@@ -13,6 +13,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import {
   OUTBOUND_TARGETS,
   OUTBOUND_INSTALL_TYPES,
@@ -84,7 +85,7 @@ export default function UseLyknWithSection({ user }) {
       } catch (err) {
         toast({
           title: "Couldn't revoke",
-          description: err?.message || "Try again in a moment.",
+          description: toUserFacingError(err),
           variant: "destructive",
         });
       } finally {

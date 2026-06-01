@@ -7,6 +7,11 @@ const getServiceRoleKey = () => process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+// Coalesce bursty chat telemetry into one RPC per session (migration 072).
+const SESSION_TOTALS_DEBOUNCE_MS = 2500;
+
+/** @type {Map<string, { cost: number, tokens: number, credits: number, timer: ReturnType<typeof setTimeout> | null, flushing: boolean }>} */
+const sessionPendingUpdates = new Map();
 
 // ─── Supabase Admin Helpers ──────────────────────────────────────────────────
 
@@ -65,6 +70,8 @@ const MODEL_PRICING = {
 
   // Anthropic
   'claude-opus-4-20250514':       { input: 0.015, output: 0.075 },
+  'claude-opus-4-8':              { input: 0.005, output: 0.025 },
+  'claude-opus-4-7':              { input: 0.005, output: 0.025 },
   'claude-sonnet-4-20250514':     { input: 0.003, output: 0.015 },
   'claude-3-5-haiku-20241022':    { input: 0.0008, output: 0.004 },
   'claude-3-5-sonnet-20241022':   { input: 0.003, output: 0.015 },
@@ -219,18 +226,10 @@ async function getOrCreateSession(userId, boardId) {
   return created?.[0] || null;
 }
 
-async function updateSessionActivity(sessionId) {
-  if (!sessionId) return;
-  await supabaseAdmin('PATCH', 'sessions', {
-    query: `id=eq.${sessionId}`,
-    body: { last_activity_at: new Date().toISOString() },
-  });
-}
-
-async function updateSessionTotals(sessionId, { cost, tokens, credits }) {
+async function updateSessionTotalsLegacy(sessionId, { cost, tokens, credits }) {
   if (!sessionId) return;
 
-  // Read current totals then increment (Supabase REST doesn't support atomic increment)
+  // Pre-072 fallback: read current totals then PATCH (two round trips).
   const rows = await supabaseAdmin('GET', 'sessions', {
     query: `id=eq.${sessionId}&select=total_cost,total_tokens,total_credits`,
   });
@@ -246,6 +245,72 @@ async function updateSessionTotals(sessionId, { cost, tokens, credits }) {
       last_activity_at: new Date().toISOString(),
     },
   });
+}
+
+async function flushSessionTotalsUpdate(sessionId) {
+  const pending = sessionPendingUpdates.get(sessionId);
+  if (!pending || pending.flushing) return;
+
+  if (pending.timer) {
+    clearTimeout(pending.timer);
+    pending.timer = null;
+  }
+
+  const payload = {
+    cost: pending.cost,
+    tokens: pending.tokens,
+    credits: pending.credits,
+  };
+  // Drop before the async RPC so concurrent logAiUsage calls accumulate
+  // in a fresh pending bucket instead of racing this flush.
+  sessionPendingUpdates.delete(sessionId);
+  pending.flushing = true;
+
+  try {
+    await callRpc('increment_session_totals', {
+      p_session_id: sessionId,
+      p_cost_delta: payload.cost,
+      p_tokens_delta: payload.tokens,
+      p_credits_delta: payload.credits,
+    });
+  } catch (e) {
+    if (e.code === 'rpc_missing') {
+      await updateSessionTotalsLegacy(sessionId, payload);
+    } else {
+      console.warn('[UsageTracking] increment_session_totals failed:', e?.message || e);
+    }
+  } finally {
+    pending.flushing = false;
+  }
+}
+
+function scheduleSessionTotalsUpdate(sessionId, { cost = 0, tokens = 0, credits = 0 } = {}) {
+  if (!sessionId) return;
+
+  let pending = sessionPendingUpdates.get(sessionId);
+  if (!pending) {
+    pending = { cost: 0, tokens: 0, credits: 0, timer: null, flushing: false };
+    sessionPendingUpdates.set(sessionId, pending);
+  }
+
+  pending.cost += cost || 0;
+  pending.tokens += tokens || 0;
+  pending.credits += credits || 0;
+
+  if (pending.timer || pending.flushing) return;
+
+  pending.timer = setTimeout(() => {
+    pending.timer = null;
+    void flushSessionTotalsUpdate(sessionId);
+  }, SESSION_TOTALS_DEBOUNCE_MS);
+}
+
+function updateSessionActivity(sessionId) {
+  scheduleSessionTotalsUpdate(sessionId, { cost: 0, tokens: 0, credits: 0 });
+}
+
+function updateSessionTotals(sessionId, { cost, tokens, credits }) {
+  scheduleSessionTotalsUpdate(sessionId, { cost, tokens, credits });
 }
 
 // ─── AI Usage Logging ────────────────────────────────────────────────────────

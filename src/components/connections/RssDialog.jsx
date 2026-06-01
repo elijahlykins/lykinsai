@@ -9,6 +9,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import {
   Rss,
   Plus,
@@ -55,7 +56,7 @@ export default function RssDialog({ open, onOpenChange }) {
     } catch (err) {
       toast({
         title: "Couldn't load feeds",
-        description: err.message,
+        description: toUserFacingError(err),
         variant: "destructive",
       });
     } finally {
@@ -89,7 +90,7 @@ export default function RssDialog({ open, onOpenChange }) {
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         setPreview(data);
       } catch (err) {
-        setPreviewError(err.message);
+        setPreviewError(toUserFacingError(err));
       } finally {
         setDiscovering(false);
       }
@@ -117,7 +118,7 @@ export default function RssDialog({ open, onOpenChange }) {
     } catch (err) {
       toast({
         title: "Couldn't add feed",
-        description: err.message,
+        description: toUserFacingError(err),
         variant: "destructive",
       });
     } finally {
@@ -145,7 +146,7 @@ export default function RssDialog({ open, onOpenChange }) {
       } catch (err) {
         toast({
           title: "Refresh failed",
-          description: err.message,
+          description: toUserFacingError(err),
           variant: "destructive",
         });
       }
@@ -167,7 +168,7 @@ export default function RssDialog({ open, onOpenChange }) {
         }
         refreshList();
       } catch (err) {
-        toast({ title: "Update failed", description: err.message, variant: "destructive" });
+        toast({ title: "Update failed", description: toUserFacingError(err), variant: "destructive" });
       }
     },
     [refreshList],
@@ -184,7 +185,7 @@ export default function RssDialog({ open, onOpenChange }) {
         }
         refreshList();
       } catch (err) {
-        toast({ title: "Delete failed", description: err.message, variant: "destructive" });
+        toast({ title: "Delete failed", description: toUserFacingError(err), variant: "destructive" });
       }
     },
     [refreshList],

@@ -65,3 +65,27 @@ export const MODEL_GROUPS = [
 export const KNOWN_MODEL_IDS = MODEL_GROUPS.flatMap((g) =>
   g.items.map((i) => i.value)
 );
+
+// Agent Studio (/agents) — coding-tier frontier models (no LYKN alias).
+export const CLAUDE_OPUS_4_8_ID = "claude-opus-4-8";
+
+/** @type {ModelGroup[]} */
+export const AGENT_BUILDER_MODEL_GROUPS = [
+  {
+    id: "coding",
+    label: "Coding models",
+    items: [
+      { value: CLAUDE_OPUS_4_8_ID, label: "Claude Opus 4.8", hint: "Anthropic" },
+      { value: FRONTIER_ANTHROPIC_ID, label: "Claude Sonnet 4.6", hint: "Anthropic" },
+      { value: FRONTIER_OPENAI_ID, label: "GPT-5.5", hint: "OpenAI" },
+      { value: FRONTIER_GOOGLE_ID, label: "Gemini 3.1 Pro", hint: "Google" },
+      { value: FRONTIER_XAI_ID, label: "Grok 4.3", hint: "xAI" },
+    ],
+  },
+];
+
+export const AGENT_BUILDER_MODEL_IDS = AGENT_BUILDER_MODEL_GROUPS.flatMap((g) =>
+  g.items.map((i) => i.value),
+);
+
+export const AGENT_BUILDER_DEFAULT_MODEL = CLAUDE_OPUS_4_8_ID;

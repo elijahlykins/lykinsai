@@ -1,4 +1,8 @@
 import { supabase } from "@/lib/supabase";
+import {
+  aggregateConnectorRollupCounts,
+  type ConnectorRollupSummary,
+} from "@/lib/vault/connectorSources";
 
 /** Lightweight row the 3D graph needs for vault neurons + cross-edges. */
 export type MindmapNoteRow = {
@@ -13,14 +17,23 @@ export type MindmapNoteRow = {
   updated_at?: string | null;
 };
 
-const LIGHT_COLUMNS =
-  "id, title, tags, ai_summary, ai_signals, source, created_at, updated_at";
-const CONTENT_COLUMNS = "id, content";
+export type MindmapVaultGraphData = {
+  /** Manual saves + perspectives — never connector-sync rows. */
+  notes: MindmapNoteRow[];
+  /** Accurate per-app totals for connector rollup nodes. */
+  connectorRollups: ConnectorRollupSummary[];
+};
 
-const PAGE_SIZE = 200;
-/** Safety ceiling — matches Vault tag-count fallback; Pro cap is 10k. */
-const MAX_NOTES = 5000;
+const CONTENT_COLUMNS = "id, content";
+const RPC_PAGE_SIZE = 200;
+/** Pro vault ceiling for synthesis graph pagination. */
+export const MINDMAP_MANUAL_NOTE_LIMIT = 5000;
 const CONTENT_BATCH = 100;
+
+export type HydrateMindmapNoteContentOptions = {
+  /** Cap content hydration (multi-attachment fan-out). Default: all manual notes. */
+  maxHydrate?: number;
+};
 
 type NotesCursor = { updatedAt: string; id: string };
 
@@ -33,31 +46,31 @@ function isMissingTableError(err: { code?: string; message?: string } | null): b
   );
 }
 
-async function fetchLightPage(
+function isRpcMissingError(err: { code?: string; message?: string } | null, fn: string): boolean {
+  if (!err) return false;
+  return (
+    err.code === "PGRST202" ||
+    err.code === "42883" ||
+    Boolean(err.message?.includes(fn))
+  );
+}
+
+async function attachContentBatch(
   userId: string,
-  cursor: NotesCursor | null,
-): Promise<{ rows: MindmapNoteRow[]; error: unknown | null }> {
-  let q = supabase
+  rows: MindmapNoteRow[],
+  noteIds: string[],
+): Promise<void> {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const { data, error } = await supabase
     .from("notes")
-    .select(LIGHT_COLUMNS)
+    .select(CONTENT_COLUMNS)
     .eq("user_id", userId)
-    .order("updated_at", { ascending: false })
-    .order("id", { ascending: false })
-    .limit(PAGE_SIZE);
-
-  if (cursor?.updatedAt) {
-    if (cursor.id) {
-      q = q.or(
-        `updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`,
-      );
-    } else {
-      q = q.lt("updated_at", cursor.updatedAt);
-    }
+    .in("id", noteIds);
+  if (error) return;
+  for (const row of data || []) {
+    const target = byId.get(row.id);
+    if (target) target.content = row.content;
   }
-
-  const { data, error } = await q;
-  if (error) return { rows: [], error };
-  return { rows: (data || []) as MindmapNoteRow[] };
 }
 
 async function attachContentBatches(
@@ -65,101 +78,151 @@ async function attachContentBatches(
   rows: MindmapNoteRow[],
   noteIds: string[],
 ): Promise<void> {
-  const byId = new Map(rows.map((r) => [r.id, r]));
+  const batches: string[][] = [];
   for (let i = 0; i < noteIds.length; i += CONTENT_BATCH) {
-    const batch = noteIds.slice(i, i + CONTENT_BATCH);
-    const { data, error } = await supabase
-      .from("notes")
-      .select(CONTENT_COLUMNS)
-      .eq("user_id", userId)
-      .in("id", batch);
-    if (error) continue;
-    for (const row of data || []) {
-      const target = byId.get(row.id);
-      if (target) target.content = row.content;
-    }
+    batches.push(noteIds.slice(i, i + CONTENT_BATCH));
   }
+  await Promise.all(
+    batches.map((batch) => attachContentBatch(userId, rows, batch)),
+  );
+}
+
+async function fetchManualNotesRpcPage(
+  cursor: NotesCursor | null,
+): Promise<{ rows: MindmapNoteRow[]; error: unknown | null }> {
+  const { data, error } = await supabase.rpc("vault_manual_notes_for_graph", {
+    p_limit: RPC_PAGE_SIZE,
+    p_cursor_updated_at: cursor?.updatedAt ?? null,
+    p_cursor_id: cursor?.id ?? null,
+  });
+  if (error) return { rows: [], error };
+  return { rows: (data || []) as MindmapNoteRow[] };
+}
+
+async function fetchManualNotesRestFallback(
+  userId: string,
+  cursor: NotesCursor | null,
+): Promise<{ rows: MindmapNoteRow[]; error: unknown | null }> {
+  let q = supabase
+    .from("notes")
+    .select("id, title, tags, ai_summary, ai_signals, source, created_at, updated_at")
+    .eq("user_id", userId)
+    .order("updated_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(RPC_PAGE_SIZE);
+
+  if (cursor?.updatedAt) {
+    q = q.lt("updated_at", cursor.updatedAt);
+  }
+
+  const { data, error } = await q;
+  if (error) return { rows: [], error };
+  const rows = ((data || []) as MindmapNoteRow[]).filter((r) => {
+    const src = String(r.source || "").trim();
+    return !src;
+  });
+  return { rows, error: null };
 }
 
 /**
- * Loads every vault note for the synthesis-layer graph. Paginates through
- * the full `notes` table (Vault does the same) instead of the old single-
- * query `.limit(300)` that silently dropped older cards from the brain.
- *
- * `content` is fetched in a second pass only for non-connector notes so
- * we can split multi-attachment rows into one neuron per vault card without
- * shipping every note body on initial load.
+ * Paginates manual + perspective notes (excludes connector sync rows).
  */
-export async function fetchMindmapNotes(userId: string): Promise<MindmapNoteRow[]> {
+export async function fetchManualMindmapNotes(
+  userId: string,
+  maxNotes = MINDMAP_MANUAL_NOTE_LIMIT,
+): Promise<MindmapNoteRow[]> {
   if (!userId) return [];
 
   const all: MindmapNoteRow[] = [];
   let cursor: NotesCursor | null = null;
+  let useRpc = true;
 
-  while (all.length < MAX_NOTES) {
-    const { rows, error } = await fetchLightPage(userId, cursor);
+  while (all.length < maxNotes) {
+    const { rows, error } = useRpc
+      ? await fetchManualNotesRpcPage(cursor)
+      : await fetchManualNotesRestFallback(userId, cursor);
+
     if (error) {
+      if (useRpc && isRpcMissingError(error as { code?: string; message?: string }, "vault_manual_notes_for_graph")) {
+        console.warn(
+          "[fetchMindmapNotes] vault_manual_notes_for_graph missing — apply migration 073; using REST fallback",
+        );
+        useRpc = false;
+        continue;
+      }
       if (isMissingTableError(error as { code?: string; message?: string })) return [];
       throw error;
     }
+
     if (!rows.length) break;
     all.push(...rows);
-    if (rows.length < PAGE_SIZE) break;
+    if (rows.length < RPC_PAGE_SIZE) break;
     const last = rows[rows.length - 1];
     if (!last?.updated_at) break;
     cursor = { updatedAt: last.updated_at, id: last.id };
   }
 
-  return all.slice(0, MAX_NOTES);
+  return all.slice(0, maxNotes);
 }
 
-/** Connector slugs that collapse into per-app rollup nodes in buildGraph. */
-const CONNECTOR_SOURCES = new Set([
-  "gmail_starred",
-  "gmail_inbox",
-  "outlook_flagged",
-  "notion_page",
-  "slack_saved",
-  "github_starred",
-  "linear_issue",
-  "todoist",
-  "trello_card",
-  "readwise",
-  "raindrop_bookmark",
-  "spotify_liked",
-  "vimeo_liked",
-  "youtube_liked",
-  "x_bookmark",
-  "bluesky_like",
-  "pinterest_pin",
-  "lastfm_loved",
-  "karakeep",
-  "linkding",
-  "pinboard",
-  "goodreads",
-  "hardcover",
-  "gcal_event",
-  "gdrive_starred",
-  "gdocs_starred",
-  "gsheets_starred",
-  "gslides_starred",
-]);
+export async function fetchConnectorRollupCounts(
+  userId: string,
+): Promise<ConnectorRollupSummary[]> {
+  if (!userId) return [];
 
-function isConnectorNote(row: MindmapNoteRow): boolean {
-  const src = String(row.source || "").trim();
-  return src !== "" && CONNECTOR_SOURCES.has(src);
+  const { data, error } = await supabase.rpc("vault_connector_source_counts");
+  if (error) {
+    if (isRpcMissingError(error as { code?: string; message?: string }, "vault_connector_source_counts")) {
+      console.warn(
+        "[fetchMindmapNotes] vault_connector_source_counts missing — apply migration 073",
+      );
+      return [];
+    }
+    throw error;
+  }
+
+  const rows = (data || []) as Array<{ source: string; count: number | string }>;
+  return aggregateConnectorRollupCounts(
+    rows.map((r) => ({
+      source: String(r.source || ""),
+      count: Number(r.count) || 0,
+    })),
+  );
 }
 
 /**
- * Hydrates `content` on individual (non-rollup) notes so buildGraph can
- * emit one neuron per attachment when a row backs multiple vault cards.
+ * Split fetch for Synthesis: all manual/perspective notes + connector
+ * rollup totals (no connector row payload on mount).
+ */
+export async function fetchMindmapVaultGraphData(
+  userId: string,
+): Promise<MindmapVaultGraphData> {
+  const [notes, connectorRollups] = await Promise.all([
+    fetchManualMindmapNotes(userId),
+    fetchConnectorRollupCounts(userId),
+  ]);
+  return { notes, connectorRollups };
+}
+
+/** @deprecated Use fetchMindmapVaultGraphData. */
+export async function fetchMindmapNotes(userId: string): Promise<MindmapNoteRow[]> {
+  const { notes } = await fetchMindmapVaultGraphData(userId);
+  return notes;
+}
+
+/**
+ * Hydrates `content` on manual notes so buildGraph can emit one neuron
+ * per attachment when a row backs multiple vault cards.
  */
 export async function hydrateMindmapNoteContent(
   userId: string,
   rows: MindmapNoteRow[],
+  options: HydrateMindmapNoteContentOptions = {},
 ): Promise<MindmapNoteRow[]> {
-  const ids = rows.filter((r) => !isConnectorNote(r)).map((r) => r.id);
-  if (!ids.length) return rows;
-  await attachContentBatches(userId, rows, ids);
+  const ids = rows.map((r) => r.id);
+  const maxHydrate = options.maxHydrate ?? ids.length;
+  const slice = ids.slice(0, maxHydrate);
+  if (!slice.length) return rows;
+  await attachContentBatches(userId, rows, slice);
   return rows;
 }

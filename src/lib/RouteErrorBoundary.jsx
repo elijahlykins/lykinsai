@@ -116,35 +116,6 @@ class RouteErrorBoundary extends React.Component {
             ? "Still having trouble. Try clearing cached data or heading back to the dashboard."
             : "Don't worry — your data is safe. Let's try loading this again."}
         </p>
-        {this.state.error && (
-          <details style={{
-            textAlign: 'left',
-            marginBottom: '20px',
-            padding: '12px',
-            background: '#fef2f2',
-            border: '1px solid #fca5a5',
-            borderRadius: '8px',
-            maxWidth: '500px',
-            width: '100%',
-          }}>
-            <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#b91c1c', fontSize: '0.8rem' }}>
-              Error details (tap to expand)
-            </summary>
-            <pre style={{ fontSize: '0.75rem', color: '#991b1b', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '8px' }}>
-              {String(this.state.error?.message || this.state.error)}
-            </pre>
-            {this.state.error?.stack && (
-              <pre style={{ fontSize: '0.7rem', color: '#6b7280', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto', marginTop: '4px' }}>
-                {this.state.error.stack}
-              </pre>
-            )}
-            {this.state.errorInfo?.componentStack && (
-              <pre style={{ fontSize: '0.7rem', color: '#6b7280', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto', marginTop: '4px' }}>
-                {this.state.errorInfo.componentStack}
-              </pre>
-            )}
-          </details>
-        )}
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
           <button
             onClick={handleRetry}

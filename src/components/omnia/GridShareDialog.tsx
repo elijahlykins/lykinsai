@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Link2, Loader2, Check, Copy, ExternalLink, Trash2 } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { toast } from "@/components/ui/use-toast";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import {
   buildShareUrl,
   createShareForBoard,
@@ -69,7 +70,7 @@ const GridShareDialog: React.FC<GridShareDialogProps> = ({ open, onOpenChange, b
         const row = await getActiveShareForBoard(boardId);
         if (!cancelled) setShare(row);
       } catch (err: any) {
-        if (!cancelled) setShareError(err?.message || "Unable to check for an existing share link.");
+        if (!cancelled) setShareError(toUserFacingError(err));
       } finally {
         if (!cancelled) setShareLoading(false);
       }
@@ -162,7 +163,7 @@ const GridShareDialog: React.FC<GridShareDialogProps> = ({ open, onOpenChange, b
                         } catch (err: any) {
                           toast({
                             title: "Revoke failed",
-                            description: err?.message || "Please try again.",
+                            description: toUserFacingError(err),
                             variant: "destructive" as any,
                           });
                         } finally {
@@ -200,7 +201,7 @@ const GridShareDialog: React.FC<GridShareDialogProps> = ({ open, onOpenChange, b
                     setShare(row);
                     toast({ title: "Share link created" });
                   } catch (err: any) {
-                    const message = err?.message || "Please try again.";
+                    const message = toUserFacingError(err);
                     setShareError(message);
                     toast({
                       title: "Couldn't create share link",

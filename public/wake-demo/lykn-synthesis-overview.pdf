@@ -1,0 +1,537 @@
+%PDF-1.3
+%ºß¬à
+3 0 obj
+<</Type /Page
+/Parent 1 0 R
+/Resources 2 0 R
+/MediaBox [0 0 612. 792.]
+/Contents 4 0 R
+>>
+endobj
+4 0 obj
+<<
+/Length 3170
+>>
+stream
+0.200025 w
+0 G
+BT
+/F2 18 Tf
+20.6999999999999993 TL
+0.118 g
+54. 720. Td
+(Synthesis Layer Overview) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 692. Td
+(The synthesis layer is LYKN's portable memory graph. It accumulates what you save, what you believe, and) Tj
+T* (what you're working on — then makes that context available to every AI client you connect.) Tj
+ET
+BT
+/F2 12 Tf
+13.7999999999999989 TL
+0.145 0.388 0.922 rg
+54. 654. Td
+(What it is) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 636. Td
+(Unlike chat history locked inside one app, the synthesis layer is yours. It lives in LYKN and travels with you) Tj
+T* (through MCP-connected tools — ChatGPT, Claude, Cursor, Gemini, and the in-app chat all read from the) Tj
+T* (same source of truth.) Tj
+ET
+BT
+/F2 12 Tf
+13.7999999999999989 TL
+0.145 0.388 0.922 rg
+54. 584. Td
+(Neuron categories) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 566. Td
+(•) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+68. 566. Td
+(Chats — conversation history and the reasoning behind each thread.) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 546. Td
+(•) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+68. 546. Td
+(Vault — files, links, notes, and the meanings LYKN extracts from them.) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 526. Td
+(•) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+68. 526. Td
+(Beliefs — principles you've ratified that models should respect and apply.) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 506. Td
+(•) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+68. 506. Td
+(Facts — concrete truths you've confirmed about yourself and your work.) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 486. Td
+(•) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+68. 486. Td
+(Concepts — thematic clusters that keep related ideas coherent over time.) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 466. Td
+(•) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+68. 466. Td
+(Projects — active goals, deadlines, and open threads in one workspace.) Tj
+ET
+BT
+/F2 12 Tf
+13.7999999999999989 TL
+0.145 0.388 0.922 rg
+54. 442. Td
+(How items become neurons) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 424. Td
+(When you save something to the Vault, LYKN reads it, extracts signals, and connects new neurons to ones) Tj
+T* (already in your graph. A PDF about pricing connects to billing facts. A meeting note connects to the project it) Tj
+T* (belongs to. Over time, the graph reflects how you actually think — not a flat folder tree.) Tj
+ET
+BT
+/F2 12 Tf
+13.7999999999999989 TL
+0.145 0.388 0.922 rg
+54. 372. Td
+(Why it matters) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 354. Td
+(Every connected model stops guessing. Instead of re-explaining your preferences, your stack, or your) Tj
+T* (current project in every new chat, the synthesis layer supplies that context up front — and keeps learning as) Tj
+T* (you work.) Tj
+ET
+BT
+/F1 9 Tf
+10.3499999999999996 TL
+0.51 g
+54. 32. Td
+(LYKN — Confidential overview) Tj
+ET
+BT
+/F1 9 Tf
+10.3499999999999996 TL
+0.51 g
+458.2799999999999727 32. Td
+(Page 1 of 2) Tj
+ET
+endstream
+endobj
+5 0 obj
+<</Type /Page
+/Parent 1 0 R
+/Resources 2 0 R
+/MediaBox [0 0 612. 792.]
+/Contents 6 0 R
+>>
+endobj
+6 0 obj
+<<
+/Length 2240
+>>
+stream
+0.200025 w
+0 G
+BT
+/F2 18 Tf
+20.6999999999999993 TL
+0.118 g
+54. 720. Td
+(Synthesis Layer Overview) Tj
+ET
+BT
+/F2 12 Tf
+13.7999999999999989 TL
+0.145 0.388 0.922 rg
+54. 692. Td
+(Read path \(every session\)) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 674. Td
+(Connected AI clients call lykn_getContextBlock at the start of a conversation. The response bundles your) Tj
+T* (active beliefs, governance rules, identity facts, and current project state into one block the model treats as) Tj
+T* (binding context.) Tj
+ET
+BT
+/F2 12 Tf
+13.7999999999999989 TL
+0.145 0.388 0.922 rg
+54. 622. Td
+(Write path \(as you work\)) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 604. Td
+(•) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+68. 604. Td
+(lykn_proposeBelief — when a durable principle emerges that you haven't ratified yet.) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 584. Td
+(•) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+68. 584. Td
+(lykn_recordRuleApplication — audit trail when a model follows one of your rules.) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 564. Td
+(•) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+68. 564. Td
+(lykn_pushProjectState — when a conversation produces a decision about an active project.) Tj
+ET
+BT
+/F2 12 Tf
+13.7999999999999989 TL
+0.145 0.388 0.922 rg
+54. 540. Td
+(Caps and plans) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 522. Td
+(Free accounts include a starter neuron cap. Pro unlocks unlimited vault storage and unlimited synthesis) Tj
+T* (neurons — the graph can grow without artificial limits as your knowledge base scales.) Tj
+ET
+BT
+/F2 12 Tf
+13.7999999999999989 TL
+0.145 0.388 0.922 rg
+54. 484. Td
+(In the product) Tj
+ET
+BT
+/F1 10.5 Tf
+12.0749999999999993 TL
+0.216 g
+54. 466. Td
+(Open the Synthesis page to explore your graph in 3D. Category clusters show density at a glance; click any) Tj
+T* (neuron to see why it exists and what it connects to. The wake tour and vault preview demonstrate how) Tj
+T* (capture feeds the graph in real time.) Tj
+ET
+BT
+/F1 9 Tf
+10.3499999999999996 TL
+0.51 g
+54. 32. Td
+(LYKN — Confidential overview) Tj
+ET
+BT
+/F1 9 Tf
+10.3499999999999996 TL
+0.51 g
+458.2799999999999727 32. Td
+(Page 2 of 2) Tj
+ET
+endstream
+endobj
+1 0 obj
+<</Type /Pages
+/Kids [3 0 R 5 0 R ]
+/Count 2
+>>
+endobj
+7 0 obj
+<<
+/Type /Font
+/BaseFont /Helvetica
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+8 0 obj
+<<
+/Type /Font
+/BaseFont /Helvetica-Bold
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+9 0 obj
+<<
+/Type /Font
+/BaseFont /Helvetica-Oblique
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+10 0 obj
+<<
+/Type /Font
+/BaseFont /Helvetica-BoldOblique
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+11 0 obj
+<<
+/Type /Font
+/BaseFont /Courier
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+12 0 obj
+<<
+/Type /Font
+/BaseFont /Courier-Bold
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+13 0 obj
+<<
+/Type /Font
+/BaseFont /Courier-Oblique
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+14 0 obj
+<<
+/Type /Font
+/BaseFont /Courier-BoldOblique
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+15 0 obj
+<<
+/Type /Font
+/BaseFont /Times-Roman
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+16 0 obj
+<<
+/Type /Font
+/BaseFont /Times-Bold
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+17 0 obj
+<<
+/Type /Font
+/BaseFont /Times-Italic
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+18 0 obj
+<<
+/Type /Font
+/BaseFont /Times-BoldItalic
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+19 0 obj
+<<
+/Type /Font
+/BaseFont /ZapfDingbats
+/Subtype /Type1
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+20 0 obj
+<<
+/Type /Font
+/BaseFont /Symbol
+/Subtype /Type1
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+2 0 obj
+<<
+/ProcSet [/PDF /Text /ImageB /ImageC /ImageI]
+/Font <<
+/F1 7 0 R
+/F2 8 0 R
+/F3 9 0 R
+/F4 10 0 R
+/F5 11 0 R
+/F6 12 0 R
+/F7 13 0 R
+/F8 14 0 R
+/F9 15 0 R
+/F10 16 0 R
+/F11 17 0 R
+/F12 18 0 R
+/F13 19 0 R
+/F14 20 0 R
+>>
+/XObject <<
+>>
+>>
+endobj
+21 0 obj
+<<
+/Producer (jsPDF 4.2.1)
+/CreationDate (D:20260530203533-06'00')
+>>
+endobj
+22 0 obj
+<<
+/Type /Catalog
+/Pages 1 0 R
+/OpenAction [3 0 R /FitH null]
+/PageLayout /OneColumn
+>>
+endobj
+xref
+0 23
+0000000000 65535 f 
+0000005739 00000 n 
+0000007564 00000 n 
+0000000015 00000 n 
+0000000120 00000 n 
+0000003342 00000 n 
+0000003447 00000 n 
+0000005802 00000 n 
+0000005927 00000 n 
+0000006057 00000 n 
+0000006190 00000 n 
+0000006328 00000 n 
+0000006452 00000 n 
+0000006581 00000 n 
+0000006713 00000 n 
+0000006849 00000 n 
+0000006977 00000 n 
+0000007104 00000 n 
+0000007233 00000 n 
+0000007366 00000 n 
+0000007468 00000 n 
+0000007814 00000 n 
+0000007900 00000 n 
+trailer
+<<
+/Size 23
+/Root 22 0 R
+/Info 21 0 R
+/ID [ <EC783263CFFF800C5CE664EA3651DD9E> <EC783263CFFF800C5CE664EA3651DD9E> ]
+>>
+startxref
+8004
+%%EOF

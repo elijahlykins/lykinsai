@@ -105,7 +105,10 @@ export const searchVaultTool = {
         id: n.id,
         title: n.title || '(untitled)',
         snippet: snippet.trim(),
-        tags: Array.isArray(n.tags) ? n.tags.slice(0, 8) : [],
+        tags: (Array.isArray(n.tags) ? n.tags : [])
+          .map((t) => (typeof t === 'string' ? t : t?.name || t?.label || String(t || '')))
+          .filter(Boolean)
+          .slice(0, 8),
         created_at: n.created_at,
         updated_at: n.updated_at,
         url: `/vault?note=${encodeURIComponent(n.id)}`,

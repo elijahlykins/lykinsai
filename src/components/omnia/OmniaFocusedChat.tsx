@@ -335,6 +335,9 @@ export interface OmniaFocusedChatProps {
    * full page reload. Optional — non-greeting surfaces leave it unset.
    */
   onLoadInGreetingRefresh?: () => void | Promise<void>;
+
+  /** Walkthrough iframe preview: tighter layout, no scroll. */
+  compactPreview?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1649,6 +1652,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   onRegenerate,
   onRegenerateNonUser,
   onLoadInGreetingRefresh,
+  compactPreview = false,
 }) {
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const chunkMapRef = useRef<Map<string, string>>(new Map());
@@ -1754,16 +1758,22 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
       {chatMessages.length === 0 ? (
         /* Empty state: identical to the canvas first-render welcome */
         <div
-          className={`fixed top-0 right-0 z-[65] flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid ? "pl-[232px]" : ""}`}
-          style={{
-            left: isMobilePhone ? 0 : "var(--sidebar-offset, 0px)",
-            bottom: "var(--mobile-tabbar-clear, 0px)",
-          }}
+          className={`${compactPreview ? "omnia-focused-chat-preview absolute inset-0 z-[65]" : "fixed top-0 right-0 z-[65]"} flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid && !compactPreview ? "pl-[232px]" : ""}`}
+          style={
+            compactPreview
+              ? undefined
+              : {
+                  left: isMobilePhone ? 0 : "var(--sidebar-offset, 0px)",
+                  bottom: "var(--mobile-tabbar-clear, 0px)",
+                }
+          }
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
-          <div className="w-full max-w-2xl space-y-10 sm:space-y-12">
-            <p className="text-center text-xl sm:text-3xl font-semibold tracking-tight min-h-[44px] text-black dark:text-white pointer-events-none">
+          <div className={`w-full max-w-2xl ${compactPreview ? "space-y-3 px-1" : "space-y-10 sm:space-y-12"}`}>
+            <p className={`text-center font-semibold tracking-tight text-black dark:text-white pointer-events-none ${
+              compactPreview ? "text-sm min-h-0 line-clamp-2" : "text-xl sm:text-3xl min-h-[44px]"
+            }`}>
               {typedWelcome}
             </p>
             <div className="omnia-neu-chat-shell omnia-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">

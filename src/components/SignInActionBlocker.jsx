@@ -8,6 +8,8 @@ export default function SignInActionBlocker({
   onClose,
   title = "Improve your LYKN experience",
   subtitle = "Sign in or sign up to continue",
+  /** Center within a positioned parent (e.g. wake vault preview subwindow). */
+  contained = false,
 }) {
   const nav = useNavigate();
   const { signInWithOAuth } = useAuth();
@@ -15,7 +17,11 @@ export default function SignInActionBlocker({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[320] bg-[#f8f7f3] dark:bg-[#0f0f0f] overflow-y-auto">
+    <div
+      className={`${
+        contained ? "absolute" : "fixed"
+      } inset-0 z-[320] bg-[#f8f7f3] dark:bg-[#0f0f0f] overflow-y-auto`}
+    >
       <button
         type="button"
         onClick={() => onClose?.()}

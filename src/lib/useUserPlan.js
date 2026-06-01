@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { API_BASE_URL } from "@/lib/api-config";
 import { PLAN_LIMITS } from "@/lib/pricing-config";
+import { hasAppAccess } from "@/lib/billingAccess";
 
 const FREE_PLAN = "free";
 
@@ -77,6 +78,7 @@ export function useUserPlan() {
     modelTier: effectiveConf.modelTier,
     isGuest: false,
     isActive: isBillingHealthy,
+    hasAppAccess: hasAppAccess(data),
     // Stripe customer may exist even when status is past_due / canceled:
     // lets the UI offer "Manage subscription" so the user can update
     // payment without starting a fresh checkout.

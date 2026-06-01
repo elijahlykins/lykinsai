@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  Bot,
   Brain,
   ChevronLeft,
   ChevronRight,
@@ -32,6 +33,8 @@ import {
   readPrototypeStep,
 } from "@/lib/prototypeHandoff";
 import { requestGuestSignIn } from "@/lib/guestChatLimits";
+import SignInPill from "@/components/SignInPill";
+import { isAgentStudioEnabled } from "@/lib/agentStudioDev";
 
 export default function AppSidebar({
   controlledOpen,
@@ -41,7 +44,7 @@ export default function AppSidebar({
 } = {}) {
   const nav = useNavigate();
   const location = useLocation();
-  const { user, signInWithOAuth, signOut } = useAuth();
+  const { user, signOut } = useAuth();
   // Prototype-handoff "preview" mode: when a guest came from the landing
   // prototype with at least one neuron in localStorage, suppress the demo
   // grid list so the sidebar reads as a brand-new, empty workspace.
@@ -245,24 +248,7 @@ export default function AppSidebar({
         >
           {open ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </button>
-        <button
-          type="button"
-          onClick={() => {
-            if (user) {
-              const ok = window.confirm("Sign out of your account?");
-              if (ok) signOut();
-            } else {
-              signInWithOAuth("google");
-            }
-          }}
-          className="flex items-center gap-1.5 rounded-full bg-white/45 dark:bg-[rgba(60,60,60,0.14)] backdrop-blur-sm border border-black/6 dark:border-white/10 pl-1 pr-3 py-1 text-[0.6875rem] text-black/70 dark:text-white/70 hover:bg-white/60 dark:hover:bg-white/15 shadow-sm transition-colors"
-          title={user ? "Sign out" : "Sign in"}
-        >
-          <div className="h-6 w-6 rounded-full bg-blue-500/15 dark:bg-blue-400/20 text-[0.6875rem] font-semibold text-blue-600 dark:text-blue-400 flex items-center justify-center flex-shrink-0">
-            {user?.email ? user.email.charAt(0).toUpperCase() : "?"}
-          </div>
-          <span>{user ? "Signed in" : "Sign in"}</span>
-        </button>
+        <SignInPill />
       </div>
 
       <div
@@ -361,6 +347,21 @@ export default function AppSidebar({
               />
               Connections
             </button>
+            {isAgentStudioEnabled && user ? (
+              <button
+                type="button"
+                onClick={() => goTo("/agents")}
+                className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
+                  location.pathname === "/agents" ? "bg-blue-500/10" : ""
+                }`}
+              >
+                <Bot className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+                <span className="flex-1">Agents</span>
+                <span className="text-[0.5625rem] uppercase tracking-wide text-violet-500/80 dark:text-violet-300/80">
+                  Dev
+                </span>
+              </button>
+            ) : null}
           </div>
         </div>
 

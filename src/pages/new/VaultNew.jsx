@@ -68,6 +68,19 @@ import { detectSocialPlatform, isSocialEmbedType, isVerticalSocialContent } from
 import { SocialEmbedInline } from "@/canvas/blocks/SocialEmbedBlock";
 import LoadingScreen from "@/components/LoadingScreen";
 import LinkPreview from "@/components/LinkPreview";
+import { buildWakeVaultDemoCards, WAKE_DEMO_CONNECTOR_CARD_IDS } from "@/lib/wake/wakeVaultDemoCards";
+import { WAKE_WALKTHROUGH_GATE_TEXT } from "@/components/wake/wakeSynthesisAddMenu";
+import {
+  appendWakeVaultPreviewQuickNote,
+  buildWakePreviewUserQuickNoteCards,
+  readWakeVaultPreviewQuickNotes,
+  removeWakeVaultPreviewQuickNote,
+} from "@/lib/wake/wakeVaultPreviewQuickNotes";
+import {
+  appendWakeVaultPreviewComment,
+  applyWakePreviewCommentsToCard,
+  readWakeVaultPreviewComments,
+} from "@/lib/wake/wakeVaultPreviewComments";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
@@ -592,6 +605,50 @@ function getYouTubeOffsetClass(seed) {
   return offsets[stableBucket(seed, offsets.length)];
 }
 
+function vaultPdfEmbedUrl(url = "") {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const params = "toolbar=0&navpanes=0&scrollbar=1";
+  return raw.includes("#") ? raw : `${raw}#${params}`;
+}
+
+function renderConnectorListCard(attachment, title, { expanded = false, compact = false } = {}) {
+  const items = Array.isArray(attachment?.listItems) ? attachment.listItems : [];
+  const siteLabel = attachment?.siteName || title || "Connected app";
+  const maxItems = expanded ? items.length : compact ? 3 : 5;
+
+  return (
+    <div className={`rounded-2xl overflow-hidden glass-control ${expanded ? "" : "cursor-pointer"}`}>
+      <div className={`flex items-center gap-2 border-b border-black/8 dark:border-white/8 ${compact ? "px-3 py-2" : "px-3.5 py-2.5"}`}>
+        {attachment?.favicon ? (
+          <img
+            src={attachment.favicon}
+            alt=""
+            className={`${compact ? "w-3.5 h-3.5" : "w-4 h-4"} shrink-0 object-contain`}
+            draggable={false}
+          />
+        ) : (
+          <Globe className={`${compact ? "w-3.5 h-3.5" : "w-4 h-4"} shrink-0 text-black/50 dark:text-white/50`} />
+        )}
+        <span className={`${compact ? "text-xs" : "text-sm"} font-medium text-black/80 dark:text-white/80 truncate`}>{siteLabel}</span>
+        <span className={`ml-auto shrink-0 ${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} text-black/45 dark:text-white/45`}>
+          {items.length} items
+        </span>
+      </div>
+      <ul className={`divide-y divide-black/6 dark:divide-white/6 ${expanded ? "max-h-[70vh] overflow-y-auto scrollbar-hide" : ""}`}>
+        {items.slice(0, maxItems).map((item, index) => (
+          <li key={`${item.label}-${index}`} className={compact ? "px-3 py-1.5" : "px-3.5 py-2.5"}>
+            <div className={`${compact ? "text-[0.6875rem]" : "text-xs"} font-medium text-black/80 dark:text-white/80 truncate`}>{item.label}</div>
+            {item.meta ? (
+              <div className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} text-black/50 dark:text-white/50 truncate mt-0.5`}>{item.meta}</div>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function getAttachmentHeightClass(card) {
   const type = card?.type;
   const ratio = resolveAttachmentAspectRatio(card?.attachment);
@@ -630,7 +687,7 @@ function getAttachmentHeightClass(card) {
   // Fallback by content type when dimensions are not present.
   if (type === "image") return "h-auto";
   if (type === "video" || type === "youtube") return "h-auto";
-  if (type === "pdf") return "h-80 md:h-[30rem] xl:h-[36rem]";
+  if (type === "pdf") return "h-56 md:h-64 xl:h-72";
   if (type === "bookmark") return "h-auto";
   if (type === "spreadsheet") return "h-auto";
   if (type === "doc" || type === "word" || type === "file") return "h-56 md:h-64 xl:h-72";
@@ -653,10 +710,11 @@ const VAULT_VIEW_OPTIONS = [
   { id: "type", icon: LayoutGrid, label: "Type" },
 ];
 
-export default function VaultNew() {
+export default function VaultNew({ wakePreview = false, onWakePreviewTabChange } = {}) {
   const location = useLocation();
   const nav = useNavigate();
   const { user, loading } = useAuth();
+  const isWakePreview = Boolean(wakePreview);
   // Walkthrough lockdown gate — kept in sync with same-tab step changes
   // (writePrototypeStep dispatches PROTOTYPE_STEP_EVENT) and cross-tab
   // `storage` events so the toggle pill re-appears the moment the
@@ -680,8 +738,8 @@ export default function VaultNew() {
   );
   const addMediaTriggerRef = useRef(null);
   const isEmbeddedMode = useMemo(
-    () => new URLSearchParams(location.search).get("embedded") === "1",
-    [location.search]
+    () => !isWakePreview && new URLSearchParams(location.search).get("embedded") === "1",
+    [location.search, isWakePreview]
   );
   // Origin to pass to `window.parent.postMessage`. Targeting "*" (the
   // previous behaviour) leaks vault drag payloads to whoever happens to
@@ -708,10 +766,10 @@ export default function VaultNew() {
   // The vault → grid bump happens later, after the intro chat finishes
   // typing — see the typing effect below.
   useEffect(() => {
+    if (isWakePreview) return;
     const step = readPrototypeStep();
     if (step === "synthesis") writePrototypeStep("vault");
-  }, []);
-
+  }, [isWakePreview]);
 
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [embeddedSearch, setEmbeddedSearch] = useState("");
@@ -734,6 +792,10 @@ export default function VaultNew() {
       setVaultReadyRaw(value);
     }
   }, [markVaultReady]);
+  useEffect(() => {
+    if (!isWakePreview) return;
+    setVaultReady(true);
+  }, [isWakePreview, setVaultReady]);
   const [notesError, setNotesError] = useState("");
   const [showChat, setShowChat] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
@@ -804,6 +866,7 @@ export default function VaultNew() {
   // prototype; LandingPrototype clears the flag whenever a brand-new
   // walkthrough kicks off, so a fresh first neuron re-arms it.
   useEffect(() => {
+    if (isWakePreview) return;
     if (user?.id) return;
     if (isPrototypeWalkthroughComplete()) return;
     // We deliberately removed the previous "must have prototype neurons
@@ -894,6 +957,12 @@ export default function VaultNew() {
 
   const chatInputValueRef = useRef("");
   const [showQuickNote, setShowQuickNote] = useState(false);
+  const [wakePreviewQuickNotes, setWakePreviewQuickNotes] = useState(() =>
+    wakePreview ? readWakeVaultPreviewQuickNotes() : [],
+  );
+  const [wakePreviewCardComments, setWakePreviewCardComments] = useState(() =>
+    wakePreview ? readWakeVaultPreviewComments() : {},
+  );
   const [orderByPage, setOrderByPage] = useState({ everything: [] });
   const [draggedCardId, setDraggedCardId] = useState(null);
   const [dropTargetCardId, setDropTargetCardId] = useState(null);
@@ -953,6 +1022,7 @@ export default function VaultNew() {
   const [saveLinkUrl, setSaveLinkUrl] = useState("");
   const [saveLinkPreview, setSaveLinkPreview] = useState(null);
   const [showSignInBlocker, setShowSignInBlocker] = useState(false);
+  const [walkthroughGateOpen, setWalkthroughGateOpen] = useState(false);
   const [previewCard, setPreviewCard] = useState(null);
   // Per-connector "folder" view. When non-null, the vault grid collapses
   // every connector-sourced card (e.g. Notion pages) into a single tile
@@ -987,9 +1057,21 @@ export default function VaultNew() {
   const [conceptResultIds, setConceptResultIds] = useState(null);
   const requireSignInForAction = useCallback(() => {
     if (user?.id) return false;
+    if (isWakePreview) {
+      setWalkthroughGateOpen(true);
+      return true;
+    }
     setShowSignInBlocker(true);
     return true;
-  }, [user?.id]);
+  }, [user?.id, isWakePreview]);
+  const vaultPreviewRootRef = useRef(null);
+  const blockWakePreviewVaultMutation = useCallback((card) => {
+    if (!isWakePreview) return false;
+    if (card?.isWakePreviewNote) return false;
+    setWalkthroughGateOpen(true);
+    setOpenCardMenuId(null);
+    return true;
+  }, [isWakePreview]);
   const handleRequestAddMedia = useCallback(() => {
     if (requireSignInForAction()) return;
     addMediaTriggerRef.current?.();
@@ -999,9 +1081,13 @@ export default function VaultNew() {
     setShowSaveLink(true);
   }, [requireSignInForAction]);
   const handleToggleQuickNote = useCallback(() => {
+    if (isWakePreview) {
+      setShowQuickNote((v) => !v);
+      return;
+    }
     if (requireSignInForAction()) return;
     setShowQuickNote((v) => !v);
-  }, [requireSignInForAction]);
+  }, [requireSignInForAction, isWakePreview]);
   const [isConceptSearching, setIsConceptSearching] = useState(false);
   const [selectedFilterTags, setSelectedFilterTags] = useState([]);
   const [showEmbeddedTagDropdown, setShowEmbeddedTagDropdown] = useState(false);
@@ -1668,7 +1754,15 @@ export default function VaultNew() {
   // and brand-new signed-in users both see an empty grid until they save
   // something themselves — no demo cards, no prototype-preview cards, no
   // seeded notes.
-  const guestDemoCards = useMemo(() => [], []);
+  const guestDemoCards = useMemo(
+    () => (isWakePreview ? buildWakeVaultDemoCards() : []),
+    [isWakePreview],
+  );
+
+  const wakePreviewUserQuickNoteCards = useMemo(
+    () => (isWakePreview ? buildWakePreviewUserQuickNoteCards(wakePreviewQuickNotes) : []),
+    [isWakePreview, wakePreviewQuickNotes],
+  );
 
   // Ref-mirrored vaultCards for handlers that fire outside React's
   // render cycle (drag-end fires from a DOM event, by which time the
@@ -1756,6 +1850,10 @@ export default function VaultNew() {
     // Ghost cards first so they render at the top of the grid — matches
     // how fresh drops normally land (mergeUploadedNotes also prepends).
     for (const ghost of ghostCards) cards.push(ghost);
+
+    // Walkthrough quick notes the guest saved this session — local only,
+    // prepended above the demo starter pack so new captures feel immediate.
+    for (const previewNote of wakePreviewUserQuickNoteCards) cards.push(previewNote);
 
     // Guest starter pack — these render as normal cards but flag `isDemo`
     // so mutating actions (drag, 3-dot menu) are gated behind the sign-in
@@ -1929,8 +2027,12 @@ export default function VaultNew() {
       }
     });
 
+    const cardsWithPreviewComments = isWakePreview
+      ? cards.map((card) => applyWakePreviewCommentsToCard(card, wakePreviewCardComments))
+      : cards;
+
     const seen = new Set();
-    return cards.filter((card) => {
+    return cardsWithPreviewComments.filter((card) => {
       if (card.kind === "attachment") {
         const att = card.attachment || {};
         const url = String(att.url || "").trim();
@@ -1955,7 +2057,7 @@ export default function VaultNew() {
       }
       return true;
     });
-  }, [notes, ghostCards, guestDemoCards]);
+  }, [notes, ghostCards, guestDemoCards, wakePreviewUserQuickNoteCards, isWakePreview, wakePreviewCardComments]);
 
   // Keep the ref in sync so handlers that fire from raw DOM events
   // (drag-end, etc.) can read the current grid without going through
@@ -2474,6 +2576,7 @@ export default function VaultNew() {
 
   const eagerResolveRunRef = useRef(false);
   useEffect(() => {
+    if (isWakePreview) return;
     if (!user?.id || isLoadingNotes || eagerResolveRunRef.current) return;
     if (vaultCards.length === 0) { setVaultReady(true); return; }
     eagerResolveRunRef.current = true;
@@ -2977,6 +3080,21 @@ export default function VaultNew() {
     return [...folderCards, ...ordered, ...remaining];
   }, [filteredVisibleCards, orderByPage]);
 
+  const wakeConnectorStripCards = useMemo(() => {
+    if (!isWakePreview) return [];
+    return WAKE_DEMO_CONNECTOR_CARD_IDS
+      .map((id) => orderedVisibleCards.find((card) => card.id === id))
+      .filter(Boolean);
+  }, [isWakePreview, orderedVisibleCards]);
+
+  const wakeCollageCards = useMemo(() => {
+    if (!isWakePreview) return orderedVisibleCards;
+    const connectorIds = new Set(WAKE_DEMO_CONNECTOR_CARD_IDS);
+    return orderedVisibleCards.filter((card) => !connectorIds.has(card.id));
+  }, [isWakePreview, orderedVisibleCards]);
+
+  const collageGridCards = isWakePreview ? wakeCollageCards : orderedVisibleCards;
+
   // ── Off-screen card culling (browser-native virtualization) ──
   //
   // Above ~80 cards on screen, paint/layout cost gets noticeable: every
@@ -3378,10 +3496,17 @@ export default function VaultNew() {
     // swapped for the DB-backed one transparently.
     const target = e?.target;
     if (target && typeof target.closest === "function") {
-      if (target.closest(
+      const blocked = target.closest(
         'button, a, input, textarea, select, iframe, video, audio, [data-no-drag="true"], [data-no-preview="true"]'
-      )) {
-        return;
+      );
+      if (blocked) {
+        // PDF grid tiles embed a scrollable iframe — allow click-to-expand
+        // while keeping other iframe types (e.g. YouTube) interactive in-place.
+        const isPdfTileIframe =
+          card.kind === "attachment" &&
+          card.type === "pdf" &&
+          blocked.tagName === "IFRAME";
+        if (!isPdfTileIframe) return;
       }
     }
 
@@ -3600,10 +3725,24 @@ export default function VaultNew() {
   }, [visibleCards, buildCardSummary, getCardSearchText]);
 
   const handleSaveQuickNote = async () => {
-    if (!user?.id) { setShowSignInBlocker(true); return; }
     if (isQuickNoteSaving) return;
     const content = quickNoteContent.trim();
     if (!content) return;
+
+    if (isWakePreview) {
+      setIsQuickNoteSaving(true);
+      try {
+        const saved = appendWakeVaultPreviewQuickNote(content);
+        setWakePreviewQuickNotes((prev) => [saved, ...prev]);
+        setQuickNoteContent("");
+        setShowQuickNote(false);
+      } finally {
+        setIsQuickNoteSaving(false);
+      }
+      return;
+    }
+
+    if (!user?.id) { setShowSignInBlocker(true); return; }
     if (!(await checkVaultLimit())) return;
 
     setIsQuickNoteSaving(true);
@@ -4192,6 +4331,7 @@ User: ${text}`;
   const renderAttachmentCard = (card, tileHeightClass) => {
     const { attachment, type, title } = card;
     const resolvedUrl = resolvedAttachmentUrls[card.id] || attachment.url;
+    const wakeDemoCard = isWakePreview && card.isDemo;
 
     // Ghost cards represent uploads still in flight. We render the local
     // blob preview directly — no signed-URL resolver, no retry logic —
@@ -4285,7 +4425,8 @@ User: ${text}`;
       // read as "just appeared" while still hiding the brief frame
       // between mount and paint, and uses the standard Tailwind scale
       // so it doesn't trip the ambiguous-arbitrary-value warning.
-      const isPreDecoded = !!resolvedUrl && preDecodedUrlsRef.current.has(resolvedUrl);
+      const isPreDecoded =
+        wakeDemoCard || (!!resolvedUrl && preDecodedUrlsRef.current.has(resolvedUrl));
 
       // Aspect-ratio reservation: use attachment metadata first, then
       // fall back to learned dims from a previous load. Setting the
@@ -4311,7 +4452,7 @@ User: ${text}`;
 
       return (
         <div
-          className="w-full rounded-2xl bg-black/[0.02] dark:bg-white/[0.02]"
+          className="w-full rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] flex items-center justify-center overflow-hidden"
           style={
             hasReservedAspect
               ? { aspectRatio: `${reservedW} / ${reservedH}` }
@@ -4329,16 +4470,12 @@ User: ${text}`;
           // Safari 14+) "aspect ratio mapping" feature.
           {...(hasReservedAspect ? { width: reservedW, height: reservedH } : {})}
           className={
-            isPreDecoded
-              ? "w-full h-auto max-h-[42rem] rounded-2xl"
-              : "w-full h-auto max-h-[42rem] rounded-2xl opacity-0 transition-opacity duration-150 ease-out"
+            isPreDecoded || wakeDemoCard
+              ? `${hasReservedAspect ? "max-w-full max-h-full w-auto h-auto object-contain" : "w-full h-auto max-h-[42rem] object-contain"} rounded-2xl`
+              : `${hasReservedAspect ? "max-w-full max-h-full w-auto h-auto object-contain" : "w-full h-auto max-h-[42rem] object-contain"} rounded-2xl opacity-0 transition-opacity duration-150 ease-out`
           }
-          // Above-fold pre-decoded images get `eager` + `sync` decode
-          // since we already paid the network + decode cost during the
-          // preload step. Everything else stays lazy/async to keep the
-          // long tail of the vault cheap to render.
-          loading={isPreDecoded ? "eager" : "lazy"}
-          decoding={isPreDecoded ? "sync" : "async"}
+          loading={isPreDecoded || wakeDemoCard ? "eager" : "lazy"}
+          decoding={isPreDecoded || wakeDemoCard ? "sync" : "async"}
           draggable={false}
           onLoad={(e) => {
             // Cache the actual natural dims so the next time this
@@ -4466,15 +4603,23 @@ User: ${text}`;
     }
 
     if (type === "pdf") {
+      const fileName = attachment.name || title || "PDF";
+      const embedUrl = vaultPdfEmbedUrl(resolvedUrl);
       return (
-        <div className={`w-full ${tileHeightClass} rounded-2xl overflow-hidden bg-white/20`}>
-          <iframe
-            src={resolvedUrl}
-            title={title || "PDF preview"}
-            className="w-full h-full border-0 opacity-0 transition-opacity duration-150 ease-out"
-            draggable={false}
-            onLoad={(e) => { e.currentTarget.style.opacity = "1"; }}
-          />
+        <div className="rounded-2xl overflow-hidden glass-control cursor-pointer">
+          <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-black/8 dark:border-white/8 pointer-events-none">
+            <FileText className="w-4 h-4 text-red-500 shrink-0" />
+            <span className="text-sm font-medium text-black/80 dark:text-white/80 truncate">{fileName}</span>
+          </div>
+          <div className={`w-full ${tileHeightClass} overflow-hidden bg-white dark:bg-[#f4f4f4]`}>
+            <iframe
+              src={embedUrl}
+              title={title || "PDF preview"}
+              className="w-full h-full border-0 opacity-0 transition-opacity duration-150 ease-out pointer-events-none"
+              draggable={false}
+              onLoad={(e) => { e.currentTarget.style.opacity = "1"; }}
+            />
+          </div>
         </div>
       );
     }
@@ -4501,9 +4646,10 @@ User: ${text}`;
     if (type === "youtube") {
       const videoId = extractYouTubeVideoId(String(attachment.url || "")) || String(attachment.videoId || "").trim() || null;
       const embedUrl = videoId ? getYouTubeEmbedUrl(videoId) : "";
+      const customThumb = String(attachment.image || attachment.thumbnail_url || "").trim();
 
-      if (isEmbeddedMode && videoId) {
-        const thumbUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+      if ((isEmbeddedMode || isWakePreview) && (customThumb || videoId)) {
+        const thumbUrl = customThumb || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
         return (
           <div className={`w-full ${tileHeightClass} rounded-2xl overflow-hidden bg-black relative`} draggable={false}>
             <img
@@ -4556,6 +4702,9 @@ User: ${text}`;
     }
 
     if (type === "bookmark") {
+      if (attachment.connectorList && Array.isArray(attachment.listItems)) {
+        return renderConnectorListCard(attachment, title, { compact: isWakePreview });
+      }
       const linkUrl = attachment.url || resolvedUrl || "";
       return (
         <LinkPreview
@@ -4730,13 +4879,13 @@ User: ${text}`;
         }
         purgeVaultNoteEmbeddings(card.noteId);
         setNotes((prev) => prev.filter((n) => String(n?.id) !== String(card.noteId)));
-        // Bust the synthesis-layer's cached `mindmap_notes` query so
+        // Bust the synthesis-layer's cached vault graph query so
         // the deleted vault note disappears from the brain on the
         // user's next visit without waiting for the realtime
         // postgres_changes event (which usually arrives ~100-300ms
         // later and won't fire at all if the project hasn't enabled
         // realtime on the `notes` table yet).
-        vaultQueryClient.invalidateQueries({ queryKey: ["mindmap_notes"] });
+        vaultQueryClient.invalidateQueries({ queryKey: ["mindmap_vault_graph"] });
         storageRemovalAllowed = true;
       } else {
         const nextAttachments = attachments.filter((_, i) => i !== idx);
@@ -4810,7 +4959,7 @@ User: ${text}`;
       // Mirror the attachment-delete path above: bust the synthesis-
       // layer cache so the quick-note neuron disappears from the brain
       // without waiting on the postgres_changes realtime round-trip.
-      vaultQueryClient.invalidateQueries({ queryKey: ["mindmap_notes"] });
+      vaultQueryClient.invalidateQueries({ queryKey: ["mindmap_vault_graph"] });
       removeCardFromProjects(card);
       setOpenCardMenuId(null);
     } finally {
@@ -5040,6 +5189,17 @@ User: ${text}`;
     }
   }, [notes, user?.id]);
 
+  const addWakePreviewCardComment = useCallback((card, textInput) => {
+    const text = String(textInput || "").trim();
+    if (!text || !card?.id) return false;
+    const saved = appendWakeVaultPreviewComment(card.id, text);
+    setWakePreviewCardComments((prev) => ({
+      ...prev,
+      [card.id]: [...(prev[card.id] || []), saved],
+    }));
+    return true;
+  }, []);
+
 
   const confirmAndDeleteAttachment = useCallback((card) => {
     if (!card) return;
@@ -5189,7 +5349,7 @@ User: ${text}`;
   // itself directly above/below the trigger regardless of which card
   // wrapper or scroll container it lives inside.
   const openAttachmentNotesForAnchor = useCallback((cardId, anchorEl) => {
-    if (requireSignInForAction()) return;
+    if (!isWakePreview && requireSignInForAction()) return;
     const rect = anchorEl?.getBoundingClientRect?.();
     setOpenAttachmentNotesRect(
       rect
@@ -5198,7 +5358,7 @@ User: ${text}`;
     );
     setAttachmentNoteDraft("");
     setOpenAttachmentNotesCardId(cardId);
-  }, [requireSignInForAction]);
+  }, [isWakePreview, requireSignInForAction]);
 
   const closeAttachmentNotes = useCallback(() => {
     setOpenAttachmentNotesCardId(null);
@@ -5207,11 +5367,11 @@ User: ${text}`;
   }, []);
 
   const openCardMenuForAnchor = useCallback((cardId, anchorEl) => {
-    // Guests can only ever see synthetic demo cards (ids prefixed with
-    // "demo-"). Any attempt to open the action menu on those should prompt
-    // sign-in instead — they can't be edited, deleted, or moved until the
-    // user has a real account + real note rows.
-    if (requireSignInForAction()) return;
+    // Guests on the standalone vault only see demo cards — gate the menu
+    // behind sign-in. The wake walkthrough preview lets guests explore the
+    // menu UI; mutating actions still prompt sign-in (except preview quick
+    // notes the guest saved this session).
+    if (!isWakePreview && requireSignInForAction()) return;
 
     const menuEstimatedHeight = 320;
     const rect = anchorEl?.getBoundingClientRect?.();
@@ -5229,14 +5389,20 @@ User: ${text}`;
     setOpenCardMenuPlacement(shouldOpenUp ? "up" : "down");
     setOpenCardMenuRect({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width, height: rect.height });
     setOpenCardMenuId(cardId);
-  }, [requireSignInForAction]);
+  }, [isWakePreview, requireSignInForAction]);
 
-  if ((loading || isLoadingNotes || !vaultReady) && user) {
+  if ((loading || isLoadingNotes || !vaultReady) && user && !isWakePreview) {
     return <LoadingScreen isLoading={true} />;
   }
 
   return (
-    <div className={`min-h-screen bg-transparent text-black dark:text-white relative overflow-x-hidden`}>
+    <div
+      ref={vaultPreviewRootRef}
+      className={`${
+        isWakePreview ? "lykn-wake-vault-live-preview h-full min-h-0" : "min-h-screen"
+      } bg-transparent text-black dark:text-white relative overflow-x-hidden`}
+    >
+      {!isWakePreview && (
       <DragDropFileUpload
         triggerRef={addMediaTriggerRef}
         beforeUpload={checkVaultLimit}
@@ -5253,24 +5419,11 @@ User: ${text}`;
           void refreshNotes();
         }}
       />
+      )}
 
       {!isEmbeddedMode && (
         <>
-          {/* Top-right: the Vault ↔ Connections toggle. Fixed so it
-              stays anchored to the same screen position when toggling
-              between /vault and /connections — otherwise the content
-              widths between the two pages can differ slightly and the
-              inline toggle visibly shifts on every flip. The old top
-              panel (model picker, attach, chat, quick-note shortcuts)
-              was retired — uploads still work via drag-and-drop, and
-              the quick-note action lives in the bottom-right FAB below. */}
-          {/* Walkthrough lockdown: hide the Vault ↔ Connections pill
-              while the visitor is being forced through the linear
-              tour. The cards' arrows are the only intended forward
-              affordance during the walkthrough; letting them jump to
-              connections out-of-order via this pill would skip the
-              vault arrow's step-advancement side effects. */}
-          {!isPrototypeWalkthroughLocked && (
+          {!isWakePreview && !isPrototypeWalkthroughLocked && (
             <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
               <div className="pointer-events-auto">
                 <VaultConnectionsToggle active="vault" />
@@ -5278,6 +5431,8 @@ User: ${text}`;
             </div>
           )}
 
+          {!isWakePreview && (
+          <>
           {/* Bottom-right FAB: opens the quick-note composer. */}
           <button
             type="button"
@@ -5298,12 +5453,30 @@ User: ${text}`;
               both /vault and /connections — keeps the launcher visible
               while the user is browsing the apps grid and avoids two
               parallel polling loops fetching the same connection list. */}
+          </>
+          )}
         </>
       )}
 
       <main
-        className={`relative z-20 mx-auto w-full px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-16"} pb-16 transition-[margin-right,max-width] duration-300`}
-        style={{ transform: "translateZ(0)", marginRight: showChat && !isMobileChat ? `${chatRailWidthPx}px` : 0, maxWidth: showChat && !isMobileChat ? `calc(100% - ${chatRailWidthPx}px)` : "1560px" }}
+        className={`vault-preview-shell relative z-20 mx-auto w-full transition-[margin-right,max-width] duration-300 ${
+          isWakePreview
+            ? "h-full overflow-y-auto px-4 sm:px-6 pt-4 pb-12 scrollbar-hide"
+            : `px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-16"} pb-16`
+        }`}
+        style={{
+          transform: "translateZ(0)",
+          marginRight:
+            showChat && !isMobileChat && !isWakePreview
+              ? `${chatRailWidthPx}px`
+              : 0,
+          maxWidth:
+            showChat && !isMobileChat && !isWakePreview
+              ? `calc(100% - ${chatRailWidthPx}px)`
+              : isWakePreview
+              ? "100%"
+              : "1560px",
+        }}
         onDragEnter={handleMainDragEnter}
         onDragOver={handleMainDragOver}
         onDragLeave={handleMainDragLeave}
@@ -5447,11 +5620,18 @@ User: ${text}`;
             </div>
           ) : (
             <>
-              <h1 className="text-3xl font-semibold">The Vault</h1>
-              <p className="text-black/60 dark:text-white/60 mt-1">
-                Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
-              </p>
-              <div className="mt-4 flex flex-wrap items-center gap-3 relative z-[400]" style={{ minHeight: 1 }}>
+              {!isWakePreview && (
+                <>
+                  <h1 className="text-3xl font-semibold">The Vault</h1>
+                  <p className="text-black/60 dark:text-white/60 mt-1">
+                    Your digital collage of media files, videos, images, and quick notes. Drag and drop files or folders anywhere on this page.
+                  </p>
+                </>
+              )}
+              <div
+                className="mt-4 flex flex-wrap items-center gap-3 relative z-[400]"
+                style={{ minHeight: 1 }}
+              >
                 <form
                   className="relative w-full sm:flex-1 sm:max-w-xl"
                   onSubmit={(e) => {
@@ -5467,7 +5647,11 @@ User: ${text}`;
                       setVaultSearch(e.target.value);
                       if (conceptResultIds !== null) setConceptResultIds(null);
                     }}
-                    placeholder="Search your vault — type an idea, topic, or keyword and press Enter"
+                    placeholder={
+                      isWakePreview
+                        ? "Search your vault — type an idea, topic, or keyword"
+                        : "Search your vault — type an idea, topic, or keyword and press Enter"
+                    }
                     className="w-full h-11 rounded-2xl glass-control pl-10 pr-20 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
                   />
                   <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
@@ -5609,7 +5793,15 @@ User: ${text}`;
                     )}
                   </div>
                 )}
-              </div>
+                {isWakePreview && (
+                  <div className="ml-auto shrink-0">
+                    <VaultConnectionsToggle
+                      active="vault"
+                      onPreviewTabChange={onWakePreviewTabChange}
+                    />
+                  </div>
+                )}
+                </div>
               {isConceptSearching && (
                 <p className="mt-2 text-xs text-black/40 dark:text-white/40">Reading through your vault...</p>
               )}
@@ -5648,7 +5840,7 @@ User: ${text}`;
           </div>
         )}
 
-        {!loading && !isLoadingNotes && (vaultReady || !user) && !notesError && (
+        {(isWakePreview || (!loading && !isLoadingNotes && (vaultReady || !user))) && !notesError && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35, ease: "easeOut" }}>
             {openSourceFolder && openFolderConnector && (
               <div className="mb-4 flex items-center justify-between gap-3">
@@ -5767,7 +5959,7 @@ User: ${text}`;
                               <Check className="w-3 h-3" strokeWidth={3} />
                             </span>
                           )}
-                          {card.isDemo && (
+                          {card.isDemo && !isWakePreview && (
                             <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
                               Sample
                             </span>
@@ -5909,7 +6101,7 @@ User: ${text}`;
                                 <Check className="w-3 h-3" strokeWidth={3} />
                               </span>
                             )}
-                            {card.isDemo && (
+                            {card.isDemo && !isWakePreview && (
                               <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
                                 Sample
                               </span>
@@ -5991,8 +6183,85 @@ User: ${text}`;
                 <div ref={loadMoreRef} className="h-6" />
               </div>
             ) : (
+              <div className={isWakePreview ? "grid grid-cols-[auto_1fr] gap-x-4 gap-y-4 items-start" : undefined}>
+                {isWakePreview && (
+                  <>
+                    <div className="col-start-1 row-start-1 shrink-0 w-fit rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
+                      <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleRequestAddMedia}
+                          className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
+                        >
+                          <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
+                            <Upload className="w-4 h-4 text-blue-500" />
+                          </div>
+                          <span className="text-[0.625rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleRequestSaveLink}
+                          className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
+                        >
+                          <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
+                            <Globe className="w-4 h-4 text-blue-500" />
+                          </div>
+                          <span className="text-[0.625rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
+                        </button>
+                      </div>
+                    </div>
+                    <div className="col-start-2 row-start-1 min-w-0 self-start">
+                      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+                        {wakeConnectorStripCards.map((card) => (
+                          <article
+                            key={card.id}
+                            data-vault-card-id={card.id}
+                            data-card-id={card.id}
+                            onClick={(e) => handleCardPress(e, card)}
+                            className="rounded-2xl relative cursor-pointer overflow-visible"
+                          >
+                            {renderAttachmentCard(card, getAttachmentHeightClass(card))}
+                            {card.tags?.length > 0 && (
+                              <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
+                                {card.tags.map((t) => (
+                                  <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                                    {t}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            <div className="mt-2 flex justify-end px-1" data-no-drag="true">
+                              <button
+                                type="button"
+                                data-no-drag="true"
+                                draggable={false}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (openCardMenuId === card.id) {
+                                    setOpenCardMenuId(null);
+                                    return;
+                                  }
+                                  openCardMenuForAnchor(card.id, e.currentTarget);
+                                }}
+                                className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
+                                title="Actions"
+                              >
+                                <MoreHorizontal className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
               <div className={
-                isEmbeddedMode
+                isWakePreview
+                  ? "col-start-1 col-span-2 row-start-2 columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"
+                  : isEmbeddedMode
                   ? vaultView === "grid"
                     ? "grid grid-cols-2 gap-3"
                     : "columns-2 gap-3"
@@ -6000,7 +6269,7 @@ User: ${text}`;
                     ? "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
                     : "columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"
               }>
-                {vaultView === "collage" && (
+                {vaultView === "collage" && !isWakePreview && (
                 <div className="break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
                   <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
                   <div className="flex gap-2">
@@ -6027,7 +6296,7 @@ User: ${text}`;
                   </div>
                 </div>
                 )}
-                {vaultView === "grid" && (
+                {vaultView === "grid" && !isWakePreview && (
                   <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center aspect-square gap-2">
                     <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
                     <div className="flex gap-1.5">
@@ -6040,7 +6309,7 @@ User: ${text}`;
                     </div>
                   </div>
                 )}
-                {orderedVisibleCards.map((card) => {
+                {collageGridCards.map((card) => {
                   const isSelected = selectedCardIds.has(card.id);
                   return (
                   <motion.article
@@ -6131,7 +6400,7 @@ User: ${text}`;
                         <Check className="w-3 h-3" strokeWidth={3} />
                       </span>
                     )}
-                    {card.isDemo && (
+                    {card.isDemo && !isWakePreview && (
                       <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
                         Sample
                       </span>
@@ -6303,6 +6572,7 @@ User: ${text}`;
                 })}
                 <div ref={loadMoreRef} className="break-inside-avoid h-6" />
               </div>
+              </div>
             )}
             {isLoadingMoreNotes && (
               <div className="mt-4 text-xs text-black/60 dark:text-white/60">Loading more memories...</div>
@@ -6310,6 +6580,18 @@ User: ${text}`;
           </motion.div>
         )}
       </main>
+
+      {isWakePreview && (
+        <button
+          type="button"
+          onClick={handleToggleQuickNote}
+          title="New quick note"
+          aria-label="New quick note"
+          className="absolute bottom-3 right-3 z-[70] w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation bg-white text-black hover:bg-white/90"
+        >
+          <Plus className="w-4 h-4" />
+        </button>
+      )}
 
       {/* Standalone walkthrough welcome card — mirrors the synthesis-layer
           welcome (same dark glass treatment, same typewriter cadence) but
@@ -6321,21 +6603,25 @@ User: ${text}`;
           wrapper are off so guests can keep dragging files / scrolling
           underneath while the card animates; the card itself
           re-enables pointer events for its own buttons. */}
-      {introWelcomeShown && walkthroughStepForLock !== "done" && (
-        <div className="fixed right-6 top-20 z-[9995] w-[min(88vw,18rem)]">
+      {(introWelcomeShown && !isWakePreview && walkthroughStepForLock !== "done") && (
+        <div className={isWakePreview ? "absolute right-3 top-3 z-[9995] w-[min(14rem,38%)] pointer-events-none" : "fixed right-6 top-20 z-[9995] w-[min(88vw,18rem)]"}>
           <div
             className="pointer-events-auto relative rounded-2xl bg-[rgba(15,15,18,0.78)] backdrop-blur-md border border-white/10 px-4 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)]"
-            style={{
-              animation:
-                "vaultIntroCardIn 360ms cubic-bezier(0.22,1,0.36,1) both",
-            }}
+            style={
+              isWakePreview
+                ? undefined
+                : {
+                    animation:
+                      "vaultIntroCardIn 360ms cubic-bezier(0.22,1,0.36,1) both",
+                  }
+            }
           >
             {/* Dismiss button intentionally removed — the walkthrough
                 is a forced flow for guests, and the only way past the
                 vault card is the arrow → /connections hand-off (or
                 signing in, which unmounts the card). See the matching
                 comment on the synthesis-layer welcome card. */}
-            <p className="text-[0.8rem] leading-relaxed text-white/80 whitespace-pre-wrap min-h-[7rem] pr-4">
+            <p className={`${isWakePreview ? "text-[0.62rem] min-h-[4.5rem]" : "text-[0.8rem] min-h-[7rem]"} leading-relaxed text-white/80 whitespace-pre-wrap pr-4`}>
               {introWelcomeText}
               {!introWelcomeDone && (
                 <span
@@ -6346,7 +6632,7 @@ User: ${text}`;
                 </span>
               )}
             </p>
-            {introWelcomeDone && (
+            {introWelcomeDone && !isWakePreview && (
               <div className="mt-3 flex justify-end">
                 <button
                   type="button"
@@ -6673,6 +6959,7 @@ User: ${text}`;
             void handleCloseQuickNote();
           }}
           onDiscard={handleDiscardQuickNote}
+          contained={isWakePreview}
         />
       )}
 
@@ -6780,28 +7067,35 @@ User: ${text}`;
           const menuW = Math.min(224, window.innerWidth - 16);
           const pad = 8;
           let top, maxH;
+          const previewRoot = isWakePreview ? vaultPreviewRootRef.current : null;
+          const previewRootRect = previewRoot?.getBoundingClientRect?.() || null;
           if (openCardMenuPlacement === "up") {
             top = undefined;
-            maxH = openCardMenuRect.top - pad;
+            maxH = openCardMenuRect.top - pad - (previewRootRect?.top ?? 0);
           } else {
-            top = openCardMenuRect.bottom + pad;
-            maxH = window.innerHeight - top - pad;
+            top = openCardMenuRect.bottom + pad - (previewRootRect?.top ?? 0);
+            maxH = (previewRootRect?.bottom ?? window.innerHeight) - openCardMenuRect.bottom - pad;
           }
-          let left = openCardMenuRect.right - menuW;
+          let left = openCardMenuRect.right - menuW - (previewRootRect?.left ?? 0);
+          const maxLeft = (previewRootRect?.width ?? window.innerWidth) - menuW - pad;
           if (left < pad) left = pad;
-          if (left + menuW > window.innerWidth - pad) left = window.innerWidth - pad - menuW;
+          if (left > maxLeft) left = Math.max(pad, maxLeft);
 
           return (
             <div
               ref={cardMenuRef}
               className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-[#171515]/60 backdrop-blur-md shadow-md p-2 flex flex-col overflow-hidden"
               style={{
-                position: "fixed",
+                position: previewRoot ? "absolute" : "fixed",
                 width: menuW,
-                left,
+                left: previewRoot ? left : openCardMenuRect.right - menuW,
                 ...(openCardMenuPlacement === "up"
-                  ? { bottom: window.innerHeight - openCardMenuRect.top + pad }
-                  : { top }),
+                  ? previewRoot
+                    ? { bottom: (previewRootRect?.bottom ?? 0) - openCardMenuRect.top + pad }
+                    : { bottom: window.innerHeight - openCardMenuRect.top + pad }
+                  : previewRoot
+                    ? { top }
+                    : { top: openCardMenuRect.bottom + pad }),
                 maxHeight: maxH,
                 zIndex: 9999,
               }}
@@ -6821,7 +7115,10 @@ User: ${text}`;
                   <button
                     type="button"
                     disabled={isCardActionBusy}
-                    onClick={() => void createProjectFromCard(menuCard)}
+                    onClick={() => {
+                      if (blockWakePreviewVaultMutation(menuCard)) return;
+                      void createProjectFromCard(menuCard);
+                    }}
                     className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
                   >
                     <Plus className="w-3.5 h-3.5" />
@@ -6837,7 +7134,10 @@ User: ${text}`;
                           key={project.id}
                           type="button"
                           disabled={isCardActionBusy}
-                          onClick={() => void addCardToProject(menuCard, project.id)}
+                          onClick={() => {
+                            if (blockWakePreviewVaultMutation(menuCard)) return;
+                            void addCardToProject(menuCard, project.id);
+                          }}
                           className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-60 truncate"
                           title={project.name}
                         >
@@ -6897,6 +7197,15 @@ User: ${text}`;
                   type="button"
                   disabled={isCardActionBusy}
                   onClick={() => {
+                    if (isWakePreview && menuCard.isWakePreviewNote) {
+                      const ok = window.confirm(`Are you sure you want to delete "${menuCard.title || "Quick Note"}"? This cannot be undone.`);
+                      if (!ok) return;
+                      removeWakeVaultPreviewQuickNote(menuCard.id);
+                      setWakePreviewQuickNotes((prev) => prev.filter((note) => note.id !== menuCard.id));
+                      setOpenCardMenuId(null);
+                      return;
+                    }
+                    if (blockWakePreviewVaultMutation(menuCard)) return;
                     if (menuCard.kind === "attachment") {
                       confirmAndDeleteAttachment(menuCard);
                     } else {
@@ -6914,7 +7223,9 @@ User: ${text}`;
             </div>
           );
         })(),
-        document.body
+        isWakePreview && vaultPreviewRootRef.current
+          ? vaultPreviewRootRef.current
+          : document.body
       )}
       {/*
         Comment composer popover. Rendered via portal (not inline inside
@@ -6939,41 +7250,80 @@ User: ${text}`;
           const placeholder = isAttachment
             ? "Write a comment about this file…"
             : "Write a comment on this quick note…";
+          const trySaveComment = () => {
+            if (!attachmentNoteDraft.trim()) return;
+            if (isWakePreview) {
+              addWakePreviewCardComment(card, attachmentNoteDraft);
+              closeAttachmentNotes();
+              return;
+            }
+            if (blockWakePreviewVaultMutation(card)) return;
+            void onSave(card, attachmentNoteDraft);
+            closeAttachmentNotes();
+          };
 
           const COMP_W = Math.min(288, window.innerWidth - 16);
           const COMP_H_EST = 240; // textarea + buttons + a few existing comments
           const pad = 8;
           const rect = openAttachmentNotesRect;
+          const previewRoot = isWakePreview ? vaultPreviewRootRef.current : null;
+          const previewRootRect = previewRoot?.getBoundingClientRect?.() || null;
 
           // Fall back to a centered overlay if we somehow opened without
           // an anchor rect (e.g. if the anchor scrolled out of frame).
           let positionStyle;
           if (rect) {
-            const spaceBelow = window.innerHeight - rect.bottom;
-            const spaceAbove = rect.top;
+            const spaceBelow = (previewRootRect?.bottom ?? window.innerHeight) - rect.bottom;
+            const spaceAbove = rect.top - (previewRootRect?.top ?? 0);
             const useUp = spaceBelow < COMP_H_EST && spaceAbove > spaceBelow;
-            let left = rect.right - COMP_W;
+            let left = rect.right - COMP_W - (previewRootRect?.left ?? 0);
+            const maxLeft = (previewRootRect?.width ?? window.innerWidth) - COMP_W - pad;
             if (left < pad) left = pad;
-            if (left + COMP_W > window.innerWidth - pad) {
-              left = window.innerWidth - pad - COMP_W;
-            }
+            if (left > maxLeft) left = Math.max(pad, maxLeft);
             positionStyle = useUp
-              ? {
-                  position: "fixed",
-                  width: COMP_W,
-                  left,
-                  bottom: window.innerHeight - rect.top + pad,
-                  maxHeight: rect.top - pad * 2,
-                  zIndex: 9999,
-                }
-              : {
-                  position: "fixed",
-                  width: COMP_W,
-                  left,
-                  top: rect.bottom + pad,
-                  maxHeight: window.innerHeight - rect.bottom - pad * 2,
-                  zIndex: 9999,
-                };
+              ? previewRoot
+                ? {
+                    position: "absolute",
+                    width: COMP_W,
+                    left,
+                    bottom: (previewRootRect?.bottom ?? 0) - rect.top + pad,
+                    maxHeight: rect.top - (previewRootRect?.top ?? 0) - pad * 2,
+                    zIndex: 9999,
+                  }
+                : {
+                    position: "fixed",
+                    width: COMP_W,
+                    left: rect.right - COMP_W,
+                    bottom: window.innerHeight - rect.top + pad,
+                    maxHeight: rect.top - pad * 2,
+                    zIndex: 9999,
+                  }
+              : previewRoot
+                ? {
+                    position: "absolute",
+                    width: COMP_W,
+                    left,
+                    top: rect.bottom + pad - (previewRootRect?.top ?? 0),
+                    maxHeight: (previewRootRect?.bottom ?? window.innerHeight) - rect.bottom - pad * 2,
+                    zIndex: 9999,
+                  }
+                : {
+                    position: "fixed",
+                    width: COMP_W,
+                    left: rect.right - COMP_W,
+                    top: rect.bottom + pad,
+                    maxHeight: window.innerHeight - rect.bottom - pad * 2,
+                    zIndex: 9999,
+                  };
+          } else if (previewRoot && previewRootRect) {
+            positionStyle = {
+              position: "absolute",
+              width: COMP_W,
+              left: Math.max(pad, (previewRootRect.width - COMP_W) / 2),
+              top: Math.max(pad, (previewRootRect.height - COMP_H_EST) / 2),
+              maxHeight: previewRootRect.height - pad * 2,
+              zIndex: 9999,
+            };
           } else {
             positionStyle = {
               position: "fixed",
@@ -7002,8 +7352,7 @@ User: ${text}`;
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey && attachmentNoteDraft.trim()) {
                     e.preventDefault();
-                    void onSave(card, attachmentNoteDraft);
-                    closeAttachmentNotes();
+                    trySaveComment();
                   }
                   if (e.key === "Escape") {
                     e.preventDefault();
@@ -7025,12 +7374,7 @@ User: ${text}`;
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    if (attachmentNoteDraft.trim()) {
-                      void onSave(card, attachmentNoteDraft);
-                      closeAttachmentNotes();
-                    }
-                  }}
+                  onClick={trySaveComment}
                   disabled={!attachmentNoteDraft.trim()}
                   className="rounded-lg bg-neutral-700 hover:bg-neutral-800 dark:bg-neutral-700 dark:hover:bg-neutral-600 text-white text-[0.6875rem] font-medium px-3 py-1 disabled:opacity-40 transition-colors"
                 >
@@ -7051,7 +7395,9 @@ User: ${text}`;
             </div>
           );
         })(),
-        document.body,
+        isWakePreview && vaultPreviewRootRef.current
+          ? vaultPreviewRootRef.current
+          : document.body,
       )}
       {tagPickerCardId && tagPickerPosition && createPortal(
         (() => {
@@ -7169,6 +7515,11 @@ User: ${text}`;
           const title = card.title || att.name || (card.kind === "quick-note" ? "Quick Note" : "Vault Item");
           const cardTags = Array.isArray(card.tags) ? card.tags : [];
           const fileNotes = card.kind === "attachment" ? parseAttachmentNotes(att) : [];
+          const quickNoteComments = card.kind === "quick-note" ? parseQuickNoteComments(card) : [];
+          const previewDescription =
+            card.kind === "attachment"
+              ? att.aiDescription
+              : card.aiDescription;
           const videoId = type === "youtube"
             ? (extractYouTubeVideoId(String(att.url || "")) || String(att.videoId || "").trim() || null)
             : null;
@@ -7206,24 +7557,40 @@ User: ${text}`;
             body = (
               <iframe
                 title={title}
-                src={resolvedUrl}
+                src={vaultPdfEmbedUrl(resolvedUrl)}
                 className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-white"
               />
             );
           } else if (card.kind === "attachment" && type === "youtube") {
-            body = youtubeEmbedUrl ? (
-              <iframe
-                title={title}
-                src={youtubeEmbedUrl}
-                className="w-full h-[70vh] rounded-xl border-0 bg-black"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowFullScreen
-              />
-            ) : (
-              <a href={att.url} target="_blank" rel="noreferrer" className="text-sm text-blue-500 underline">
-                Open YouTube video
-              </a>
-            );
+            const isMockDemoYoutube = Boolean(card.isDemo && !youtubeEmbedUrl);
+            if (isMockDemoYoutube) {
+              body = (
+                <div className="flex flex-col items-center justify-center gap-5 py-20 px-6 text-center rounded-xl bg-black/5 dark:bg-white/5">
+                  <div className="w-16 h-11 bg-red-600 rounded-xl flex items-center justify-center shadow-lg">
+                    <svg viewBox="0 0 24 24" fill="white" className="w-7 h-7 ml-0.5" aria-hidden>
+                      <polygon points="8,5 20,12 8,19" />
+                    </svg>
+                  </div>
+                  <p className="text-base font-medium text-black/75 dark:text-white/80">Sample YouTube video</p>
+                </div>
+              );
+            } else if (youtubeEmbedUrl) {
+              body = (
+                <iframe
+                  title={title}
+                  src={youtubeEmbedUrl}
+                  className="w-full h-[70vh] rounded-xl border-0 bg-black"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  allowFullScreen
+                />
+              );
+            } else {
+              body = (
+                <a href={att.url} target="_blank" rel="noreferrer" className="text-sm text-blue-500 underline">
+                  Open YouTube video
+                </a>
+              );
+            }
           } else if (card.kind === "attachment" && (type === "instagram" || type === "tiktok" || type === "facebook")) {
             body = (
               <div className="w-full max-h-[78vh] overflow-auto rounded-xl">
@@ -7238,6 +7605,8 @@ User: ${text}`;
                 />
               </div>
             );
+          } else if (card.kind === "attachment" && type === "bookmark" && att.connectorList) {
+            body = renderConnectorListCard(att, title, { expanded: true });
           } else if (card.kind === "attachment" && type === "bookmark") {
             body = (
               <div className="space-y-4">
@@ -7374,16 +7743,26 @@ User: ${text}`;
                 </div>
                 <div className="px-4 py-4 overflow-y-auto">
                   {body}
-                  {card.kind === "attachment" && att.aiDescription && (
+                  {previewDescription && (
                     <div className="mt-4 rounded-xl bg-white/40 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3">
                       <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45 mb-1">Description</div>
-                      <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{String(att.aiDescription)}</p>
+                      <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{String(previewDescription)}</p>
                     </div>
                   )}
                   {fileNotes.length > 0 && (
                     <div className="mt-4 space-y-2">
                       <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45">Notes</div>
                       {fileNotes.map((n) => (
+                        <div key={n.id} className="rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2">
+                          <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{n.text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {quickNoteComments.length > 0 && (
+                    <div className="mt-4 space-y-2">
+                      <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45">Notes</div>
+                      {quickNoteComments.map((n) => (
                         <div key={n.id} className="rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2">
                           <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{n.text}</p>
                         </div>
@@ -7412,7 +7791,7 @@ User: ${text}`;
       {/* Drag-to-delete trash can — desktop only. On phones the bottom-left
           corner conflicts with the mobile tab bar and the drag-and-hold
           gesture isn't usable on touch, so the affordance is hidden. */}
-      {!isEmbeddedMode && !isMobileChat && !sidebarOpen && createPortal(
+      {!isEmbeddedMode && !isWakePreview && !isMobileChat && !sidebarOpen && createPortal(
         <div
           className="fixed z-[200] flex items-end gap-2"
           style={{ bottom: "16px", left: "16px", pointerEvents: "none" }}
@@ -7487,10 +7866,28 @@ User: ${text}`;
         document.body
       )}
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
-      <SignInActionBlocker
-        open={showSignInBlocker}
-        onClose={() => setShowSignInBlocker(false)}
-      />
+      {!isWakePreview && (
+        <SignInActionBlocker
+          open={showSignInBlocker}
+          onClose={() => setShowSignInBlocker(false)}
+        />
+      )}
+      {isWakePreview && walkthroughGateOpen && (
+        <div
+          className="lykn-wake-synth-gate-backdrop"
+          role="presentation"
+          onClick={() => setWalkthroughGateOpen(false)}
+        >
+          <div
+            className="lykn-wake-synth-gate-card"
+            role="alertdialog"
+            aria-label="Walkthrough required"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="lykn-wake-synth-gate-text">{WAKE_WALKTHROUGH_GATE_TEXT}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

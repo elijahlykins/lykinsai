@@ -92,24 +92,6 @@ class ErrorBoundary extends React.Component {
         <p style={{ fontSize: '0.95rem', color: '#666', marginBottom: '24px' }}>
           We hit an unexpected issue. You can try recovering below — your data is safe in the cloud.
         </p>
-        {this.state.error && (
-          <details style={{ textAlign: 'left', marginBottom: '24px', padding: '16px', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px' }}>
-            <summary style={{ cursor: 'pointer', fontWeight: 600, color: '#b91c1c', marginBottom: '8px' }}>Error details (tap to expand)</summary>
-            <pre style={{ fontSize: '0.8rem', color: '#991b1b', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: '8px 0' }}>
-              {String(this.state.error?.message || this.state.error)}
-            </pre>
-            {this.state.error?.stack && (
-              <pre style={{ fontSize: '0.75rem', color: '#6b7280', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '300px', overflow: 'auto' }}>
-                {this.state.error.stack}
-              </pre>
-            )}
-            {this.state.errorInfo?.componentStack && (
-              <pre style={{ fontSize: '0.75rem', color: '#6b7280', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto', marginTop: '8px' }}>
-                {this.state.errorInfo.componentStack}
-              </pre>
-            )}
-          </details>
-        )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
           <button
             onClick={handleRetry}

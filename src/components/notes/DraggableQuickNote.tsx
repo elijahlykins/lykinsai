@@ -11,6 +11,8 @@ type DraggableQuickNoteProps = {
   onSave: () => void | Promise<void>;
   onClose: () => void;
   onDiscard?: () => void;
+  /** Center within a positioned parent (e.g. wake vault preview subwindow). */
+  contained?: boolean;
 };
 
 export default function DraggableQuickNote({
@@ -20,12 +22,15 @@ export default function DraggableQuickNote({
   onSave,
   onClose,
   onDiscard,
+  contained = false,
 }: DraggableQuickNoteProps) {
   const constraintsRef = useRef<HTMLDivElement | null>(null);
 
   return (
     <div
-      className="fixed inset-0 pointer-events-none z-[75] flex items-center justify-center"
+      className={`${
+        contained ? "absolute" : "fixed"
+      } inset-0 pointer-events-none z-[75] flex items-center justify-center`}
       ref={constraintsRef}
     >
       <motion.div
@@ -33,11 +38,15 @@ export default function DraggableQuickNote({
         dragConstraints={constraintsRef}
         dragMomentum={false}
         dragElastic={0.08}
-        initial={{ x: 400, y: 0, opacity: 0, scale: 0.95 }}
+        initial={{ x: contained ? 80 : 400, y: 0, opacity: 0, scale: 0.95 }}
         animate={{ x: 0, y: 0, opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         transition={{ type: "spring", stiffness: 260, damping: 26 }}
-        className="pointer-events-auto w-[380px] max-w-[92vw] min-h-[360px] max-h-[86vh] flex flex-col rounded-2xl border border-black/8 dark:border-white/8 bg-white/80 dark:bg-[#1e1e1e]/90 backdrop-blur-md shadow-2xl overflow-hidden"
+        className={`pointer-events-auto flex flex-col rounded-2xl border border-black/8 dark:border-white/8 bg-white/80 dark:bg-[#1e1e1e]/90 backdrop-blur-md shadow-2xl overflow-hidden ${
+          contained
+            ? "w-[min(94%,300px)] min-h-[220px] max-h-[72%]"
+            : "w-[380px] max-w-[92vw] min-h-[360px] max-h-[86vh]"
+        }`}
       >
         {/* Drag handle pill */}
         <div className="flex-shrink-0 flex justify-center pt-2 pb-1 select-none cursor-grab active:cursor-grabbing">
@@ -69,7 +78,9 @@ export default function DraggableQuickNote({
             value={content}
             onChange={(e) => setContent(e.target.value)}
             placeholder=""
-            className="block w-full h-full min-h-[240px] resize-none bg-transparent border-0 outline-none text-sm leading-relaxed text-black/85 dark:text-white/85 placeholder:text-black/40 dark:placeholder:text-white/40"
+            className={`block w-full h-full resize-none bg-transparent border-0 outline-none text-sm leading-relaxed text-black/85 dark:text-white/85 placeholder:text-black/40 dark:placeholder:text-white/40 ${
+              contained ? "min-h-[140px]" : "min-h-[240px]"
+            }`}
             onPointerDownCapture={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {

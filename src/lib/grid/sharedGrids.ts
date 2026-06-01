@@ -8,6 +8,7 @@
  */
 
 import { supabase } from "@/lib/supabase";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 
 export type SharedBoardRow = {
   id: string;
@@ -78,7 +79,7 @@ function explainShareError(error: { code?: string; message?: string; details?: s
   if (code === "23505" || msg.includes("duplicate key")) {
     return "Token collision (extremely rare). Please try again.";
   }
-  return error.message || "Please try again.";
+  return toUserFacingError(error);
 }
 
 /**

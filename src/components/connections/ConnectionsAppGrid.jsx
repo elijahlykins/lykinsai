@@ -14,6 +14,7 @@ import {
 import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
+import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
 
 // Unified "app store" view for the Connections page. Everything LYKN
 // can plug into — AI tools (Claude, Cursor, ChatGPT, …) and input
@@ -195,7 +196,16 @@ const UNIVERSAL_AI_TILES = [
   },
 ];
 
-export default function ConnectionsAppGrid({ user }) {
+export default function ConnectionsAppGrid({
+  user,
+  compactPreview = false,
+  wakePreview = false,
+  onWakePreviewTabChange,
+}) {
+  const embeddedPreviewMode = compactPreview;
+  const showPageHeader = !embeddedPreviewMode && !wakePreview;
+  const showToolbar = !embeddedPreviewMode || wakePreview;
+  const compactGrid = embeddedPreviewMode && !wakePreview;
   const navigate = useNavigate();
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
@@ -365,8 +375,10 @@ export default function ConnectionsAppGrid({ user }) {
   const allTiles = useMemo(() => {
     const out = [];
 
-    const aiTargets = OUTBOUND_TARGETS.filter((t) => t.tier === 1);
-    if (aiTargets.length > 0) {
+    const tierOneAi = OUTBOUND_TARGETS.filter((t) => t.tier === 1);
+    const aiTargets = tierOneAi;
+
+    if (aiTargets.length > 0 || UNIVERSAL_AI_TILES.length > 0) {
       out.push({
         key: "section:ai",
         kind: "section",
@@ -435,9 +447,11 @@ export default function ConnectionsAppGrid({ user }) {
     }
 
     for (const cat of CONNECTOR_CATEGORIES) {
-      const connectorsInCat = CONNECTORS.filter(
-        (c) => c.category === cat.id && CONNECTABLE_INPUT_STATUSES.has(c.status),
-      );
+      const connectorsInCat = CONNECTORS.filter((c) => {
+        if (c.category !== cat.id) return false;
+        if (!CONNECTABLE_INPUT_STATUSES.has(c.status)) return false;
+        return true;
+      });
       if (connectorsInCat.length === 0) continue;
       out.push({
         key: `section:${cat.id}`,
@@ -546,8 +560,10 @@ export default function ConnectionsAppGrid({ user }) {
     }
 
     // Active search bypasses the collapse pass — users always see every
-    // matching tile regardless of which bucket they're in.
-    if (q) return noEmpty;
+    // matching tile regardless of which bucket they're in. Wake preview
+    // does the same so the walkthrough grid shows the full lineup (e.g.
+    // Grok in Chat) without a "Show N more" pill.
+    if (q || wakePreview) return noEmpty;
 
     // Collapse pass: within each AI subgroup, show only the first
     // AI_SUBGROUP_DEFAULT_VISIBLE tiles, then emit ONE `aiShowMore`
@@ -597,7 +613,7 @@ export default function ConnectionsAppGrid({ user }) {
       // else: skip this tile — pill already emitted.
     }
     return out;
-  }, [filter, allTiles, query, expandedAiSubgroups]);
+  }, [filter, allTiles, query, expandedAiSubgroups, wakePreview]);
 
   const hasResults = visibleTiles.some((t) => t.kind !== "section");
 
@@ -611,7 +627,9 @@ export default function ConnectionsAppGrid({ user }) {
           the two surfaces via the inline Vault ↔ Connections toggle
           doesn't reflow the page chrome. Spacing values (`mt-1`, `mt-4`,
           `mb-6`) match VaultNew.jsx 1:1. */}
-      <section className="mb-6">
+      <section className={compactGrid ? "h-full overflow-hidden" : "mb-6"}>
+        {showPageHeader && (
+          <>
         <h1 className="text-3xl font-semibold">Apps</h1>
         <p className="text-black/60 dark:text-white/60 mt-1">
           Everything LYKN can plug into.{" "}
@@ -621,11 +639,14 @@ export default function ConnectionsAppGrid({ user }) {
           evidence that makes your synthesis layer rich. All revocable any time.
         </p>
         {!user && (
-          <p className="mt-2 text-[11px] text-black/45 dark:text-white/45">
+          <p className="mt-2 text-[11px] text-black/45 dark:text-white/45" data-preview-hide-signin="true">
             Sign in to connect apps.
           </p>
         )}
-        <div className="mt-4 flex flex-wrap items-center gap-3 relative z-[400]">
+          </>
+        )}
+        {showToolbar && (
+        <div className={`flex flex-wrap items-center gap-3 relative z-[400] mt-4`}>
           <div className="relative w-full sm:flex-1 sm:max-w-xl">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
             <input
@@ -680,13 +701,27 @@ export default function ConnectionsAppGrid({ user }) {
               </div>
             )}
           </div>
+          {wakePreview && (
+            <div className="ml-auto shrink-0">
+              <VaultConnectionsToggle
+                active="connections"
+                onPreviewTabChange={onWakePreviewTabChange}
+              />
+            </div>
+          )}
         </div>
+        )}
       </section>
 
       {/* ── Unified grid ─────────────────────────────────────────── */}
-      <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+      <div className={`grid gap-2 ${
+        compactGrid
+          ? "grid-cols-3 pt-0 overflow-hidden"
+          : "gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
+      }`}>
         {visibleTiles.map((tile) => {
           if (tile.kind === "section") {
+            if (compactGrid) return null;
             return (
               <div key={tile.key} className="col-span-full mt-3 first:mt-0">
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-black/55 dark:text-white/55">
@@ -701,6 +736,7 @@ export default function ConnectionsAppGrid({ user }) {
             );
           }
           if (tile.kind === "aiSubgroup") {
+            if (compactGrid) return null;
             // Subgroup heading sits inside the parent "AI Tools"
             // section. Visually lighter than a section header (less
             // tracking, no caps) so the parent → subgroup hierarchy
@@ -799,7 +835,7 @@ export default function ConnectionsAppGrid({ user }) {
               ? { tone: "emerald", label: "Connected", icon: CheckCircle2 }
               : target.comingSoon
                 ? { tone: "amber", label: "Coming soon" }
-                : paidWarning
+                : paidWarning && !wakePreview
                   ? { tone: "amber", label: paidWarning.shortLabel || `Requires ${target.name} plan` }
                   : null;
             return (
@@ -868,9 +904,9 @@ export default function ConnectionsAppGrid({ user }) {
                   ? { tone: "neutral", label: "Not configured" }
                   : isConnected
                     ? { tone: "emerald", label: "Connected", icon: CheckCircle2 }
-                    : connector.status === "verification"
+                    : connector.status === "verification" && !wakePreview
                       ? { tone: "amber", label: connector.statusLabel || "Pending review" }
-                      : paidWarning
+                      : paidWarning && !wakePreview
                         ? { tone: "amber", label: connector.statusLabel || `Requires ${connector.name} plan` }
                         : null;
             // Synthesis-counts footer surfaces the chain of impact for

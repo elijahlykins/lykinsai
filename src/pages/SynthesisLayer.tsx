@@ -37,11 +37,16 @@ import NeuronPanel from "@/components/synthesis/NeuronPanel";
 import VaultAttachment from "@/components/synthesis/VaultAttachment";
 import { parseVaultContent } from "@/lib/vaultContent";
 import {
-  fetchMindmapNotes,
+  fetchMindmapVaultGraphData,
   hydrateMindmapNoteContent,
   type MindmapNoteRow,
 } from "@/lib/vault/fetchMindmapNotes";
+import {
+  noteSourceApp as resolveNoteSourceApp,
+  type ConnectorRollupSummary,
+} from "@/lib/vault/connectorSources";
 import { API_BASE_URL } from "@/lib/api-config";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import {
   isSynthesisCapError,
@@ -77,9 +82,7 @@ import {
   readPrototypeChat,
   readPrototypeNeurons,
   readPrototypeStep,
-  readPrototypeTourMode,
   writePrototypeStep,
-  writePrototypeTourMode,
 } from "@/lib/prototypeHandoff";
 import {
   createUserLinks,
@@ -236,46 +239,6 @@ type NoteRow = MindmapNoteRow & { ai_signals?: any };
 // underlying items, each with the same lazy-content fetch a normal
 // vault node uses.
 //
-// New connector sources without an entry here fall through to the
-// individual-node path (they look like manual saves). Add new rows as
-// new connectors land in `connectors/` if they're high-volume.
-const CONNECTOR_SOURCE_APPS: Record<string, { app: string; label: string }> = {
-  // Gmail's two sub-sources collapse to one app — the user thinks of
-  // "Gmail" as one thing, not "starred mail" + "inbox mail".
-  gmail_starred:     { app: "gmail",     label: "Gmail" },
-  gmail_inbox:       { app: "gmail",     label: "Gmail" },
-  outlook_flagged:   { app: "outlook",   label: "Outlook" },
-  notion_page:       { app: "notion",    label: "Notion" },
-  slack_saved:       { app: "slack",     label: "Slack" },
-  github_starred:    { app: "github",    label: "GitHub" },
-  linear_issue:      { app: "linear",    label: "Linear" },
-  todoist:           { app: "todoist",   label: "Todoist" },
-  trello_card:       { app: "trello",    label: "Trello" },
-  readwise:          { app: "readwise",  label: "Readwise" },
-  raindrop_bookmark: { app: "raindrop",  label: "Raindrop" },
-  spotify_liked:     { app: "spotify",   label: "Spotify" },
-  vimeo_liked:       { app: "vimeo",     label: "Vimeo" },
-  youtube_liked:     { app: "youtube",   label: "YouTube" },
-  x_bookmark:        { app: "x",         label: "X" },
-  bluesky_like:      { app: "bluesky",   label: "Bluesky" },
-  pinterest_pin:     { app: "pinterest", label: "Pinterest" },
-  lastfm_loved:      { app: "lastfm",    label: "Last.fm" },
-  karakeep:          { app: "karakeep",  label: "Karakeep" },
-  linkding:          { app: "linkding",  label: "linkding" },
-  pinboard:          { app: "pinboard",  label: "Pinboard" },
-  goodreads:         { app: "goodreads", label: "Goodreads" },
-  hardcover:         { app: "hardcover", label: "Hardcover" },
-  // Calendar events are noisy and rarely "thoughts" — roll up.
-  gcal_event:        { app: "gcal",      label: "Google Calendar" },
-  // Drive family all roll up under one "Google Drive" node — Docs/
-  // Sheets/Slides are sub-types of the same surface from the user's
-  // mental model perspective.
-  gdrive_starred:    { app: "gdrive",    label: "Google Drive" },
-  gdocs_starred:     { app: "gdrive",    label: "Google Drive" },
-  gsheets_starred:   { app: "gdrive",    label: "Google Drive" },
-  gslides_starred:   { app: "gdrive",    label: "Google Drive" },
-};
-
 // Magic tag that marks a Vault note as a Perspective neuron. We
 // piggyback on the existing `notes` table for storage so the
 // Perspective composer doesn't require a new migration, but the
@@ -298,9 +261,7 @@ function isUserFacingTag(tag: string): boolean {
 }
 
 function noteSourceApp(note: NoteRow): { app: string; label: string } | null {
-  const src = (note.source || "").trim();
-  if (!src) return null;
-  return CONNECTOR_SOURCE_APPS[src] || null;
+  return resolveNoteSourceApp(note.source);
 }
 
 function sourceRollupNodeId(app: string): string {
@@ -449,6 +410,10 @@ function buildGraph(
   // the category is omitted unless forceCategoryIds includes
   // __cat_projects__.
   userProjects: UserProject[] = [],
+  // Accurate per-app connector totals from vault_connector_source_counts()
+  // (migration 073). Manual notes in `notes` exclude connector rows;
+  // rollups are materialised from these counts instead of row scans.
+  connectorRollups: ConnectorRollupSummary[] = [],
 ) {
   const nodes: MindNode[] = [];
   const edges: MindEdge[] = [];
@@ -467,7 +432,9 @@ function buildGraph(
 
   const cats: { id: string; label: string; color: string; glow: string }[] = [];
   if (boards.length > 0 || forceCategoryIds.has("__cat_grids__")) cats.push({ id: "__cat_grids__", label: "Chats", color: palette.grids.bg, glow: palette.grids.glow });
-  if (vaultNotes.length > 0 || forceCategoryIds.has("__cat_vault__")) cats.push({ id: "__cat_vault__", label: "Vault", color: palette.vault.bg, glow: palette.vault.glow });
+  if (vaultNotes.length > 0 || connectorRollups.length > 0 || forceCategoryIds.has("__cat_vault__")) {
+    cats.push({ id: "__cat_vault__", label: "Vault", color: palette.vault.bg, glow: palette.vault.glow });
+  }
 
   // Tag pass operates on the regular Vault notes only — Perspectives
   // carry the `_perspective` marker tag which we never want to expose
@@ -517,10 +484,24 @@ function buildGraph(
   // redirected onto the rollup id instead of dangling against a
   // non-existent `vault_<id>` node.
   const noteIdToVaultNodeId = new Map<string, string>();
-  const rollupGroups = new Map<
-    string,
-    { app: string; label: string; items: Array<{ noteId: string; title: string; ai_summary: string | null; tags: string[]; sourceSlug: string }> }
-  >();
+  type RollupGroup = {
+    app: string;
+    label: string;
+    items: Array<{ noteId: string; title: string; ai_summary: string | null; tags: string[]; sourceSlug: string }>;
+    aggregateCount?: number;
+  };
+  const rollupGroups = new Map<string, RollupGroup>();
+
+  // Seed rollups from server-side counts (accurate totals, no row fetch).
+  for (const rollup of connectorRollups) {
+    const rollupId = sourceRollupNodeId(rollup.app);
+    rollupGroups.set(rollupId, {
+      app: rollup.app,
+      label: rollup.label,
+      items: [],
+      aggregateCount: rollup.itemCount,
+    });
+  }
 
   // Vault rendering iterates over the non-perspective slice only.
   // Perspectives get their own cluster below; double-rendering would
@@ -532,6 +513,8 @@ function buildGraph(
     if (sourceInfo) {
       const rollupId = sourceRollupNodeId(sourceInfo.app);
       noteIdToVaultNodeId.set(n.id, rollupId);
+      // Fallback when migration 073 is not applied: accumulate sample
+      // rows client-side so rollups still render (counts may be low).
       let group = rollupGroups.get(rollupId);
       if (!group) {
         group = { app: sourceInfo.app, label: sourceInfo.label, items: [] };
@@ -631,16 +614,19 @@ function buildGraph(
   // when the simulation seeds children around the Vault category,
   // the biggest connector inboxes get the most prominent placement.
   const sortedRollups = Array.from(rollupGroups.entries()).sort(
-    (a, b) => b[1].items.length - a[1].items.length,
+    (a, b) => {
+      const countA = a[1].aggregateCount ?? a[1].items.length;
+      const countB = b[1].aggregateCount ?? b[1].items.length;
+      return countB - countA;
+    },
   );
   sortedRollups.forEach(([rollupId, group]) => {
-    // Slight radius bump for big rollups so a 200-item Gmail node
-    // reads as more substantial than a 5-item Bluesky one. Capped so
-    // the node never grows into category-sized territory.
-    const radius = Math.min(28, 18 + Math.floor(Math.log2(group.items.length + 1) * 1.6));
+    const itemCount = group.aggregateCount ?? group.items.length;
+    if (itemCount <= 0) return;
+    const radius = Math.min(28, 18 + Math.floor(Math.log2(itemCount + 1) * 1.6));
     nodes.push({
       id: rollupId,
-      label: `${group.label} · ${group.items.length}`,
+      label: `${group.label} · ${itemCount.toLocaleString()}`,
       kind: "vault",
       radius,
       color: palette.note.bg,
@@ -651,11 +637,7 @@ function buildGraph(
         isSourceRollup: true,
         sourceApp: group.app,
         sourceLabel: group.label,
-        itemCount: group.items.length,
-        // Cap items shipped to the client memory-side at 300. The
-        // DetailPanel renders a virtualised list and is happy with
-        // this much; the rollup label still shows the full count
-        // above so a user with 1k+ inbox items sees the real number.
+        itemCount,
         items: group.items.slice(0, 300),
       },
     });
@@ -1482,7 +1464,7 @@ const BeliefDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
         body: JSON.stringify({}),
       });
       if (!res.ok) {
-        setError(`Couldn't accept (status ${res.status}). Try again.`);
+        setError(toUserFacingError());
         return;
       }
       setStatus("active");
@@ -1491,7 +1473,7 @@ const BeliefDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
       queryClient.invalidateQueries({ queryKey: ["mindmap_active_beliefs"] });
       queryClient.invalidateQueries({ queryKey: ["belief_window"] });
     } catch (e) {
-      setError((e as Error)?.message || "Network error. Try again.");
+      setError(toUserFacingError());
     } finally {
       setPending(false);
     }
@@ -1636,13 +1618,13 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
         .update({ status: "confirmed" })
         .eq("id", factId);
       if (upErr) {
-        setError(upErr.message || "Couldn't accept. Try again.");
+        setError(toUserFacingError());
         return;
       }
       setStatus("confirmed");
       queryClient.invalidateQueries({ queryKey: ["mindmap_manual_facts"] });
     } catch (e) {
-      setError((e as Error)?.message || "Network error. Try again.");
+      setError(toUserFacingError());
     } finally {
       setPending(false);
     }
@@ -1859,7 +1841,7 @@ const ConceptDetailSection: React.FC<{
       setEditing(false);
       invalidateConcepts();
     } catch (e) {
-      setError((e as Error).message);
+      setError(toUserFacingError());
     } finally {
       setPending(null);
     }
@@ -1873,7 +1855,7 @@ const ConceptDetailSection: React.FC<{
       setStatus("dismissed");
       invalidateConcepts();
     } catch (e) {
-      setError((e as Error).message);
+      setError(toUserFacingError());
     } finally {
       setPending(null);
     }
@@ -1887,7 +1869,7 @@ const ConceptDetailSection: React.FC<{
       setStatus("active");
       invalidateConcepts();
     } catch (e) {
-      setError((e as Error).message);
+      setError(toUserFacingError());
     } finally {
       setPending(null);
     }
@@ -1904,7 +1886,7 @@ const ConceptDetailSection: React.FC<{
       // where the merged links landed.
       onSelectNode(`concept_${intoId}`);
     } catch (e) {
-      setError((e as Error).message);
+      setError(toUserFacingError());
     } finally {
       setPending(null);
     }
@@ -3405,7 +3387,7 @@ function NeuronCreationModal({
             notifySynthesisCapIfApplicable({ message: reason });
             setError("Couldn't save — upgrade required.");
           } else {
-            setError(`Couldn't save — ${reason}.`);
+            setError(toUserFacingError());
           }
           setSubmitting(false);
           return;
@@ -3440,7 +3422,7 @@ function NeuronCreationModal({
             notifySynthesisCapIfApplicable({ message: reason });
             setError("Couldn't save — upgrade required.");
           } else {
-            setError(`Couldn't save — ${reason}.`);
+            setError(toUserFacingError());
           }
           setSubmitting(false);
           return;
@@ -3466,7 +3448,7 @@ function NeuronCreationModal({
             body?.error ||
             (res.status === 401 ? "auth_required" : null) ||
             `http_${res.status}`;
-          setError(`Couldn't save — ${reason}.`);
+          setError(toUserFacingError());
           setSubmitting(false);
           return;
         }
@@ -3482,7 +3464,7 @@ function NeuronCreationModal({
         const { data: authData } = await supabase.auth.getUser();
         const authUserId = authData?.user?.id;
         if (!authUserId) {
-          setError("Couldn't save — auth_required.");
+          setError(toUserFacingError());
           setSubmitting(false);
           return;
         }
@@ -3505,7 +3487,7 @@ function NeuronCreationModal({
           if (notifyVaultCapIfApplicable(insErr) || notifySynthesisCapIfApplicable(insErr)) {
             setError("Couldn't save — upgrade required.");
           } else {
-            setError(`Couldn't save — ${insErr?.message || "insert_failed"}.`);
+            setError(toUserFacingError());
           }
           setSubmitting(false);
           return;
@@ -3519,7 +3501,7 @@ function NeuronCreationModal({
         const { data: authData } = await supabase.auth.getUser();
         const authUserId = authData?.user?.id;
         if (!authUserId) {
-          setError("Couldn't save — auth_required.");
+          setError(toUserFacingError());
           setSubmitting(false);
           return;
         }
@@ -3534,7 +3516,7 @@ function NeuronCreationModal({
           .select("id")
           .single();
         if (insErr || !inserted?.id) {
-          setError(`Couldn't save — ${insErr?.message || "insert_failed"}.`);
+          setError(toUserFacingError());
           setSubmitting(false);
           return;
         }
@@ -3574,7 +3556,7 @@ function NeuronCreationModal({
       }, 1400);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "network_error";
-      setError(`Couldn't save — ${msg}.`);
+      setError(toUserFacingError());
       setSubmitting(false);
     }
   };
@@ -3993,38 +3975,11 @@ export default function SynthesisLayer() {
   const [synthSignInEmail, setSynthSignInEmail] = useState("");
   useEffect(() => {
     if (user?.id) return;
-    // Tour mode: the visitor just arrived from the wake screen via the
-    // "Get started" → seedTourNeurons() path. Even if a stale step
-    // value (vault/grid/done) is sitting in localStorage from a prior
-    // session, this IS a fresh tour, so the sign-in wall should stay
-    // closed. We also reset the step to "synthesis" so downstream
-    // surfaces (sidebar nudges, VaultNew, OmniaGrid, and the global
-    // walkthrough trap in AppShell) treat the walkthrough as starting
-    // over.
-    //
-    // This effect deliberately does NOT short-circuit when
-    // `hasPrototypeNeurons()` is false. The legacy flow only ever
-    // surfaced the walkthrough state for guests who'd authored a
-    // neuron in the landing chat; the new Get-Started → arrow path
-    // skips neuron creation entirely. Gating on neurons here would
-    // leave the prototype step unwritten for the most common path,
-    // which in turn would silently disable the global lockdown
-    // overlay + chrome hiding because `isWalkthroughLockActive` keys
-    // off the step.
-    if (readPrototypeTourMode()) {
-      const stale = readPrototypeStep();
-      if (stale !== "synthesis") writePrototypeStep("synthesis");
-      return;
-    }
-    // Guests who landed here WITHOUT going through Get Started (e.g.
+    // Guests who landed here WITHOUT going through the wake landing (e.g.
     // they typed `/synthesis-layer` straight in) but have prototype
-    // neurons from the legacy landing chat still get the sign-in
-    // wall on second-visit. The neuron gate stays scoped to this
-    // legacy branch so we don't mis-fire the wall for fresh Get-
-    // Started visitors who haven't built anything yet.
+    // neurons from the landing chat still get the sign-in
+    // wall on second-visit.
     if (!hasPrototypeNeurons()) {
-      // No prior session to wall — also no walkthrough hand-off
-      // (no tour mode flag and no neuron history). Let them through.
       return;
     }
     const step = readPrototypeStep();
@@ -4300,7 +4255,7 @@ export default function SynthesisLayer() {
       // synthesis layer's brain reflects it without a manual refresh.
       // Also covers the synthesis chunks since vault edits typically
       // re-chunk the note.
-      notes: ["mindmap_notes", uid],
+      notes: ["mindmap_vault_graph", uid],
       boards: ["mindmap_boards", uid],
     };
     const schedule = (...keys: string[]) => {
@@ -4388,23 +4343,24 @@ export default function SynthesisLayer() {
       return fetchBoardsWithContext(user.id, 80);
     },
     enabled: !!user?.id,
+    staleTime: 60_000,
   });
 
-  const { data: notes = [], isFetched: notesFetched } = useQuery({
-    queryKey: ["mindmap_notes", user?.id],
+  const { data: vaultGraph = { notes: [], connectorRollups: [] }, isFetched: notesFetched } = useQuery({
+    queryKey: ["mindmap_vault_graph", user?.id],
     queryFn: async () => {
-      if (!user?.id) return [];
-      // Paginate through the full notes table (see fetchMindmapNotes) so
-      // every vault card can become a neuron — the old single-query
-      // `.limit(300)` silently dropped anything outside the most-recent
-      // 300 rows. Content is hydrated in a second pass only for manual
-      // notes so multi-attachment rows can fan out to one neuron per card
-      // without shipping every note body up front.
-      const rows = await fetchMindmapNotes(user.id);
-      return hydrateMindmapNoteContent(user.id, rows);
+      if (!user?.id) return { notes: [] as MindmapNoteRow[], connectorRollups: [] as ConnectorRollupSummary[] };
+      const data = await fetchMindmapVaultGraphData(user.id);
+      return {
+        notes: await hydrateMindmapNoteContent(user.id, data.notes),
+        connectorRollups: data.connectorRollups,
+      };
     },
     enabled: !!user?.id,
+    staleTime: 60_000,
   });
+  const notes = vaultGraph.notes;
+  const connectorRollups = vaultGraph.connectorRollups;
 
   const { data: synthesisProfile, isFetched: profileFetched } = useQuery({
     queryKey: ["mindmap_synthesis_profile", user?.id],
@@ -4414,6 +4370,7 @@ export default function SynthesisLayer() {
       return data;
     },
     enabled: !!user?.id,
+    staleTime: 120_000,
   });
 
   const { data: synthesisChunks = [], isFetched: chunksFetched } = useQuery({
@@ -4430,6 +4387,7 @@ export default function SynthesisLayer() {
       return (data || []) as ChunkRow[];
     },
     enabled: !!user?.id,
+    staleTime: 60_000,
   });
 
   // Active beliefs (Hyrum-Smith belief-window layer). Rendered as their own
@@ -4469,6 +4427,7 @@ export default function SynthesisLayer() {
       }>;
     },
     enabled: !!user?.id,
+    staleTime: 60_000,
   });
 
   // User-stated and user-confirmed atomic facts. We render these as their
@@ -4507,6 +4466,7 @@ export default function SynthesisLayer() {
       }>;
     },
     enabled: !!user?.id,
+    staleTime: 60_000,
   });
 
   // Belief → fact → source provenance for the active/proposed beliefs in
@@ -4685,28 +4645,9 @@ export default function SynthesisLayer() {
   // instead of being stuck on the prototype page until a refresh.
   const [prototypeNeurons, setPrototypeNeurons] = useState(() => readPrototypeNeurons());
   const [prototypeChat, setPrototypeChat] = useState(() => readPrototypeChat());
-  // Tour mode: the visitor landed here straight off the wake screen
-  // (no describe-yourself chat). The sample neurons in `prototypeNeurons`
-  // were seeded by `seedTourNeurons()` so the brain isn't empty, and we
-  // owe them a welcome card + an arrow at the "+" create-neuron button.
-  // `tourMode` is set once on mount from localStorage so the welcome
-  // overlay doesn't pop back in if the user briefly opens the + menu
-  // (which clears the localStorage flag — see below).
-  const [tourMode, setTourMode] = useState(() => readPrototypeTourMode());
-  // Welcome-card visibility initializer. We used to key the card purely
-  // off `readPrototypeTourMode()`, but the tour-mode flag is a single-
-  // use signal that the synthesis-layer effect below clears on mount.
-  // That meant a guest who hard-refreshed `/synthesis-layer` mid-tour
-  // (or got bounced here by the AppShell walkthrough trap) found the
-  // card gone with no arrow to click — and combined with the
-  // walkthrough click-blocker overlay, that's a permanent stuck state.
-  // Initializing the card from the walkthrough STEP instead (which
-  // persists across reloads until the visitor clicks through) keeps
-  // the card alive any time a guest is meant to be on this beat.
   const [tourWelcomeOpen, setTourWelcomeOpen] = useState(() => {
     if (typeof window === "undefined") return false;
     if (isPrototypeWalkthroughComplete()) return false;
-    if (readPrototypeTourMode()) return true;
     return readPrototypeStep() === "synthesis";
   });
   // Typewriter state for the left-side welcome card. The card is NOT a
@@ -4718,15 +4659,6 @@ export default function SynthesisLayer() {
   const [tourTypedDone, setTourTypedDone] = useState(false);
   const tourTypingTimerRef = useRef<number | null>(null);
   const tourTypingCancelRef = useRef(false);
-  // Consume the localStorage tour flag on first mount: clearing it here
-  // means a mid-tour browser refresh doesn't replay the welcome card,
-  // while the in-memory `tourMode` keeps the "+" button hint alive until
-  // the visitor finds the menu. The flag only gets re-armed by the wake
-  // screen calling `seedTourNeurons()` again on a fresh visit.
-  useEffect(() => {
-    if (tourMode) writePrototypeTourMode(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   // Close the welcome card if the visitor finishes the tour on another
   // surface (e.g. clicks Finish on /app while this route stays mounted).
   useEffect(() => {
@@ -4749,25 +4681,6 @@ export default function SynthesisLayer() {
   // label. This stays up until the visitor opens the + menu — i.e.
   // they've found the affordance the tour was teaching them.
   const [tourAddNeuronHintVisible, setTourAddNeuronHintVisible] = useState(false);
-  // Auto-orbit the camera for the first ~14s of the tour so the brand-
-  // new visitor sees the brain from several angles before they have to
-  // figure out drag-to-orbit themselves. Clears the second they grab
-  // the canvas (the drei OrbitControls auto-cancels) or the timer
-  // expires — whichever comes first.
-  const [tourAutoRotate, setTourAutoRotate] = useState(false);
-  useEffect(() => {
-    if (!tourMode) return;
-    // Start the slow orbit a beat AFTER the scene mounts so the lazy
-    // SynthesisScene3D Suspense boundary has time to swap in. Otherwise
-    // the rotation prop arrives while the fallback is still painting
-    // and gets discarded.
-    const startAt = window.setTimeout(() => setTourAutoRotate(true), 600);
-    const stopAt = window.setTimeout(() => setTourAutoRotate(false), 15_000);
-    return () => {
-      window.clearTimeout(startAt);
-      window.clearTimeout(stopAt);
-    };
-  }, [tourMode]);
 
   // Type out the welcome text word-by-word — same cadence as the Vault,
   // Connections, and /app chat intro cards (28ms/word, 1100ms lead-in).
@@ -4812,27 +4725,6 @@ export default function SynthesisLayer() {
       }
     };
   }, [tourWelcomeOpen]);
-  // Any real interaction with the canvas (drag, click on a neuron, etc.)
-  // should kill the spin so we don't fight the user's gesture. Bind a
-  // pointer-down listener at the container level — it bubbles up from
-  // both Canvas and the surrounding chrome.
-  const containerStopAutoRotateRef = useRef(false);
-  useEffect(() => {
-    if (!tourAutoRotate) return;
-    const el = containerRef.current;
-    if (!el) return;
-    const stop = () => {
-      if (containerStopAutoRotateRef.current) return;
-      containerStopAutoRotateRef.current = true;
-      setTourAutoRotate(false);
-    };
-    el.addEventListener("pointerdown", stop, { once: true });
-    el.addEventListener("wheel", stop, { once: true, passive: true });
-    return () => {
-      el.removeEventListener("pointerdown", stop);
-      el.removeEventListener("wheel", stop);
-    };
-  }, [tourAutoRotate]);
 
   // Bug fix (2026-05): if a guest goes through the landing walkthrough
   // and then signs into an EXISTING account, we used to keep showing
@@ -4890,20 +4782,14 @@ export default function SynthesisLayer() {
   // and we're still inside the guided tour. The effect above tears
   // this back down once an existing signed-in user is detected.
   //
-  // `tourMode` also counts: a tour visitor arrives with ZERO neurons
-  // but still needs the "this is your synthesis layer" framing (root
-  // label, narrative, forced-empty category clusters) — so we treat
-  // tour mode as a stand-in for the handoff display state.
-  const isPrototypeHandoff = prototypeNeurons.length > 0 || tourMode;
+  const isPrototypeHandoff = prototypeNeurons.length > 0;
 
   // Guest-preview surface: an unauthenticated visitor with no real
   // chat-handoff data ALWAYS sees the five top-level containers
   // (Chats, Vault, Belief, Facts, Concepts) so the synthesis layer never
   // collapses to a blank "empty" placeholder on them. This is
-  // deliberately decoupled from `tourMode`: the tour flag is a
-  // one-shot UX flag (welcome card + auto-rotate + "+" pulse), but
-  // the category SHAPE should persist for the whole guest session,
-  // including after the visitor dismisses the welcome card or pokes
+  // deliberately decoupled from one-shot welcome-card UX: the category
+  // SHAPE should persist for the whole guest session, including after
   // the "+" menu. The signed-in / "real handoff with neurons" paths
   // are unaffected.
   //
@@ -4976,9 +4862,8 @@ export default function SynthesisLayer() {
         // collapse back into AI Learned regardless of which button
         // the visitor pressed.
         themes: prototypeNeurons.filter((n) => !n.neuronType).map((n) => n.text),
-        narrative: tourMode
-          ? "This is your synthesis layer, the six neurons your digital brain grows from. Chats, Vault, Beliefs, Facts, Concepts, and Projects all start empty and fill as you use LYKN. You can also build your own neurons to organize anything you want. Tap the + button to add your first one."
-          : "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your chats, vault, and the rest are waiting to be filled.",
+        narrative:
+          "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your chats, vault, and the rest are waiting to be filled.",
         signals: {},
       };
     }
@@ -4988,7 +4873,7 @@ export default function SynthesisLayer() {
       narrative: synthesisProfile.narrative || "",
       signals: (synthesisProfile.signals && typeof synthesisProfile.signals === "object") ? synthesisProfile.signals as Record<string, any> : {},
     };
-  }, [synthesisProfile, isPrototypeHandoff, prototypeNeurons, tourMode]);
+  }, [synthesisProfile, isPrototypeHandoff, prototypeNeurons]);
 
   const synthesisThemes: string[] = useMemo(() => {
     const t: string[] = [];
@@ -5038,7 +4923,7 @@ export default function SynthesisLayer() {
   const rootLabel = isPrototypeHandoff ? "Your Synthesis Layer" : "Your Mind";
   const { nodes: allNodes, edges, noteIdToVaultNodeId } = useMemo(
     () => {
-      const built = buildGraph(effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, userProjects);
+      const built = buildGraph(effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, userProjects, connectorRollups);
       // Prototype handoff: stamp each prototype-neuron node with the
       // ordinal (1st, 2nd, ...) and the AI-supplied "why" reason so the
       // detail panel can render "Nth neuron created" + a custom blurb
@@ -5255,7 +5140,7 @@ export default function SynthesisLayer() {
       }
       return built;
     },
-    [effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons, tourMode, userLinks, userProjects],
+    [effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons, userLinks, userProjects, connectorRollups],
   );
   const nodeMap = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
 
@@ -5922,16 +5807,6 @@ export default function SynthesisLayer() {
     if (didPlayPrototypeIntro.current) return;
     if (!prototypeFocusId) return;
     if (!nodeMap.has(prototypeFocusId)) return;
-    // Tour-mode neurons are samples seeded by the wake screen, not a
-    // freshly-created real neuron. Playing the "your first neuron is
-    // forming" animation on a sample would be a lie — and would also
-    // yank the camera onto whichever sample happens to be last in the
-    // seed array, hiding the rest of the brain. Skip the formation and
-    // let the autoRotate intro + welcome card do the talking instead.
-    if (tourMode) {
-      didPlayPrototypeIntro.current = true;
-      return;
-    }
     didPlayPrototypeIntro.current = true;
     setFormingNodeId(prototypeFocusId);
     // CRITICAL: do NOT clear these timeouts in the effect's cleanup.
@@ -5955,7 +5830,7 @@ export default function SynthesisLayer() {
       writePrototypeStep("vault");
     }, 4500);
     prototypeIntroTimeouts.current.push(focusAt, clearAt, advanceAt);
-  }, [prototypeFocusId, nodeMap, tourMode]);
+  }, [prototypeFocusId, nodeMap]);
 
   // Page-level unmount cleanup for the prototype-intro timeouts. Splitting
   // this from the effect that schedules them is what keeps them alive
@@ -6282,7 +6157,7 @@ export default function SynthesisLayer() {
               // figure out drag-to-orbit themselves. Cancels on first
               // interaction — see the pointerdown listener bound to
               // containerRef above.
-              autoRotate={tourAutoRotate}
+              autoRotate={false}
               // Keep the camera pulled in close on the prototype neuron even
               // after the formation animation clears, so the user doesn't
               // see it ease back out to the wider default focus distance.
@@ -6405,15 +6280,6 @@ export default function SynthesisLayer() {
               if (!user?.id) {
                 const refreshed = readPrototypeNeurons();
                 setPrototypeNeurons(refreshed);
-                // Tour mode's whole purpose is "show the empty
-                // containers" — once a real neuron exists we want
-                // the regular preview rendering, not the tour
-                // narrative + welcome card. Clear the flag so the
-                // next mount doesn't relaunch the welcome.
-                if (tourMode) {
-                  setTourMode(false);
-                  writePrototypeTourMode(false);
-                }
                 // Queue the formation pulse against whichever node id
                 // the post-build pass will produce for this prototype
                 // (must mirror `protoNodeId` in the allNodes useMemo).
@@ -6457,14 +6323,14 @@ export default function SynthesisLayer() {
                 // The Vault notes query also caches this row (filtered
                 // out by the perspective tag in buildGraph), so refresh
                 // it as well to keep counts consistent.
-                queryClient.invalidateQueries({ queryKey: ["mindmap_notes", user?.id] });
+                queryClient.invalidateQueries({ queryKey: ["mindmap_vault_graph", user?.id] });
               } else if (creatingNeuronType === "tag") {
                 // Tag creation inserts a Vault note carrying the tag.
                 // The tag-cluster node id is derived from the tag text
                 // itself (`tag_<text>`), not the note id, which is why
                 // we queue the pulse off `savedText` rather than newId.
                 if (savedText) setPendingFormingNodeId(`tag_${savedText}`);
-                queryClient.invalidateQueries({ queryKey: ["mindmap_notes", user?.id] });
+                queryClient.invalidateQueries({ queryKey: ["mindmap_vault_graph", user?.id] });
               } else if (newId) {
                 // Basic neurons land in lykn_user_model_facts. We render
                 // user-stated/confirmed rows directly via the manualFacts
@@ -6813,10 +6679,6 @@ export default function SynthesisLayer() {
               // the hint + the tour flag so they don't see it again the
               // next time they land on this page in this session.
               if (tourAddNeuronHintVisible) setTourAddNeuronHintVisible(false);
-              if (tourMode) {
-                setTourMode(false);
-                writePrototypeTourMode(false);
-              }
             }}
             className={`relative w-11 h-11 rounded-full backdrop-blur border flex items-center justify-center shadow-[0_6px_20px_rgba(0,0,0,0.35)] transition-colors ${
               addMenuOpen
@@ -7441,7 +7303,7 @@ export default function SynthesisLayer() {
           } else if (n.kind === "concept") {
             queryClient.invalidateQueries({ queryKey: ["mindmap_concepts", user?.id] });
           } else if (n.kind === "vault") {
-            queryClient.invalidateQueries({ queryKey: ["mindmap_notes", user?.id] });
+            queryClient.invalidateQueries({ queryKey: ["mindmap_vault_graph", user?.id] });
           }
         }}
         onAfterDelete={(n) => {
@@ -7466,7 +7328,7 @@ export default function SynthesisLayer() {
             queryClient.invalidateQueries({ queryKey: ["mindmap_manual_facts", user?.id] });
             queryClient.invalidateQueries({ queryKey: ["mindmap_synthesis_profile", user?.id] });
           } else if (n.kind === "vault" || n.kind === "perspective") {
-            queryClient.invalidateQueries({ queryKey: ["mindmap_notes", user?.id] });
+            queryClient.invalidateQueries({ queryKey: ["mindmap_vault_graph", user?.id] });
           }
         }}
       />
@@ -7590,10 +7452,6 @@ export default function SynthesisLayer() {
                           tourTypingTimerRef.current = null;
                         }
                         setTourWelcomeOpen(false);
-                        if (tourMode) {
-                          setTourMode(false);
-                          writePrototypeTourMode(false);
-                        }
                         // Re-arm the Vault page's one-shot welcome card.
                         // It self-stamps `PROTO_VAULT_INTRO_SS_KEY` on
                         // the first run so refreshing /vault doesn't

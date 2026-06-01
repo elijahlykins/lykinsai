@@ -397,6 +397,30 @@ body.embedded-vault-mode .app-content {
   padding-left: 0 !important;
 }
 
+body.embedded-vault-mode .omnia-grid-bg {
+  background: #000 !important;
+}
+
+body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] {
+  position: absolute !important;
+  inset: 0 !important;
+  padding: 0.5rem !important;
+}
+
+body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .max-w-2xl {
+  max-width: 100% !important;
+}
+
+body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] p {
+  font-size: 0.85rem !important;
+  line-height: 1.35 !important;
+  margin-bottom: 0.5rem !important;
+}
+
+body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
+  gap: 0.5rem !important;
+}
+
 /* =========================================================
    WALKTHROUGH LOCKDOWN
    While a guest is forced through the onboarding tour, the body
@@ -1673,119 +1697,6 @@ mark {
   box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.18);
 }
 
-/* =========================================================
-   LANDING PAGE THEME (Lovable import)
-   Scoped overrides so the dark navy landing aesthetic doesn't
-   leak into the rest of the app. Every landing page wraps
-   itself in `.lykn-landing-theme` to opt in.
-   ========================================================= */
-.lykn-landing-theme {
-  --background: 0 0% 0%;
-  --foreground: 0 0% 96%;
-
-  --card: 0 0% 7%;
-  --card-foreground: 0 0% 96%;
-
-  --popover: 0 0% 7%;
-  --popover-foreground: 0 0% 96%;
-
-  --primary: 200 100% 60%;
-  --primary-foreground: 0 0% 100%;
-
-  --secondary: 0 0% 12%;
-  --secondary-foreground: 0 0% 96%;
-
-  --muted: 0 0% 14%;
-  --muted-foreground: 0 0% 70%;
-
-  --accent: 200 100% 60%;
-  --accent-foreground: 0 0% 100%;
-
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 0 0% 96%;
-
-  --border: 0 0% 16%;
-  --input: 0 0% 20%;
-  --ring: 200 100% 60%;
-
-  --radius: 0.75rem;
-
-  --font-display: 'Montserrat', sans-serif;
-  --font-body: 'Inter', sans-serif;
-
-  font-family: var(--font-body);
-}
-
-.lykn-landing-theme h1,
-.lykn-landing-theme h2,
-.lykn-landing-theme h3,
-.lykn-landing-theme h4,
-.lykn-landing-theme h5,
-.lykn-landing-theme h6 {
-  font-family: var(--font-display);
-  font-weight: 200;
-}
-
-.lykn-landing-theme .glass {
-  background: hsla(0, 0%, 100%, 0.03);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid hsla(0, 0%, 100%, 0.1);
-}
-
-.lykn-landing-theme .video-overlay {
-  background: linear-gradient(
-    to bottom,
-    hsla(0, 0%, 3%, 0.2) 0%,
-    hsla(0, 0%, 3%, 0.55) 50%,
-    hsla(0, 0%, 3%, 0.9) 100%
-  );
-}
-
-@keyframes lykn-landing-fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.lykn-landing-theme .animate-fade-in {
-  animation: lykn-landing-fade-in 0.8s ease-out forwards;
-}
-
-/* Cinematic "zoom out" intro played once when the landing page mounts.
-   Starts slightly scaled in + softly blurred, then settles to scale 1.
-   `transform-origin: center` keeps the focal point steady. */
-@keyframes lykn-landing-zoom-out {
-  0% {
-    opacity: 0;
-    transform: scale(1.18);
-    filter: blur(8px);
-  }
-  60% {
-    opacity: 1;
-    filter: blur(1px);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1);
-    filter: blur(0);
-  }
-}
-
-.lykn-landing-theme .animate-zoom-out {
-  transform-origin: center center;
-  animation: lykn-landing-zoom-out 1.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-  will-change: transform, filter, opacity;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .lykn-landing-theme .animate-zoom-out {
-    animation: none;
-    opacity: 1;
-    transform: none;
-    filter: none;
-  }
-}
-
 /* ============================================================
    LYKN landing prototype — "wake" experience
    Used by /landing-prototype. Self-contained: no other surfaces
@@ -1796,101 +1707,1921 @@ mark {
 .lykn-wake-stage {
   background: #0a0a0a;
   color: #ffffff;
+  height: 100dvh;
+  min-height: 100dvh;
 }
 
-/* ── Boot / "wake" intro ─────────────────────────────────────────
-   On first paint the entire stage is muted to black and the
-   "Synthetic Intelligence" wordmark fades in at center, holds,
-   then fades out. Once the wordmark is gone the mute lifts and
-   the normal wake sequence (perimeter trace, "Waking up..." chat
-   bubble, typed greeting) takes over. Both elements are fixed-
-   position, pointer-events: none, and the whole wrapper unmounts
-   after the sequence so no inert overlay nodes linger. */
+/* ── Wake intro ──────────────────────────────────────────────────
+   Black stage → blue perimeter trace sweeps the edge (2.8s) while
+   the large LYKN logo + "Make it personal" fade in at center on
+   the same beat. */
 
-/* Solid black curtain over the stage. Matches the .lykn-wake-stage
-   background (#0a0a0a) exactly so the boot reads as the stage
-   itself starting blank, not as a translucent overlay floating
-   on top of a visible workspace. No backdrop blur needed — the
-   layer is fully opaque, so nothing underneath is visible while
-   the title card holds. Lifts off completely once the boot
-   intro is done so the perimeter trace + greeting can take over. */
-.lykn-wake-boot-overlay {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 60;
-  background: #0a0a0a;
-  animation: lykn-wake-boot-overlay 5400ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+/* Logo + tagline stack — tagline sits tight under the wordmark. */
+.lykn-wake-logo-stack {
+  gap: 0;
+  position: relative;
+  z-index: 55;
 }
 
-@keyframes lykn-wake-boot-overlay {
-  0%   { opacity: 1; }
-  88%  { opacity: 1; }
-  100% { opacity: 0; }
+/* Large logo — fades in alongside the perimeter trace. */
+.lykn-wake-logo-reveal {
+  display: block;
+  width: clamp(240px, 48vw, 480px);
+  height: auto;
+  opacity: 0;
+  transform: translateY(14px) scale(0.92);
+  animation: lykn-wake-logo-reveal-in 2200ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both;
 }
 
-/* Title-card group — the only thing visible while the screen is
-   muted. Centered fixed-position wrapper holding the welcome
-   line and the tagline beneath it. Pointer-events disabled so
-   nothing here intercepts clicks; the actual fade animations
-   live on the children for a slight stagger. */
-.lykn-wake-boot-title-group {
-  position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  z-index: 66;
+/* "Make it personal" — tucked close beneath the logo, slightly
+   staggered so it trails the sweep by a beat. */
+.lykn-wake-tagline-reveal {
+  margin: -6px 0 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  font-size: clamp(18px, 2.4vw, 28px);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ffffff;
+  opacity: 0;
+  transform: translateY(10px);
+  animation: lykn-wake-tagline-reveal-in 1800ms cubic-bezier(0.22, 1, 0.36, 1) 380ms both;
+}
+
+@keyframes lykn-wake-logo-reveal-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes lykn-wake-tagline-reveal-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.lykn-wake-slide.lykn-wake-slide--problems {
+  display: block;
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  pointer-events: auto;
+  scroll-snap-type: y proximity;
+}
+
+.lykn-wake-problems-hero {
+  position: relative;
+  height: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 18px;
+  justify-content: center;
+  flex-shrink: 0;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+.lykn-wake-problems-intro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
+  gap: clamp(1rem, 2.5vh, 1.35rem);
+  padding: clamp(2rem, 5vh, 3rem) clamp(1rem, 4vw, 2rem);
+  box-sizing: border-box;
+}
+
+.lykn-wake-problems-intro .lykn-wake-scroll-lead {
+  max-width: none;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.lykn-wake-problems-why {
+  max-width: 30rem;
+  margin: 0;
+}
+
+.lykn-wake-problems-pair {
+  min-height: min(72vh, 620px);
+  padding-inline: clamp(1.25rem, 5vw, 3rem);
+}
+
+.lykn-wake-problems-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  column-gap: clamp(1.25rem, 4vw, 2.75rem);
+  row-gap: 0;
+  width: min(100%, 62rem);
+  align-items: start;
+}
+
+.lykn-wake-problems-split-kicker {
   white-space: nowrap;
 }
 
-/* "Welcome to Synthetic Intelligence" — plain white, bold. */
-.lykn-wake-boot-title {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  font-size: clamp(20px, 2.6vw, 32px);
+.lykn-wake-problems-split-problem {
+  grid-column: 1;
+  justify-self: end;
+  text-align: right;
+}
+
+.lykn-wake-problems-split-fix {
+  grid-column: 3;
+  justify-self: start;
+  text-align: left;
+}
+
+.lykn-wake-problems-split-kicker.lykn-wake-problems-split-problem {
+  grid-row: 1;
+  margin: 0 0 0.55rem;
+}
+
+.lykn-wake-problems-split-kicker.lykn-wake-problems-split-fix {
+  grid-row: 1;
+  margin: 0 0 0.55rem;
+}
+
+.lykn-wake-problems-split-title.lykn-wake-problems-split-problem {
+  grid-row: 2;
+  margin: 0 0 0.65rem;
+}
+
+.lykn-wake-problems-split-title.lykn-wake-problems-split-fix {
+  grid-row: 2;
+  margin: 0 0 0.65rem;
+}
+
+.lykn-wake-problems-split-body.lykn-wake-problems-split-problem {
+  grid-row: 3;
+  margin: 0;
+}
+
+.lykn-wake-problems-split-body.lykn-wake-problems-split-fix {
+  grid-row: 3;
+  margin: 0;
+}
+
+.lykn-wake-problems-split-divider {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  width: 1px;
+  align-self: stretch;
+  min-height: clamp(8rem, 22vh, 12rem);
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(96, 165, 250, 0.35) 18%,
+    rgba(96, 165, 250, 0.35) 82%,
+    transparent 100%
+  );
+}
+
+.lykn-wake-problems-split-title {
+  max-width: none;
+  white-space: nowrap;
+  font-size: clamp(1.05rem, 2.1vw, 1.5rem);
+  line-height: 1.12;
+}
+
+.lykn-wake-problems-split-body {
+  max-width: 22rem;
+  font-size: clamp(0.82rem, 1.45vw, 0.98rem);
+  line-height: 1.6;
+  margin-top: 0;
+}
+
+@media (max-width: 760px) {
+  .lykn-wake-problems-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: repeat(7, auto);
+    row-gap: 0;
+  }
+
+  .lykn-wake-problems-split-kicker.lykn-wake-problems-split-problem {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: center;
+    text-align: center;
+  }
+
+  .lykn-wake-problems-split-title.lykn-wake-problems-split-problem {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: center;
+    text-align: center;
+  }
+
+  .lykn-wake-problems-split-body.lykn-wake-problems-split-problem {
+    grid-column: 1;
+    grid-row: 3;
+    justify-self: center;
+    text-align: center;
+    margin-bottom: 1.1rem;
+  }
+
+  .lykn-wake-problems-split-divider {
+    grid-column: 1;
+    grid-row: 4;
+    width: min(12rem, 72%);
+    height: 1px;
+    min-height: 0;
+    justify-self: center;
+    margin-block: 0.25rem 1.1rem;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(96, 165, 250, 0.35) 18%,
+      rgba(96, 165, 250, 0.35) 82%,
+      transparent 100%
+    );
+  }
+
+  .lykn-wake-problems-split-kicker.lykn-wake-problems-split-fix {
+    grid-column: 1;
+    grid-row: 5;
+    justify-self: center;
+    text-align: center;
+  }
+
+  .lykn-wake-problems-split-title.lykn-wake-problems-split-fix {
+    grid-column: 1;
+    grid-row: 6;
+    justify-self: center;
+    text-align: center;
+  }
+
+  .lykn-wake-problems-split-body.lykn-wake-problems-split-fix {
+    grid-column: 1;
+    grid-row: 7;
+    justify-self: center;
+    text-align: center;
+  }
+
+  .lykn-wake-problems-split-body {
+    max-width: 28rem;
+  }
+
+  .lykn-wake-problems-split-title {
+    max-width: 28rem;
+    white-space: normal;
+  }
+
+  .lykn-wake-problems-split-kicker {
+    white-space: normal;
+  }
+
+  .lykn-wake-problems-split .lykn-wake-scroll-subhead,
+  .lykn-wake-problems-split .lykn-wake-scroll-kicker {
+    white-space: normal;
+  }
+}
+
+@keyframes lykn-wake-problems-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Advance arrow — no circle; bright icon with blue glow so it reads as clickable. */
+.lykn-wake-advance-btn {
+  pointer-events: auto;
+  touch-action: manipulation;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  border: none;
+  background: transparent;
+  color: rgba(191, 219, 254, 0.95);
+  cursor: pointer;
+  filter:
+    drop-shadow(0 0 6px rgba(59, 130, 246, 0.55))
+    drop-shadow(0 0 14px rgba(59, 130, 246, 0.35));
+  transition:
+    color 220ms ease,
+    filter 220ms ease,
+    transform 220ms ease;
+  animation: lykn-wake-advance-glow 2.8s ease-in-out infinite;
+}
+
+.lykn-wake-advance-btn-icon {
+  width: 1.35rem;
+  height: 1.35rem;
+}
+
+.lykn-wake-advance-btn:hover:not(:disabled) {
+  color: #ffffff;
+  transform: scale(1.08);
+  filter:
+    drop-shadow(0 0 8px rgba(96, 165, 250, 0.95))
+    drop-shadow(0 0 18px rgba(59, 130, 246, 0.65))
+    drop-shadow(0 0 28px rgba(59, 130, 246, 0.35));
+  animation: none;
+}
+
+.lykn-wake-advance-btn:active:not(:disabled) {
+  transform: scale(1.02);
+}
+
+.lykn-wake-advance-btn:disabled {
+  cursor: default;
+}
+
+@keyframes lykn-wake-advance-glow {
+  0%, 100% {
+    filter:
+      drop-shadow(0 0 6px rgba(59, 130, 246, 0.55))
+      drop-shadow(0 0 14px rgba(59, 130, 246, 0.35));
+  }
+  50% {
+    filter:
+      drop-shadow(0 0 10px rgba(96, 165, 250, 0.85))
+      drop-shadow(0 0 22px rgba(59, 130, 246, 0.5));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-wake-advance-btn {
+    animation: none;
+  }
+}
+
+/* Intro slide carousel — welcome ↔ problems. */
+.lykn-wake-slides-viewport {
+  overflow: hidden;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.lykn-wake-slides-track {
+  display: flex;
+  height: 100%;
+  width: 600%;
+  transition: transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.lykn-wake-slides-at-problems {
+  transform: translateX(calc(-100% / 6));
+}
+
+.lykn-wake-slides-at-platform {
+  transform: translateX(calc(-200% / 6));
+}
+
+.lykn-wake-slides-at-vault {
+  transform: translateX(calc(-300% / 6));
+}
+
+.lykn-wake-slides-at-chat {
+  transform: translateX(calc(-400% / 6));
+}
+
+.lykn-wake-slides-at-account {
+  transform: translateX(calc(-500% / 6));
+}
+
+.lykn-wake-slide {
+  flex: 0 0 calc(100% / 6);
+  width: calc(100% / 6);
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Content sits dead center of the viewport; arrows float outside. */
+.lykn-wake-slide-inner {
+  width: min(920px, calc(100vw - 6.5rem));
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lykn-wake-slide-inner-synthesis {
+  width: min(1120px, calc(100vw - 4.5rem));
+  height: min(calc(100vh - 3.25rem), 760px);
+  align-items: stretch;
+  overflow: hidden;
+}
+
+/* Create account — final carousel slide. */
+.lykn-wake-slide--account {
+  pointer-events: auto;
+  align-items: stretch;
+  justify-content: center;
+  padding: clamp(0.75rem, 2vh, 1.25rem) clamp(0.85rem, 3vw, 2rem);
+  box-sizing: border-box;
+}
+
+.lykn-wake-account-layout {
+  width: min(1120px, calc(100vw - 4.5rem));
+  min-height: min(calc(100vh - 2.5rem), 720px);
+  max-height: calc(100vh - 1.5rem);
+  margin: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(1.5rem, 4vw, 3.5rem);
+  align-items: center;
+}
+
+.lykn-wake-account-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: clamp(1rem, 3vh, 2rem) 0;
+}
+
+.lykn-wake-account-brand-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 22rem;
+}
+
+.lykn-wake-account-logo {
+  display: block;
+  width: clamp(180px, 22vw, 320px);
+  height: auto;
+}
+
+.lykn-wake-account-tagline {
+  margin: -4px 0 0;
+  font-size: clamp(1.05rem, 2vw, 1.45rem);
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: #ffffff;
-  opacity: 0;
-  transform: translateY(6px);
-  animation: lykn-wake-boot-line-in 4400ms ease-out 300ms both;
+  color: rgba(255, 255, 255, 0.96);
 }
 
-/* "The Future of Thinking" — plain white, bold, smaller for
-   hierarchy. Arrives after the title and exits earlier (its own
-   keyframes have a shorter hold) so it's fully gone before the
-   mute overlay starts to lift, leaving the title alone for a
-   beat before everything releases into the wake sequence. */
-.lykn-wake-boot-tagline {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  font-size: clamp(14px, 1.6vw, 19px);
-  font-weight: 700;
+.lykn-wake-account-pitch {
+  margin-top: clamp(1.35rem, 3vh, 2rem);
+  padding: clamp(0.95rem, 2vh, 1.15rem) clamp(1rem, 2.5vw, 1.25rem);
+  border-radius: 14px;
+  border: 1px solid rgba(96, 165, 250, 0.18);
+  background: linear-gradient(
+    165deg,
+    rgba(59, 130, 246, 0.08) 0%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  text-align: left;
+}
+
+.lykn-wake-account-pitch-title {
+  margin: 0 0 0.45rem;
+  font-size: clamp(0.92rem, 1.6vw, 1rem);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  color: rgba(191, 219, 254, 0.95);
+}
+
+.lykn-wake-account-pitch-body {
+  margin: 0;
+  font-size: clamp(0.78rem, 1.3vw, 0.86rem);
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.48);
+}
+
+.lykn-wake-account-panel {
+  min-height: 0;
+  max-height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(1.75rem, 4vh, 2.5rem) clamp(1.65rem, 3.5vw, 2.25rem);
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(12, 12, 15, 0.82);
+  backdrop-filter: blur(16px);
+  box-shadow:
+    0 32px 90px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.lykn-wake-account-panel::-webkit-scrollbar {
+  display: none;
+}
+
+.lykn-wake-account-header {
+  text-align: left;
+  margin-bottom: clamp(1.25rem, 2.5vh, 1.5rem);
+}
+
+.lykn-wake-account-title {
+  margin: 0 0 0.55rem;
+  font-size: clamp(1.5rem, 3.2vw, 1.85rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.12;
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.lykn-wake-account-lede {
+  margin: 0;
+  font-size: clamp(0.88rem, 1.6vw, 0.96rem);
+  line-height: 1.58;
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.lykn-wake-account-google-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.78rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: rgba(15, 15, 18, 0.92);
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.lykn-wake-account-google-btn:hover {
+  background: #fff;
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.lykn-wake-account-divider {
+  position: relative;
+  margin: clamp(1.1rem, 2.5vh, 1.35rem) 0;
+  text-align: center;
+}
+
+.lykn-wake-account-divider::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lykn-wake-account-divider span {
+  position: relative;
+  display: inline-block;
+  padding: 0 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.32);
+  background: rgba(12, 12, 15, 0.82);
+}
+
+.lykn-wake-account-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.lykn-wake-account-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.lykn-wake-account-label {
+  font-size: 0.72rem;
+  font-weight: 600;
   letter-spacing: 0.04em;
-  color: #ffffff;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.lykn-wake-account-input {
+  width: 100%;
+  padding: 0.72rem 0.85rem;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.86rem;
+  color: rgba(255, 255, 255, 0.92);
+  outline: none;
+  transition: border-color 160ms ease, background 160ms ease;
+  box-sizing: border-box;
+}
+
+.lykn-wake-account-input::placeholder {
+  color: rgba(255, 255, 255, 0.28);
+}
+
+.lykn-wake-account-input:focus {
+  border-color: rgba(96, 165, 250, 0.45);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.lykn-wake-account-error {
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  background: rgba(248, 113, 113, 0.08);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: rgba(252, 165, 165, 0.95);
+}
+
+.lykn-wake-account-submit-btn {
+  margin-top: 0.25rem;
+  width: 100%;
+  padding: 0.78rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(147, 197, 253, 0.14);
+  background: linear-gradient(145deg, #34405a, #232c40);
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: rgba(191, 219, 254, 0.95);
+  cursor: pointer;
+  box-shadow:
+    3px 3px 8px rgba(0, 0, 0, 0.45),
+    -2px -2px 6px rgba(255, 255, 255, 0.02),
+    0 0 20px rgba(59, 130, 246, 0.12);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease;
+}
+
+.lykn-wake-account-submit-btn:hover:not(:disabled) {
+  background: linear-gradient(145deg, #344a72, #283a5d);
+  border-color: rgba(96, 165, 250, 0.42);
+  color: #fff;
+  box-shadow:
+    3px 3px 8px rgba(0, 0, 0, 0.4),
+    -1px -1px 5px rgba(255, 255, 255, 0.03),
+    0 0 24px rgba(59, 130, 246, 0.28);
+}
+
+.lykn-wake-account-submit-btn:active:not(:disabled) {
+  box-shadow:
+    inset 2px 2px 6px rgba(0, 0, 0, 0.45),
+    inset -1px -1px 4px rgba(255, 255, 255, 0.03),
+    0 0 0 1px rgba(96, 165, 250, 0.18);
+}
+
+.lykn-wake-account-submit-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.lykn-wake-account-success {
+  text-align: center;
+  padding: 0.5rem 0;
+}
+
+.lykn-wake-account-success-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  margin: 0 auto 1.1rem;
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.25);
+}
+
+.lykn-wake-start-trial {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(1.5rem, 4vh, 3rem);
+}
+
+.lykn-wake-start-trial-inner {
+  width: min(28rem, calc(100vw - 2.5rem));
+  text-align: center;
+}
+
+.lykn-wake-start-trial-inner--checkout {
+  width: min(36rem, calc(100vw - 2rem));
+}
+
+.lykn-wake-start-trial-checkout {
+  margin-top: 1.25rem;
+  text-align: left;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.lykn-wake-start-trial-logo {
+  width: clamp(160px, 38vw, 240px);
+  height: auto;
+  margin: 0 auto 0.75rem;
+  display: block;
+}
+
+.lykn-wake-start-trial-tagline {
+  margin: 0 0 2rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.lykn-wake-start-trial-title {
+  margin: 0 0 0.85rem;
+  font-size: clamp(1.35rem, 3.2vw, 1.75rem);
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.lykn-wake-start-trial-copy {
+  margin: 0 0 1.5rem;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.lykn-wake-start-trial-hint {
+  margin: 1rem 0 0;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.lykn-wake-start-trial-spinner {
+  width: 2rem;
+  height: 2rem;
+  margin: 0 auto;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: rgba(147, 197, 253, 0.95);
+  animation: lykn-wake-spin 0.85s linear infinite;
+}
+
+.lykn-wake-start-trial-retry {
+  width: 100%;
+  max-width: 18rem;
+  margin: 0 auto;
+}
+
+@keyframes lykn-wake-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 900px) {
+  .lykn-wake-account-layout {
+    width: calc(100vw - 3.75rem);
+    grid-template-columns: 1fr;
+    gap: clamp(1rem, 2.5vh, 1.5rem);
+    min-height: auto;
+    max-height: none;
+  }
+
+  .lykn-wake-account-brand {
+    padding: 0.5rem 0 0;
+  }
+
+  .lykn-wake-account-brand-inner {
+    max-width: 18rem;
+  }
+
+  .lykn-wake-account-logo {
+    width: clamp(140px, 42vw, 220px);
+  }
+
+  .lykn-wake-account-pitch {
+    margin-top: 1rem;
+    text-align: center;
+  }
+
+  .lykn-wake-account-panel {
+    max-height: none;
+    padding: clamp(1.35rem, 3vh, 1.75rem) clamp(1.15rem, 4vw, 1.45rem);
+  }
+}
+
+/* Product slides — one full-screen preview pane, explainer strictly below the fold. */
+.lykn-wake-slide--product {
+  display: block;
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  pointer-events: auto;
+  scroll-snap-type: y proximity;
+}
+
+.lykn-wake-product-hero {
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  flex-shrink: 0;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+.lykn-wake-product-preview {
+  width: min(1120px, calc(100vw - 4.5rem));
+  height: min(calc(100vh - 3.25rem), 760px);
+  max-height: calc(100% - 2.5rem);
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.lykn-wake-product-preview .lykn-wake-subwindow {
+  height: 100%;
+  width: 100%;
+}
+
+.lykn-wake-product-scroll-hint {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(0.5rem, 1.5vh, 0.85rem);
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  margin: 0;
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+  pointer-events: none;
+  user-select: none;
+  z-index: 4;
+}
+
+.lykn-wake-product-scroll-hint-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+  animation: lykn-wake-scroll-hint-bob 2.2s ease-in-out infinite;
+}
+
+@keyframes lykn-wake-scroll-hint-bob {
+  0%, 100% { transform: translateY(-1px); opacity: 0.45; }
+  50%      { transform: translateY(3px); opacity: 0.9; }
+}
+
+.lykn-wake-scroll-story {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0 0 clamp(4rem, 10vh, 6.5rem);
+  box-sizing: border-box;
+}
+
+.lykn-wake-scroll-story::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  left: 50%;
+  width: 100vw;
+  transform: translateX(-50%);
+  z-index: -1;
+  pointer-events: none;
+  background: #0a0a0a;
+}
+
+.lykn-wake-scroll-section {
+  min-height: min(68vh, 560px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: clamp(2.5rem, 6vh, 4.5rem) clamp(1rem, 4vw, 2rem);
+  box-sizing: border-box;
+  scroll-snap-align: start;
+  scroll-snap-stop: normal;
   opacity: 0;
-  transform: translateY(6px);
-  animation: lykn-wake-boot-tagline-life 3000ms ease-out 1000ms both;
+  transform: translateY(22px);
+  transition:
+    opacity 900ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 900ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-@keyframes lykn-wake-boot-line-in {
-  0%   { opacity: 0; transform: translateY(6px); }
-  14%  { opacity: 1; transform: translateY(0); }
-  82%  { opacity: 1; transform: translateY(0); }
-  100% { opacity: 0; transform: translateY(-3px); }
+.lykn-wake-scroll-section.is-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
-@keyframes lykn-wake-boot-tagline-life {
-  0%   { opacity: 0; transform: translateY(6px); }
-  20%  { opacity: 1; transform: translateY(0); }
-  65%  { opacity: 1; transform: translateY(0); }
-  100% { opacity: 0; transform: translateY(-3px); }
+.lykn-wake-scroll-section-intro {
+  min-height: min(42vh, 380px);
+  padding: clamp(1.25rem, 3vh, 2rem) clamp(1rem, 4vw, 2rem) clamp(2rem, 5vh, 3rem);
+  gap: clamp(0.85rem, 2vh, 1.25rem);
+}
+
+.lykn-wake-scroll-section-intro .lykn-wake-scroll-body {
+  margin-top: 0;
+}
+
+.lykn-wake-scroll-section-outro {
+  min-height: min(56vh, 480px);
+}
+
+.lykn-wake-scroll-lead {
+  margin: 0;
+  max-width: 18ch;
+  font-size: clamp(1.45rem, 3.2vw, 2.15rem);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1.12;
+  background: linear-gradient(180deg, #eff6ff 0%, #93c5fd 38%, #3b82f6 72%, #2563eb 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 18px rgba(59, 130, 246, 0.22));
+}
+
+.lykn-wake-scroll-kicker {
+  margin: 0 0 0.75rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(147, 197, 253, 0.88);
+}
+
+.lykn-wake-scroll-headline {
+  margin: 0 0 1rem;
+  max-width: 14ch;
+  font-size: clamp(2rem, 5.2vw, 3.35rem);
+  font-weight: 600;
+  letter-spacing: -0.045em;
+  line-height: 1.04;
+  background: linear-gradient(180deg, #f8fbff 0%, #bfdbfe 40%, #60a5fa 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.lykn-wake-scroll-subhead {
+  margin: 0 0 0.85rem;
+  max-width: 16ch;
+  font-size: clamp(1.45rem, 3.4vw, 2.15rem);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  background: linear-gradient(180deg, #eff6ff 0%, #93c5fd 42%, #3b82f6 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 14px rgba(59, 130, 246, 0.18));
+}
+
+/* Problems/fixes split — override global subhead ch cap so titles stay one line
+   and problem/fix rows align (kicker / title / body share grid rows). */
+.lykn-wake-problems-split .lykn-wake-scroll-subhead {
+  max-width: none;
+  white-space: nowrap;
+}
+
+.lykn-wake-problems-split .lykn-wake-scroll-kicker {
+  white-space: nowrap;
+}
+
+.lykn-wake-problems-split .lykn-wake-scroll-body {
+  max-width: 22rem;
+}
+
+@media (max-width: 540px) {
+  .lykn-wake-problems-intro .lykn-wake-scroll-lead {
+    white-space: normal;
+    max-width: 14ch;
+  }
+}
+
+.lykn-wake-scroll-body {
+  margin: 0;
+  max-width: 34rem;
+  font-size: clamp(0.95rem, 1.75vw, 1.12rem);
+  font-weight: 400;
+  line-height: 1.65;
+  letter-spacing: -0.01em;
+  color: rgba(219, 234, 254, 0.58);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-wake-scroll-section {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+.lykn-wake-surface-explainer {
+  width: min(1120px, calc(100vw - 4.5rem));
+  margin: 0 auto;
+  padding: clamp(2rem, 5vh, 3rem) 0 clamp(3rem, 8vh, 5rem);
+  box-sizing: border-box;
+  scroll-snap-align: start;
+}
+
+.lykn-wake-surface-explainer-hero {
+  text-align: center;
+  max-width: 44rem;
+  margin: 0 auto clamp(2rem, 4vh, 2.75rem);
+}
+
+.lykn-wake-surface-explainer-eyebrow {
+  margin: 0 0 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(96, 165, 250, 0.85);
+}
+
+.lykn-wake-surface-explainer-title {
+  margin: 0 0 0.85rem;
+  font-size: clamp(1.65rem, 3.4vw, 2.35rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.lykn-wake-surface-explainer-lede {
+  margin: 0;
+  font-size: clamp(0.95rem, 1.7vw, 1.08rem);
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.lykn-wake-surface-explainer-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: clamp(0.65rem, 1.5vw, 0.85rem);
+  margin-bottom: clamp(2rem, 4vh, 2.75rem);
+  padding: clamp(0.85rem, 2vh, 1.1rem);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.lykn-wake-surface-explainer-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.35rem;
+}
+
+.lykn-wake-surface-explainer-stat-value {
+  font-size: clamp(1.35rem, 2.8vw, 1.75rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: rgba(147, 197, 253, 0.95);
+}
+
+.lykn-wake-surface-explainer-stat-label {
+  font-size: 0.68rem;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.48);
+  max-width: 9rem;
+}
+
+.lykn-wake-surface-explainer-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(1rem, 2.2vh, 1.35rem);
+  margin-bottom: clamp(2.25rem, 5vh, 3rem);
+}
+
+.lykn-wake-surface-explainer-block {
+  padding: clamp(1.15rem, 2.5vh, 1.45rem) clamp(1.2rem, 2.8vw, 1.55rem);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.012) 100%
+  );
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.2);
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+.lykn-wake-surface-explainer-block-alt {
+  border-color: rgba(96, 165, 250, 0.14);
+  background: linear-gradient(
+    165deg,
+    rgba(59, 130, 246, 0.07) 0%,
+    rgba(255, 255, 255, 0.01) 100%
+  );
+}
+
+.lykn-wake-surface-explainer-active .lykn-wake-surface-explainer-block,
+.lykn-wake-surface-explainer-active .lykn-wake-surface-explainer-step {
+  animation: lykn-wake-problems-in 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.lykn-wake-surface-explainer-block-eyebrow {
+  margin: 0 0 0.4rem;
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(96, 165, 250, 0.75);
+}
+
+.lykn-wake-surface-explainer-block-title {
+  margin: 0 0 0.55rem;
+  font-size: clamp(1.05rem, 2vw, 1.22rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.lykn-wake-surface-explainer-block-body {
+  margin: 0;
+  font-size: clamp(0.84rem, 1.4vw, 0.92rem);
+  line-height: 1.62;
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.lykn-wake-surface-explainer-bullets {
+  margin: 0.85rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.lykn-wake-surface-explainer-bullets li {
+  position: relative;
+  padding-left: 1rem;
+  font-size: clamp(0.8rem, 1.3vw, 0.86rem);
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.lykn-wake-surface-explainer-bullets li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.52em;
+  width: 0.3rem;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.8);
+  box-shadow: 0 0 8px rgba(96, 165, 250, 0.4);
+}
+
+.lykn-wake-surface-explainer-steps {
+  margin-bottom: clamp(2rem, 4vh, 2.75rem);
+  padding-top: clamp(0.5rem, 1.5vh, 0.85rem);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.lykn-wake-surface-explainer-steps-heading {
+  margin: 0 0 clamp(1rem, 2.5vh, 1.35rem);
+  font-size: clamp(1.1rem, 2.2vw, 1.28rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.lykn-wake-surface-explainer-steps-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: clamp(0.75rem, 1.8vw, 1rem);
+}
+
+.lykn-wake-surface-explainer-step {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: clamp(0.85rem, 2vh, 1rem);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.lykn-wake-surface-explainer-step-num {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(96, 165, 250, 0.7);
+  padding-top: 0.15rem;
+}
+
+.lykn-wake-surface-explainer-step-copy {
+  min-width: 0;
+}
+
+.lykn-wake-surface-explainer-step-title {
+  margin: 0 0 0.3rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.lykn-wake-surface-explainer-step-body {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.52;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.lykn-wake-surface-explainer-closing {
+  text-align: center;
+  padding: clamp(1.35rem, 3vh, 1.75rem) clamp(1rem, 3vw, 1.5rem);
+  border-radius: 18px;
+  border: 1px solid rgba(96, 165, 250, 0.18);
+  background: radial-gradient(
+    ellipse at 50% 0%,
+    rgba(59, 130, 246, 0.12) 0%,
+    rgba(255, 255, 255, 0.02) 55%,
+    transparent 100%
+  );
+}
+
+.lykn-wake-surface-explainer-closing-title {
+  margin: 0 0 0.55rem;
+  font-size: clamp(1.05rem, 2vw, 1.2rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.lykn-wake-surface-explainer-closing-body {
+  margin: 0 auto;
+  max-width: 36rem;
+  font-size: clamp(0.84rem, 1.4vw, 0.92rem);
+  line-height: 1.62;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+@media (max-width: 900px) {
+  .lykn-wake-product-preview {
+    width: calc(100vw - 3.75rem);
+    height: min(calc(100vh - 2.75rem), 640px);
+  }
+
+  .lykn-wake-scroll-section {
+    min-height: min(58vh, 480px);
+    padding: clamp(2rem, 5vh, 3rem) 0.5rem;
+  }
+
+  .lykn-wake-scroll-section-intro {
+    min-height: min(36vh, 320px);
+    padding: clamp(1rem, 2.5vh, 1.5rem) 0.5rem clamp(1.5rem, 4vh, 2.25rem);
+  }
+
+  .lykn-wake-scroll-lead {
+    max-width: 16ch;
+  }
+
+  .lykn-wake-scroll-headline {
+    max-width: 12ch;
+  }
+
+  .lykn-wake-scroll-subhead {
+    max-width: 14ch;
+  }
+
+  .lykn-wake-surface-explainer-stats {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+
+  .lykn-wake-surface-explainer-stat {
+    flex-direction: row;
+    justify-content: center;
+    gap: 0.65rem;
+    padding: 0.4rem 0;
+  }
+
+  .lykn-wake-surface-explainer-stat-label {
+    max-width: none;
+    text-align: left;
+  }
+
+  .lykn-wake-surface-explainer-steps-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lykn-wake-subwindow {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: hsl(0 0% 12%);
+  box-shadow:
+    0 28px 90px rgba(0, 0, 0, 0.62),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset,
+    0 0 80px rgba(99, 102, 241, 0.08);
+  overflow: hidden;
+}
+
+.lykn-wake-subwindow-chrome {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.lykn-wake-subwindow-dots {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.lykn-wake-subwindow-dots span {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.lykn-wake-subwindow-dots span:first-child {
+  background: rgba(248, 113, 113, 0.55);
+}
+
+.lykn-wake-subwindow-dots span:nth-child(2) {
+  background: rgba(251, 191, 36, 0.55);
+}
+
+.lykn-wake-subwindow-dots span:nth-child(3) {
+  background: rgba(74, 222, 128, 0.55);
+}
+
+.lykn-wake-subwindow-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.lykn-wake-subwindow-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: hsl(0 0% 12%);
+}
+
+.lykn-wake-vault-live-preview {
+  position: relative;
+  overflow: hidden;
+  background: hsl(0 0% 12%);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.lykn-wake-vault-live-preview .vault-preview-shell .glass-control {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.lykn-wake-vault-live-preview button[title="Actions"],
+.lykn-wake-vault-live-preview button[title="Quick note actions"] {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+
+.lykn-wake-vault-live-preview .lykn-wake-synth-gate-backdrop {
+  z-index: 400;
+}
+
+.lykn-wake-connections-live-preview {
+  position: relative;
+  overflow: hidden;
+  background: hsl(0 0% 12%);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.lykn-wake-connections-live-preview .glass-control {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.lykn-wake-chat-preview {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: hsl(0 0% 12%);
+}
+
+.lykn-wake-chat-preview-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem 0.85rem;
+  pointer-events: auto;
+}
+
+.lykn-wake-chat-preview-inner {
+  width: 100%;
+  max-width: 34rem;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: clamp(1.25rem, 3vh, 2rem);
+}
+
+.lykn-wake-chat-preview-inner-active {
+  gap: 0.75rem;
+  max-height: 100%;
+}
+
+.lykn-wake-chat-preview-messages {
+  width: 100%;
+  max-height: min(38vh, 300px);
+  overflow-y: auto;
+  flex-shrink: 1;
+  min-height: 0;
+}
+
+.lykn-wake-chat-preview-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.lykn-wake-chat-preview-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.lykn-wake-chat-preview-user-col {
+  max-width: 88%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.lykn-wake-chat-preview-assistant-col {
+  max-width: 88%;
+  width: 100%;
+}
+
+.lykn-wake-chat-preview-show-more {
+  margin-top: 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.45rem;
+  border: none;
+  border-radius: 0.375rem;
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.5);
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.lykn-wake-chat-preview-show-more:hover {
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.lykn-wake-chat-preview-collapse-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.15rem 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: padding 0.2s ease, border-radius 0.2s ease, background 0.2s ease;
+}
+
+.lykn-wake-chat-preview-collapse-btn-expanded {
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.lykn-wake-chat-preview-collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.lykn-wake-chat-preview-collapse-chevron {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.38);
+  transition: transform 0.2s ease;
+}
+
+.lykn-wake-chat-preview-collapse-chevron-open {
+  transform: rotate(90deg);
+}
+
+.lykn-wake-chat-preview-collapse-preview {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lykn-wake-chat-preview-collapse-label {
+  flex: 1;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.lykn-wake-chat-preview-collapse-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.2s ease, opacity 0.2s ease;
+}
+
+.lykn-wake-chat-preview-collapse-panel-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  margin-top: 0.25rem;
+}
+
+.lykn-wake-chat-preview-collapse-panel-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.lykn-wake-chat-preview-row {
+  display: flex;
+}
+
+.lykn-wake-chat-preview-row-user {
+  justify-content: flex-end;
+}
+
+.lykn-wake-chat-preview-row-assistant {
+  justify-content: flex-start;
+}
+
+.lykn-wake-chat-preview-bubble {
+  max-width: 88%;
+  border-radius: 1rem;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.lykn-wake-chat-preview-bubble-user {
+  border-bottom-right-radius: 0.35rem;
+  color: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.lykn-wake-chat-preview-bubble-assistant {
+  border-bottom-left-radius: 0.35rem;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.lykn-wake-chat-preview-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  max-width: fit-content;
+  padding: 0.6rem 0.8rem;
+  border-radius: 1rem;
+  border-bottom-left-radius: 0.35rem;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.lykn-wake-chat-preview-composer {
+  flex-shrink: 0;
+  width: 100%;
+}
+
+.lykn-wake-chat-preview-remaining {
+  margin: 0 0 0.4rem;
+  text-align: center;
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: rgba(147, 197, 253, 0.72);
+}
+
+.lykn-wake-chat-preview-remaining-done {
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.lykn-wake-chat-preview-prompt {
+  margin: 0;
+  text-align: center;
+  font-size: clamp(1rem, 2.2vw, 1.35rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.92);
+  pointer-events: none;
+}
+
+@media (max-width: 900px) {
+  .lykn-wake-chat-preview-inner {
+    max-width: min(100%, 28rem);
+    gap: 1rem;
+  }
+
+  .lykn-wake-chat-preview-prompt {
+    font-size: 0.95rem;
+  }
+}
+
+.lykn-wake-synth-preview {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: hsl(0 0% 12%);
+}
+
+.lykn-wake-synth-preview-scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.lykn-wake-synth-preview-spotlight {
+  z-index: 1;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(120, 130, 180, 0.12) 0%,
+    rgba(31, 31, 31, 0) 68%
+  );
+}
+
+.lykn-wake-synth-preview-grid {
+  z-index: 1;
+  opacity: 0.04;
+  background-image: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.7) 1px,
+    transparent 1px
+  );
+  background-size: 44px 44px;
+}
+
+.lykn-wake-synth-preview-header {
+  position: absolute;
+  top: 1rem;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  justify-content: center;
+}
+
+.lykn-wake-synth-preview-title {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 0 14px rgba(99, 102, 241, 0.4);
+}
+
+.lykn-wake-synth-preview-stats {
+  position: absolute;
+  top: 1.1rem;
+  right: 3.25rem;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  font-size: 0.625rem;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.lykn-wake-synth-preview-stats-divider {
+  width: 1px;
+  height: 0.75rem;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.lykn-wake-synth-preview-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.lykn-wake-synth-preview-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: radial-gradient(
+    circle at 50% 44%,
+    rgba(99, 102, 241, 0.14) 0%,
+    hsl(0 0% 12%) 72%
+  );
+}
+
+.lykn-wake-synth-preview-add {
+  position: absolute;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 4;
+  width: 3rem;
+  height: 3rem;
+}
+
+.lykn-wake-synth-preview-add-ring {
+  position: absolute;
+  inset: -0.35rem;
+  border-radius: 999px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  animation: lykn-wake-synth-add-pulse 2.4s ease-out infinite;
+}
+
+.lykn-wake-synth-preview-add-btn {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.lykn-wake-synth-preview-add-btn-open {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: rgba(96, 165, 250, 0.45);
+  color: rgba(219, 234, 254, 1);
+}
+
+.lykn-wake-synth-add-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.5rem);
+  z-index: 6;
+  width: 15rem;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: #000;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+  animation: lykn-wake-synth-menu-in 140ms ease-out both;
+}
+
+.lykn-wake-synth-add-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.lykn-wake-synth-add-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.lykn-wake-synth-gate-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  animation: lykn-wake-synth-menu-in 160ms ease-out both;
+}
+
+.lykn-wake-synth-gate-card {
+  width: min(18rem, 100%);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 15, 18, 0.96);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55);
+  padding: 1rem 1.1rem;
+  text-align: center;
+}
+
+.lykn-wake-synth-gate-text {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+@keyframes lykn-wake-synth-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes lykn-wake-synth-add-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  70% {
+    transform: scale(1.12);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.12);
+    opacity: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .lykn-wake-synth-preview-stats {
+    display: none;
+  }
+}
+
+.lykn-wake-slide-nav {
+  position: fixed;
+  top: 50%;
+  z-index: 90;
+  pointer-events: auto;
+  transform: translateY(-50%);
+}
+
+.lykn-wake-slide-nav-back {
+  left: clamp(12px, 2vw, 20px);
+}
+
+.lykn-wake-slide-nav-forward {
+  right: clamp(12px, 2vw, 20px);
+}
+
+.lykn-wake-slide-nav-btn-hidden {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
 }
 
 
@@ -2058,15 +3789,9 @@ mark {
   }
 }
 
-/* The chat-shell's pulsing blue ring (.lykn-wake-chat-shell::after)
-   doesn't need to be suppressed during boot anymore: the chat
-   bar itself is now gated on questionStarted in JSX, so it
-   doesn't even mount until well after the boot intro has
-   completed. There's nothing for the boot overlay to "cover up"
-   at the chat-bar position. The perimeter conic trace is
-   likewise gated on !bootActive in JSX, since that one IS a
-   load-in sweep (not a persistent element) and should fire only
-   after the title card fades. */
+/* The chat bar is gated on questionStarted in JSX, so it doesn't
+   mount until after the intro sequence. The perimeter trace mounts
+   immediately and sweeps before the logo reveal. */
 
 /* Stagger-fade for each opener question as it appears in the AI greeting. */
 .lykn-wake-question-fade {
@@ -2234,9 +3959,9 @@ mark {
   .lykn-wake-synth-node::before,
   .lykn-wake-neuron-pill,
   .lykn-vault-deeplink-flash,
-  .lykn-wake-boot-overlay,
-  .lykn-wake-boot-title,
-  .lykn-wake-boot-tagline,
+  .lykn-wake-logo-reveal,
+  .lykn-wake-tagline-reveal,
+  .lykn-wake-slides-track,
   .lykn-sidebar-mount-fade,
   .lykn-sidebar-synthesis-glow,
   .lykn-sidebar-vault-glow,
@@ -2244,9 +3969,9 @@ mark {
     animation: none !important;
   }
   .lykn-wake-screen-trace::before { opacity: 0; }
-  .lykn-wake-boot-overlay,
-  .lykn-wake-boot-title,
-  .lykn-wake-boot-tagline { opacity: 0; }
+  .lykn-wake-logo-reveal,
+  .lykn-wake-tagline-reveal { opacity: 1; transform: none; }
+  .lykn-wake-slides-track { transition: none !important; }
   .lykn-wake-prompt-in {
     opacity: 1;
     transform: none;

@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import {
   listProjectStateUpdates,
   mergeUserProjects,
@@ -190,7 +191,7 @@ export default function ProjectPanel({
       });
       setMergePreview(preview);
     } catch (err) {
-      setMergeError(err instanceof Error ? err.message : "Preview failed.");
+      setMergeError(toUserFacingError(err));
     } finally {
       setPreviewing(false);
     }
@@ -209,7 +210,7 @@ export default function ProjectPanel({
       resetMerge();
       onMergeComplete?.(sourceId, targetId);
     } catch (err) {
-      setMergeError(err instanceof Error ? err.message : "Merge failed.");
+      setMergeError(toUserFacingError(err));
       setCommitting(false);
     }
   };

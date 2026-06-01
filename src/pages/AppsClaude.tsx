@@ -602,7 +602,7 @@ export default function AppsClaude() {
             <Link to="/" className="hover:text-black/85 dark:hover:text-white/85">
               Home
             </Link>
-            <Link to="/why" className="hover:text-black/85 dark:hover:text-white/85">
+            <Link to="/" className="hover:text-black/85 dark:hover:text-white/85">
               Why LYKN
             </Link>
             <Link to="/apps/chatgpt" className="hover:text-black/85 dark:hover:text-white/85">

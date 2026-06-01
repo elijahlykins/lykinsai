@@ -11,6 +11,7 @@ import {
 import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 
 function BillingToggle({ period, onChange }) {
   return (
@@ -354,7 +355,7 @@ export default function BillingNew() {
         if (url) window.location.href = url;
       } catch (err) {
         console.error("[Billing] checkout failed:", err);
-        alert(err.message || "Checkout failed. Please try again.");
+        alert(toUserFacingError(err));
       } finally {
         setCheckoutBusy(null);
       }
@@ -371,7 +372,7 @@ export default function BillingNew() {
       setWaitlistState({ joined: Boolean(data?.joined), busy: false });
     } catch (err) {
       console.error("[Billing] waitlist join failed:", err);
-      alert(err.message || "Could not join the waitlist. Please try again.");
+      alert(toUserFacingError(err));
       setWaitlistState((prev) => ({ ...prev, busy: false }));
     }
   }, [user?.email, waitlistState.joined, waitlistState.busy]);

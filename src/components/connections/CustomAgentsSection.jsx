@@ -17,6 +17,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 
 /**
  * CustomAgentsSection — outbound webhook registry for user-built agents.
@@ -195,7 +196,7 @@ function AgentRow({ agent, onEdit, onChanged }) {
     } catch (err) {
       toast({
         title: "Test failed",
-        description: err.message,
+        description: toUserFacingError(err),
         variant: "destructive",
       });
     } finally {
@@ -215,7 +216,7 @@ function AgentRow({ agent, onEdit, onChanged }) {
     } catch (err) {
       toast({
         title: "Couldn't update",
-        description: err.message,
+        description: toUserFacingError(err),
         variant: "destructive",
       });
     }
@@ -233,7 +234,7 @@ function AgentRow({ agent, onEdit, onChanged }) {
     } catch (err) {
       toast({
         title: "Couldn't delete",
-        description: err.message,
+        description: toUserFacingError(err),
         variant: "destructive",
       });
     }
@@ -447,7 +448,7 @@ function AgentFormDialog({ agent, onClose, onSaved }) {
       } catch (err) {
         toast({
           title: "Couldn't save",
-          description: err.message,
+          description: toUserFacingError(err),
           variant: "destructive",
         });
       } finally {

@@ -9,6 +9,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
+import { CONNECTION_TROUBLE_TEXT, toUserFacingError } from "@/lib/ai/userFacingErrors";
 import {
   AlertTriangle,
   Copy,
@@ -152,7 +153,7 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
         }
       } catch (err) {
         if (cancelled) return;
-        const msg = err?.message || "Couldn't issue token";
+        const msg = toUserFacingError(err);
         setError(msg);
         // If mint failed, allow the user to retry by reopening — clear
         // the de-dupe key so the next effect run can try again.
@@ -558,7 +559,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
         timer = setTimeout(tick, 3000);
       } catch (err) {
         if (cancelled) return;
-        setPollingError(err?.message || "Couldn't check for connection.");
+        setPollingError(CONNECTION_TROUBLE_TEXT);
         timer = setTimeout(tick, 6000); // back off on error
       }
     };
@@ -1020,8 +1021,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       {/* ── Polling diagnostics + help link ───────────────────────── */}
       {pollingError && step === 1 && (
         <div className="text-[10.5px] text-amber-700 dark:text-amber-400">
-          Couldn't reach LYKN to check for the new connection ({pollingError}).
-          We'll keep retrying — or refresh this dialog after approving in {targetName}.
+          {pollingError} We'll keep retrying — or refresh this dialog after approving in {targetName}.
         </div>
       )}
 

@@ -9,6 +9,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import {
   Loader2,
   RefreshCw,
@@ -58,7 +59,7 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
     } catch (err) {
       toast({
         title: "Couldn't load connections",
-        description: err.message,
+        description: toUserFacingError(err),
         variant: "destructive",
       });
     } finally {
@@ -194,7 +195,7 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
       setConnecting(false);
       toast({
         title: "Couldn't start OAuth",
-        description: err.message,
+        description: toUserFacingError(err),
         variant: "destructive",
       });
     }
@@ -220,7 +221,7 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
         }
         refresh();
       } catch (err) {
-        toast({ title: "Sync failed", description: err.message, variant: "destructive" });
+        toast({ title: "Sync failed", description: toUserFacingError(err), variant: "destructive" });
       } finally {
         setSyncingId(null);
       }
@@ -242,7 +243,7 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
         }
         refresh();
       } catch (err) {
-        toast({ title: "Update failed", description: err.message, variant: "destructive" });
+        toast({ title: "Update failed", description: toUserFacingError(err), variant: "destructive" });
       }
     },
     [refresh],
@@ -265,7 +266,7 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
         toast({ title: "Disconnected", description: `${connector.name} unlinked.` });
         refresh();
       } catch (err) {
-        toast({ title: "Delete failed", description: err.message, variant: "destructive" });
+        toast({ title: "Delete failed", description: toUserFacingError(err), variant: "destructive" });
       }
     },
     [connector?.name, refresh],

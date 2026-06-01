@@ -78,6 +78,7 @@ import {
   testCustomAgent,
   CustomAgentValidationError,
 } from './custom-agents-service.js';
+import { registerAgentStudioRoutes } from './agent-studio-routes.js';
 import {
   runUserModelLearningPass,
   applyFactFeedback,
@@ -708,6 +709,11 @@ const stripe = process.env.STRIPE_SECRET_KEY
 // Price IDs live in Stripe, not in code. Map internal plan ids → env-provided
 // Stripe price ids. Populate these in .env after creating the corresponding
 // Products + Prices in the Stripe dashboard.
+const STRIPE_TRIAL_DAYS = Math.max(
+  1,
+  Number(process.env.STRIPE_TRIAL_DAYS || 7) || 7,
+);
+
 const STRIPE_PRICE_MAP = {
   studio: {
     monthly: process.env.STRIPE_PRICE_STUDIO_MONTHLY,
@@ -3453,7 +3459,7 @@ function getFallbackModels(failedModel) {
 // switch — the AUTOMATIC fallback chain already tried every available
 // alternative on their behalf.
 const AI_TEMPORARY_FAILURE_TEXT =
-  'Hit a snag reaching the AI just now \u2014 give it another try in a moment.';
+  "Sorry, we're having trouble connecting right now.";
 
 function extractPureUserMessage(text, prompt) {
   const raw = String(text || '').trim();
@@ -3489,9 +3495,11 @@ const resolveAnthropicModel = (model) => {
     'claude-3-5-sonnet-20240620': 'claude-sonnet-4-6',
     'claude-3-5-sonnet-20241022': 'claude-sonnet-4-6',
     'claude-3-7-sonnet-20250219': 'claude-sonnet-4-6',
-    'claude-3-opus-20240229': 'claude-opus-4-6',
+    'claude-3-opus-20240229': 'claude-opus-4-8',
     'claude-3-sonnet-20240229': 'claude-sonnet-4-6',
-    'claude-opus-4-6-code': 'claude-opus-4-6',
+    'claude-opus-4-6': 'claude-opus-4-8',
+    'claude-opus-4-6-code': 'claude-opus-4-8',
+    'claude-opus-4-7': 'claude-opus-4-8',
   };
   return aliasMap[value] || value;
 };
@@ -4872,10 +4880,10 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
     let started = false;
     const reader = resp.body;
     let buffer = '';
-    let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError(AI_TEMPORARY_FAILURE_TEXT); }, 45_000);
     const bumpInactivity = () => {
       clearTimeout(inactivityRef);
-      inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+      inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError(AI_TEMPORARY_FAILURE_TEXT); }, 45_000);
     };
 
     return await new Promise((resolve) => {
@@ -4985,10 +4993,10 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
     // the client already trims dangling fragments back to a sentence
     // boundary; this just lets us see how often it happens per model.
     let accumulatedText = '';
-    let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError(AI_TEMPORARY_FAILURE_TEXT); }, 45_000);
     const bumpInactivity = () => {
       clearTimeout(inactivityRef);
-      inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+      inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError(AI_TEMPORARY_FAILURE_TEXT); }, 45_000);
     };
 
     // Pull every text part out of a Gemini SSE payload, skipping the
@@ -5146,10 +5154,10 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
     let started = false;
     const reader = resp.body;
     let buffer = '';
-    let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+    let inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError(AI_TEMPORARY_FAILURE_TEXT); }, 45_000);
     const bumpInactivity = () => {
       clearTimeout(inactivityRef);
-      inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError('Timed out — try again'); }, 45_000);
+      inactivityRef = setTimeout(() => { try { abort.abort(); } catch {} sendError(AI_TEMPORARY_FAILURE_TEXT); }, 45_000);
     };
 
     return await new Promise((resolve) => {
@@ -5221,7 +5229,7 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
   }
 
   // All providers failed before streaming a single token.
-  return sendError('This demo is having trouble right now — please try again.');
+  return sendError(AI_TEMPORARY_FAILURE_TEXT);
 });
 
 // Budget constants — mirrors src/lib/ai/promptBuilder.ts CONTEXT_BUDGETS
@@ -7031,6 +7039,8 @@ app.post('/api/v1/custom-agents/:id/test', requireAuth, async (req, res) => {
     return res.status(status).json(body);
   }
 });
+
+registerAgentStudioRoutes(app, { requireAuth, supabaseAdmin, resolveUserPlan });
 
 // --- Concepts (056-058) ---------------------------------------------------
 // First-class concept/topic layer with hybrid AI/user authorship. The
@@ -11697,11 +11707,11 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         console.warn(`⚠️ ${provider} stream produced no visible text (model=${_streamModels[_si]}); retrying with ${_streamModels[_si + 1]}`);
         return tryStreamAt(_si + 1);
       }
-      return sendError(finalErr || 'All models returned empty replies \u2014 try rephrasing or switching models.');
+      return sendError(AI_TEMPORARY_FAILURE_TEXT);
     };
     const tryStreamAt = async (_si) => {
       if (_si >= _streamModels.length) {
-        return sendError('All AI providers are temporarily busy \u2014 please wait a moment and try again.');
+        return sendError(AI_TEMPORARY_FAILURE_TEXT);
       }
       if (_si > 0) { actualModel = _streamModels[_si]; console.log(`🔄 Stream fallback → ${actualModel} (attempt ${_si + 1}/${_streamModels.length})`); }
 
@@ -12063,18 +12073,18 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
               // Safety blocks are not retry-friendly across the same provider
               // family (the next Gemini model will block the same prompt). Send
               // the explicit safety error rather than recursing.
-              return sendError('Google blocked that response for safety reasons \u2014 try rephrasing your question.');
+              return sendError(AI_TEMPORARY_FAILURE_TEXT);
             }
             sendChunk('\n\n_…response stopped early (safety filter)._');
           } else if (lastFinishReason === 'RECITATION') {
             if (!receivedAnyText) {
-              return sendError('Google blocked that response (recitation policy) \u2014 try rephrasing.');
+              return sendError(AI_TEMPORARY_FAILURE_TEXT);
             }
             sendChunk('\n\n_…response stopped early (recitation filter)._');
           }
         }
         if (!receivedAnyText && blockReason) {
-          return sendError(`Google blocked the request: ${blockReason}. Try rephrasing.`);
+          return sendError(AI_TEMPORARY_FAILURE_TEXT);
         }
         // Clean stream close. retryNextOrFinalize handles both "had text → done"
         // and "no text → walk the fallback chain" without a separate code path.
@@ -12184,7 +12194,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     // No provider matched the model id at this _si. Surface a clear error rather
     // than silently dropping the request — happens if a future model alias is
     // requested before the routing branches above are updated.
-    return sendError('All AI providers are temporarily busy \u2014 please wait a moment and try again.');
+    return sendError(AI_TEMPORARY_FAILURE_TEXT);
     }; // end tryStreamAt
 
     // ── Agent loop short-circuit ─────────────────────────────────────
@@ -14689,6 +14699,29 @@ async function resolveUserPlan(userId, email = null) {
   return { planId: effectivePlan, modelTier: tier };
 }
 
+function hasSubscriptionAccess(row) {
+  if (!row?.stripe_subscription_id) return false;
+  const status = String(row?.status || '').toLowerCase();
+  return ['trialing', 'active', 'past_due'].includes(status);
+}
+
+function billingMePayload(row, extra = {}) {
+  const hasActive = hasSubscriptionAccess(row);
+  return {
+    plan: row?.plan || 'free',
+    billing_period: row?.billing_period || null,
+    status: row?.status || 'inactive',
+    current_period_end: row?.current_period_end || null,
+    cancel_at_period_end: Boolean(row?.cancel_at_period_end),
+    has_stripe_customer: Boolean(row?.stripe_customer_id),
+    stripe_subscription_id: row?.stripe_subscription_id || null,
+    has_active_subscription: hasActive,
+    needs_trial_checkout: !hasActive,
+    trial_days: STRIPE_TRIAL_DAYS,
+    ...extra,
+  };
+}
+
 async function ensureStripeCustomer(user) {
   if (!stripeConfigured()) throw new Error('stripe_not_configured');
   const existing = await loadBillingRow(user.id);
@@ -14774,7 +14807,12 @@ async function syncSubscriptionToBilling(subscription) {
     //     mid-retry — pulling features mid-grace would be hostile).
     if (match && isActive) {
       const candidateRank = planRank(match.plan);
-      if (candidateRank > currentRank) updates.plan = match.plan;
+      if (
+        candidateRank > currentRank
+        || (subscription.status === 'trialing' && currentPlan === 'free')
+      ) {
+        updates.plan = match.plan;
+      }
     }
     // Deliberately NO else-branch that writes plan='free' on
     // canceled / unpaid / incomplete_expired. Status alone signals
@@ -14876,26 +14914,22 @@ app.get('/api/billing/me', requireAuth, async (req, res) => {
     // billing portal link keeps working for them.
     if (isCompedProEmail(req.user?.email)) {
       const row = await loadBillingRow(userId);
-      return res.json({
-        plan: COMPED_PRO_PLAN_ID,
-        billing_period: null,
-        status: 'active',
-        current_period_end: null,
-        cancel_at_period_end: false,
-        has_stripe_customer: Boolean(row?.stripe_customer_id),
-        comped: true,
-      });
+      return res.json(
+        billingMePayload(row || { plan: COMPED_PRO_PLAN_ID, status: 'active' }, {
+          plan: COMPED_PRO_PLAN_ID,
+          billing_period: null,
+          status: 'active',
+          current_period_end: null,
+          cancel_at_period_end: false,
+          has_active_subscription: true,
+          needs_trial_checkout: false,
+          comped: true,
+        }),
+      );
     }
 
     const row = await loadBillingRow(userId);
-    return res.json({
-      plan: row?.plan || 'free',
-      billing_period: row?.billing_period || null,
-      status: row?.status || 'inactive',
-      current_period_end: row?.current_period_end || null,
-      cancel_at_period_end: Boolean(row?.cancel_at_period_end),
-      has_stripe_customer: Boolean(row?.stripe_customer_id),
-    });
+    return res.json(billingMePayload(row));
   } catch (err) {
     console.error('❌ /api/billing/me error:', err);
     return res.status(500).json({ error: 'Failed to load billing' });
@@ -14947,6 +14981,71 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
     return res.json({ url: session.url });
   } catch (err) {
     console.error('❌ /api/billing/checkout error:', err);
+    return res.status(500).json({ error: 'checkout_failed' });
+  }
+});
+
+// ── /api/billing/trial-checkout (7-day Pro trial, card required) ────────────
+app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
+  try {
+    if (!stripeConfigured()) {
+      return res.status(503).json({ error: 'stripe_not_configured' });
+    }
+    const user = req.user;
+    if (isCompedProEmail(user?.email)) {
+      return res.status(400).json({ error: 'already_subscribed' });
+    }
+
+    const row = await loadBillingRow(user.id);
+    if (hasSubscriptionAccess(row)) {
+      return res.status(400).json({ error: 'already_subscribed' });
+    }
+
+    const planId = 'studio';
+    const period = 'monthly';
+    const priceId = STRIPE_PRICE_MAP[planId]?.[period];
+    if (!priceId) {
+      return res.status(500).json({
+        error: 'price_not_configured',
+        message: `Missing env var for ${planId}/${period} price id`,
+      });
+    }
+
+    const customerId = await ensureStripeCustomer(user);
+    const appUrl = appUrlFromReq(req);
+
+    const session = await stripe.checkout.sessions.create({
+      ui_mode: 'embedded',
+      mode: 'subscription',
+      customer: customerId,
+      line_items: [{ price: priceId, quantity: 1 }],
+      payment_method_collection: 'always',
+      return_url: `${appUrl}/start-trial?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      client_reference_id: user.id,
+      allow_promotion_codes: true,
+      metadata: {
+        supabase_user_id: user.id,
+        plan: planId,
+        period,
+        trial: 'true',
+      },
+      subscription_data: {
+        trial_period_days: STRIPE_TRIAL_DAYS,
+        metadata: {
+          supabase_user_id: user.id,
+          plan: planId,
+          period,
+          trial: 'true',
+        },
+      },
+    });
+
+    return res.json({
+      client_secret: session.client_secret,
+      trial_days: STRIPE_TRIAL_DAYS,
+    });
+  } catch (err) {
+    console.error('❌ /api/billing/trial-checkout error:', err);
     return res.status(500).json({ error: 'checkout_failed' });
   }
 });
@@ -15883,16 +15982,12 @@ app.use((err, req, res, next) => {
   }, { req });
 
   if (process.env.NODE_ENV === 'production') {
-    // In production: a stable error code only. Never leak err.message or
-    // err.stack to the wire — they may contain DB schema names, file
-    // paths, or library internals.
-    const code = isPayloadTooLarge ? 'payload_too_large'
-      : status >= 500 ? 'internal_error'
-      : status === 401 ? 'unauthorized'
-      : status === 403 ? 'forbidden'
-      : status === 404 ? 'not_found'
-      : 'request_failed';
-    return res.status(status).json({ error: code });
+    // In production: user-safe copy only — never leak err.message, err.stack,
+    // or stable internal codes to the wire.
+    const userMsg = isPayloadTooLarge
+      ? "That upload is too large — try a smaller file."
+      : AI_TEMPORARY_FAILURE_TEXT;
+    return res.status(status).json({ error: userMsg });
   }
 
   // In development: include err.message (helpful for the dev console)

@@ -4,6 +4,7 @@ import { Loader2, Sparkles, Shield, CheckCircle2, X, ExternalLink, ShieldAlert }
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 
 /**
  * OAuthConsent — the user-facing consent page for "Connect LYKN" flows.
@@ -95,7 +96,7 @@ export default function OAuthConsent() {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data?.ok || !data?.redirect_to) {
-          setError(data?.error_description || data?.error || `HTTP ${res.status}`);
+          setError(toUserFacingError());
           return;
         }
         // Bounce back to the requesting app. window.location.replace
@@ -104,7 +105,7 @@ export default function OAuthConsent() {
         // them on this page.
         window.location.replace(data.redirect_to);
       } catch (err) {
-        setError(err?.message || "Couldn't submit your decision.");
+        setError(toUserFacingError(err));
       } finally {
         setSubmitting(false);
       }
@@ -123,7 +124,7 @@ export default function OAuthConsent() {
       const returnTo = window.location.href;
       signInWithOAuth?.("google", { redirectTo: returnTo });
     } catch (err) {
-      setError(err?.message || "Couldn't start sign-in.");
+      setError(toUserFacingError(err));
     }
   }, [signInWithOAuth]);
 

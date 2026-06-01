@@ -18,7 +18,7 @@
 //        • Everyone else → "Install from ChatGPT App Store" placeholder
 //          that flips to a real catalog URL once the review lands.
 //
-// Visual idiom mirrors /why and the marketing landing — generous spacing,
+// Visual idiom mirrors the wake landing — generous spacing,
 // tracking-tight headings, light/dark parity, intersection-observer fade-ins
 // so the page feels intentional rather than a spec sheet.
 // ============================================================================
@@ -579,7 +579,7 @@ export default function AppsChatGPT() {
             <Link to="/" className="hover:text-black/85 dark:hover:text-white/85">
               Home
             </Link>
-            <Link to="/why" className="hover:text-black/85 dark:hover:text-white/85">
+            <Link to="/" className="hover:text-black/85 dark:hover:text-white/85">
               Why LYKN
             </Link>
             <Link to="/privacy" className="hover:text-black/85 dark:hover:text-white/85">

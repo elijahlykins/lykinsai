@@ -5517,7 +5517,7 @@ export const Canvas = React.memo(function Canvas({ liveAIMode = false, isAiThink
         openPanel({ blockId, key: qKey, answer: "", anchorRect: args.anchorRect });
         setAiPanel((p) => {
           if (!p.open || p.blockId !== blockId) return p;
-          return { ...p, question: qKey, answer: "", fullAnswer: "Sorry — I couldn't reach the AI right now.", loading: false, isTyping: true };
+          return { ...p, question: qKey, answer: "", fullAnswer: "Sorry, we're having trouble connecting right now.", loading: false, isTyping: true };
         });
       } finally {
         aiInFlightRef.current.delete(blockId);

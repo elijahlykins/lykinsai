@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 
 import { useAuth } from "@/lib/SupabaseAuth";
+import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
 import ConnectionsAppGrid from "@/components/connections/ConnectionsAppGrid";
 import CustomAgentsSection from "@/components/connections/CustomAgentsSection";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
@@ -37,11 +38,25 @@ import {
 // read as a single chapter — same dark glass, same right-edge
 // pinning, same arrow-driven hand-off — instead of three visually
 // unrelated overlays.
-export default function Connections() {
+export default function Connections({
+  wakePreview = false,
+  onWakePreviewTabChange,
+} = {}) {
   const { user } = useAuth();
   const nav = useNavigate();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const onConnectionsRoute = pathname.startsWith("/connections");
+  const { isEmbedded: isEmbeddedMode } = useMemo(
+    () => readEmbeddedPreviewParams(search),
+    [search],
+  );
+
+  useEffect(() => {
+    if (isEmbeddedMode) {
+      document.documentElement.classList.add("embedded-transparent");
+      return () => document.documentElement.classList.remove("embedded-transparent");
+    }
+  }, [isEmbeddedMode]);
 
   const [introShown, setIntroShown] = useState(false);
   const [introText, setIntroText] = useState("");
@@ -189,12 +204,26 @@ export default function Connections() {
     nav("/app");
   }, [dismissIntro, nav]);
 
+  if (wakePreview) {
+    return (
+      <div className="lykn-wake-connections-live-preview h-full min-h-0 relative">
+        <main className="connections-preview-shell relative z-20 mx-auto w-full h-full overflow-y-auto px-4 sm:px-6 pt-4 pb-12 scrollbar-hide">
+          <ConnectionsAppGrid
+            user={user}
+            wakePreview
+            onWakePreviewTabChange={onWakePreviewTabChange}
+          />
+        </main>
+      </div>
+    );
+  }
+
   return (
     <>
       {/* Walkthrough lockdown: hide the Vault ↔ Connections pill while
           the visitor is being forced through the linear tour. See
           VaultNew.jsx for the matching gate on the vault side. */}
-      {!isPrototypeWalkthroughLocked && (
+      {!isEmbeddedMode && !isPrototypeWalkthroughLocked && (
         <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
           <div className="pointer-events-auto">
             <VaultConnectionsToggle active="connections" />
@@ -202,7 +231,7 @@ export default function Connections() {
         </div>
       )}
       <main
-        className="relative z-20 mx-auto w-full px-4 sm:px-6 lg:px-8 pt-16 pb-16"
+        className="connections-preview-shell relative z-20 mx-auto w-full px-4 sm:px-6 lg:px-8 pt-16 pb-16"
         style={{ maxWidth: "1560px" }}
       >
         {/* Unified app-store grid: AI tools (Claude, ChatGPT, Cursor,
@@ -215,13 +244,7 @@ export default function Connections() {
             ConnectionsAppGrid for the universal-tile + subgroup
             mechanics. */}
         <ConnectionsAppGrid user={user} />
-        {/* Bring-your-own outbound webhook registry. Sibling to the
-            hero's "Build with the API" card — the hero is the discovery
-            path ("here's your bearer + code snippets") and this section
-            is the lifecycle path ("here are the agents you registered,
-            pause / edit / delete"). Kept at the bottom so the page reads
-            top-to-bottom as: connect → feed → push. */}
-        <CustomAgentsSection user={user} />
+        {!isEmbeddedMode && <CustomAgentsSection user={user} />}
       </main>
 
       {/* Walkthrough welcome card — mirrors the synthesis-layer + vault

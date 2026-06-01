@@ -13,17 +13,6 @@ export const PROTOTYPE_CHAT_LS_KEY = "lykn_prototype_chat";
 /** Full chat-rail state for First Conversation while the SPA is open. */
 export const PROTOTYPE_GRID_CHAT_SS_KEY = "lykn_prototype_grid_chat_v1";
 
-// Set to "1" while the visitor is in the synthesis-layer "tour" — i.e.
-// they clicked Get Started on the wake screen and were dropped into a
-// pre-populated synthesis layer with sample neurons (NOT real neurons
-// from a chat). The synthesis layer uses this to (a) render the welcome
-// card explaining what they're looking at, (b) skip the "neuron forming"
-// animation that's meant for a freshly-created real neuron, and (c)
-// auto-orbit the camera for the first beat so the brain feels alive on
-// arrival. Cleared the moment the visitor opens the "+" add-neuron menu
-// (they've found the create-your-own affordance) or signs in / out.
-export const PROTOTYPE_TOUR_MODE_LS_KEY = "lykn_prototype_tour_mode";
-
 export interface PrototypeNeuron {
   id: string;
   kind: "identity" | "focus" | "goal" | "style";
@@ -264,48 +253,6 @@ export const hasPrototypeNeurons = (): boolean => {
 /** Guest has the single preview chat (landing + walkthrough handoff). */
 export const hasGuestFirstConversation = (): boolean =>
   hasPrototypeNeurons() || readPrototypeChat().length > 0;
-
-/* ------------------------------------------------------------------ */
-/*  Synthesis-layer tour mode                                          */
-/* ------------------------------------------------------------------ */
-
-export const readPrototypeTourMode = (): boolean => {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(PROTOTYPE_TOUR_MODE_LS_KEY) === "1";
-  } catch {
-    return false;
-  }
-};
-
-export const writePrototypeTourMode = (on: boolean): void => {
-  if (typeof window === "undefined") return;
-  try {
-    if (on) {
-      window.localStorage.setItem(PROTOTYPE_TOUR_MODE_LS_KEY, "1");
-    } else {
-      window.localStorage.removeItem(PROTOTYPE_TOUR_MODE_LS_KEY);
-    }
-  } catch {
-    // ignore quota / private-mode errors
-  }
-};
-
-// Arm the synthesis-layer tour. The tour itself is pre-populated NOT
-// with sample neurons but with the five top-level "containers" of the
-// brain (Chats, Vault, AI Learned, Beliefs, Concepts) — see
-// `forceCategoryIds` in SynthesisLayer.tsx. We deliberately do NOT
-// seed any individual neurons: the visitor should see the SHAPE of
-// their future workspace, not a fake populated brain claiming to know
-// things about them. Returns true when the flag was actually flipped
-// (false if a real session is already in progress, in which case the
-// tour overlay would lie about an already-populated layer).
-export const seedTourNeurons = (): boolean => {
-  if (typeof window === "undefined") return false;
-  if (readPrototypeNeurons().length > 0) return false;
-  writePrototypeTourMode(true);
-  return true;
-};
 
 /* ------------------------------------------------------------------ */
 /*  Walkthrough step state                                             */
@@ -570,7 +517,6 @@ export const clearPrototypeState = (): void => {
     window.localStorage.removeItem(PROTOTYPE_NEURONS_LS_KEY);
     window.localStorage.removeItem(PROTOTYPE_CHAT_LS_KEY);
     window.localStorage.removeItem(PROTOTYPE_STEP_LS_KEY);
-    window.localStorage.removeItem(PROTOTYPE_TOUR_MODE_LS_KEY);
     window.localStorage.removeItem(CONNECT_ONBOARDING_DONE_LS_KEY);
   } catch {
     // ignore quota / private-mode errors
@@ -580,6 +526,7 @@ export const clearPrototypeState = (): void => {
     window.sessionStorage.removeItem(PROTO_GRID_INTRO_SS_KEY);
     window.sessionStorage.removeItem(POST_TOUR_GUEST_CHAT_COUNT_KEY);
     window.sessionStorage.removeItem(LEGACY_GUEST_CHAT_SESSION_COUNT_KEY);
+    window.sessionStorage.removeItem("lykn_wake_chat_preview_send_count");
     window.sessionStorage.removeItem("lykn_guest_chat_board_id");
     window.sessionStorage.removeItem("lykn_guest_chat_v1");
     window.sessionStorage.removeItem(PROTOTYPE_GRID_CHAT_SS_KEY);

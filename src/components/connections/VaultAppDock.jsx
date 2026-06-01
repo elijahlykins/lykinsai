@@ -6,6 +6,7 @@ import { API_BASE_URL } from "@/lib/api-config";
 import { CONNECTORS } from "@/lib/connectors/catalog";
 import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 import { toast } from "@/components/ui/use-toast";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Squircle-BLUE-master.png";
 
 // Floating macOS-style dock for the Vault page and a vertical variant
@@ -272,7 +273,7 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
         setReconnectingProvider(null);
         toast({
           title: "Couldn't start reconnect",
-          description: err.message,
+          description: toUserFacingError(err),
           variant: "destructive",
         });
         navigate("/connections");

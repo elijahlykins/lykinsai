@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#134e4a"/>
+      <stop offset="100%" stop-color="#042f2e"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect x="80" y="120" width="1120" height="480" rx="24" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.12)"/>
+  <circle cx="640" cy="360" r="56" fill="rgba(255,255,255,0.12)"/>
+  <polygon points="620,330 690,360 620,390" fill="#ffffff"/>
+  <text x="640" y="560" fill="rgba(255,255,255,0.55)" font-family="Helvetica,Arial,sans-serif" font-size="28" text-anchor="middle">Notes + AI capture demo</text>
+</svg>

@@ -14,6 +14,7 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import { markConnectOnboardingDone } from "@/lib/prototypeHandoff";
 import {
   OUTBOUND_TARGETS,
@@ -776,7 +777,7 @@ export default function Onboarding() {
       setPending(null);
       toast({
         title: "Couldn't mint ElevenLabs bearer",
-        description: err?.message || "Try again, or grab a bearer from Settings → Connections.",
+        description: toUserFacingError(err),
         variant: "destructive",
       });
     } finally {

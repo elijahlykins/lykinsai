@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
 import {
   buildPrototypeFirstChatSnapshot,
   hasGuestFirstConversation,
@@ -636,6 +637,13 @@ export default function OmniaGridPage() {
   const location = useLocation();
   const { boardId: routeBoardId } = useParams<{ boardId?: string }>();
   const { user, signInWithOAuth } = useAuth();
+  const isEmbeddedMode = readEmbeddedPreviewParams(location.search).isEmbedded && !routeBoardId;
+
+  useEffect(() => {
+    if (!isEmbeddedMode) return;
+    document.documentElement.classList.add("embedded-transparent");
+    return () => document.documentElement.classList.remove("embedded-transparent");
+  }, [isEmbeddedMode]);
 
   // (Removed: an old effect here used to auto-write `step="done"` on
   // mount of `/app`, which was the final beat of the walkthrough back
@@ -3500,8 +3508,9 @@ export default function OmniaGridPage() {
   }, [undo]);
 
   return (
-    <div className="w-full h-[100svh] relative overflow-hidden omnia-grid-bg">
+    <div className={`w-full relative overflow-hidden omnia-grid-bg ${isEmbeddedMode ? "h-full min-h-0" : "h-[100svh]"}`}>
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
+      {!isEmbeddedMode && (
       <OmniaToolbar
         title={title}
         onTitleChange={setTitle}
@@ -3546,6 +3555,7 @@ export default function OmniaGridPage() {
         onShareGrid={() => setShowShareDialog(true)}
         onUndo={handleTopPanelUndo}
       />
+      )}
 
       <GridShareDialog
         open={showShareDialog}
@@ -4057,6 +4067,7 @@ export default function OmniaGridPage() {
           The wall is sticky — closing it re-arms the canvas trap and
           chat-send guard so the next interaction reopens it, until the
           guest actually signs in. */}
+      {!isEmbeddedMode && (
       <Dialog
         open={prototypeSignInOpen}
         onOpenChange={(next) => {
@@ -4135,6 +4146,7 @@ export default function OmniaGridPage() {
           </p>
         </DialogContent>
       </Dialog>
+      )}
 
       <FileDropModeDialog />
 

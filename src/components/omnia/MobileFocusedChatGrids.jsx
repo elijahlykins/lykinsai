@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
+import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isDemoGridId } from "@/lib/demoGrids";
@@ -134,7 +135,7 @@ export default function MobileFocusedChatGrids() {
       .eq("user_id", user.id);
     setActionFor(null);
     if (error) {
-      window.alert("Couldn't rename chat: " + error.message);
+      window.alert("Couldn't rename chat. " + toUserFacingError());
       return;
     }
     window.dispatchEvent(new Event("lykinsai_boards_changed"));
@@ -159,7 +160,7 @@ export default function MobileFocusedChatGrids() {
       .eq("user_id", user.id);
     setActionFor(null);
     if (error) {
-      window.alert("Couldn't delete chat: " + error.message);
+      window.alert("Couldn't delete chat. " + toUserFacingError());
       return;
     }
     if (localStorage.getItem("omnia_board_id") === boardId) {

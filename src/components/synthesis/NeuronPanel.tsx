@@ -37,6 +37,7 @@ import {
   type UserProject,
 } from "@/lib/userProjects";
 import { createUserLinks } from "@/lib/userLinks";
+import { categoryWhyText } from "@/lib/synthesis/categoryExplainers";
 
 /**
  * NeuronPanel — the single, unified right-side panel that appears for
@@ -117,11 +118,14 @@ function kindLabel(node: MindNode): string {
   if (node.kind === "tag") return "Tag";
   if (node.kind === "neuron") return node.meta?.kindLabel || "Fact";
   if (node.kind === "root") return "Your Mind";
-  if (node.kind === "category") return "Cluster";
+  if (node.kind === "category") return "Category";
   return "Neuron";
 }
 
 function whyCreated(node: MindNode): string {
+  if (node.kind === "category") {
+    return categoryWhyText(node.id, node.label);
+  }
   if (node.kind === "belief") {
     const r = node.meta?.beliefRationale;
     if (r) return r;
@@ -463,6 +467,9 @@ export type NeuronPanelProps = {
    *  remove-on-click affordance (legacy behaviour) so the panel
    *  keeps working in any harness that hasn't wired the handler. */
   onOpenProject?: (projectId: string) => void;
+  /** When true, anchors inside a relative parent (walkthrough preview)
+   *  instead of fixed to the viewport. */
+  embedded?: boolean;
 };
 
 export default function NeuronPanel({
@@ -477,6 +484,7 @@ export default function NeuronPanel({
   onBeginLinking,
   onAfterDelete,
   onOpenProject,
+  embedded = false,
 }: NeuronPanelProps) {
   const navigate = useNavigate();
   // Pull the user's projects in once — same react-query key the
@@ -781,18 +789,33 @@ export default function NeuronPanel({
           animate={{ x: 0, opacity: 1 }}
           exit={{ x: 380, opacity: 0 }}
           transition={{ type: "spring", stiffness: 280, damping: 32 }}
-          className="fixed top-0 right-0 z-[90] h-full w-[380px] max-w-[92vw] flex flex-col bg-[rgba(15,15,18,0.92)] backdrop-blur-xl border-l border-white/10 shadow-[0_0_60px_rgba(99,102,241,0.16)]"
+          className={
+            embedded
+              ? "absolute top-0 right-0 bottom-0 z-[10] w-[min(320px,88%)] max-w-[92%] flex flex-col bg-[rgba(15,15,18,0.94)] backdrop-blur-xl border-l border-white/10 shadow-[0_0_40px_rgba(99,102,241,0.14)]"
+              : "fixed top-0 right-0 z-[90] h-full w-[380px] max-w-[92vw] flex flex-col bg-[rgba(15,15,18,0.92)] backdrop-blur-xl border-l border-white/10 shadow-[0_0_60px_rgba(99,102,241,0.16)]"
+          }
           role="dialog"
           aria-label="Neuron details"
         >
           {/* Header — type chip + the page-level close chevron (z-[100],
               right-4) lives outside this component, so we just leave
               room for it on the right. */}
-          <header className="pl-5 pr-12 py-4 border-b border-white/8 flex items-center gap-2">
+          <header className="pl-5 pr-12 py-4 border-b border-white/8 flex items-center gap-2 relative">
             <Icon size={14} className="text-blue-300" />
             <h2 className="text-[0.65rem] uppercase tracking-[0.18em] font-semibold text-white/55">
               {kindLabel(node)}
             </h2>
+            {embedded ? (
+              <button
+                type="button"
+                onClick={onClose}
+                className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center text-white/55 hover:text-white/90 hover:bg-white/8 transition-colors"
+                aria-label="Close panel"
+                title="Close"
+              >
+                <X size={14} />
+              </button>
+            ) : null}
           </header>
 
           {/* Body */}
@@ -856,20 +879,35 @@ export default function NeuronPanel({
             <section className="space-y-3">
               <div>
                 <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
-                  Why
+                  {node.kind === "category" ? "What this is" : "Why"}
                 </p>
                 <p className="text-[0.75rem] text-white/75 leading-relaxed">
                   {whyCreated(node)}
                 </p>
               </div>
-              <div>
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
-                  Added
-                </p>
-                <p className="text-[0.75rem] text-white/75">
-                  {formatWhen(whenCreatedISO(node))}
-                </p>
-              </div>
+              {node.kind === "category" ? (
+                <div>
+                  <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                    Contains
+                  </p>
+                  <p className="text-[0.75rem] text-white/75">
+                    {allNodes.filter((n) => n.categoryId === node.id).length} items
+                    {allNodes.filter((n) => n.categoryId === node.id).length === 0
+                      ? " — starts empty and fills as you use LYKN."
+                      : ""}
+                  </p>
+                </div>
+              ) : null}
+              {node.kind !== "category" && node.kind !== "root" ? (
+                <div>
+                  <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                    Added
+                  </p>
+                  <p className="text-[0.75rem] text-white/75">
+                    {formatWhen(whenCreatedISO(node))}
+                  </p>
+                </div>
+              ) : null}
             </section>
 
             {/* Jump-to-source link — for chat (grid) neurons and vault
@@ -948,6 +986,7 @@ export default function NeuronPanel({
             ) : null}
 
             {/* Connected neurons */}
+            {node.kind !== "category" ? (
             <section>
               <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-2">
                 Connected ({connected.length})
@@ -1000,6 +1039,7 @@ export default function NeuronPanel({
                 </button>
               )}
             </section>
+            ) : null}
 
             {/* Projects — clustering / membership. Renders for every
                 neuron-shaped kind (root + category are the only

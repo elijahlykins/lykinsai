@@ -1,4 +1,5 @@
 import { API_BASE_URL } from '@/lib/api-config';
+import { toUserFacingError } from '@/lib/ai/userFacingErrors';
 import type { IntakeAnswers } from '@/lib/synthesis/intakeStorage';
 
 export type SynthesisProfileStatus = {
@@ -14,7 +15,7 @@ async function readApiError(res: Response): Promise<string> {
       if (j?.error) console.error('API error detail:', j.error);
     } catch { /* ignore */ }
   }
-  return 'Something went wrong. Please try again.';
+  return toUserFacingError();
 }
 
 export async function fetchSynthesisProfileStatus(): Promise<SynthesisProfileStatus> {
@@ -38,7 +39,7 @@ export async function submitSynthesisIntake(
   const data = (await res.json().catch(() => ({}))) as { ok?: boolean; updated?: boolean; reason?: string; error?: string };
   if (!res.ok) {
     if (import.meta.env.DEV) console.error('Intake API error:', data.error, res.status);
-    throw new Error('Something went wrong. Please try again.');
+    throw new Error(toUserFacingError());
   }
   return data;
 }

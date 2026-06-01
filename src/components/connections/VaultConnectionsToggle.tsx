@@ -6,6 +6,8 @@ type Side = "vault" | "connections";
 interface VaultConnectionsToggleProps {
   active: Side;
   className?: string;
+  /** Walkthrough subwindow: swap vault/connections preview without routing. */
+  onPreviewTabChange?: (tab: Side) => void;
 }
 
 // Segmented control that swaps between the Vault page (manual entry / memories)
@@ -15,6 +17,7 @@ interface VaultConnectionsToggleProps {
 export default function VaultConnectionsToggle({
   active,
   className = "",
+  onPreviewTabChange,
 }: VaultConnectionsToggleProps) {
   const navigate = useNavigate();
 
@@ -24,6 +27,15 @@ export default function VaultConnectionsToggle({
     "bg-white dark:bg-zinc-100 text-black/85 dark:text-zinc-900 shadow-sm";
   const inactiveBtn =
     "text-black/40 dark:text-white/45 hover:text-black/60 dark:hover:text-white/70";
+
+  const goTo = (tab: Side) => {
+    if (active === tab) return;
+    if (onPreviewTabChange) {
+      onPreviewTabChange(tab);
+      return;
+    }
+    navigate(tab === "vault" ? "/vault" : "/connections");
+  };
 
   return (
     <div
@@ -35,9 +47,7 @@ export default function VaultConnectionsToggle({
         type="button"
         role="tab"
         aria-selected={active === "vault"}
-        onClick={() => {
-          if (active !== "vault") navigate("/vault");
-        }}
+        onClick={() => goTo("vault")}
         className={`${baseBtn} ${active === "vault" ? activeBtn : inactiveBtn}`}
       >
         <Lock className="w-3 h-3" />
@@ -47,9 +57,7 @@ export default function VaultConnectionsToggle({
         type="button"
         role="tab"
         aria-selected={active === "connections"}
-        onClick={() => {
-          if (active !== "connections") navigate("/connections");
-        }}
+        onClick={() => goTo("connections")}
         className={`${baseBtn} ${active === "connections" ? activeBtn : inactiveBtn}`}
       >
         <Plug className="w-3 h-3" />

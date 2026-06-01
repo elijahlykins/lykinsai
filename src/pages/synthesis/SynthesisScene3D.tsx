@@ -160,6 +160,12 @@ interface Props {
    * loading state often reads as "not yet known."
    */
   focusedSet?: Set<string> | null;
+  /**
+   * Landing walkthrough mini preview: skip the Bloom post-process pass
+   * and cap DPR at 1 so we don't stack a heavy GPU pipeline on top of
+   * three live app iframes in the same tab (Chrome error code 5 OOM).
+   */
+  litePreview?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -961,6 +967,7 @@ function CameraController({ zoom, resetSignal, focusPos, focusDistanceOverride, 
 
 export default function SynthesisScene3D(props: Props) {
   const centroid = useGraphCentroid(props.nodes);
+  const litePreview = props.litePreview === true;
 
   // Translate the focus node id into a world-space coord. SceneInner is
   // rendered inside a group translated by -centroid, so the world position
@@ -1081,11 +1088,12 @@ export default function SynthesisScene3D(props: Props) {
       // ~no perceptible quality gain at typical viewing distance — the
       // emissive cores are already bigger than the half-pixel difference
       // a retina screen would show. Mobile floor stays at 1.
-      dpr={[1, 1.5]}
+      // Lite preview (walkthrough grid) locks DPR at 1 and skips Bloom.
+      dpr={litePreview ? 1 : [1, 1.5]}
       gl={{
-        antialias: true,
+        antialias: !litePreview,
         alpha: true,
-        powerPreference: "high-performance",
+        powerPreference: litePreview ? "default" : "high-performance",
         toneMapping: THREE.ACESFilmicToneMapping,
         toneMappingExposure: 1.05,
       }}
@@ -1138,6 +1146,7 @@ export default function SynthesisScene3D(props: Props) {
           (high luminance) pixels bleed light into surrounding pixels. Tuned
           so emissive cores bloom strongly but the page background stays
           black-ish; tweak intensity if the user's display blows out. */}
+      {!litePreview && (
       <EffectComposer multisampling={0} enableNormalPass={false}>
         <Bloom
           intensity={1.05}
@@ -1153,6 +1162,7 @@ export default function SynthesisScene3D(props: Props) {
           radius={0.7}
         />
       </EffectComposer>
+      )}
     </Canvas>
   );
 }

@@ -81,7 +81,7 @@ export const FAQ_ITEMS = [
   {
     question: "Is there a free trial?",
     answer:
-      "No free trials. The Free plan is the trial. Upgrade to Pro whenever you're ready, and you can cancel anytime.",
+      "Yes. Every new account starts with a 7-day Pro trial. Add a card at signup to unlock the app. You will not be charged until the trial ends, and you can cancel anytime from billing settings.",
   },
   {
     question: "How much do I save by paying yearly?",

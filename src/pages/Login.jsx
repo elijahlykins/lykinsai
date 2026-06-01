@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isConnectOnboardingDone } from "@/lib/prototypeHandoff";
+import { hasAppAccess } from "@/lib/billingAccess";
+import { API_BASE_URL } from "@/lib/api-config";
 import { motion, AnimatePresence } from "framer-motion";
 
 const GoogleIcon = () => (
@@ -107,11 +109,32 @@ export default function Login() {
   useEffect(() => {
     if (loading || !user) return;
     const hasExplicitFrom = !!location.state?.from?.pathname;
-    if (!hasExplicitFrom && isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
-      nav("/onboarding/connect", { replace: true });
-      return;
-    }
-    nav(from, { replace: true });
+
+    (async () => {
+      if (hasExplicitFrom) {
+        nav(from, { replace: true });
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/billing/me`);
+        if (res.ok) {
+          const billing = await res.json();
+          if (!hasAppAccess(billing)) {
+            nav("/start-trial", { replace: true });
+            return;
+          }
+        }
+      } catch {
+        // Fall through to default routing if billing is unreachable.
+      }
+
+      if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
+        nav("/onboarding/connect", { replace: true });
+        return;
+      }
+      nav(from, { replace: true });
+    })();
   }, [loading, nav, user, from, location.state]);
 
   const displayError = friendlyError(error || authError);

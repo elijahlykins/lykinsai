@@ -908,7 +908,7 @@ async function runGuestChat(
   }
 
   if (!streamResponse || !streamResponse.ok) {
-    let msg = "This demo is having trouble right now — please try again, or sign in for full access.";
+    let msg = AI_TEMPORARY_FAILURE_TEXT;
     if (streamResponse?.status === 429) {
       msg = "You've hit the free preview limit for now — sign in to keep chatting.";
     }
@@ -935,7 +935,7 @@ async function runGuestChat(
   // grid), so any action JSON the model leaks is purely noise — strip it out
   // of the final reply rather than letting it flicker back into the bubble.
   const cleanedAccumulated = stripStreamingActionJson(accumulated).trim();
-  const finalText = cleanedAccumulated || accumulated || "This demo is having trouble right now — please try again.";
+  const finalText = cleanedAccumulated || accumulated || AI_TEMPORARY_FAILURE_TEXT;
   state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
   p.aiThread.push({ role: "assistant", content: finalText });
   if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);

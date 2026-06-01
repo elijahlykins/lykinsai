@@ -13,13 +13,16 @@ import {
   readPrototypeStep,
   PROTOTYPE_STEP_EVENT,
   isWalkthroughLockActive,
-  isConnectOnboardingDone,
 } from '@/lib/prototypeHandoff';
+import {
+  hasAppAccess,
+  isSubscriptionGateExempt,
+} from '@/lib/billingAccess';
+import { API_BASE_URL } from '@/lib/api-config';
+import { useQuery } from '@tanstack/react-query';
 
 import Login from "./pages/Login";
 import LandingPrototype from "./pages/LandingPrototype";
-import Why from "./pages/Why";
-import Synthesis from "./pages/Synthesis";
 import OmniaGrid from "./pages/OmniaGrid";
 import Settings from "./pages/Settings";
 // SynthesisLayer pulls in three.js + react-three-fiber + drei + the
@@ -39,8 +42,14 @@ import TagManagementNew from "./pages/new/TagManagementNew";
 import BillingNew from "./pages/new/BillingNew";
 import GuestSignInPrompt from "./components/GuestSignInPrompt";
 import GuestSignInGate from "./components/GuestSignInGate";
+import SignInPill from "./components/SignInPill";
+import {
+  isEmbeddedSurfacePath,
+  readEmbeddedPreviewParams,
+} from "@/lib/embeddedPreview";
 import ShareReceiver from "./pages/ShareReceiver";
 import Onboarding from "./pages/Onboarding";
+import StartTrial from "./pages/StartTrial";
 import AdminUsage from "./pages/AdminUsage";
 import OAuthConsent from "./pages/OAuthConsent";
 import AppsChatGPT from "./pages/AppsChatGPT";
@@ -50,6 +59,8 @@ import Terms from "./pages/Terms";
 import CookiePolicy from "./pages/CookiePolicy";
 import DPA from "./pages/DPA";
 import { useIsMobile } from "@/hooks/useViewportTier";
+import Agents from "./pages/Agents";
+import { isAgentStudioEnabled } from "@/lib/agentStudioDev";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
@@ -77,28 +88,11 @@ function AdminOnly({ children }) {
   return children;
 }
 
-// Guest-only route wrapper. Used to gate the LandingPrototype + the old
-// marketing landing so signed-in users never see them — they always
-// bounce to `/app` (or whatever path is passed in). Returns null while
-// auth is still resolving so we don't flash the landing UI to a user
+// Guest-only route wrapper. Used to gate the wake landing so signed-in
+// users never see it — they always
+// bounce to `/start-trial` (or whatever path is passed in). Returns null
+// while auth is still resolving so we don't flash the landing UI to a user
 // who's about to be redirected.
-//
-// Newly-created users (account age < 10 minutes) get routed to
-// `/onboarding/connect` instead of `/app` so they actually see the
-// "Connect your AI tools" cards. This handles the email-confirmation
-// path specifically: Supabase's confirmation link redirects to
-// `window.location.origin` (i.e. `/`), and without this branch those
-// users would skip onboarding entirely. Google-OAuth signups also land
-// on `/` after the OAuth callback, so they're covered too. After 10
-// minutes the heuristic flips off and returning users get the normal
-// `/app` destination.
-const NEW_USER_WINDOW_MS = 10 * 60 * 1000;
-function isFreshlyCreatedUser(user) {
-  if (!user?.created_at) return false;
-  const createdMs = Date.parse(user.created_at);
-  if (!Number.isFinite(createdMs)) return false;
-  return Date.now() - createdMs < NEW_USER_WINDOW_MS;
-}
 
 // Walkthrough guard. Once a guest has entered the linear synthesis →
 // vault → connections → chat tour (i.e. `lykn_prototype_step` is set
@@ -129,6 +123,7 @@ const WALKTHROUGH_ALLOWED_PATHS = new Set([
 ]);
 const WALKTHROUGH_EXEMPT_PREFIXES = [
   "/login",
+  "/start-trial",
   "/oauth",
   "/privacy",
   "/terms",
@@ -213,34 +208,64 @@ function useWalkthroughTrap() {
   return { redirect, locked: stateLocked };
 }
 
-function shouldRouteFreshUserToConnectOnboarding(user) {
-  return isFreshlyCreatedUser(user) && !isConnectOnboardingDone();
-}
-
-function GuestOnly({ children, to = "/app" }) {
+function GuestOnly({ children, to = "/start-trial" }) {
   const { user, loading } = useAuth();
   if (loading) return null;
   if (user) {
-    const dest = shouldRouteFreshUserToConnectOnboarding(user)
-      ? "/onboarding/connect"
-      : to;
-    return <Navigate to={dest} replace />;
+    return <Navigate to={to} replace />;
   }
   return children;
 }
 
+async function fetchBillingMeForGate() {
+  const res = await fetch(`${API_BASE_URL}/api/billing/me`);
+  if (!res.ok) throw new Error(`billing/me ${res.status}`);
+  return res.json();
+}
+
+function useSubscriptionGate() {
+  const { user, loading: authLoading } = useAuth();
+  const location = useLocation();
+  const exempt = isSubscriptionGateExempt(location.pathname);
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["billing-me", user?.id || "guest"],
+    queryFn: fetchBillingMeForGate,
+    enabled: Boolean(user?.id) && !exempt,
+    staleTime: 5_000,
+    retry: 1,
+  });
+
+  if (authLoading || !user || exempt) {
+    return { redirect: null, loading: false };
+  }
+  if (isLoading) {
+    return { redirect: null, loading: true };
+  }
+  if (!isError && data && !hasAppAccess(data)) {
+    if (location.pathname === "/start-trial") {
+      return { redirect: null, loading: false };
+    }
+    return { redirect: "/start-trial", loading: false };
+  }
+  return { redirect: null, loading: false };
+}
+
 function AppShell() {
-  const { user, loading, signInWithOAuth } = useAuth();
+  const { user, loading } = useAuth();
   const location = useLocation();
   const isMobile = useIsMobile();
   const walkthroughRedirect = useWalkthroughTrap();
-  const search = new URLSearchParams(location.search);
-  const isEmbeddedVault = location.pathname === "/vault" && search.get("embedded") === "1";
+  const subscriptionGate = useSubscriptionGate();
+  const { isEmbedded: isEmbeddedSurface } = readEmbeddedPreviewParams(
+    location.search,
+  );
+  const isEmbeddedRoute =
+    isEmbeddedSurface && isEmbeddedSurfacePath(location.pathname);
   const isLoginPage = location.pathname === "/login";
+  const isStartTrialPage = location.pathname === "/start-trial";
   const isLandingPage =
     location.pathname === "/" ||
-    location.pathname === "/why" ||
-    location.pathname === "/synthesis" ||
     location.pathname === "/landing-prototype" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
@@ -251,13 +276,13 @@ function AppShell() {
   const isSharePage = location.pathname === "/share";
 
   useEffect(() => {
-    document.documentElement.classList.toggle("embedded-vault-mode", isEmbeddedVault);
-    document.body.classList.toggle("embedded-vault-mode", isEmbeddedVault);
+    document.documentElement.classList.toggle("embedded-vault-mode", isEmbeddedRoute);
+    document.body.classList.toggle("embedded-vault-mode", isEmbeddedRoute);
     return () => {
       document.documentElement.classList.remove("embedded-vault-mode");
       document.body.classList.remove("embedded-vault-mode");
     };
-  }, [isEmbeddedVault]);
+  }, [isEmbeddedRoute]);
 
   // Walkthrough lockdown via CSS pointer-events. Toggling a body class
   // is the only reliable way to neutralize the page during the tour:
@@ -280,8 +305,17 @@ function AppShell() {
   }, [walkthroughRedirect.locked]);
 
   const isGuest = !loading && !user;
-  const isStandalone = isLoginPage || isLandingPage || isSharedGridView || isSharePage;
+  const isStandalone =
+    isLoginPage || isStartTrialPage || isLandingPage || isSharedGridView || isSharePage;
   const isWalkthroughLocked = walkthroughRedirect.locked;
+
+  if (subscriptionGate.loading) {
+    return null;
+  }
+
+  if (subscriptionGate.redirect && location.pathname !== subscriptionGate.redirect) {
+    return <Navigate to={subscriptionGate.redirect} replace />;
+  }
 
   // Mid-walkthrough trap: when the guard hook says "redirect to X",
   // unmount whatever chrome was about to render and bounce the visitor
@@ -301,7 +335,9 @@ function AppShell() {
   // signing in via the GuestSignInPrompt (which we deliberately keep
   // mounted — the prompt is the explicit escape valve the user
   // promised in copy: "unless they sign in").
-  const chromeHidden = isEmbeddedVault || isStandalone || isWalkthroughLocked;
+  const chromeHidden = isEmbeddedRoute || isStandalone || isWalkthroughLocked;
+  const showSignInPillGlobally =
+    !isLoginPage && !isEmbeddedRoute && (chromeHidden || isMobile);
 
   return (
     <>
@@ -312,38 +348,9 @@ function AppShell() {
       {!chromeHidden && isMobile && <MobileTabBar />}
       {!chromeHidden && isMobile && <MobileExperienceNotice />}
 
-      {/* Walkthrough sign-in pill: while the visitor is locked into the
-          guided tour the rest of the app chrome (sidebar, mobile tab
-          bar) is unmounted, which strips out the usual "Sign in" entry
-          point. Returning users shouldn't have to crank through the
-          whole tour just to get to a login screen — so we mount a
-          standalone pill in the top-left for the duration of the
-          lockdown. Same visual treatment as the AppSidebar /
-          LandingPrototype pill (avatar circle + label), so it reads
-          as the canonical sign-in affordance rather than a stray
-          new control. Click → Google OAuth via SupabaseAuth; on
-          success the auth listener flips `user` to truthy, which
-          unwinds the walkthrough lock (`isWalkthroughLockActive`
-          short-circuits on userId) and drops them straight onto the
-          chat surface they were headed for. `pointer-events-auto`
-          is the explicit re-enable that escapes the body-level
-          `pointer-events: none` we apply during the lock. */}
-      {isWalkthroughLocked && (
+      {showSignInPillGlobally && (
         <div className="fixed left-4 top-4 z-[9995] flex items-center gap-3 pointer-events-auto">
-          <button
-            type="button"
-            onClick={() =>
-              signInWithOAuth("google", { redirectTo: window.location.href })
-            }
-            className="flex items-center gap-1.5 rounded-full bg-white/45 dark:bg-[rgba(60,60,60,0.14)] backdrop-blur-sm border border-black/6 dark:border-white/10 pl-1 pr-3 py-1 text-[0.6875rem] text-black/70 dark:text-white/70 hover:bg-white/60 dark:hover:bg-white/15 shadow-sm transition-colors"
-            title="Sign in"
-            aria-label="Sign in"
-          >
-            <div className="h-6 w-6 rounded-full bg-blue-500/15 dark:bg-blue-400/20 text-[0.6875rem] font-semibold text-blue-600 dark:text-blue-400 flex items-center justify-center flex-shrink-0">
-              ?
-            </div>
-            <span>Sign in</span>
-          </button>
+          <SignInPill className="lykn-wake-signin-fade" />
         </div>
       )}
       {/* The upload-progress toast was intentionally removed in favor of
@@ -353,14 +360,15 @@ function AppShell() {
           via the global `toast()` notification raised from
           `uploadPipeline.ts`. So there's no longer a persistent
           upload-progress UI to render. */}
-      {!isEmbeddedVault && !isStandalone && !user && !isWalkthroughLocked && (
+      {!isEmbeddedRoute && !isStandalone && !user && !isWalkthroughLocked && (
         <GuestSignInPrompt />
       )}
-      {!isEmbeddedVault && !isStandalone && !user && <GuestSignInGate />}
+      {!isEmbeddedRoute && !isStandalone && !user && <GuestSignInGate />}
       <div className={isStandalone ? "" : (isGuest ? "app-content guest-mode" : "app-content")}>
         <RouteErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/start-trial" element={<StartTrial />} />
             {/* OAuth consent screen — reached via 302 from API's /oauth/authorize.
                 Intentionally NOT wrapped in ProtectedRoute: the page handles its
                 own auth-gate inline so OAuth params survive the sign-in round-trip
@@ -394,8 +402,6 @@ function AppShell() {
                 any inbound links to the prototype-only URL. */}
             <Route path="/" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
             <Route path="/landing-prototype" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
-            <Route path="/why" element={<Why />} />
-            <Route path="/synthesis" element={<Synthesis />} />
             <Route path="/app" element={<OmniaGrid />} />
             <Route path="/dashboard" element={<Navigate to="/app" replace />} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
@@ -431,6 +437,16 @@ function AppShell() {
                 </Suspense>
               }
             />
+            {isAgentStudioEnabled ? (
+              <Route
+                path="/agents"
+                element={
+                  <ProtectedRoute>
+                    <Agents />
+                  </ProtectedRoute>
+                }
+              />
+            ) : null}
             <Route
               path="/tag-management"
               element={
