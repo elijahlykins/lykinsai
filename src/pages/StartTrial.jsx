@@ -55,6 +55,15 @@ function postTrialDestination(user) {
   return "/app";
 }
 
+async function returnToLandingSignIn() {
+  try {
+    await supabase.auth.signOut({ scope: "local" });
+  } catch {
+    // Best-effort — still send them back to the wake sign-in slide.
+  }
+  window.location.assign("/?resume=account");
+}
+
 export default function StartTrial() {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
@@ -62,15 +71,12 @@ export default function StartTrial() {
   const checkoutResult = searchParams.get("checkout");
   const [phase, setPhase] = useState(() => {
     if (checkoutResult === "success") return "confirming";
-    if (checkoutResult === "canceled") return "error";
+    if (checkoutResult === "canceled") return "returning";
     return "redirecting";
   });
-  const [error, setError] = useState(() =>
-    checkoutResult === "canceled"
-      ? "Checkout was canceled. Try again when you are ready."
-      : null,
-  );
+  const [error, setError] = useState(null);
   const startedRef = useRef(false);
+  const cancelHandledRef = useRef(false);
 
   const pollUntilActive = useCallback(async () => {
     for (let i = 0; i < 20; i += 1) {
@@ -108,7 +114,17 @@ export default function StartTrial() {
   }, [navigate, user]);
 
   useEffect(() => {
-    if (authLoading || !user) return;
+    if (authLoading) return;
+
+    if (checkoutResult === "canceled") {
+      if (cancelHandledRef.current) return;
+      cancelHandledRef.current = true;
+      setPhase("returning");
+      void returnToLandingSignIn();
+      return;
+    }
+
+    if (!user) return;
 
     if (checkoutResult === "success") {
       (async () => {
@@ -132,18 +148,21 @@ export default function StartTrial() {
       return;
     }
 
-    if (checkoutResult === "canceled") return;
-
     if (startedRef.current) return;
     startedRef.current = true;
     beginCheckout();
   }, [authLoading, user, checkoutResult, navigate, pollUntilActive, beginCheckout]);
 
-  if (!authLoading && !user) {
+  if (
+    !authLoading &&
+    !user &&
+    checkoutResult !== "canceled" &&
+    phase !== "returning"
+  ) {
     return <Navigate to="/login" replace state={{ from: { pathname: "/start-trial" } }} />;
   }
 
-  if (phase === "redirecting" || phase === "confirming") {
+  if (phase === "redirecting" || phase === "confirming" || phase === "returning") {
     return (
       <div className="dark lykn-wake-stage relative w-screen min-h-screen overflow-hidden flex items-center justify-center">
         <div className="lykn-wake-start-trial-spinner" aria-hidden aria-label="Loading" />

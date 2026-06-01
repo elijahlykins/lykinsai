@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, ArrowUp, ChevronDown, Mic, Plus } from "lucide-react";
 import { API_BASE_URL } from "@/lib/api-config";
 import AppSidebar from "@/components/AppSidebar";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import {
   PROTO_GRID_INTRO_SS_KEY,
@@ -295,7 +295,10 @@ async function streamChatResponse(
 const LandingPrototype = () => {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
-  const [introPhase, setIntroPhase] = useState<IntroPhase>("welcome");
+  const [searchParams] = useSearchParams();
+  const [introPhase, setIntroPhase] = useState<IntroPhase>(() =>
+    searchParams.get("resume") === "account" ? "account" : "welcome",
+  );
   const [problemsFadingOut, setProblemsFadingOut] = useState(false);
   const [questionStarted, setQuestionStarted] = useState(false);
   // Pre-mount synthesis / vault / chat previews during the welcome slide so
@@ -308,6 +311,11 @@ const LandingPrototype = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (searchParams.get("resume") !== "account") return;
+    window.history.replaceState({}, "", "/");
+  }, [searchParams]);
 
   // Signed-in users have no business on the "build your intelligence
   // layer" onboarding chat — bounce them straight into the app. Catches both
