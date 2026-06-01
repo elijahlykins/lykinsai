@@ -714,6 +714,22 @@ const STRIPE_TRIAL_DAYS = Math.max(
   Number(process.env.STRIPE_TRIAL_DAYS || 7) || 7,
 );
 
+/** Checkout copy shown on Stripe's hosted page (supports Markdown). */
+function trialCheckoutCustomText(trialDays = STRIPE_TRIAL_DAYS) {
+  const days = Math.max(1, Number(trialDays) || STRIPE_TRIAL_DAYS);
+  const dayLabel = days === 1 ? '1 day' : `${days} days`;
+  return {
+    submit: {
+      message:
+        `**${dayLabel} free — $0 due today.** Start your Pro trial now; cancel anytime before it ends and you won't be charged.`,
+    },
+    after_submit: {
+      message:
+        `Your ${dayLabel} Pro trial is active. Cancel anytime from LYKN billing settings — no charge if you cancel before the trial ends.`,
+    },
+  };
+}
+
 const STRIPE_PRICE_MAP = {
   studio: {
     monthly: process.env.STRIPE_PRICE_STUDIO_MONTHLY,
@@ -15041,6 +15057,7 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
       payment_method_collection: 'always',
       client_reference_id: user.id,
       allow_promotion_codes: true,
+      custom_text: trialCheckoutCustomText(STRIPE_TRIAL_DAYS),
       metadata: {
         supabase_user_id: user.id,
         plan: planId,
