@@ -59,7 +59,7 @@ export function invalidateBoardListQueries(
   queryClient.invalidateQueries({ queryKey: ["mindmap_boards", userId] });
 }
 
-/** Prepend the active /grid/:id route when the list hasn't refetched yet. */
+/** Pin the active /grid/:id chat to the top of sidebar lists. */
 export function mergeActiveRouteBoard<T extends BoardListRow>(
   boards: T[],
   pathname: string,
@@ -68,6 +68,8 @@ export function mergeActiveRouteBoard<T extends BoardListRow>(
   if (!match) return boards;
   const id = match[1];
   if (isDemoGridId(id) || id.startsWith("__prototype")) return boards;
-  if (boards.some((b) => b.id === id)) return boards;
-  return [{ id, title: "New Chat", updated_at: new Date().toISOString() } as T, ...boards];
+  const existing = boards.find((b) => b.id === id);
+  const active: T =
+    existing ?? ({ id, title: "New Chat", updated_at: new Date().toISOString() } as T);
+  return [active, ...boards.filter((b) => b.id !== id)];
 }
