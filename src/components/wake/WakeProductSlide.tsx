@@ -56,7 +56,7 @@ export default function WakeProductSlide({
 
         {scrollHintVisible && active && (
           <p className="lykn-wake-product-scroll-hint" aria-hidden>
-            <span>Scroll</span>
+            <span className="lykn-wake-product-scroll-hint-label">Scroll for more</span>
             <ChevronDown className="lykn-wake-product-scroll-hint-icon" />
           </p>
         )}

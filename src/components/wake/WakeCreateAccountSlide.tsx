@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import { useAuth } from "@/lib/SupabaseAuth";
 import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
+import WakeIntroTagline from "@/components/wake/WakeIntroTagline";
 
 function GoogleIcon() {
   return (
@@ -108,7 +109,7 @@ export default function WakeCreateAccountSlide() {
               alt="LYKN"
               className="lykn-wake-account-logo"
             />
-            <p className="lykn-wake-account-tagline">Make it personal</p>
+            <WakeIntroTagline className="lykn-wake-account-tagline" />
             <div className="lykn-wake-account-pitch">
               <p className="lykn-wake-account-pitch-title">
                 Start building your personal AI today

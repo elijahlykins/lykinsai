@@ -124,7 +124,7 @@ export const WAKE_SURFACE_EXPLAINERS: Record<
   },
   vault: {
     eyebrow: "The Vault",
-    title: "Think of it as your AI drive",
+    title: "Your AI Drive",
     overview:
       "Not cloud storage with a chat box bolted on. An ingestion layer that turns what you collect into structured memory you can reason over forever.",
     stats: [

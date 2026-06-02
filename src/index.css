@@ -1687,10 +1687,10 @@ mark {
 
 /* ── Wake intro ──────────────────────────────────────────────────
    Black stage → blue perimeter trace sweeps the edge (2.8s) while
-   the large LYKN logo + "Make it personal" fade in at center on
+   the large LYKN logo + "Create beyond yourself" fade in at center on
    the same beat. */
 
-/* Logo + tagline stack — tagline sits tight under the wordmark. */
+/* Logo + tagline stack — tagline tucked directly under the wordmark. */
 .lykn-wake-logo-stack {
   gap: 0;
   position: relative;
@@ -1707,19 +1707,35 @@ mark {
   animation: lykn-wake-logo-reveal-in 2200ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both;
 }
 
-/* "Make it personal" — tucked close beneath the logo, slightly
-   staggered so it trails the sweep by a beat. */
+/* "C R E A T E   B E Y O N D   Y O U R S E L F" — beneath the logo;
+   trails the perimeter sweep by a beat. */
 .lykn-wake-tagline-reveal {
-  margin: -6px 0 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  font-size: clamp(18px, 2.4vw, 28px);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #ffffff;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  white-space: nowrap;
+  align-items: center;
+  gap: clamp(0.6rem, 1.75vw, 1rem);
+  margin: clamp(-0.55rem, -1.2vh, -0.35rem) 0 0;
+  padding: 0;
+  font-size: clamp(15px, 2.15vw, 22px);
+  line-height: 1;
   opacity: 0;
   transform: translateY(10px);
   animation: lykn-wake-tagline-reveal-in 1800ms cubic-bezier(0.22, 1, 0.36, 1) 380ms both;
+}
+
+.lykn-wake-tagline-word {
+  display: inline-flex;
+  align-items: center;
+  gap: clamp(0.3rem, 0.9vw, 0.5rem);
+}
+
+.lykn-wake-tagline-letter {
+  font-family: "Helvetica Neue", "Arial Narrow", Arial, sans-serif;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: #ffffff;
 }
 
 @keyframes lykn-wake-logo-reveal-in {
@@ -2121,7 +2137,7 @@ mark {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  max-width: 22rem;
+  max-width: min(100%, 40rem);
 }
 
 .lykn-wake-account-logo {
@@ -2131,11 +2147,21 @@ mark {
 }
 
 .lykn-wake-account-tagline {
-  margin: -4px 0 0;
-  font-size: clamp(1.05rem, 2vw, 1.45rem);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.96);
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  align-items: center;
+  white-space: nowrap;
+  gap: clamp(0.4rem, 1.1vw, 0.65rem);
+  margin: clamp(-0.4rem, -0.9vh, -0.25rem) 0 0;
+  padding: 0;
+  font-size: clamp(10px, 1.25vw, 14px);
+  line-height: 1;
+  max-width: 100%;
+}
+
+.lykn-wake-account-tagline .lykn-wake-tagline-word {
+  gap: clamp(0.2rem, 0.55vw, 0.34rem);
 }
 
 .lykn-wake-account-pitch {
@@ -2469,7 +2495,16 @@ mark {
   }
 
   .lykn-wake-account-brand-inner {
-    max-width: 18rem;
+    max-width: min(100%, 36rem);
+  }
+
+  .lykn-wake-account-tagline {
+    font-size: clamp(9px, 2.2vw, 12px);
+    gap: clamp(0.32rem, 1vw, 0.52rem);
+  }
+
+  .lykn-wake-account-tagline .lykn-wake-tagline-word {
+    gap: clamp(0.16rem, 0.55vw, 0.28rem);
   }
 
   .lykn-wake-account-logo {
@@ -2962,12 +2997,15 @@ mark {
   color: rgba(255, 255, 255, 0.55);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 900px) and (min-width: 768px) {
   .lykn-wake-product-preview {
-    width: calc(100vw - 3.75rem);
-    height: min(calc(100dvh - 2.75rem), 640px);
+    width: min(420px, calc(100vw - 4.5rem));
+    height: min(calc(100dvh - 4rem), 680px);
+    margin-inline: auto;
   }
+}
 
+@media (max-width: 900px) {
   .lykn-wake-scroll-section {
     min-height: min(58vh, 480px);
     padding: clamp(2rem, 5vh, 3rem) 0.5rem;
@@ -3598,10 +3636,12 @@ mark {
   visibility: hidden;
 }
 
-/* Phones — bottom nav arrows, shorter previews, scrollable account step. */
-@media (max-width: 640px) {
+/* Phones / narrow viewports — phone-shaped previews, bottom arrows, scroll-for-more. */
+@media (max-width: 767px) {
   .lykn-wake-slide-inner {
     width: calc(100vw - 3.25rem);
+    padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
   }
 
   .lykn-wake-slide-inner-synthesis {
@@ -3609,16 +3649,53 @@ mark {
     height: min(calc(100dvh - 7.5rem), 520px);
   }
 
+  /* Narrow phone frame — centered between bottom nav arrows. */
   .lykn-wake-product-preview {
-    width: calc(100vw - 2.75rem);
-    height: min(46dvh, 360px);
-    max-height: calc(100dvh - 10rem);
+    --lykn-wake-phone-width: min(292px, calc(100vw - 6.25rem));
+    width: var(--lykn-wake-phone-width);
+    height: min(
+      calc(var(--lykn-wake-phone-width) * 19 / 9),
+      calc(100dvh - 11.5rem),
+      520px
+    );
+    max-height: calc(100dvh - 11.5rem);
+    margin-inline: auto;
+    flex-shrink: 0;
+    border-radius: 24px;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.1),
+      0 22px 56px rgba(0, 0, 0, 0.55),
+      0 0 48px rgba(59, 130, 246, 0.08);
+  }
+
+  .lykn-wake-product-preview .lykn-wake-subwindow {
+    border-radius: 20px;
   }
 
   .lykn-wake-product-hero {
-    min-height: min(52dvh, 400px);
+    min-height: 100dvh;
+    min-height: 100svh;
     height: auto;
-    padding-block: 0.35rem;
+    padding: clamp(0.5rem, 2vh, 0.85rem) clamp(0.65rem, 3vw, 1rem);
+    padding-bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    box-sizing: border-box;
+  }
+
+  .lykn-wake-product-scroll-hint {
+    position: static;
+    left: auto;
+    bottom: auto;
+    transform: none;
+    margin: 0.15rem 0 0;
+    flex-shrink: 0;
+    font-size: 0.58rem;
+    letter-spacing: 0.12em;
+    color: rgba(255, 255, 255, 0.42);
   }
 
   .lykn-wake-slide.lykn-wake-slide--problems,
@@ -3627,11 +3704,33 @@ mark {
     -webkit-overflow-scrolling: touch;
   }
 
+  .lykn-wake-slide--product .lykn-wake-scroll-story {
+    padding-bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .lykn-wake-problems-hero {
+    min-height: 100dvh;
+    min-height: 100svh;
+    height: auto;
+    padding: clamp(0.75rem, 2.5vh, 1.25rem) clamp(0.85rem, 4vw, 1.25rem);
+    padding-bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    box-sizing: border-box;
+  }
+
+  .lykn-wake-problems-intro {
+    padding: clamp(1rem, 3vh, 1.5rem) 0.5rem;
+  }
+
   .lykn-wake-slide--account {
     overflow-y: auto;
     overscroll-behavior-y: contain;
     align-items: flex-start;
-    padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
   }
 
   .lykn-wake-account-layout {
@@ -3650,8 +3749,8 @@ mark {
     font-size: 16px;
   }
 
-  .lykn-wake-surface-explainer {
-    width: calc(100vw - 2rem);
+  .lykn-wake-scroll-story {
+    padding-bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
   }
 
   .lykn-wake-problems-pair {
@@ -3661,16 +3760,17 @@ mark {
 
   .lykn-wake-slide-nav {
     top: auto;
-    bottom: calc(0.65rem + env(safe-area-inset-bottom, 0px));
+    bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
     transform: none;
+    z-index: 95;
   }
 
   .lykn-wake-slide-nav-back {
-    left: max(0.5rem, env(safe-area-inset-left, 0px));
+    left: max(0.65rem, env(safe-area-inset-left, 0px));
   }
 
   .lykn-wake-slide-nav-forward {
-    right: max(0.5rem, env(safe-area-inset-right, 0px));
+    right: max(0.65rem, env(safe-area-inset-right, 0px));
   }
 
   .lykn-wake-advance-btn {
@@ -3688,25 +3788,58 @@ mark {
     width: clamp(168px, 70vw, 300px);
   }
 
+  .lykn-wake-synth-preview-header {
+    top: 0.55rem;
+  }
+
+  .lykn-wake-synth-preview-title {
+    font-size: 0.75rem;
+  }
+
   .lykn-wake-synth-preview-add {
-    right: 0.65rem;
-    bottom: 0.65rem;
+    right: 0.55rem;
+    bottom: 0.55rem;
+    width: 2.5rem;
+    height: 2.5rem;
   }
 
   .lykn-wake-synth-add-menu {
-    width: min(15rem, calc(100vw - 2.5rem));
+    width: min(14.5rem, calc(100vw - 2.5rem));
+    right: 0.35rem;
+    bottom: calc(100% + 0.35rem);
   }
 
   .lykn-wake-chat-preview-stage {
-    padding: 0.65rem 0.5rem;
+    position: absolute;
+    inset: 0;
+    padding: 0.45rem 0.4rem 0.5rem;
+    align-items: stretch;
   }
 
   .lykn-wake-chat-preview-inner {
-    gap: 0.65rem;
+    max-width: 100%;
+    gap: 0.5rem;
+    min-height: 0;
+  }
+
+  .lykn-wake-chat-preview-inner-active {
+    height: 100%;
+    max-height: 100%;
   }
 
   .lykn-wake-chat-preview-messages {
-    max-height: min(32dvh, 220px);
+    max-height: none;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .lykn-wake-chat-preview-prompt {
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
+
+  .lykn-wake-vault-live-preview .vault-preview-shell {
+    max-width: 100%;
   }
 }
 

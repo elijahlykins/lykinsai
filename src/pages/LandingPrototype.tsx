@@ -20,12 +20,13 @@ import WakeProductSlide from "@/components/wake/WakeProductSlide";
 import WakeSynthesisSubwindow from "@/components/wake/WakeSynthesisSubwindow";
 import WakeVaultSubwindow from "@/components/wake/WakeVaultSubwindow";
 import WakeChatSubwindow from "@/components/wake/WakeChatSubwindow";
+import WakeIntroTagline from "@/components/wake/WakeIntroTagline";
 
 // Prototype "wake" landing experience.
 //
 // Sequence:
 //   1. Black screen + blue perimeter trace sweeps the edge while the
-//      logo + "Make it personal" fade in at center together.
+//      logo + "Create beyond yourself" fade in at center together.
 //   2. Left/right arrows slide between welcome, problems, synthesis, vault, chat, and create account.
 //   3. Synthesis, vault, and chat slides show a product preview plus a
 //      scroll-down landing-page explainer beneath it.
@@ -703,7 +704,7 @@ const LandingPrototype = () => {
                       alt="LYKN"
                       className="lykn-wake-logo-reveal"
                     />
-                    <p className="lykn-wake-tagline-reveal">Make it personal</p>
+                    <WakeIntroTagline className="lykn-wake-tagline-reveal" />
                   </div>
                 </div>
               </div>
