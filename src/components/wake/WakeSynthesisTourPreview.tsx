@@ -16,7 +16,14 @@ import {
 
 const SynthesisScene3D = lazy(() => import("@/pages/synthesis/SynthesisScene3D"));
 
-export default function WakeSynthesisTourPreview() {
+interface WakeSynthesisTourPreviewProps {
+  /** False while the slide is pre-mounted off-screen; full scene quality when true. */
+  active?: boolean;
+}
+
+export default function WakeSynthesisTourPreview({
+  active = true,
+}: WakeSynthesisTourPreviewProps) {
   const sceneRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ w: 0, h: 0 });
@@ -138,6 +145,7 @@ export default function WakeSynthesisTourPreview() {
           {sceneReady && (
             <Suspense fallback={null}>
               <SynthesisScene3D
+                key={active ? "wake-synth-full" : "wake-synth-lite"}
                 nodes={simNodes}
                 edges={edges}
                 hoveredId={hoveredNode}
@@ -150,8 +158,8 @@ export default function WakeSynthesisTourPreview() {
                 onHoverNode={setHoveredNode}
                 onClickNode={handleNodeClick}
                 onBackgroundClick={handleBackgroundClick}
-                autoRotate={!selectedId}
-                litePreview
+                autoRotate={active && !selectedId}
+                litePreview={!active}
               />
             </Suspense>
           )}
@@ -171,7 +179,7 @@ export default function WakeSynthesisTourPreview() {
               setWalkthroughGateOpen(false);
               setAddMenuOpen((open) => !open);
             }}
-            className={`lykn-wake-synth-preview-add-btn transition-colors ${
+            className={`lykn-wake-synth-preview-add-btn backdrop-blur transition-colors ${
               addMenuOpen
                 ? "lykn-wake-synth-preview-add-btn-open"
                 : "hover:bg-white/12 hover:border-white/25"
