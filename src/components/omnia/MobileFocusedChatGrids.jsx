@@ -17,13 +17,6 @@ import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isDemoGridId } from "@/lib/demoGrids";
-import { requestGuestSignIn } from "@/lib/guestChatLimits";
-import {
-  guestFirstConversationPath,
-  hasGuestFirstConversation,
-  isGuestPreviewChatRoute,
-} from "@/lib/prototypeHandoff";
-
 const flushAndNavigate = (nav, path) => {
   window.dispatchEvent(new Event("omnia_flush_save"));
   setTimeout(() => nav(path), 80);
@@ -74,14 +67,9 @@ export default function MobileFocusedChatGrids() {
   }, [open]);
 
   const list = useMemo(() => {
-    if (!user && hasGuestFirstConversation()) {
-      return [{ id: "__prototype_first_chat__", title: "First Conversation", updated_at: null }];
-    }
-    if (!user) {
-      return [];
-    }
+    if (!user?.id) return [];
     return mergeActiveRouteBoard(boards, location.pathname);
-  }, [user, boards, location.pathname]);
+  }, [user?.id, boards, location.pathname]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -91,27 +79,13 @@ export default function MobileFocusedChatGrids() {
 
   const goToGrid = (id) => {
     setOpen(false);
-    if (!user) {
-      if (!hasGuestFirstConversation()) {
-        requestGuestSignIn("second_chat");
-        return;
-      }
-      const target = guestFirstConversationPath();
-      if (!isGuestPreviewChatRoute(location.pathname, routeBoardId)) {
-        flushAndNavigate(nav, target);
-      }
-      return;
-    }
+    if (!user?.id) return;
     if (location.pathname === `/grid/${id}`) return;
     flushAndNavigate(nav, `/grid/${id}`);
   };
 
   const createNewGrid = () => {
-    if (!user) {
-      setOpen(false);
-      requestGuestSignIn("new_chat");
-      return;
-    }
+    if (!user?.id) return;
     const newId = (typeof crypto !== "undefined" && crypto.randomUUID)
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -242,11 +216,6 @@ export default function MobileFocusedChatGrids() {
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
-              {!user && hasGuestFirstConversation() ? (
-                <div className="px-3 pt-1 pb-2 text-[0.75rem] text-black/55 dark:text-white/55">
-                  One free preview chat — First Conversation. Sign in to start more.
-                </div>
-              ) : null}
               {filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-10 text-center">
                   <div className="w-12 h-12 rounded-2xl bg-black/[0.04] dark:bg-white/5 flex items-center justify-center mb-3">

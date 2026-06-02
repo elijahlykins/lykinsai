@@ -151,6 +151,7 @@ export default function WakeSynthesisTourPreview() {
                 onClickNode={handleNodeClick}
                 onBackgroundClick={handleBackgroundClick}
                 autoRotate={!selectedId}
+                litePreview
               />
             </Suspense>
           )}

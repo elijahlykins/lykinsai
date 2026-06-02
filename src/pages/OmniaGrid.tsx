@@ -1,18 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
-import {
-  buildPrototypeFirstChatSnapshot,
-  hasGuestFirstConversation,
-  hasPrototypeNeurons,
-  isPrototypeWalkthroughComplete,
-  readGuestPreviewChatSession,
-  writeGuestPreviewChatSession,
-  PROTO_GRID_INTRO_SS_KEY,
-  PROTOTYPE_STEP_EVENT,
-  readPrototypeStep,
-  writePrototypeStep,
-} from "@/lib/prototypeHandoff";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
@@ -67,12 +55,6 @@ import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
 import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useChatEngine } from "@/hooks/useChatEngine";
-import {
-  guestChatCapReached,
-  guestPreviewRedirectPath,
-  isGuestAllowedBoardRoute,
-  requestGuestSignIn,
-} from "@/lib/guestChatLimits";
 
 // Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
 // Keep this `true` to make the focused chat the main interface across `/app`,
@@ -636,7 +618,7 @@ export default function OmniaGridPage() {
   const nav = useNavigate();
   const location = useLocation();
   const { boardId: routeBoardId } = useParams<{ boardId?: string }>();
-  const { user, signInWithOAuth } = useAuth();
+  const { user } = useAuth();
   const isEmbeddedMode = readEmbeddedPreviewParams(location.search).isEmbedded && !routeBoardId;
 
   useEffect(() => {
@@ -644,16 +626,6 @@ export default function OmniaGridPage() {
     document.documentElement.classList.add("embedded-transparent");
     return () => document.documentElement.classList.remove("embedded-transparent");
   }, [isEmbeddedMode]);
-
-  // (Removed: an old effect here used to auto-write `step="done"` on
-  // mount of `/app`, which was the final beat of the walkthrough back
-  // when /app was the literal end of the tour. Now the chat card's
-  // Finish button is the authoritative "done" signal — auto-writing
-  // on mount silently released the walkthrough lock the moment the
-  // visitor arrived, unmounted the chrome guard, and made the chat
-  // intro card's gate flip from "step === grid" → "step === done"
-  // before the chat-intro effect could even read it. The Finish
-  // button at the bottom of the card now handles the transition.)
 
   const { modelTier, loading: planLoading, isGuest } = useUserPlan();
   const requireSignIn = useCallback((what: string = "save your work") => {
@@ -893,280 +865,11 @@ export default function OmniaGridPage() {
   const [showMediaSuggestion, setShowMediaSuggestion] = useState(false);
   const [importingMedia, setImportingMedia] = useState(false);
 
-  // Final beat of the landing-prototype guided tour: after the typed
-  // "what is the grid" intro finishes, we *arm* the sign-in wall. The
-  // next click anywhere on the canvas surface (or the next chat send)
-  // will surface the prompt so the user can save what they've made
-  // (their first neuron, first conversation, first grid). The wall is
-  // sticky — dismissing it re-arms instead of going away — so guests
-  // can't trivially keep poking around the empty grid for free.
-  const [prototypeSignInArmed, setPrototypeSignInArmed] = useState(false);
-  const [prototypeSignInOpen, setPrototypeSignInOpen] = useState(false);
-  // `triggered` flips true the very first time we open the modal and
-  // never flips back. We use it to gate the chat send path so any
-  // attempt to keep chatting after the tour also funnels through the
-  // wall, not just clicking on the canvas.
-  const [prototypeSignInTriggered, setPrototypeSignInTriggered] = useState(false);
-  const [prototypeSignInEmail, setPrototypeSignInEmail] = useState("");
-
-  // Chat walkthrough card (final beat of the guided tour). Mirrors the
-  // synthesis-layer / vault / connections welcome cards: typewriter
-  // text + a "Finish" button at the bottom. The button closes the
-  // card, marks the walkthrough done, and arms the sign-in wall so
-  // the next interaction with the chat surface funnels the visitor
-  // into creating an account.
-  const [chatIntroShown, setChatIntroShown] = useState(false);
-  const [chatIntroText, setChatIntroText] = useState("");
-  const [chatIntroDone, setChatIntroDone] = useState(false);
-  const typingCancelRef = useRef(false);
-  const [walkthroughStep, setWalkthroughStep] = useState(() =>
-    typeof window === "undefined" ? null : readPrototypeStep(),
-  );
-
-  useEffect(() => {
-    const sync = () => {
-      const step = readPrototypeStep();
-      setWalkthroughStep(step);
-      if (step === "done") {
-        typingCancelRef.current = true;
-        setChatIntroShown(false);
-      }
-    };
-    sync();
-    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
-      window.removeEventListener("storage", sync);
-    };
-  }, []);
-
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth || 1280);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-
-  // Landing-prototype handoff (final beat): on first load of the chat
-  // surface (`/app`) for a guest who came through the walkthrough,
-  // open the chat rail and have LYKN type out a short orientation
-  // message about what this surface is. With the canvas unplugged
-  // (GRID_DISABLED), `/app` is just the chat — every conversation
-  // routes through the synthesis layer + connections we set up in
-  // the prior beats. Only fires once per session; LandingPrototype
-  // clears the flag whenever a brand-new walkthrough kicks off so a
-  // fresh first neuron re-arms it.
-  useEffect(() => {
-    if (user?.id) return;
-    if (routeBoardId) return; // only on /app, not on a specific /grid/<id>
-    if (isPrototypeWalkthroughComplete()) return;
-    // Two-stage gate:
-    //   1. If the walkthrough step is "grid" (Connections' advance arrow
-    //      just bumped us here), ALWAYS show the card. This is the
-    //      authoritative signal that the visitor is mid-walkthrough,
-    //      regardless of any stale sessionStorage state. Without this
-    //      override, a visitor who already hit Finish earlier in the
-    //      session (then refreshed back to landing → restarted the
-    //      tour) would silently skip the chat card because the
-    //      session-scoped stamp was still set.
-    //   2. Otherwise (no walkthrough running — e.g. a guest who came
-    //      straight to /app without going through the tour), fall
-    //      back to the sessionStorage one-shot so we don't spam them
-    //      with the card on every /app load.
-    // The Finish button stamps `PROTO_GRID_INTRO_SS_KEY` only on
-    // explicit click; refreshes mid-typing replay from the top.
-    const stepNow = readPrototypeStep();
-    if (stepNow !== "grid") {
-      let alreadyFinished = false;
-      try {
-        alreadyFinished = sessionStorage.getItem(PROTO_GRID_INTRO_SS_KEY) === "1";
-      } catch {
-        // private mode etc.
-      }
-      if (alreadyFinished) return;
-    } else {
-      // Walkthrough is live: clear any stale stamp so future replays
-      // (i.e. visitor restarts the tour from the landing page) get
-      // the card again without needing to close the tab.
-      try {
-        sessionStorage.removeItem(PROTO_GRID_INTRO_SS_KEY);
-      } catch {
-        // private mode etc.
-      }
-    }
-
-    // Final beat of the walkthrough: orientation card matched to the
-    // synthesis-layer / vault / connections cards (same dark glass,
-    // same right-edge pinning, same typewriter cadence). The earlier
-    // iteration injected a fake "What's chat for?" prompt + typed
-    // assistant response directly into the chat rail. The fake
-    // exchange read like LYKN talking to itself before the visitor
-    // ever sent a message, which set up the wrong mental model for
-    // the surface they're about to use. Rendering the orientation as
-    // a card keeps the tour consistent end-to-end and leaves the
-    // chat rail empty + ready for the visitor's first real message.
-
-    const fullText =
-      "And this is chat, where you actually talk to your synthetic intelligence.\n\n" +
-      "Every reply you get here is grounded in you: the neurons in your synthesis layer, the files in your vault, and the AI tools you wire up under connections. Ask anything, and LYKN answers as something custom-built for you, not a stranger trained on everyone.";
-
-    const timeouts: number[] = [];
-    typingCancelRef.current = false;
-
-    timeouts.push(window.setTimeout(() => {
-      setChatIntroShown(true);
-      setChatIntroText("");
-      setChatIntroDone(false);
-    }, 600));
-
-    timeouts.push(window.setTimeout(() => {
-      const words = fullText.split(" ").filter(Boolean);
-      let i = 0;
-      let current = "";
-      const tick = () => {
-        if (typingCancelRef.current) {
-          setChatIntroText(fullText);
-          setChatIntroDone(true);
-          return;
-        }
-        current += (i === 0 ? "" : " ") + words[i];
-        i += 1;
-        setChatIntroText(current);
-        if (i < words.length) {
-          timeouts.push(window.setTimeout(tick, 28));
-        } else {
-          setChatIntroDone(true);
-        }
-      };
-      tick();
-    }, 1100));
-
-    return () => {
-      for (const t of timeouts) window.clearTimeout(t);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // --------------------------------------------------------------------
-  // Guest chat persistence (sessionStorage)
-  // --------------------------------------------------------------------
-  // For unauthenticated visitors on `/app` (no `routeBoardId`), we want
-  // chats to survive React Router navigation within the SPA — e.g. a
-  // guest sends a message, clicks over to the synthesis layer to peek
-  // at a neuron, and returns to `/app` — without persisting across
-  // tab close / new visits. localStorage would over-promise (the
-  // visitor hasn't signed in, so we shouldn't anchor anything to
-  // their browser long-term); in-memory React state under-delivers
-  // (OmniaGrid unmounts on every route change and the chat resets to
-  // []). sessionStorage is the only tier that maps to "save while
-  // you're on this page; gone when you exit and come back."
-  //
-  // Cleared automatically the moment the visitor signs in so their
-  // real Supabase-backed chats take over without a stale local copy
-  // shadowing them.
-  const GUEST_CHAT_SS_KEY = "lykn_guest_chat_v1";
-  const guestChatPersistTimerRef = useRef<number | null>(null);
-  const guestUsesFirstConversation = !user?.id && hasGuestFirstConversation();
-
-  // Restore the single preview chat (walkthrough: `/app` + First Conversation
-  // grid share one session store). Re-run whenever the visitor returns so
-  // leaving for synthesis/connections and coming back does not reset.
-  useEffect(() => {
-    if (user?.id) return;
-    if (guestUsesFirstConversation) {
-      if (routeBoardId && !isGuestAllowedBoardRoute(routeBoardId)) return;
-    } else if (routeBoardId) {
-      return;
-    }
-    const session = guestUsesFirstConversation
-      ? readGuestPreviewChatSession()
-      : (() => {
-          try {
-            const raw = sessionStorage.getItem(GUEST_CHAT_SS_KEY);
-            if (!raw) return null;
-            const parsed = JSON.parse(raw);
-            if (!Array.isArray(parsed?.chatMessages) || parsed.chatMessages.length === 0) {
-              return null;
-            }
-            return {
-              chatMessages: parsed.chatMessages,
-              aiThread: Array.isArray(parsed?.aiThread) ? parsed.aiThread : [],
-            };
-          } catch {
-            return null;
-          }
-        })();
-    let messages = session?.chatMessages;
-    let thread = session?.aiThread;
-    if (!messages?.length && guestUsesFirstConversation) {
-      const snap = buildPrototypeFirstChatSnapshot();
-      if (snap.chatMessages?.length) {
-        messages = snap.chatMessages;
-        thread = snap.aiThread;
-      }
-    }
-    if (!messages?.length) return;
-    setChatMessages(messages);
-    chatMessagesRef.current = messages;
-    setChatRailOpen(true);
-    setChatRailVisible(true);
-    if (thread?.length) {
-      aiThreadRef.current = thread;
-    }
-  }, [user?.id, routeBoardId, guestUsesFirstConversation]);
-
-  // Persist preview chat (debounced — streaming updates chatMessages often).
-  useEffect(() => {
-    if (user?.id) return;
-    if (guestUsesFirstConversation) {
-      if (routeBoardId && !isGuestAllowedBoardRoute(routeBoardId)) return;
-    } else if (routeBoardId) {
-      return;
-    }
-    if (guestChatPersistTimerRef.current != null) {
-      window.clearTimeout(guestChatPersistTimerRef.current);
-    }
-    guestChatPersistTimerRef.current = window.setTimeout(() => {
-      try {
-        if (chatMessages.length === 0) {
-          if (guestUsesFirstConversation) {
-            writeGuestPreviewChatSession([], []);
-          } else {
-            sessionStorage.removeItem(GUEST_CHAT_SS_KEY);
-          }
-          return;
-        }
-        if (guestUsesFirstConversation) {
-          writeGuestPreviewChatSession(chatMessages, aiThreadRef.current || []);
-        } else {
-          sessionStorage.setItem(
-            GUEST_CHAT_SS_KEY,
-            JSON.stringify({
-              chatMessages,
-              aiThread: aiThreadRef.current || [],
-            }),
-          );
-        }
-      } catch {
-        // quota / private mode
-      }
-    }, 600);
-    return () => {
-      if (guestChatPersistTimerRef.current != null) {
-        window.clearTimeout(guestChatPersistTimerRef.current);
-      }
-    };
-  }, [user?.id, routeBoardId, guestUsesFirstConversation, chatMessages]);
-
-  // Guests get one preview chat: block extra `/grid/:id` URLs (new-chat
-  // links, bookmarks, demo hops) and surface the sign-in wall.
-  useEffect(() => {
-    if (user?.id) return;
-    if (!routeBoardId) return;
-    if (isGuestAllowedBoardRoute(routeBoardId)) return;
-    requestGuestSignIn("second_chat");
-    nav(guestPreviewRedirectPath(), { replace: true });
-  }, [user?.id, routeBoardId, nav]);
 
   // --------------------------------------------------------------------
   // Resume last chat (signed-in users landing on /app)
@@ -1176,19 +879,32 @@ export default function OmniaGridPage() {
   // fresh blank chat every time — empty "New Chat" shells stay hidden
   // from sidebars until they have real content. Hard reloads at
   // `/grid/<id>` are left alone so the URL the user bookmarked wins.
-  //
-  // Prototype/guest users are intentionally skipped: their grid URLs
-  // are demo content, not Supabase-backed boards, and the walkthrough
-  // intro owns the chat surface for that flow.
   const loadInGreetingSeededRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!user?.id) return;
     if (planLoading) return;
-    if (hasPrototypeNeurons()) return;
     if (routeBoardId) return;
 
     let cancelled = false;
+
+    // Navigate immediately so `/grid/:id` exists before the user can send
+    // a first message. The async Supabase round-trip below may reconcile to
+    // a different board for cross-device resume — useBoardPersistence keeps
+    // any in-flight chat when that happens.
+    let provisionalId: string | null = null;
+    try {
+      provisionalId = localStorage.getItem("omnia_board_id");
+    } catch {
+      // ignore
+    }
+    if (!provisionalId) {
+      provisionalId =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    nav(`/grid/${provisionalId}`, { replace: true });
 
     (async () => {
       try {
@@ -1238,13 +954,10 @@ export default function OmniaGridPage() {
       }
 
       if (!targetId) {
-        targetId =
-          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-            ? crypto.randomUUID()
-            : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        targetId = provisionalId;
       }
 
-      if (!cancelled) {
+      if (!cancelled && targetId !== provisionalId) {
         nav(`/grid/${targetId}`, { replace: true });
       }
     })();
@@ -1477,7 +1190,7 @@ export default function OmniaGridPage() {
     if (!message) return;
     loadInGreetingSeededRef.current.add(routeBoardId);
 
-    // Match the existing prototype-intro pattern: a tiny synthetic
+    // Match the existing typewriter-intro pattern: a tiny synthetic
     // "Catch me up" user prompt sits above LYKN's recap as the
     // `aiResponse` of that prompt (PromptMessage.role is hard-typed to
     // "user", every reply belongs to a prompt). We then progressively
@@ -2540,23 +2253,13 @@ export default function OmniaGridPage() {
   }, [user?.id, routeBoardId, boardId, requireSignIn]);
 
 
-  // Guest preview: only the 10-message session cap blocks sends (not the
-  // old post-tour sign-in wall — visitors chat normally after Finish).
-  const gatedHandleChatSend = useCallback(async () => {
-    if (!user?.id && guestChatCapReached()) {
-      requestGuestSignIn("chat");
-      return;
-    }
-    await handleChatSend();
-  }, [user?.id, handleChatSend]);
-
   const handleCenterAskSend = useCallback(async () => {
     if (!chatInputRef.current.trim() || isChatLoading) return;
     setChatRailOpen(true);
     setChatRailVisible(true);
     setCenterChatLeaving(false);
-    await gatedHandleChatSend();
-  }, [gatedHandleChatSend, isChatLoading]);
+    await handleChatSend();
+  }, [handleChatSend, isChatLoading]);
 
 
   const chatIsNearBottom = useCallback((threshold = 80) => {
@@ -3673,7 +3376,7 @@ export default function OmniaGridPage() {
           thinkingStatus={thinkingStatus}
           chatInputRef={chatInputRef}
           onChatInputChange={handleChatInputChange}
-          onSend={gatedHandleChatSend}
+          onSend={handleChatSend}
           chatRailWidthPx={chatRailWidthPx}
           isMobileGrid={isMobileGrid}
           notesOpen={notesOpen}
@@ -3703,7 +3406,7 @@ export default function OmniaGridPage() {
           copiedMsgId={copiedMsgId}
           onCopyMessage={handleSideRailCopyMessage}
           addChatResponseToGrid={addChatResponseToGrid}
-          chatBarToolbar={<OmniaChatBarToolbar compact onSend={gatedHandleChatSend} {...chatBarToolbarProps} />}
+          chatBarToolbar={<OmniaChatBarToolbar compact onSend={handleChatSend} {...chatBarToolbarProps} />}
         />
       )}
 
@@ -3719,7 +3422,7 @@ export default function OmniaGridPage() {
           thinkingStatus={thinkingStatus}
           chatInputRef={chatInputRef}
           onChatInputChange={handleChatInputChange}
-          onSend={gatedHandleChatSend}
+          onSend={handleChatSend}
           typedWelcome={typedWelcome}
           isMobileGrid={isMobileGrid}
           isMobilePhone={isMobilePhone}
@@ -3750,7 +3453,7 @@ export default function OmniaGridPage() {
           renderFocusedAttachmentPreview={renderFocusedAttachmentPreview}
           onDragOver={handleFocusedChatDragOver}
           onDrop={handleFocusedChatDrop}
-          chatBarToolbar={<OmniaChatBarToolbar onSend={gatedHandleChatSend} {...chatBarToolbarProps} />}
+          chatBarToolbar={<OmniaChatBarToolbar onSend={handleChatSend} {...chatBarToolbarProps} />}
           chatReactions={chatReactions}
           onReaction={handleFocusedChatReaction}
           onRegenerate={handleFocusedChatRegenerate}
@@ -3997,156 +3700,6 @@ export default function OmniaGridPage() {
       )}
 
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
-
-      {/* Chat walkthrough card (final beat). Matches the synthesis-layer,
-          vault, and connections cards — same dark glass, same right-edge
-          pinning, same typewriter cadence — so the four cards read as
-          one continuous tour. The "Finish" button closes the card,
-          stamps the walkthrough as done, and arms the sign-in wall.
-          We intentionally don't open the wall here; the visitor's
-          next click on the canvas or chat-send is what surfaces it,
-          which keeps the wall feeling like a natural consequence of
-          trying to use the app rather than an interrupt mid-typing. */}
-      {chatIntroShown && walkthroughStep !== "done" && (
-        <div className="fixed right-6 top-20 z-[9995] w-[min(88vw,18rem)]">
-          <div
-            className="pointer-events-auto relative rounded-2xl bg-[rgba(15,15,18,0.78)] backdrop-blur-md border border-white/10 px-4 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)]"
-            style={{
-              animation:
-                "vaultIntroCardIn 360ms cubic-bezier(0.22,1,0.36,1) both",
-            }}
-          >
-            {/* Dismiss button intentionally removed — the walkthrough
-                is a forced flow for guests, and the only way past the
-                chat card is the Finish button below (which also arms
-                the sign-in wall) or signing in directly. See the
-                matching comment on the synthesis-layer welcome card. */}
-            <p className="text-[0.8rem] leading-relaxed text-white/80 whitespace-pre-wrap min-h-[7rem] pr-4">
-              {chatIntroText}
-              {!chatIntroDone && (
-                <span aria-hidden="true" className="lykn-wake-cursor">
-                  |
-                </span>
-              )}
-            </p>
-            {chatIntroDone && (
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => {
-                    typingCancelRef.current = true;
-                    setChatIntroShown(false);
-                    // Stamp the one-shot here (not on effect entry) so
-                    // refreshes during the typing don't accidentally
-                    // consume the tour beat — only an explicit Finish
-                    // counts as "the visitor saw it."
-                    try {
-                      sessionStorage.setItem(PROTO_GRID_INTRO_SS_KEY, "1");
-                    } catch {
-                      // private mode etc.
-                    }
-                    const step = readPrototypeStep();
-                    if (step === "synthesis" || step === "vault" || step === "grid") {
-                      writePrototypeStep("done");
-                    }
-                  }}
-                  className="rounded-full bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/40 text-blue-100 hover:text-white px-3 py-1 text-[0.75rem] font-medium transition-colors"
-                  aria-label="Finish walkthrough"
-                  title="Finish walkthrough"
-                >
-                  Finish
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Landing-prototype handoff (final beat): surfaces after the typed
-          grid intro finishes for guests who came through the walkthrough.
-          The wall is sticky — closing it re-arms the canvas trap and
-          chat-send guard so the next interaction reopens it, until the
-          guest actually signs in. */}
-      {!isEmbeddedMode && (
-      <Dialog
-        open={prototypeSignInOpen}
-        onOpenChange={(next) => {
-          setPrototypeSignInOpen(next);
-          if (!next && !user?.id) {
-            // Re-arm so any subsequent canvas click or chat send
-            // re-opens the wall instead of slipping through.
-            setPrototypeSignInArmed(true);
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-md border-white/10 bg-[#1a1a1a]/95 backdrop-blur-xl text-white p-7">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-semibold tracking-tight">
-              That's the tour — sign in to keep going.
-            </DialogTitle>
-            <DialogDescription className="text-sm text-white/60 leading-relaxed pt-2">
-              Create a free account to save your first neuron, your conversation, and the grid you're standing in. Everything you've made so far comes with you.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="mt-2 flex flex-col gap-2.5">
-            <button
-              type="button"
-              onClick={() => { void signInWithOAuth?.("google"); }}
-              className="w-full flex items-center justify-center gap-2.5 rounded-xl border border-white/10 bg-white text-black px-3 py-2.5 text-sm font-medium hover:bg-white/90 transition-colors"
-            >
-              <svg width="16" height="16" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 01-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4" />
-                <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z" fill="#34A853" />
-                <path d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05" />
-                <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335" />
-              </svg>
-              Continue with Google
-            </button>
-          </div>
-
-          <div className="relative my-4">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-white/10" />
-            </div>
-            <div className="relative flex justify-center text-[0.625rem]">
-              <span className="px-2 text-white/40 font-medium uppercase tracking-wider bg-[#1a1a1a]">
-                or
-              </span>
-            </div>
-          </div>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const trimmed = prototypeSignInEmail.trim();
-              setPrototypeSignInOpen(false);
-              nav("/login", { state: trimmed ? { email: trimmed } : undefined });
-            }}
-            className="flex flex-col gap-2"
-          >
-            <input
-              type="email"
-              value={prototypeSignInEmail}
-              onChange={(e) => setPrototypeSignInEmail(e.target.value)}
-              placeholder="Enter your email"
-              autoComplete="email"
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-blue-400/40 focus:bg-white/10 transition-colors"
-            />
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 px-3 py-2.5 text-sm font-semibold transition-colors"
-            >
-              Continue with email
-            </button>
-          </form>
-
-          <p className="mt-1 text-center text-[10px] text-white/35 leading-relaxed">
-            Free forever. No credit card. Takes 10 seconds.
-          </p>
-        </DialogContent>
-      </Dialog>
-      )}
 
       <FileDropModeDialog />
 

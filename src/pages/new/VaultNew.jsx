@@ -56,13 +56,6 @@ import UpgradeModal from "@/components/UpgradeModal";
 import SignInActionBlocker from "@/components/SignInActionBlocker";
 import { toast } from "@/components/ui/use-toast";
 import { ToastAction } from "@/components/ui/toast";
-import {
-  isPrototypeWalkthroughComplete,
-  isWalkthroughLockActive,
-  PROTOTYPE_STEP_EVENT,
-  readPrototypeStep,
-  writePrototypeStep,
-} from "@/lib/prototypeHandoff";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
 import { detectSocialPlatform, isSocialEmbedType, isVerticalSocialContent } from "@/canvas/utils/socialEmbed";
 import { SocialEmbedInline } from "@/canvas/blocks/SocialEmbedBlock";
@@ -715,27 +708,6 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   const nav = useNavigate();
   const { user, loading } = useAuth();
   const isWakePreview = Boolean(wakePreview);
-  // Walkthrough lockdown gate — kept in sync with same-tab step changes
-  // (writePrototypeStep dispatches PROTOTYPE_STEP_EVENT) and cross-tab
-  // `storage` events so the toggle pill re-appears the moment the
-  // visitor clicks Finish or signs in.
-  const [walkthroughStepForLock, setWalkthroughStepForLock] = useState(() =>
-    typeof window === "undefined" ? null : readPrototypeStep(),
-  );
-  useEffect(() => {
-    const sync = () => setWalkthroughStepForLock(readPrototypeStep());
-    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
-      window.removeEventListener("storage", sync);
-    };
-  }, []);
-
-  const isPrototypeWalkthroughLocked = isWalkthroughLockActive(
-    user?.id ?? null,
-    walkthroughStepForLock,
-  );
   const addMediaTriggerRef = useRef(null);
   const isEmbeddedMode = useMemo(
     () => !isWakePreview && new URLSearchParams(location.search).get("embedded") === "1",
@@ -759,17 +731,6 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
       return () => document.documentElement.classList.remove("embedded-transparent");
     }
   }, [isEmbeddedMode]);
-
-  // Walkthrough handoff: arriving on the Vault clears the
-  // synthesis-step glow (covers the case where the user navigated
-  // directly to /vault before the synthesis-layer auto-advance ran).
-  // The vault → grid bump happens later, after the intro chat finishes
-  // typing — see the typing effect below.
-  useEffect(() => {
-    if (isWakePreview) return;
-    const step = readPrototypeStep();
-    if (step === "synthesis") writePrototypeStep("vault");
-  }, [isWakePreview]);
 
   const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [embeddedSearch, setEmbeddedSearch] = useState("");
@@ -801,19 +762,6 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
-  // Standalone walkthrough welcome card. Replaces the old chat-rail
-  // intro: instead of typing the orientation message into the (now-
-  // retired) vault chat surface, we render a self-contained floating
-  // text box that types the same copy out on screen. Same gating, same
-  // word-by-word animation, same downstream walkthrough-step nudge.
-  // `introWelcomeShown` controls visibility (true once the intro is
-  // armed; false once the user dismisses), `introWelcomeText` is the
-  // currently-typed substring, and `introWelcomeDone` flips true the
-  // moment the full string has been written so the dismiss button can
-  // unhide and the blinking caret can stop.
-  const [introWelcomeShown, setIntroWelcomeShown] = useState(false);
-  const [introWelcomeText, setIntroWelcomeText] = useState("");
-  const [introWelcomeDone, setIntroWelcomeDone] = useState(false);
   const [isDictating, setIsDictating] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const mediaRecorderRef = useRef(null);
@@ -834,125 +782,6 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     return () => {
       isMountedRef.current = false;
     };
-  }, []);
-
-  // Dismiss the vault intro card the moment the guest finishes the tour
-  // (Finish on /app) so revisiting /vault doesn't flash a stale card.
-  useEffect(() => {
-    const dismissIfDone = () => {
-      if (!isPrototypeWalkthroughComplete()) return;
-      typingCancelRef.current = true;
-      if (typingTimerRef.current) {
-        window.clearTimeout(typingTimerRef.current);
-        typingTimerRef.current = null;
-      }
-      setIntroWelcomeShown(false);
-    };
-    dismissIfDone();
-    window.addEventListener(PROTOTYPE_STEP_EVENT, dismissIfDone);
-    window.addEventListener("storage", dismissIfDone);
-    return () => {
-      window.removeEventListener(PROTOTYPE_STEP_EVENT, dismissIfDone);
-      window.removeEventListener("storage", dismissIfDone);
-    };
-  }, []);
-
-  // Landing-prototype handoff: on first load of the Vault, surface a
-  // short orientation message that types itself out on screen — how
-  // Connections and the Vault work together to feed the Synthesis
-  // Layer. Originally typed into the vault chat rail, but the chat
-  // surface here was retired, so we render a standalone welcome card
-  // instead. Only fires once per session for guests who came from the
-  // prototype; LandingPrototype clears the flag whenever a brand-new
-  // walkthrough kicks off, so a fresh first neuron re-arms it.
-  useEffect(() => {
-    if (isWakePreview) return;
-    if (user?.id) return;
-    if (isPrototypeWalkthroughComplete()) return;
-    // We deliberately removed the previous "must have prototype neurons
-    // OR be in a walkthrough step" gate — both signals were getting
-    // wiped before this effect could read them (the wake-screen
-    // hand-off clears localStorage state when the visitor signs out /
-    // restarts, and `VaultConnectionsShell` is a sibling route so a
-    // synthesis → vault navigation can race the writePrototypeStep
-    // call from the synthesis arrow). For a guest, the only sensible
-    // thing to show on /vault is the orientation card anyway — unless
-    // they already finished the full walkthrough (step === "done").
-    const fullText =
-      "This is your Vault, the raw material that feeds your digital brain.\n\n" +
-      "Drag any file in (PDFs, images, video, audio, screenshots, web links, quick notes) and LYKN reads it, breaks down what it means about you, and turns those meanings into new neurons connected to the ones already there.\n\n" +
-      "Think of this as your AI drive.";
-
-    // Slight stagger so the card's mount-in animation lands first;
-    // typing starts a beat later so the text doesn't appear mid-
-    // transition.
-    const openTimer = window.setTimeout(() => {
-      if (!isMountedRef.current) return;
-      setIntroWelcomeShown(true);
-      setIntroWelcomeText("");
-      setIntroWelcomeDone(false);
-    }, 600);
-
-    const startTypingTimer = window.setTimeout(() => {
-      if (!isMountedRef.current) return;
-      const words = fullText.split(" ").filter(Boolean);
-      let i = 0;
-      let current = "";
-      const tick = () => {
-        if (!isMountedRef.current) return;
-        if (typingCancelRef.current) {
-          setIntroWelcomeText(fullText);
-          setIntroWelcomeDone(true);
-          return;
-        }
-        current += (i === 0 ? "" : " ") + words[i];
-        i += 1;
-        setIntroWelcomeText(current);
-        if (i < words.length) {
-          typingTimerRef.current = window.setTimeout(tick, 28);
-        } else {
-          typingTimerRef.current = null;
-          setIntroWelcomeDone(true);
-          // Walkthrough nudge: a beat after the intro finishes typing,
-          // advance to the chat step. The auto-mounted AppSidebar
-          // listens for the step change and reopens itself with the
-          // Chat button glowing as the next thing to explore. (Step
-          // is still spelled "grid" in storage to keep the linear
-          // walkthrough machinery untouched — the sidebar just shows
-          // it as the Chat nav now that GRID_DISABLED is on.)
-          // Guarded so a re-mount mid-step (e.g. HMR) doesn't bump
-          // past already-advanced state.
-          window.setTimeout(() => {
-            if (!isMountedRef.current) return;
-            const cur = readPrototypeStep();
-            if (cur === "vault" || cur === "synthesis") writePrototypeStep("grid");
-          }, 1800);
-        }
-      };
-      tick();
-    }, 1100);
-
-    return () => {
-      window.clearTimeout(openTimer);
-      window.clearTimeout(startTypingTimer);
-      if (typingTimerRef.current) {
-        window.clearTimeout(typingTimerRef.current);
-        typingTimerRef.current = null;
-      }
-    };
-    // Intentionally empty deps — this is a one-shot intro keyed off the
-    // first mount for guests who have prototype neurons. Re-running when
-    // `user` flips on sign-in would replay the typing animation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const dismissIntroWelcome = useCallback(() => {
-    typingCancelRef.current = true;
-    if (typingTimerRef.current) {
-      window.clearTimeout(typingTimerRef.current);
-      typingTimerRef.current = null;
-    }
-    setIntroWelcomeShown(false);
   }, []);
 
   const chatInputValueRef = useRef("");
@@ -1754,7 +1583,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   // and brand-new signed-in users both see an empty grid until they save
   // something themselves — no demo cards, no prototype-preview cards, no
   // seeded notes.
-  const guestDemoCards = useMemo(
+  const wakeDemoCards = useMemo(
     () => (isWakePreview ? buildWakeVaultDemoCards() : []),
     [isWakePreview],
   );
@@ -1855,10 +1684,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     // prepended above the demo starter pack so new captures feel immediate.
     for (const previewNote of wakePreviewUserQuickNoteCards) cards.push(previewNote);
 
-    // Guest starter pack — these render as normal cards but flag `isDemo`
-    // so mutating actions (drag, 3-dot menu) are gated behind the sign-in
-    // blocker. Previews work as usual.
-    for (const demo of guestDemoCards) cards.push(demo);
+    for (const demo of wakeDemoCards) cards.push(demo);
 
     safeNotes.forEach((note) => {
       const attachments = parseAttachmentsFromNote(note);
@@ -2057,7 +1883,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
       }
       return true;
     });
-  }, [notes, ghostCards, guestDemoCards, wakePreviewUserQuickNoteCards, isWakePreview, wakePreviewCardComments]);
+  }, [notes, ghostCards, wakeDemoCards, wakePreviewUserQuickNoteCards, isWakePreview, wakePreviewCardComments]);
 
   // Keep the ref in sync so handlers that fire from raw DOM events
   // (drag-end, etc.) can read the current grid without going through
@@ -5423,7 +5249,7 @@ User: ${text}`;
 
       {!isEmbeddedMode && (
         <>
-          {!isWakePreview && !isPrototypeWalkthroughLocked && (
+          {!isWakePreview && (
             <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
               <div className="pointer-events-auto">
                 <VaultConnectionsToggle active="vault" />
@@ -6591,65 +6417,6 @@ User: ${text}`;
         >
           <Plus className="w-4 h-4" />
         </button>
-      )}
-
-      {/* Standalone walkthrough welcome card — mirrors the synthesis-layer
-          welcome (same dark glass treatment, same typewriter cadence) but
-          pinned to the right edge of the viewport so the hand-off feels
-          like the user is reading the next chapter of the same book. The
-          arrow button at the bottom of the card flips the walkthrough
-          step forward and navigates to the Connections page, which is
-          the next surface in the linear tour. Pointer-events on the
-          wrapper are off so guests can keep dragging files / scrolling
-          underneath while the card animates; the card itself
-          re-enables pointer events for its own buttons. */}
-      {(introWelcomeShown && !isWakePreview && walkthroughStepForLock !== "done") && (
-        <div className={isWakePreview ? "absolute right-3 top-3 z-[9995] w-[min(14rem,38%)] pointer-events-none" : "fixed right-6 top-20 z-[9995] w-[min(88vw,18rem)]"}>
-          <div
-            className="pointer-events-auto relative rounded-2xl bg-[rgba(15,15,18,0.78)] backdrop-blur-md border border-white/10 px-4 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)]"
-            style={
-              isWakePreview
-                ? undefined
-                : {
-                    animation:
-                      "vaultIntroCardIn 360ms cubic-bezier(0.22,1,0.36,1) both",
-                  }
-            }
-          >
-            {/* Dismiss button intentionally removed — the walkthrough
-                is a forced flow for guests, and the only way past the
-                vault card is the arrow → /connections hand-off (or
-                signing in, which unmounts the card). See the matching
-                comment on the synthesis-layer welcome card. */}
-            <p className={`${isWakePreview ? "text-[0.62rem] min-h-[4.5rem]" : "text-[0.8rem] min-h-[7rem]"} leading-relaxed text-white/80 whitespace-pre-wrap pr-4`}>
-              {introWelcomeText}
-              {!introWelcomeDone && (
-                <span
-                  aria-hidden="true"
-                  className="lykn-wake-cursor"
-                >
-                  |
-                </span>
-              )}
-            </p>
-            {introWelcomeDone && !isWakePreview && (
-              <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => {
-                    dismissIntroWelcome();
-                    nav("/connections");
-                  }}
-                  className="rounded-full bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/40 text-blue-100 hover:text-white p-1.5 transition-colors"
-                  aria-label="Next: Connections"
-                  title="Next: Connections"
-                >
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
       )}
 
       {showChat && isMobileChat && (

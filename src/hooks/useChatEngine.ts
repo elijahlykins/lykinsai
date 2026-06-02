@@ -24,7 +24,6 @@ import { isDemoGridId } from "@/lib/demoGrids";
 import { toast } from "@/components/ui/use-toast";
 import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
 import { AI_TEMPORARY_FAILURE_TEXT, AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
-import { guestChatCapReached, requestGuestSignIn } from "@/lib/guestChatLimits";
 
 export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorResult };
 
@@ -1792,10 +1791,6 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const handleChatSend = useCallback(async () => {
     const text = chatInputRef.current.trim();
     if (!text || isChatLoading || isSendingRef.current) return;
-    if (!user?.id && guestChatCapReached()) {
-      requestGuestSignIn("chat");
-      return;
-    }
     chatUserScrolledUpRef.current = false;
     if (streamTypingRafRef.current) { cancelAnimationFrame(streamTypingRafRef.current); streamTypingRafRef.current = null; }
     streamTargetTextRef.current = "";

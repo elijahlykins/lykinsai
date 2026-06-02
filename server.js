@@ -14723,6 +14723,8 @@ function hasSubscriptionAccess(row) {
 
 function billingMePayload(row, extra = {}) {
   const hasActive = hasSubscriptionAccess(row);
+  const rawPlan = String(row?.plan || 'free').toLowerCase();
+  const hasPaidPlanOnFile = rawPlan !== 'free' && Boolean(PLAN_LIMITS[rawPlan]);
   return {
     plan: row?.plan || 'free',
     billing_period: row?.billing_period || null,
@@ -14732,7 +14734,7 @@ function billingMePayload(row, extra = {}) {
     has_stripe_customer: Boolean(row?.stripe_customer_id),
     stripe_subscription_id: row?.stripe_subscription_id || null,
     has_active_subscription: hasActive,
-    needs_trial_checkout: !hasActive,
+    needs_trial_checkout: !hasActive && !hasPaidPlanOnFile,
     trial_days: STRIPE_TRIAL_DAYS,
     ...extra,
   };

@@ -1,6 +1,6 @@
 import { useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { clearPrototypeState, releaseWalkthroughOnSignIn } from '@/lib/prototypeHandoff';
+import { clearPrototypeState } from '@/lib/prototypeHandoff';
 import { AuthContext } from '@/lib/authContext';
 
 export function SupabaseAuthProvider({ children }) {
@@ -55,7 +55,6 @@ export function SupabaseAuthProvider({ children }) {
           userRef.current = nextUser;
           setUser(nextUser);
           setLoading(false);
-          if (nextUser) releaseWalkthroughOnSignIn();
           return;
         }
 
@@ -66,7 +65,6 @@ export function SupabaseAuthProvider({ children }) {
           }
           userRef.current = session.user;
           setUser(session.user);
-          releaseWalkthroughOnSignIn();
           return;
         }
 

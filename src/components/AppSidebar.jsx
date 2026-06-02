@@ -24,15 +24,6 @@ import { supabase } from "@/lib/supabase";
 import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  guestFirstConversationPath,
-  hasGuestFirstConversation,
-  hasPrototypeNeurons,
-  isGuestPreviewChatRoute,
-  PROTOTYPE_STEP_EVENT,
-  readPrototypeStep,
-} from "@/lib/prototypeHandoff";
-import { requestGuestSignIn } from "@/lib/guestChatLimits";
 import SignInPill from "@/components/SignInPill";
 import { isAgentStudioEnabled } from "@/lib/agentStudioDev";
 
@@ -45,60 +36,10 @@ export default function AppSidebar({
   const nav = useNavigate();
   const location = useLocation();
   const { user, signOut } = useAuth();
-  // Prototype-handoff "preview" mode: when a guest came from the landing
-  // prototype with at least one neuron in localStorage, suppress the demo
-  // grid list so the sidebar reads as a brand-new, empty workspace.
-  const isPrototypePreview = !user && hasGuestFirstConversation();
-  const firstConversationPath = guestFirstConversationPath();
 
-  // Walkthrough step (read from localStorage). Drives the auto-mounted
-  // sidebar's nudges on /synthesis-layer and beyond — e.g. opens itself
-  // and glows the Vault button when the user reaches step "vault".
-  // Components that own their own AppSidebar (LandingPrototype passes
-  // `highlightSynthesis` + `restrictToSynthesis` directly) keep the
-  // explicit-prop path; this state is the fallback.
-  const [walkStep, setWalkStep] = useState(() =>
-    typeof window === "undefined" ? null : readPrototypeStep(),
-  );
-  useEffect(() => {
-    const sync = () => setWalkStep(readPrototypeStep());
-    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
-      window.removeEventListener("storage", sync);
-    };
-  }, []);
-
-  // Effective walkthrough state — explicit props from a parent (e.g. the
-  // landing prototype) win over the localStorage-driven default. The
-  // walkthrough only nudges guests who actually came from the prototype.
-  const walkActive =
-    isPrototypePreview &&
-    (walkStep === "synthesis" || walkStep === "vault" || walkStep === "grid");
-  const effectiveHighlightSynthesis = highlightSynthesis || (walkActive && walkStep === "synthesis");
-  const effectiveHighlightVault = walkActive && walkStep === "vault";
-  const effectiveHighlightGrid = walkActive && walkStep === "grid";
-  // Tour ends on `/app`; after Finish both `/app` and First Conversation
-  // are the same chat. While step is "grid", sidebar lock keeps `/app`.
-  const guestChatPath =
-    isPrototypePreview && !(walkActive && walkStep === "grid")
-      ? firstConversationPath
-      : "/app";
-  // Centralized navigation lock: during a walkthrough step only the
-  // highlighted destination (Synthesis Layer, Connections, or Chat) is
-  // clickable. The "vault" / "grid" step names are storage-only labels
-  // that survive from before the rename — Connections lives at /vault,
-  // Chat at /app. Explicit `restrictToSynthesis` from the prototype
-  // page still wins.
-  const lockedDestination = restrictToSynthesis
-    ? "/synthesis-layer"
-    : effectiveHighlightVault
-      ? "/vault"
-      : effectiveHighlightGrid
-        ? "/app"
-        : null;
-  const isLocked = restrictToSynthesis || effectiveHighlightVault || effectiveHighlightGrid;
+  const effectiveHighlightSynthesis = highlightSynthesis;
+  const lockedDestination = restrictToSynthesis ? "/synthesis-layer" : null;
+  const isLocked = restrictToSynthesis;
 
   // Centralized navigation: when locked to a single destination, every
   // nav attempt EXCEPT that destination is silently swallowed. This is
@@ -112,10 +53,7 @@ export default function AppSidebar({
   };
 
   const handleNewChat = () => {
-    if (!user) {
-      requestGuestSignIn("new_chat");
-      return;
-    }
+    if (!user?.id) return;
     const newId = crypto.randomUUID();
     goTo(`/grid/${newId}`);
   };
@@ -132,19 +70,6 @@ export default function AppSidebar({
     }
   };
 
-  // Auto-open the (uncontrolled) sidebar each time the walkthrough
-  // advances to a new "highlight + restrict" step. Fires once per step
-  // value so manually closing the sidebar mid-step doesn't immediately
-  // reopen it. Only fires when not controlled by a parent (e.g. the
-  // landing prototype owns its own open-state).
-  const lastAutoOpenedStepRef = useRef(null);
-  useEffect(() => {
-    if (isControlled) return;
-    if (!effectiveHighlightVault && !effectiveHighlightGrid) return;
-    if (lastAutoOpenedStepRef.current === walkStep) return;
-    lastAutoOpenedStepRef.current = walkStep;
-    setInternalOpen(true);
-  }, [isControlled, effectiveHighlightVault, effectiveHighlightGrid, walkStep]);
   const queryClient = useQueryClient();
   const [menuBoardId, setMenuBoardId] = useState(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
@@ -287,18 +212,10 @@ export default function AppSidebar({
           <div className="mt-1.5 flex flex-col gap-0.5">
             <button
               type="button"
-              onClick={() => goTo(guestChatPath)}
-              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
-                effectiveHighlightGrid ? "lykn-sidebar-grid-glow" : ""
-              }`}
+              onClick={() => goTo("/app")}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
             >
-              <MessageCircle
-                className={`w-3.5 h-3.5 ${
-                  effectiveHighlightGrid
-                    ? "text-amber-300"
-                    : "text-black/60 dark:text-white/60"
-                }`}
-              />
+              <MessageCircle className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
               Chat
             </button>
           </div>
@@ -334,17 +251,9 @@ export default function AppSidebar({
             <button
               type="button"
               onClick={() => goTo("/vault")}
-              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
-                effectiveHighlightVault ? "lykn-sidebar-vault-glow" : ""
-              }`}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
             >
-              <Plug
-                className={`w-3.5 h-3.5 ${
-                  effectiveHighlightVault
-                    ? "text-emerald-300"
-                    : "text-black/60 dark:text-white/60"
-                }`}
-              />
+              <Plug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
               Connections
             </button>
             {isAgentStudioEnabled && user ? (
@@ -382,41 +291,8 @@ export default function AppSidebar({
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
             <div className="flex flex-col gap-0.5">
-              {!user && !hasGuestFirstConversation() ? (
-                // Signed-out, no walkthrough yet: show nothing. We used to
-                // render `DEMO_GRID_LIST` (3 prebuilt demo boards) here so
-                // the sidebar wasn't empty, but that surfaced fake content
-                // as if it were the visitor's own work — confusing for
-                // anyone trying out LYKN cold. Now signed-out users only
-                // ever see what THEY create through the walkthrough.
+              {!user?.id ? (
                 <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No chats yet</div>
-              ) : !user && hasGuestFirstConversation() ? (
-                // Walkthrough / landing handoff: exactly one chat —
-                // "First Conversation" — shared between `/app` (tour end)
-                // and the synthetic grid route.
-                (() => {
-                  const path = firstConversationPath;
-                  const isActive = isGuestPreviewChatRoute(
-                    location.pathname,
-                    location.pathname.startsWith("/grid/")
-                      ? location.pathname.split("/grid/")[1]
-                      : null,
-                  );
-                  return (
-                    <div className="group relative flex items-center">
-                      <button
-                        type="button"
-                        onClick={() => goTo(path)}
-                        className={`flex-1 min-w-0 text-left text-[0.6875rem] px-2.5 py-1 rounded-md flex items-center gap-2 transition-colors ${
-                          isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
-                        }`}
-                      >
-                        <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
-                        <span className="truncate">First Conversation</span>
-                      </button>
-                    </div>
-                  );
-                })()
               ) : boards.length === 0 ? (
                 <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No chats yet</div>
               ) : filteredBoards.length === 0 ? (

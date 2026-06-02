@@ -24,10 +24,6 @@ import type { LucideIcon } from "lucide-react";
 import type { MindEdge, MindNode } from "@/pages/synthesis/layoutTypes";
 import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
-import {
-  readPrototypeNeurons,
-  writePrototypeNeurons,
-} from "@/lib/prototypeHandoff";
 import { parseVaultContent } from "@/lib/vaultContent";
 import VaultAttachment from "@/components/synthesis/VaultAttachment";
 import {
@@ -348,7 +344,7 @@ async function saveEdit(node: MindNode, text: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 function isDeletable(node: MindNode): boolean {
-  if (node.meta?.isPrototypeNeuron) return true;
+  if (node.meta?.isPrototypeNeuron) return false;
   if (node.kind === "belief") return Boolean(node.meta?.beliefId);
   if (node.kind === "concept") return Boolean(node.meta?.conceptId);
   if (node.kind === "neuron") return Boolean(node.meta?.factId);
@@ -382,23 +378,7 @@ async function postAuthed(path: string, body: Record<string, unknown>): Promise<
 }
 
 async function deleteNeuron(node: MindNode): Promise<boolean> {
-  // Prototype (guest) neurons live entirely in localStorage. Pull the
-  // raw proto id from meta, filter it out, and write the slimmer list
-  // back. The synthesis layer's `prototypeNeurons` state subscribes to
-  // the same key so the 3D scene rebuilds without the deleted node on
-  // the next refresh tick.
-  if (node.meta?.isPrototypeNeuron) {
-    const protoId = node.meta?.prototypeRawId as string | undefined;
-    if (!protoId) return false;
-    try {
-      const current = readPrototypeNeurons();
-      const next = current.filter((p) => p.id !== protoId);
-      writePrototypeNeurons(next);
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  if (node.meta?.isPrototypeNeuron) return false;
 
   if (node.kind === "belief") {
     const id = node.meta?.beliefId;

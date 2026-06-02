@@ -9,7 +9,6 @@ import LoadingScreen from "@/components/LoadingScreen";
 import { PLAN_LIMITS } from "@/lib/pricing-config";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowRight,
   Atom,
   Brain,
   Check,
@@ -53,13 +52,6 @@ import {
   notifySynthesisCapIfApplicable,
 } from "@/lib/vault/synthesisCapError";
 import { GridIcon } from "@/components/ui/GridIcon";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 // `SynthesisScene3D` pulls in three.js + react-three-fiber + drei + the
 // Bloom postprocessing pipeline. That's the largest single import in the
 // app — eager-importing it forced every other route to parse those modules
@@ -73,17 +65,6 @@ import { useIsMobile } from "@/hooks/useViewportTier";
 import { isDemoNodeId } from "@/lib/demoSynthesis";
 import { isDemoGridId } from "@/lib/demoGrids";
 import { fetchBoardsWithContext } from "@/lib/board/fetchBoardsWithContext";
-import {
-  appendPrototypeNeuron,
-  clearPrototypeState,
-  hasPrototypeNeurons,
-  isPrototypeWalkthroughComplete,
-  PROTOTYPE_STEP_EVENT,
-  readPrototypeChat,
-  readPrototypeNeurons,
-  readPrototypeStep,
-  writePrototypeStep,
-} from "@/lib/prototypeHandoff";
 import {
   createUserLinks,
   listUserLinks,
@@ -3124,18 +3105,11 @@ type NeuronCreationModalProps = {
   /** Called after a successful save with the server-returned id (for
       beliefs the lykn_beliefs UUID; for basic neurons the fact id;
       for concepts the lykn_concepts UUID; for tags the new note id
-      that carries the tag). For guests this is a synthetic local id
-      (see `isGuest` below) so downstream code can still treat the
-      handoff uniformly. The second arg carries the raw text the user
-      submitted — useful for types whose graph-node id derives from
-      the label rather than the row id (e.g. tags use `tag_<text>`,
+      that carries the tag). The second arg carries the raw text the
+      user submitted — useful for types whose graph-node id derives
+      from the label rather than the row id (e.g. tags use `tag_<text>`,
       not `tag_<noteId>`). */
   onCreated: (newId: string | null, text: string) => void;
-  /** True when the visitor is unauthenticated and this is their free
-      "try one neuron before signing in" attempt. Skips every backend
-      call and instead writes the neuron to localStorage via the
-      prototype-handoff helpers so it renders in the preview brain. */
-  isGuest?: boolean;
   /** Snapshot of every neuron currently in the synthesis graph.
       Powers the in-panel Connections multi-select so the user can
       wire the freshly-minted neuron to existing nodes as part of
@@ -3143,9 +3117,7 @@ type NeuronCreationModalProps = {
       the panel filters out the root + the empty category shells
       internally so the picker only shows real neurons. */
   existingNodes?: Array<{ id: string; label: string; kind: string; color?: string }>;
-  /** Authenticated user id for the userLinks write. When undefined
-      we still write connections through `createUserLinks`, which
-      falls back to localStorage (same code path guests use). */
+  /** Authenticated user id for the userLinks write. */
   userId?: string | null;
 };
 
@@ -3192,7 +3164,6 @@ function NeuronCreationModal({
   type,
   onClose,
   onCreated,
-  isGuest = false,
   existingNodes,
   userId,
 }: NeuronCreationModalProps) {
@@ -3318,49 +3289,7 @@ function NeuronCreationModal({
     const metadata = buildMetadata();
     try {
       let newId: string | null = null;
-      if (isGuest) {
-        // Guest "first neuron" freebie. No authenticated backend, so we
-        // stash the neuron in localStorage through the prototype-handoff
-        // machinery and tag it with `neuronType` so the synthesis layer
-        // routes it under the matching cluster. The `extra` blob carries
-        // every optional field the user filled in so the preview brain
-        // can echo the full story / why / notes back via the DetailPanel
-        // before the visitor signs in.
-        const localId = `proto_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-        const neuronType =
-          type === "belief" ? "belief"
-          : type === "concept" ? "concept"
-          : type === "tag" ? "tag"
-          : type === "perspective" ? "perspective"
-          : "fact";
-        const extra: Record<string, string> = {};
-        if (type === "perspective") {
-          extra.title = t;
-          extra.story = s;
-        } else if (s) {
-          extra.story = s;
-        }
-        if (w) extra.rationale = w;
-        if (n) extra.notes = n;
-        appendPrototypeNeuron({
-          id: localId,
-          kind: "identity",
-          text: t,
-          neuronType,
-          reason:
-            type === "belief"
-              ? "Belief you wrote during the tour."
-              : type === "concept"
-              ? "Concept you wrote during the tour."
-              : type === "tag"
-              ? "Tag you wrote during the tour."
-              : type === "perspective"
-              ? "Perspective you shared during the tour."
-              : "Fact you wrote during the tour.",
-          extra: Object.keys(extra).length > 0 ? extra : undefined,
-        });
-        newId = localId;
-      } else if (type === "basic") {
+      if (type === "basic") {
         // Always send 'identity' — the server's reconciler downgrades /
         // reclassifies the kind based on text content if it obviously
         // fits another bucket (focus / goal / etc.).
@@ -3943,14 +3872,8 @@ function NeuronFormingVisual({
   );
 }
 
-// Text the tour welcome card types out in the left-side overlay on first
-// arrival from the wake screen. Kept short so the typewriter beat doesn't
-// outrun the visitor's attention while the brain orbits in the background.
-const TOUR_WELCOME_TEXT =
-  "This is your synthesis layer, your digital brain.\n\nRight now you can see the six neurons it grows from: Chats, Vault, Facts, Beliefs, Concepts, and Projects. Each one starts empty and fills as you use LYKN.\n\nYou can also build your own neurons to organize anything you want.";
-
 export default function SynthesisLayer() {
-  const { user, signInWithOAuth } = useAuth();
+  const { user } = useAuth();
   const { planId, loading: planLoading } = useUserPlan();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -3963,41 +3886,6 @@ export default function SynthesisLayer() {
   // anyway (see MobileExperienceNotice — synthesis layer is desktop-first
   // by design), so we deliberately skip the heavy renderer there.
   const isMobile = useIsMobile();
-
-  // Landing-prototype handoff: a guest gets ONE free pass through the
-  // synthesis layer (the first time they land on it after creating
-  // their first neuron — that's when the formation animation plays).
-  // Any subsequent visit funnels through a sticky sign-in wall so they
-  // can't keep mining the synthesis surface for free. The wall is
-  // armed on mount based on the persisted walkthrough step: if it's
-  // anything past "synthesis" they've already seen this page once.
-  const [synthSignInOpen, setSynthSignInOpen] = useState(false);
-  const [synthSignInEmail, setSynthSignInEmail] = useState("");
-  useEffect(() => {
-    if (user?.id) return;
-    // Guests who landed here WITHOUT going through the wake landing (e.g.
-    // they typed `/synthesis-layer` straight in) but have prototype
-    // neurons from the landing chat still get the sign-in
-    // wall on second-visit.
-    if (!hasPrototypeNeurons()) {
-      return;
-    }
-    const step = readPrototypeStep();
-    // Step is null on first-ever visit (writePrototypeStep("synthesis")
-    // ran from LandingPrototype but might be cleared) or "synthesis"
-    // on the canonical first visit. Both mean "first time here, let
-    // them through". "done" means the guest finished the full walkthrough
-    // — let them browse freely. vault / grid mean they already finished
-    // this beat and are coming BACK — wall them.
-    if (
-      step !== null &&
-      step !== "synthesis" &&
-      step !== "done"
-    ) {
-      setSynthSignInOpen(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // (Historical note: a `showWelcome` boolean used to gate the
@@ -4633,247 +4521,17 @@ export default function SynthesisLayer() {
     [synthesisChunks],
   );
 
-  // Prototype-only: neurons created during the landing onboarding live in
-  // localStorage so this page can show them on every visit during the
-  // walkthrough — including the moment a guest signs UP mid-walkthrough,
-  // when `user?.id` flips on but we still want their freshly-formed
-  // neuron to drive the scene rather than an empty / demo workspace.
-  //
-  // Held in component state (not just a useMemo on mount) so that when
-  // an EXISTING user signs IN mid-walkthrough we can clear the
-  // prototype data reactively and re-render with their real workspace
-  // instead of being stuck on the prototype page until a refresh.
-  const [prototypeNeurons, setPrototypeNeurons] = useState(() => readPrototypeNeurons());
-  const [prototypeChat, setPrototypeChat] = useState(() => readPrototypeChat());
-  const [tourWelcomeOpen, setTourWelcomeOpen] = useState(() => {
-    if (typeof window === "undefined") return false;
-    if (isPrototypeWalkthroughComplete()) return false;
-    return readPrototypeStep() === "synthesis";
-  });
-  // Typewriter state for the left-side welcome card. The card is NOT a
-  // modal — it doesn't dim the screen — so the visitor can watch the
-  // brain orbit behind it while LYKN "types" the explanation in real
-  // time. Once the full string lands, the "Show me how to add one"
-  // button fades in.
-  const [tourTypedText, setTourTypedText] = useState("");
-  const [tourTypedDone, setTourTypedDone] = useState(false);
-  const tourTypingTimerRef = useRef<number | null>(null);
-  const tourTypingCancelRef = useRef(false);
-  // Close the welcome card if the visitor finishes the tour on another
-  // surface (e.g. clicks Finish on /app while this route stays mounted).
-  useEffect(() => {
-    const sync = () => {
-      if (isPrototypeWalkthroughComplete()) {
-        setTourWelcomeOpen(false);
-        setTourAddNeuronHintVisible(false);
-      }
-    };
-    sync();
-    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
-      window.removeEventListener("storage", sync);
-    };
-  }, []);
-  // After the visitor dismisses the welcome card we flip on a pulsing
-  // ring around the "+" button and a small "Tap to add your own neuron"
-  // label. This stays up until the visitor opens the + menu — i.e.
-  // they've found the affordance the tour was teaching them.
-  const [tourAddNeuronHintVisible, setTourAddNeuronHintVisible] = useState(false);
-
-  // Type out the welcome text word-by-word — same cadence as the Vault,
-  // Connections, and /app chat intro cards (28ms/word, 1100ms lead-in).
-  useEffect(() => {
-    if (!tourWelcomeOpen) return;
-    setTourTypedText("");
-    setTourTypedDone(false);
-    tourTypingCancelRef.current = false;
-    let cancelled = false;
-
-    const startTypingTimer = window.setTimeout(() => {
-      if (cancelled) return;
-      const words = TOUR_WELCOME_TEXT.split(" ").filter(Boolean);
-      let i = 0;
-      let current = "";
-      const tick = () => {
-        if (cancelled) return;
-        if (tourTypingCancelRef.current) {
-          setTourTypedText(TOUR_WELCOME_TEXT);
-          setTourTypedDone(true);
-          return;
-        }
-        current += (i === 0 ? "" : " ") + words[i];
-        i += 1;
-        setTourTypedText(current);
-        if (i < words.length) {
-          tourTypingTimerRef.current = window.setTimeout(tick, 28);
-        } else {
-          tourTypingTimerRef.current = null;
-          setTourTypedDone(true);
-        }
-      };
-      tick();
-    }, 1100);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(startTypingTimer);
-      if (tourTypingTimerRef.current) {
-        window.clearTimeout(tourTypingTimerRef.current);
-        tourTypingTimerRef.current = null;
-      }
-    };
-  }, [tourWelcomeOpen]);
-
-  // Bug fix (2026-05): if a guest goes through the landing walkthrough
-  // and then signs into an EXISTING account, we used to keep showing
-  // the prototype's "empty workspace + 1 neuron" instead of their real
-  // synthesis layer. Detect that case here: signed in + queries
-  // finished + at least one piece of real data exists → wipe prototype
-  // state and let the real synthesisData/boards/notes render.
-  //
-  // We deliberately wait for *every* query to settle before deciding,
-  // otherwise we'd nuke the prototype during the brief loading window
-  // when all defaults are `[]` and we'd misclassify a genuinely empty
-  // brand-new account as "no data → keep prototype".
   const allQueriesFetched =
     boardsFetched && notesFetched && profileFetched && chunksFetched;
-  useEffect(() => {
-    if (!user?.id) return;
-    if (prototypeNeurons.length === 0) return;
-    if (!allQueriesFetched) return;
-    const hasRealData =
-      (boards?.length || 0) > 0 ||
-      (notes?.length || 0) > 0 ||
-      (synthesisChunks?.length || 0) > 0 ||
-      Boolean(synthesisProfile);
-    // Account-age check: a brand new sign-up triggered from inside the
-    // walkthrough will have created_at within the last few minutes —
-    // keep the prototype scene so their walkthrough continues. Anything
-    // older than this is an EXISTING account being signed into mid-
-    // walkthrough; treat it as "not the same person whose neuron is in
-    // localStorage" and drop the prototype even if their workspace is
-    // currently empty.
-    const FRESH_ACCOUNT_GRACE_MS = 5 * 60 * 1000;
-    const createdAtMs = user.created_at ? Date.parse(user.created_at) : NaN;
-    const isExistingAccount =
-      Number.isFinite(createdAtMs) &&
-      Date.now() - createdAtMs > FRESH_ACCOUNT_GRACE_MS;
-    if (!hasRealData && !isExistingAccount) return;
-    // Existing user (or new user with real data) just signed in — drop
-    // the prototype state so we render their real synthesis layer.
-    clearPrototypeState();
-    setPrototypeNeurons([]);
-    setPrototypeChat([]);
-  }, [
-    user?.id,
-    user?.created_at,
-    allQueriesFetched,
-    prototypeNeurons.length,
-    boards,
-    notes,
-    synthesisChunks,
-    synthesisProfile,
-  ]);
-
-  // True whenever we're rendering the landing-prototype walkthrough —
-  // i.e. the visitor created at least one neuron in the landing chat
-  // and we're still inside the guided tour. The effect above tears
-  // this back down once an existing signed-in user is detected.
-  //
-  const isPrototypeHandoff = prototypeNeurons.length > 0;
-
-  // Guest-preview surface: an unauthenticated visitor with no real
-  // chat-handoff data ALWAYS sees the five top-level containers
-  // (Chats, Vault, Belief, Facts, Concepts) so the synthesis layer never
-  // collapses to a blank "empty" placeholder on them. This is
-  // deliberately decoupled from one-shot welcome-card UX: the category
-  // SHAPE should persist for the whole guest session, including after
-  // the "+" menu. The signed-in / "real handoff with neurons" paths
-  // are unaffected.
-  //
-  // All five category containers stay forced-on for ANY unauthenticated
-  // visitor — even after they've used their "first neuron" freebie.
-  // We want the brain to keep looking populated and structured so the
-  // visible payoff motivates the sign-up (vs. collapsing back to just
-  // the one neuron they wrote and an otherwise-empty root).
-  const showGuestCategories = !user?.id;
-
-  // No more demo-content fallback. Brand-new signed-in users with no
-  // boards/notes used to see a synthetic "Morning practice / Harbor /
-  // Greenroom" workspace stitched in from `demoSynthesis.js`; that demo
-  // shipped the user out of the walkthrough into a fake mind that wasn't
-  // theirs. Now the synthesis layer only ever shows real data + the
-  // user's prototype handoff, with an empty workspace falling through to
-  // the standard empty-state placeholder below.
-  const effectiveBoards = useMemo(
-    () => {
-      if (isPrototypeHandoff) {
-        // Synthesize the landing-prototype conversation as the user's
-        // very first grid. The grid's id (`__prototype_first_chat__`)
-        // is intercepted in DetailPanel so clicking it surfaces the
-        // chat transcript inline rather than trying to navigate to a
-        // non-existent grid route.
-        //
-        // Only surface the grid if the chat actually has user content
-        // — an empty conversation (greeting only, no user messages
-        // with non-trivial text) shouldn't save as a grid node in the
-        // mind map. We require at least one user turn whose content
-        // is more than 1 character so a stray space doesn't qualify.
-        const hasRealUserTurn = prototypeChat.some(
-          (t) => t.role === "user" && t.content.trim().length > 1,
-        );
-        if (!hasRealUserTurn) return [];
-        return [
-          {
-            id: "__prototype_first_chat__",
-            title: "First Conversation",
-          },
-        ];
-      }
-      return boards;
-    },
-    [isPrototypeHandoff, boards, prototypeChat],
-  );
-  // For guests we intentionally bypass `notes` as a dependency — the
-  // `useQuery` destructuring default (`= []`) produces a new empty array
-  // reference on every render, which would otherwise invalidate this memo
-  // (and every downstream memo) on every hover tick, re-seeding the force
-  // layout with fresh random jitter.
-  const effectiveNotes = useMemo<NoteRow[]>(() => {
-    if (isPrototypeHandoff) return [];
-    if (!user?.id) return [];
-    return notes as NoteRow[];
-  }, [isPrototypeHandoff, user?.id, notes]);
 
   const synthesisData: SynthesisData | null = useMemo(() => {
-    // Prototype handoff: surface only the user's freshly-created
-    // neuron(s). Everything else (grids, vault, tags) renders as an
-    // empty category shell so the page reads as a brand-new mind with
-    // exactly one thing in it.
-    if (isPrototypeHandoff) {
-      return {
-        // Only the legacy untyped wake-screen-chat prototypes flow into
-        // AI Learned `themes`. Anything authored from the synthesis
-        // layer's "+" menu carries a `neuronType` and gets routed to
-        // its proper category (Facts / Beliefs / Concepts / Tags) in
-        // the post-build pass below — otherwise every prototype would
-        // collapse back into AI Learned regardless of which button
-        // the visitor pressed.
-        themes: prototypeNeurons.filter((n) => !n.neuronType).map((n) => n.text),
-        narrative:
-          "This is your synthesis layer the moment it woke up. The neuron you just created is the only thing here — your chats, vault, and the rest are waiting to be filled.",
-        signals: {},
-      };
-    }
     if (!synthesisProfile) return null;
     return {
       themes: Array.isArray(synthesisProfile.themes) ? synthesisProfile.themes : [],
       narrative: synthesisProfile.narrative || "",
       signals: (synthesisProfile.signals && typeof synthesisProfile.signals === "object") ? synthesisProfile.signals as Record<string, any> : {},
     };
-  }, [synthesisProfile, isPrototypeHandoff, prototypeNeurons]);
+  }, [synthesisProfile]);
 
   const synthesisThemes: string[] = useMemo(() => {
     const t: string[] = [];
@@ -4920,156 +4578,9 @@ export default function SynthesisLayer() {
   );
 
   /* Build + simulate */
-  const rootLabel = isPrototypeHandoff ? "Your Synthesis Layer" : "Your Mind";
   const { nodes: allNodes, edges, noteIdToVaultNodeId } = useMemo(
     () => {
-      const built = buildGraph(effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, userProjects, connectorRollups);
-      // Prototype handoff: stamp each prototype-neuron node with the
-      // ordinal (1st, 2nd, ...) and the AI-supplied "why" reason so the
-      // detail panel can render "Nth neuron created" + a custom blurb
-      // for every neuron the user has built so far. Typed prototypes
-      // (`neuronType` set) get INJECTED into the right category cluster
-      // first — buildGraph only knows how to materialise the legacy
-      // theme-style prototypes under AI Learned, so anything authored
-      // through the new "+" menu has to be added here.
-      if (isPrototypeHandoff && prototypeNeurons.length > 0) {
-        // Compute the synthesis-layer node id for a prototype neuron.
-        // Legacy (untyped) prototypes were already pushed under
-        // `neuron_theme_${text}` via the synthesisThemes path; typed
-        // prototypes get a per-category id so they slot into the right
-        // cluster. The 5-category model retired stand-alone Tag
-        // neurons (tags are Vault attributes now), so the old "tag"
-        // neuronType is ignored at render time below — we tolerate
-        // legacy localStorage rows so a guest who created a tag pre-
-        // collapse doesn't lose their existing brain.
-        const protoNodeId = (pn: { text: string; id: string; neuronType?: string }): string => {
-          switch (pn.neuronType) {
-            case "fact":        return `fact_${pn.id}`;
-            case "belief":      return `belief_${pn.id}`;
-            case "concept":     return `concept_${pn.id}`;
-            case "perspective": return `perspective_${pn.id}`;
-            default:            return `neuron_theme_${pn.text}`;
-          }
-        };
-
-        for (const pn of prototypeNeurons) {
-          if (!pn.neuronType) continue;
-          // Legacy "tag" prototypes are silently dropped — tags are
-          // Vault metadata in the 5-category model, no node to render.
-          if (pn.neuronType === "tag") continue;
-          const nid = protoNodeId(pn);
-          if (built.nodes.some((n) => n.id === nid)) continue;
-          const label = pn.text.length > 56 ? `${pn.text.slice(0, 54)}…` : pn.text;
-          if (pn.neuronType === "fact") {
-            built.nodes.push({
-              id: nid,
-              label,
-              kind: "neuron",
-              radius: 16,
-              color: palette.facts.bg,
-              glow: palette.facts.glow,
-              parentId: "__cat_facts__",
-              categoryId: "__cat_facts__",
-              meta: { neuronKind: "fact", source: "prototype_fact", factText: pn.text },
-            });
-            built.edges.push({ from: "__cat_facts__", to: nid });
-          } else if (pn.neuronType === "belief") {
-            built.nodes.push({
-              id: nid,
-              label: pn.text.length > 48 ? `${pn.text.slice(0, 46)}…` : pn.text,
-              kind: "belief",
-              radius: 24,
-              color: palette.belief.bg,
-              glow: palette.belief.glow,
-              // Beliefs + Perspectives both live inside the unified
-              // Belief cluster in the 5-category model.
-              parentId: "__cat_belief__",
-              categoryId: "__cat_belief__",
-              meta: { beliefText: pn.text, source: "prototype_belief" },
-            });
-            built.edges.push({ from: "__cat_belief__", to: nid });
-          } else if (pn.neuronType === "concept") {
-            const labelShown = pn.text.length > 32 ? `${pn.text.slice(0, 30)}…` : pn.text;
-            built.nodes.push({
-              id: nid,
-              label: labelShown,
-              kind: "concept",
-              radius: 18,
-              color: palette.concept.bg,
-              glow: palette.concept.glow,
-              parentId: "__cat_concepts__",
-              categoryId: "__cat_concepts__",
-              meta: { conceptLabel: pn.text, conceptSource: "prototype_concept" },
-            });
-            built.edges.push({ from: "__cat_concepts__", to: nid });
-          } else if (pn.neuronType === "perspective") {
-            // Guest perspectives ride the same prototype-handoff
-            // machinery, but since `buildGraph` doesn't see the
-            // localStorage row (no `notes` query for guests), we
-            // inject the node + its parent cluster here. The story
-            // body + title get echoed into `meta.extra` so the
-            // DetailPanel can render the full text before sign-in.
-            const proto = pn as typeof pn & { extra?: { story?: string; title?: string } };
-            const story = proto.extra?.story || "";
-            const title = proto.extra?.title || pn.text;
-            built.nodes.push({
-              id: nid,
-              label: title.length > 60 ? `${title.slice(0, 58)}…` : title,
-              kind: "perspective",
-              radius: 20,
-              color: palette.belief.bg,
-              glow: palette.belief.glow,
-              parentId: "__cat_belief__",
-              categoryId: "__cat_belief__",
-              meta: {
-                title,
-                ai_summary: story.slice(0, 160) || null,
-                tags: ["_perspective"],
-                isPerspective: true,
-                source: "prototype_perspective",
-                prototypeStory: story,
-              },
-            });
-            // The Belief cluster is already in forceCategoryIds, so
-            // buildGraph will materialise the parent — no
-            // on-demand category creation needed here anymore.
-            built.edges.push({ from: "__cat_belief__", to: nid });
-          }
-        }
-
-        // Stamp the per-neuron prototype meta (ordinal / reason / kind)
-        // onto whichever node id corresponds to each prototype — works
-        // uniformly for legacy and typed prototypes now that we resolve
-        // the id through `protoNodeId`.
-        for (let i = 0; i < prototypeNeurons.length; i++) {
-          const pn = prototypeNeurons[i];
-          const nid = protoNodeId(pn);
-          const node = built.nodes.find((n) => n.id === nid);
-          if (!node) continue;
-          node.meta = {
-            ...(node.meta || {}),
-            prototypeOrdinal: pn.ordinal || i + 1,
-            prototypeReason: pn.reason || "",
-            prototypeKind: pn.kind,
-            prototypeNeuronType: pn.neuronType || null,
-            isPrototypeNeuron: true,
-          };
-        }
-        // Tie EVERY prototype neuron to the synthetic "First Conversation"
-        // grid with a cross-link edge — semantically each neuron was born
-        // out of that chat, and the visual connection makes the
-        // relationship obvious in the 3D graph.
-        const gridId = "grid___prototype_first_chat__";
-        const haveGrid = built.nodes.some((n) => n.id === gridId);
-        if (haveGrid) {
-          for (const pn of prototypeNeurons) {
-            const nid = protoNodeId(pn);
-            if (built.nodes.some((n) => n.id === nid)) {
-              built.edges.push({ from: nid, to: gridId, cross: true });
-            }
-          }
-        }
-      }
+      const built = buildGraph(boards, notes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, "Your Mind", userProjects, connectorRollups);
       // User-authored manual links (migration 062). Injected here at
       // the end of the build pass so they layer on TOP of every
       // inferred edge (concept_links, belief→fact provenance,
@@ -5140,7 +4651,7 @@ export default function SynthesisLayer() {
       }
       return built;
     },
-    [effectiveBoards, effectiveNotes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, rootLabel, isPrototypeHandoff, prototypeNeurons, userLinks, userProjects, connectorRollups],
+    [boards, notes, synthesisThemes, synthesisData, vaultGridMap, activeBeliefs, manualFacts, beliefProvenance, conceptRows, conceptLinks, forceCategoryIds, userLinks, userProjects, connectorRollups],
   );
   const nodeMap = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
 
@@ -5237,12 +4748,12 @@ export default function SynthesisLayer() {
   const allIdeas = useMemo(() => {
     const s = new Set<string>();
     synthesisThemes.forEach((t) => s.add(t));
-    effectiveNotes.forEach((n) => {
+    notes.forEach((n) => {
       (n.tags || []).forEach((t: string) => s.add(t.toLowerCase().trim()));
       extractNoteThemes(n).forEach((t) => s.add(t));
     });
     return Array.from(s).sort();
-  }, [effectiveNotes, synthesisThemes]);
+  }, [notes, synthesisThemes]);
 
   // ----------------------------------------------------------------
   // simNodes: laid-out positions for every graph node. Computed in a
@@ -5383,26 +4894,6 @@ export default function SynthesisLayer() {
   // monotonic counter; bumping it tells the scene to re-snap the camera.
   const [resetSignal] = useState(0);
 
-  // Track the prototype-handoff neuron so click/background handlers can
-  // refuse to deselect it (otherwise the camera would yank back to the
-  // graph centroid the moment the user pokes their freshly-formed neuron).
-  // Computed before handleNodeClick so the callback closure can read it.
-  const prototypeFocusId = useMemo<string | null>(() => {
-    if (prototypeNeurons.length === 0) return null;
-    // buildGraph creates theme neurons with id `neuron_theme_<raw text>`,
-    // taken straight from `synthesis.themes` (NOT the lowercased
-    // `synthesisThemes` dedupe list). Match that exact format here so
-    // `nodeMap.has(prototypeFocusId)` actually succeeds — otherwise the
-    // formation effect bails and we render the regular synthesis view.
-    //
-    // Focus on the LATEST neuron (the one most recently created) so
-    // returning to the synthesis layer after creating a 2nd / 3rd /
-    // ... neuron snaps the camera + formation animation onto the new
-    // arrival rather than the stale first one.
-    const latest = prototypeNeurons[prototypeNeurons.length - 1];
-    return `neuron_theme_${latest.text}`;
-  }, [prototypeNeurons]);
-
   /* Node click → select & show panel */
   const handleNodeClick = useCallback((nodeId: string) => {
     const node = nodeMap.get(nodeId);
@@ -5440,9 +4931,6 @@ export default function SynthesisLayer() {
       return;
     }
     if (node.kind === "root") {
-      // In prototype-handoff mode the only "selected" neuron is the user's
-      // brand-new one; clicking root in that mode shouldn't yank the camera.
-      if (prototypeFocusId) return;
       setSelectedId(null);
       return;
     }
@@ -5480,17 +4968,8 @@ export default function SynthesisLayer() {
     if (beliefWindowOpen) {
       setBeliefWindowOpen(false);
     }
-    // Prototype handoff: clicking the highlighted neuron a second time
-    // would normally toggle it off and fly the camera back to the graph
-    // centroid — which feels like the neuron "jumping away" right when
-    // the user is trying to interact with it. Lock it as the focus
-    // instead so hover/click just keeps it centered.
-    if (prototypeFocusId && nodeId === prototypeFocusId) {
-      setSelectedId(prototypeFocusId);
-      return;
-    }
     setSelectedId((prev) => (prev === nodeId ? null : nodeId));
-  }, [nodeMap, prototypeFocusId, linkingMode, projectMode, beliefWindowOpen]);
+  }, [nodeMap, linkingMode, projectMode, beliefWindowOpen]);
 
   // Stable identity for SynthesisScene3D so the scene's React.memo (if
   // any) and prop-equality short-circuits actually fire. Inline lambdas
@@ -5503,9 +4982,8 @@ export default function SynthesisLayer() {
     // action bar.
     if (linkingMode) return;
     if (projectMode) return;
-    if (prototypeFocusId) return;
     setSelectedId(null);
-  }, [prototypeFocusId, linkingMode, projectMode]);
+  }, [linkingMode, projectMode]);
 
   // Enter linking mode from the "+" menu or from a DetailPanel button.
   // The `seedNodeIds` param optionally pre-fills the selection set
@@ -5643,9 +5121,7 @@ export default function SynthesisLayer() {
             kind: node.kind || null,
           };
         })
-        .filter(
-          (m): m is { nodeId: string; label: string | null; kind: string | null } => m != null,
-        );
+        .filter((m) => m != null);
 
       // Resolve the project context for both the cluster write
       // AND the auto-link pass below. In "create" mode we don't
@@ -5784,63 +5260,7 @@ export default function SynthesisLayer() {
     setAddMenuOpen(false);
   }, []);
 
-  // Prototype handoff: when a guest arrives here right after creating their
-  // first neuron in the landing prototype, play a 3D-scene-integrated
-  // formation: an electric-blue line draws OUT from the "AI Learned"
-  // category, the neuron scales into existence at the line's end, and
-  // the camera glides in to center on it.
-  //
-  // Phase timeline:
-  //   t=0    line begins drawing from category toward neuron position
-  //   t=400  camera starts flying to the neuron (overlaps with formation)
-  //   t=800  line reaches neuron position; neuron starts scaling in
-  //   t=1400 neuron is full size; camera roughly centered by now
-  //   t=2000 formingNodeId cleared → scene returns to its normal renderer
-  //
-  // Triggering the camera focus partway through (rather than at the end)
-  // means the camera arrives and centers exactly as the neuron finishes
-  // forming, so the user sees their neuron land dead-center on screen.
-  const didPlayPrototypeIntro = useRef(false);
-  const prototypeIntroTimeouts = useRef<number[]>([]);
   const [formingNodeId, setFormingNodeId] = useState<string | null>(null);
-  useEffect(() => {
-    if (didPlayPrototypeIntro.current) return;
-    if (!prototypeFocusId) return;
-    if (!nodeMap.has(prototypeFocusId)) return;
-    didPlayPrototypeIntro.current = true;
-    setFormingNodeId(prototypeFocusId);
-    // CRITICAL: do NOT clear these timeouts in the effect's cleanup.
-    // Upstream memos (synthesisData / synthesisThemes / allNodes) regenerate
-    // their array references on most re-renders, which causes nodeMap to
-    // re-create → this effect re-fires. If we tied the timeouts to the
-    // effect's cleanup, they'd get killed on the very next render — meaning
-    // setSelectedId never gets called and the camera never focuses on the
-    // new neuron. Instead we store them on a ref and only clear them on
-    // unmount of the page, not on re-renders.
-    const focusAt = window.setTimeout(() => setSelectedId(prototypeFocusId), 400);
-    const clearAt = window.setTimeout(() => setFormingNodeId(null), 2000);
-    // Walkthrough nudge: a beat after the formation completes, advance
-    // the prototype step to "vault" so the auto-mounted AppSidebar
-    // re-opens with the Vault button glowing as the next thing to
-    // explore. Only fire if we haven't already passed this step (e.g.
-    // user came back to /synthesis-layer after visiting the vault).
-    const advanceAt = window.setTimeout(() => {
-      const current = readPrototypeStep();
-      if (current === "vault" || current === "done") return;
-      writePrototypeStep("vault");
-    }, 4500);
-    prototypeIntroTimeouts.current.push(focusAt, clearAt, advanceAt);
-  }, [prototypeFocusId, nodeMap]);
-
-  // Page-level unmount cleanup for the prototype-intro timeouts. Splitting
-  // this from the effect that schedules them is what keeps them alive
-  // through interim re-renders (see the long comment above).
-  useEffect(() => {
-    return () => {
-      prototypeIntroTimeouts.current.forEach((id) => window.clearTimeout(id));
-      prototypeIntroTimeouts.current = [];
-    };
-  }, []);
 
   // Generic post-save formation-pulse watcher. The "+" menu's modal
   // (and the belief / fact-specific UUID handoffs above) stash the
@@ -5891,18 +5311,9 @@ export default function SynthesisLayer() {
     };
   }, []);
 
-  // The empty-state placeholder should only kick in when there is genuinely
-  // nothing to show — including no neurons. The prototype handoff has no
-  // boards/notes but does have neurons, so it renders the scene. The
-  // guest-preview path also has zero boards/notes/neurons but
-  // force-renders the six top-level containers, so the scene has
-  // nodes to draw and the placeholder would lie about an "empty"
-  // layer the visitor can see in front of them. Exempt that path
-  // from the empty check.
   const isEmpty =
-    !showGuestCategories &&
-    effectiveBoards.length === 0 &&
-    effectiveNotes.length === 0 &&
+    boards.length === 0 &&
+    notes.length === 0 &&
     (synthesisData?.themes?.length ?? 0) === 0;
   const selectedNode = selectedId ? nodeMap.get(selectedId) : null;
   const selectedProject = selectedProjectId
@@ -5954,9 +5365,7 @@ export default function SynthesisLayer() {
   // placeholder for a beat while data is still in flight — which reads
   // as a bug to users with non-empty workspaces. Show the same
   // "Getting things ready…" typewriter screen the Vault uses so the
-  // transition between routes feels uniform. Guests / prototype mode
-  // skip this gate because they render seeded localStorage data
-  // without waiting on any of these queries.
+  // transition between routes feels uniform.
   if (user?.id && !allQueriesFetched) {
     return <LoadingScreen isLoading={true} />;
   }
@@ -5972,6 +5381,7 @@ export default function SynthesisLayer() {
       <PlanGate
         minPlan="studio"
         feature="Mind Map"
+        fallback={null}
         description={`Your Free plan includes the Synthesis Layer up to ${FREE_SYNTHESIS_NODE_LIMIT} neurons you create yourself (chats, vault notes, perspectives, ratified beliefs, manual facts). You've reached ${userCreatedNodeCount} — upgrade to Pro for the full, unlimited mind map. Concepts and other AI-derived nodes never count against this limit.`}
       >
         {null}
@@ -6158,10 +5568,6 @@ export default function SynthesisLayer() {
               // interaction — see the pointerdown listener bound to
               // containerRef above.
               autoRotate={false}
-              // Keep the camera pulled in close on the prototype neuron even
-              // after the formation animation clears, so the user doesn't
-              // see it ease back out to the wider default focus distance.
-              focusDistanceOverride={isPrototypeHandoff ? 240 : null}
             />
             </Suspense>
           </SynthesisSceneErrorBoundary>
@@ -6192,7 +5598,7 @@ export default function SynthesisLayer() {
         // synthesis layer already fetched — the _perspective tag is
         // the magic marker that splits perspective rows out of
         // regular Vault notes (see PERSPECTIVE_NOTE_TAG comment).
-        perspectives={effectiveNotes
+        perspectives={notes
           .filter(isPerspectiveNote)
           .map((n) => ({
             id: n.id,
@@ -6258,7 +5664,6 @@ export default function SynthesisLayer() {
         {creatingNeuronType ? (
           <NeuronCreationModal
             type={creatingNeuronType}
-            isGuest={!user?.id}
             // The unified composer's Connections picker needs the
             // full live node list (every belief / fact / concept /
             // perspective / vault note already in the graph). We
@@ -6273,29 +5678,6 @@ export default function SynthesisLayer() {
             userId={user?.id || null}
             onClose={() => setCreatingNeuronType(null)}
             onCreated={(newId, savedText) => {
-              // Guest "first neuron" branch — the modal already wrote
-              // the new neuron to localStorage; pull the refreshed
-              // list into state so the synthesis layer rebuilds with
-              // it visible and the next "+" tap bounces to sign-in.
-              if (!user?.id) {
-                const refreshed = readPrototypeNeurons();
-                setPrototypeNeurons(refreshed);
-                // Queue the formation pulse against whichever node id
-                // the post-build pass will produce for this prototype
-                // (must mirror `protoNodeId` in the allNodes useMemo).
-                const justSaved = refreshed[refreshed.length - 1];
-                if (justSaved) {
-                  const targetId =
-                    justSaved.neuronType === "fact"        ? `fact_${justSaved.id}` :
-                    justSaved.neuronType === "belief"      ? `belief_${justSaved.id}` :
-                    justSaved.neuronType === "concept"     ? `concept_${justSaved.id}` :
-                    justSaved.neuronType === "perspective" ? `perspective_${justSaved.id}` :
-                    justSaved.neuronType === "tag"         ? `tag_${justSaved.text}` :
-                    `neuron_theme_${justSaved.text}`;
-                  setPendingFormingNodeId(targetId);
-                }
-                return;
-              }
               if (creatingNeuronType === "belief" && newId) {
                 // Belief nodes render directly off the active-beliefs
                 // query, so once we refetch the new node will appear in
@@ -6574,17 +5956,6 @@ export default function SynthesisLayer() {
                   <button
                     onClick={() => {
                       setShowProjectMenu(false);
-                      // Same guest carrot the "+" menu's Create
-                      // project entry uses — anonymous visitors
-                      // get one prototype neuron, then the
-                      // sign-in wall drops. Keeps the two entry
-                      // points behaving identically so the user
-                      // doesn't discover a backdoor that
-                      // bypasses sign-in.
-                      if (!user?.id && prototypeNeurons.length >= 1) {
-                        setSynthSignInOpen(true);
-                        return;
-                      }
                       beginProject();
                     }}
                     className="w-full text-left px-3 py-2 text-[0.6875rem] text-white/85 hover:bg-white/8 transition-colors flex items-center gap-2"
@@ -6619,9 +5990,9 @@ export default function SynthesisLayer() {
       <div className="absolute top-6 z-20 flex items-center gap-4 text-[0.625rem] text-white/60 pointer-events-none transition-[right] duration-300"
         style={{ right: anyRightPanelOpen ? 396 : 56 }}
       >
-        <span>{effectiveBoards.length} chats</span>
+        <span>{boards.length} chats</span>
         <span className="w-px h-3 bg-white/15" />
-        <span>{effectiveNotes.length} notes</span>
+        <span>{notes.length} notes</span>
       </div>
 
       {/* Bottom-right control — single add-neuron button, centered in
@@ -6648,44 +6019,12 @@ export default function SynthesisLayer() {
             primary action of the cluster. Picking a type opens a
             centered creation modal. */}
         <div ref={addMenuRef} className="relative">
-          {/* Tour hint: pulse + caption that lights up the "+" button
-              after the visitor dismisses the welcome card. Pointer-
-              events-none on the ring so it never eats the click that
-              opens the menu. Removed the moment the menu opens (the
-              user has found the affordance the tour was teaching). */}
-          {tourAddNeuronHintVisible && (
-            <>
-              <span
-                aria-hidden
-                className="pointer-events-none absolute -inset-2 rounded-full border border-blue-400/60 animate-ping"
-              />
-              <span
-                aria-hidden
-                className="pointer-events-none absolute -inset-1 rounded-full border border-blue-400/45"
-              />
-              <div
-                aria-hidden
-                className="pointer-events-none absolute bottom-full right-0 mb-3 whitespace-nowrap rounded-md bg-[rgba(15,15,18,0.95)] backdrop-blur border border-blue-400/35 px-2.5 py-1.5 text-[0.7rem] font-medium text-blue-100 shadow-[0_6px_18px_rgba(0,0,0,0.5)]"
-              >
-                Tap + to add your own neuron
-              </div>
-            </>
-          )}
           <button
-            onClick={() => {
-              setAddMenuOpen((v) => !v);
-              // Tour cleanup: the user has reached the "create a neuron"
-              // affordance, which is the whole point of the tour. Clear
-              // the hint + the tour flag so they don't see it again the
-              // next time they land on this page in this session.
-              if (tourAddNeuronHintVisible) setTourAddNeuronHintVisible(false);
-            }}
+            onClick={() => setAddMenuOpen((v) => !v)}
             className={`relative w-11 h-11 rounded-full backdrop-blur border flex items-center justify-center shadow-[0_6px_20px_rgba(0,0,0,0.35)] transition-colors ${
               addMenuOpen
                 ? "bg-blue-500/25 border-blue-400/45 text-blue-100"
-                : tourAddNeuronHintVisible
-                  ? "bg-blue-500/20 border-blue-400/55 text-blue-100"
-                  : "bg-white/10 border-white/15 text-white/85 hover:bg-white/16 hover:border-white/25"
+                : "bg-white/10 border-white/15 text-white/85 hover:bg-white/16 hover:border-white/25"
             }`}
             title="Add a neuron"
             aria-label="Add a neuron"
@@ -6748,23 +6087,6 @@ export default function SynthesisLayer() {
                     divider: false,
                     onClick: () => {
                       setAddMenuOpen(false);
-                      // Guest carrot: an unauthenticated visitor gets to
-                      // build ONE neuron before the sign-in wall drops
-                      // (it gets persisted to localStorage through the
-                      // prototype-handoff machinery, same path the
-                      // wake-screen chat used to use). After that we
-                      // bounce them to sign-in — they've seen the
-                      // formation animation and they've got a node in
-                      // the brain; further authoring needs an account.
-                      if (!user?.id && prototypeNeurons.length >= 1) {
-                        setSynthSignInOpen(true);
-                        return;
-                      }
-                      // Belief currently maps straight to the Belief
-                      // composer. Perspective is still reachable from
-                      // the Belief panel's Stories tab. We'll expand
-                      // this into a Belief / Perspective sub-chooser
-                      // later.
                       setCreatingNeuronType("belief");
                     },
                   },
@@ -6776,10 +6098,6 @@ export default function SynthesisLayer() {
                     divider: false,
                     onClick: () => {
                       setAddMenuOpen(false);
-                      if (!user?.id && prototypeNeurons.length >= 1) {
-                        setSynthSignInOpen(true);
-                        return;
-                      }
                       setCreatingNeuronType("basic");
                     },
                   },
@@ -6791,10 +6109,6 @@ export default function SynthesisLayer() {
                     divider: false,
                     onClick: () => {
                       setAddMenuOpen(false);
-                      if (!user?.id && prototypeNeurons.length >= 1) {
-                        setSynthSignInOpen(true);
-                        return;
-                      }
                       setCreatingNeuronType("concept");
                     },
                   },
@@ -6854,16 +6168,6 @@ export default function SynthesisLayer() {
                     divider: false,
                     onClick: () => {
                       setAddMenuOpen(false);
-                      // Same guest carrot as the other create flows:
-                      // anonymous visitors get one prototype neuron,
-                      // then we bounce them to sign-in for any
-                      // further authoring (projects included). The
-                      // userProjects lib still falls back to
-                      // localStorage so the in-session UX works.
-                      if (!user?.id && prototypeNeurons.length >= 1) {
-                        setSynthSignInOpen(true);
-                        return;
-                      }
                       beginProject();
                     },
                   },
@@ -7307,15 +6611,6 @@ export default function SynthesisLayer() {
           }
         }}
         onAfterDelete={(n) => {
-          // Refetch whichever query backs the deleted kind so the 3D
-          // scene rebuilds without the node on the next layout tick.
-          // Prototype (guest) neurons live in localStorage so we
-          // re-read that list into state directly — there's no react-
-          // query layer for them.
-          if (n.meta?.isPrototypeNeuron) {
-            setPrototypeNeurons(readPrototypeNeurons());
-            return;
-          }
           if (n.kind === "belief") {
             queryClient.invalidateQueries({ queryKey: ["mindmap_active_beliefs", user?.id] });
           } else if (n.kind === "concept") {
@@ -7393,178 +6688,6 @@ export default function SynthesisLayer() {
           setAddMenuOpen(true);
         }}
       />
-
-      {/* Tour welcome card — left-side typewriter overlay shown only on
-          the visitor's first arrival at the synthesis layer from the
-          wake screen. Deliberately NOT a modal: no backdrop, no screen
-          mute, no click trap. The visitor can watch the brain auto-
-          orbit behind it while LYKN "types" the explanation in real
-          time, then dismisses the card to expose the pulsing "+" button
-          hint. AnimatePresence handles the fade in/out so the card
-          slides in from the left edge and fades back out cleanly. */}
-      <AnimatePresence>
-        {tourWelcomeOpen && !isPrototypeWalkthroughComplete() && (
-          <motion.div
-            key="tour-welcome-card"
-            initial={{ opacity: 0, x: -24 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -24 }}
-            transition={{ duration: 0.45, ease: "easeOut" }}
-            className="fixed left-6 top-20 z-[9995] w-[min(88vw,18rem)]"
-            role="dialog"
-            aria-label="Synthesis layer welcome"
-          >
-            <div className="pointer-events-auto relative rounded-2xl bg-[rgba(15,15,18,0.78)] backdrop-blur-md border border-white/10 px-4 py-3.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)]">
-              {/* Dismiss button intentionally removed: the walkthrough
-                  is now a forced flow for guests. The only way past
-                  this card is the arrow → vault hand-off (or signing
-                  in, which unmounts the card entirely). Earlier
-                  iterations let visitors X-out and roam free, but
-                  testers consistently bailed at this step without
-                  realizing the rest of the tour existed. */}
-              <p className="text-[0.8rem] leading-relaxed text-white/80 whitespace-pre-wrap min-h-[8.5rem] pr-4">
-                {tourTypedText}
-                {!tourTypedDone && (
-                  <span aria-hidden className="lykn-wake-cursor">|</span>
-                )}
-              </p>
-              <AnimatePresence>
-                {tourTypedDone && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.4, delay: 0.15 }}
-                    className="mt-3 flex justify-end"
-                  >
-                    {/* Walkthrough advancer: clicking the arrow hands off
-                        to the next leg of the tour — the Connections
-                        message that types out the moment the Vault page
-                        mounts under the "vault" prototype step. We close
-                        the welcome card here, flip the prototype step
-                        forward, and navigate; the sidebar's walkthrough
-                        glow + the Vault intro pick up from there. */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        tourTypingCancelRef.current = true;
-                        if (tourTypingTimerRef.current) {
-                          window.clearTimeout(tourTypingTimerRef.current);
-                          tourTypingTimerRef.current = null;
-                        }
-                        setTourWelcomeOpen(false);
-                        // Re-arm the Vault page's one-shot welcome card.
-                        // It self-stamps `PROTO_VAULT_INTRO_SS_KEY` on
-                        // the first run so refreshing /vault doesn't
-                        // replay the typewriter; clearing it here means
-                        // every time the user advances out of the
-                        // synthesis layer the next leg shows fresh.
-                        try {
-                          window.sessionStorage.removeItem("lykn_prototype_vault_intro_played");
-                        } catch {
-                          // ignore (private mode / quota)
-                        }
-                        const current = readPrototypeStep();
-                        if (current !== "vault" && current !== "done") {
-                          writePrototypeStep("vault");
-                        }
-                        navigate("/vault");
-                      }}
-                      className="rounded-full bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/40 text-blue-100 hover:text-white p-1.5 transition-colors"
-                      aria-label="Next: Connections"
-                      title="Next: Connections"
-                    >
-                      <ArrowRight size={14} />
-                    </button>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Landing-prototype handoff: sticky sign-in wall for guests
-          revisiting the synthesis layer after they've already done the
-          one-time formation walkthrough. Same pattern as OmniaGrid's
-          wall — closing it re-opens the next interaction so the page
-          stays gated until they actually sign in. */}
-      <Dialog
-        open={synthSignInOpen}
-        onOpenChange={(next) => {
-          // Sticky for guests — ignore close attempts (X / ESC /
-          // backdrop click) so the wall can't be dismissed. Only let
-          // the modal close if the user signs in mid-render (which
-          // also navigates away, so this is mostly a safety net).
-          if (user?.id) setSynthSignInOpen(next);
-        }}
-      >
-        <DialogContent className="sm:max-w-md border-white/10 bg-[#1a1a1a]/95 backdrop-blur-xl text-white p-7">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-semibold tracking-tight">
-              Sign in to revisit your synthesis layer.
-            </DialogTitle>
-            <DialogDescription className="text-sm text-white/60 leading-relaxed pt-2">
-              The synthesis layer is your living mind map — every neuron, every connection, every grid you make. To keep growing it across visits, you'll need a free account.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="mt-2 flex flex-col gap-2.5">
-            <button
-              type="button"
-              onClick={() => { void signInWithOAuth?.("google"); }}
-              className="w-full flex items-center justify-center gap-2.5 rounded-xl border border-white/10 bg-white text-black px-3 py-2.5 text-sm font-medium hover:bg-white/90 transition-colors"
-            >
-              <svg width="16" height="16" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 01-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4" />
-                <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 009 18z" fill="#34A853" />
-                <path d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05" />
-                <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335" />
-              </svg>
-              Continue with Google
-            </button>
-          </div>
-
-          <div className="relative my-4">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-white/10" />
-            </div>
-            <div className="relative flex justify-center text-[0.625rem]">
-              <span className="px-2 text-white/40 font-medium uppercase tracking-wider bg-[#1a1a1a]">
-                or
-              </span>
-            </div>
-          </div>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const trimmed = synthSignInEmail.trim();
-              setSynthSignInOpen(false);
-              navigate("/login", { state: trimmed ? { email: trimmed } : undefined });
-            }}
-            className="flex flex-col gap-2"
-          >
-            <input
-              type="email"
-              value={synthSignInEmail}
-              onChange={(e) => setSynthSignInEmail(e.target.value)}
-              placeholder="Enter your email"
-              autoComplete="email"
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-blue-400/40 focus:bg-white/10 transition-colors"
-            />
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 px-3 py-2.5 text-sm font-semibold transition-colors"
-            >
-              Continue with email
-            </button>
-          </form>
-
-          <p className="mt-1 text-center text-[10px] text-white/35 leading-relaxed">
-            Free forever. No credit card. Takes 10 seconds.
-          </p>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

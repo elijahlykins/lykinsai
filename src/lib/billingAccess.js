@@ -1,8 +1,15 @@
+import { PLAN_LIMITS } from "@/lib/pricing-config";
+
 /** True when the user may use the app (trialing, paying, or comped). */
 export function hasAppAccess(billing) {
   if (!billing) return false;
   if (billing.comped) return true;
   if (billing.has_active_subscription === true) return true;
+  // Monotone-up (client): honor a paid plan already on file even when
+  // Stripe status is canceled / inactive — matches resolveUserPlan on
+  // the server and useUserPlan's tier derivation.
+  const rawPlan = String(billing.plan || "free").toLowerCase();
+  if (rawPlan !== "free" && PLAN_LIMITS[rawPlan]) return true;
   if (!billing.stripe_subscription_id && billing.has_stripe_customer) {
     // Legacy payload without subscription id — fall back to status.
     const status = String(billing.status || "").toLowerCase();

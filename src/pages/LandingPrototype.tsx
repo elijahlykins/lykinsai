@@ -5,11 +5,8 @@ import AppSidebar from "@/components/AppSidebar";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import {
-  PROTO_GRID_INTRO_SS_KEY,
-  PROTO_VAULT_INTRO_SS_KEY,
   PROTOTYPE_CHAT_LS_KEY,
   PROTOTYPE_NEURONS_LS_KEY,
-  writePrototypeStep,
 } from "@/lib/prototypeHandoff";
 import {
   stripModelTruncationNote,
@@ -324,9 +321,10 @@ const LandingPrototype = () => {
   // old marketing link.
   useEffect(() => {
     if (!authLoading && user) {
+      if (searchParams.get("resume") === "account") return;
       navigate("/start-trial", { replace: true });
     }
-  }, [authLoading, user, navigate]);
+  }, [authLoading, user, navigate, searchParams]);
 
   useEffect(() => {
     const id = window.requestAnimationFrame(() => setWarmSlidePreviews(true));
@@ -354,39 +352,12 @@ const LandingPrototype = () => {
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  // Mirror created neurons into localStorage so the SynthesisLayer page can
-  // pick them up when the user navigates over from the prototype.
-  //
-  // Walkthrough nudge: when the AI learns the FIRST neuron of this
-  // session (factNodes flipping from 0 → 1+), reset the walkthrough
-  // back to the "synthesis" step. We deliberately overwrite any stale
-  // "vault" / "grid" / "done" value that may be sitting in localStorage
-  // from a previous test run — this is the canonical "user just
-  // started over" signal, so the guided tour should always replay from
-  // the top when the user creates a fresh first neuron.
-  const prevFactCountRef = useRef(0);
+  // Mirror created neurons into localStorage for the landing sidebar preview.
   useEffect(() => {
     persistPrototypeNeurons(factNodes);
-    const prev = prevFactCountRef.current;
-    if (prev === 0 && factNodes.length > 0) {
-      writePrototypeStep("synthesis");
-      // Re-arm any one-shot session flags downstream pages set so they
-      // don't replay across visits (e.g. the vault's typed intro chat).
-      // The walkthrough is starting over — those nudges should fire
-      // again on this run.
-      try {
-        sessionStorage.removeItem(PROTO_VAULT_INTRO_SS_KEY);
-        sessionStorage.removeItem(PROTO_GRID_INTRO_SS_KEY);
-      } catch {
-        // ignore (private mode etc.)
-      }
-    }
-    prevFactCountRef.current = factNodes.length;
   }, [factNodes]);
 
-  // Mirror the conversation so the SynthesisLayer can render the chat as
-  // the user's very first "grid" (an artifact of their first session
-  // with LYKN).
+  // Mirror the conversation for the landing sidebar preview.
   useEffect(() => {
     persistPrototypeChat(GREETING, FIRST_QUESTION, messages);
   }, [messages]);
@@ -433,6 +404,30 @@ const LandingPrototype = () => {
     setIntroPhase("account");
   };
 
+  const handleIntroForward = () => {
+    if (introPhase === "welcome") {
+      handleWelcomeAdvance();
+      return;
+    }
+    if (introPhase === "problems") {
+      handleProblemsAdvance();
+      return;
+    }
+    if (introPhase === "platform") {
+      handlePlatformAdvance();
+      return;
+    }
+    if (introPhase === "vault") {
+      handleVaultAdvance();
+      return;
+    }
+    if (introPhase === "chat") {
+      handleChatAdvance();
+    }
+  };
+
+  const introSwipeRef = useRef({ x: 0, y: 0 });
+
   const handleSend = () => {
     const text = draft.trim();
     if (!text) return;
@@ -451,8 +446,7 @@ const LandingPrototype = () => {
       setQuestionStarted(true);
     }
 
-    // Landing onboarding chat is uncapped — the 10-message limit applies
-    // only after the walkthrough finishes (First Conversation / /app).
+    // Landing onboarding chat is uncapped on the marketing page.
 
     // Build conversational history so Gemini sees the full thread, not just
     // the latest message in isolation. We use the visible (tag-stripped)
@@ -638,7 +632,7 @@ const LandingPrototype = () => {
   );
 
   return (
-    <div className="dark lykn-wake-stage relative w-screen min-h-screen overflow-hidden flex flex-col">
+    <div className="dark lykn-wake-stage relative w-full max-w-[100dvw] min-h-screen overflow-hidden flex flex-col">
       {introPhase === "welcome" && (
         <div aria-hidden className="lykn-wake-screen-trace" />
       )}
@@ -647,7 +641,11 @@ const LandingPrototype = () => {
       <div
         className={`relative z-10 flex-1 min-h-0 w-full flex flex-col transition-all duration-500 ease-out ${
           sidebarOpen ? "lg:pl-[12rem]" : ""
-        } ${!questionStarted && !hasSentFirst ? "pointer-events-none" : ""}`}
+        } ${
+          introPhase === "welcome" && !questionStarted && !hasSentFirst
+            ? "pointer-events-none"
+            : ""
+        }`}
       >
         {!hasSentFirst ? (
           questionStarted ? (
@@ -662,7 +660,26 @@ const LandingPrototype = () => {
               </div>
             </div>
           ) : (
-          <div className="lykn-wake-slides-viewport relative flex-1 w-full min-h-0">
+          <div
+            className="lykn-wake-slides-viewport relative flex-1 w-full min-h-0 pointer-events-auto"
+            onTouchStart={(e) => {
+              if (!showIntroSlideNav || e.touches.length !== 1) return;
+              const t = e.touches[0];
+              introSwipeRef.current = { x: t.clientX, y: t.clientY };
+            }}
+            onTouchEnd={(e) => {
+              if (!showIntroSlideNav || e.changedTouches.length !== 1) return;
+              const t = e.changedTouches[0];
+              const dx = t.clientX - introSwipeRef.current.x;
+              const dy = t.clientY - introSwipeRef.current.y;
+              if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+              if (dx < 0) {
+                if (introPhase !== "account") handleIntroForward();
+              } else if (!introBackDisabled) {
+                handleIntroBack();
+              }
+            }}
+          >
             <div
               className={`lykn-wake-slides-track ${
                 introPhase === "account"
@@ -856,17 +873,7 @@ const LandingPrototype = () => {
           >
             <button
               type="button"
-              onClick={
-                introPhase === "welcome"
-                  ? handleWelcomeAdvance
-                  : introPhase === "problems"
-                    ? handleProblemsAdvance
-                    : introPhase === "platform"
-                      ? handlePlatformAdvance
-                      : introPhase === "vault"
-                        ? handleVaultAdvance
-                        : handleChatAdvance
-              }
+              onClick={handleIntroForward}
               disabled={introPhase === "account"}
               tabIndex={introPhase === "account" ? -1 : 0}
               aria-hidden={introPhase === "account"}

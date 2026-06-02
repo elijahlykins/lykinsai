@@ -37,6 +37,13 @@ env vars below. It's called `CONNECTOR_TOKEN_KEY`.
 > becomes unrecoverable and users have to reconnect. Treat it like a
 > primary-DB password.
 
+### 0d. Google sign-in shows `*.supabase.co` on the consent screen
+
+End-user **Sign in with Google** goes through **Supabase Auth**, not the connector
+OAuth apps in section 1. To show `auth.lykn.io` (or similar) instead of your
+Supabase project URL, follow the checklist in **`docs/google-signin-branding.md`**
+(custom domain + dedicated Google Cloud client + Vercel `VITE_SUPABASE_URL` cutover).
+
 ### 0c. Set the global env vars on Render
 
 In Render → your backend service → **Environment**, add:

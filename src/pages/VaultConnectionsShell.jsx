@@ -1,14 +1,9 @@
 import { useLocation } from "react-router-dom";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import VaultNew from "./new/VaultNew";
 import Connections from "./Connections";
 import VaultAppDock from "@/components/connections/VaultAppDock";
 import { useAuth } from "@/lib/SupabaseAuth";
-import {
-  isWalkthroughLockActive,
-  PROTOTYPE_STEP_EVENT,
-  readPrototypeStep,
-} from "@/lib/prototypeHandoff";
 
 // Keeps both `/vault` and `/connections` mounted simultaneously so the
 // in-page toggle between them feels instant. Without this, navigating
@@ -43,24 +38,6 @@ export default function VaultConnectionsShell() {
     [search],
   );
 
-  // Walkthrough lockdown mirrors the AppShell's chrome-hiding: while a
-  // guest is mid-tour, the bottom dock and any other roaming chrome
-  // mounted by this shell stays hidden. The cards' arrows are the
-  // only forward affordance, and signing in is the only way out.
-  const [walkStep, setWalkStep] = useState(() =>
-    typeof window === "undefined" ? null : readPrototypeStep(),
-  );
-  useEffect(() => {
-    const sync = () => setWalkStep(readPrototypeStep());
-    window.addEventListener(PROTOTYPE_STEP_EVENT, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(PROTOTYPE_STEP_EVENT, sync);
-      window.removeEventListener("storage", sync);
-    };
-  }, []);
-  const isWalkthroughLocked = isWalkthroughLockActive(user?.id ?? null, walkStep);
-
   // Use `inert` rather than `aria-hidden` on the inactive subtree.
   // aria-hidden only hides from AT; if focus is still inside the
   // subtree (e.g. user just clicked the in-page Vault↔Connections
@@ -94,7 +71,7 @@ export default function VaultConnectionsShell() {
       >
         <Connections />
       </div>
-      {!isEmbedded && !isWalkthroughLocked && <VaultAppDock user={user} />}
+      {!isEmbedded && <VaultAppDock user={user} />}
     </>
   );
 }

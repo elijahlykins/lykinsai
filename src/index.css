@@ -422,32 +422,6 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
 }
 
 /* =========================================================
-   WALKTHROUGH LOCKDOWN
-   While a guest is forced through the onboarding tour, the body
-   gets `lykn-walkthrough-locked` to neutralize every UI control
-   under it. `pointer-events: none` inherits to every descendant
-   that hasn't explicitly overridden it, so the entire app —
-   sidebar (when present), buttons, vault dock, OmniaToolbar,
-   synthesis "+" pill, etc. — becomes inert without an overlay.
-   Elements that should remain interactive (the four walkthrough
-   cards and the guest sign-in prompt) opt back in with the
-   `lykn-walkthrough-interactive` helper or by being marked with
-   Tailwind's `pointer-events-auto` on their inner box. We CANNOT
-   solve this with a fixed-position overlay because the
-   synthesis/vault/grid pages each create their own root
-   stacking context via position: fixed, which demotes any
-   sibling overlay UNDER the cards they contain.
-   ========================================================= */
-body.lykn-walkthrough-locked {
-  pointer-events: none;
-}
-
-body.lykn-walkthrough-locked .lykn-walkthrough-interactive,
-body.lykn-walkthrough-locked [data-walkthrough-interactive="true"] {
-  pointer-events: auto;
-}
-
-/* =========================================================
    UTILITIES — reflective glass controls (same style as text boxes)
    ========================================================= */
 @layer utilities {
@@ -2109,7 +2083,7 @@ mark {
 
 .lykn-wake-slide-inner-synthesis {
   width: min(1120px, calc(100vw - 4.5rem));
-  height: min(calc(100vh - 3.25rem), 760px);
+  height: min(calc(100dvh - 3.25rem), 760px);
   align-items: stretch;
   overflow: hidden;
 }
@@ -2125,8 +2099,8 @@ mark {
 
 .lykn-wake-account-layout {
   width: min(1120px, calc(100vw - 4.5rem));
-  min-height: min(calc(100vh - 2.5rem), 720px);
-  max-height: calc(100vh - 1.5rem);
+  min-height: min(calc(100dvh - 2.5rem), 720px);
+  max-height: calc(100dvh - 1.5rem);
   margin: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -2539,7 +2513,7 @@ mark {
 
 .lykn-wake-product-preview {
   width: min(1120px, calc(100vw - 4.5rem));
-  height: min(calc(100vh - 3.25rem), 760px);
+  height: min(calc(100dvh - 3.25rem), 760px);
   max-height: calc(100% - 2.5rem);
   display: flex;
   align-items: stretch;
@@ -2991,7 +2965,7 @@ mark {
 @media (max-width: 900px) {
   .lykn-wake-product-preview {
     width: calc(100vw - 3.75rem);
-    height: min(calc(100vh - 2.75rem), 640px);
+    height: min(calc(100dvh - 2.75rem), 640px);
   }
 
   .lykn-wake-scroll-section {
@@ -3622,6 +3596,118 @@ mark {
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
+}
+
+/* Phones — bottom nav arrows, shorter previews, scrollable account step. */
+@media (max-width: 640px) {
+  .lykn-wake-slide-inner {
+    width: calc(100vw - 3.25rem);
+  }
+
+  .lykn-wake-slide-inner-synthesis {
+    width: calc(100vw - 2.5rem);
+    height: min(calc(100dvh - 7.5rem), 520px);
+  }
+
+  .lykn-wake-product-preview {
+    width: calc(100vw - 2.75rem);
+    height: min(46dvh, 360px);
+    max-height: calc(100dvh - 10rem);
+  }
+
+  .lykn-wake-product-hero {
+    min-height: min(52dvh, 400px);
+    height: auto;
+    padding-block: 0.35rem;
+  }
+
+  .lykn-wake-slide.lykn-wake-slide--problems,
+  .lykn-wake-slide--product,
+  .lykn-wake-slide--account {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .lykn-wake-slide--account {
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    align-items: flex-start;
+    padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .lykn-wake-account-layout {
+    width: calc(100vw - 2rem);
+    min-height: auto;
+    max-height: none;
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .lykn-wake-account-panel {
+    max-height: none;
+  }
+
+  .lykn-wake-account-input {
+    font-size: 16px;
+  }
+
+  .lykn-wake-surface-explainer {
+    width: calc(100vw - 2rem);
+  }
+
+  .lykn-wake-problems-pair {
+    min-height: min(58dvh, 480px);
+    padding-inline: 1rem;
+  }
+
+  .lykn-wake-slide-nav {
+    top: auto;
+    bottom: calc(0.65rem + env(safe-area-inset-bottom, 0px));
+    transform: none;
+  }
+
+  .lykn-wake-slide-nav-back {
+    left: max(0.5rem, env(safe-area-inset-left, 0px));
+  }
+
+  .lykn-wake-slide-nav-forward {
+    right: max(0.5rem, env(safe-area-inset-right, 0px));
+  }
+
+  .lykn-wake-advance-btn {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    padding: 0.65rem;
+  }
+
+  .lykn-wake-advance-btn-icon {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+
+  .lykn-wake-logo-reveal {
+    width: clamp(168px, 70vw, 300px);
+  }
+
+  .lykn-wake-synth-preview-add {
+    right: 0.65rem;
+    bottom: 0.65rem;
+  }
+
+  .lykn-wake-synth-add-menu {
+    width: min(15rem, calc(100vw - 2.5rem));
+  }
+
+  .lykn-wake-chat-preview-stage {
+    padding: 0.65rem 0.5rem;
+  }
+
+  .lykn-wake-chat-preview-inner {
+    gap: 0.65rem;
+  }
+
+  .lykn-wake-chat-preview-messages {
+    max-height: min(32dvh, 220px);
+  }
 }
 
 

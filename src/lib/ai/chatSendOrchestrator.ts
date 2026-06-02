@@ -21,12 +21,6 @@ import {
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
-import {
-  GUEST_CHAT_SESSION_CAP,
-  guestChatCapReached,
-  incrementGuestChatCount,
-} from "@/lib/prototypeHandoff";
-import { requestGuestSignIn } from "@/lib/guestChatLimits";
 import { toast } from "@/components/ui/use-toast";
 
 // Show a one-shot toast when the server downgrades the model. The server
@@ -845,101 +839,6 @@ function stripTrailingSourcesBlockIfHasLinks(text: string): string {
     return text.slice(0, sm.index ?? 0).trimEnd();
   }
   return text;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Guest (logged-out) chat flow                                       */
-/*  Skips workspace/memory/tool routing; streams Gemini Flash only.    */
-/* ------------------------------------------------------------------ */
-async function runGuestChat(
-  p: ChatSendParams,
-  promptId: string,
-  cappedText: string,
-): Promise<void> {
-  const { state, streamRefs, abortController } = p;
-  const signal = abortController.signal;
-
-  // Session-scoped guest chat cap. Server-side per-IP limits are the
-  // real ceiling, but this short-circuit gives the user a clear
-  // sign-in nudge before we burn another LLM call.
-  if (guestChatCapReached()) {
-    requestGuestSignIn("chat");
-    const msg =
-      `You've hit the free preview limit (${GUEST_CHAT_SESSION_CAP} messages) ` +
-      "for this session — sign in (it's free) to keep chatting and save what you've made.";
-    state.setChatMessages((prev) =>
-      prev.map((m) => (m.id === promptId ? { ...m, aiResponse: msg } : m)),
-    );
-    p.aiThread.push({ role: "assistant", content: msg });
-    state.setChatStatusText("Sign in to continue");
-    return;
-  }
-  incrementGuestChatCount();
-
-  state.setChatStatusText("Thinking…");
-  state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
-
-  const history: Array<{ role: "user" | "assistant"; content: string }> = [];
-  for (const cm of p.chatMessages) {
-    if (cm.role === "user" && cm.content) {
-      history.push({ role: "user", content: cm.content });
-      if (cm.aiResponse) history.push({ role: "assistant", content: cm.aiResponse });
-    } else if (cm.role !== "user" && cm.content) {
-      history.push({ role: "assistant", content: cm.content });
-    }
-  }
-  // Drop the most recent user entry — it's the live prompt we're about to send.
-  if (history.length && history[history.length - 1].role === "user") history.pop();
-
-  const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
-
-  let streamResponse: Response | null = null;
-  try {
-    const timeout = setTimeout(() => abortController.abort(), 90_000);
-    streamResponse = await fetch(`${apiBase}/api/ai/stream-guest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: cappedText, history }),
-      signal,
-    });
-    clearTimeout(timeout);
-  } catch {
-    streamResponse = null;
-  }
-
-  if (!streamResponse || !streamResponse.ok) {
-    let msg = AI_TEMPORARY_FAILURE_TEXT;
-    if (streamResponse?.status === 429) {
-      msg = "You've hit the free preview limit for now — sign in to keep chatting.";
-    }
-    state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: msg } : m)));
-    p.aiThread.push({ role: "assistant", content: msg });
-    state.setChatStatusText("Answered");
-    return;
-  }
-
-  const { accumulated } = await handleStreamingResponse(p, streamResponse, promptId, null, cappedText);
-
-  if (streamRefs.streamTypingRafRef.current) {
-    cancelAnimationFrame(streamRefs.streamTypingRafRef.current);
-    streamRefs.streamTypingRafRef.current = null;
-  }
-  if (streamRefs.streamPromptIdRef.current && streamRefs.streamDisplayedLenRef.current < streamRefs.streamTargetTextRef.current.length) {
-    state.setChatMessages((prev) => prev.map((m) => (m.id === streamRefs.streamPromptIdRef.current ? { ...m, aiResponse: streamRefs.streamTargetTextRef.current } : m)));
-  }
-  streamRefs.streamTargetTextRef.current = "";
-  streamRefs.streamDisplayedLenRef.current = 0;
-  streamRefs.streamPromptIdRef.current = null;
-
-  // Guest mode bypasses the action channel (logged-out users can't mutate a
-  // grid), so any action JSON the model leaks is purely noise — strip it out
-  // of the final reply rather than letting it flicker back into the bubble.
-  const cleanedAccumulated = stripStreamingActionJson(accumulated).trim();
-  const finalText = cleanedAccumulated || accumulated || AI_TEMPORARY_FAILURE_TEXT;
-  state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
-  p.aiThread.push({ role: "assistant", content: finalText });
-  if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
-  state.setChatStatusText("Answered");
 }
 
 async function handleStreamingResponse(
@@ -2200,10 +2099,13 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   p.aiThread.push({ role: "user", content: cappedText + (attachmentContext ? attachmentContext.slice(0, 1000) : "") });
   if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
 
-  // Guest (logged-out) path — bypass all workspace/memory/action routing and
-  // stream a lightweight Gemini-only response. No attachments, no tools.
   if (!identity.userId) {
-    await runGuestChat(p, promptId, cappedText);
+    const msg = "Sign in to send messages in chat.";
+    state.setChatMessages((prev) =>
+      prev.map((m) => (m.id === promptId ? { ...m, aiResponse: msg } : m)),
+    );
+    p.aiThread.push({ role: "assistant", content: msg });
+    state.setChatStatusText("Sign in required");
     return;
   }
 

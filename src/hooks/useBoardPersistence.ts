@@ -10,15 +10,6 @@ import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/board/blocksCapError";
 import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { isDemoGridId, getDemoGridSnapshot } from "@/lib/demoGrids";
-import {
-  hasGuestFirstConversation,
-  isPrototypeFirstChatBoardId,
-  readGuestPreviewChatSession,
-  readPrototypeGridChatSession,
-  syncPrototypeChatFromPromptMessages,
-  writeGuestPreviewChatSession,
-  writePrototypeGridChatSession,
-} from "@/lib/prototypeHandoff";
 
 const SNAPSHOT_VERSION = 2;
 
@@ -752,20 +743,8 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         // `boardId` state, which is still stale (the previous boardId, or
         // `null` on first mount) at this point because `setBoardId(routeBoardId)`
         // above hasn't flushed yet. The seeded demo grids ship with empty
-        // chat so it doesn't matter for them — but the prototype-handoff
-        // "First Conversation" grid carries the saved transcript on its
-        // snapshot, so hydrate it explicitly here.
-        const sessionChat = isPrototypeFirstChatBoardId(routeBoardId)
-          ? readGuestPreviewChatSession()
-          : null;
-        const chatToHydrate =
-          sessionChat?.chatMessages?.length
-            ? sessionChat.chatMessages
-            : snapshot?.chatMessages;
-        const threadToHydrate =
-          sessionChat?.aiThread?.length
-            ? sessionChat.aiThread
-            : snapshot?.aiThread;
+        const chatToHydrate = snapshot?.chatMessages;
+        const threadToHydrate = snapshot?.aiThread;
         if (!cancelled && Array.isArray(chatToHydrate) && chatToHydrate.length > 0) {
           setChatMessages(chatToHydrate);
           setChatRailOpen(true);
@@ -779,43 +758,26 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       return () => { cancelled = true; };
     }
 
-    // Guest (pre-sign-in) new grid: show a fresh, in-memory board. Saves are
-    // gated elsewhere by the `!userId` check, so nothing persists — but the
-    // user still gets an empty canvas they can play with after clicking
-    // "Add New Grid" in the sidebar.
     if (!userId) {
-      if (routeBoardId && hasGuestFirstConversation() && !isPrototypeFirstChatBoardId(routeBoardId)) {
-        return () => { cancelled = true; };
-      }
-      if (routeBoardId) {
-        (async () => {
-          hydratedRef.current = false;
-          userRenamedRef.current = false;
-          setTitleTracked("New Chat");
-          lastSavedTitleRef.current = "New Chat";
-          if (cancelled) return;
-          setBoardId(routeBoardId);
-          reset();
-          setChatMessages([]);
-          aiThreadRef.current = [];
-          applySnapshotRef.current({
-            version: SNAPSHOT_VERSION,
-            blocks: {},
-            blockOrder: [],
-            camera: { x: 0, y: 0, zoom: 1 },
-            gridSize: 24,
-            wireConnections: [],
-            notesPages: makeDefaultNotesPages(),
-          });
-          hydratedRef.current = true;
-        })();
-      }
+      return () => { cancelled = true; };
+    }
+    // Signed-in `/app` — OmniaGrid's resume effect owns board selection
+    // and navigates to `/grid/:id`. Hydrating here mints a second UUID;
+    // when the redirect lands, loadBoard resets chat and the first
+    // messages never attach to the URL board.
+    if (userId && !routeBoardId) {
       return () => { cancelled = true; };
     }
     const loadBoard = async () => {
       hydratedRef.current = false;
       userRenamedRef.current = false;
       boardRowExistsRef.current = false;
+      const pendingChatBeforeReset = chatMessagesRef.current?.length
+        ? chatMessagesRef.current.map((m: any) => ({ ...m }))
+        : [];
+      const pendingThreadBeforeReset = aiThreadRef.current?.length
+        ? [...aiThreadRef.current]
+        : [];
       let id: string | null = null;
       let loadedTitle = "New Chat";
       try {
@@ -947,6 +909,15 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           useDraft = true;
         }
 
+        const snapshotForChat = useDraft
+          ? draft
+          : hasRemote
+            ? remoteData.state
+            : null;
+        const remoteHasChat =
+          (Array.isArray(snapshotForChat?.chatMessages) && snapshotForChat.chatMessages.length > 0) ||
+          (Array.isArray(snapshotForChat?.aiThread) && snapshotForChat.aiThread.length > 0);
+
         if (useDraft) {
           applySnapshotRef.current(draft);
         } else if (hasRemote) {
@@ -972,6 +943,23 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             notesPages: makeDefaultNotesPages(),
           });
         }
+
+        const pendingDuringLoad = chatMessagesRef.current?.length
+          ? chatMessagesRef.current.map((m: any) => ({ ...m }))
+          : [];
+        const pendingThreadDuringLoad = aiThreadRef.current?.length
+          ? [...aiThreadRef.current]
+          : [];
+        const pendingChat = pendingDuringLoad.length > 0 ? pendingDuringLoad : pendingChatBeforeReset;
+        const pendingThread = pendingDuringLoad.length > 0 ? pendingThreadDuringLoad : pendingThreadBeforeReset;
+        if (pendingChat.length > 0 && !remoteHasChat) {
+          setChatMessages(pendingChat);
+          aiThreadRef.current = pendingThread;
+          setChatRailOpen(true);
+          setChatRailVisible(true);
+          queueMicrotask(() => saveSnapshotRef.current());
+        }
+
         try { localStorage.removeItem(`omnia_draft_${id}`); } catch { /* ignore */ }
       } catch (err) {
         if (import.meta.env.DEV) console.error("[LYKN] Failed to load board state:", err);
@@ -991,6 +979,21 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             notesPages: makeDefaultNotesPages(),
           });
         } catch { /* last resort — at least mark hydrated so the UI is usable */ }
+        const pendingDuringLoad = chatMessagesRef.current?.length
+          ? chatMessagesRef.current.map((m: any) => ({ ...m }))
+          : [];
+        const pendingThreadDuringLoad = aiThreadRef.current?.length
+          ? [...aiThreadRef.current]
+          : [];
+        const pendingChat = pendingDuringLoad.length > 0 ? pendingDuringLoad : pendingChatBeforeReset;
+        const pendingThread = pendingDuringLoad.length > 0 ? pendingThreadDuringLoad : pendingThreadBeforeReset;
+        if (pendingChat.length > 0) {
+          setChatMessages(pendingChat);
+          aiThreadRef.current = pendingThread;
+          setChatRailOpen(true);
+          setChatRailVisible(true);
+          queueMicrotask(() => saveSnapshotRef.current());
+        }
       }
       hydratedRef.current = true;
 
@@ -1052,18 +1055,6 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, userId, chatMessages]);
-
-  /* ------------------------------------------------------------------ */
-  /*  Prototype "First Conversation" chat persist (guest preview)        */
-  /* ------------------------------------------------------------------ */
-  useEffect(() => {
-    if (!boardId || !isPrototypeFirstChatBoardId(boardId)) return;
-    if (!hydratedRef.current) return;
-    const timer = setTimeout(() => {
-      writeGuestPreviewChatSession(chatMessages, aiThreadRef.current || []);
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [boardId, chatMessages]);
 
   /* ------------------------------------------------------------------ */
   /*  Chat localStorage persist effect                                   */
