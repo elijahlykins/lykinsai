@@ -333,6 +333,11 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   // Abort on boardId change
   useEffect(() => { activeAiAbortRef.current?.abort(); activeAiAbortRef.current = null; }, [boardId]);
 
+  // Clear composer draft when switching chats
+  useEffect(() => {
+    setChatInput("");
+  }, [routeBoardId, setChatInput]);
+
   // Brick action events
   useEffect(() => {
     const handler = (e: Event) => {

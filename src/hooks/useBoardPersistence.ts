@@ -112,6 +112,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     catch { return ""; }
   });
   const [boardId, setBoardId] = useState<string | null>(null);
+  const boardIdRef = useRef<string | null>(null);
 
   /* ------------------------------------------------------------------ */
   /*  Refs                                                               */
@@ -150,6 +151,10 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     try { localStorage.setItem("omnia_title", title); } catch { /* ignore */ }
   }, [title]);
 
+  useEffect(() => {
+    boardIdRef.current = boardId;
+  }, [boardId]);
+
   /* ------------------------------------------------------------------ */
   /*  buildSnapshot                                                      */
   /* ------------------------------------------------------------------ */
@@ -176,7 +181,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
   /*  applySnapshot                                                      */
   /* ------------------------------------------------------------------ */
   const applySnapshot = useCallback(
-    (snapshot: any) => {
+    (snapshot: any, hydrateBoardId?: string | null) => {
       if (!snapshot || typeof snapshot !== "object") return;
       const blocksRecord = (snapshot.blocks && typeof snapshot.blocks === "object") ? snapshot.blocks : {};
       const order: string[] = Array.isArray(snapshot.blockOrder)
@@ -306,8 +311,9 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         }
       })();
 
-      if (boardId) {
-        const boardChatKey = `omnia_chat_${boardId}`;
+      const chatBoardId = hydrateBoardId ?? boardId;
+      if (chatBoardId) {
+        const boardChatKey = `omnia_chat_${chatBoardId}`;
         let chatLoaded = false;
 
         try {
@@ -336,7 +342,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         }
 
         reSignChatAttachments();
-        restoreSavedToVaultState(boardId);
+        restoreSavedToVaultState(chatBoardId);
       }
 
       const restoredPages = migrateNotesContent(snapshot);
@@ -724,10 +730,12 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         setTitleTracked(demoTitle);
         lastSavedTitleRef.current = demoTitle;
         userRenamedRef.current = demoTitle !== "New Chat";
+        boardIdRef.current = routeBoardId;
         setBoardId(routeBoardId);
         reset();
-        setChatMessages([]);
+        chatMessagesRef.current = [];
         aiThreadRef.current = [];
+        setChatMessages([]);
         // Demo snapshots already carry a non-default camera computed at
         // fetch time (see `computeDemoCamera` in demoGrids.js) — framing
         // the top of the grid at a zoom that fits the bbox width. That
@@ -738,21 +746,9 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         // a stale `canvasZoomRef` / `el.scrollTop` pair and clamps the
         // scroll to `maxTop`, visibly shooting the user to the bottom
         // of the grid on their first zoom-out gesture.
-        if (snapshot) applySnapshotRef.current(snapshot);
-        // applySnapshot's chat-hydration branch is gated on the captured
-        // `boardId` state, which is still stale (the previous boardId, or
-        // `null` on first mount) at this point because `setBoardId(routeBoardId)`
-        // above hasn't flushed yet. The seeded demo grids ship with empty
-        const chatToHydrate = snapshot?.chatMessages;
-        const threadToHydrate = snapshot?.aiThread;
-        if (!cancelled && Array.isArray(chatToHydrate) && chatToHydrate.length > 0) {
-          setChatMessages(chatToHydrate);
-          setChatRailOpen(true);
-          setChatRailVisible(true);
-          if (Array.isArray(threadToHydrate) && threadToHydrate.length > 0) {
-            aiThreadRef.current = threadToHydrate;
-          }
-        }
+        if (snapshot) applySnapshotRef.current(snapshot, routeBoardId);
+        // applySnapshot hydrates chat from the explicit board id passed
+        // above — no manual branch needed here.
         if (!cancelled) hydratedRef.current = true;
       })();
       return () => { cancelled = true; };
@@ -772,6 +768,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       hydratedRef.current = false;
       userRenamedRef.current = false;
       boardRowExistsRef.current = false;
+      const priorBoardId = boardIdRef.current;
       const pendingChatBeforeReset = chatMessagesRef.current?.length
         ? chatMessagesRef.current.map((m: any) => ({ ...m }))
         : [];
@@ -780,6 +777,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         : [];
       let id: string | null = null;
       let loadedTitle = "New Chat";
+      let isExplicitNewChat = false;
       try {
         const existing = routeBoardId || localStorage.getItem("omnia_board_id");
         if (existing) {
@@ -802,6 +800,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         // ignore
       }
       if (!id && routeBoardId) {
+        isExplicitNewChat = true;
         id = routeBoardId;
         loadedTitle = "New Chat";
         setTitleTracked("New Chat");
@@ -866,14 +865,18 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       }
       if (cancelled) return;
       if (loadedTitle !== "New Chat") userRenamedRef.current = true;
+      boardIdRef.current = id;
       setBoardId(id);
       if (!id) {
         hydratedRef.current = true;
         return;
       }
+      const isBoardSwitch = Boolean(priorBoardId && priorBoardId !== id);
+      const shouldRestorePendingChat = !isExplicitNewChat && !isBoardSwitch;
       reset();
-      setChatMessages([]);
+      chatMessagesRef.current = [];
       aiThreadRef.current = [];
+      setChatMessages([]);
       try {
         let draft: any = null;
         try {
@@ -919,7 +922,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           (Array.isArray(snapshotForChat?.aiThread) && snapshotForChat.aiThread.length > 0);
 
         if (useDraft) {
-          applySnapshotRef.current(draft);
+          applySnapshotRef.current(draft, id);
         } else if (hasRemote) {
           const snap = { ...(remoteData.state || {}), version: (remoteData as any)?.version || (remoteData.state as any)?.version || 1 };
           try {
@@ -931,7 +934,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
               }
             }
           } catch { /* ignore */ }
-          applySnapshotRef.current(snap);
+          applySnapshotRef.current(snap, id);
         } else {
           applySnapshotRef.current({
             version: SNAPSHOT_VERSION,
@@ -941,7 +944,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             gridSize: 24,
             wireConnections: [],
             notesPages: makeDefaultNotesPages(),
-          });
+          }, id);
         }
 
         const pendingDuringLoad = chatMessagesRef.current?.length
@@ -952,7 +955,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           : [];
         const pendingChat = pendingDuringLoad.length > 0 ? pendingDuringLoad : pendingChatBeforeReset;
         const pendingThread = pendingDuringLoad.length > 0 ? pendingThreadDuringLoad : pendingThreadBeforeReset;
-        if (pendingChat.length > 0 && !remoteHasChat) {
+        if (shouldRestorePendingChat && pendingChat.length > 0 && !remoteHasChat) {
           setChatMessages(pendingChat);
           aiThreadRef.current = pendingThread;
           setChatRailOpen(true);
@@ -977,7 +980,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             gridSize: 24,
             wireConnections: [],
             notesPages: makeDefaultNotesPages(),
-          });
+          }, id);
         } catch { /* last resort — at least mark hydrated so the UI is usable */ }
         const pendingDuringLoad = chatMessagesRef.current?.length
           ? chatMessagesRef.current.map((m: any) => ({ ...m }))
@@ -987,7 +990,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           : [];
         const pendingChat = pendingDuringLoad.length > 0 ? pendingDuringLoad : pendingChatBeforeReset;
         const pendingThread = pendingDuringLoad.length > 0 ? pendingThreadDuringLoad : pendingThreadBeforeReset;
-        if (pendingChat.length > 0) {
+        if (shouldRestorePendingChat && pendingChat.length > 0) {
           setChatMessages(pendingChat);
           aiThreadRef.current = pendingThread;
           setChatRailOpen(true);
