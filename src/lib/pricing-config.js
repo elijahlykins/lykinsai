@@ -171,6 +171,17 @@ export const UPLOAD_RATE_LIMITS = {
   studio_max: { perMinute: 600, perHour: 7200 },
 };
 
+// Client-side vault upload guards (uploadPipeline.ts + uploadPreflight.ts).
+// DB triggers still enforce vault item count and upload rate authoritatively.
+export const VAULT_UPLOAD_LIMITS = {
+  /** Reject before compression/upload. Align with Supabase bucket file size limit. */
+  maxFileBytes: 100 * 1024 * 1024,
+  /** Hard cap on files accepted from one drag/drop or picker session. */
+  maxFilesPerDrop: 200,
+  /** Skip per-file AI describe + enrich when a single drop is at least this big. */
+  bulkImportAiThreshold: 25,
+};
+
 export const PLAN_LABELS = {
   free: "Free",
   studio: "Pro",

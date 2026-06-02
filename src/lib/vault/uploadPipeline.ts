@@ -12,7 +12,12 @@ import {
   useVaultUploadStore,
   type VaultUploadItem,
 } from "@/store/vaultUploadStore";
-import { UPLOAD_RATE_LIMITS } from "@/lib/pricing-config";
+import { UPLOAD_RATE_LIMITS, VAULT_UPLOAD_LIMITS } from "@/lib/pricing-config";
+import {
+  preflightVaultUploadBatch,
+  summarizePreflightRejections,
+  formatBytesShort,
+} from "@/lib/vault/uploadPreflight";
 import { notifyUploadRateLimitIfApplicable } from "@/lib/vault/uploadRateLimitError";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { findAttachmentsMarker, withAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
@@ -179,7 +184,11 @@ type StartFileUploadsInput = {
    * miss the cap.
    */
   planId?: PlanId | null;
+  /** Latest vault note count — refreshed here when omitted. */
+  vaultCount?: number | null;
   onAllComplete?: (result: { createdNotes: Array<{ id: string }> }) => void;
+  /** Fires after each note row is inserted (for client-side cap bookkeeping). */
+  onNoteCreated?: () => void;
   /**
    * Fires as soon as each individual file finishes uploading and has a
    * persisted vault note. Used by the vault grid to swap its optimistic
@@ -370,8 +379,9 @@ function runPostProcessing(args: {
   fileType: string;
   fileUrl: string | null;
   createdNote: any;
+  bulkImport?: boolean;
 }): void {
-  const { userId, noteId, file, filename, fileType, fileUrl, createdNote } = args;
+  const { userId, noteId, file, filename, fileType, fileUrl, createdNote, bulkImport } = args;
   (async () => {
     try {
       let extractedPdfText = "";
@@ -432,17 +442,20 @@ function runPostProcessing(args: {
         ? Object.values(spreadsheetData.cells).flat().filter(Boolean).join(", ").slice(0, 3000)
         : "";
 
-      describeVaultItemInBackground(noteId, {
-        imageUrl: (fileType === "image" || fileType === "video") ? fileUrl || undefined : undefined,
-        textContent: extractedPdfText || ssText || undefined,
-        fileType,
-        fileName: filename,
-      });
+      if (!bulkImport) {
+        describeVaultItemInBackground(noteId, {
+          imageUrl: (fileType === "image" || fileType === "video") ? fileUrl || undefined : undefined,
+          textContent: extractedPdfText || ssText || undefined,
+          fileType,
+          fileName: filename,
+        });
+      }
 
       afterVaultNoteSaved(userId, noteId, {
         title: createdNote?.title || filename,
         content: createdNote?.content || "",
         extraPlain: extractedPdfText || ssText || undefined,
+        bulkImport,
       });
     } catch (err) {
       if (import.meta.env.DEV) {
@@ -453,6 +466,29 @@ function runPostProcessing(args: {
   })();
 }
 
+async function resolveVaultCount(
+  userId: string,
+  hint: number | null | undefined,
+): Promise<number> {
+  if (typeof hint === "number" && Number.isFinite(hint)) return Math.max(0, hint);
+  const { count } = await supabase
+    .from("notes")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId);
+  return count ?? 0;
+}
+
+type VaultSlotState = {
+  remaining: number | null;
+};
+
+function takeVaultSlot(state: VaultSlotState | null | undefined): boolean {
+  if (!state || state.remaining === null) return true;
+  if (state.remaining <= 0) return false;
+  state.remaining -= 1;
+  return true;
+}
+
 async function processOne(args: {
   userId: string;
   itemId: string;
@@ -460,7 +496,10 @@ async function processOne(args: {
   folderPath: string | null;
   filename: string;
   planId?: PlanId | null;
+  bulkImport?: boolean;
+  vaultSlots?: VaultSlotState | null;
   onFileComplete?: (note: { id: string; [key: string]: unknown }) => void;
+  onNoteCreated?: () => void;
 }): Promise<{ id: string } | null> {
   const { userId } = args;
   let { file, filename } = args;
@@ -475,6 +514,17 @@ async function processOne(args: {
   //     can trigger us from outside the pipeline).
   const abortCtrl = new AbortController();
   registerVaultUploadCancellation(args.itemId, abortCtrl);
+
+  // ── Vault headroom (before HEIF decode / compression) ───────────
+  if (!takeVaultSlot(args.vaultSlots)) {
+    store.update(args.itemId, {
+      status: "error",
+      error: "Vault is full — upgrade your plan to save more.",
+    });
+    notifyVaultCapIfApplicable({ message: "vault_cap_reached" });
+    unregisterVaultUploadCancellation(args.itemId);
+    return null;
+  }
 
   // ── HEIF → JPEG ─────────────────────────────────────────────────────
   const nameLower = filename.toLowerCase();
@@ -683,6 +733,7 @@ async function processOne(args: {
     // Record after the insert succeeds (the DB trigger is authoritative,
     // but we want our rolling window to reflect reality).
     recordUpload();
+    args.onNoteCreated?.();
 
     store.update(args.itemId, {
       progress: 100,
@@ -712,6 +763,7 @@ async function processOne(args: {
       fileType,
       fileUrl,
       createdNote,
+      bulkImport: args.bulkImport,
     });
 
     return createdNote;
@@ -757,7 +809,7 @@ async function processOne(args: {
       friendly = "Upload paused — you're uploading too fast. Try again in a moment.";
       didNotifyExternally = true;
     } else if (lower.includes("exceeded the maximum allowed size") || lower.includes("payload too large") || lower.includes("413")) {
-      friendly = "File too large for this vault. Increase the bucket file size limit in Supabase Storage.";
+      friendly = `File too large — max ${formatBytesShort(VAULT_UPLOAD_LIMITS.maxFileBytes)} per file.`;
     } else if (lower.includes("mime") && lower.includes("not allowed")) {
       friendly = "This file type is blocked by the storage bucket settings.";
     } else if (lower.includes("bucket not found")) {
@@ -806,6 +858,51 @@ async function processOne(args: {
 export async function startVaultUploads(input: StartFileUploadsInput): Promise<void> {
   const store = useVaultUploadStore.getState();
 
+  if (!input.files.length) return;
+
+  const vaultCount = await resolveVaultCount(input.userId, input.vaultCount);
+  const preflight = preflightVaultUploadBatch(
+    input.files,
+    input.planId ?? null,
+    vaultCount,
+  );
+
+  const rejectionSummary = summarizePreflightRejections(preflight.rejected);
+  if (rejectionSummary) {
+    try {
+      toast({
+        title: preflight.accepted.length > 0 ? "Some files skipped" : "Upload blocked",
+        description: rejectionSummary,
+        variant: preflight.accepted.length > 0 ? "default" : "destructive",
+      });
+    } catch {
+      /* toast unavailable */
+    }
+  }
+
+  if (!preflight.accepted.length) {
+    if (preflight.remainingSlots === 0) {
+      notifyVaultCapIfApplicable({ message: "vault_cap_reached" });
+    }
+    return;
+  }
+
+  if (preflight.isBulkImport) {
+    try {
+      toast({
+        title: `Uploading ${preflight.accepted.length} files`,
+        description:
+          "Large import — skipping per-file AI descriptions until this batch finishes. Files still save normally.",
+      });
+    } catch {
+      /* toast unavailable */
+    }
+  }
+
+  const vaultSlots: VaultSlotState = {
+    remaining: preflight.remainingSlots,
+  };
+
   const enqueued: Array<{
     itemId: string;
     file: File;
@@ -814,7 +911,7 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
     dedupKey: string;
   }> = [];
 
-  for (const entry of input.files) {
+  for (const entry of preflight.accepted) {
     // Skip files already mid-flight in this session. Without this the
     // user could drop the same image twice (because the toast was slow
     // to render, or they second-guessed) and end up with two identical
@@ -835,7 +932,7 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
     const mimeType = entry.file.type || "";
     const fileType = getFileType(mimeType, entry.filename);
     let previewUrl: string | null = null;
-    if (canPreview(fileType)) {
+    if (canPreview(fileType) && !preflight.isBulkImport) {
       try {
         previewUrl = URL.createObjectURL(entry.file);
       } catch {
@@ -883,7 +980,10 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
           folderPath: job.folderPath,
           filename: job.filename,
           planId: input.planId ?? null,
+          bulkImport: preflight.isBulkImport,
+          vaultSlots,
           onFileComplete: input.onFileComplete,
+          onNoteCreated: input.onNoteCreated,
         });
         if (created?.id) createdNotes.push(created);
       } finally {
@@ -898,6 +998,17 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
   const workerCount = Math.min(UPLOAD_PARALLELISM, enqueued.length);
   const workers = Array.from({ length: workerCount }, () => runNext());
   await Promise.all(workers);
+
+  if (preflight.isBulkImport && createdNotes.length > 0) {
+    try {
+      const { invalidateWorkspaceSummaryCache } = await import("@/lib/workspaceContext");
+      const { useAiStore } = await import("@/store/aiStore");
+      invalidateWorkspaceSummaryCache(input.userId);
+      void useAiStore.getState().refreshWorkspaceSummary(input.userId, undefined, { force: true });
+    } catch {
+      /* best-effort batch refresh */
+    }
+  }
 
   if (input.onAllComplete) {
     try {

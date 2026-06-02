@@ -18,7 +18,7 @@ import { useUserPlan } from "@/lib/useUserPlan";
  * — the user can start uploading on /vault and keep browsing while the
  * background workers finish.
  */
-export default function DragDropFileUpload({ onUploadComplete, onFileComplete, triggerRef, beforeUpload, onRequireSignIn }) {
+export default function DragDropFileUpload({ onUploadComplete, onFileComplete, triggerRef, beforeUpload, onRequireSignIn, onNoteCreated, refreshVaultCount }) {
   const { user } = useAuth();
   const { planId } = useUserPlan();
   const [isDragging, setIsDragging] = useState(false);
@@ -168,18 +168,25 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, t
       const filesToUpload = await processFileList(acceptedFiles);
       if (filesToUpload.length === 0) return;
 
+      let vaultCount = null;
+      if (refreshVaultCount) {
+        vaultCount = await refreshVaultCount();
+      }
+
       // Fire-and-forget: the global pipeline pushes all progress into the
       // Zustand store, so this component returns immediately and the user
       // can navigate away while uploads continue.
       startVaultUploads({
         userId: user.id,
         planId,
+        vaultCount,
         files: filesToUpload,
+        onNoteCreated,
         onAllComplete: onUploadComplete,
         onFileComplete,
       });
     },
-    [user?.id, planId, beforeUpload, processFileList, onUploadComplete, onFileComplete, onRequireSignIn],
+    [user?.id, planId, beforeUpload, processFileList, onUploadComplete, onFileComplete, onRequireSignIn, onNoteCreated, refreshVaultCount],
   );
 
   const onDrop = useCallback(
@@ -351,7 +358,7 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, t
                 Drop files or folders here
               </p>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                Supports folders, PDFs, images, videos, documents
+                Folders, PDFs, images, videos — up to 200 files, 100 MB each
               </p>
             </div>
           </div>

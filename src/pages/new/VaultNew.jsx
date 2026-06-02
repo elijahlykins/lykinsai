@@ -732,7 +732,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     }
   }, [isEmbeddedMode]);
 
-  const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
+  const { checkVaultLimit, incrementVaultCount, refreshVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [embeddedSearch, setEmbeddedSearch] = useState("");
   const vaultQueryClient = useQueryClient();
   const [vaultReady, setVaultReadyRaw] = useState(() => sessionVaultReady);
@@ -5232,6 +5232,8 @@ User: ${text}`;
       <DragDropFileUpload
         triggerRef={addMediaTriggerRef}
         beforeUpload={checkVaultLimit}
+        refreshVaultCount={refreshVaultCount}
+        onNoteCreated={incrementVaultCount}
         onRequireSignIn={() => setShowSignInBlocker(true)}
         onFileComplete={(note) => {
           if (note?.id) mergeUploadedNotes([note]);

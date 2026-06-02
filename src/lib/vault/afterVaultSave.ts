@@ -22,14 +22,18 @@ const ENRICH_DEBOUNCE_MS = 4000;
 export function afterVaultNoteSaved(
   userId: string,
   noteId: string,
-  opts: { title: string; content: string; extraPlain?: string },
+  opts: { title: string; content: string; extraPlain?: string; bulkImport?: boolean },
   workspaceOpts?: { excludeBoardId?: string | null },
 ): void {
   if (!userId || !noteId) return;
-  invalidateWorkspaceSummaryCache(userId);
-  const ex = workspaceOpts?.excludeBoardId ?? undefined;
-  void useAiStore.getState().refreshWorkspaceSummary(userId, ex, { force: true });
-  scheduleUserProfileRefresh(userId);
+  const bulkImport = !!opts.bulkImport;
+
+  if (!bulkImport) {
+    invalidateWorkspaceSummaryCache(userId);
+    const ex = workspaceOpts?.excludeBoardId ?? undefined;
+    void useAiStore.getState().refreshWorkspaceSummary(userId, ex, { force: true });
+    scheduleUserProfileRefresh(userId);
+  }
 
   let text = vaultNoteTextForSynthesis(opts.title, opts.content);
   const extra = String(opts.extraPlain || "").trim();
@@ -39,9 +43,12 @@ export function afterVaultNoteSaved(
     sourceId: noteId,
     text,
     metadata: { title: opts.title },
+    debounceMs: bulkImport ? 30_000 : undefined,
   });
 
-  scheduleVaultNoteEnrichment(noteId);
+  if (!bulkImport) {
+    scheduleVaultNoteEnrichment(noteId);
+  }
 }
 
 function scheduleVaultNoteEnrichment(noteId: string): void {
