@@ -14740,13 +14740,71 @@ function billingMePayload(row, extra = {}) {
   };
 }
 
+function resolveAuthUserEmail(user) {
+  const direct = String(user?.email || '').trim();
+  if (direct) return direct;
+  const meta = String(
+    user?.user_metadata?.email || user?.raw_user_meta_data?.email || '',
+  ).trim();
+  if (meta) return meta;
+  for (const identity of user?.identities || []) {
+    const fromIdentity = String(identity?.identity_data?.email || '').trim();
+    if (fromIdentity) return fromIdentity;
+  }
+  return null;
+}
+
+function resolveAuthUserDisplayName(user) {
+  const meta = user?.user_metadata || user?.raw_user_meta_data || {};
+  const name = String(meta.full_name || meta.name || '').trim();
+  return name || null;
+}
+
+async function resolveAuthUserEmailFromDb(userId) {
+  if (!supabaseAdmin || !userId) return null;
+  try {
+    const { data, error } = await supabaseAdmin.auth.admin.getUserById(userId);
+    if (error || !data?.user) return null;
+    return resolveAuthUserEmail(data.user);
+  } catch (err) {
+    console.warn('⚠️ resolveAuthUserEmailFromDb failed:', err?.message || err);
+    return null;
+  }
+}
+
+async function backfillStripeCustomerContact(customerId, { email, name } = {}) {
+  if (!stripe || !customerId) return;
+  const patch = {};
+  if (email) patch.email = email;
+  if (name) patch.name = name;
+  if (!Object.keys(patch).length) return;
+  try {
+    const customer = await stripe.customers.retrieve(customerId);
+    const updates = {};
+    if (patch.email && !customer.email) updates.email = patch.email;
+    if (patch.name && !customer.name) updates.name = patch.name;
+    if (Object.keys(updates).length) {
+      await stripe.customers.update(customerId, updates);
+    }
+  } catch (err) {
+    console.warn('⚠️ backfillStripeCustomerContact failed:', err?.message || err);
+  }
+}
+
 async function ensureStripeCustomer(user) {
   if (!stripeConfigured()) throw new Error('stripe_not_configured');
   const existing = await loadBillingRow(user.id);
-  if (existing?.stripe_customer_id) return existing.stripe_customer_id;
+  const email = resolveAuthUserEmail(user) || await resolveAuthUserEmailFromDb(user.id);
+  const name = resolveAuthUserDisplayName(user);
+
+  if (existing?.stripe_customer_id) {
+    await backfillStripeCustomerContact(existing.stripe_customer_id, { email, name });
+    return existing.stripe_customer_id;
+  }
 
   const customer = await stripe.customers.create({
-    email: user.email || undefined,
+    email: email || undefined,
+    name: name || undefined,
     metadata: { supabase_user_id: user.id },
   });
 
@@ -14887,6 +14945,15 @@ async function handleStripeEvent(event) {
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object;
+      const customerId = typeof session.customer === 'string'
+        ? session.customer
+        : session.customer?.id;
+      const sessionEmail = String(
+        session.customer_details?.email || session.customer_email || '',
+      ).trim();
+      if (customerId && sessionEmail) {
+        await backfillStripeCustomerContact(customerId, { email: sessionEmail });
+      }
       if (session.mode === 'subscription' && session.subscription) {
         const sub = await stripe.subscriptions.retrieve(session.subscription);
         await syncSubscriptionToBilling(sub);
@@ -14985,6 +15052,7 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: customerId,
+      customer_update: { email: 'auto', name: 'auto' },
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: `${appUrl}/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${appUrl}/billing?checkout=canceled`,
