@@ -764,7 +764,7 @@ const COMPED_PRO_EMAILS = new Set(
     'aj@intertwine.tv',
     'jaeminw8@gmail.com',
     'nyuballer18@gmail.com',
-    'spam.redford@gmail.com',
+    'easton.redford13@gmail.com',
     'rowan@lykn.io',
     'dlexeffect@gmail.com',
     ...String(process.env.COMPED_PRO_EMAILS || '')
