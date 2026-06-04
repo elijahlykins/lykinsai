@@ -1874,7 +1874,7 @@ mark {
   max-width: none;
   white-space: nowrap;
   font-size: clamp(1.05rem, 2.1vw, 1.5rem);
-  line-height: 1.12;
+  line-height: 1.22;
 }
 
 .lykn-wake-problems-split-body {
@@ -2651,13 +2651,22 @@ mark {
   min-height: min(56vh, 480px);
 }
 
+/* background-clip:text trims descenders unless line-height + padding leave room */
+.lykn-wake-scroll-lead,
+.lykn-wake-scroll-headline,
+.lykn-wake-scroll-subhead {
+  padding-bottom: 0.12em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
 .lykn-wake-scroll-lead {
   margin: 0;
   max-width: 18ch;
   font-size: clamp(1.45rem, 3.2vw, 2.15rem);
   font-weight: 600;
   letter-spacing: -0.04em;
-  line-height: 1.12;
+  line-height: 1.22;
   background: linear-gradient(180deg, #eff6ff 0%, #93c5fd 38%, #3b82f6 72%, #2563eb 100%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -2680,7 +2689,7 @@ mark {
   font-size: clamp(2rem, 5.2vw, 3.35rem);
   font-weight: 600;
   letter-spacing: -0.045em;
-  line-height: 1.04;
+  line-height: 1.18;
   background: linear-gradient(180deg, #f8fbff 0%, #bfdbfe 40%, #60a5fa 100%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -2693,7 +2702,7 @@ mark {
   font-size: clamp(1.45rem, 3.4vw, 2.15rem);
   font-weight: 600;
   letter-spacing: -0.035em;
-  line-height: 1.12;
+  line-height: 1.22;
   background: linear-gradient(180deg, #eff6ff 0%, #93c5fd 42%, #3b82f6 100%);
   -webkit-background-clip: text;
   background-clip: text;

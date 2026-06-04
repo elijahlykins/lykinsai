@@ -171,7 +171,7 @@ export const WAKE_SURFACE_EXPLAINERS: Record<
       },
       {
         eyebrow: "Synthesis link",
-        title: "Files become neurons, not orphans",
+        title: "Files become neurons",
         body:
           "Every meaningful upload can spawn or enrich neurons in your synthesis layer. A journal entry might strengthen a belief. A project brief might open a new project neuron. The vault is raw material. The synthesis layer is where it becomes intelligence.",
       },
