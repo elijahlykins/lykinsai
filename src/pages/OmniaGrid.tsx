@@ -49,13 +49,24 @@ import OmniaVaultOverlay from "@/components/omnia/OmniaVaultOverlay";
 import FileDropModeDialog from "@/components/omnia/FileDropModeDialog";
 import OmniaSideRail from "@/components/omnia/OmniaSideRail";
 import OmniaFocusedChat from "@/components/omnia/OmniaFocusedChat";
+import OmniaVoiceMode from "@/components/omnia/OmniaVoiceMode";
+import SubAgentTasksStrip from "@/components/omnia/SubAgentTasksStrip";
 import LoadInBriefingPanel from "@/components/omnia/LoadInBriefingPanel";
 import MobileFocusedChatGrids from "@/components/omnia/MobileFocusedChatGrids";
 import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
 import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useChatEngine } from "@/hooks/useChatEngine";
-
+import { fetchPublishedCustomModels } from "@/lib/modelBuilder/customModelsClient";
+import {
+  loadActiveCustomModelId,
+  saveActiveCustomModelId,
+} from "@/lib/modelBuilder/activeCustomModelStorage";
+import {
+  customModelSelectValue,
+  parseCustomModelSelectValue,
+} from "@/lib/modelBuilder/customModelSelect";
+import { toChatModelKey } from "@/lib/board/chatModelKey";
 // Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
 // Keep this `true` to make the focused chat the main interface across `/app`,
 // `/grid/:boardId`, and `/omnia`. Flip back to `false` to re-enable the
@@ -529,13 +540,24 @@ const makeAttId = () =>
  * Locked models are shown greyed out with a lock badge so users can see the
  * upgrade path instead of hiding the tier entirely.
  */
-function OmniaGridModelSelectMenuBody({ modelTier = "basic" }: { modelTier?: string }) {
-  return <ModelSelectOptions modelTier={modelTier} />;
+function OmniaGridModelSelectMenuBody({
+  modelTier = "basic",
+  publishedCustomModels = [],
+}: {
+  modelTier?: string;
+  publishedCustomModels?: { id: string; name: string }[];
+}) {
+  return (
+    <ModelSelectOptions
+      modelTier={modelTier}
+      publishedCustomModels={publishedCustomModels}
+    />
+  );
 }
 
 const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   compact, onSend, chatInputHasText, isChatLoading, isDictating, isTranscribing,
-  selectedModel, persistSelectedModel, modelTier,
+  modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
   handleOpenAttachments, handleStopAi, handleDictateToggle,
 }: {
   compact?: boolean;
@@ -544,9 +566,10 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   isChatLoading: boolean;
   isDictating: boolean;
   isTranscribing: boolean;
-  selectedModel: string;
+  modelSelectValue: string;
   persistSelectedModel: (v: string) => void;
   modelTier?: string;
+  modelSelectMenu: React.ReactNode;
   handleOpenAttachments: () => void;
   handleStopAi: () => void;
   handleDictateToggle: () => void;
@@ -561,7 +584,7 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
 
   return (
     <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>
-      <Select value={selectedModel} onValueChange={persistSelectedModel}>
+      <Select value={modelSelectValue} onValueChange={persistSelectedModel}>
         <SelectTrigger className={modelTriggerCls}>
           <SelectValue placeholder="Model" />
         </SelectTrigger>
@@ -570,7 +593,7 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
           align="start"
           className={`${dropdownCls} max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]`}
         >
-          <OmniaGridModelSelectMenuBody modelTier={modelTier} />
+          {modelSelectMenu}
         </SelectContent>
       </Select>
       <div className="flex-1 min-w-[4px]" aria-hidden />
@@ -728,6 +751,79 @@ export default function OmniaGridPage() {
     }
     return "lykn";
   });
+  const [activeCustomModelId, setActiveCustomModelId] = useState<string | null>(() =>
+    loadActiveCustomModelId(),
+  );
+  const chatModelKeyRef = useRef<string | null>(
+    toChatModelKey(
+      (() => {
+        try {
+          const saved = localStorage.getItem("lykinsai_settings");
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (parsed.aiModel) return parsed.aiModel;
+          }
+        } catch {
+          // ignore
+        }
+        return "lykn";
+      })(),
+      loadActiveCustomModelId(),
+    ),
+  );
+  const [publishedCustomModels, setPublishedCustomModels] = useState<
+    { id: string; name: string; baseModelId?: string }[]
+  >([]);
+  const refreshPublishedCustomModels = useCallback(async () => {
+    if (!user?.id) {
+      setPublishedCustomModels([]);
+      return;
+    }
+    try {
+      const list = await fetchPublishedCustomModels();
+      setPublishedCustomModels(list || []);
+      const stored = loadActiveCustomModelId();
+      if (stored && !(list || []).some((m) => m.id === stored)) {
+        saveActiveCustomModelId(null);
+        setActiveCustomModelId(null);
+      }
+    } catch {
+      setPublishedCustomModels([]);
+    }
+  }, [user?.id]);
+  useEffect(() => {
+    void refreshPublishedCustomModels();
+  }, [refreshPublishedCustomModels]);
+  useEffect(() => {
+    const onRefresh = () => void refreshPublishedCustomModels();
+    window.addEventListener("lykn_custom_models_changed", onRefresh);
+    window.addEventListener("lykn_active_custom_model_changed", onRefresh);
+    return () => {
+      window.removeEventListener("lykn_custom_models_changed", onRefresh);
+      window.removeEventListener("lykn_active_custom_model_changed", onRefresh);
+    };
+  }, [refreshPublishedCustomModels]);
+  const modelSelectValue = useMemo(
+    () =>
+      activeCustomModelId
+        ? customModelSelectValue(activeCustomModelId)
+        : selectedModel,
+    [activeCustomModelId, selectedModel],
+  );
+  const isMainAgentChat = useMemo(() => {
+    if (!activeCustomModelId) return false;
+    const model = publishedCustomModels.find((m) => m.id === activeCustomModelId);
+    return !!(model as { isMainAgent?: boolean } | undefined)?.isMainAgent;
+  }, [activeCustomModelId, publishedCustomModels]);
+  const modelSelectMenu = useMemo(
+    () => (
+      <OmniaGridModelSelectMenuBody
+        modelTier={modelTier}
+        publishedCustomModels={publishedCustomModels}
+      />
+    ),
+    [modelTier, publishedCustomModels],
+  );
   const [liveAIMode, setLiveAIMode] = useState(() => {
     try {
       const saved = localStorage.getItem("lykinsai_settings");
@@ -741,6 +837,20 @@ export default function OmniaGridPage() {
     return false;
   });
   const persistSelectedModel = useCallback((value: string) => {
+    const customId = parseCustomModelSelectValue(value);
+    if (customId) {
+      saveActiveCustomModelId(customId);
+      setActiveCustomModelId(customId);
+      const custom = publishedCustomModels.find((m) => m.id === customId);
+      const base = custom?.baseModelId;
+      if (base && isModelAllowedForPlan(base, modelTier)) {
+        setSelectedModel(base);
+      }
+      chatModelKeyRef.current = toChatModelKey(base || selectedModel || "lykn", customId);
+      return;
+    }
+    saveActiveCustomModelId(null);
+    setActiveCustomModelId(null);
     // Refuse to persist a model the current plan can't use. Radix will already
     // prevent selection of disabled items, but this guards against stale saved
     // preferences and any programmatic callers.
@@ -761,6 +871,7 @@ export default function OmniaGridPage() {
       return;
     }
     setSelectedModel(value);
+    chatModelKeyRef.current = toChatModelKey(value, null);
     try {
       const saved = localStorage.getItem("lykinsai_settings");
       const settings = saved ? JSON.parse(saved) : {};
@@ -770,12 +881,13 @@ export default function OmniaGridPage() {
     } catch {
       /* ignore */
     }
-  }, [modelTier, nav, isGuest]);
+  }, [modelTier, nav, isGuest, publishedCustomModels, selectedModel]);
 
   // Auto-downgrade the saved model once the plan resolves. Keeps behaviour
   // deterministic for users who had a premium model picked before downgrading.
   useEffect(() => {
     if (planLoading) return;
+    if (activeCustomModelId) return;
     if (isModelAllowedForPlan(selectedModel, modelTier)) return;
     const fallback = defaultModelForTier(modelTier);
     setSelectedModel(fallback);
@@ -785,7 +897,7 @@ export default function OmniaGridPage() {
       settings.aiModel = fallback;
       localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
     } catch { /* ignore */ }
-  }, [modelTier, planLoading, selectedModel]);
+  }, [modelTier, planLoading, selectedModel, activeCustomModelId]);
 
   // Allow callers (e.g. the Skills page) to deep-link directly into the
   // grid in chat-focused mode by appending `?chat=1` to the URL. We read
@@ -1123,6 +1235,7 @@ export default function OmniaGridPage() {
     onDraftEffectCleanup,
     savedMediaUrls,
     savedYouTubeIds,
+    chatModelKeyRef,
   });
 
   const {
@@ -1524,8 +1637,17 @@ export default function OmniaGridPage() {
   /* ------------------------------------------------------------------ */
   /*  Chat engine hook                                                    */
   /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    const sync = () => setActiveCustomModelId(loadActiveCustomModelId());
+    window.addEventListener("lykn_active_custom_model_changed", sync);
+    return () => window.removeEventListener("lykn_active_custom_model_changed", sync);
+  }, []);
+  useEffect(() => {
+    chatModelKeyRef.current = toChatModelKey(selectedModel, activeCustomModelId);
+  }, [selectedModel, activeCustomModelId]);
   const chatEngine = useChatEngine({
     boardId, routeBoardId, user, title, titleRef, selectedModel,
+    customModelId: activeCustomModelId,
     notesPagesRef, projectId: projectId ?? null, gridSize, viewportWidth,
     chatMode, chatRailVisible,
     chatMessages, setChatMessages, chatMessagesRef, aiThreadRef,
@@ -1545,6 +1667,7 @@ export default function OmniaGridPage() {
     expandedAiMsgIds, expandedUserPromptIds, chatReactions, setChatReactions,
     copiedMsgId, setCopiedMsgId,
     assistantTaskChecks, isDictating, isTranscribing,
+    voiceModeOn, setVoiceMode, toggleVoiceMode,
     chatScrollRef, chatPanelInputRef, centerChatInputRef,
     chatUserScrolledUpRef, chatProgrammaticScrollRef,
     pendingAiBrickActionRef, pendingBrickActionDataRef,
@@ -2723,11 +2846,95 @@ export default function OmniaGridPage() {
   }, [addFocusedAttachment, applyVaultDropToChat]);
 
 
+  // Voice Mode is only offered on "main model agents": the default LYKN
+  // model (no custom model active) or the user's main-agent orchestrator.
+  // Model-Builder custom/sub agents are excluded for the MVP.
+  const voiceModeEligible = !activeCustomModelId || isMainAgentChat;
+
+  // Switching to an ineligible model while voice mode is on silently exits
+  // voice mode so the chat can't get stuck speaking on an unsupported agent.
+  useEffect(() => {
+    if (!voiceModeEligible && voiceModeOn) setVoiceMode(false);
+  }, [voiceModeEligible, voiceModeOn, setVoiceMode]);
+
+  // Assemble the LYKN-grounded system instructions for a realtime voice
+  // session from the same workspace/KB context the text chat uses, plus the
+  // recent conversation so voice picks up where the user left off.
+  const buildVoiceInstructions = useCallback(async (): Promise<string> => {
+    const parts: string[] = [];
+    const boardTitle = String(titleRef.current || title || "").trim();
+    if (boardTitle) parts.push(`The user's current workspace is titled "${boardTitle}".`);
+    try {
+      const ws = getCachedWorkspaceSummary()?.full;
+      if (ws) parts.push(`Workspace & memory summary:\n${String(ws).slice(0, 6000)}`);
+    } catch { /* ignore */ }
+    try {
+      const kb = typeof getCachedKbText === "function" ? getCachedKbText() : "";
+      const kbText = typeof kb === "string" ? kb : String((kb as { text?: string })?.text || "");
+      if (kbText) parts.push(`Relevant saved knowledge:\n${kbText.slice(0, 4000)}`);
+    } catch { /* ignore */ }
+    try {
+      const recent = (chatMessagesRef.current || []).slice(-6);
+      const convo = recent
+        .map((m) => {
+          const u = m.content ? `User: ${String(m.content).slice(0, 600)}` : "";
+          const a = m.aiResponse ? `LYKN: ${String(m.aiResponse).slice(0, 600)}` : "";
+          return [u, a].filter(Boolean).join("\n");
+        })
+        .filter(Boolean)
+        .join("\n");
+      if (convo) parts.push(`Recent conversation so far:\n${convo.slice(0, 3000)}`);
+    } catch { /* ignore */ }
+    return parts.join("\n\n");
+  }, [title, getCachedWorkspaceSummary, getCachedKbText]);
+
+  // Voice Mode persists each finalized turn into the chat thread so the full
+  // conversation is waiting in the text chat when the user switches back. The
+  // live transcript is intentionally NOT shown in the voice UI; this is the
+  // single source of truth for what was said.
+  const voiceTurnIdRef = useRef<string | null>(null);
+  const newMsgId = useCallback(
+    () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `voice-${Date.now().toString(36)}`),
+    [],
+  );
+
+  const handleVoiceUserTranscript = useCallback((text: string) => {
+    const content = String(text || "").trim();
+    if (!content) return;
+    const id = newMsgId();
+    voiceTurnIdRef.current = id;
+    const msg = { id, role: "user", content, kind: "prompt", viaVoice: true } as unknown as PromptMessage;
+    setChatMessages((prev) => [...prev, msg]);
+    try { aiThreadRef.current = [...(aiThreadRef.current || []), { role: "user", content }]; } catch { /* ignore */ }
+  }, [newMsgId, setChatMessages, aiThreadRef]);
+
+  const handleVoiceAssistantReply = useCallback((text: string) => {
+    const reply = String(text || "").trim();
+    if (!reply) return;
+    const pendingId = voiceTurnIdRef.current;
+    setChatMessages((prev) => {
+      const target = pendingId ? prev.find((m) => m.id === pendingId) : null;
+      // Attach the reply to the pending user turn when it has none yet;
+      // otherwise (assistant spoke first, or a follow-up) start a fresh turn.
+      if (target && !target.aiResponse) {
+        return prev.map((m) => (m.id === pendingId ? { ...m, aiResponse: reply } : m));
+      }
+      const id = newMsgId();
+      return [...prev, { id, role: "user", content: "", aiResponse: reply, kind: "prompt", viaVoice: true } as unknown as PromptMessage];
+    });
+    voiceTurnIdRef.current = null;
+    try { aiThreadRef.current = [...(aiThreadRef.current || []), { role: "assistant", content: reply }]; } catch { /* ignore */ }
+  }, [newMsgId, setChatMessages, aiThreadRef]);
+
   const chatBarToolbarProps = useMemo(() => ({
     chatInputHasText, isChatLoading, isDictating, isTranscribing,
-    selectedModel, persistSelectedModel, modelTier,
+    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
-  }), [chatInputHasText, isChatLoading, isDictating, isTranscribing, selectedModel, persistSelectedModel, modelTier, handleOpenAttachments, handleStopAi, handleDictateToggle]);
+  }), [
+    chatInputHasText, isChatLoading, isDictating, isTranscribing,
+    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
+    handleOpenAttachments, handleStopAi, handleDictateToggle,
+  ]);
 
   const handleCloseSideRail = useCallback(() => {
     setChatRailVisible(false);
@@ -3220,7 +3427,7 @@ export default function OmniaGridPage() {
         onTitleCommit={commitBoardTitle}
         topPanelOpen={topPanelOpen}
         onTopPanelToggle={() => setTopPanelOpen((v) => !v)}
-        selectedModel={selectedModel}
+        selectedModel={modelSelectValue}
         onModelChange={persistSelectedModel}
         chatMode={chatMode}
         isMobilePhone={isMobilePhone}
@@ -3254,11 +3461,23 @@ export default function OmniaGridPage() {
         showVaultSidebar={showVaultSidebar}
         onVaultToggle={() => setShowVaultSidebar((v) => !v)}
         notesOpen={notesOpen}
-        modelSelectMenu={<OmniaGridModelSelectMenuBody modelTier={modelTier} />}
+        modelSelectMenu={modelSelectMenu}
         onShareGrid={() => setShowShareDialog(true)}
         onUndo={handleTopPanelUndo}
+        voiceModeEligible={voiceModeEligible}
+        voiceModeOn={voiceModeOn}
+        onVoiceModeToggle={toggleVoiceMode}
       />
       )}
+
+      <OmniaVoiceMode
+        open={voiceModeOn}
+        onClose={() => setVoiceMode(false)}
+        boardId={boardId}
+        buildInstructions={buildVoiceInstructions}
+        onUserTranscript={handleVoiceUserTranscript}
+        onAssistantReply={handleVoiceAssistantReply}
+      />
 
       <GridShareDialog
         open={showShareDialog}
@@ -3459,6 +3678,11 @@ export default function OmniaGridPage() {
           onRegenerate={handleFocusedChatRegenerate}
           onRegenerateNonUser={handleFocusedChatRegenerateNonUser}
           onLoadInGreetingRefresh={refreshLoadInGreetingInPlace}
+          composerAbove={
+            chatMode && isMainAgentChat ? (
+              <SubAgentTasksStrip boardId={boardId} enabled={isMainAgentChat} />
+            ) : null
+          }
         />
       )}
 

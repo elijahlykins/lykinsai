@@ -372,7 +372,8 @@ function ProjectInstructionsSection({ target, snippet, copied, onCopy }) {
         <p className="text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed">
           The config above wires LYKN's tools in. <strong>This snippet teaches the
           AI when to use them</strong> — silently load context at conversation start,
-          push project state on decisions, ask before promoting core beliefs.
+          push project state on decisions. Beliefs are user-authored only —
+          the AI reads them but never proposes new ones.
           Without it, you'd have to prompt the AI every chat. With it, the
           synthesis layer stays in sync on its own.
         </p>

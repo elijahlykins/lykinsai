@@ -42,6 +42,7 @@
 // hydrate-everything-in-this-project pipeline is straightforward.
 
 import { jsonContent, errorContent } from './index.js';
+import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -109,49 +110,20 @@ export const getProjectNeuronsTool = {
       ? args.kind.trim().toLowerCase()
       : null;
 
-    // Resolve project: explicit > active. Mirrors getProjectState /
-    // pushProjectState exactly so the three tools agree on "which
-    // project are we talking about" within a single turn.
-    let projectId = args?.project_id ? String(args.project_id).trim() : null;
-    if (!projectId) {
-      const { data: profile, error: profileErr } = await ctx.supabaseAdmin
-        .from('lykn_user_synthesis_profile')
-        .select('active_project_id')
-        .eq('user_id', ctx.userId)
-        .maybeSingle();
-      if (profileErr) {
-        return errorContent(`profile lookup failed: ${profileErr.message}`);
-      }
-      projectId = profile?.active_project_id || null;
-    }
+    const explicitId = args?.project_id ? String(args.project_id).trim() : null;
+    const { project } = await resolveWriteProjectTarget(ctx, explicitId);
 
-    if (!projectId) {
+    if (!project) {
       return jsonContent({
         ok: true,
         project: null,
         neurons: [],
         counts: {},
         message:
-          'No active project. Call lykn_setActiveProject first, or pass an explicit project_id.',
+          'No writable project in scope. Pass project_id for a user-created project.',
       });
     }
-
-    const { data: project, error: pjErr } = await ctx.supabaseAdmin
-      .from('lykn_projects')
-      .select('id, name, description, status, created_by_client, created_at, last_active_at')
-      .eq('id', projectId)
-      .eq('user_id', ctx.userId)
-      .maybeSingle();
-    if (pjErr) {
-      return errorContent(`project lookup failed: ${pjErr.message}`);
-    }
-    if (!project) {
-      return jsonContent({
-        ok: false,
-        reason: 'project_not_found',
-        message: 'That project_id is not in the user\'s project list.',
-      });
-    }
+    const projectId = project.id;
 
     let q = ctx.supabaseAdmin
       .from('lykn_project_neurons')

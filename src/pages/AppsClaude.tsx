@@ -77,11 +77,6 @@ const tools = [
       "Substring search across your saved notes, links, and attachments. Returns the raw items so Claude can reason over them.",
   },
   {
-    name: "lykn_proposeBelief",
-    summary:
-      "Suggests a new belief based on the conversation. Lands in your LYKN inbox to ratify — never auto-promoted.",
-  },
-  {
     name: "lykn_proposeFact",
     summary:
       "Records a new identity / preference / constraint fact. Same review-before-active flow as beliefs.",
@@ -114,7 +109,7 @@ const scopes = [
     id: "lykn:write",
     title: "Propose & update",
     description:
-      "Propose new beliefs and facts (you ratify before they go live), and push state updates to your active project.",
+      "Propose new facts (you ratify before they go live) and push state updates to your active project. Beliefs are user-authored only.",
   },
   {
     id: "offline_access",
@@ -318,12 +313,12 @@ export default function AppsClaude() {
               {
                 icon: Zap,
                 title: "Pushes back what it learns",
-                body: "When you say something belief-shaped (\"I think X is non-negotiable\"), Claude proposes it back to LYKN — you ratify with one click.",
+                body: "When you share a durable fact or make a project decision, Claude can save it to LYKN — facts and project state, not beliefs (those you add yourself).",
               },
               {
                 icon: RefreshCw,
                 title: "Read-write, with consent",
-                body: "Claude can read your synthesis layer AND propose updates to it — but writes always land in your inbox to ratify, never silently active.",
+                body: "Claude can read your synthesis layer AND propose fact and project updates — but writes always land in your inbox to ratify, never silently active.",
               },
               {
                 icon: Shield,

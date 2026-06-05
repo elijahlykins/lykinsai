@@ -1,6 +1,8 @@
-import React, { useRef } from "react";
+import React, { useCallback, useRef } from "react";
 import { motion } from "framer-motion";
-import { ChevronDown, StickyNote, Loader2, Save, Trash2 } from "lucide-react";
+import { ChevronDown, Loader2, Mic, Save, Square, StickyNote, Trash2 } from "lucide-react";
+import { useVaultVoiceRecorder } from "@/hooks/useVaultVoiceRecorder";
+import { transcribeVaultAudio, VOICE_NOTE_MIN_BYTES } from "@/lib/vault/saveVoiceNote";
 
 type DraggableQuickNoteProps = {
   title?: string;
@@ -13,6 +15,9 @@ type DraggableQuickNoteProps = {
   onDiscard?: () => void;
   /** Center within a positioned parent (e.g. wake vault preview subwindow). */
   contained?: boolean;
+  /** When false, hides the mic dictation control (e.g. wake preview). */
+  voiceEnabled?: boolean;
+  onVoiceError?: (message: string) => void;
 };
 
 export default function DraggableQuickNote({
@@ -23,8 +28,30 @@ export default function DraggableQuickNote({
   onClose,
   onDiscard,
   contained = false,
+  voiceEnabled = true,
+  onVoiceError,
 }: DraggableQuickNoteProps) {
   const constraintsRef = useRef<HTMLDivElement | null>(null);
+
+  const handleVoiceBlob = useCallback(async (blob: Blob) => {
+    if (blob.size < VOICE_NOTE_MIN_BYTES) {
+      onVoiceError?.("Recording too short — try speaking a bit longer.");
+      return;
+    }
+    const hint = String(content || "").trim().split(/\s+/).slice(-12).join(" ");
+    const result = await transcribeVaultAudio(blob, { promptHint: hint });
+    if ("error" in result) {
+      onVoiceError?.(result.error);
+      return;
+    }
+    const current = String(content || "").trim();
+    setContent(current ? `${current} ${result.transcript}` : result.transcript);
+  }, [content, onVoiceError, setContent]);
+
+  const { isRecording, isProcessing, toggleRecording } = useVaultVoiceRecorder({
+    disabled: isSaving || !voiceEnabled,
+    onBlobReady: handleVoiceBlob,
+  });
 
   return (
     <div
@@ -90,9 +117,24 @@ export default function DraggableQuickNote({
             }}
             autoFocus
           />
-          {!content.trim() && (
+          {!content.trim() && !isRecording && !isProcessing && (
             <div className="pointer-events-none absolute inset-x-4 top-3 text-sm text-black/35 dark:text-white/35 select-none">
-              Start typing a quick note...
+              Start typing or tap the mic to dictate...
+            </div>
+          )}
+          {(isRecording || isProcessing) && (
+            <div className="pointer-events-none absolute inset-x-4 bottom-3 flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
+              {isRecording ? (
+                <>
+                  <div className="dictation-wave"><span /><span /><span /><span /><span /></div>
+                  <span className="font-medium">Recording…</span>
+                </>
+              ) : (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Transcribing…</span>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -110,6 +152,29 @@ export default function DraggableQuickNote({
             <span className="ml-1.5">to save</span>
           </span>
           <div className="flex items-center gap-1">
+            {voiceEnabled && (
+              <button
+                type="button"
+                onClick={() => toggleRecording()}
+                onPointerDown={(e) => e.stopPropagation()}
+                disabled={isSaving || isProcessing}
+                title={isRecording ? "Stop recording" : "Dictate into note"}
+                aria-label={isRecording ? "Stop recording" : "Dictate into note"}
+                className={`flex items-center justify-center w-7 h-7 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                  isRecording
+                    ? "text-red-600 dark:text-red-400 bg-red-500/10"
+                    : "text-black/40 dark:text-white/40 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10"
+                }`}
+              >
+                {isProcessing ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : isRecording ? (
+                  <Square className="w-3 h-3" fill="currentColor" />
+                ) : (
+                  <Mic className="w-3.5 h-3.5" />
+                )}
+              </button>
+            )}
             {onDiscard && (
               <button
                 type="button"

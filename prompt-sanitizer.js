@@ -56,6 +56,10 @@ const STRIP_PATTERNS = [
   /\blykn_\w+\s*\(\s*\{[\s\S]*?\}\s*\)/g,
   // lykn_xxx() — empty-args call
   /\blykn_\w+\s*\(\s*\)/g,
+  // <tool_use ... /> and <tool_use>...</tool_use> — Cursor / Anthropic XML.
+  /<tool_use\b[^>]*\/>/gi,
+  /<tool_use\b[^>]*>[\s\S]*?<\/tool_use>/gi,
+  /<\/?tool_use\b[^>]*>/gi,
   // <tool>...</tool>, <tool_call>...</tool_call>, etc. — block form.
   /<tool[_a-z]*[^>]*>[\s\S]*?<\/tool[_a-z]*>/gi,
   // Lone opening / closing tool tags (in case the close was on a

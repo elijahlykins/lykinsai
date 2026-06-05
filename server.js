@@ -23,6 +23,8 @@ import {
   retranscribeSegment,
   transcribeBuffer,
 } from './youtubeQa.js';
+import { searchWeb, formatSearchResultsForPrompt } from './lib/exterior/webSearch.js';
+import { fetchWebPage } from './lib/exterior/webFetch.js';
 import {
   getOrCreateSession,
   logAiUsage,
@@ -50,6 +52,7 @@ import {
   classifyModel,
 } from './src/lib/modelTiers.js';
 import { PLAN_LIMITS } from './src/lib/pricing-config.js';
+import { compressConversation as compressConversationForPrompt } from './src/lib/ai/conversationFormat.js';
 import {
   discoverFeed,
   fetchAndSaveNewEntries,
@@ -78,7 +81,50 @@ import {
   testCustomAgent,
   CustomAgentValidationError,
 } from './custom-agents-service.js';
-import { registerAgentStudioRoutes } from './agent-studio-routes.js';
+import { registerTrainingSetRoutes } from './training-sets-routes.js';
+import { registerCustomModelRoutes } from './custom-models-routes.js';
+import { registerLoraRoutes } from './lora-routes.js';
+import {
+  registerModelBuilderWalletRoutes,
+  handleModelBuilderWalletCheckoutCompleted,
+} from './model-builder-wallet-routes.js';
+import {
+  isTogetherDedicatedEndpointError,
+  isTogetherInferenceModel,
+  isTogetherLoraInferenceRetryableError,
+} from './lib/lora/togetherLora.js';
+import { buildTogetherChatBody } from './lib/lora/togetherServerlessLora.js';
+import {
+  buildTogetherLoraMessages,
+  extractSupplementalUserContext,
+} from './lib/lora/togetherLoraChat.js';
+import {
+  resolveCustomModelChatContext,
+  applyCustomModelOverlayToPrompt,
+  shouldSkipSynthesisBeliefsForCustomModel,
+  buildProviderModelChain,
+} from './lib/modelBuilder/customModelChat.js';
+import { resolveCustomModelChatTools } from './lib/modelBuilder/customModelChatTools.js';
+import { loadCustomModelVaultKnowledgeSection } from './lib/modelBuilder/customModelKnowledge.js';
+import {
+  readIsMainAgent,
+  readSubModelIds,
+  loadSubModelRoster,
+  formatMainAgentOrchestrationBlock,
+} from './lib/modelBuilder/mainAgentOrchestration.js';
+import { runSubModelDelegate } from './lib/modelBuilder/runSubModelDelegate.js';
+import {
+  createSubModelTask,
+  listSubModelTasks,
+  getSubModelTask,
+  listUndeliveredCompletedTasks,
+  markSubModelTasksNotified,
+} from './lib/modelBuilder/subModelTasksService.js';
+import { enqueueSubModelTask } from './lib/modelBuilder/subModelTaskRunner.js';
+import {
+  getCustomModelChatPersonaStatic,
+  getCustomModelStreamPersonaFull,
+} from './lib/modelBuilder/lyknCustomModelRuntimePersona.js';
 import {
   runUserModelLearningPass,
   applyFactFeedback,
@@ -107,6 +153,7 @@ import {
   formatBeliefsAndRulesForPrompt,
   formatProjectStateForPromptInLykn,
   loadActiveProjectContext,
+  loadProjectContextById,
   shouldSkipUserModelGivenBeliefs,
   listActiveBeliefsForUser,
   listActiveRulesForUser,
@@ -125,8 +172,13 @@ import {
 import { buildMcpHandler, buildMcpStreamHandler, mcpMethodNotAllowed, MCP_DISCOVERY } from './mcp-server.js';
 import { mountOauthServer } from './oauth-server.js';
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools/index.js';
-import { CHAT_TOOLS, buildChatToolCtx, providerForModel, supportsTools } from './mcp-tools/chatTools.js';
-import { runAgentLoop } from './chat-agent-loop.js';
+import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, supportsTools } from './mcp-tools/chatTools.js';
+import {
+  formatBoundProjectGuidance,
+  loadWritableProject,
+  stampActiveProject,
+} from './lib/projectWriteTarget.js';
+import { runAgentLoop, makeToolSyntaxStripper, stripToolSyntaxFromText } from './chat-agent-loop.js';
 import { z, validate, validateParams, setValidationFailureHook } from './validation.js';
 import {
   sanitizeUserContent,
@@ -166,6 +218,7 @@ console.log('  OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? '✅ Set' : '❌ M
 console.log('  ANTHROPIC_API_KEY:', process.env.ANTHROPIC_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('  GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('  XAI_API_KEY:', process.env.XAI_API_KEY ? '✅ Set' : '❌ Missing');
+console.log('  TOGETHER_API_KEY:', process.env.TOGETHER_API_KEY ? '✅ Set' : '⚪ Not set (LoRA training/inference disabled)');
 console.log('  YOUTUBE_API_KEY:', process.env.YOUTUBE_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('  GOOGLE_CSE_ID:', process.env.GOOGLE_CSE_ID ? '✅ Set' : '⚪ Not set');
 console.log('  SERPER_API_KEY:', process.env.SERPER_API_KEY ? '✅ Set' : '❌ Missing');
@@ -297,28 +350,8 @@ function hasExplicitUrlScrapeIntent(text) {
 }
 
 async function scrapeUrl(url) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; LYKNBot/1.0)" },
-      signal: controller.signal,
-      redirect: "follow",
-    });
-    clearTimeout(timeout);
-    if (!res.ok) return "";
-    const ct = String(res.headers.get("content-type") || "");
-    if (!ct.includes("text/html") && !ct.includes("text/plain")) return "";
-    const html = await res.text();
-    if (ct.includes("text/plain")) return html.slice(0, 8000);
-    const $ = cheerio.load(html);
-    $("script, style, nav, footer, header, aside, iframe, noscript, svg, form").remove();
-    const article = $("article").text().trim() || $("main").text().trim() || $("body").text().trim();
-    const cleaned = article.replace(/\s{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-    return cleaned.slice(0, 8000);
-  } catch {
-    return "";
-  }
+  const page = await fetchWebPage(url, { timeoutMs: 5000, maxChars: 8000 });
+  return page.ok ? page.content : '';
 }
 
 async function scrapeUrlsFromText(text, opts = {}) {
@@ -497,44 +530,16 @@ async function runWebSearchIfNeeded(text, opts = {}) {
   try {
     const query = String(text).trim().slice(0, 200);
     console.log(`🔍 Web search (Serper): "${query.slice(0, 80)}..."`);
-    const res = await fetch("https://google.serper.dev/search", {
-      method: "POST",
-      headers: {
-        "X-API-KEY": process.env.SERPER_API_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ q: query, num: 5 }),
-    });
-    if (!res.ok) {
-      console.warn(`⚠️ Web search failed: ${res.status} ${res.statusText}`);
+    const payload = await searchWeb(query, { num: 5, deepBrowse: true });
+    if (!payload.ok || !payload.results?.length) {
+      if (!payload.ok) console.warn(`⚠️ Web search failed: ${payload.error}`);
       return "";
     }
-    const data = await res.json();
-    const items = Array.isArray(data.organic) ? data.organic.slice(0, 5) : [];
-    if (items.length === 0) return "";
-    const formatted = items
-      .map((item, i) => `${i + 1}. [${item.title || "Untitled"}](${item.link || ""}) — ${item.snippet || ""}`)
-      .join("\n");
-    console.log(`✅ Web search returned ${items.length} result(s)`);
-
-    // Deep browse: scrape the top 3 result pages for full content
-    const browseable = items.filter(i => i.link).slice(0, 3);
-    let deepContent = "";
-    if (browseable.length > 0) {
-      console.log(`🌐 Deep browsing ${browseable.length} result page(s)...`);
-      const pages = await Promise.all(browseable.map(async (item) => {
-        const content = await scrapeUrl(item.link);
-        if (!content || content.length < 100) return "";
-        return `[PAGE: ${item.title || "Untitled"} — ${item.link}]\n${content.slice(0, 4000)}`;
-      }));
-      const validPages = pages.filter(Boolean);
-      if (validPages.length > 0) {
-        console.log(`✅ Deep browsed ${validPages.length} page(s)`);
-        deepContent = `\n\n[DEEP_BROWSE_CONTENT]\nFull page content from top results. Use this for detailed, accurate answers:\n\n${validPages.join("\n\n---\n\n")}`;
-      }
+    console.log(`✅ Web search returned ${payload.result_count} result(s)`);
+    if (payload.pages?.length) {
+      console.log(`✅ Deep browsed ${payload.pages.length} page(s)`);
     }
-
-    return `[WEB_SEARCH_RESULTS]\nThe following are live web search results. Use them to give accurate, current answers. You MUST include a "Sources:" section at the very end of your response listing each source as a markdown link.\n${formatted}${deepContent}`;
+    return formatSearchResultsForPrompt(payload);
   } catch (err) {
     console.warn("⚠️ Web search error:", err.message);
     return "";
@@ -2491,18 +2496,94 @@ async function fetchBeliefSection(authHeader, userId) {
  * underlying model. The body (header + state kv-pairs + clustered
  * neurons) is identical; only the trailing footer differs.
  */
-async function fetchProjectSection(authHeader, userId) {
+/**
+ * Load a published custom model for main /app chat and optionally override
+ * the frontier model id when the user's plan allows it.
+ */
+async function loadCustomModelForChat(userId, customModelId, currentModel, planTier) {
+  const empty = {
+    customModel: null,
+    overlay: { promptSections: [], beliefText: '', skipSynthesisBeliefs: false },
+    model: currentModel,
+  };
+  if (!supabaseAdmin || !userId || !customModelId) return empty;
+  try {
+    const { model, overlay } = await resolveCustomModelChatContext(
+      supabaseAdmin,
+      userId,
+      String(customModelId).trim(),
+    );
+    if (!model) return empty;
+    let nextModel = currentModel;
+    if (overlay?.modelId) {
+      const candidate = normalizeRequestedModel(overlay.modelId);
+      const useLoraAdapter = !!overlay.loraActive && isTogetherInferenceModel(candidate);
+      if (
+        candidate &&
+        (useLoraAdapter || isModelAllowedForPlan(candidate, planTier))
+      ) {
+        nextModel = candidate;
+        console.log(
+          useLoraAdapter
+            ? `🧱 Custom model "${model.name}" → Together serverless LoRA host ${candidate} + adapter ${overlay.loraAdapterId}`
+            : `🧱 Custom model "${model.name}" → ${candidate}`,
+        );
+      } else if (overlay.loraActive && candidate) {
+        console.warn(
+          `⚠️ LoRA adapter "${candidate}" not applied (plan gate); using ${currentModel} + prompt stack only`,
+        );
+      }
+    }
+    return { customModel: model, overlay, model: nextModel };
+  } catch (e) {
+    console.warn('⚠️ loadCustomModelForChat:', e?.message || e);
+    return empty;
+  }
+}
+
+async function fetchCustomModelKnowledgeSection(userId, customModel) {
+  if (!supabaseAdmin || !userId || !customModel) return '';
+  try {
+    const section = await loadCustomModelVaultKnowledgeSection(
+      supabaseAdmin,
+      userId,
+      customModel,
+    );
+    if (section) {
+      console.log(
+        `📚 Custom model "${customModel.name}" vault knowledge: ${section.length} chars`,
+      );
+    }
+    return section;
+  } catch (e) {
+    console.warn('⚠️ fetchCustomModelKnowledgeSection:', e?.message || e);
+    return '';
+  }
+}
+
+function readCustomModelLinkedProjectId(customModel) {
+  const meta = customModel?.metadata;
+  if (!meta || typeof meta !== 'object') return null;
+  const raw = meta.linked_project_id ?? meta.linkedProjectId;
+  const id = String(raw || '').trim();
+  return id.length > 8 ? id : null;
+}
+
+async function fetchProjectSection(authHeader, userId, projectIdOverride = null) {
   if (!userId) return '';
-  const cached = projectSectionCache.get(userId);
+  const cacheKey = projectIdOverride ? `${userId}:${projectIdOverride}` : userId;
+  const cached = projectSectionCache.get(cacheKey);
   if (cached && Date.now() - cached.at < BELIEF_SECTION_CACHE_TTL_MS) {
     return cached.text;
   }
   const client = supabaseAdmin || createSynthesisUserClient(authHeader);
   if (!client) return '';
   try {
-    const ctx = await loadActiveProjectContext(client, userId);
+    const ctx = projectIdOverride
+      ? await loadProjectContextById(client, userId, projectIdOverride)
+      : await loadActiveProjectContext(client, userId);
     const text = ctx ? formatProjectStateForPromptInLykn(ctx) : '';
-    projectSectionCache.set(userId, {
+    projectSectionCache.set(cacheKey, {
       text,
       projectId: ctx?.project?.id || null,
       at: Date.now(),
@@ -3403,10 +3484,12 @@ const normalizeRequestedModel = (model) => {
 
 const OPENAI_O_SERIES = new Set(['o3', 'o3-pro', 'o4-mini']);
 const isOpenAIModel = (m) => m.startsWith('gpt-') || OPENAI_O_SERIES.has(m);
+const isTogetherModel = (m) => isTogetherInferenceModel(m);
 
 const RETRYABLE_STATUSES = new Set([429, 503, 529]);
 const isRetryableProviderError = (errMsg) =>
-  /429|rate.?limit|overloaded|529|503|too many|capacity|resource.?exhaust|quota.?exceed/i.test(errMsg);
+  /429|rate.?limit|overloaded|529|503|too many|capacity|resource.?exhaust|quota.?exceed/i.test(errMsg) ||
+  isTogetherDedicatedEndpointError(errMsg);
 
 function getFallbackModels(failedModel) {
   // Multi-tier fallback chain. Walked in order by the streaming + invoke
@@ -4317,7 +4400,8 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    invocations in your reply text. The tool system runs invisibly',
   '    via a separate channel; the user MUST NOT see strings like',
   '    "lykn_findConnections", "[lykn_foo({...})]", "<tool>...</tool>",',
-  '    or "calling X with Y". Anything tool-shaped that leaks into your',
+  '    "<tool_use name=... />", or "calling X with Y". Anything tool-shaped',
+  '    that leaks into your',
   '    text is a bug.',
   '  • Do NOT announce intent ("Let me check…", "I\'ll look that up…").',
   '    Just call the tool silently and reply with the result.',
@@ -4326,12 +4410,14 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    the internal tool names.',
   '',
   'PROJECT DISCOVERY (read):',
-  '  • lykn_listProjects — what the user is working on. Default to active.',
+  '  • lykn_listProjects — all active main + branch projects. Default to active.',
   '    Use this any time the user mentions "my projects", "what am I',
   '    working on", or wants to switch / merge / rename projects.',
-  '  • lykn_getProjectState — the ACTIVE project\'s working memory (a',
-  '    small key-value store: current_blocker, next_milestone,',
-  '    recent_decisions, scope, …). Cheap, idempotent.',
+  '  • lykn_resolveProject — score projects against the user\'s topic and',
+  '    pick the best main or branch (GitHub-style). Call when the topic',
+  '    might not match the current focus.',
+  '  • lykn_getProjectState — working memory for a project (pass project_id',
+  '    to read ANY project; omit for the active focus). Cheap, idempotent.',
   '  • lykn_getProjectNeurons — the ACTIVE project\'s clustered neurons',
   '    (beliefs, facts, concepts, vault notes the user has grouped',
   '    here). Returns node_ids you can hand to lykn_loadNeuron.',
@@ -4357,23 +4443,17 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    don\'t see anything saved on X yet — want me to add a note now?")',
   '    — NEVER substitute project state as if it were vault content.',
   '',
-  'AUTO-CONNECT FLOW — this is the most important pattern in the whole',
-  'toolset. The MOMENT the user mentions a project by name (e.g. "let me',
-  'think about LYKN Labs Robotics", "for my Personal Branding work",',
-  '"on the Q1 deck"), run this 3-tool pipeline silently, IN PARALLEL',
-  'WHERE POSSIBLE, without announcing it:',
-  '  1. lykn_setActiveProject({ name: "<their name>" })  // create:false',
-  '  2. lykn_getProjectState({})                          // working memory',
-  '  3. lykn_getProjectNeurons({})                        // clustered neurons',
-  'Now you have: the project header, every key/value Cursor + Claude',
-  'Desktop + Claude Code pushed about this project, AND every neuron the',
-  'user has explicitly grouped under it. The conversation is now',
-  '"connected" to the project — anything you push next via',
-  'lykn_pushProjectState carries forward to the user\'s next chat AND',
-  'into every other AI client they use.',
-  'If setActiveProject returns project_not_found, the user is likely',
-  'starting NEW work — ask them "Want me to start a new project for',
-  'this?" before passing create:true.',
+  'AUTO-CONNECT FLOW — when the user mentions a project by name, run this',
+  'pipeline silently (parallel where possible):',
+  '  1. lykn_resolveProject({ query: "<topic or project name>" }) OR',
+  '     lykn_listProjects({ query: "<name fragment>" })',
+  '  2. lykn_setActiveProject({ project_id: "<best id>" })  // never create',
+  '  3. lykn_getProjectState({ project_id: "<same id>" })',
+  '  4. lykn_getProjectNeurons({ project_id: "<same id>" })',
+  'Projects are USER-CREATED ONLY in the synthesis layer (+ → Create project).',
+  'If nothing matches, ask the user to create a main project or branch there —',
+  'do NOT pass create:true (blocked). Any agent may read/update any project',
+  'by project_id once the user has created it.',
   '',
   'PROJECT WORKING MEMORY (write, git-style — fully reversible):',
   '  • lykn_pushProjectState — update one key in the active project\'s',
@@ -4412,7 +4492,9 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '      milestone / open question / scope change). In that case, end',
   '      your reply with a brief one-liner telling the user what you',
   '      saved, so they can object: "Saved to <Project>: <key> = <one-',
-  '      line value>." (No question mark — already pushed.)',
+  '      line value>." (No question mark — already pushed.) NEVER echo',
+  '      the tool call, arguments JSON, or <tool_use> markup in that',
+  '      one-liner — plain English only.',
   '  (b) You did NOT push, because nothing concrete enough surfaced. In',
   '      that case end your reply with EXACTLY one offer line proposing',
   '      a specific push the user can accept with a single word:',
@@ -4515,10 +4597,9 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    The neurons themselves stay around; only the membership goes.',
   '',
   'PROJECT METADATA (write, reversible):',
-  '  • lykn_setActiveProject — switch the user\'s current working project.',
-  '    Resume an existing one by project_id whenever possible (call',
-  '    lykn_listProjects first to discover the id). Only pass',
-  '    { name, create: true } when the user has genuinely started new work.',
+  '  • lykn_setActiveProject — switch focus to an existing main or branch.',
+  '    Always pass project_id (from lykn_listProjects / lykn_resolveProject).',
+  '    Projects are user-created only — never pass create:true.',
   '  • lykn_updateProject — rename / re-describe / archive an existing',
   '    project. Does NOT change which one is active.',
   '',
@@ -4538,23 +4619,26 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    to consolidate. Never merge on your own initiative.',
   '',
   'NEW NEURONS (write):',
-  '  • lykn_proposeBelief — when the user states a durable principle that',
-  '    generalises across many decisions ("I always reject X"). If you',
-  '    explicitly asked them "should I add this as a core belief?" and',
-  '    they said yes, pass user_confirmed:true so it lands active.',
-  '    Otherwise (you observed it without asking) leave it omitted so it',
-  '    lands proposed for ratification.',
+  '  BELIEFS ARE USER-AUTHORED ONLY. Core belief neurons are created',
+  '  exclusively by the user in the Synthesis Layer (+ → Core Belief',
+  '  neuron). You MUST NOT propose beliefs, offer to add beliefs, ask',
+  '  "should I add this as a core belief?", or suggest belief options.',
+  '  If the user states a durable principle, acknowledge it in your reply',
+  '  and — only if they seem to want it in their synthesis layer — point',
+  '  them to add it themselves in Synthesis Layer. Read existing beliefs',
+  '  via lykn_getBeliefs; never write new ones.',
   '  • lykn_proposeFact — when the user discloses something concrete and',
-  '    durable about themselves ("works as a designer in Brooklyn"). Use',
-  '    this for facts; use proposeBelief for principles.',
+  '    durable about themselves ("works as a designer in Brooklyn"). Facts',
+  '    are observation; beliefs are governance and are user-only.',
   '  • lykn_createVaultNote — save a piece of CONTENT (a summary you',
   '    produced, a snippet the user shared, a working code block, a',
   '    research extract) into the user\'s vault so it survives this',
   '    chat. ASK FIRST every time: "Want me to drop this into your',
   '    vault?" — the vault is the user\'s space, silent writes of',
   '    arbitrary text are hostile. Don\'t use this for principles',
-  '    (proposeBelief) or for identity disclosures (proposeFact). And',
-  '    DON\'T use this for URLs — see lykn_saveLinkToVault below.',
+  '    (beliefs are user-authored in Synthesis Layer) or for identity',
+  '    disclosures (proposeFact). And DON\'T use this for URLs — see',
+  '    lykn_saveLinkToVault below.',
   '  • lykn_saveLinkToVault — save a LINK the user pasted, dropped, or',
   '    shared in chat into the vault as a rich link note. Use this',
   '    INSTEAD of createVaultNote whenever the thing being saved is',
@@ -4611,10 +4695,11 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '',
   'CAPABILITY-AWARE ROUTING (pull model — NEVER dispatch):',
   '  LYKN is a synthesis layer. It does NOT send email, run code in the',
-  '  user\'s repo, generate images / video / voice, browse the live web,',
-  '  access calendars, or otherwise execute actions in outside tools. The',
-  '  honest answer to "send this", "make me a poster", "run this script",',
-  '  "search the web for X" is two-part:',
+  '  user\'s repo, access calendars, or otherwise execute actions in outside',
+  '  tools. For live web search use lykn_web_search; for reading a URL use',
+  '  lykn_web_fetch; for image generation use lykn_generate_image (5/month).',
+  '  The honest answer to "send this", "make me a poster", "run this script"',
+  '  is two-part:',
   '    (a) Produce the LYKN-shaped output you CAN produce, using the',
   '        user\'s tone (beliefs / rules), the active project\'s state,',
   '        relevant vault snippets, and any facts that bear on the ask.',
@@ -4644,12 +4729,38 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   'next step. If a tool errors, fall back to answering from context',
   'without mentioning the failure.',
   '',
+  'VISUAL ARTIFACTS (interactive previews — like claude.ai Artifacts):',
+  '  When the user asks for a slideshow, pitch deck, dashboard, mini-app,',
+  '  landing page, worksheet, or any visual/interactive deliverable, BUILD',
+  '  IT WITH TOOLS — do not dump a long HTML/code block only in markdown.',
+  '  LYKN renders tool output inline in the chat as a live preview.',
+  '  • lykn_build_template — slideshows, pitch decks, lessons, forms,',
+  '    layouts. Pass template_type + title + sections[{heading, body,',
+  '    notes}]. Always include export_formats: ["html","pptx"] for decks.',
+  '  • lykn_manage_file — self-contained HTML/CSS/JS apps, custom pages,',
+  '    or one-off documents. action=create, filename ends in .html, full',
+  '    page in content. Prefer this for interactive UIs and prototypes.',
+  '  • lykn_generate_chart / lykn_generate_diagram / lykn_generate_image',
+  '    — charts, diagrams, and images render inline too.',
+  '  After the tool returns, give a brief summary in prose — the preview',
+  '  card appears automatically; you do not need to paste download URLs.',
+  '',
   'BIAS TOWARD ONE CALL — most turns need zero tools, many need exactly',
   'one, and very few need more than two. If you\'re tempted to call three+',
   'tools, the user\'s question is probably better answered by one well-',
   'chosen lykn_findConnections call. The end-of-turn project',
   'push/proposal above is the ONE exception: it does not count against',
   'this bias and must still happen whenever a project was mentioned.',
+  '',
+  'EXTERIOR CAPABILITIES (on-demand — call when needed, not every turn):',
+  '  • lykn_web_search — live web results when vault/synthesis cannot answer.',
+  '  • lykn_web_fetch — read one URL the user shared.',
+  '  • lykn_calculate — exact math or unit conversion.',
+  '  • lykn_generate_chart — bar/line/pie; show chart_url as markdown image.',
+  '  • lykn_generate_diagram — Mermaid flowcharts; paste returned markdown block.',
+  '  • lykn_get_current_time — current date/time; do not guess "today".',
+  '  • lykn_run_python — short data snippets (no imports).',
+  '  • lykn_generate_image — Nano Banana image (5/month cap); embed markdown.',
   '=== END TOOL CALLING ===',
 ].join('\n');
 
@@ -4807,12 +4918,13 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
     }).catch((e) => console.warn('[Usage] guest_chat log failed:', e?.message || e));
   };
 
-  const sendChunk = (text) => {
+  const _guestTextStripper = makeToolSyntaxStripper((text) => {
     if (ended || res.writableEnded) return;
     emittedChars += String(text || '').length;
     res.write(`data: ${JSON.stringify({ t: text })}\n\n`);
     if (typeof res.flush === 'function') res.flush();
-  };
+  });
+  const sendChunk = (text) => _guestTextStripper.ingest(text);
   const sendError = (msg) => {
     if (ended || res.writableEnded) return;
     ended = true;
@@ -4822,6 +4934,7 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
   };
   const sendDone = () => {
     if (ended || res.writableEnded) return;
+    _guestTextStripper.flush();
     ended = true;
     logGuestUsageOnce();
     try { res.write('data: [DONE]\n\n'); } catch {}
@@ -4829,7 +4942,10 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
   };
 
   req.on('close', () => {
-    if (!ended) logGuestUsageOnce();
+    if (!ended) {
+      _guestTextStripper.flush();
+      logGuestUsageOnce();
+    }
     ended = true;
   });
 
@@ -5257,39 +5373,9 @@ const AI_BUDGETS = { canvasTotal: 14000, projectSummary: 2000, projectSummaryInP
 // usable context window — exceeding this is an abuse signal.
 const MAX_USER_INPUT_CHARS = 200_000;
 
-// Conversation compressor — mirrors compressConversation() in src/lib/ai/promptBuilder.ts
-//
-// Tier 3 cost cut: more aggressive trimming for long histories.
-//   * older messages: 80 → 60 char snippets (was already terse; tightened further)
-//   * recent messages: per-message cap drops from 2000 → 900 chars
-//     (a 6-message recent block now caps at ~5.4K instead of ~12K)
-//   * `fullCount` reduced from 6 → 4 — the model sees the user's last 4
-//     turns in full, which covers virtually every real coreference need.
-//   * if 4 full + 16 snippets still exceeds maxChars, the joined string is
-//     hard-truncated as before.
-// Net effect: a chatty session that used to fill the full 8K AI_BUDGETS.conversation
-// budget now sits closer to 5K-6K, reclaiming ~500-750 input tokens per turn.
-const compressConversation = (msgs, fullCount = 4, maxChars = AI_BUDGETS.conversation) => {
-  if (!Array.isArray(msgs) || !msgs.length) return "";
-  const capped = msgs.slice(-20);
-  const splitAt = Math.max(0, capped.length - fullCount);
-  const older = capped.slice(0, splitAt);
-  const recent = capped.slice(splitAt);
-  const olderLines = older.map((m) => {
-    const role = String(m?.role || "user").toUpperCase();
-    const snippet = String(m?.content || "").replace(/\s+/g, " ").trim().slice(0, 60);
-    return snippet ? `${role}: ${snippet}…` : "";
-  }).filter(Boolean);
-  const recentLines = recent.map((m) => {
-    const role = String(m?.role || "user").toUpperCase();
-    const content = String(m?.content || "").trim();
-    if (!content) return "";
-    const truncated = content.length > 900 ? `${content.slice(0, 900)}…` : content;
-    return `${role}: ${truncated}`;
-  }).filter(Boolean);
-  const joined = [...olderLines, ...recentLines].join("\n");
-  return joined.length > maxChars ? `${joined.slice(0, maxChars)}…` : joined;
-};
+// Conversation compressor — shared with src/lib/ai/conversationFormat.js
+const compressConversation = (msgs, fullCount = 4, maxChars = AI_BUDGETS.conversation) =>
+  compressConversationForPrompt(msgs, { fullCount, maxChars, recentMessageMax: 900, olderSnippetMax: 60 });
 
 app.post('/api/synthesis/reindex', requireAuth, synthesisLimiter, async (req, res) => {
   try {
@@ -6675,9 +6761,9 @@ app.post('/api/applied/:id/feedback', requireAuth, async (req, res) => {
 // surface (POST/GET/DELETE /api/v1/synthesis/tokens) is JWT-only — only a
 // signed-in user can mint a token for themselves.
 //
-// Token-managed write actions (recordRuleApplication, proposeBelief,
-// proposeFact) check the token's `scopes`. By default every freshly-minted
-// token gets ['read', 'write'] regardless of plan — pushing context to LYKN
+// Token-managed write actions (recordRuleApplication, proposeFact) check
+// the token's `scopes`. By default every freshly-minted token gets
+// ['read', 'write'] regardless of plan — pushing context to LYKN
 // is a core capability we never want to gate. Callers can still mint an
 // explicitly read-only token by passing `scopes: ['read']`.
 //
@@ -6907,12 +6993,12 @@ app.post('/api/v1/synthesis/vault', requireAuthOrMcpToken, mcpMinuteLimiter, mcp
 app.get('/api/v1/synthesis/context-block', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getContextBlock', req, res));
 app.get('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectState', req, res));
 app.get('/api/v1/synthesis/projects', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_listProjects', req, res));
+app.get('/api/v1/synthesis/projects/resolve', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_resolveProject', req, res));
 
 // Write endpoints — same auth. Tools internally enforce 'write' scope for
 // MCP-token requests, but mints default to read+write on every plan, so
 // 'write' is present unless the caller explicitly minted a read-only token.
 app.post('/api/v1/synthesis/attributions', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_recordRuleApplication', req, res));
-app.post('/api/v1/synthesis/beliefs/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_proposeBelief', req, res));
 app.post('/api/v1/synthesis/facts/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_proposeFact', req, res));
 app.post('/api/v1/synthesis/projects/active', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_setActiveProject', req, res));
 app.post('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_pushProjectState', req, res));
@@ -7056,7 +7142,9 @@ app.post('/api/v1/custom-agents/:id/test', requireAuth, async (req, res) => {
   }
 });
 
-registerAgentStudioRoutes(app, { requireAuth, supabaseAdmin, resolveUserPlan });
+registerTrainingSetRoutes(app, { requireAuth, supabaseAdmin });
+registerCustomModelRoutes(app, { requireAuth, supabaseAdmin });
+registerLoraRoutes(app, { requireAuth, supabaseAdmin });
 
 // --- Concepts (056-058) ---------------------------------------------------
 // First-class concept/topic layer with hybrid AI/user authorship. The
@@ -9715,6 +9803,31 @@ app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       res.setHeader('X-Plan', invokePlan.planId);
       model = downgraded;
     }
+    const customModelId = String(req.body?.customModelId || '').trim() || null;
+    let customModelCtx = { overlay: null, model, customModel: null };
+    if (customModelId && req.user?.id) {
+      customModelCtx = await loadCustomModelForChat(
+        req.user.id,
+        customModelId,
+        model,
+        invokePlan.modelTier,
+      );
+      model = customModelCtx.model;
+      if (customModelCtx.customModel) {
+        try {
+          res.setHeader('X-Custom-Model', customModelCtx.customModel.id);
+          res.setHeader('X-Custom-Model-Name', customModelCtx.customModel.name || '');
+        } catch { /* ignore */ }
+      }
+      if (customModelCtx.overlay?.responseLength) {
+        responseLength = customModelCtx.overlay.responseLength;
+      }
+      if (customModelCtx.customModel && !(customModelCtx.overlay?.promptSections?.length)) {
+        console.warn(
+          `⚠️ Custom model ${customModelId} loaded but prompt overlay is empty (status=${customModelCtx.customModel.status})`,
+        );
+      }
+    }
     // Custom AI instructions are a Studio+ feature. Basic-tier callers get
     // the userPrompt silently stripped so the server prompt builder treats
     // them as a vanilla request.
@@ -9968,12 +10081,14 @@ ${t}
         ? `[USER_PREFERENCES]\nThe user has set these personal instructions — always follow them:\n${String(userPrompt).trim().slice(0, AI_BUDGETS.userPrompt)}`
         : "";
 
+      const staticPersona = customModelCtx.customModel
+        ? getCustomModelChatPersonaStatic()
+        : LYKN_CHAT_PERSONA_STATIC;
+
       return [
-        // Static persona — single canonical version, hashes deterministically
-        // so Google's cachedContents API hits on every call. See
-        // LYKN_CHAT_PERSONA_STATIC near the top of this file for the rules
-        // (capabilities, vault markers, data access, writing style, security).
-        LYKN_CHAT_PERSONA_STATIC,
+        // Static persona — LYKN default or custom-model runtime (no "You are LYKN"
+        // identity when a published custom model is active).
+        staticPersona,
 
         // Dynamic per-call sections (everything below the first [MARKER] is
         // treated as 'user' content by splitPromptForProvider — uncached).
@@ -9982,7 +10097,7 @@ ${t}
         input?.projectId ? `[PROJECT_ID]\n${String(input.projectId)}` : "",
         responseLengthNote,
         focusedBricksNote,
-        convo ? `[CONVERSATION]\n${convo}` : "",
+        convo ? `[CONVERSATION — each line shows role, timestamp, and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
         conversationMemory ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(String(conversationMemory).slice(0, 6000))}` : "",
         wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's entire Vault contents. This is real data.\n${wsCtx}` : "",
         rawPrompt ? `[REQUEST_CONTEXT]\n${rawPrompt}` : "",
@@ -10321,7 +10436,8 @@ ${t}
     const skipSearch    = skipWebSearch || enrichTier !== 'full';
     const skipSynthesis = enrichTier === 'none';
     const skipUserModel = enrichTier === 'none';
-    const skipBeliefs   = enrichTier === 'none' || !isChatIntent;
+    let skipBeliefs   = enrichTier === 'none' || !isChatIntent;
+    skipBeliefs = shouldSkipSynthesisBeliefsForCustomModel(skipBeliefs, customModelCtx.overlay);
     // Identity is tiny (just name + project list) and high-value for tone, so
     // we always pull it for chat-style intents — even "none" tier benefits.
     const skipIdentity  = !isChatIntent;
@@ -10346,7 +10462,11 @@ ${t}
           return fetchVaultNotesByUrls(req.user.id, matches);
         })()
       : Promise.resolve('');
-    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection, projectSection] = await Promise.all([
+    const customModelKnowledgePromise =
+      customModelCtx.customModel && req.user?.id
+        ? fetchCustomModelKnowledgeSection(req.user.id, customModelCtx.customModel)
+        : Promise.resolve('');
+    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection, projectSection, customModelKnowledge] = await Promise.all([
       skipScrape ? Promise.resolve("") : scrapeUrlsFromText(searchText, { force: explicitUrlIntent }),
       skipSearch ? Promise.resolve("") : runWebSearchIfNeeded(searchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForSearch }),
       !skipSynthesis
@@ -10372,8 +10492,13 @@ ${t}
       // kv state + user-clustered neurons so it can reference work
       // outside AI clients have been doing without re-litigating.
       !skipBeliefs
-        ? fetchProjectSection(req.headers.authorization, req.user?.id)
+        ? fetchProjectSection(
+            req.headers.authorization,
+            req.user?.id,
+            readCustomModelLinkedProjectId(customModelCtx.customModel),
+          )
         : Promise.resolve(""),
+      customModelKnowledgePromise,
     ]);
     // BELIEF-WINDOW ROUTER: when the user has ratified beliefs+rules and
     // this turn doesn't look like a recall question, skip the wide
@@ -10392,14 +10517,22 @@ ${t}
     }
     if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
     if (connectedToolsSection) prompt += "\n\n" + connectedToolsSection;
-    if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
+    if (customModelCtx.overlay?.beliefText) {
+      prompt += "\n\n" + sanitizeStaleSurfaceLanguage(customModelCtx.overlay.beliefText);
+    } else if (beliefSection.text) {
+      prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
+    }
     if (projectSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(projectSection);
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
+    if (customModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(customModelKnowledge);
     if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
     if (youtubeResults) prompt += "\n\n" + youtubeResults;
+    if (customModelCtx.overlay) {
+      prompt = applyCustomModelOverlayToPrompt(prompt, customModelCtx.overlay);
+    }
 
     // Handle unified-auto mode — prefer Gemini Flash (cheapest by far),
     // and if no Google key is configured fall back to gpt-4.1-nano. The
@@ -10437,12 +10570,72 @@ ${t}
     const boardId = req.body?.boardId || null;
 
     // ── Provider fallback: retry with another provider on rate-limit / overload ──
-    const _invokeModels = [actualModel, ...getFallbackModels(actualModel)];
+    const _invokeModels = buildProviderModelChain(
+      actualModel,
+      customModelCtx.overlay,
+      getFallbackModels,
+    );
     for (let _ii = 0; _ii < _invokeModels.length; _ii++) {
       if (_ii > 0) { actualModel = _invokeModels[_ii]; console.log(`🔄 Invoke fallback → ${actualModel} (attempt ${_ii + 1}/${_invokeModels.length})`); }
       try {
 
-    if (isOpenAIModel(actualModel)) {
+    if (isTogetherModel(actualModel)) {
+      if (!process.env.TOGETHER_API_KEY) {
+        return res.status(503).json({
+          error: 'Together API key not configured. Set TOGETHER_API_KEY for LoRA inference.',
+        });
+      }
+      const { system: tSys, user: tUser } = splitPromptForProvider(prompt);
+      const invokeUserText = String(text || '').trim();
+      const tMessages = customModelCtx.overlay?.useTogetherMultiTurn
+        ? buildTogetherLoraMessages({
+            system: tSys,
+            conversation,
+            latestUserText: invokeUserText,
+            supplementalContext: extractSupplementalUserContext(tUser, invokeUserText),
+            includeTurnRules: false,
+          })
+        : (() => {
+            const m = [];
+            if (tSys) m.push({ role: 'system', content: tSys });
+            m.push({ role: 'user', content: tUser });
+            return m;
+          })();
+      const _tCap = clampForProvider(pickOutputCap({
+        wantsActions,
+        hasImages: effectiveImageUrls.length > 0,
+      }), actualModel);
+      const invokeAttachLora =
+        customModelCtx.overlay?.loraActive &&
+        (customModelCtx.overlay?.loraServerlessHostCandidates || []).includes(actualModel);
+      const tRes = await fetch('https://api.together.ai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.TOGETHER_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(
+          buildTogetherChatBody({
+            model: actualModel,
+            messages: tMessages,
+            max_tokens: _tCap,
+            overlay: customModelCtx.overlay,
+            chatParams: invokeAttachLora ? customModelCtx.overlay?.togetherChatParams : undefined,
+          }),
+        ),
+      });
+      if (!tRes.ok) {
+        const err = await tRes.json().catch(() => ({}));
+        throw new Error(`Together: ${err?.error?.message || tRes.statusText}`);
+      }
+      const tData = await tRes.json();
+      responseText = tData?.choices?.[0]?.message?.content || '';
+      usageData = {
+        input_tokens: tData?.usage?.prompt_tokens || 0,
+        output_tokens: tData?.usage?.completion_tokens || 0,
+      };
+
+    } else if (isOpenAIModel(actualModel)) {
       if (!process.env.OPENAI_API_KEY) {
         console.error('❌ OPENAI_API_KEY not found in environment variables');
         return res.status(500).json({ 
@@ -11211,10 +11404,14 @@ ${t}
         else if (wantsOrganize) actions = [{ type: "organize_grid", strategy: "grid" }];
       }
 
-      return res.json({ response: cleanAssistant || assistant, actions, followUpQuestions });
+      return res.json({
+        response: stripToolSyntaxFromText(cleanAssistant || assistant),
+        actions,
+        followUpQuestions,
+      });
     }
 
-    res.json({ response: responseText });
+    res.json({ response: stripToolSyntaxFromText(responseText) });
   } catch (error) {
     console.error('❌ AI Error:', error.message);
     console.error('❌ Full error:', error.stack);
@@ -11245,6 +11442,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     // `let` (not const) because we may downgrade this to `false` once
     // we've classified the turn — see the 'none' tier gate below.
     let useTools = req.body?.useTools === true && CHAT_TOOLS.length > 0;
+    /** undefined = full in-app whitelist; array = custom-model subset */
+    let streamChatToolNames;
     let model = normalizedModel;
     console.log('[LYKN-STREAM] workspaceContext received:', workspaceContext ? `${String(workspaceContext).length} chars` : 'EMPTY/MISSING');
 
@@ -11301,6 +11500,111 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       res.setHeader('X-Model-Downgraded', `${model}->${downgraded}`);
       res.setHeader('X-Plan', streamPlan.planId);
       model = downgraded;
+    }
+    const streamCustomModelId =
+      String(req.body?.customModelId || '').trim() || null;
+    const streamChatAgentCtx = null;
+    let streamCustomModelCtx = { overlay: null, model, customModel: null };
+    let streamOrchestrationCtx = null;
+    if (streamCustomModelId && req.user?.id) {
+      streamCustomModelCtx = await loadCustomModelForChat(
+        req.user.id,
+        streamCustomModelId,
+        model,
+        streamPlan.modelTier,
+      );
+      model = streamCustomModelCtx.model;
+      if (streamCustomModelCtx.customModel) {
+        try {
+          res.setHeader('X-Custom-Model', streamCustomModelCtx.customModel.id);
+          res.setHeader('X-Custom-Model-Name', streamCustomModelCtx.customModel.name || '');
+        } catch { /* ignore */ }
+      }
+      if (streamCustomModelCtx.overlay?.responseLength) {
+        responseLength = streamCustomModelCtx.overlay.responseLength;
+      }
+      if (streamCustomModelCtx.customModel && !(streamCustomModelCtx.overlay?.promptSections?.length)) {
+        console.warn(
+          `⚠️ Custom model ${streamCustomModelId} loaded but prompt overlay is empty (status=${streamCustomModelCtx.customModel.status})`,
+        );
+      }
+      const mainModel = streamCustomModelCtx.customModel;
+      if (mainModel && readIsMainAgent(mainModel) && supabaseAdmin) {
+        const subModelIds = readSubModelIds(mainModel);
+        const roster = await loadSubModelRoster(supabaseAdmin, req.user.id, subModelIds);
+        if (roster.length) {
+          const [activeTasks, completedReports] = await Promise.all([
+            listSubModelTasks(supabaseAdmin, req.user.id, {
+              mainModelId: mainModel.id,
+              status: 'pending,running',
+              limit: 12,
+            }),
+            listUndeliveredCompletedTasks(supabaseAdmin, req.user.id, mainModel.id),
+          ]);
+          streamOrchestrationCtx = {
+            isMainAgent: true,
+            mainModelId: mainModel.id,
+            subModelIds: roster.map((r) => r.id),
+            roster,
+            activeTasks,
+            completedReports,
+            orchestrationBlock: formatMainAgentOrchestrationBlock(mainModel, roster, {
+              activeTasks,
+              completedReports,
+            }),
+          };
+          console.log(
+            `🎯 Main agent "${mainModel.name}" orchestrating ${roster.length} sub-model(s)` +
+              (activeTasks.length ? ` (${activeTasks.length} active task(s))` : '') +
+              (completedReports.length ? ` (${completedReports.length} new report(s))` : ''),
+          );
+        }
+      }
+    }
+
+    const streamBoundProjectId =
+      readCustomModelLinkedProjectId(streamCustomModelCtx.customModel) ||
+      (String(projectId || '').trim() || null);
+    const streamBoardProjectId =
+      !readCustomModelLinkedProjectId(streamCustomModelCtx.customModel)
+        ? (String(projectId || '').trim() || null)
+        : null;
+
+    if (streamChatAgentCtx?.agent) {
+      const toolsCfg = streamChatAgentCtx.toolsCfg;
+      streamChatToolNames = toolsCfg.toolNames;
+      useTools = toolsCfg.enabled && toolsCfg.toolNames.length > 0;
+      console.log(
+        useTools
+          ? `🛠 Chat agent "${streamChatAgentCtx.agent.name}" tools: ${toolsCfg.toolNames.length}`
+          : `🛠 Chat agent "${streamChatAgentCtx.agent.name}" tools: off`,
+      );
+    } else if (streamCustomModelCtx.customModel) {
+      const toolsCfg = resolveCustomModelChatTools(streamCustomModelCtx.customModel.metadata);
+      streamChatToolNames = toolsCfg.toolNames;
+      useTools = toolsCfg.enabled && toolsCfg.toolNames.length > 0;
+      if (useTools) {
+        console.log(
+          `🛠 Custom model "${streamCustomModelCtx.customModel.name}" agent tools: ${toolsCfg.toolNames.length}`,
+        );
+      } else {
+        console.log(
+          `🛠 Custom model "${streamCustomModelCtx.customModel.name}" agent tools: off`,
+        );
+      }
+    }
+    if (streamOrchestrationCtx?.isMainAgent) {
+      const names = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : [];
+      for (const toolName of [
+        'lykn_delegate_to_sub_model',
+        'lykn_list_sub_model_tasks',
+        'lykn_get_sub_model_task',
+      ]) {
+        if (!names.includes(toolName)) names.push(toolName);
+      }
+      streamChatToolNames = names;
+      useTools = useTools || names.length > 0;
+      console.log('🎯 Main agent delegation tools enabled');
     }
     // Custom AI instructions are Studio+. Strip them for basic-tier callers.
     if (streamPlan.modelTier === 'basic' && userPrompt) {
@@ -11402,17 +11706,20 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
           ? `[USER_PREFERENCES]\nThe user has set these personal instructions — always follow them:\n${String(input.userPrompt).trim().slice(0, AI_BUDGETS.userPrompt)}`
           : '';
 
+      const streamStaticPersona = streamCustomModelCtx.customModel
+        ? getCustomModelStreamPersonaFull(LYKN_LEARNED_TAG_INSTRUCTIONS)
+        : LYKN_STREAM_PERSONA_FULL;
+
       return [
-        // Static persona + learn-a-fact rules. Single canonical version.
-        // Hashes deterministically so Gemini cachedContents hits on every call.
-        LYKN_STREAM_PERSONA_FULL,
+        // Static persona — LYKN default or custom-model runtime + learn-a-fact.
+        streamStaticPersona,
 
         // Dynamic per-call sections (treated as 'user' content by
         // splitPromptForProvider — uncached, varies per call).
         userPromptSection,
         focusedBricksNote,
         imageNote,
-        convo ? `[CONVERSATION]\n${convo}` : "",
+        convo ? `[CONVERSATION — each line shows role, timestamp, and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
         conversationMemoryText
           ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(conversationMemoryText)}`
           : '',
@@ -11455,6 +11762,9 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     else if (streamEnrichTier === 'light') console.log('💡 Stream: Light enrichment — synthesis + user model (no web)');
     else console.log('🔬 Stream: Full enrichment — synthesis, user model, web search, URL scraping');
 
+    const streamHasProjectWriteScope = Boolean(streamBoundProjectId || streamBoardProjectId);
+    let streamEnrichTierEffective = streamEnrichTier;
+
     // CASUAL-TURN TOOL GATE: on a 'none' tier (greetings, casual chitchat,
     // identity-of-LYKN questions, single-word acks), turn off the agent
     // loop entirely. The LYKN_CHAT_TOOL_GUIDANCE block we'd otherwise
@@ -11467,9 +11777,19 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     // market-gap analysis of the user's active project. The fix is to
     // skip tools on phatic turns — there's nothing for them to look up,
     // and the persona alone produces a clean conversational reply.
+    //
+    // Exception: custom models linked to a project (or board-scoped chat)
+    // must keep tools enabled so lykn_pushProjectState can run on short
+    // confirmations ("yes", "ship it") — otherwise the project panel
+    // stays empty while the model claims it saved working memory.
     if (useTools && streamEnrichTier === 'none') {
-      useTools = false;
-      console.log('💬 Stream: useTools disabled for casual turn — skipping agent loop and project-proposal guidance');
+      if (streamHasProjectWriteScope) {
+        streamEnrichTierEffective = 'light';
+        console.log('📌 Stream: project-scoped chat — keeping tools on (light enrichment) despite casual tier');
+      } else {
+        useTools = false;
+        console.log('💬 Stream: useTools disabled for casual turn — skipping agent loop and project-proposal guidance');
+      }
     }
     // Explicit URL intent overrides the tier — if the user pasted a URL and
     // asked us to read / browse / search it, we scrape regardless of tier.
@@ -11482,15 +11802,19 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     const streamHasUrlInMessage = isChatIntent && URL_DETECT_RE.test(streamSearchText);
     if (streamHasUrlInMessage && !streamExplicitUrlIntent) console.log('🔗 Stream: Pasted URL detected — auto-scraping (no explicit intent verbs)');
     const streamSkipScrape    = !streamExplicitUrlIntent && !streamHasUrlInMessage;
-    const streamSkipSearch    = skipWebSearch || streamEnrichTier !== 'full';
-    const streamSkipSynthesis = streamEnrichTier === 'none';
-    const streamSkipUserModel = streamEnrichTier === 'none';
-    const streamSkipBeliefs   = streamEnrichTier === 'none' || !isChatIntent;
+    const streamSkipSearch    = skipWebSearch || streamEnrichTierEffective !== 'full';
+    const streamSkipSynthesis = streamEnrichTierEffective === 'none';
+    const streamSkipUserModel = streamEnrichTierEffective === 'none';
+    let streamSkipBeliefs   = streamEnrichTierEffective === 'none' || !isChatIntent;
+    streamSkipBeliefs = shouldSkipSynthesisBeliefsForCustomModel(
+      streamSkipBeliefs,
+      streamCustomModelCtx.overlay,
+    );
     // Always pull identity for chat intents — name + projects are cheap and
     // they're what makes the assistant feel personalised.
     const streamSkipIdentity  = !isChatIntent;
-    const streamSkipYouTube   = streamEnrichTier === 'none' || !needsYouTubeSearch(streamPureUserMessage || streamSearchText);
-    _ck(`before enrichment Promise.all (tier=${streamEnrichTier}, skipScrape=${streamSkipScrape}, skipSearch=${streamSkipSearch}, skipSynth=${streamSkipSynthesis}, skipUM=${streamSkipUserModel}, skipBeliefs=${streamSkipBeliefs}, skipIdentity=${streamSkipIdentity}, skipYT=${streamSkipYouTube})`);
+    const streamSkipYouTube   = streamEnrichTierEffective === 'none' || !needsYouTubeSearch(streamPureUserMessage || streamSearchText);
+    _ck(`before enrichment Promise.all (tier=${streamEnrichTierEffective}, skipScrape=${streamSkipScrape}, skipSearch=${streamSkipSearch}, skipSynth=${streamSkipSynthesis}, skipUM=${streamSkipUserModel}, skipBeliefs=${streamSkipBeliefs}, skipIdentity=${streamSkipIdentity}, skipYT=${streamSkipYouTube})`);
     // Connected-source URL → vault lookup (see invoke path for rationale).
     // Always on for chat intents; cheap; fixes the "I can't access external
     // pages" stall when the user pastes OR drags a Notion/Drive/etc. URL.
@@ -11505,7 +11829,14 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
           return fetchVaultNotesByUrls(req.user.id, matches);
         })()
       : Promise.resolve('');
-    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection, projectSection] = await Promise.all([
+    const streamCustomModelKnowledgePromise =
+      streamCustomModelCtx.customModel && req.user?.id
+        ? fetchCustomModelKnowledgeSection(req.user.id, streamCustomModelCtx.customModel)
+        : Promise.resolve('');
+    if (streamBoundProjectId && req.user?.id && supabaseAdmin) {
+      await stampActiveProject(supabaseAdmin, req.user.id, streamBoundProjectId);
+    }
+    const [scrapedContent, searchResults, synthesisRetrieval, beliefSection, userIdentitySection, youtubeResults, vaultUrlMatches, connectedToolsSection, projectSection, streamCustomModelKnowledge] = await Promise.all([
       streamSkipScrape ? Promise.resolve("") : scrapeUrlsFromText(streamSearchText, { force: streamExplicitUrlIntent }),
       streamSkipSearch ? Promise.resolve("") : runWebSearchIfNeeded(streamSearchText, { hasFocusedBricks: Boolean(hasFocusedBricks), hasContext: hasContextForStreamSearch }),
       !streamSkipSynthesis
@@ -11530,8 +11861,13 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       // project context outside AI clients (Claude Desktop, Cursor,
       // Claude Code, ChatGPT) get from lykn_getContextBlock.
       !streamSkipBeliefs
-        ? fetchProjectSection(req.headers.authorization, req.user?.id)
+        ? fetchProjectSection(
+            req.headers.authorization,
+            req.user?.id,
+            readCustomModelLinkedProjectId(streamCustomModelCtx.customModel),
+          )
         : Promise.resolve(""),
+      streamCustomModelKnowledgePromise,
     ]);
     _ck('after enrichment Promise.all');
     // BELIEF-WINDOW ROUTER (stream): when the user has ratified beliefs+rules
@@ -11551,14 +11887,34 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     }
     if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
     if (connectedToolsSection) prompt += "\n\n" + connectedToolsSection;
-    if (beliefSection.text) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
+    if (streamCustomModelCtx.overlay?.beliefText) {
+      prompt += "\n\n" + sanitizeStaleSurfaceLanguage(streamCustomModelCtx.overlay.beliefText);
+    } else if (beliefSection.text) {
+      prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
+    }
     if (projectSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(projectSection);
+    if (streamBoundProjectId && req.user?.id && supabaseAdmin) {
+      const boundRow = await loadWritableProject(supabaseAdmin, req.user.id, streamBoundProjectId);
+      if (boundRow) {
+        prompt += '\n\n' + formatBoundProjectGuidance(boundRow);
+      }
+    }
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
+    if (streamCustomModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(streamCustomModelKnowledge);
     if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
     if (scrapedContent) prompt += "\n\n" + scrapedContent;
     if (searchResults) prompt += "\n\n" + searchResults;
     if (youtubeResults) prompt += "\n\n" + youtubeResults;
+    if (streamCustomModelCtx.overlay) {
+      prompt = applyCustomModelOverlayToPrompt(prompt, streamCustomModelCtx.overlay);
+    }
+    if (streamChatAgentCtx?.instructionsBlock) {
+      prompt += `\n\n${streamChatAgentCtx.instructionsBlock}`;
+    }
+    if (streamOrchestrationCtx?.orchestrationBlock) {
+      prompt += `\n\n${streamOrchestrationCtx.orchestrationBlock}`;
+    }
 
     let actualModel = model;
     if (model === 'unified-auto') {
@@ -11600,7 +11956,7 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     let streamedTextLength = 0;
     const streamBoardId = req.body?.boardId || null;
     const cleanup = () => { clearInterval(stallCheck); clearInterval(heartbeat); clearTimeout(hardKill); };
-    const sendChunk = (text) => {
+    const _streamTextStripper = makeToolSyntaxStripper((text) => {
       if (!res.writableEnded) {
         streamActivity = Date.now();
         lastClientWriteAt = Date.now();
@@ -11608,7 +11964,8 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         res.write(`data: ${JSON.stringify({ t: text })}\n\n`);
         if (typeof res.flush === 'function') res.flush();
       }
-    };
+    });
+    const sendChunk = (text) => _streamTextStripper.ingest(text);
     // Tool-call SSE event. Mirrors sendChunk's contract (resets the stall
     // watchdog, flushes the response) but ships a structured payload so
     // the client can render an inline pill for each tool the agent loop
@@ -11620,6 +11977,15 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         res.write(`data: ${JSON.stringify({ tool_call: evt })}\n\n`);
         if (typeof res.flush === 'function') res.flush();
       }
+      if (
+        evt?.status === 'done'
+        && PROJECT_WRITE_TOOLS.has(evt.name)
+        && evt.result
+        && evt.result.ok !== false
+        && req.user?.id
+      ) {
+        invalidateProjectSectionCache(req.user.id);
+      }
     };
     const sendStatus = (status) => {
       if (!res.writableEnded) {
@@ -11629,8 +11995,12 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     };
     const sendDone = () => {
       if (!res.writableEnded) {
+        _streamTextStripper.flush();
         cleanup();
         console.log('✅ Stream complete');
+        try {
+          res.write(`data: ${JSON.stringify({ served_model: actualModel })}\n\n`);
+        } catch { /* socket closed */ }
         res.write('data: [DONE]\n\n');
         res.end();
         // Fire-and-forget usage logging for stream
@@ -11651,6 +12021,12 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
             outputTokens: Math.ceil(streamedTextLength / 4),
           });
         }).catch(() => {});
+        const reportIds = streamOrchestrationCtx?.completedReports?.map((t) => t.id) || [];
+        if (reportIds.length && req.user?.id && supabaseAdmin) {
+          markSubModelTasksNotified(supabaseAdmin, req.user.id, reportIds).catch((e) => {
+            console.warn('[orchestration] mark notified failed:', e?.message || e);
+          });
+        }
       }
     };
     const sendError = (msg) => { if (!res.writableEnded) { cleanup(); console.error('❌ Stream error:', msg); res.write(`data: ${JSON.stringify({ error: msg })}\n\n`); res.end(); } };
@@ -11716,7 +12092,25 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     //      client got a clean [DONE] with no text and surfaced the "Hmm — that one came
     //      back empty" fallback. We now treat both cases identically and walk the
     //      _streamModels chain end-to-end before giving up.
-    const _streamModels = [actualModel, ...getFallbackModels(actualModel)];
+    const _streamModels = buildProviderModelChain(
+      actualModel,
+      streamCustomModelCtx.overlay,
+      getFallbackModels,
+    );
+    let streamTogetherLoraMessages = null;
+    if (streamCustomModelCtx.overlay?.useTogetherMultiTurn) {
+      const { system: tSys, user: tUser } = splitPromptForProvider(prompt);
+      streamTogetherLoraMessages = buildTogetherLoraMessages({
+        system: tSys,
+        conversation,
+        latestUserText: streamUserText,
+        supplementalContext: extractSupplementalUserContext(tUser, streamUserText),
+        includeTurnRules: false,
+      });
+      console.log(
+        `🧱 Together LoRA multi-turn: ${streamTogetherLoraMessages.length} message(s) (history from conversation[])`,
+      );
+    }
     const retryNextOrFinalize = (_si, provider, hadText, finalErr) => {
       if (hadText) return sendDone();
       if (_si + 1 < _streamModels.length) {
@@ -11731,7 +12125,136 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
       }
       if (_si > 0) { actualModel = _streamModels[_si]; console.log(`🔄 Stream fallback → ${actualModel} (attempt ${_si + 1}/${_streamModels.length})`); }
 
-    if (isOpenAIModel(actualModel)) {
+    if (isTogetherModel(actualModel)) {
+      if (!process.env.TOGETHER_API_KEY) {
+        if (_si + 1 < _streamModels.length) return tryStreamAt(_si + 1);
+        return sendError(AI_TEMPORARY_FAILURE_TEXT);
+      }
+      const ab = makeProviderAbort();
+      let togetherRes;
+      try {
+        const { system: tSys, user: tUser } = splitPromptForProvider(prompt);
+        const tMessages = streamTogetherLoraMessages?.length
+          ? streamTogetherLoraMessages
+          : (() => {
+              const m = [];
+              if (tSys) m.push({ role: 'system', content: tSys });
+              m.push({ role: 'user', content: tUser });
+              return m;
+            })();
+        const _strmTCap = clampForProvider(pickOutputCap({ hasImages: imageUrls.length > 0 }), actualModel);
+        const attachLora =
+          streamCustomModelCtx.overlay?.loraActive &&
+          (streamCustomModelCtx.overlay?.loraServerlessHostCandidates || []).includes(actualModel);
+        togetherRes = await fetch('https://api.together.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.TOGETHER_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(
+            buildTogetherChatBody({
+              model: actualModel,
+              messages: tMessages,
+              max_tokens: _strmTCap,
+              stream: true,
+              overlay: streamCustomModelCtx.overlay,
+              chatParams: attachLora ? streamCustomModelCtx.overlay?.togetherChatParams : undefined,
+            }),
+          ),
+          signal: ab.signal,
+        });
+        ab.clear();
+      } catch (e) {
+        ab.clear();
+        console.error('❌ Together stream fetch failed:', e.message);
+        if (_si + 1 < _streamModels.length) return tryStreamAt(_si + 1);
+        return sendError(AI_TEMPORARY_FAILURE_TEXT);
+      }
+      if (!togetherRes.ok) {
+        const err = await togetherRes.json().catch(() => ({}));
+        const errMsg = err?.error?.message || togetherRes.statusText;
+        console.error('❌ Together API error:', errMsg);
+        const togetherModelRetryable = streamCustomModelCtx.overlay?.loraActive
+          ? isTogetherLoraInferenceRetryableError(errMsg)
+          : isTogetherDedicatedEndpointError(errMsg);
+        const canRetry =
+          (RETRYABLE_STATUSES.has(togetherRes.status) || togetherModelRetryable) &&
+          _si + 1 < _streamModels.length;
+        if (canRetry) {
+          if (togetherModelRetryable && streamCustomModelCtx.overlay?.loraActive) {
+            const nextModel = _streamModels[_si + 1];
+            const candidates = streamCustomModelCtx.overlay.loraInferenceCandidates || [];
+            const stillLoraHost = candidates.includes(_streamModels[_si + 1]);
+            console.warn(
+              `⚠️ Together serverless LoRA unavailable (host=${_streamModels[_si]}, adapter=${streamCustomModelCtx.overlay?.loraAdapterId});` +
+                (stillLoraHost ? ' trying next host…' : ` falling back to ${nextModel}`),
+            );
+            if (!stillLoraHost) {
+              try { res.setHeader('X-Lora-Fallback', 'persona-only-base'); } catch { /* headers flushed */ }
+              if (_si < candidates.length) {
+                sendStatus('Trying another Together serverless host for your LoRA adapter…');
+              } else {
+                sendStatus(
+                  `LoRA weights unavailable — replying with ${nextModel?.split('/').pop() || 'base model'} and your custom persona (no fine-tuned weights this turn).`,
+                );
+              }
+            }
+          } else if (togetherModelRetryable) {
+            console.warn(`⚠️ Together model unavailable (${_streamModels[_si]}); falling back to ${_streamModels[_si + 1]}`);
+          }
+          return tryStreamAt(_si + 1);
+        }
+        return sendError(AI_TEMPORARY_FAILURE_TEXT);
+      }
+      streamActivity = Date.now();
+      if (streamCustomModelCtx.overlay?.loraActive) {
+        try { res.setHeader('X-Lora-Mode', 'serverless'); } catch { /* headers flushed */ }
+      }
+      console.log('✅ Together LoRA stream connected, reading tokens...');
+      const reader = togetherRes.body;
+      let buffer = '';
+      let receivedAnyText = false;
+      const processTogPayload = (payload) => {
+        if (!payload || payload === '[DONE]') return;
+        try {
+          const parsed = JSON.parse(payload);
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if (delta) { receivedAnyText = true; sendChunk(delta); }
+        } catch { /* ignore */ }
+      };
+      reader.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const payload = trimmed.slice(6);
+          if (payload === '[DONE]') return sendDone();
+          processTogPayload(payload);
+        }
+      });
+      reader.on('end', () => {
+        if (buffer.trim()) {
+          for (const line of buffer.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const payload = trimmed.slice(6);
+            if (payload === '[DONE]') return sendDone();
+            processTogPayload(payload);
+          }
+          buffer = '';
+        }
+        return retryNextOrFinalize(_si, 'Together', receivedAnyText, null);
+      });
+      reader.on('error', (err) => {
+        console.error('❌ Together stream reader error:', err?.message || err);
+        return retryNextOrFinalize(_si, 'Together', receivedAnyText, AI_TEMPORARY_FAILURE_TEXT);
+      });
+      return;
+
+    } else if (isOpenAIModel(actualModel)) {
       if (!process.env.OPENAI_API_KEY) { if (_si + 1 < _streamModels.length) return tryStreamAt(_si + 1); return sendError(AI_TEMPORARY_FAILURE_TEXT); }
       const ab = makeProviderAbort();
       let openaiRes;
@@ -12312,8 +12835,63 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
           priorTurns: [],
           maxOutputTokens: agentCap,
           promptCacheKey: agentCacheKey,
+          chatToolNames: streamChatToolNames,
           env: process.env,
-          ctx: buildChatToolCtx(req),
+          ctx: (() => {
+            const chatModelLabel = resolveChatModelLabel({
+              customModelName: streamCustomModelCtx.customModel?.name,
+              modelId: agentModel,
+            });
+            const base = buildChatToolCtx(req, {
+              chatModelLabel,
+              boundProjectId: streamBoundProjectId,
+              boardProjectId: streamBoardProjectId,
+            });
+            if (!streamOrchestrationCtx?.isMainAgent) return base;
+            const mainModelId = streamOrchestrationCtx.mainModelId;
+            const boardId = streamBoardId;
+            return {
+              ...base,
+              orchestration: {
+                isMainAgent: true,
+                subModelIds: streamOrchestrationCtx.subModelIds,
+                roster: streamOrchestrationCtx.roster,
+              },
+              runSubModelDelegate: ({ subModelId, taskInstruction, context }) =>
+                runSubModelDelegate({
+                  client: supabaseAdmin,
+                  userId: req.user?.id,
+                  subModelId,
+                  taskInstruction,
+                  context,
+                }),
+              createSubModelTask: ({ subModelId, subModelName, taskInstruction, context }) =>
+                createSubModelTask(supabaseAdmin, {
+                  userId: req.user?.id,
+                  mainModelId,
+                  subModelId,
+                  subModelName,
+                  boardId,
+                  taskInstruction,
+                  context,
+                }),
+              enqueueSubModelTask: ({ taskId }) =>
+                enqueueSubModelTask({
+                  client: supabaseAdmin,
+                  taskId,
+                  userId: req.user?.id,
+                }),
+              listSubModelTasks: ({ status, limit } = {}) =>
+                listSubModelTasks(supabaseAdmin, req.user?.id, {
+                  mainModelId,
+                  boardId,
+                  status,
+                  limit,
+                }),
+              getSubModelTask: (taskId) =>
+                getSubModelTask(supabaseAdmin, req.user?.id, taskId),
+            };
+          })(),
           signal: undefined, // request abort wires via res.on('close') already
           onTextChunk: (t) => sendChunk(t),
           onToolCall: (evt) => sendToolCall(evt),
@@ -13025,6 +13603,496 @@ app.post('/api/ai/tts', requireAuth, aiLimiter, checkAiUsageLimit, async (req, r
       return res.status(500).json({ error: `TTS failed: ${error?.message || 'Unknown error'}` });
     }
     res.end();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Realtime voice (speech-to-speech) — mint a short-lived ephemeral client
+// secret the browser uses to open a WebRTC session directly with OpenAI.
+// The real API key never reaches the client. Grounding lives in the
+// `instructions` the client assembles from the user's LYKN context.
+// ──────────────────────────────────────────────────────────────────────────
+const REALTIME_VOICES = new Set(['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']);
+// Default LYKN voice. 'cedar' is the newest, most natural male voice for
+// gpt-realtime (other male options: ash, verse, echo).
+const LYKN_DEFAULT_REALTIME_VOICE = 'cedar';
+const LYKN_REALTIME_BASE_INSTRUCTIONS =
+  "You are LYKN, the user's personal AI companion speaking out loud in a live voice conversation. " +
+  "You have access to the user's synthesis layer (their ratified beliefs, if-then governance rules, and active project state) " +
+  "plus their memory, identity, and saved knowledge — all provided as context below. " +
+  "Treat the beliefs and rules as binding governance for how you respond, and ground every answer in this context — " +
+  "be personally contextual, never a generic assistant. " +
+  "Speak naturally and conversationally, in short spoken-friendly sentences. Avoid markdown, bullet lists, code blocks, " +
+  "or reading URLs aloud. " +
+  "IMPORTANT: the context below contains formatting tokens such as section headers in brackets (e.g. [BELIEFS_AND_RULES], " +
+  "[CURRENT_PROJECT]), identifiers like rule_id=..., and tags like <applied>. These are silent guidance for you ONLY. " +
+  "NEVER read them aloud, never say words like 'rule_id', 'applied', or bracketed section names, and never emit any tags. " +
+  "You also have live TOOLS you can call during the conversation: search_vault (look up anything the user saved or might " +
+  "know), get_project_state (read their active project status), update_project_state (record a decision/blocker/milestone), " +
+  "and save_to_vault (save a note — only when the user explicitly asks). Use search_vault proactively the moment a question " +
+  "depends on the user's own saved knowledge rather than guessing. When a tool is running, keep your spoken acknowledgement " +
+  "brief (e.g. 'let me check'). " +
+  "If you don't know something from the user's context and a tool can't help, say so honestly and briefly.";
+
+// Function tools the realtime voice model can call mid-conversation. These
+// give voice a LIVE connection to the Synthesis Layer (not just the static
+// grounding injected at session start): semantic vault/synthesis search plus
+// the ability to read + update project state and save to the vault by voice.
+// Each maps to an existing, auth-gated server capability in
+// POST /api/ai/realtime/tool (the dispatch endpoint below).
+const LYKN_REALTIME_TOOLS = [
+  {
+    type: 'function',
+    name: 'search_vault',
+    description:
+      "Semantic search across the user's LYKN vault and synthesis layer (notes, saved articles, " +
+      'connected-source content like Notion/Gmail/Slack, and embedded knowledge). Call this WHENEVER ' +
+      'the user asks about something they saved, wrote, or might know — "what did I save about X", ' +
+      '"what do I know about Y", "did I take notes on Z", "remind me what we decided about…". ' +
+      'Returns matched snippets you should ground your spoken answer in.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'What to look for, phrased as a search query (a topic or question).',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    type: 'function',
+    name: 'get_project_state',
+    description:
+      "Read the user's active project and its current working state (decisions, blockers, milestones, " +
+      'tech stack, etc.). Call this when the user asks about "the project", "where we left off", ' +
+      '"what\'s the current status", or before you update project state so you know what already exists.',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    type: 'function',
+    name: 'update_project_state',
+    description:
+      "Push a decision, milestone, blocker, or piece of working state into the user's ACTIVE project so " +
+      "their other AI tools see it later (git-style: each push at the same key replaces the prior value). " +
+      'Call this when the conversation produces something durable worth recording — e.g. the user says ' +
+      '"the new blocker is…", "we decided to…", "next milestone is…". Confirm out loud what you recorded.',
+    parameters: {
+      type: 'object',
+      properties: {
+        state_key: {
+          type: 'string',
+          description:
+            'Stable slug key (lowercase letters/digits/underscores). Reuse across pushes. Suggested: ' +
+            'current_blocker, next_milestone, recent_decisions, tech_stack, architecture, open_questions, scope, progress_summary.',
+        },
+        state_value: {
+          type: 'string',
+          description: 'The current value at this key (concise; <=2000 chars). Replaces any prior value at the same key.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional one-sentence justification for why this is worth recording.',
+        },
+      },
+      required: ['state_key', 'state_value'],
+    },
+  },
+  {
+    type: 'function',
+    name: 'save_to_vault',
+    description:
+      "Save a note into the user's LYKN vault (their long-term memory) — a summary, idea, draft, or " +
+      "snippet worth keeping past this conversation. ONLY call this after the user clearly asks you to " +
+      'save / capture / "put this in my vault" / "remember this". Never save silently.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short, descriptive title for the note.' },
+        content: { type: 'string', description: 'The note body to save.' },
+      },
+      required: ['title', 'content'],
+    },
+  },
+];
+
+/**
+ * Build the user's synthesis-layer grounding (beliefs + if-then rules +
+ * active project state) for a realtime voice session. Reuses the exact
+ * same builders the text chat uses so voice and chat stay in sync.
+ */
+async function buildRealtimeSynthesisGrounding(authHeader, userId) {
+  if (!userId) return '';
+  const sections = [];
+  try {
+    const [beliefSection, projectSection] = await Promise.all([
+      fetchBeliefSection(authHeader, userId).catch(() => ({ text: '' })),
+      fetchProjectSection(authHeader, userId).catch(() => ''),
+    ]);
+    if (beliefSection?.text) sections.push(beliefSection.text);
+    if (projectSection) sections.push(projectSection);
+  } catch (e) {
+    console.warn('⚠️ buildRealtimeSynthesisGrounding:', e?.message || e);
+  }
+  return sections.join('\n\n');
+}
+
+app.post('/api/ai/realtime/session', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({ error: 'OpenAI API key not configured.' });
+    }
+    const model = String(req.body?.model || 'gpt-realtime').trim() || 'gpt-realtime';
+    const requestedVoice = String(req.body?.voice || LYKN_DEFAULT_REALTIME_VOICE).trim().toLowerCase();
+    const voice = REALTIME_VOICES.has(requestedVoice) ? requestedVoice : LYKN_DEFAULT_REALTIME_VOICE;
+    // Synthesis layer (beliefs + rules + active project state) is built
+    // server-side from the user's account — this is the connection to the
+    // Synthesis Layer that voice was missing. The client-supplied grounding
+    // (workspace/KB summary + recent conversation) is layered on top.
+    const synthesisGrounding = await buildRealtimeSynthesisGrounding(req.headers.authorization, req.user?.id);
+    const clientGrounding = String(req.body?.instructions || '').slice(0, 8000).trim();
+    const contextParts = [];
+    if (synthesisGrounding) contextParts.push(synthesisGrounding);
+    if (clientGrounding) contextParts.push(`[WORKSPACE_AND_CONVERSATION]\n${clientGrounding}`);
+    const instructions = (contextParts.length
+      ? `${LYKN_REALTIME_BASE_INSTRUCTIONS}\n\n${contextParts.join('\n\n')}`
+      : LYKN_REALTIME_BASE_INSTRUCTIONS
+    ).slice(0, 14000);
+
+    const sessionConfig = {
+      session: {
+        type: 'realtime',
+        model,
+        instructions,
+        audio: {
+          input: {
+            transcription: { model: 'whisper-1' },
+            turn_detection: { type: 'server_vad' },
+          },
+          output: { voice },
+        },
+        tools: LYKN_REALTIME_TOOLS,
+        tool_choice: 'auto',
+      },
+    };
+
+    const r = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(sessionConfig),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = String(data?.error?.message || r.statusText || 'Failed to create realtime session');
+      return res.status(r.status === 401 ? 500 : r.status || 500).json({ error: `Realtime: ${msg}` });
+    }
+
+    // Ephemeral secret can live at the top level (`value`) or nested under
+    // `client_secret` depending on API revision — accept either.
+    const clientSecret = data?.value || data?.client_secret?.value || data?.client_secret || null;
+    if (!clientSecret) {
+      return res.status(500).json({ error: 'Realtime: no client secret returned.' });
+    }
+
+    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'realtime_voice',
+        model, provider: 'openai',
+        metadata: { voice },
+      });
+    }).catch(() => {});
+
+    return res.json({
+      value: clientSecret,
+      expires_at: data?.expires_at || null,
+      model,
+      voice,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: `Realtime session failed: ${error?.message || 'Unknown error'}` });
+  }
+});
+
+// Execute a tool call requested by the realtime voice model. The browser
+// relays the model's function_call here (authed with the user's JWT), we run
+// it against the SAME synthesis-layer capabilities the text chat / MCP use,
+// and return JSON the client feeds back as the tool output. Secrets + DB
+// access stay server-side; the realtime model never sees them.
+app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+
+    const name = String(req.body?.name || '').trim();
+    let args = req.body?.arguments;
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args || '{}'); } catch { args = {}; }
+    }
+    if (!args || typeof args !== 'object') args = {};
+    const authHeader = req.headers.authorization;
+
+    // Run one of the existing MCP tool handlers with a JWT ctx (in-LYKN
+    // privileges — no read-only token gate), unwrapping its content block
+    // into plain JSON.
+    const runMcp = async (mcpName, mcpArgs) => {
+      const tool = MCP_TOOLS_BY_NAME[mcpName];
+      if (!tool) return { ok: false, error: 'tool_unavailable' };
+      const ctx = buildToolCtx(req);
+      const result = await tool.handler(mcpArgs, ctx);
+      if (!result?.isError && PROJECT_WRITE_TOOLS.has(mcpName)) invalidateProjectSectionCache(ctx.userId);
+      const block = Array.isArray(result?.content) ? result.content[0] : null;
+      if (block?.type === 'text') {
+        try { return JSON.parse(block.text); } catch { return { ok: !result?.isError, text: String(block.text) }; }
+      }
+      return { ok: !result?.isError };
+    };
+
+    switch (name) {
+      case 'search_vault': {
+        const query = String(args.query || '').trim();
+        if (!query) return res.json({ ok: false, error: 'query is required.' });
+        // Prefer semantic synthesis retrieval (spans embedded chunks +
+        // connected sources); fall back to substring vault search.
+        const block = await fetchSynthesisRetrievalSection(authHeader, query, userId);
+        if (block && block.trim()) {
+          return res.json({ ok: true, results: block.slice(0, 6000) });
+        }
+        const fb = await runMcp('lykn_searchVault', { query, limit: 6 });
+        const hits = Array.isArray(fb?.hits) ? fb.hits : [];
+        if (hits.length) {
+          const lines = hits.slice(0, 6).map((h, i) =>
+            `${i + 1}. ${h.title || '(untitled)'}: ${String(h.snippet || '').replace(/\s+/g, ' ').slice(0, 300)}`);
+          return res.json({ ok: true, results: lines.join('\n') });
+        }
+        return res.json({ ok: true, results: 'No matching items found in the vault or synthesis layer for that query.' });
+      }
+      case 'get_project_state': {
+        const text = await fetchProjectSection(authHeader, userId);
+        return res.json({
+          ok: true,
+          project_state: text && text.trim() ? text.slice(0, 6000) : 'No active project is set, or it has no recorded state yet.',
+        });
+      }
+      case 'update_project_state': {
+        const out = await runMcp('lykn_pushProjectState', {
+          state_key: args.state_key,
+          state_value: args.state_value,
+          reason: args.reason,
+        });
+        return res.json(out);
+      }
+      case 'save_to_vault': {
+        const out = await runMcp('lykn_createVaultNote', {
+          title: args.title,
+          content: args.content,
+        });
+        return res.json(out);
+      }
+      default:
+        return res.status(404).json({ ok: false, error: 'unknown_tool' });
+    }
+  } catch (e) {
+    console.error('❌ /api/ai/realtime/tool:', e?.message || e);
+    return res.status(500).json({ ok: false, error: 'tool_failed' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// ELEVENLABS CONVERSATIONAL AI — alternative voice provider (behind a flag)
+// ══════════════════════════════════════════════════════════════════════════
+// Architecture: the browser connects to an ElevenLabs Agent (signed URL minted
+// below). The agent uses a CUSTOM LLM that points back at THIS server
+// (/api/ai/elevenlabs/llm/chat/completions), so the voice brain reuses LYKN
+// grounding + the same client tools the OpenAI Realtime path uses. Per-user
+// identity flows through a short-lived signed session token embedded as a
+// dynamic variable in the agent prompt; the custom-LLM endpoint reads it back.
+//
+// NOTE: ElevenLabs calls the custom-LLM endpoint server-to-server, so this
+// server must be publicly reachable for the full loop (won't work on
+// localhost). The OpenAI Realtime path remains the default.
+
+const VOICE_SESSION_SECRET =
+  process.env.VOICE_SESSION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || 'lykn-dev-voice-secret';
+const VOICE_SESSION_TTL_MS = 60 * 60 * 1000; // 1h — covers a long voice call.
+
+// Per-conversation grounding, keyed by the signed session token. Lets the
+// custom-LLM endpoint recover the client-built context (workspace summary +
+// recent conversation) that only the browser had at session start. Best-effort
+// (in-memory): on a miss we fall back to userId-only synthesis grounding.
+const voiceSessionGrounding = new Map(); // token -> { instructions, at }
+function pruneVoiceSessions() {
+  const now = Date.now();
+  for (const [k, v] of voiceSessionGrounding) {
+    if (!v || now - v.at > VOICE_SESSION_TTL_MS) voiceSessionGrounding.delete(k);
+  }
+}
+
+function signLyknVoiceToken(payload) {
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + VOICE_SESSION_TTL_MS })).toString('base64url');
+  const sig = crypto.createHmac('sha256', VOICE_SESSION_SECRET).update(body).digest('base64url');
+  return `${body}.${sig}`;
+}
+function verifyLyknVoiceToken(token) {
+  try {
+    const [body, sig] = String(token || '').split('.');
+    if (!body || !sig) return null;
+    const expected = crypto.createHmac('sha256', VOICE_SESSION_SECRET).update(body).digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (!data?.exp || Date.now() > data.exp) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+// Mint an ElevenLabs signed URL for the configured agent + a signed session
+// token that binds the conversation to this LYKN user. The client passes the
+// token to startSession as the `lykn_session_token` dynamic variable.
+app.post('/api/ai/elevenlabs/signed-url', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
+  try {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    const agentId = process.env.ELEVENLABS_AGENT_ID;
+    if (!apiKey || !agentId) {
+      return res.status(503).json({ error: 'ElevenLabs voice is not configured yet.' });
+    }
+
+    const r = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
+      { headers: { 'xi-api-key': apiKey } },
+    );
+    const data = await r.json().catch(() => ({}));
+    const signedUrl = data?.signed_url || data?.signedUrl;
+    if (!r.ok || !signedUrl) {
+      const msg = String(data?.detail?.message || data?.detail || r.statusText || 'Failed to get signed URL');
+      return res.status(r.status || 500).json({ error: `ElevenLabs: ${msg}` });
+    }
+
+    // Build the same grounded instructions the OpenAI path uses, stash them so
+    // the custom-LLM endpoint can recover the client context for this call.
+    const synthesisGrounding = await buildRealtimeSynthesisGrounding(req.headers.authorization, req.user?.id);
+    const clientGrounding = String(req.body?.instructions || '').slice(0, 8000).trim();
+    const parts = [];
+    if (synthesisGrounding) parts.push(synthesisGrounding);
+    if (clientGrounding) parts.push(`[WORKSPACE_AND_CONVERSATION]\n${clientGrounding}`);
+    const instructions = (parts.length
+      ? `${LYKN_REALTIME_BASE_INSTRUCTIONS}\n\n${parts.join('\n\n')}`
+      : LYKN_REALTIME_BASE_INSTRUCTIONS
+    ).slice(0, 14000);
+
+    const sessionToken = signLyknVoiceToken({ uid: req.user?.id, board: req.body?.boardId || null });
+    pruneVoiceSessions();
+    voiceSessionGrounding.set(sessionToken, { instructions, at: Date.now() });
+
+    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'elevenlabs_voice',
+        model: 'elevenlabs-convai', provider: 'elevenlabs', metadata: { agent_id: agentId },
+      });
+    }).catch(() => {});
+
+    return res.json({ signedUrl, sessionToken });
+  } catch (error) {
+    return res.status(500).json({ error: `ElevenLabs signed URL failed: ${error?.message || 'Unknown error'}` });
+  }
+});
+
+// Custom-LLM endpoint for the ElevenLabs agent. OpenAI Chat Completions
+// compatible: ElevenLabs POSTs the conversation here, we inject LYKN grounding
+// into the system message, then stream OpenAI's response straight back. Tools
+// the agent declares are passed through untouched (ElevenLabs executes the
+// resulting tool_calls as client tools in the browser).
+const LYKN_SESSION_TOKEN_RE = /LYKN_SESSION_TOKEN=(\S+)/;
+app.post('/api/ai/elevenlabs/llm/chat/completions', async (req, res) => {
+  try {
+    // Auth: ElevenLabs sends the configured custom-LLM API key as a bearer.
+    const expected = process.env.ELEVENLABS_LLM_SECRET;
+    if (!expected) return res.status(503).json({ error: 'Custom LLM not configured.' });
+    const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    if (presented !== expected) return res.status(401).json({ error: 'Unauthorized' });
+
+    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI not configured.' });
+
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const messages = Array.isArray(body.messages) ? [...body.messages] : [];
+
+    // Recover the session token from the agent's system prompt, resolve the
+    // LYKN user, and build grounding. Falls back gracefully if absent.
+    let sessionToken = '';
+    for (const m of messages) {
+      const content = typeof m?.content === 'string' ? m.content : '';
+      const match = content.match(LYKN_SESSION_TOKEN_RE);
+      if (match) { sessionToken = match[1]; break; }
+    }
+    const session = sessionToken ? verifyLyknVoiceToken(sessionToken) : null;
+    const userId = session?.uid || null;
+
+    let grounding = '';
+    if (sessionToken && voiceSessionGrounding.has(sessionToken)) {
+      grounding = voiceSessionGrounding.get(sessionToken)?.instructions || '';
+    } else if (userId) {
+      const synth = await buildRealtimeSynthesisGrounding(null, userId);
+      grounding = (synth
+        ? `${LYKN_REALTIME_BASE_INSTRUCTIONS}\n\n${synth}`
+        : LYKN_REALTIME_BASE_INSTRUCTIONS
+      ).slice(0, 14000);
+    } else {
+      grounding = LYKN_REALTIME_BASE_INSTRUCTIONS;
+    }
+
+    // Rebuild the message list: our grounded system message first, then the
+    // original turns with the token line scrubbed out of any system message.
+    const rebuilt = [{ role: 'system', content: grounding }];
+    for (const m of messages) {
+      if (m?.role === 'system' && typeof m.content === 'string') {
+        const scrubbed = m.content.replace(LYKN_SESSION_TOKEN_RE, '').trim();
+        if (scrubbed) rebuilt.push({ ...m, content: scrubbed });
+      } else {
+        rebuilt.push(m);
+      }
+    }
+
+    const upstreamBody = {
+      ...body,
+      model: process.env.ELEVENLABS_LLM_MODEL || body.model || 'gpt-4o',
+      messages: rebuilt,
+    };
+
+    const upstream = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(upstreamBody),
+    });
+
+    if (userId) {
+      logAiUsage({
+        userId, actionType: 'elevenlabs_voice_llm',
+        model: upstreamBody.model, provider: 'openai', metadata: { via: 'elevenlabs_custom_llm' },
+      }).catch(() => {});
+    }
+
+    res.status(upstream.status);
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'text/event-stream');
+    if (upstream.body && typeof upstream.body.pipe === 'function') {
+      upstream.body.pipe(res);
+      upstream.body.on('error', () => { try { res.end(); } catch { /* ignore */ } });
+    } else {
+      const text = await upstream.text();
+      res.send(text);
+    }
+  } catch (error) {
+    console.error('❌ /api/ai/elevenlabs/llm/chat/completions:', error?.message || error);
+    if (!res.headersSent) res.status(500).json({ error: 'custom_llm_failed' });
+    else { try { res.end(); } catch { /* ignore */ } }
   }
 });
 
@@ -14721,17 +15789,24 @@ function hasSubscriptionAccess(row) {
   return ['trialing', 'active', 'past_due'].includes(status);
 }
 
+/** True when we already have a Stripe customer tied to a real subscription history. */
+function hasEstablishedStripeCustomer(row) {
+  if (!row?.stripe_customer_id) return false;
+  return hasSubscriptionAccess(row) || Boolean(row.stripe_subscription_id);
+}
+
 function billingMePayload(row, extra = {}) {
   const hasActive = hasSubscriptionAccess(row);
   const rawPlan = String(row?.plan || 'free').toLowerCase();
   const hasPaidPlanOnFile = rawPlan !== 'free' && Boolean(PLAN_LIMITS[rawPlan]);
+  const hasStripeCustomer = hasEstablishedStripeCustomer(row);
   return {
     plan: row?.plan || 'free',
     billing_period: row?.billing_period || null,
     status: row?.status || 'inactive',
     current_period_end: row?.current_period_end || null,
     cancel_at_period_end: Boolean(row?.cancel_at_period_end),
-    has_stripe_customer: Boolean(row?.stripe_customer_id),
+    has_stripe_customer: hasStripeCustomer,
     stripe_subscription_id: row?.stripe_subscription_id || null,
     has_active_subscription: hasActive,
     needs_trial_checkout: !hasActive && !hasPaidPlanOnFile,
@@ -14791,39 +15866,80 @@ async function backfillStripeCustomerContact(customerId, { email, name } = {}) {
   }
 }
 
-async function ensureStripeCustomer(user) {
-  if (!stripeConfigured()) throw new Error('stripe_not_configured');
-  const existing = await loadBillingRow(user.id);
-  const email = resolveAuthUserEmail(user) || await resolveAuthUserEmailFromDb(user.id);
+async function resolveUserEmailForStripe(user) {
+  return resolveAuthUserEmail(user) || await resolveAuthUserEmailFromDb(user.id);
+}
+
+/**
+ * Checkout identity params. Reuse an existing Stripe customer only after a
+ * subscription has actually been created; otherwise pass customer_email so
+ * Stripe creates the Customer only when card entry completes.
+ */
+async function buildStripeCheckoutIdentity(user, billingRow) {
+  const email = await resolveUserEmailForStripe(user);
   const name = resolveAuthUserDisplayName(user);
 
-  if (existing?.stripe_customer_id) {
-    await backfillStripeCustomerContact(existing.stripe_customer_id, { email, name });
-    return existing.stripe_customer_id;
+  if (hasEstablishedStripeCustomer(billingRow)) {
+    await backfillStripeCustomerContact(billingRow.stripe_customer_id, { email, name });
+    return {
+      customer: billingRow.stripe_customer_id,
+      customer_update: { email: 'auto', name: 'auto' },
+    };
   }
 
-  const customer = await stripe.customers.create({
-    email: email || undefined,
-    name: name || undefined,
-    metadata: { supabase_user_id: user.id },
-  });
+  if (!email) {
+    throw new Error('checkout_email_required');
+  }
 
+  return { customer_email: email };
+}
+
+async function linkBillingRowFromCheckoutSession(session, subscription) {
+  if (!supabaseAdmin) return false;
+
+  const userId = String(
+    session.client_reference_id
+    || session.metadata?.supabase_user_id
+    || subscription?.metadata?.supabase_user_id
+    || '',
+  ).trim();
+  const customerId = typeof session.customer === 'string'
+    ? session.customer
+    : session.customer?.id;
+  if (!userId || !customerId) return false;
+
+  const sessionEmail = String(
+    session.customer_details?.email || session.customer_email || '',
+  ).trim();
+  const name = String(session.customer_details?.name || '').trim();
+
+  try {
+    await stripe.customers.update(customerId, {
+      ...(sessionEmail ? { email: sessionEmail } : {}),
+      ...(name ? { name } : {}),
+      metadata: { supabase_user_id: userId },
+    });
+  } catch (err) {
+    console.warn('⚠️ linkBillingRowFromCheckoutSession customer update failed:', err?.message || err);
+  }
+
+  const existing = await loadBillingRow(userId);
   const { error } = await supabaseAdmin
     .from('user_billing')
     .upsert(
       {
-        user_id: user.id,
-        stripe_customer_id: customer.id,
+        user_id: userId,
+        stripe_customer_id: customerId,
         plan: existing?.plan || 'free',
         status: existing?.status || 'inactive',
       },
       { onConflict: 'user_id' },
     );
   if (error) {
-    console.error('❌ ensureStripeCustomer upsert failed:', error.message);
-    throw new Error('billing_upsert_failed');
+    console.error('❌ linkBillingRowFromCheckoutSession upsert failed:', error.message);
+    return false;
   }
-  return customer.id;
+  return true;
 }
 
 async function syncSubscriptionToBilling(subscription) {
@@ -14842,6 +15958,38 @@ async function syncSubscriptionToBilling(subscription) {
     .from('user_billing')
     .select('user_id, plan')
     .eq('stripe_customer_id', customerId);
+
+  let rowsToWrite = existingRows && existingRows.length > 0
+    ? existingRows
+    : [];
+
+  if (!rowsToWrite.length && stripe) {
+    try {
+      const customer = await stripe.customers.retrieve(customerId);
+      const linkedUserId = String(customer.metadata?.supabase_user_id || '').trim();
+      if (linkedUserId) {
+        const existing = await loadBillingRow(linkedUserId);
+        await supabaseAdmin
+          .from('user_billing')
+          .upsert(
+            {
+              user_id: linkedUserId,
+              stripe_customer_id: customerId,
+              plan: existing?.plan || 'free',
+              status: existing?.status || 'inactive',
+            },
+            { onConflict: 'user_id' },
+          );
+        rowsToWrite = [{ user_id: linkedUserId, plan: existing?.plan || 'free' }];
+      }
+    } catch (err) {
+      console.warn('⚠️ syncSubscriptionToBilling customer lookup failed:', err?.message || err);
+    }
+  }
+
+  if (!rowsToWrite.length) {
+    rowsToWrite = [{ user_id: null, plan: 'free' }];
+  }
 
   const priceId = subscription.items?.data?.[0]?.price?.id;
   const match = planFromPriceId(priceId);
@@ -14862,10 +16010,6 @@ async function syncSubscriptionToBilling(subscription) {
   // Always update when we know it so the cycle display stays right.
   // Intentionally NOT cleared on cancellation — same reason as plan.
   if (match) baseUpdates.billing_period = match.period;
-
-  const rowsToWrite = existingRows && existingRows.length > 0
-    ? existingRows
-    : [{ user_id: null, plan: 'free' }]; // brand-new customer path; no plan to protect
 
   let lastError = null;
   const touched = [];
@@ -14895,10 +16039,8 @@ async function syncSubscriptionToBilling(subscription) {
     // collection problems; access stays. Admin can force-down via
     // scripts/set-user-plan.mjs.
 
-    // For brand-new rows (no existing row matched the customer id) we
-    // upsert by stripe_customer_id so the customer-creation race
-    // doesn't lose the row. For existing rows we update by user_id so
-    // we never touch a sibling row by accident.
+    // Rows without user_id are skipped — checkout.session.completed links
+    // the Stripe customer to Supabase before subscription webhooks land.
     let writeRes;
     if (existing.user_id) {
       writeRes = await supabaseAdmin
@@ -14907,10 +16049,7 @@ async function syncSubscriptionToBilling(subscription) {
         .eq('user_id', existing.user_id)
         .select('user_id');
     } else {
-      // No row yet. Don't invent a plan here — this is normally hit
-      // when the customer-side checkout flow races the webhook; the
-      // webhook will fire again on the next subscription event and
-      // see the row that ensureStripeCustomer creates.
+      // No linked user yet — checkout.session.completed should create the row.
       continue;
     }
 
@@ -14945,18 +16084,15 @@ async function handleStripeEvent(event) {
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object;
-      const customerId = typeof session.customer === 'string'
-        ? session.customer
-        : session.customer?.id;
-      const sessionEmail = String(
-        session.customer_details?.email || session.customer_email || '',
-      ).trim();
-      if (customerId && sessionEmail) {
-        await backfillStripeCustomerContact(customerId, { email: sessionEmail });
+      if (session.mode === 'payment' && session.metadata?.purpose === 'model_builder_wallet') {
+        await handleModelBuilderWalletCheckoutCompleted(supabaseAdmin, session);
+        break;
       }
+      let subscription = null;
       if (session.mode === 'subscription' && session.subscription) {
-        const sub = await stripe.subscriptions.retrieve(session.subscription);
-        await syncSubscriptionToBilling(sub);
+        subscription = await stripe.subscriptions.retrieve(session.subscription);
+        await linkBillingRowFromCheckoutSession(session, subscription);
+        await syncSubscriptionToBilling(subscription);
       }
       break;
     }
@@ -15046,13 +16182,13 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
       });
     }
 
-    const customerId = await ensureStripeCustomer(user);
+    const row = await loadBillingRow(user.id);
+    const checkoutIdentity = await buildStripeCheckoutIdentity(user, row);
     const appUrl = appUrlFromReq(req);
 
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
-      customer: customerId,
-      customer_update: { email: 'auto', name: 'auto' },
+      ...checkoutIdentity,
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: `${appUrl}/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${appUrl}/billing?checkout=canceled`,
@@ -15067,8 +16203,22 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
     return res.json({ url: session.url });
   } catch (err) {
     console.error('❌ /api/billing/checkout error:', err);
+    if (String(err?.message || '').includes('checkout_email_required')) {
+      return res.status(400).json({ error: 'checkout_email_required' });
+    }
     return res.status(500).json({ error: 'checkout_failed' });
   }
+});
+
+registerModelBuilderWalletRoutes(app, {
+  requireAuth,
+  supabaseAdmin,
+  stripe,
+  stripeConfigured,
+  buildStripeCheckoutIdentity,
+  loadBillingRow,
+  appUrlFromReq,
+  validate,
 });
 
 function stripePublishableKey() {
@@ -15114,7 +16264,7 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
       });
     }
 
-    const customerId = await ensureStripeCustomer(user);
+    const checkoutIdentity = await buildStripeCheckoutIdentity(user, row);
     const appUrl = appUrlFromReq(req);
     const mode = String(req.body?.mode || 'embedded').toLowerCase() === 'hosted'
       ? 'hosted'
@@ -15122,7 +16272,7 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
 
     const sessionParams = {
       mode: 'subscription',
-      customer: customerId,
+      ...checkoutIdentity,
       line_items: [{ price: priceId, quantity: 1 }],
       payment_method_collection: 'always',
       client_reference_id: user.id,
@@ -15163,6 +16313,9 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('❌ /api/billing/trial-checkout error:', err);
+    if (String(err?.message || '').includes('checkout_email_required')) {
+      return res.status(400).json({ error: 'checkout_email_required' });
+    }
     return res.status(500).json({ error: 'checkout_failed' });
   }
 });
@@ -15172,7 +16325,7 @@ app.post('/api/billing/portal', requireAuth, async (req, res) => {
   try {
     if (!stripeConfigured()) return res.status(503).json({ error: 'Stripe not configured' });
     const row = await loadBillingRow(req.user.id);
-    if (!row?.stripe_customer_id) {
+    if (!hasEstablishedStripeCustomer(row)) {
       return res.status(400).json({ error: 'no_customer', message: 'No Stripe customer yet.' });
     }
     const appUrl = appUrlFromReq(req);

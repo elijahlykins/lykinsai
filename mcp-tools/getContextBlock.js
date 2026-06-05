@@ -25,8 +25,10 @@ import {
   listActiveRulesForUser,
   formatBeliefsAndRulesForPromptOutsideClient,
   loadActiveProjectContext,
+  loadProjectContextById,
   loadOtherProjectsForUser,
 } from '../beliefSystem.js';
+import { resolveRelevantProjects } from '../lib/projectResolver.js';
 import { textContent, errorContent } from './index.js';
 
 export const getContextBlockTool = {
@@ -43,10 +45,9 @@ export const getContextBlockTool = {
     'Returns a single pre-formatted text block summarising:',
     '  1. [BELIEFS_AND_RULES] — the LYKN user\'s active beliefs + if-then rules.',
     '  2. [CURRENT_PROJECT]   — the user\'s focus project + its working state.',
-    '  3. [OTHER_PROJECTS]    — up to 5 OTHER recent projects with id + name +',
-    '                           last_active + state_key_count, so you can',
-    '                           switch into one if the user mentions it by',
-    '                           name instead of saying "I can\'t find that."',
+    '  3. [PROJECT_CATALOG]    — other active projects (main + branches) with',
+    '                           ids so you can focus the best match via',
+    '                           lykn_setActiveProject({ project_id }).',
     '',
     'Treat the block as binding governance for the rest of the conversation.',
     'The project sections are what other AI clients (Claude Desktop, Cursor,',
@@ -66,6 +67,10 @@ export const getContextBlockTool = {
     'lykn_recordRuleApplication with the rule_id so LYKN can show the user',
     'an audit trail. Tag-less / call-less replies are normal — only record',
     'when a rule actually changed how you responded.',
+    '',
+    'Projects are user-created only. Use lykn_resolveProject({ query }) when',
+    'the topic might belong to a different main or branch than the current',
+    'focus. Any agent may read/update any project by id; never create projects.',
     '',
     'When this conversation produces a meaningful project decision, call',
     'lykn_pushProjectState so the next AI client to read this block has',
@@ -91,19 +96,23 @@ export const getContextBlockTool = {
       ? Math.max(200, Math.min(8000, args.max_chars))
       : 2400;
 
-    const [beliefs, rules, projectContext] = await Promise.all([
+    const [beliefs, rules, activeContext] = await Promise.all([
       listActiveBeliefsForUser(ctx.supabaseAdmin, ctx.userId),
       listActiveRulesForUser(ctx.supabaseAdmin, ctx.userId),
       loadActiveProjectContext(ctx.supabaseAdmin, ctx.userId),
     ]);
 
-    // Discovery footer: surface up to 5 OTHER recent projects so the
-    // model can answer "what about LYKN MCP integrations?" without a
-    // separate lykn_listProjects round-trip. Excludes the focus project
-    // to avoid duplication. Best-effort — empty array on failure.
+    let projectContext = activeContext;
+    if (!projectContext) {
+      const resolved = await resolveRelevantProjects(ctx.supabaseAdmin, ctx.userId, { limit: 1 });
+      if (resolved.best?.id) {
+        projectContext = await loadProjectContextById(ctx.supabaseAdmin, ctx.userId, resolved.best.id);
+      }
+    }
+
     const otherProjects = await loadOtherProjectsForUser(ctx.supabaseAdmin, ctx.userId, {
       excludeId: projectContext?.project?.id || null,
-      limit: 5,
+      limit: 8,
     });
 
     // No beliefs AND no project AND no other projects = brand-new user.
@@ -115,9 +124,9 @@ export const getContextBlockTool = {
       return textContent(
         'This LYKN user has no active beliefs and no active project yet.' +
         ' Treat them as a fresh conversation — but you can call lykn_getFacts' +
-        ' for atomic identity facts, lykn_proposeBelief if a clear durable' +
-        ' principle emerges, or lykn_setActiveProject to start tracking the' +
-        ' work this conversation produces.',
+        ' for atomic identity facts, or ask the user to create a project in the' +
+        ' synthesis layer (+ → Create project). Beliefs are user-authored only' +
+        ' (+ → Core Belief neuron in Synthesis Layer) — do not propose beliefs.',
       );
     }
 

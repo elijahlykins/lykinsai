@@ -7,8 +7,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import ModelSelectOptions from "@/components/ModelSelectOptions";
-import { AGENT_BUILDER_DEFAULT_MODEL, LYKN_ID } from "@/lib/modelCatalog";
-import { canonicalizeAgentBuilderModelId, canonicalizeModelId } from "@/lib/modelTiers";
+import { LYKN_ID } from "@/lib/modelCatalog";
+import { canonicalizeModelId } from "@/lib/modelTiers";
 
 export type OmniaChatBarToolbarProps = {
   compact?: boolean;
@@ -20,8 +20,10 @@ export type OmniaChatBarToolbarProps = {
   selectedModel: string;
   persistSelectedModel: (v: string) => void;
   modelTier?: string;
-  /** Override model dropdown body (e.g. Agent Studio coding models). */
+  /** Override model dropdown body. */
   modelMenu?: React.ReactNode;
+  /** Replaces the model select entirely. */
+  toolbarSelect?: React.ReactNode;
   handleOpenAttachments: () => void;
   handleStopAi: () => void;
   handleDictateToggle: () => void;
@@ -38,14 +40,13 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   persistSelectedModel,
   modelTier,
   modelMenu,
+  toolbarSelect,
   handleOpenAttachments,
   handleStopAi,
   handleDictateToggle,
 }: OmniaChatBarToolbarProps) {
   const sendDisabled = !chatInputHasText || isChatLoading || isDictating || isTranscribing;
-  const selectValue = modelMenu
-    ? canonicalizeAgentBuilderModelId(selectedModel) || AGENT_BUILDER_DEFAULT_MODEL
-    : canonicalizeModelId(selectedModel) || LYKN_ID;
+  const selectValue = canonicalizeModelId(selectedModel) || LYKN_ID;
   const modelTriggerCls = compact
     ? "omnia-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
     : "omnia-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
@@ -56,18 +57,20 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
 
   return (
     <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>
-      <Select value={selectValue} onValueChange={persistSelectedModel}>
-        <SelectTrigger className={modelTriggerCls}>
-          <SelectValue placeholder="Model" />
-        </SelectTrigger>
-        <SelectContent
-          side="top"
-          align="start"
-          className={`${dropdownCls} max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]`}
-        >
-          {modelMenu ?? <ModelSelectOptions modelTier={modelTier} />}
-        </SelectContent>
-      </Select>
+      {toolbarSelect ?? (
+        <Select value={selectValue} onValueChange={persistSelectedModel}>
+          <SelectTrigger className={modelTriggerCls}>
+            <SelectValue placeholder="Model" />
+          </SelectTrigger>
+          <SelectContent
+            side="top"
+            align="start"
+            className={`${dropdownCls} max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]`}
+          >
+            {modelMenu ?? <ModelSelectOptions modelTier={modelTier} />}
+          </SelectContent>
+        </Select>
+      )}
       <div className="flex-1 min-w-[4px]" aria-hidden />
       <button
         type="button"

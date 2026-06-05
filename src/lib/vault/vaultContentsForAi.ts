@@ -246,6 +246,7 @@ function buildVaultCardsForAiChat(notes: VaultAiNoteRow[]): VaultAiCard[] {
     const dateLabel = formatDate(note.updated_at || note.created_at);
     const isStandaloneQuickNote =
       String(note?.source || "").toLowerCase() === "quick_note" ||
+      String(note?.source || "").toLowerCase() === "voice_note" ||
       (String(note?.title || "")
         .trim()
         .toLowerCase() === "quick note" &&

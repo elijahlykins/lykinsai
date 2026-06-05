@@ -12,6 +12,8 @@ import remarkGfm from "remark-gfm";
 import NeuronPill from "@/components/synthesis/NeuronPill";
 import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
 import ToolCallPill from "@/components/omnia/ToolCallPill";
+import ChatArtifactCard from "@/components/omnia/ChatArtifactCard";
+import { extractChatArtifacts, sortArtifactsForDisplay } from "@/lib/ai/chatArtifacts";
 import ChatNeuronCard from "@/components/omnia/ChatNeuronCard";
 import type {
   ToolCallEvent,
@@ -266,10 +268,14 @@ export interface OmniaFocusedChatProps {
   thinkingStatus: string;
 
   chatInputRef: React.MutableRefObject<string>;
+  /** When set, composer textareas are controlled (clears reliably on send). */
+  chatInputValue?: string;
   onChatInputChange: (value: string) => void;
   onSend: () => void | Promise<void>;
 
   typedWelcome: string;
+  /** Optional line under the centered welcome heading (empty-state only). */
+  welcomeSubtitle?: React.ReactNode;
   isMobileGrid: boolean;
   isMobilePhone?: boolean;
 
@@ -338,6 +344,13 @@ export interface OmniaFocusedChatProps {
 
   /** Walkthrough iframe preview: tighter layout, no scroll. */
   compactPreview?: boolean;
+
+  /** Optional content rendered at the bottom of the message scroll area. */
+  threadFooter?: React.ReactNode;
+  /** Sub-agent task status strip above the composer (main agent orchestration). */
+  composerAbove?: React.ReactNode;
+  /** Keep the composer pinned to the bottom even with no messages (e.g. new chat in a thread). */
+  pinComposerToBottom?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1509,6 +1522,17 @@ const MessageItem = React.memo(function MessageItem({
                 ))}
               </div>
             )}
+            {(() => {
+              const artifacts = sortArtifactsForDisplay(extractChatArtifacts(msg.toolCalls));
+              if (!artifacts.length) return null;
+              return (
+                <div className="px-1 flex flex-col gap-2 max-w-[min(100%,42rem)] w-full">
+                  {artifacts.map((art) => (
+                    <ChatArtifactCard key={art.id} artifact={art} />
+                  ))}
+                </div>
+              );
+            })()}
             {Array.isArray(msg.aiNeurons) && msg.aiNeurons.length > 0 && (
               <div className="px-1 flex flex-col gap-2 max-w-[32rem]">
                 {msg.aiNeurons.map((att) => (
@@ -1614,9 +1638,11 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   isChatLoading,
   thinkingStatus,
   chatInputRef,
+  chatInputValue,
   onChatInputChange,
   onSend,
   typedWelcome,
+  welcomeSubtitle,
   isMobileGrid,
   isMobilePhone = false,
   isDictating,
@@ -1653,6 +1679,9 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   onRegenerateNonUser,
   onLoadInGreetingRefresh,
   compactPreview = false,
+  threadFooter = null,
+  composerAbove = null,
+  pinComposerToBottom = false,
 }) {
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const chunkMapRef = useRef<Map<string, string>>(new Map());
@@ -1685,6 +1714,17 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   const registerChunks = useCallback((msgId: string, entries: Array<{ key: string; text: string }>) => {
     for (const e of entries) chunkMapRef.current.set(e.key, e.text);
   }, []);
+
+  const isControlledInput = chatInputValue !== undefined;
+  const handleComposerInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const value = e.target.value;
+      chatInputRef.current = value;
+      onChatInputChange(value);
+      onResizeInput(e.currentTarget);
+    },
+    [chatInputRef, onChatInputChange, onResizeInput],
+  );
 
   return (
     <>
@@ -1755,7 +1795,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
         </div>
       )}
 
-      {chatMessages.length === 0 ? (
+      {chatMessages.length === 0 && !pinComposerToBottom ? (
         /* Empty state: identical to the canvas first-render welcome */
         <div
           className={`${compactPreview ? "omnia-focused-chat-preview absolute inset-0 z-[65]" : "fixed top-0 right-0 z-[65]"} flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid && !compactPreview ? "pl-[232px]" : ""}`}
@@ -1771,12 +1811,27 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
           onDrop={onDrop}
         >
           <div className={`w-full max-w-2xl ${compactPreview ? "space-y-3 px-1" : "space-y-10 sm:space-y-12"}`}>
-            <p className={`text-center font-semibold tracking-tight text-black dark:text-white pointer-events-none ${
-              compactPreview ? "text-sm min-h-0 line-clamp-2" : "text-xl sm:text-3xl min-h-[44px]"
-            }`}>
-              {typedWelcome}
-            </p>
-            <div className="omnia-neu-chat-shell omnia-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
+            <div className={`pointer-events-none text-center ${compactPreview ? "space-y-1" : "space-y-3"}`}>
+              <p
+                className={`font-semibold tracking-tight text-black dark:text-white ${
+                  compactPreview ? "text-sm min-h-0 line-clamp-2" : "text-xl sm:text-3xl min-h-[44px]"
+                }`}
+              >
+                {typedWelcome}
+              </p>
+              {welcomeSubtitle ? (
+                <p
+                  className={`text-black/60 dark:text-white/55 max-w-md mx-auto leading-relaxed ${
+                    compactPreview ? "text-[11px] line-clamp-2" : "text-sm sm:text-[15px]"
+                  }`}
+                >
+                  {welcomeSubtitle}
+                </p>
+              ) : null}
+            </div>
+            <div className="w-full flex flex-col gap-1">
+              {composerAbove}
+              <div className="omnia-neu-chat-shell omnia-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
               {focusedChatAttachments.length > 0 && (
                 <div className="mb-0 flex flex-wrap gap-2 items-end">
                   {focusedChatAttachments.map((att) => (
@@ -1792,8 +1847,10 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                 <textarea
                   ref={chatPanelInputRef}
                   data-min-h="52"
-                  defaultValue={chatInputRef.current}
-                  onChange={(e) => { onChatInputChange(e.target.value); onResizeInput(e.currentTarget); }}
+                  {...(isControlledInput
+                    ? { value: chatInputValue }
+                    : { defaultValue: chatInputRef.current })}
+                  onChange={handleComposerInputChange}
                   onPaste={onPaste}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
                   placeholder="Ask me anything..."
@@ -1802,6 +1859,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                 />
               )}
               {chatBarToolbar}
+            </div>
             </div>
           </div>
         </div>
@@ -1821,40 +1879,45 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
-          <div ref={chatScrollRef} className="flex-1 w-full max-w-2xl overflow-y-auto scrollbar-hide px-4 pt-6 pb-4 space-y-4">
-            {chatMessages.map((msg, idx) => (
-              <MessageItem
-                key={msg.id || idx}
-                msg={msg}
-                idx={idx}
-                isAiExpanded={expandedAiMsgIds.has(msg.id)}
-                isUserPromptExpanded={expandedUserPromptIds.has(msg.id)}
-                reaction={chatReactions[msg.id]}
-                isCopied={copiedMsgId === msg.id}
-                isMobilePhone={isMobilePhone}
-                gridDisabled={gridDisabled}
-                savedMediaUrls={savedMediaUrls}
-                savedYouTubeIds={savedYouTubeIds}
-                selectedChunks={selectedChunks}
-                buildChatMarkdownComponents={buildChatMarkdownComponents}
-                toggleAiExpanded={toggleAiExpanded}
-                toggleUserPromptExpanded={toggleUserPromptExpanded}
-                getCollapsedPreview={getCollapsedPreview}
-                onCopyMessage={onCopyMessage}
-                onReaction={onReaction}
-                onRegenerate={onRegenerate}
-                onRegenerateNonUser={onRegenerateNonUser}
-                onSaveYouTube={onSaveYouTube}
-                onSaveAttachment={onSaveAttachment}
-                onSaveAiImage={onSaveAiImage}
-                onSaveLink={onSaveLink}
-                addChatResponseToGrid={addChatResponseToGrid}
-                handleChunkClick={handleChunkClick}
-                getSelectedText={getSelectedText}
-                registerChunks={registerChunks}
-                onLoadInGreetingRefresh={onLoadInGreetingRefresh}
-              />
-            ))}
+          <div ref={chatScrollRef} className="flex-1 w-full max-w-2xl overflow-y-auto scrollbar-hide px-4 pt-6 pb-4 flex flex-col">
+            {chatMessages.length > 0 ? (
+              <div className="space-y-4">
+                {chatMessages.map((msg, idx) => (
+                  <MessageItem
+                    key={msg.id || idx}
+                    msg={msg}
+                    idx={idx}
+                    isAiExpanded={expandedAiMsgIds.has(msg.id)}
+                    isUserPromptExpanded={expandedUserPromptIds.has(msg.id)}
+                    reaction={chatReactions[msg.id]}
+                    isCopied={copiedMsgId === msg.id}
+                    isMobilePhone={isMobilePhone}
+                    gridDisabled={gridDisabled}
+                    savedMediaUrls={savedMediaUrls}
+                    savedYouTubeIds={savedYouTubeIds}
+                    selectedChunks={selectedChunks}
+                    buildChatMarkdownComponents={buildChatMarkdownComponents}
+                    toggleAiExpanded={toggleAiExpanded}
+                    toggleUserPromptExpanded={toggleUserPromptExpanded}
+                    getCollapsedPreview={getCollapsedPreview}
+                    onCopyMessage={onCopyMessage}
+                    onReaction={onReaction}
+                    onRegenerate={onRegenerate}
+                    onRegenerateNonUser={onRegenerateNonUser}
+                    onSaveYouTube={onSaveYouTube}
+                    onSaveAttachment={onSaveAttachment}
+                    onSaveAiImage={onSaveAiImage}
+                    onSaveLink={onSaveLink}
+                    addChatResponseToGrid={addChatResponseToGrid}
+                    handleChunkClick={handleChunkClick}
+                    getSelectedText={getSelectedText}
+                    registerChunks={registerChunks}
+                    onLoadInGreetingRefresh={onLoadInGreetingRefresh}
+                  />
+                ))}
+                {threadFooter}
+              </div>
+            ) : null}
             {isChatLoading && (
               <div className="flex justify-start">
                 <div className="omnia-ai-thinking-glow rounded-2xl rounded-bl-md max-w-[80%] px-4 py-3 text-sm leading-relaxed border bg-black/5 dark:bg-white/8 border-black/10 dark:border-white/10 text-black/70 dark:text-white/60 backdrop-blur-sm flex items-center gap-3">
@@ -1865,6 +1928,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
             )}
           </div>
           <div className="w-full max-w-2xl px-4 pb-6 pt-2">
+            {composerAbove ? <div className="mb-1">{composerAbove}</div> : null}
             <div className="omnia-neu-chat-shell omnia-chat-border-run-once p-2.5 sm:p-3 w-full flex flex-col gap-1.5">
               {focusedChatAttachments.length > 0 && (
                 <div className="mb-0 flex flex-wrap gap-2 items-end">
@@ -1881,8 +1945,10 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                 <textarea
                   ref={chatPanelInputRef}
                   data-min-h="52"
-                  defaultValue={chatInputRef.current}
-                  onChange={(e) => { onChatInputChange(e.target.value); onResizeInput(e.currentTarget); }}
+                  {...(isControlledInput
+                    ? { value: chatInputValue }
+                    : { defaultValue: chatInputRef.current })}
+                  onChange={handleComposerInputChange}
                   onPaste={onPaste}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
                   placeholder="Ask me anything..."

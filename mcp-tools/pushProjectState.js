@@ -23,7 +23,8 @@
 //      NOT auto-create an "Untitled project" because that's the kind
 //      of orphan-row footgun that pollutes the synthesis profile UI.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent, requireWrite } from './content.js';
+import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const STATE_KEY_MAX = 80;
 const STATE_VALUE_MAX = 2000;
@@ -120,52 +121,29 @@ export const pushProjectStateTool = {
     const stateValue = String(args?.state_value || '').trim().slice(0, STATE_VALUE_MAX);
     if (!stateValue) return errorContent('state_value is required and must be non-empty.');
 
-    const reason = args?.reason ? String(args.reason).trim().slice(0, REASON_MAX) : null;
+    const pushReason = args?.reason ? String(args.reason).trim().slice(0, REASON_MAX) : null;
     const messageId = args?.message_id ? String(args.message_id).trim().slice(0, 200) : null;
-    const clientKind = ctx?.mcpAuth?.clientKind || 'lykn-chat';
+    const clientKind = ctx?.chatModelLabel || ctx?.mcpAuth?.clientKind || 'lykn-chat';
 
-    // Resolve project: explicit > active > error.
-    let projectId = args?.project_id ? String(args.project_id).trim() : null;
-    if (!projectId) {
-      const { data: profile, error: profileErr } = await ctx.supabaseAdmin
-        .from('lykn_user_synthesis_profile')
-        .select('active_project_id')
-        .eq('user_id', ctx.userId)
-        .maybeSingle();
-      if (profileErr) {
-        return errorContent(`profile lookup failed: ${profileErr.message}`);
-      }
-      projectId = profile?.active_project_id || null;
-    }
-    if (!projectId) {
-      return jsonContent({
-        ok: false,
-        reason: 'no_active_project',
-        message:
-          'No active project. Call lykn_setActiveProject({ name: "..." }) first, then re-push this state.',
-      });
-    }
-
-    // Verify the project belongs to this user (and exists). Cheap guard
-    // against a model passing a stale/foreign project_id from another
-    // conversation.
-    const { data: project, error: pjErr } = await ctx.supabaseAdmin
-      .from('lykn_projects')
-      .select('id, name, status')
-      .eq('id', projectId)
-      .eq('user_id', ctx.userId)
-      .maybeSingle();
-    if (pjErr) {
-      return errorContent(`project verify failed: ${pjErr.message}`);
-    }
+    const explicitId = args?.project_id ? String(args.project_id).trim() : null;
+    const { project, resolvedBy, reason: resolveReason } = await resolveWriteProjectTarget(ctx, explicitId);
     if (!project) {
+      if (resolveReason === 'project_not_found_or_not_writable') {
+        return jsonContent({
+          ok: false,
+          reason: 'project_not_writable',
+          message:
+            'That project_id is not writable. Only user-created projects (from the LYKN synthesis layer) accept AI updates. Legacy AI-inferred projects are read-only — ask the user to create a project and pass its id.',
+        });
+      }
       return jsonContent({
         ok: false,
-        reason: 'project_not_found',
+        reason: resolveReason || 'no_active_project',
         message:
-          'That project_id is not in the user\'s project list. Call lykn_setActiveProject first.',
+          'No writable project resolved. Pass project_id for a user-created project, or ask the user to create one in synthesis (+ → Create project). Custom-model chats bind to linked_project_id automatically.',
       });
     }
+    const projectId = project.id;
 
     // Mark prior unsuperseded row at the same key as superseded. We do
     // this BEFORE inserting the new row so a hypothetical concurrent
@@ -193,7 +171,7 @@ export const pushProjectStateTool = {
         state_value: stateValue,
         set_by_client: clientKind,
         set_in_message_id: messageId,
-        reason,
+        reason: pushReason,
       })
       .select('id, state_key, state_value, set_by_client, created_at')
       .single();
@@ -211,6 +189,7 @@ export const pushProjectStateTool = {
 
     return jsonContent({
       ok: true,
+      resolved_by: resolvedBy,
       project: { id: project.id, name: project.name },
       pushed: {
         state_key: inserted.state_key,

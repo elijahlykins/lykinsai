@@ -1,6 +1,6 @@
 import { supabase } from "./supabase";
 
-export type Surface = "grid" | "project" | "vault";
+export type Surface = "chat" | "grid" | "project" | "vault";
 
 export interface MemoryEntry {
   id: string;
@@ -14,7 +14,7 @@ export interface MemoryEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Save a user ↔ assistant exchange (for vault/project and long-term storage)
+// Save a user ↔ assistant exchange (main /app chat, project, legacy vault)
 // ---------------------------------------------------------------------------
 export async function saveExchange(
   userId: string,
@@ -186,9 +186,11 @@ export function formatMemoryForPrompt(entries: MemoryEntry[]): string {
 
   for (const e of entries) {
     const label = surfaceLabel(e);
+    const when = e.created_at ? new Date(e.created_at).toISOString() : "";
+    const whenPrefix = when ? `[${when}] ` : "";
     const userSnip = (e.summary || e.user_message).slice(0, 600);
     const aiSnip = (e.summary || e.assistant_message).slice(0, 600);
-    const block = `[${label}]\nUser: ${userSnip}\nAssistant: ${aiSnip}`;
+    const block = `${whenPrefix}[${label}]\nUser: ${userSnip}\nAssistant: ${aiSnip}`;
 
     if (chars + block.length > MEMORY_CHAR_BUDGET) break;
     lines.push(block);

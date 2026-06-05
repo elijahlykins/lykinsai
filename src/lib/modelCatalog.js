@@ -66,26 +66,48 @@ export const KNOWN_MODEL_IDS = MODEL_GROUPS.flatMap((g) =>
   g.items.map((i) => i.value)
 );
 
-// Agent Studio (/agents) — coding-tier frontier models (no LYKN alias).
+/** Frontier id also used by server routing (e.g. Anthropic Opus). */
 export const CLAUDE_OPUS_4_8_ID = "claude-opus-4-8";
 
-/** @type {ModelGroup[]} */
-export const AGENT_BUILDER_MODEL_GROUPS = [
+/**
+ * Closed / hosted LLM sections for Model Builder (base_kind: standard).
+ * @type {{ id: string, label: string, items: { id: string, label: string, hint: string }[] }[]}
+ */
+export const CLOSED_LLM_MODEL_SECTIONS = [
   {
-    id: "coding",
-    label: "Coding models",
+    id: "frontier",
+    label: "Top frontier models",
     items: [
-      { value: CLAUDE_OPUS_4_8_ID, label: "Claude Opus 4.8", hint: "Anthropic" },
-      { value: FRONTIER_ANTHROPIC_ID, label: "Claude Sonnet 4.6", hint: "Anthropic" },
-      { value: FRONTIER_OPENAI_ID, label: "GPT-5.5", hint: "OpenAI" },
-      { value: FRONTIER_GOOGLE_ID, label: "Gemini 3.1 Pro", hint: "Google" },
-      { value: FRONTIER_XAI_ID, label: "Grok 4.3", hint: "xAI" },
+      { id: FRONTIER_OPENAI_ID, label: "GPT-5.5", hint: "OpenAI" },
+      { id: FRONTIER_ANTHROPIC_ID, label: "Claude Sonnet 4.6", hint: "Anthropic" },
+      { id: FRONTIER_GOOGLE_ID, label: "Gemini 3.1 Pro", hint: "Google" },
+      { id: FRONTIER_XAI_ID, label: "Grok 4.3", hint: "xAI" },
+    ],
+  },
+  {
+    id: "fast",
+    label: "Fast models",
+    items: [
+      { id: LYKN_ID, label: "LYKN", hint: "Everyday routed model" },
+      { id: "gpt-4.1-nano", label: "GPT-4.1 Nano", hint: "OpenAI — low latency" },
+      { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", hint: "Google — fast reasoning" },
+      { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", hint: "Google — lightweight" },
+    ],
+  },
+  {
+    id: "deep",
+    label: "Deep thinking",
+    items: [
+      { id: CLAUDE_OPUS_4_8_ID, label: "Claude Opus 4.8", hint: "Anthropic — deepest reasoning" },
+      { id: FRONTIER_OPENAI_ID, label: "GPT-5.5", hint: "OpenAI — flagship" },
+      { id: "deepseek-r1", label: "DeepSeek R1", hint: "Reasoning-focused" },
+      { id: FRONTIER_GOOGLE_ID, label: "Gemini 3.1 Pro", hint: "Google — long context" },
     ],
   },
 ];
 
-export const AGENT_BUILDER_MODEL_IDS = AGENT_BUILDER_MODEL_GROUPS.flatMap((g) =>
-  g.items.map((i) => i.value),
+export const ALL_CLOSED_LLM_MODEL_IDS = CLOSED_LLM_MODEL_SECTIONS.flatMap((s) =>
+  s.items.map((i) => i.id),
 );
 
-export const AGENT_BUILDER_DEFAULT_MODEL = CLAUDE_OPUS_4_8_ID;
+export const DEFAULT_CLOSED_LLM_MODEL_ID = LYKN_ID;

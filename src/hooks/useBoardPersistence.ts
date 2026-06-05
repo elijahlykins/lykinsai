@@ -9,6 +9,7 @@ import { scheduleUserProfileRefresh } from "@/lib/synthesis/profileRefresh";
 import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/board/blocksCapError";
 import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
+import { getThreadSnapshot, shouldPreferRuntimeSnapshot } from "@/lib/chat/chatThreadRuntime";
 import { isDemoGridId, getDemoGridSnapshot } from "@/lib/demoGrids";
 
 const SNAPSHOT_VERSION = 2;
@@ -92,6 +93,7 @@ export interface UseBoardPersistenceParams {
   onDraftEffectCleanup?: () => void;
   savedMediaUrls: Set<string>;
   savedYouTubeIds: Set<string>;
+  chatModelKeyRef?: MutableRefObject<string | null>;
 }
 
 export function useBoardPersistence(params: UseBoardPersistenceParams) {
@@ -102,6 +104,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     reSignChatAttachments, restoreSavedToVaultState,
     onCanvasChange, onDraftEffectCleanup,
     savedMediaUrls, savedYouTubeIds,
+    chatModelKeyRef,
   } = params;
 
   /* ------------------------------------------------------------------ */
@@ -162,6 +165,10 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
     const st = useCanvasStore.getState();
     const current = titleRef.current;
     const resolvedTitle = (current && String(current).trim()) ? String(current).trim() : "New Chat";
+    const chatModelKey =
+      chatModelKeyRef?.current != null && String(chatModelKeyRef.current).trim()
+        ? String(chatModelKeyRef.current).trim()
+        : null;
     return {
       blocks: st.blocks,
       blockOrder: st.blockOrder,
@@ -173,6 +180,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       chatMessages: chatMessagesRef.current,
       aiThread: aiThreadRef.current,
       notesPages: notesPagesRef.current,
+      ...(chatModelKey ? { chatModelKey } : {}),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -282,6 +290,12 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       }
 
       if (snapshot.title) setTitleTracked(String(snapshot.title));
+
+      const hydratedModelKey =
+        typeof snapshot.chatModelKey === "string" && snapshot.chatModelKey.trim()
+          ? snapshot.chatModelKey.trim()
+          : null;
+      if (chatModelKeyRef) chatModelKeyRef.current = hydratedModelKey;
 
       (async () => {
         const innerSt = useCanvasStore.getState();
@@ -567,13 +581,35 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
 
       const statePayload = { board_id: boardId, state: snapshot, version: raw.version || SNAPSHOT_VERSION, user_id: userId, updated_at: now };
 
-      const [updateRes, initialUpsertRes] = await Promise.all([
-        supabase.from("omnia_boards").update({ title: savedTitle, updated_at: now }).eq("id", boardId),
-        supabase
-          .from("omnia_board_states")
-          .upsert(statePayload, { onConflict: "board_id" })
-          .select("board_id, user_id, updated_at"),
-      ]);
+      const chatModelKey =
+        chatModelKeyRef?.current != null && String(chatModelKeyRef.current).trim()
+          ? String(chatModelKeyRef.current).trim()
+          : null;
+      const boardUpdatePayload: Record<string, string | null> = {
+        title: savedTitle,
+        updated_at: now,
+        ...(chatModelKey ? { chat_model_key: chatModelKey } : {}),
+      };
+
+      const boardStateUpsert = supabase
+        .from("omnia_board_states")
+        .upsert(statePayload, { onConflict: "board_id" })
+        .select("board_id, user_id, updated_at");
+
+      let updateRes = await supabase.from("omnia_boards").update(boardUpdatePayload).eq("id", boardId);
+      if (
+        updateRes.error &&
+        chatModelKey &&
+        (String(updateRes.error.code) === "42703" ||
+          String(updateRes.error.message || "").toLowerCase().includes("chat_model_key"))
+      ) {
+        updateRes = await supabase
+          .from("omnia_boards")
+          .update({ title: savedTitle, updated_at: now })
+          .eq("id", boardId);
+      }
+
+      const initialUpsertRes = await boardStateUpsert;
 
       let stateSaveOk = !initialUpsertRes.error;
       let needsSelfHeal = false;
@@ -817,7 +853,11 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         try {
           const { error: insertErr } = await supabase
             .from("omnia_boards")
-            .insert({ id: routeBoardId, user_id: userId, title: "New Chat" });
+            .insert({
+              id: routeBoardId,
+              user_id: userId,
+              title: "New Chat",
+            });
           if (!insertErr) {
             boardRowExistsRef.current = true;
             localStorage.setItem("omnia_board_id", routeBoardId);
@@ -873,6 +913,31 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       }
       const isBoardSwitch = Boolean(priorBoardId && priorBoardId !== id);
       const shouldRestorePendingChat = !isExplicitNewChat && !isBoardSwitch;
+      // Restore an in-memory thread snapshot for `boardId` over the DB load
+      // when it is newer (streaming or more complete). Guards against the
+      // async DB load clobbering a response that streamed while the user
+      // was viewing a different chat in the thread.
+      const restorePreferredRuntimeChat = (boardId: string, loadedChat: any[]) => {
+        try {
+          const rtSnap = getThreadSnapshot(boardId);
+          if (!rtSnap) return;
+          // Compare against what THIS load actually pulled from disk — not
+          // chatMessagesRef, which the engine's board-switch hydrate may
+          // have already repointed at the snapshot (making the comparison
+          // a no-op and leaving the stale DB copy on screen).
+          const loaded = Array.isArray(loadedChat) ? loadedChat : [];
+          if (!shouldPreferRuntimeSnapshot(rtSnap, loaded)) return;
+          chatMessagesRef.current = rtSnap.chatMessages;
+          aiThreadRef.current = [...rtSnap.aiThread];
+          setChatMessages(rtSnap.chatMessages);
+          setChatRailOpen(true);
+          setChatRailVisible(true);
+          // Persist the recovered conversation so it survives a reload
+          // (a background stream's completion saves under whichever board
+          // was active at the time, not necessarily this one).
+          if (!rtSnap.isChatLoading) queueMicrotask(() => saveSnapshotRef.current());
+        } catch { /* ignore */ }
+      };
       reset();
       chatMessagesRef.current = [];
       aiThreadRef.current = [];
@@ -963,6 +1028,25 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           queueMicrotask(() => saveSnapshotRef.current());
         }
 
+        // If this board has a live (or just-finished) in-memory stream,
+        // it is newer than anything on disk — prefer it so returning to a
+        // chat that was thinking shows the response instead of a bare prompt.
+        // Compare against the chat that actually came off disk this load
+        // (localStorage chat cache wins in applySnapshot, else the snapshot).
+        let loadedChatForCompare: any[] = Array.isArray(snapshotForChat?.chatMessages)
+          ? snapshotForChat.chatMessages
+          : [];
+        try {
+          const cachedRaw = localStorage.getItem(`omnia_chat_${id}`);
+          if (cachedRaw) {
+            const cached = JSON.parse(cachedRaw);
+            if (Array.isArray(cached?.chatMessages) && cached.chatMessages.length > 0) {
+              loadedChatForCompare = cached.chatMessages;
+            }
+          }
+        } catch { /* ignore */ }
+        restorePreferredRuntimeChat(id, loadedChatForCompare);
+
         try { localStorage.removeItem(`omnia_draft_${id}`); } catch { /* ignore */ }
       } catch (err) {
         if (import.meta.env.DEV) console.error("[LYKN] Failed to load board state:", err);
@@ -997,6 +1081,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           setChatRailVisible(true);
           queueMicrotask(() => saveSnapshotRef.current());
         }
+        restorePreferredRuntimeChat(id, []);
       }
       hydratedRef.current = true;
 

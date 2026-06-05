@@ -3,6 +3,44 @@ import type { QueryClient } from "@tanstack/react-query";
 import { filterBoardsWithContext, type BoardListRow } from "@/lib/board/boardHasContext";
 import { isDemoGridId } from "@/lib/demoGrids";
 
+const BOARD_LIST_SELECT_BASE =
+  "id, title, updated_at, created_at, omnia_board_states(state)";
+const BOARD_LIST_SELECT_WITH_MODEL =
+  "id, title, updated_at, created_at, chat_model_key, omnia_board_states(state)";
+
+function isMissingChatModelKeyColumn(error: { message?: string; code?: string } | null) {
+  const msg = String(error?.message || "").toLowerCase();
+  return (
+    error?.code === "42703" ||
+    msg.includes("chat_model_key") ||
+    (msg.includes("column") && msg.includes("does not exist"))
+  );
+}
+
+async function fetchBoardListRows(
+  userId: string,
+  overfetch: number,
+): Promise<BoardListRow[]> {
+  const query = (select: string) =>
+    supabase
+      .from("omnia_boards")
+      .select(select)
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false })
+      .limit(overfetch);
+
+  const withModel = await query(BOARD_LIST_SELECT_WITH_MODEL);
+  if (!withModel.error) return (withModel.data || []) as BoardListRow[];
+
+  if (isMissingChatModelKeyColumn(withModel.error)) {
+    const fallback = await query(BOARD_LIST_SELECT_BASE);
+    if (fallback.error) throw fallback.error;
+    return (fallback.data || []) as BoardListRow[];
+  }
+
+  throw withModel.error;
+}
+
 /**
  * Fetches recent chats that have real content, a custom title, or were
  * explicitly opened (board row exists but no snapshot yet). Empty login
@@ -13,15 +51,8 @@ export async function fetchBoardsWithContext(
   limit = 50,
 ): Promise<BoardListRow[]> {
   const overfetch = Math.min(Math.max(limit * 3, limit), 150);
-  const { data, error } = await supabase
-    .from("omnia_boards")
-    .select("id, title, updated_at, created_at, omnia_board_states(state)")
-    .eq("user_id", userId)
-    .order("updated_at", { ascending: false })
-    .limit(overfetch);
-
-  if (error) throw error;
-  const filtered = filterBoardsWithContext((data || []) as BoardListRow[]);
+  const data = await fetchBoardListRows(userId, overfetch);
+  const filtered = filterBoardsWithContext(data);
   return filtered.slice(0, limit);
 }
 
@@ -37,16 +68,8 @@ export async function fetchRecentBoardWithContext(
 export async function fetchMostRecentBoard(
   userId: string,
 ): Promise<BoardListRow | null> {
-  const { data, error } = await supabase
-    .from("omnia_boards")
-    .select("id, title, updated_at, created_at, omnia_board_states(state)")
-    .eq("user_id", userId)
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  return (data as BoardListRow | null) ?? null;
+  const rows = await fetchBoardListRows(userId, 1);
+  return rows[0] ?? null;
 }
 
 /** Invalidate every react-query cache that lists chats for sidebars / synthesis. */
@@ -56,6 +79,8 @@ export function invalidateBoardListQueries(
 ) {
   if (!userId) return;
   queryClient.invalidateQueries({ queryKey: ["boards", userId] });
+  queryClient.invalidateQueries({ queryKey: ["sidebar-chats", userId] });
+  queryClient.invalidateQueries({ queryKey: ["thread-chats", userId] });
   queryClient.invalidateQueries({ queryKey: ["mindmap_boards", userId] });
 }
 

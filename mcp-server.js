@@ -95,8 +95,8 @@ const SERVER_INFO = {
 //   • Names the single tool to call at conversation start (getContextBlock)
 //     instead of listing all 12 — model picks one tool with high
 //     confidence, not several with low confidence.
-//   • Calls out the write-back loop (recordRuleApplication, pushProjectState,
-//     proposeBelief) so the synthesis layer stays "living" across clients.
+//   • Calls out the write-back loop (recordRuleApplication, pushProjectState)
+//     so the synthesis layer stays "living" across clients.
 const SERVER_INSTRUCTIONS = [
   'This server exposes the user\'s LYKN synthesis layer — their portable',
   'beliefs, if-then governance rules, identity facts, and active project',
@@ -117,8 +117,10 @@ const SERVER_INSTRUCTIONS = [
   '  • Call `lykn_pushProjectState` when the conversation produces a durable',
   '    decision about the active project (so the next AI client picks up',
   '    where this one left off).',
-  '  • Call `lykn_proposeBelief` when a clear durable principle emerges',
-  '    that the user has not yet ratified.',
+  '',
+  'Beliefs are USER-AUTHORED ONLY — do NOT propose, create, or offer to add',
+  'core beliefs. The user adds them in LYKN\'s Synthesis Layer (+ → Core',
+  'Belief neuron). You may read beliefs via getContextBlock / getBeliefs.',
   '',
   'Use the finer-grained tools (lykn_getBeliefs / lykn_getRules /',
   'lykn_getProjectState / lykn_searchVault / lykn_getFacts) only when you',
@@ -150,8 +152,8 @@ function toMcpToolDescriptor(tool) {
   // them from the `scope` field we already track ('read' vs 'write').
   //
   // None of the LYKN write tools delete anything — they append rows
-  // (proposeBelief / proposeFact / recordRuleApplication) or update a
-  // single named cell (setActiveProject / pushProjectState) — so
+  // (proposeFact / recordRuleApplication) or update a single named cell
+  // (setActiveProject / pushProjectState) — so
   // destructiveHint is false everywhere.
   //
   // openWorldHint is false because every LYKN tool reads/writes

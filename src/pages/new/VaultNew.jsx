@@ -42,10 +42,16 @@ import { useQuery, useQueryClient, useInfiniteQuery } from "@tanstack/react-quer
 import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select";
 import ModelSelectOptions from "@/components/ModelSelectOptions";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
+import VaultNewNoteChooser from "@/components/vault/VaultNewNoteChooser";
 import DragDropFileUpload from "@/components/files/DragDropFileUpload";
+import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { useVaultUploadStore } from "@/store/vaultUploadStore";
 import { useUsageGate } from "@/lib/useUsageGate";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
+import {
+  VAULT_PICKER_CHANGE,
+  VAULT_PICKER_SET_SELECTION,
+} from "@/lib/vault/vaultPickerProtocol";
 import {
   findAttachmentsMarker,
   parseAttachmentsFromContent,
@@ -235,6 +241,13 @@ function resolveAttachmentType(attachment = {}) {
   if (["doc", "docx", "ppt", "pptx", "txt", "md"].includes(ext)) return "file";
 
   return "file";
+}
+
+function isVoiceNoteCard(card = {}) {
+  if (String(card.source || "").toLowerCase() === "voice_note") return true;
+  if ((card.tags || []).some((t) => String(t).toLowerCase() === "voice")) return true;
+  const label = String(card.attachment?.name || card.title || "").trim().toLowerCase();
+  return label === "voice recording" || label.startsWith("voice note");
 }
 
 function parseTagActions(text) {
@@ -688,6 +701,16 @@ function getAttachmentHeightClass(card) {
   return "h-56 md:h-64 xl:h-72";
 }
 
+// `h-auto` tiles reserve zero height in masonry/collage columns, so the
+// skeleton collapses and every subsequent image load shoves the column
+// downward. Always map to a stable bucket before first paint.
+function resolveStableTileHeight(card, tileHeightClass) {
+  if (tileHeightClass && tileHeightClass !== "h-auto") return tileHeightClass;
+  const fromCard = getAttachmentHeightClass(card);
+  if (fromCard && fromCard !== "h-auto") return fromCard;
+  return "h-56 md:h-64 xl:h-72";
+}
+
 function extractYouTubeLinks(content = "") {
   const text = String(content || "");
   if (!text) return [];
@@ -703,6 +726,17 @@ const VAULT_VIEW_OPTIONS = [
   { id: "type", icon: LayoutGrid, label: "Type" },
 ];
 
+function VaultPickerTapOverlay({ show }) {
+  if (!show) return null;
+  return (
+    <div
+      className="absolute inset-0 z-[130] cursor-pointer"
+      aria-hidden
+      data-vault-picker-overlay="true"
+    />
+  );
+}
+
 export default function VaultNew({ wakePreview = false, onWakePreviewTabChange } = {}) {
   const location = useLocation();
   const nav = useNavigate();
@@ -711,6 +745,10 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   const addMediaTriggerRef = useRef(null);
   const isEmbeddedMode = useMemo(
     () => !isWakePreview && new URLSearchParams(location.search).get("embedded") === "1",
+    [location.search, isWakePreview]
+  );
+  const isPickerMode = useMemo(
+    () => !isWakePreview && new URLSearchParams(location.search).get("picker") === "1",
     [location.search, isWakePreview]
   );
   // Origin to pass to `window.parent.postMessage`. Targeting "*" (the
@@ -786,6 +824,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
 
   const chatInputValueRef = useRef("");
   const [showQuickNote, setShowQuickNote] = useState(false);
+  const [showNewNoteChooser, setShowNewNoteChooser] = useState(false);
   const [wakePreviewQuickNotes, setWakePreviewQuickNotes] = useState(() =>
     wakePreview ? readWakeVaultPreviewQuickNotes() : [],
   );
@@ -823,6 +862,11 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   // we re-resolve it against the live `vaultCardsRef` at click time so
   // selection ranges still make sense after the grid has reordered.
   const [selectedCardIds, setSelectedCardIds] = useState(() => new Set());
+  const pickerInitNoteIdsRef = useRef(null);
+  const pickerParentInitReceivedRef = useRef(false);
+  const pickerParentNoteIdsRef = useRef([]);
+  const pickerSyncedWithParentRef = useRef(false);
+  const pickerUserAdjustedRef = useRef(false);
   const lastSelectedCardIdRef = useRef(null);
   const draggedCardMetricsRef = useRef(null);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
@@ -881,8 +925,20 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   const [isSaveLinkSaving, setIsSaveLinkSaving] = useState(false);
   const [vaultSearch, setVaultSearch] = useState("");
   const [vaultView, setVaultView] = useState(() => {
-    try { return localStorage.getItem("lykn_vault_view") || "collage"; } catch { return "collage"; }
+    try {
+      if (typeof window !== "undefined") {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("picker") === "1") return "grid";
+      }
+      return localStorage.getItem("lykn_vault_view") || "collage";
+    } catch {
+      return "collage";
+    }
   });
+
+  useEffect(() => {
+    if (isPickerMode) setVaultView("grid");
+  }, [isPickerMode]);
   const [conceptResultIds, setConceptResultIds] = useState(null);
   const requireSignInForAction = useCallback(() => {
     if (user?.id) return false;
@@ -915,8 +971,17 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
       return;
     }
     if (requireSignInForAction()) return;
-    setShowQuickNote((v) => !v);
-  }, [requireSignInForAction, isWakePreview]);
+    if (showQuickNote) {
+      setShowQuickNote(false);
+      return;
+    }
+    setShowNewNoteChooser(true);
+  }, [requireSignInForAction, isWakePreview, showQuickNote]);
+
+  const handleChooseWrittenNote = useCallback(() => {
+    setShowNewNoteChooser(false);
+    setShowQuickNote(true);
+  }, []);
   const [isConceptSearching, setIsConceptSearching] = useState(false);
   const [selectedFilterTags, setSelectedFilterTags] = useState([]);
   const [showEmbeddedTagDropdown, setShowEmbeddedTagDropdown] = useState(false);
@@ -1634,6 +1699,29 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     lastSelectedCardIdRef.current = card.id;
   }, [isSelectableCard]);
 
+  const toggleNoteSelectionInPicker = useCallback((card) => {
+    if (!isSelectableCard(card)) return;
+    if (pickerSyncedWithParentRef.current) {
+      pickerUserAdjustedRef.current = true;
+    }
+    const noteId = card.noteId || card.id;
+    setSelectedCardIds((prev) => {
+      const allCards = vaultCardsRef.current || [];
+      const cardsForNote = allCards.filter(
+        (c) => (c.noteId || c.id) === noteId && isSelectableCard(c),
+      );
+      const noteSelected = cardsForNote.some((c) => prev.has(c.id));
+      const next = new Set(prev);
+      if (noteSelected) {
+        for (const c of cardsForNote) next.delete(c.id);
+      } else {
+        for (const c of cardsForNote) next.add(c.id);
+      }
+      return next;
+    });
+    lastSelectedCardIdRef.current = card.id;
+  }, [isSelectableCard]);
+
   // Shift+click range select: pick everything between the last-clicked
   // anchor and the just-clicked card, in current visual grid order. If
   // there's no anchor (first shift-click), behave like a plain toggle so
@@ -1766,6 +1854,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
       const lastTouchedMs = Math.max(updatedAtMs, createdAtMs);
       const isStandaloneQuickNote =
         noteSource === "quick_note" ||
+        noteSource === "voice_note" ||
         (String(note?.title || "").trim().toLowerCase() === "quick note" && attachments.length === 0);
       const excerpt = isStandaloneQuickNote
         ? buildTextExcerpt(String(cleanContent || "").replace(/\r\n/g, "\n"))
@@ -1891,6 +1980,127 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   useEffect(() => {
     vaultCardsRef.current = vaultCards;
   }, [vaultCards]);
+
+  const postPickerSelection = useCallback(() => {
+    if (!isPickerMode || !isEmbeddedMode) return;
+    if (selectedCardIds.size === 0) {
+      if (!pickerParentInitReceivedRef.current || pickerInitNoteIdsRef.current?.length) {
+        return;
+      }
+      pickerParentNoteIdsRef.current = [];
+      try {
+        window.parent.postMessage(
+          { type: VAULT_PICKER_CHANGE, noteIds: [], items: [] },
+          embeddedTargetOrigin,
+        );
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    const allCards = vaultCardsRef.current || [];
+    let noteIdSet = new Set();
+    const itemsById = new Map();
+    for (const cardId of selectedCardIds) {
+      const card = allCards.find((c) => c.id === cardId);
+      if (!card) continue;
+      const noteId = String(card.noteId || card.id || "").trim();
+      if (!noteId || noteIdSet.has(noteId)) continue;
+      noteIdSet.add(noteId);
+      itemsById.set(noteId, {
+        noteId,
+        title: card.title || card.parentTitle || "Untitled",
+        type: card.type || card.kind,
+        tags: card.tags || [],
+      });
+    }
+
+    const parentIds = (pickerParentNoteIdsRef.current || []).map(String).filter(Boolean);
+    if (pickerUserAdjustedRef.current) {
+      pickerParentNoteIdsRef.current = [...noteIdSet];
+    } else if (parentIds.length) {
+      noteIdSet = new Set([...parentIds, ...noteIdSet]);
+      if (parentIds.every((id) => noteIdSet.has(id))) {
+        pickerSyncedWithParentRef.current = true;
+      }
+      pickerParentNoteIdsRef.current = [...noteIdSet];
+    } else {
+      pickerParentNoteIdsRef.current = [...noteIdSet];
+    }
+
+    const items = [];
+    for (const noteId of noteIdSet) {
+      const item = itemsById.get(noteId);
+      if (item) items.push(item);
+    }
+    try {
+      window.parent.postMessage(
+        {
+          type: VAULT_PICKER_CHANGE,
+          noteIds: [...noteIdSet],
+          items,
+        },
+        embeddedTargetOrigin,
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [isPickerMode, isEmbeddedMode, selectedCardIds, embeddedTargetOrigin]);
+
+  useEffect(() => {
+    postPickerSelection();
+  }, [postPickerSelection]);
+
+  useEffect(() => {
+    if (!isPickerMode) {
+      pickerParentInitReceivedRef.current = false;
+      pickerInitNoteIdsRef.current = null;
+      pickerParentNoteIdsRef.current = [];
+      pickerSyncedWithParentRef.current = false;
+      pickerUserAdjustedRef.current = false;
+      return;
+    }
+    const handler = (event) => {
+      if (event.origin !== embeddedTargetOrigin) return;
+      if (event.data?.type !== VAULT_PICKER_SET_SELECTION) return;
+      pickerParentInitReceivedRef.current = true;
+      pickerSyncedWithParentRef.current = false;
+      pickerUserAdjustedRef.current = false;
+      const noteIds = Array.isArray(event.data.noteIds)
+        ? event.data.noteIds.map(String).filter(Boolean)
+        : [];
+      pickerParentNoteIdsRef.current = noteIds;
+      if (!noteIds.length) {
+        setSelectedCardIds(new Set());
+        pickerInitNoteIdsRef.current = null;
+        return;
+      }
+      const allCards = vaultCardsRef.current || [];
+      if (!allCards.length) {
+        pickerInitNoteIdsRef.current = noteIds;
+        return;
+      }
+      const idSet = new Set(noteIds);
+      const cardIds = allCards
+        .filter((c) => idSet.has(c.noteId || c.id) && isSelectableCard(c))
+        .map((c) => c.id);
+      setSelectedCardIds(new Set(cardIds));
+      pickerInitNoteIdsRef.current = null;
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [isPickerMode, embeddedTargetOrigin, isSelectableCard]);
+
+  useEffect(() => {
+    if (!isPickerMode || !pickerInitNoteIdsRef.current?.length) return;
+    const noteIds = pickerInitNoteIdsRef.current;
+    const idSet = new Set(noteIds);
+    const cardIds = vaultCards
+      .filter((c) => idSet.has(c.noteId || c.id) && isSelectableCard(c))
+      .map((c) => c.id);
+    setSelectedCardIds(new Set(cardIds));
+    pickerInitNoteIdsRef.current = null;
+  }, [isPickerMode, vaultCards, isSelectableCard]);
 
   // ─── Deep-link: ?note=<noteId> ─────────────────────────────────────
   //
@@ -2178,7 +2388,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   // setState anyway. Better to risk a small first-load shift on a slow
   // image than to leave the user staring at a skeleton.
   const resolveImageDimsAndCommit = useCallback((cardId, signedUrl) => {
-    const PROBE_BUDGET_MS = 600;
+    const PROBE_BUDGET_MS = 1200;
     const learned = learnedImageDimsRef.current.get(signedUrl);
     if (learned) {
       // Already know dims (preload covered it, or we've seen this URL).
@@ -2689,6 +2899,26 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     initialCardIdsRef.current = new Set(vaultCards.map((c) => c.id));
   }
 
+  // Suppress per-card entry motion + image fade-ins on the first paint
+  // after the loading gate lifts. Without this, masonry columns reflow
+  // while each card's opacity transition starts on a different frame —
+  // the "pile in" / "click downward" effect users see on cold load.
+  const isVaultFirstPaintRef = useRef(true);
+  useEffect(() => {
+    if (!vaultReady) return;
+    let outer = 0;
+    let inner = 0;
+    outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        isVaultFirstPaintRef.current = false;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [vaultReady]);
+
   const backfillDescribedRef = useRef(new Set());
   const backfillRunningRef = useRef(false);
 
@@ -3079,6 +3309,10 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   }, [startVaultTrashHold, clearVaultTrashHold]);
 
   const handleCardDragStart = useCallback((e, card) => {
+    if (isPickerMode) {
+      e.preventDefault();
+      return;
+    }
     // Guest demo cards aren't backed by a real note — dragging them into a
     // project or the canvas would have nowhere to land. Block the drag and
     // surface the sign-in prompt instead.
@@ -3195,7 +3429,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     }
     window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_start"));
     try { e.dataTransfer.setData("application/x-lykins-vault-card-id", card.id); } catch {}
-  }, [isEmbeddedMode, resolvedAttachmentUrls, requireSignInForAction, embeddedTargetOrigin]);
+  }, [isPickerMode, isEmbeddedMode, resolvedAttachmentUrls, requireSignInForAction, embeddedTargetOrigin]);
 
   // NOTE: `removeAttachmentFromNote` and `removeQuickNoteCard` are
   // defined later in this component (TDZ), so they are intentionally
@@ -3321,6 +3555,21 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     // simply no-op until the real note lands, at which point this card is
     // swapped for the DB-backed one transparently.
     const target = e?.target;
+    if (isPickerMode) {
+      if (!isSelectableCard(card)) return;
+      e?.preventDefault?.();
+      e?.stopPropagation?.();
+      setOpenCardMenuId(null);
+      setOpenAttachmentNotesCardId(null);
+      setPreviewCard(null);
+      const shift = !!e?.shiftKey;
+      const toggle = !!(e?.metaKey || e?.ctrlKey);
+      if (shift) selectRangeTo(card);
+      else if (toggle) toggleCardSelection(card);
+      else toggleNoteSelectionInPicker(card);
+      return;
+    }
+
     if (target && typeof target.closest === "function") {
       const blocked = target.closest(
         'button, a, input, textarea, select, iframe, video, audio, [data-no-drag="true"], [data-no-preview="true"]'
@@ -3359,9 +3608,11 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     setPreviewCard(card);
   }, [
     draggedCardId,
+    isPickerMode,
     isSelectableCard,
     selectRangeTo,
     toggleCardSelection,
+    toggleNoteSelectionInPicker,
     selectedCardIds,
     clearSelection,
   ]);
@@ -3582,13 +3833,40 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
           user_id: user.id,
           title: "Quick Note",
           content,
+          source: "quick_note",
+          tags: ["note"],
         })
-        .select("id, title, content, created_at, updated_at")
+        .select("id, title, content, tags, created_at, updated_at")
         .single());
+
+      const missingColumnError =
+        noteError &&
+        (
+          noteError.code === "PGRST204" ||
+          noteError.message?.includes("Could not find") ||
+          String(noteError.message || "").toLowerCase().includes("does not exist")
+        );
+
+      if (missingColumnError) {
+        ({ data: insertedNote, error: noteError } = await supabase
+          .from("notes")
+          .insert({
+            user_id: user.id,
+            title: "Quick Note",
+            content,
+          })
+          .select("id, title, content, created_at, updated_at")
+          .single());
+      }
 
       if (noteError || !insertedNote?.id) {
         throw noteError || new Error("Unable to save quick note.");
       }
+
+      afterVaultNoteSaved(user.id, insertedNote.id, {
+        title: insertedNote.title || "Quick Note",
+        content,
+      });
 
       setQuickNoteContent("");
       setShowQuickNote(false);
@@ -4158,6 +4436,7 @@ User: ${text}`;
     const { attachment, type, title } = card;
     const resolvedUrl = resolvedAttachmentUrls[card.id] || attachment.url;
     const wakeDemoCard = isWakePreview && card.isDemo;
+    const stableTileHeight = resolveStableTileHeight(card, tileHeightClass);
 
     // Ghost cards represent uploads still in flight. We render the local
     // blob preview directly — no signed-URL resolver, no retry logic —
@@ -4203,7 +4482,7 @@ User: ${text}`;
 
       if (isStorageBacked && !hasResolvedUrl && !hasFailed) {
         return (
-          <div className={`w-full ${tileHeightClass || "h-44"} rounded-2xl bg-white/5 animate-pulse flex items-center justify-center`}>
+          <div className={`w-full ${stableTileHeight} rounded-2xl bg-white/5 animate-pulse flex items-center justify-center`}>
             <Loader2 className="w-6 h-6 text-white/20 animate-spin" />
           </div>
         );
@@ -4211,7 +4490,7 @@ User: ${text}`;
 
       if (hasFailed) {
         return (
-          <div className={`w-full ${tileHeightClass || "h-44"} rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3`}>
+          <div className={`w-full ${stableTileHeight} rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3`}>
             <FileText className="w-8 h-8 text-black/20 dark:text-white/20" />
             <span className="text-xs text-black/40 dark:text-white/40 text-center truncate max-w-full">{title}</span>
             {isStorageBacked && (
@@ -4253,6 +4532,7 @@ User: ${text}`;
       // so it doesn't trip the ambiguous-arbitrary-value warning.
       const isPreDecoded =
         wakeDemoCard || (!!resolvedUrl && preDecodedUrlsRef.current.has(resolvedUrl));
+      const skipEntryFade = isVaultFirstPaintRef.current || isPreDecoded || wakeDemoCard;
 
       // Aspect-ratio reservation: use attachment metadata first, then
       // fall back to learned dims from a previous load. Setting the
@@ -4278,11 +4558,13 @@ User: ${text}`;
 
       return (
         <div
-          className="w-full rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] flex items-center justify-center overflow-hidden"
+          className={`w-full rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] flex items-center justify-center overflow-hidden ${
+            hasReservedAspect ? "" : stableTileHeight
+          }`}
           style={
             hasReservedAspect
               ? { aspectRatio: `${reservedW} / ${reservedH}` }
-              : { minHeight: "8rem" }
+              : undefined
           }
         >
         <img
@@ -4296,12 +4578,12 @@ User: ${text}`;
           // Safari 14+) "aspect ratio mapping" feature.
           {...(hasReservedAspect ? { width: reservedW, height: reservedH } : {})}
           className={
-            isPreDecoded || wakeDemoCard
-              ? `${hasReservedAspect ? "max-w-full max-h-full w-auto h-auto object-contain" : "w-full h-auto max-h-[42rem] object-contain"} rounded-2xl`
-              : `${hasReservedAspect ? "max-w-full max-h-full w-auto h-auto object-contain" : "w-full h-auto max-h-[42rem] object-contain"} rounded-2xl opacity-0 transition-opacity duration-150 ease-out`
+            skipEntryFade
+              ? `${hasReservedAspect ? "max-w-full max-h-full w-auto h-auto object-contain" : "max-w-full max-h-full w-auto h-auto object-contain"} rounded-2xl`
+              : `${hasReservedAspect ? "max-w-full max-h-full w-auto h-auto object-contain" : "max-w-full max-h-full w-auto h-auto object-contain"} rounded-2xl opacity-0 transition-opacity duration-150 ease-out`
           }
-          loading={isPreDecoded || wakeDemoCard ? "eager" : "lazy"}
-          decoding={isPreDecoded || wakeDemoCard ? "sync" : "async"}
+          loading={skipEntryFade ? "eager" : "lazy"}
+          decoding={skipEntryFade ? "sync" : "async"}
           draggable={false}
           onLoad={(e) => {
             // Cache the actual natural dims so the next time this
@@ -4389,21 +4671,26 @@ User: ${text}`;
 
       if (videoIsStorageBacked && !resolvedAttachmentUrls[card.id]) {
         return (
-          <div className={`w-full ${tileHeightClass || "h-44"} rounded-2xl bg-black/10 animate-pulse flex items-center justify-center`}>
+          <div className={`w-full ${stableTileHeight} rounded-2xl bg-black/10 animate-pulse flex items-center justify-center`}>
             <Loader2 className="w-6 h-6 text-white/20 animate-spin" />
           </div>
         );
       }
 
+      const skipVideoFade = isVaultFirstPaintRef.current || wakeDemoCard;
+
       return (
-        <div className="w-full min-h-[8rem] rounded-2xl bg-black/[0.02] dark:bg-white/[0.02]">
+        <div className={`w-full ${stableTileHeight} rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] pointer-events-none flex items-center justify-center overflow-hidden`}>
           <video
             key={resolvedUrl}
-            className="w-full h-auto max-h-[42rem] rounded-2xl bg-black/10 opacity-0 transition-opacity duration-150 ease-out"
-            controls
+            className={`max-w-full max-h-full w-auto h-auto rounded-2xl bg-black/10 ${
+              skipVideoFade ? "" : "opacity-0 transition-opacity duration-150 ease-out"
+            }`}
+            controls={!isPickerMode}
             playsInline
             preload="metadata"
             draggable={false}
+            muted={isPickerMode}
             onLoadedData={(e) => {
               e.currentTarget.style.opacity = "1";
               const wrapper = e.currentTarget.parentElement;
@@ -4417,13 +4704,14 @@ User: ${text}`;
     }
 
     if (type === "audio") {
+      const voiceNote = isVoiceNoteCard(card);
       return (
         <div className="p-3 space-y-3 rounded-2xl">
           <div className="flex items-center gap-2 text-black/80 dark:text-white/80">
-            <Music className="w-4 h-4" />
+            {voiceNote ? <Mic className="w-4 h-4" /> : <Music className="w-4 h-4" />}
             <span className="text-xs font-medium truncate">{title}</span>
           </div>
-          <audio src={resolvedUrl} controls className="w-full h-10" preload="metadata" />
+          <audio src={resolvedUrl} controls={!isPickerMode} className="w-full h-10 pointer-events-none" preload="metadata" />
         </div>
       );
     }
@@ -4463,7 +4751,7 @@ User: ${text}`;
             title={attachment.title || title || ""}
             authorName={attachment.authorName || ""}
             authorHandle={attachment.authorHandle || ""}
-            compact={isEmbeddedMode}
+            compact={isEmbeddedMode || isPickerMode}
           />
         </div>
       );
@@ -4474,7 +4762,7 @@ User: ${text}`;
       const embedUrl = videoId ? getYouTubeEmbedUrl(videoId) : "";
       const customThumb = String(attachment.image || attachment.thumbnail_url || "").trim();
 
-      if ((isEmbeddedMode || isWakePreview) && (customThumb || videoId)) {
+      if ((isEmbeddedMode || isWakePreview || isPickerMode) && (customThumb || videoId)) {
         const thumbUrl = customThumb || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
         return (
           <div className={`w-full ${tileHeightClass} rounded-2xl overflow-hidden bg-black relative`} draggable={false}>
@@ -4494,6 +4782,22 @@ User: ${text}`;
       }
 
       if (!embedUrl) {
+        const linkBody = (
+          <div className="flex items-start gap-2 h-full">
+            <Video className="w-4 h-4 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{title}</p>
+              <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1 truncate">{attachment.url}</p>
+            </div>
+          </div>
+        );
+        if (isPickerMode) {
+          return (
+            <div className={`block p-4 rounded-2xl ${tileHeightClass} pointer-events-none`} draggable={false}>
+              {linkBody}
+            </div>
+          );
+        }
         return (
           <a
             href={attachment.url}
@@ -4503,23 +4807,36 @@ User: ${text}`;
             title="Open YouTube video"
             draggable={false}
           >
-            <div className="flex items-start gap-2 h-full">
-              <Video className="w-4 h-4 mt-0.5" />
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{title}</p>
-                <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1 truncate">{attachment.url}</p>
-              </div>
-            </div>
+            {linkBody}
           </a>
         );
       }
 
+      if (isPickerMode && videoId) {
+        const thumbUrl = customThumb || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+        return (
+          <div className={`w-full ${tileHeightClass} rounded-2xl overflow-hidden bg-black relative pointer-events-none`} draggable={false}>
+            <img
+              src={thumbUrl}
+              alt={title || "YouTube Video"}
+              className="w-full h-full object-cover"
+              draggable={false}
+            />
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="w-14 h-10 bg-red-600 rounded-xl flex items-center justify-center shadow-lg">
+                <svg viewBox="0 0 24 24" fill="white" className="w-6 h-6 ml-0.5"><polygon points="8,5 20,12 8,19" /></svg>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       return (
-        <div className={`w-full ${tileHeightClass} rounded-2xl overflow-hidden bg-black`} draggable={false}>
+        <div className={`w-full ${tileHeightClass} rounded-2xl overflow-hidden bg-black pointer-events-none`} draggable={false}>
           <iframe
             src={embedUrl}
             title={title || "YouTube video"}
-            className="w-full h-full border-0"
+            className="w-full h-full border-0 pointer-events-none"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
             allowFullScreen
           />
@@ -4533,18 +4850,20 @@ User: ${text}`;
       }
       const linkUrl = attachment.url || resolvedUrl || "";
       return (
-        <LinkPreview
-          url={linkUrl}
-          title={attachment.title || title || ""}
-          description={String(attachment.description || "")}
-          image={attachment.image || ""}
-          siteName={attachment.siteName || ""}
-          favicon={attachment.favicon || ""}
-          authorName={attachment.authorName || ""}
-          authorHandle={attachment.authorHandle || ""}
-          oembedType={attachment.oembedType || ""}
-          variant="vault"
-        />
+        <div className={isPickerMode ? "pointer-events-none" : undefined}>
+          <LinkPreview
+            url={linkUrl}
+            title={attachment.title || title || ""}
+            description={String(attachment.description || "")}
+            image={attachment.image || ""}
+            siteName={attachment.siteName || ""}
+            favicon={attachment.favicon || ""}
+            authorName={attachment.authorName || ""}
+            authorHandle={attachment.authorHandle || ""}
+            oembedType={attachment.oembedType || ""}
+            variant="vault"
+          />
+        </div>
       );
     }
 
@@ -4589,6 +4908,22 @@ User: ${text}`;
     }
 
     if (type === "doc" || type === "word") {
+      const fileBody = (
+        <div className="flex items-start gap-2 h-full">
+          <FileText className="w-4 h-4 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{title}</p>
+            <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1">{type.toUpperCase()} file</p>
+          </div>
+        </div>
+      );
+      if (isPickerMode) {
+        return (
+          <div className={`block p-4 rounded-2xl ${tileHeightClass} pointer-events-none`} draggable={false}>
+            {fileBody}
+          </div>
+        );
+      }
       return (
         <a
           href={resolvedUrl}
@@ -4598,13 +4933,7 @@ User: ${text}`;
           title={`Open ${type.toUpperCase()} file`}
           draggable={false}
         >
-          <div className="flex items-start gap-2 h-full">
-            <FileText className="w-4 h-4 mt-0.5" />
-            <div className="min-w-0">
-              <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{title}</p>
-              <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1">{type.toUpperCase()} file</p>
-            </div>
-          </div>
+          {fileBody}
         </a>
       );
     }
@@ -5261,14 +5590,14 @@ User: ${text}`;
 
           {!isWakePreview && (
           <>
-          {/* Bottom-right FAB: opens the quick-note composer. */}
+          {/* Bottom-right FAB: voice or written note chooser. */}
           <button
             type="button"
             onClick={handleToggleQuickNote}
-            title={showQuickNote ? "Hide quick note" : "New quick note"}
-            aria-label={showQuickNote ? "Hide quick note" : "New quick note"}
+            title={showQuickNote ? "Hide quick note" : "New note"}
+            aria-label={showQuickNote ? "Hide quick note" : "New note"}
             className={`fixed bottom-6 right-6 z-[70] w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation ${
-              showQuickNote
+              showQuickNote || showNewNoteChooser
                 ? "bg-blue-500/15 text-blue-600 hover:bg-blue-500/25 dark:bg-blue-400/20 dark:text-blue-400 dark:hover:bg-blue-400/30"
                 : "bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90"
             }`}
@@ -5669,7 +5998,7 @@ User: ${text}`;
         )}
 
         {(isWakePreview || (!loading && !isLoadingNotes && (vaultReady || !user))) && !notesError && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35, ease: "easeOut" }}>
+          <motion.div initial={false} animate={{ opacity: 1 }}>
             {openSourceFolder && openFolderConnector && (
               <div className="mb-4 flex items-center justify-between gap-3">
                 <button
@@ -5757,7 +6086,11 @@ User: ${text}`;
                         const isSelected = selectedCardIds.has(card.id);
                         return (
                         <motion.article
-                          initial={initialCardIdsRef.current?.has(card.id) ? false : { opacity: 0, scale: 0.97 }}
+                          initial={
+                            isVaultFirstPaintRef.current || initialCardIdsRef.current?.has(card.id)
+                              ? false
+                              : { opacity: 0, scale: 0.97 }
+                          }
                           animate={{ opacity: 1, scale: 1 }}
                           transition={{ duration: 0.15 }}
                           key={`${tagName}-${card.id}`}
@@ -5898,7 +6231,11 @@ User: ${text}`;
                           const isSelected = selectedCardIds.has(card.id);
                           return (
                           <motion.article
-                            initial={initialCardIdsRef.current?.has(card.id) ? false : { opacity: 0, scale: 0.97 }}
+                            initial={
+                              isVaultFirstPaintRef.current || initialCardIdsRef.current?.has(card.id)
+                                ? false
+                                : { opacity: 0, scale: 0.97 }
+                            }
                             animate={{ opacity: 1, scale: 1 }}
                             transition={{ duration: 0.15 }}
                             key={`${typeName}-${card.id}`}
@@ -6141,14 +6478,18 @@ User: ${text}`;
                   const isSelected = selectedCardIds.has(card.id);
                   return (
                   <motion.article
-                    initial={initialCardIdsRef.current?.has(card.id) ? false : { opacity: 0, scale: 0.97 }}
+                    initial={
+                      isVaultFirstPaintRef.current || initialCardIdsRef.current?.has(card.id)
+                        ? false
+                        : { opacity: 0, scale: 0.97 }
+                    }
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ duration: 0.2, ease: "easeOut" }}
                     key={card.id}
                     data-vault-card-id={card.id}
                     data-card-id={card.id}
                     ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
-                    draggable
+                    draggable={!isPickerMode}
                     onDragStart={(e) => handleCardDragStart(e, card)}
                     onDrag={handleCardDrag}
                     onDragEnter={(e) => {
@@ -6395,6 +6736,9 @@ User: ${text}`;
                         </div>
                       </>
                     )}
+                    <VaultPickerTapOverlay
+                      show={isPickerMode && isSelectableCard(card)}
+                    />
                   </motion.article>
                   );
                 })}
@@ -6718,6 +7062,39 @@ User: ${text}`;
         </div>
       )}
 
+      <VaultNewNoteChooser
+        open={showNewNoteChooser}
+        userId={user?.id}
+        onClose={() => setShowNewNoteChooser(false)}
+        onChooseWritten={handleChooseWrittenNote}
+        onRequireSignIn={() => setShowSignInBlocker(true)}
+        beforeSave={checkVaultLimit}
+        onNoteSaved={(note) => {
+          if (note?.id) {
+            mergeUploadedNotes([note]);
+            incrementVaultCount();
+          }
+          toast({
+            title: "Voice note saved",
+            description: String(note?.title || "Added to your Vault."),
+            action: note?.id ? (
+              <ToastAction altText="Open note" onClick={() => nav(`/vault?note=${encodeURIComponent(String(note.id))}`)}>
+                Open
+              </ToastAction>
+            ) : undefined,
+          });
+        }}
+        onError={(message) => {
+          if (!notifyVaultCapIfApplicable({ message })) {
+            toast({
+              title: "Voice note failed",
+              description: message,
+              variant: "destructive",
+            });
+          }
+        }}
+      />
+
       {showQuickNote && (
         <DraggableQuickNote
           content={quickNoteContent}
@@ -6729,6 +7106,14 @@ User: ${text}`;
           }}
           onDiscard={handleDiscardQuickNote}
           contained={isWakePreview}
+          voiceEnabled={!isWakePreview}
+          onVoiceError={(message) => {
+            toast({
+              title: "Dictation failed",
+              description: message,
+              variant: "destructive",
+            });
+          }}
         />
       )}
 
@@ -7315,9 +7700,14 @@ User: ${text}`;
               />
             );
           } else if (card.kind === "attachment" && type === "audio") {
+            const voiceNote = isVoiceNoteCard(card);
             body = (
               <div className="flex flex-col items-center gap-4 py-8">
-                <Music className="w-14 h-14 text-violet-400/70" />
+                {voiceNote ? (
+                  <Mic className="w-14 h-14 text-black/40 dark:text-white/40" />
+                ) : (
+                  <Music className="w-14 h-14 text-black/40 dark:text-white/40" />
+                )}
                 <p className="text-sm text-black/70 dark:text-white/70 text-center">{title}</p>
                 <audio src={resolvedUrl} controls autoPlay className="w-full max-w-xl" />
               </div>
@@ -7604,7 +7994,7 @@ User: ${text}`;
           mobile tab bar on phones. Esc and Delete/Backspace also work as
           keyboard shortcuts (see the keydown effect alongside
           `deleteSelectedCards`). */}
-      {selectedCardIds.size > 0 && createPortal(
+      {selectedCardIds.size > 0 && !isPickerMode && createPortal(
         <div
           className="fixed z-[210] left-1/2 -translate-x-1/2 flex items-center"
           style={{ bottom: isMobileChat ? "80px" : "24px" }}

@@ -412,6 +412,7 @@ export function makeRequireAuthOrMcpToken({ supabaseAdmin, requireAuth, getPubli
 
 export function labelForClientKind(kind) {
   switch (kind) {
+    case 'lykn-chat':      return 'LYKN Chat';
     case 'claude-desktop': return 'Claude Desktop';
     case 'claude-code':    return 'Claude Code';
     case 'cursor':         return 'Cursor';

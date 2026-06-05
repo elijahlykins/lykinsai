@@ -311,7 +311,7 @@ export const SKILLS = [
     summary:
       "Tap the mic, talk, get a transcribed note added to your Vault automatically.",
     status: "live",
-    action: { route: "/grid/new", chat: true },
+    action: { route: "/vault" },
   },
   {
     id: "podcastify",
@@ -383,8 +383,8 @@ export const SKILLS = [
     name: "Web search inside chat",
     summary:
       "Ask anything; if the answer isn't in your Vault, search the web and cite sources.",
-    status: "soon",
-    action: { comingSoon: true },
+    status: "live",
+    action: { route: "/grid/new", chat: true },
   },
   {
     id: "tool-calls",

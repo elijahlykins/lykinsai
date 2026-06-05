@@ -104,6 +104,17 @@ function normaliseNameKey(name: string): string {
   return name.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
+/** User-created synthesis projects only — excludes legacy AI-inferred rows. */
+function isUserCreatedProjectRow(row: {
+  created_by?: string | null;
+  created_by_client?: string | null;
+}): boolean {
+  if (row.created_by === "user") return true;
+  if (row.created_by === "agent") return false;
+  const client = row.created_by_client;
+  return !client || client === "lykn-synthesis" || client === "user";
+}
+
 // ---------------------------------------------------------------------------
 // Read — every project (with members) belonging to this user.
 // ---------------------------------------------------------------------------
@@ -118,12 +129,13 @@ export async function listUserProjects(userId: string | null | undefined): Promi
   try {
     const { data: projects, error: projErr } = await supabase
       .from("lykn_projects")
-      .select("id, name, description, status, created_by_client, created_at, last_active_at")
+      .select("id, name, description, status, created_by, created_by_client, created_at, last_active_at")
       .eq("user_id", userId)
       .order("last_active_at", { ascending: false });
     if (projErr) throw projErr;
 
-    const ids = (projects || []).map((p) => p.id as string);
+    const userProjects = (projects || []).filter(isUserCreatedProjectRow);
+    const ids = userProjects.map((p) => p.id as string);
     let membersByProject = new Map<string, UserProjectMember[]>();
     let pushCountByProject = new Map<string, number>();
     if (ids.length > 0) {
@@ -174,7 +186,7 @@ export async function listUserProjects(userId: string | null | undefined): Promi
       }
     }
 
-    return (projects || []).map((p) => ({
+    return userProjects.map((p) => ({
       id: p.id as string,
       name: p.name as string,
       description: (p.description as string | null) ?? null,
@@ -209,6 +221,8 @@ export async function createUserProject(
     name: string;
     description?: string | null;
     members: UserProjectMember[];
+    /** When set, creates a branch under this main project (GitHub-style). */
+    parentProjectId?: string | null;
   },
 ): Promise<UserProject | null> {
   const name = args.name.trim().slice(0, 120);
@@ -299,7 +313,9 @@ export async function createUserProject(
           name_key: nameKey,
           description,
           status: "active",
+          created_by: "user",
           created_by_client: "lykn-synthesis",
+          parent_project_id: args.parentProjectId || null,
           last_active_at: new Date().toISOString(),
         })
         .select("id, name, description, status, created_by_client, created_at, last_active_at")
@@ -309,6 +325,19 @@ export async function createUserProject(
     }
 
     if (!projectRow) throw new Error("project upsert returned no row");
+
+    // User-created projects become the synthesis focus so agents pick up
+    // context immediately (like checking out the repo you just made).
+    await supabase
+      .from("lykn_user_synthesis_profile")
+      .upsert(
+        {
+          user_id: userId,
+          active_project_id: projectRow.id,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" },
+      );
 
     // Membership upsert: ON CONFLICT do nothing so re-clustering with
     // the same set is idempotent. We use `upsert` with

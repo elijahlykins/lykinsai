@@ -20,6 +20,18 @@
 // nuked my projects" stories. New tools opt in here explicitly.
 
 import { MCP_TOOLS_BY_NAME, errorContent } from './index.js';
+import { EXTERIOR_TOOLS_BY_NAME } from './exterior/index.js';
+import { delegateToSubModelTool } from './delegateToSubModel.js';
+import { listSubModelTasksTool } from './listSubModelTasks.js';
+import { getSubModelTaskTool } from './getSubModelTask.js';
+
+const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
+  ...MCP_TOOLS_BY_NAME,
+  ...EXTERIOR_TOOLS_BY_NAME,
+  [delegateToSubModelTool.name]: delegateToSubModelTool,
+  [listSubModelTasksTool.name]: listSubModelTasksTool,
+  [getSubModelTaskTool.name]: getSubModelTaskTool,
+});
 
 // ---------------------------------------------------------------------------
 // Whitelist
@@ -31,7 +43,7 @@ import { MCP_TOOLS_BY_NAME, errorContent } from './index.js';
 //   discovery → read   → cluster → mutate → propose-new
 //   listProjects → findConnections / searchVault → addProjectNeurons /
 //   removeProjectNeurons → updateProject / setActiveProject / deleteProject →
-//   proposeBelief / proposeFact
+//   proposeFact
 //
 // Read tools first because the agent loop's first call on most turns is
 // a read, and writes get more conservative when the model has already
@@ -44,6 +56,7 @@ export const CHAT_TOOL_NAMES = [
   'lykn_getUserPreferences',
   // ── Project / neuron reads ───────────────────────────────────────
   'lykn_listProjects',
+  'lykn_resolveProject',
   'lykn_getProjectState',
   'lykn_getProjectNeurons',
   'lykn_findConnections',
@@ -69,8 +82,7 @@ export const CHAT_TOOL_NAMES = [
   'lykn_touchConcept',
   // ── Rule application telemetry (records belief→reply attribution) ─
   'lykn_recordRuleApplication',
-  // ── New-neuron proposals (write into beliefs / facts / vault) ────
-  'lykn_proposeBelief',
+  // ── New-neuron proposals (write into facts / vault — beliefs are user-only) ─
   'lykn_proposeFact',
   'lykn_createVaultNote',
   // URL-specialised vault save (rich link card, URL dedupe). The agent
@@ -86,10 +98,35 @@ export const CHAT_TOOL_NAMES = [
   // list of outside tools the user can connect via /connections. Pull
   // model only — LYKN never dispatches.
   'lykn_recommendTools',
+  // ── Exterior capabilities (on-demand, server-executed) ───────────
+  'lykn_web_search',
+  'lykn_web_fetch',
+  'lykn_calculate',
+  'lykn_generate_chart',
+  'lykn_generate_diagram',
+  'lykn_get_current_time',
+  'lykn_run_python',
+  'lykn_generate_image',
+  // ── Model Builder capabilities ─────────────────────────────────────
+  'lykn_manage_file',
+  'lykn_parse_document',
+  'lykn_run_code',
+  'lykn_build_spreadsheet',
+  'lykn_symbolic_math',
+  'lykn_process_image',
+  'lykn_transcribe_audio',
+  'lykn_generate_speech',
+  'lykn_build_template',
+  'lykn_translate',
+  'lykn_http_request',
+  // Main-agent orchestration (enabled per-turn when a main agent is active)
+  'lykn_delegate_to_sub_model',
+  'lykn_list_sub_model_tasks',
+  'lykn_get_sub_model_task',
 ];
 
 export const CHAT_TOOLS = CHAT_TOOL_NAMES
-  .map((name) => MCP_TOOLS_BY_NAME[name])
+  .map((name) => ALL_CHAT_TOOLS_BY_NAME[name])
   .filter(Boolean);
 
 export const CHAT_TOOLS_BY_NAME = Object.freeze(
@@ -189,21 +226,39 @@ export function toGeminiToolDeclaration(tool) {
 // Per-provider "build the whole tools[] array" wrappers
 // ---------------------------------------------------------------------------
 
-export function buildOpenAiTools() {
-  if (!CHAT_TOOLS.length) return null;
-  return CHAT_TOOLS.map(toOpenAIToolSchema);
+/**
+ * Resolve the in-app tool list for a turn.
+ * @param {string[] | null | undefined} toolNames — undefined = full CHAT_TOOLS whitelist; [] = none
+ */
+export function resolveChatTools(toolNames) {
+  if (toolNames === undefined || toolNames === null) {
+    return CHAT_TOOLS;
+  }
+  if (!Array.isArray(toolNames) || toolNames.length === 0) {
+    return [];
+  }
+  const set = new Set(toolNames);
+  return CHAT_TOOL_NAMES.filter((n) => set.has(n))
+    .map((n) => ALL_CHAT_TOOLS_BY_NAME[n])
+    .filter(Boolean);
 }
 
-export function buildAnthropicTools() {
-  if (!CHAT_TOOLS.length) return null;
-  return CHAT_TOOLS.map(toAnthropicToolSchema);
+export function buildOpenAiTools(toolNames) {
+  const tools = resolveChatTools(toolNames);
+  if (!tools.length) return null;
+  return tools.map(toOpenAIToolSchema);
 }
 
-export function buildGeminiTools() {
-  if (!CHAT_TOOLS.length) return null;
-  // Gemini wraps every declaration set in a single `functionDeclarations`
-  // array under one `tools` entry.
-  return [{ functionDeclarations: CHAT_TOOLS.map(toGeminiToolDeclaration) }];
+export function buildAnthropicTools(toolNames) {
+  const tools = resolveChatTools(toolNames);
+  if (!tools.length) return null;
+  return tools.map(toAnthropicToolSchema);
+}
+
+export function buildGeminiTools(toolNames) {
+  const tools = resolveChatTools(toolNames);
+  if (!tools.length) return null;
+  return [{ functionDeclarations: tools.map(toGeminiToolDeclaration) }];
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +285,16 @@ export function buildGeminiTools() {
  *   isError   — mirrors the MCP tool's `isError` flag
  *   latencyMs — wall-clock time spent in the handler (telemetry)
  */
-export async function runChatTool(toolName, args, ctx) {
+export async function runChatTool(toolName, args, ctx, options = {}) {
+  const allowed = options?.allowedToolNames;
+  if (Array.isArray(allowed) && !allowed.includes(toolName)) {
+    return {
+      ok: false,
+      isError: true,
+      payload: { ok: false, error: `tool_not_enabled_for_model: ${toolName}` },
+      latencyMs: 0,
+    };
+  }
   const tool = CHAT_TOOLS_BY_NAME[toolName];
   if (!tool) {
     return {
@@ -292,7 +356,20 @@ export async function runChatTool(toolName, args, ctx) {
  * Surface convention: in-app chat traffic is always `lykn-chat` (matches
  * what the <applied> tag funnel uses), and `mcpAuth` is null (JWT path).
  */
-export function buildChatToolCtx(req) {
+/**
+ * Human-readable attribution for in-app chat tool writes (project state,
+ * etc.). Custom models use their display name; frontier models use the
+ * served model id so the project panel can show "via Mark" / "via gpt-4.1".
+ */
+export function resolveChatModelLabel({ customModelName, modelId } = {}) {
+  const custom = typeof customModelName === 'string' ? customModelName.trim() : '';
+  if (custom) return custom.slice(0, 80);
+  const model = typeof modelId === 'string' ? modelId.trim() : '';
+  if (model) return model.slice(0, 80);
+  return 'lykn-chat';
+}
+
+export function buildChatToolCtx(req, extras = {}) {
   return {
     supabaseAdmin: req.app.get('supabaseAdmin'),
     userId: req.user?.id || null,
@@ -300,6 +377,11 @@ export function buildChatToolCtx(req) {
     clientLabel: String(req.headers['user-agent'] || '').slice(0, 240),
     attribSurface: 'lykn-chat',
     tokenId: null,
+    chatModelLabel: extras.chatModelLabel || null,
+    /** Custom model linked_project_id — default target for project writes. */
+    boundProjectId: extras.boundProjectId || null,
+    /** Board/chat scope from req.body.projectId. */
+    boardProjectId: extras.boardProjectId || null,
   };
 }
 

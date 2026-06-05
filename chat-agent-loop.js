@@ -75,7 +75,8 @@ function safeJsonParse(s) {
 //     "[lykn_") hold the tail back until the next chunk arrives.
 //   • Cap the hold at MAX_HOLD so a model that opens a `[` and never
 //     closes it doesn't block the stream forever — past the cap we
-//     flush the tail as-is and trust the user to ignore the noise.
+//     drop the unclosed opener (and any continuation chunks until />)
+//     rather than leaking tool-call syntax to the user.
 //   • Flush whatever's left when the hop ends.
 //
 // We deliberately don't strip bare tool-name MENTIONS without a call
@@ -93,6 +94,11 @@ const STRIP_PATTERNS = [
   /\blykn_\w+\s*\(\s*\{[\s\S]*?\}\s*\)/g,
   // lykn_xxx() — empty-args call
   /\blykn_\w+\s*\(\s*\)/g,
+  // <tool_use ... /> and <tool_use>...</tool_use> — Cursor / Anthropic XML
+  // that some models echo as plain text instead of using native tool calls.
+  /<tool_use\b[^>]*\/>/gi,
+  /<tool_use\b[^>]*>[\s\S]*?<\/tool_use>/gi,
+  /<\/?tool_use\b[^>]*>/gi,
   // <tool>...</tool>, <tool_call>...</tool_call>, etc.
   /<tool[_a-z]*[^>]*>[\s\S]*?<\/tool[_a-z]*>/gi,
   // Lone opening/closing tool tags (in case the close was on a
@@ -109,6 +115,7 @@ const STRIP_PATTERNS = [
 const STRIP_OPENERS = [
   /\[\s*lykn_/,
   /\blykn_\w+\s*\(/,
+  /<tool_use\b/i,
   /<tool[_a-z]*/i,
   /<function[_a-z]*/i,
 ];
@@ -119,30 +126,88 @@ function applyStripPatterns(text) {
   return out;
 }
 
-function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 1024) {
+/** Strip tool-call syntax from a complete (non-streaming) model response. */
+export function stripToolSyntaxFromText(text) {
+  if (typeof text !== 'string' || !text) return text;
+  return applyStripPatterns(text);
+}
+
+const TOOL_USE_SELF_CLOSE = /\/>/;
+const TOOL_USE_BLOCK_CLOSE = /<\/tool_use>/i;
+
+export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
   let buffer = '';
+  // After discarding an unclosed opener, suppress continuation chunks
+  // (e.g. the tail of a long arguments="..." value) until we see /> or
+  // </tool_use>, so a mid-tag stream split cannot leak argument debris.
+  let dropUntilClose = false;
+  const findEarliestOpener = (text) => {
+    let earliestOpener = -1;
+    for (const re of STRIP_OPENERS) {
+      const m = re.exec(text);
+      if (m && (earliestOpener < 0 || m.index < earliestOpener)) {
+        earliestOpener = m.index;
+      }
+    }
+    return earliestOpener;
+  };
+  const consumeDroppedTail = () => {
+    const selfClose = buffer.search(TOOL_USE_SELF_CLOSE);
+    const blockClose = buffer.search(TOOL_USE_BLOCK_CLOSE);
+    let closeAt = -1;
+    let closeLen = 0;
+    if (selfClose >= 0 && (blockClose < 0 || selfClose < blockClose)) {
+      closeAt = selfClose;
+      closeLen = 2;
+    } else if (blockClose >= 0) {
+      closeAt = blockClose;
+      const m = buffer.slice(blockClose).match(TOOL_USE_BLOCK_CLOSE);
+      closeLen = m ? m[0].length : 10;
+    }
+    if (closeAt >= 0) {
+      buffer = buffer.slice(closeAt + closeLen);
+      dropUntilClose = false;
+      buffer = applyStripPatterns(buffer);
+      return true;
+    }
+    if (buffer.length > MAX_HOLD) {
+      buffer = '';
+      dropUntilClose = false;
+    }
+    return false;
+  };
   return {
     ingest(chunk) {
       if (!chunk) return;
       buffer += chunk;
+      if (dropUntilClose) {
+        while (dropUntilClose && consumeDroppedTail()) { /* drain */ }
+        if (dropUntilClose) return;
+      }
       // Kill any complete patterns inline (cheap; idempotent).
       buffer = applyStripPatterns(buffer);
       // Find earliest position where an UNCLOSED opener starts.
       // Anything before that is safe to flush.
-      let earliestOpener = -1;
-      for (const re of STRIP_OPENERS) {
-        const m = re.exec(buffer);
-        if (m && (earliestOpener < 0 || m.index < earliestOpener)) {
-          earliestOpener = m.index;
-        }
-      }
+      const earliestOpener = findEarliestOpener(buffer);
       let safeLen;
       if (earliestOpener >= 0) {
         const tailLen = buffer.length - earliestOpener;
-        // Hold the tail unless it's grown past MAX_HOLD — at that
-        // point the model is almost certainly NOT producing a tool
-        // call, and waiting forever degrades the stream.
-        safeLen = tailLen <= MAX_HOLD ? earliestOpener : buffer.length;
+        if (tailLen <= MAX_HOLD) {
+          // Hold the tail until the opener closes or more chunks arrive.
+          safeLen = earliestOpener;
+        } else {
+          // Tail grew past MAX_HOLD without closing — drop the unclosed
+          // opener entirely rather than leaking it (common with long
+          // <tool_use ... arguments="..."/> echoes).
+          const prefix = buffer.slice(0, earliestOpener);
+          if (prefix) {
+            try { onTextChunk?.(prefix); } catch { /* swallow */ }
+          }
+          buffer = buffer.slice(earliestOpener);
+          dropUntilClose = true;
+          while (dropUntilClose && consumeDroppedTail()) { /* drain */ }
+          return;
+        }
       } else {
         safeLen = buffer.length;
       }
@@ -156,7 +221,14 @@ function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 1024) {
     },
     flush() {
       if (!buffer) return;
-      const out = applyStripPatterns(buffer);
+      if (dropUntilClose) {
+        buffer = '';
+        dropUntilClose = false;
+        return;
+      }
+      buffer = applyStripPatterns(buffer);
+      const earliestOpener = findEarliestOpener(buffer);
+      const out = earliestOpener >= 0 ? buffer.slice(0, earliestOpener) : buffer;
       if (out) {
         try { onTextChunk?.(out); } catch { /* swallow */ }
       }
@@ -208,14 +280,15 @@ function makeToolCallRecorder(onToolCall, allToolCalls) {
  *
  *   calls: [{ id, name, args }]
  */
-async function runToolBatch(calls, ctx, record) {
+async function runToolBatch(calls, ctx, record, allowedToolNames) {
   const capped = calls.slice(0, MAX_TOOL_CALLS_PER_HOP);
   if (calls.length > MAX_TOOL_CALLS_PER_HOP) {
     console.warn(`[chat-agent-loop] capping tool calls at ${MAX_TOOL_CALLS_PER_HOP} (model emitted ${calls.length})`);
   }
+  const toolOpts = Array.isArray(allowedToolNames) ? { allowedToolNames } : {};
   return Promise.all(capped.map(async (call) => {
     record({ id: call.id, name: call.name, args: call.args, status: 'running' });
-    const { payload, isError, latencyMs } = await runChatTool(call.name, call.args, ctx);
+    const { payload, isError, latencyMs } = await runChatTool(call.name, call.args, ctx, toolOpts);
     record({
       id: call.id,
       name: call.name,
@@ -331,11 +404,12 @@ async function runOpenAiCompatLoop({
   onToolCall,
   onStatus,
   providerLabel = 'openai',
+  chatToolNames,
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: `${providerLabel} API key missing` };
   }
-  const tools = buildOpenAiTools();
+  const tools = buildOpenAiTools(chatToolNames);
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
@@ -449,7 +523,7 @@ async function runOpenAiCompatLoop({
       name: c.function.name,
       args: safeJsonParse(c.function.arguments),
     }));
-    const results = await runToolBatch(resolved, ctx, record);
+    const results = await runToolBatch(resolved, ctx, record, chatToolNames);
     for (const r of results) {
       messages.push({
         role: 'tool',
@@ -501,11 +575,12 @@ async function runAnthropicLoop({
   onTextChunk,
   onToolCall,
   onStatus,
+  chatToolNames,
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'ANTHROPIC_API_KEY missing' };
   }
-  const tools = buildAnthropicTools();
+  const tools = buildAnthropicTools(chatToolNames);
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
@@ -656,7 +731,7 @@ async function runAnthropicLoop({
 
     try { onStatus?.('Running tools…'); } catch { /* swallow */ }
 
-    const results = await runToolBatch(toolCallsThisHop, ctx, record);
+    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames);
     // Anthropic expects tool_result blocks wrapped as a SINGLE user
     // turn whose content is the array of tool_result blocks (one per
     // tool_use id from the assistant turn). Order doesn't matter as
@@ -715,11 +790,12 @@ async function runGeminiLoop({
   onTextChunk,
   onToolCall,
   onStatus,
+  chatToolNames,
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'GOOGLE_API_KEY missing' };
   }
-  const tools = buildGeminiTools();
+  const tools = buildGeminiTools(chatToolNames);
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
@@ -831,7 +907,7 @@ async function runGeminiLoop({
 
     try { onStatus?.('Running tools…'); } catch { /* swallow */ }
 
-    const results = await runToolBatch(toolCallsThisHop, ctx, record);
+    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames);
 
     // Gemini wants functionResponse parts in a NEW user turn. Each
     // functionResponse mirrors a prior functionCall by `name` (and id

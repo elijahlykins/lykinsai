@@ -153,8 +153,9 @@ export const recommendToolsTool = {
   scope: 'read',
   description: [
     'Return a small, ranked list of outside AI tools the user can connect',
-    'to handle a task LYKN itself cannot execute (sending email, generating',
-    'images, running code in their repo, searching the live web, etc.).',
+    'to handle a task LYKN itself cannot execute (sending email, running',
+    'code in their repo, etc.). For images use lykn_generate_image first',
+    '(5/month cap); recommend Midjourney etc. only when the user needs more.',
     '',
     'WHEN TO CALL THIS — only when:',
     '  (a) The user asked LYKN to perform an action that requires a',

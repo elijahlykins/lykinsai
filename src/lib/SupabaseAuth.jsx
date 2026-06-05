@@ -7,6 +7,10 @@ export function SupabaseAuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
+  // True from the moment signOut() is invoked until the hard reload lands.
+  // While this is set, ProtectedRoute renders blank instead of bouncing to
+  // /login, so the legacy login page never flashes before the walkthrough.
+  const [signingOut, setSigningOut] = useState(false);
   const signOutTimerRef = useRef(null);
   const recoveryInFlightRef = useRef(false);
   const userRef = useRef(null);
@@ -193,6 +197,10 @@ export function SupabaseAuthProvider({ children }) {
       clearTimeout(signOutTimerRef.current);
       signOutTimerRef.current = null;
     }
+    // Mark the transition first so the SIGNED_OUT event below (and the manual
+    // clear) don't cause ProtectedRoute to flash the legacy /login page while
+    // we wait for the hard reload to `/`.
+    setSigningOut(true);
     userRef.current = null;
     setUser(null);
 
@@ -224,6 +232,7 @@ export function SupabaseAuthProvider({ children }) {
     <AuthContext.Provider value={{
       user,
       loading,
+      signingOut,
       authError,
       signInWithOAuth,
       signInWithEmail,

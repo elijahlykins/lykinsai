@@ -7,29 +7,23 @@ import {
   SelectSeparator,
 } from "@/components/ui/select";
 import { MODEL_GROUPS } from "@/lib/modelCatalog";
+import { customModelSelectValue } from "@/lib/modelBuilder/customModelSelect";
 import { isModelAllowedForPlan } from "@/lib/modelTiers";
 
 /**
  * Inner option list for the AI model `<Select>`. Drop this inside any
  * `<SelectContent>` to get the canonical, plan-gated model menu.
  *
- * Keeping every picker pointed at this component (rather than hand-rolling
- * `<SelectItem>` lists) is what lets us add or remove models from a single
- * place — `src/lib/modelCatalog.js` — without hunting through six pages.
- *
- * Locked items stay visible (greyed + lock badge) so free users can see the
- * upgrade path. The actual selection is blocked at the call site by gating
- * `onValueChange`; we deliberately don't `return null` on locked items.
- *
  * @param {object} props
  * @param {string} [props.modelTier] Plan model tier from `useUserPlan()`.
- *   Pass to enable lock badges; omit to render every model as available
- *   (used by surfaces that haven't been wired to plan info yet).
+ * @param {{ id: string, name: string }[]} [props.publishedCustomModels]
+ *   Published Model Builder personas (shown at top of menu).
  */
-export default function ModelSelectOptions({ modelTier }) {
+export default function ModelSelectOptions({
+  modelTier,
+  publishedCustomModels = [],
+}) {
   const gate = (item) => {
-    // No tier → don't gate (legacy callers). With a tier → use the shared
-    // helper so the picker, server, and billing logic agree on tier.
     const allowed = modelTier ? isModelAllowedForPlan(item.value, modelTier) : true;
     return (
       <SelectItem
@@ -49,8 +43,27 @@ export default function ModelSelectOptions({ modelTier }) {
     );
   };
 
+  const customModels = Array.isArray(publishedCustomModels) ? publishedCustomModels : [];
+
   return (
     <>
+      {customModels.length > 0 && (
+        <>
+          <SelectGroup>
+            <SelectLabel>Your models</SelectLabel>
+            {customModels.map((m) => (
+              <SelectItem
+                key={m.id}
+                value={customModelSelectValue(m.id)}
+                hint="Model Builder"
+              >
+                {m.name || "Custom model"}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+          <SelectSeparator />
+        </>
+      )}
       {MODEL_GROUPS.map((group, gi) => (
         <React.Fragment key={group.id}>
           {gi > 0 && <SelectSeparator />}

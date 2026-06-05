@@ -35,7 +35,7 @@ export const proposeFactTool = {
     'Call this when the user discloses something concrete and durable',
     'about themselves — identity, focus, preferences, constraints, goals.',
     'NOT for casual / transient state ("I\'m tired", "I\'m at the airport")',
-    'and NOT for principles / values (use lykn_proposeBelief instead).',
+    'and NOT for principles / values (beliefs are user-authored in Synthesis Layer).',
     '',
     'Facts inserted here flow into the same synthesis-profile review surface',
     'the user already uses; they can thumbs-down anything that\'s wrong. No',

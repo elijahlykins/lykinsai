@@ -102,6 +102,8 @@ export type BoardListRow = {
   title: string | null;
   updated_at?: string | null;
   created_at?: string | null;
+  chat_model_key?: string | null;
+  thread_id?: string | null;
 };
 
 function stateFromBoardRow(row: Record<string, unknown>): unknown {

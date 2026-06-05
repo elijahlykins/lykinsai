@@ -52,8 +52,7 @@ import Terms from "./pages/Terms";
 import CookiePolicy from "./pages/CookiePolicy";
 import DPA from "./pages/DPA";
 import { useIsMobile } from "@/hooks/useViewportTier";
-import Agents from "./pages/Agents";
-import { isAgentStudioEnabled } from "@/lib/agentStudioDev";
+import ModelBuilder from "./pages/ModelBuilder";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
@@ -61,9 +60,13 @@ const LegacyTagManagement = React.lazy(() => import("./pages/TagManagement"));
 const loadingFallback = <LoadingScreen isLoading={true} />;
 
 function ProtectedRoute({ children }) {
-  const { user, loading } = useAuth();
+  const { user, loading, signingOut } = useAuth();
   const location = useLocation();
   if (loading) return null;
+  // During an explicit logout the user clears before the hard reload to `/`
+  // (the walkthrough) completes. Render blank instead of bouncing to /login,
+  // otherwise the legacy login page flashes for a frame mid-logout.
+  if (signingOut) return null;
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
@@ -249,16 +252,14 @@ function AppShell() {
                 </ProtectedRoute>
               }
             />
-            {isAgentStudioEnabled ? (
-              <Route
-                path="/agents"
-                element={
-                  <ProtectedRoute>
-                    <Agents />
-                  </ProtectedRoute>
-                }
-              />
-            ) : null}
+            <Route
+              path="/builder"
+              element={
+                <ProtectedRoute>
+                  <ModelBuilder />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/tag-management"
               element={

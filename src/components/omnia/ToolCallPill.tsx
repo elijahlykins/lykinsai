@@ -399,6 +399,36 @@ const TOOL_COPY: Record<string, ToolCopy> = {
     verbError: "Activity read failed",
     navTo: "/synthesis-layer",
   },
+  lykn_delegate_to_sub_model: {
+    verbRunning: "Delegating to sub-agent",
+    verbDone: (result) => {
+      const name = result?.sub_model_name || "Sub-agent";
+      if (result?.mode === "background" || result?.task_id) {
+        return `${name} started in background`;
+      }
+      return `${name} returned a report`;
+    },
+    verbError: "Delegation failed",
+  },
+  lykn_list_sub_model_tasks: {
+    verbRunning: "Checking sub-agents",
+    verbDone: (result) => {
+      const active = Number.isFinite(result?.active_count) ? result.active_count : 0;
+      if (active > 0) return active === 1 ? "1 sub-agent working" : `${active} sub-agents working`;
+      const count = Number.isFinite(result?.count) ? result.count : 0;
+      return count === 0 ? "No sub-agent tasks" : `${count} task(s) listed`;
+    },
+    verbError: "Task list failed",
+  },
+  lykn_get_sub_model_task: {
+    verbRunning: "Loading sub-agent task",
+    verbDone: (result) => {
+      const name = result?.task?.sub_model_name || "Sub-agent";
+      const status = result?.task?.status || "unknown";
+      return `${name}: ${status}`;
+    },
+    verbError: "Task load failed",
+  },
 };
 
 /**

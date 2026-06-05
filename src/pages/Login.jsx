@@ -126,7 +126,11 @@ export default function Login() {
           }
         }
       } catch {
-        // Fall through to default routing if billing is unreachable.
+        // Billing unreachable — new users still need trial checkout first.
+        if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
+          nav("/start-trial", { replace: true });
+          return;
+        }
       }
 
       if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {

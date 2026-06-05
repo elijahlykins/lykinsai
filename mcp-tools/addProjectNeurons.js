@@ -23,6 +23,7 @@
 // wins, otherwise we fall back to the user's active project.
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
+import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const NODE_ID_MAX = 200;
 const NODE_LABEL_MAX = 240;
@@ -137,43 +138,25 @@ export const addProjectNeuronsTool = {
       return errorContent('No usable node_id values in the neurons array.');
     }
 
-    let projectId = args?.project_id ? String(args.project_id).trim() : null;
-    if (!projectId) {
-      const { data: profile, error: profileErr } = await ctx.supabaseAdmin
-        .from('lykn_user_synthesis_profile')
-        .select('active_project_id')
-        .eq('user_id', ctx.userId)
-        .maybeSingle();
-      if (profileErr) {
-        return errorContent(`profile lookup failed: ${profileErr.message}`);
+    const explicitId = args?.project_id ? String(args.project_id).trim() : null;
+    const { project, reason } = await resolveWriteProjectTarget(ctx, explicitId);
+    if (!project) {
+      if (reason === 'project_not_found_or_not_writable') {
+        return jsonContent({
+          ok: false,
+          reason: 'project_not_writable',
+          message:
+            'That project is not writable. Only user-created synthesis projects accept AI clustering.',
+        });
       }
-      projectId = profile?.active_project_id || null;
-    }
-    if (!projectId) {
       return jsonContent({
         ok: false,
         reason: 'no_active_project',
         message:
-          'No active project. Call lykn_setActiveProject({ name: "..." }) first, then re-call addProjectNeurons.',
+          'No writable project resolved. Pass project_id for a user-created project or ask the user to create one in synthesis.',
       });
     }
-
-    const { data: project, error: pjErr } = await ctx.supabaseAdmin
-      .from('lykn_projects')
-      .select('id, name, status')
-      .eq('id', projectId)
-      .eq('user_id', ctx.userId)
-      .maybeSingle();
-    if (pjErr) {
-      return errorContent(`project verify failed: ${pjErr.message}`);
-    }
-    if (!project) {
-      return jsonContent({
-        ok: false,
-        reason: 'project_not_found',
-        message: 'That project_id is not in the user\'s project list. Call lykn_listProjects.',
-      });
-    }
+    const projectId = project.id;
 
     // Upsert with onConflict so re-adding a node updates label/kind in
     // place without erroring. We deliberately don't use ignoreDuplicates

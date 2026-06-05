@@ -18,9 +18,20 @@ import {
   postAppliedAttribution,
   type AppliedAttribution,
 } from "@/lib/ai/appliedTag";
+import {
+  stripToolSyntaxFromStream,
+  stripToolSyntaxFromFinal,
+} from "@/lib/ai/toolSyntaxStrip";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
+import { loadActiveCustomModelId } from "@/lib/modelBuilder/activeCustomModelStorage";
 import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
+import {
+  emitProjectsChanged,
+  projectIdFromToolResult,
+  PROJECTS_CHANGED_EVENT,
+  shouldEmitProjectsChanged,
+} from "@/lib/synthesis/projectLiveSync";
 import { toast } from "@/components/ui/use-toast";
 
 // Show a one-shot toast when the server downgrades the model. The server
@@ -184,6 +195,12 @@ export type PromptMessage = {
    * know the citation is honest.
    */
   appliedAttribution?: AppliedAttribution;
+  /** ISO timestamp when the user sent this message. */
+  createdAt?: string;
+  /** Model id that produced aiResponse (for multi-model chat attribution). */
+  aiModel?: string;
+  /** ISO timestamp when the assistant reply finished streaming. */
+  aiCompletedAt?: string;
 };
 
 export type FocusedChatAttachment = {
@@ -264,6 +281,7 @@ export type OrchestratorResult = {
 /* ------------------------------------------------------------------ */
 
 export interface ChatSendIdentity {
+  customModelId?: string | null;
   selectedModel: string;
   boardId: string | null;
   routeBoardId: string | undefined;
@@ -362,7 +380,7 @@ export interface ChatSendParams {
   sentAttachments: FocusedChatAttachment[];
   brickActionData: { imageUrl?: string; videoId?: string } | null;
   chatMessages: PromptMessage[];
-  aiThread: Array<{ role: "user" | "assistant"; content: string }>;
+  aiThread: Array<{ role: "user" | "assistant"; content: string; model?: string; at?: string }>;
   conversationSummary: string;
   abortController: AbortController;
 
@@ -780,7 +798,7 @@ async function handleActionPath(
       p.aiThread.push({ role: "assistant", content: assistantText });
       if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
       typing.maybeRunConversationSummary();
-      if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "grid", identity.routeBoardId || identity.boardId || null, p.context.titleRef.current || null, cappedText, assistantText); }
+      if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "chat", identity.routeBoardId || identity.boardId || null, p.context.titleRef.current || null, cappedText, assistantText); }
       if (responseBlockId) {
         const normalized = canvas.normalizeAiTextForBlock(assistantText);
         const curBlk: any = canvas.getCanvasState().blocks?.[responseBlockId];
@@ -847,11 +865,12 @@ async function handleStreamingResponse(
   promptId: string,
   responseBlockId: string | null,
   userText: string,
-): Promise<{ accumulated: string; responseBlockId: string | null }> {
+): Promise<{ accumulated: string; responseBlockId: string | null; servedModel: string | null }> {
   const { canvas, state, streamRefs } = p;
   const reader = streamRes.body?.getReader();
   const decoder = new TextDecoder();
   let accumulated = "";
+  let servedModel: string | null = null;
   let firstToken = true;
   let sseBuffer = "";
   let serverErrorMsg = "";
@@ -894,6 +913,10 @@ async function handleStreamingResponse(
               continue;
             }
             if (parsed.status) { state.setChatStatusText(String(parsed.status)); continue; }
+            if (parsed.served_model && typeof parsed.served_model === "string") {
+              servedModel = parsed.served_model.trim() || null;
+              continue;
+            }
             if (parsed.tool_call && typeof parsed.tool_call === "object") {
               // Agent-loop tool call event from server (chat-agent-loop.js).
               // We update the in-flight assistant message's `toolCalls`
@@ -1014,6 +1037,13 @@ async function handleStreamingResponse(
               // bubble doesn't sit silent during a multi-hop loop.
               if (tc.status === "running") {
                 state.setChatStatusText(`Running ${tc.name.replace(/^lykn_/, "")}…`);
+              } else if (
+                shouldEmitProjectsChanged(tc.name, tc.status, tc.result)
+              ) {
+                emitProjectsChanged({
+                  userId: p.identity.userId,
+                  projectId: projectIdFromToolResult(tc.name, tc.result),
+                });
               }
               continue;
             }
@@ -1033,9 +1063,11 @@ async function handleStreamingResponse(
               // rest._" style note the model may emit at the tail — the
               // system prompt forbids it, but some models still do it, and
               // we'd rather strip it than ever flash it on screen.
-              const accumulatedForView = stripModelTruncationNoteFromStream(
-                stripAppliedTagFromStream(
-                  stripLearnedTagFromStream(accumulated),
+              const accumulatedForView = stripToolSyntaxFromStream(
+                stripModelTruncationNoteFromStream(
+                  stripAppliedTagFromStream(
+                    stripLearnedTagFromStream(accumulated),
+                  ),
                 ),
               );
               const visibleText = stripStreamingActionJson(
@@ -1068,28 +1100,34 @@ async function handleStreamingResponse(
                   canvas.updateBlock(responseBlockId, { content: normalized, width: size.width, height: size.height });
                 }
               }
-              // Direct commit — no fake typewriter. The previous
-              // implementation throttled visible characters at 2-6 chars per
-              // 18ms (~333 chars/sec ceiling), which made every reply feel
-              // sluggish even when Gemini streamed in <1s. We now commit
-              // the latest `visibleText` to the message bubble immediately
-              // and rely on rAF coalescing inside React to keep the render
-              // rate bounded. `streamDisplayedLenRef` tracks the committed
-              // length so postProcessResponse can still tell if a final
-              // commit is needed.
-              streamRefs.streamDisplayedLenRef.current = visibleText.length;
               if (!streamRefs.streamTypingRafRef.current) {
-                streamRefs.streamTypingRafRef.current = window.requestAnimationFrame(() => {
-                  streamRefs.streamTypingRafRef.current = null;
+                const typeTick = () => {
                   const target = streamRefs.streamTargetTextRef.current;
-                  const pid = streamRefs.streamPromptIdRef.current;
-                  if (!pid) return;
-                  state.setChatMessages((prev) => prev.map((m) => (m.id === pid ? { ...m, aiResponse: target } : m)));
-                  if (!streamRefs.chatUserScrolledUpRef.current) {
-                    const el = streamRefs.chatScrollRef.current;
-                    if (el) { streamRefs.chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
+                  const cur = streamRefs.streamDisplayedLenRef.current;
+                  if (cur < target.length) {
+                    const behind = target.length - cur;
+                    const step = Math.max(2, Math.min(6, Math.ceil(behind / 6)));
+                    streamRefs.streamDisplayedLenRef.current = Math.min(cur + step, target.length);
+                    const partial = target.substring(0, streamRefs.streamDisplayedLenRef.current);
+                    const pid = streamRefs.streamPromptIdRef.current;
+                    if (pid) {
+                      state.setChatMessages((prev) =>
+                        prev.map((m) => (m.id === pid ? { ...m, aiResponse: partial } : m)),
+                      );
+                    }
+                    if (!streamRefs.chatUserScrolledUpRef.current) {
+                      const el = streamRefs.chatScrollRef.current;
+                      if (el) {
+                        streamRefs.chatProgrammaticScrollRef.current = true;
+                        el.scrollTop = el.scrollHeight;
+                      }
+                    }
+                    streamRefs.streamTypingRafRef.current = window.setTimeout(typeTick, 18);
+                  } else {
+                    streamRefs.streamTypingRafRef.current = null;
                   }
-                });
+                };
+                streamRefs.streamTypingRafRef.current = window.setTimeout(typeTick, 18);
               }
             }
           } catch {}
@@ -1129,9 +1167,11 @@ async function handleStreamingResponse(
       // ENTIRE final reply, then stop cleanly so the post-process commit
       // sticks.
       try {
-        const finalAccumulatedForView = stripModelTruncationNoteFromStream(
-          stripAppliedTagFromStream(
-            stripLearnedTagFromStream(accumulated),
+        const finalAccumulatedForView = stripToolSyntaxFromStream(
+          stripModelTruncationNoteFromStream(
+            stripAppliedTagFromStream(
+              stripLearnedTagFromStream(accumulated),
+            ),
           ),
         );
         const finalVisibleText = stripStreamingActionJson(
@@ -1157,7 +1197,7 @@ async function handleStreamingResponse(
   if (serverErrorMsg && !accumulated.trim()) {
     accumulated = AI_TEMPORARY_FAILURE_TEXT;
   }
-  return { accumulated, responseBlockId };
+  return { accumulated, responseBlockId, servedModel };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1769,6 +1809,7 @@ async function postProcessResponse(
   youtubeTranscriptSource: string,
   asksAboutVideo: boolean,
   cappedText: string,
+  servedModel: string | null = null,
 ): Promise<void> {
   const { analysis, postProcessing, state, canvas, typing, identity } = p;
 
@@ -1799,7 +1840,9 @@ async function postProcessResponse(
   // model's last real sentence rather than on the truncation marker.
   const aiTextWithoutLearnedTag = finalizeVisibleReply(
     stripModelTruncationNote(
-      stripAppliedTagFromFinal(stripLearnedTagsFromFinal(aiTextRaw)),
+      stripToolSyntaxFromFinal(
+        stripAppliedTagFromFinal(stripLearnedTagsFromFinal(aiTextRaw)),
+      ),
     ),
   );
 
@@ -1874,18 +1917,28 @@ async function postProcessResponse(
   // ref to the final text so any in-flight frame that already started can't
   // introduce regressions.
   if (p.streamRefs.streamTypingRafRef.current) {
-    cancelAnimationFrame(p.streamRefs.streamTypingRafRef.current);
+    clearTimeout(p.streamRefs.streamTypingRafRef.current);
     p.streamRefs.streamTypingRafRef.current = null;
   }
   p.streamRefs.streamTargetTextRef.current = finalDisplayText;
   p.streamRefs.streamDisplayedLenRef.current = finalDisplayText.length;
-  state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalDisplayText, sources, aiYouTubeUrls: ytResult.urls.length ? ytResult.urls : undefined, aiWebLinks: webLinks.length ? webLinks : undefined } : m)));
+  const replyModel = servedModel || identity.selectedModel || null;
+  const completedAt = new Date().toISOString();
+  state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? {
+    ...m,
+    aiResponse: finalDisplayText,
+    aiModel: replyModel || undefined,
+    aiCompletedAt: completedAt,
+    sources,
+    aiYouTubeUrls: ytResult.urls.length ? ytResult.urls : undefined,
+    aiWebLinks: webLinks.length ? webLinks : undefined,
+  } : m)));
   // Push the post-cleanup display text into conversation memory so future
   // turns and saved exchanges don't reference internal markers / source tags.
-  p.aiThread.push({ role: "assistant", content: finalDisplayText });
+  p.aiThread.push({ role: "assistant", content: finalDisplayText, model: replyModel || undefined, at: completedAt });
   if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
   typing.maybeRunConversationSummary();
-  if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "grid", identity.routeBoardId || identity.boardId || null, p.context.titleRef.current || null, cappedText, finalDisplayText); }
+  if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "chat", identity.routeBoardId || identity.boardId || null, p.context.titleRef.current || null, cappedText, finalDisplayText); }
 
   // === AUTO-NAME — fire-and-forget after any user→assistant turn while
   // the chat is still using the default placeholder title.
@@ -2096,7 +2149,11 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   const cappedText = text.length > 3000 ? text.slice(0, 3000) : text;
   const attachmentContext = buildAttachmentContext(sentAttachments);
 
-  p.aiThread.push({ role: "user", content: cappedText + (attachmentContext ? attachmentContext.slice(0, 1000) : "") });
+  p.aiThread.push({
+    role: "user",
+    content: cappedText + (attachmentContext ? attachmentContext.slice(0, 1000) : ""),
+    at: new Date().toISOString(),
+  });
   if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
 
   if (!identity.userId) {
@@ -2114,16 +2171,23 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content.length > 1200 ? m.content.slice(0, 1200) + "…" : m.content}`)
     .join("\n");
 
-  const conversationArray: Array<{ role: string; content: string }> = [];
+  const conversationArray: Array<{ role: string; content: string; model?: string; at?: string }> = [];
   for (const cm of p.chatMessages) {
     if (cm.role === "user" && cm.content) {
-      conversationArray.push({ role: "user", content: cm.content });
-      if (cm.aiResponse) conversationArray.push({ role: "assistant", content: cm.aiResponse });
+      conversationArray.push({ role: "user", content: cm.content, at: cm.createdAt });
+      if (cm.aiResponse) {
+        conversationArray.push({
+          role: "assistant",
+          content: cm.aiResponse,
+          model: cm.aiModel,
+          at: cm.aiCompletedAt || cm.createdAt,
+        });
+      }
     } else if (cm.role !== "user" && cm.content) {
-      conversationArray.push({ role: "assistant", content: cm.content });
+      conversationArray.push({ role: "assistant", content: cm.content, model: cm.aiModel, at: cm.aiCompletedAt });
     }
   }
-  conversationArray.push({ role: "user", content: cappedText });
+  conversationArray.push({ role: "user", content: cappedText, at: new Date().toISOString() });
 
   const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
 
@@ -2348,8 +2412,11 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   // serialising either across the wire — both branches on the server then
   // skip context-sized prompt budgets and stay on the lighter chat path.
   const trimmedCanvasContext = (canvasContext || "").slice(0, 14000);
+  const customModelId =
+    identity.customModelId ?? (identity.userId ? loadActiveCustomModelId() : null);
   const requestBody = {
     model: identity.selectedModel,
+    ...(customModelId ? { customModelId } : {}),
     prompt: prompt.slice(0, 16000),
     text: textForServer,
     intent: "ask",
@@ -2416,7 +2483,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     let accumulated = streamResult.accumulated;
     responseBlockId = streamResult.responseBlockId;
 
-    if (streamRefs.streamTypingRafRef.current) { cancelAnimationFrame(streamRefs.streamTypingRafRef.current); streamRefs.streamTypingRafRef.current = null; }
+    if (streamRefs.streamTypingRafRef.current) { clearTimeout(streamRefs.streamTypingRafRef.current); streamRefs.streamTypingRafRef.current = null; }
     if (streamRefs.streamPromptIdRef.current && streamRefs.streamDisplayedLenRef.current < streamRefs.streamTargetTextRef.current.length) {
       state.setChatMessages((prev) => prev.map((m) => (m.id === streamRefs.streamPromptIdRef.current ? { ...m, aiResponse: streamRefs.streamTargetTextRef.current } : m)));
     }
@@ -2424,7 +2491,17 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     streamRefs.streamDisplayedLenRef.current = 0;
     streamRefs.streamPromptIdRef.current = null;
 
-    await postProcessResponse(p, accumulated, promptId, responseBlockId, youtubeGrounding, youtubeTranscriptSource, asksAboutVideo, cappedText);
+    await postProcessResponse(
+      p,
+      accumulated,
+      promptId,
+      responseBlockId,
+      youtubeGrounding,
+      youtubeTranscriptSource,
+      asksAboutVideo,
+      cappedText,
+      streamResult.servedModel,
+    );
   } else {
     /* Non-streaming invoke fallback */
     const invokeTimeout = setTimeout(() => abortController.abort(), 120000);
@@ -2448,6 +2525,16 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     }
     let invokeAiText = String(data?.response || data?.answer || data?.text || "").trim();
     await typing.typeResponseIntoChat(promptId, analysis.sanitizeAssistantResponse(invokeAiText) || "I'm not sure how to answer that. Could you rephrase?");
-    await postProcessResponse(p, invokeAiText, promptId, responseBlockId, youtubeGrounding, youtubeTranscriptSource, asksAboutVideo, cappedText);
+    await postProcessResponse(
+      p,
+      invokeAiText,
+      promptId,
+      responseBlockId,
+      youtubeGrounding,
+      youtubeTranscriptSource,
+      asksAboutVideo,
+      cappedText,
+      identity.selectedModel,
+    );
   }
 }

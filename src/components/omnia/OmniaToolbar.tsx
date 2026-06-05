@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  AudioLines,
   ChevronDown,
   ChevronUp,
   MessageSquare,
@@ -40,6 +41,11 @@ interface OmniaToolbarProps {
   modelSelectMenu: React.ReactNode;
   onShareGrid?: () => void;
   onUndo?: () => void;
+  // Voice Mode: a Chat ⇆ Voice switch. Only shown when the active model is
+  // voice-eligible (default LYKN model or the main-agent orchestrator).
+  voiceModeEligible?: boolean;
+  voiceModeOn?: boolean;
+  onVoiceModeToggle?: () => void;
 }
 
 const OmniaToolbar = React.memo(function OmniaToolbar({
@@ -62,6 +68,9 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
   modelSelectMenu,
   onShareGrid,
   onUndo,
+  voiceModeEligible = false,
+  voiceModeOn = false,
+  onVoiceModeToggle,
 }: OmniaToolbarProps) {
   // On phones we hide grid-only controls (chat-rail toggle, share, undo, vault
   // panel, title) since the canvas is unmounted and a bottom tab bar handles
@@ -83,6 +92,18 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
               {modelSelectMenu}
             </SelectContent>
           </Select>
+          {voiceModeEligible && (
+            <button
+              type="button"
+              onClick={onVoiceModeToggle}
+              className={`rounded-full w-8 h-8 p-0 transition-colors flex items-center justify-center ${voiceModeOn ? "bg-blue-500/20 text-blue-500" : "hover:bg-black/10 dark:hover:bg-white/15"}`}
+              title="Voice Mode"
+              aria-pressed={voiceModeOn}
+            >
+              <AudioLines className="w-4 h-4" />
+              <span className="sr-only">Voice Mode</span>
+            </button>
+          )}
         </div>
       </div>
     );
@@ -158,6 +179,22 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
                     {chatRailVisible
                       ? <PanelRightClose className="w-4 h-4 text-blue-500" />
                       : <PanelRight className="w-4 h-4" />}
+                  </button>
+                </>
+              )}
+
+              {voiceModeEligible && (
+                <>
+                  <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
+                  <button
+                    type="button"
+                    onClick={onVoiceModeToggle}
+                    className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${voiceModeOn ? "bg-blue-500/15" : ""}`}
+                    title="Voice Mode — talk hands-free"
+                    aria-pressed={voiceModeOn}
+                  >
+                    <AudioLines className={`w-4 h-4 ${voiceModeOn ? "text-blue-500" : ""}`} />
+                    <span className="sr-only">Voice Mode</span>
                   </button>
                 </>
               )}

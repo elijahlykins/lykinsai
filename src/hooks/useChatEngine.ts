@@ -24,6 +24,18 @@ import { isDemoGridId } from "@/lib/demoGrids";
 import { toast } from "@/components/ui/use-toast";
 import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
 import { AI_TEMPORARY_FAILURE_TEXT, AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
+import {
+  addOpenThread,
+  bindThreadStateCallbacks,
+  ensureThreadSnapshot,
+  getActiveThreadBoardId,
+  getThreadSnapshot,
+  hydrateActiveThreadToReact,
+  patchThreadSnapshot,
+  registerStreamAbortController,
+  setActiveThreadBoardId,
+  snapshotActiveThreadFromReact,
+} from "@/lib/chat/chatThreadRuntime";
 
 export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorResult };
 
@@ -60,6 +72,7 @@ export interface UseChatEngineDeps {
   title: string;
   titleRef: React.MutableRefObject<string>;
   selectedModel: string;
+  customModelId?: string | null;
   notesPagesRef: React.MutableRefObject<Array<{ id: string; title: string; content: any }>>;
   projectId: string | null;
   gridSize: number;
@@ -129,6 +142,8 @@ export interface UseChatEngineReturn {
   assistantTaskChecks: Record<string, Record<string, boolean>>;
   isDictating: boolean;
   isTranscribing: boolean;
+  /* Voice Mode: full-screen hands-free voice conversation overlay. */
+  voiceModeOn: boolean;
 
   /* Refs (exposed for child component prop-passing) */
   chatMessagesRef: React.MutableRefObject<PromptMessage[]>;
@@ -146,6 +161,15 @@ export interface UseChatEngineReturn {
   handleChatSend: () => Promise<void>;
   handleStopAi: () => void;
   handleDictateToggle: () => void;
+  /* Voice Mode controls. */
+  toggleVoiceMode: () => void;
+  setVoiceMode: (on: boolean) => void;
+  /**
+   * Send a voice-originated turn through the normal chat pipeline and
+   * resolve with the assistant's final reply text (for the voice overlay
+   * to speak). Returns "" if nothing came back.
+   */
+  sendVoiceTurn: (text: string) => Promise<string>;
   handleChatPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   handleOpenAttachments: () => void;
   removeFocusedAttachment: (id: string) => void;
@@ -232,7 +256,7 @@ function findSmartPlacement(opts: {
 
 export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const {
-    boardId, routeBoardId, user, title, titleRef, selectedModel,
+    boardId, routeBoardId, user, title, titleRef, selectedModel, customModelId,
     notesPagesRef, projectId, gridSize, viewportWidth, chatMode, chatRailVisible,
     chatMessages, setChatMessages, chatMessagesRef, aiThreadRef,
     convoSummaryRef, convoTurnsSinceSummaryRef,
@@ -258,10 +282,23 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const [assistantTaskChecks, setAssistantTaskChecks] = useState<Record<string, Record<string, boolean>>>({});
   const [isDictating, setIsDictating] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [voiceModeOn, setVoiceModeOn] = useState(false);
 
   /* ---------- Refs (hook-local) ---------- */
+  const voiceModeOnRef = useRef(false);
   const activeAiAbortRef = useRef<AbortController | null>(null);
+  const streamBoardIdRef = useRef<string | null>(null);
+  const prevBoardIdRef = useRef<string | null>(null);
   const isSendingRef = useRef(false);
+  // Per-board concurrency tracking so chats in a thread can stream
+  // independently without sharing a single send-lock or stream cursor.
+  const sendingBoardsRef = useRef<Set<string>>(new Set());
+  const streamRuntimeRef = useRef<Map<string, {
+    streamTargetTextRef: { current: string };
+    streamDisplayedLenRef: { current: number };
+    streamTypingRafRef: { current: number | null };
+    streamPromptIdRef: { current: string | null };
+  }>>(new Map());
   const lastSendSigRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
   const clarificationSessionRef = useRef({ active: false, basePromptId: "", baseRequest: "", questions: [] as string[], answers: [] as string[], askedCount: 0 });
   const streamTargetTextRef = useRef("");
@@ -269,7 +306,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const streamTypingRafRef = useRef<number | null>(null);
   const streamPromptIdRef = useRef<string | null>(null);
   const chatTypingTimerRef = useRef<number | null>(null);
-  const chatTypingPendingRef = useRef<{ promptId: string; fullText: string; resolve: () => void } | null>(null);
+  const chatTypingPendingRef = useRef<{ promptId: string; fullText: string; resolve: () => void; boardId: string | null } | null>(null);
   const aiTypingRunRef = useRef(0);
   const lastAiResponseBlockRef = useRef<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -314,8 +351,115 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   /* ---------- Effects ---------- */
 
-  // Abort cleanup on unmount
-  useEffect(() => () => { activeAiAbortRef.current?.abort(); }, []);
+  // Abort cleanup on unmount — stop only the active thread's stream
+  useEffect(() => () => {
+    activeAiAbortRef.current?.abort();
+  }, []);
+
+  const patchThreadMessages = useCallback((
+    updater: (prev: PromptMessage[]) => PromptMessage[],
+    targetBoardId?: string | null,
+  ) => {
+    const bid = targetBoardId || streamBoardIdRef.current || boardId || routeBoardId;
+    if (!bid) {
+      setChatMessages(updater);
+      return;
+    }
+    const snap = ensureThreadSnapshot(String(bid));
+    snap.chatMessages = updater(snap.chatMessages);
+    snap.updatedAt = Date.now();
+    if (getActiveThreadBoardId() === String(bid)) {
+      setChatMessages(() => snap.chatMessages);
+    }
+    chatMessagesRef.current = snap.chatMessages;
+  }, [boardId, routeBoardId, setChatMessages]);
+
+  // Switch threads without aborting background streams
+  useEffect(() => {
+    const incoming = boardId ? String(boardId) : null;
+    const outgoing = prevBoardIdRef.current;
+
+    if (outgoing && outgoing !== incoming) {
+      const outSnap = getThreadSnapshot(outgoing);
+      // If the outgoing chat has a stream in flight, the orchestrator is
+      // the source of truth for its snapshot — DON'T overwrite its
+      // messages from the shared React refs. (Board navigation resets
+      // those refs to [] before this effect runs, which would otherwise
+      // wipe the in-flight prompt/response from the snapshot.)
+      const outStreaming = !!outSnap?.isChatLoading;
+      const refMessages = chatMessagesRef.current;
+      const snapHasMore = (outSnap?.chatMessages?.length ?? 0) > (refMessages?.length ?? 0);
+
+      const patch: Parameters<typeof snapshotActiveThreadFromReact>[1] = {
+        chatStatusText: chatStatusText,
+        chatFlowMode: chatFlowMode,
+        chatInput: chatInputRef.current,
+      };
+      if (!outStreaming) {
+        // Only persist React-side messages when they aren't a stale/empty
+        // reset that would clobber a more complete snapshot.
+        if (!snapHasMore) {
+          patch.chatMessages = refMessages;
+          patch.aiThread = [...aiThreadRef.current];
+          patch.convoSummary = convoSummaryRef.current;
+          patch.convoTurnsSinceSummary = convoTurnsSinceSummaryRef.current;
+        }
+        patch.isChatLoading = isChatLoading;
+        patch.abortController = activeAiAbortRef.current;
+      }
+      snapshotActiveThreadFromReact(outgoing, patch);
+    }
+
+    if (incoming) {
+      setActiveThreadBoardId(incoming);
+      addOpenThread(incoming);
+      const snap = getThreadSnapshot(incoming);
+      activeAiAbortRef.current = snap?.abortController ?? null;
+      streamBoardIdRef.current = snap?.isChatLoading ? incoming : null;
+
+      // Always sync the lightweight status flags to the board we're
+      // switching to — these are per-chat and must NEVER inherit the
+      // outgoing chat's "thinking" state. Message hydration stays
+      // conditional below (so a fresh board doesn't clobber a DB load),
+      // but loading/status/flow always reflect the incoming board.
+      setIsChatLoading(snap?.isChatLoading ?? false);
+      setChatStatusText(snap?.chatStatusText ?? "");
+      setChatFlowMode(snap?.chatFlowMode ?? "idle");
+
+      requestAnimationFrame(() => {
+        hydrateActiveThreadToReact(
+          incoming,
+          {
+            setChatMessages,
+            setIsChatLoading,
+            setChatStatusText,
+            setChatFlowMode,
+            setChatInput,
+          },
+          {
+            chatMessagesRef,
+            aiThreadRef,
+            convoSummaryRef,
+            convoTurnsSinceSummaryRef,
+            chatInputRef,
+            activeAiAbortRef,
+          },
+          chatMessagesRef.current,
+        );
+      });
+    } else {
+      setActiveThreadBoardId(null);
+    }
+
+    prevBoardIdRef.current = incoming;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on board switch
+  }, [boardId]);
+
+  // Persist composer draft per thread when typing
+  useEffect(() => {
+    if (!boardId) return;
+    patchThreadSnapshot(String(boardId), { chatInput: chatInputRef.current });
+  }, [boardId, chatInputHasText]);
 
   // Sync ref
   useEffect(() => { chatMessagesRef.current = chatMessages; }, [chatMessages]);
@@ -329,14 +473,6 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     }
     prevMsgCountRef.current = count;
   }, [chatMessages.length]);
-
-  // Abort on boardId change
-  useEffect(() => { activeAiAbortRef.current?.abort(); activeAiAbortRef.current = null; }, [boardId]);
-
-  // Clear composer draft when switching chats
-  useEffect(() => {
-    setChatInput("");
-  }, [routeBoardId, setChatInput]);
 
   // Brick action events
   useEffect(() => {
@@ -358,6 +494,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (dictationTimerRef.current) { window.clearInterval(dictationTimerRef.current); dictationTimerRef.current = null; }
     try { if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") mediaRecorderRef.current.stop(); } catch {}
     try { mediaStreamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch {}
+    void import("@/lib/ai/speakText").then(({ stopSpeaking }) => stopSpeaking()).catch(() => {});
   }, []);
 
   // Drop-to-chat attachments
@@ -411,12 +548,23 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   /* ---------- Callbacks ---------- */
 
   const SUMMARIZE_EVERY_N_TURNS = 8;
-  const maybeRunConversationSummary = useCallback(async () => {
-    convoTurnsSinceSummaryRef.current += 1;
-    if (convoTurnsSinceSummaryRef.current < SUMMARIZE_EVERY_N_TURNS) return;
-    const thread = aiThreadRef.current;
-    if (thread.length < 8) return;
-    convoTurnsSinceSummaryRef.current = 0;
+  const maybeRunConversationSummary = useCallback(async (targetBoardId?: string | null) => {
+    // Operate on the stream's own board snapshot so summaries don't mix
+    // conversation history across chats in a thread.
+    const bid = targetBoardId ? String(targetBoardId) : null;
+    const snap = bid ? ensureThreadSnapshot(bid) : null;
+    if (snap) {
+      snap.convoTurnsSinceSummary += 1;
+      if (snap.convoTurnsSinceSummary < SUMMARIZE_EVERY_N_TURNS) return;
+      if (snap.aiThread.length < 8) return;
+      snap.convoTurnsSinceSummary = 0;
+    } else {
+      convoTurnsSinceSummaryRef.current += 1;
+      if (convoTurnsSinceSummaryRef.current < SUMMARIZE_EVERY_N_TURNS) return;
+      if (aiThreadRef.current.length < 8) return;
+      convoTurnsSinceSummaryRef.current = 0;
+    }
+    const thread = snap ? snap.aiThread : aiThreadRef.current;
     try {
       const { API_BASE_URL } = await import("@/lib/api-config");
       const res = await fetch(`${API_BASE_URL}/api/ai/summarize-conversation`, {
@@ -426,7 +574,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       });
       if (res.ok) {
         const { summary } = await res.json();
-        if (summary) convoSummaryRef.current = summary;
+        if (summary) {
+          if (snap) snap.convoSummary = summary;
+          if (!bid || getActiveThreadBoardId() === bid) convoSummaryRef.current = summary;
+        }
       }
     } catch {}
   }, []);
@@ -1031,23 +1182,42 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     }
   }, [calcAiBubbleSize, normalizeAiTextForBlock, updateBlock]);
 
-  const typeResponseIntoChat = useCallback((promptId: string, fullText: string): Promise<void> => {
-    // Previously this fake-typed responses at 3 words / 30ms (~100 wps),
-    // which added up to seconds of artificial delay on long replies. The
-    // streaming path commits tokens directly now; the replay path no
-    // longer needs (or wants) a separate animation.
+  const typeResponseIntoChat = useCallback((promptId: string, fullText: string, targetBoardId?: string | null): Promise<void> => {
     return new Promise((resolve) => {
       if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
       const prev = chatTypingPendingRef.current;
-      if (prev) { setChatMessages((msgs) => msgs.map((m) => (m.id === prev.promptId ? { ...m, aiResponse: prev.fullText } : m))); prev.resolve(); chatTypingPendingRef.current = null; }
-      setChatMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: fullText } : m)));
-      if (!chatUserScrolledUpRef.current) {
-        const el = chatScrollRef.current;
-        if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
+      if (prev) {
+        patchThreadMessages((msgs) => msgs.map((m) => (m.id === prev.promptId ? { ...m, aiResponse: prev.fullText } : m)), prev.boardId);
+        prev.resolve();
+        chatTypingPendingRef.current = null;
       }
-      resolve();
+      // Pin every write for this animation to the board that owns the
+      // stream. Without this, switching chat tabs mid-stream reroutes the
+      // typewriter into whatever board is now active (cross-chat bleed).
+      const bid = targetBoardId ?? streamBoardIdRef.current ?? boardId ?? routeBoardId ?? null;
+      const isActiveBoard = () => getActiveThreadBoardId() === String(bid);
+      const words = fullText.split(/(\s+)/);
+      let idx = 0;
+      chatTypingPendingRef.current = { promptId, fullText, resolve, boardId: bid };
+      patchThreadMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)), bid);
+      chatTypingTimerRef.current = window.setInterval(() => {
+        idx += 3;
+        const partial = words.slice(0, idx).join("");
+        patchThreadMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m)), bid);
+        if (isActiveBoard() && !chatUserScrolledUpRef.current) {
+          const el = chatScrollRef.current;
+          if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
+        }
+        if (idx >= words.length) {
+          if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
+          chatTypingTimerRef.current = null;
+          chatTypingPendingRef.current = null;
+          patchThreadMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: fullText } : m)), bid);
+          resolve();
+        }
+      }, 30);
     });
-  }, []);
+  }, [patchThreadMessages, boardId, routeBoardId]);
 
   const replaySavedPromptResponse = useCallback((msg: PromptMessage) => {
     if ((msg as any).aiImageUrl) {
@@ -1795,24 +1965,49 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   const handleChatSend = useCallback(async () => {
     const text = chatInputRef.current.trim();
-    if (!text || isChatLoading || isSendingRef.current) return;
+    if (!text) return;
+
+    const streamBoardId = String(routeBoardId || boardId || "");
+    // Per-board guard: block a second send for THIS chat only. Other
+    // chats in the thread can stream at the same time.
+    if (sendingBoardsRef.current.has(streamBoardId)) return;
+    const targetSnap = streamBoardId ? getThreadSnapshot(streamBoardId) : null;
+    if (targetSnap?.isChatLoading) return;
+
     chatUserScrolledUpRef.current = false;
-    if (streamTypingRafRef.current) { cancelAnimationFrame(streamTypingRafRef.current); streamTypingRafRef.current = null; }
-    streamTargetTextRef.current = "";
-    streamDisplayedLenRef.current = 0;
-    streamPromptIdRef.current = null;
-    if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
-    const pendingType = chatTypingPendingRef.current;
-    if (pendingType) { setChatMessages((prev) => prev.map((m) => (m.id === pendingType.promptId ? { ...m, aiResponse: pendingType.fullText } : m))); pendingType.resolve(); chatTypingPendingRef.current = null; }
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
     const now = Date.now();
     const sig = text.length > 100 ? text.slice(0, 100) : text;
     if (lastSendSigRef.current.text === sig && now - lastSendSigRef.current.at < 900) return;
     lastSendSigRef.current = { text: sig, at: now };
-    activeAiAbortRef.current?.abort();
-    activeAiAbortRef.current = new AbortController();
-    const sendAbort = activeAiAbortRef.current;
+
+    streamBoardIdRef.current = streamBoardId;
+    const priorSnap = getThreadSnapshot(streamBoardId);
+    priorSnap?.abortController?.abort();
+    const sendAbort = new AbortController();
+    activeAiAbortRef.current = sendAbort;
+    registerStreamAbortController(streamBoardId, sendAbort);
+
+    // Fresh, per-send stream cursor so concurrent chats never share a
+    // typing position / prompt id (which caused responses to bleed or
+    // get deleted across chats). Registered per board so handleStopAi
+    // can flush the right stream.
+    const sendStreamRefs = {
+      streamTargetTextRef: { current: "" },
+      streamDisplayedLenRef: { current: 0 },
+      streamTypingRafRef: { current: null as number | null },
+      streamPromptIdRef: { current: null as string | null },
+    };
+    streamRuntimeRef.current.set(streamBoardId, sendStreamRefs);
+
+    const threadState = bindThreadStateCallbacks(streamBoardId, {
+      setChatStatusText,
+      setChatMessages,
+      setIsChatLoading,
+      setChatFlowMode,
+    });
     isSendingRef.current = true;
+    sendingBoardsRef.current.add(streamBoardId);
     const sentAttachments = [...focusedChatAttachments];
     const brickActionData = pendingBrickActionDataRef.current;
     pendingBrickActionDataRef.current = null;
@@ -1821,14 +2016,23 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     }
     setChatInput("");
     setFocusedChatAttachments([]);
-    setIsChatLoading(true);
-    setChatStatusText("");
-    setChatFlowMode("idle");
+    threadState.setIsChatLoading(true);
+    threadState.setChatStatusText("");
+    threadState.setChatFlowMode("idle");
     const promptId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     // Keep the FULL prompt as the message content. The bubble UI handles
     // long-prompt collapse + "show more" affordance via expandedUserPromptIds
     // — the user must always be able to read back what they actually sent.
-    setChatMessages((prev) => [...prev, { id: promptId, role: "user", content: text, kind: "prompt", ...(sentAttachments.length ? { attachments: sentAttachments } : {}) }]);
+    threadState.setChatMessages((prev) => [...prev, {
+      id: promptId,
+      role: "user",
+      content: text,
+      kind: "prompt",
+      createdAt: new Date().toISOString(),
+      ...(sentAttachments.length ? { attachments: sentAttachments } : {}),
+    }]);
+    const sendSnap = ensureThreadSnapshot(streamBoardId);
+    chatMessagesRef.current = sendSnap.chatMessages;
 
     try {
       await orchestrateChatSend({
@@ -1836,11 +2040,20 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         promptId,
         sentAttachments,
         brickActionData,
-        chatMessages: chatMessagesRef.current,
-        aiThread: aiThreadRef.current,
-        conversationSummary: convoSummaryRef.current,
+        // Pull conversation context from THIS board's snapshot so chats
+        // in a thread never share message history (no merging/bleed).
+        chatMessages: sendSnap.chatMessages,
+        aiThread: sendSnap.aiThread,
+        conversationSummary: sendSnap.convoSummary,
         abortController: sendAbort,
-        identity: { selectedModel, boardId, routeBoardId, projectId, userId: user?.id },
+        identity: {
+          selectedModel,
+          customModelId: customModelId ?? null,
+          boardId,
+          routeBoardId,
+          projectId,
+          userId: user?.id,
+        },
         context: {
           buildCanvasContext,
           buildActionCanvasContext,
@@ -1883,30 +2096,44 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         analysis: { isVideoQuestion, looksLikeDeflectingQuestion, sanitizeAssistantResponse, buildDirectVideoAnswerFromGrounding },
         postProcessing: { extractSourceLinks, extractAiConnections, extractAndApplyTagActions, extractAndEmbedYouTubeUrls, extractAndEmbedMediaItems, extractWebLinksFromText, attachSourcesToBlock },
         canvas: { getCanvasState: () => useCanvasStore.getState(), updateBlock, deleteBlock, normalizeAiTextForBlock, calcAiBubbleSize, applyProjectActions },
-        state: { setChatStatusText, setChatMessages, setIsChatLoading, setChatFlowMode, setConnectionCards, setShowConnectionCard, setMediaSuggestions, setSelectedMediaIds, setShowMediaSuggestion },
-        streamRefs: { streamTargetTextRef, streamDisplayedLenRef, streamTypingRafRef, streamPromptIdRef, chatScrollRef, chatUserScrolledUpRef, chatProgrammaticScrollRef },
-        typing: { typeResponseIntoChat, typeIntoAiResponseBlock, maybeRunConversationSummary },
+        state: {
+          ...threadState,
+          setConnectionCards,
+          setShowConnectionCard,
+          setMediaSuggestions,
+          setSelectedMediaIds,
+          setShowMediaSuggestion,
+        },
+        streamRefs: { ...sendStreamRefs, chatScrollRef, chatUserScrolledUpRef, chatProgrammaticScrollRef },
+        typing: {
+          typeResponseIntoChat: (pid: string, full: string) => typeResponseIntoChat(pid, full, streamBoardId),
+          typeIntoAiResponseBlock,
+          maybeRunConversationSummary: () => maybeRunConversationSummary(streamBoardId),
+        },
         supabaseClient: supabase,
       });
     } catch (err: any) {
-      if (err?.name === "AbortError" && sendAbort !== activeAiAbortRef.current) { setChatStatusText(""); return; }
-      setChatFlowMode("idle");
+      if (err?.name === "AbortError" && sendAbort !== activeAiAbortRef.current) { threadState.setChatStatusText(""); return; }
+      threadState.setChatFlowMode("idle");
       const errMsg = user?.id
         ? AI_TEMPORARY_FAILURE_TEXT
         : AI_GUEST_TEMPORARY_FAILURE_TEXT;
-      setChatStatusText(errMsg);
-      setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
+      threadState.setChatStatusText(errMsg);
+      threadState.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
     } finally {
-      setIsChatLoading(false);
-      isSendingRef.current = false;
-      setChatFlowMode("idle");
+      threadState.setIsChatLoading(false);
+      patchThreadSnapshot(streamBoardId, { abortController: null, isChatLoading: false });
+      sendingBoardsRef.current.delete(streamBoardId);
+      streamRuntimeRef.current.delete(streamBoardId);
+      isSendingRef.current = sendingBoardsRef.current.size > 0;
+      threadState.setChatFlowMode("idle");
       window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
       if (user?.id) {
         setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 300);
       }
     }
   }, [
-    isChatLoading, focusedChatAttachments, selectedModel, boardId, routeBoardId, projectId, user?.id, setChatInput,
+    focusedChatAttachments, selectedModel, customModelId, boardId, routeBoardId, projectId, user?.id, setChatInput,
     buildCanvasContext, getKnowledgeBaseContext, getCachedWorkspaceSummary,
     getAllYouTubeBlocks, buildYouTubeGrounding, isVideoQuestion, looksLikeDeflectingQuestion,
     sanitizeAssistantResponse, buildDirectVideoAnswerFromGrounding,
@@ -1918,21 +2145,38 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   ]);
 
   const handleStopAi = useCallback(() => {
-    activeAiAbortRef.current?.abort();
+    // Stop only the chat the user is currently viewing — other chats in
+    // the thread keep streaming.
+    const bid = String(getActiveThreadBoardId() || streamBoardIdRef.current || boardId || routeBoardId || "");
+    const snap = bid ? getThreadSnapshot(bid) : null;
+    (snap?.abortController || activeAiAbortRef.current)?.abort();
     activeAiAbortRef.current = null;
-    if (streamTypingRafRef.current) { cancelAnimationFrame(streamTypingRafRef.current); streamTypingRafRef.current = null; }
-    if (streamPromptIdRef.current && streamDisplayedLenRef.current < streamTargetTextRef.current.length) {
-      setChatMessages((prev) => prev.map((m) => (m.id === streamPromptIdRef.current ? { ...m, aiResponse: streamTargetTextRef.current } : m)));
+    if (bid) registerStreamAbortController(bid, null);
+    const sr = bid ? streamRuntimeRef.current.get(bid) : null;
+    if (sr) {
+      if (sr.streamTypingRafRef.current) { clearTimeout(sr.streamTypingRafRef.current); sr.streamTypingRafRef.current = null; }
+      if (sr.streamPromptIdRef.current && sr.streamDisplayedLenRef.current < sr.streamTargetTextRef.current.length) {
+        patchThreadMessages((prev) => prev.map((m) => (m.id === sr.streamPromptIdRef.current ? { ...m, aiResponse: sr.streamTargetTextRef.current } : m)), bid);
+      }
+      sr.streamTargetTextRef.current = ""; sr.streamDisplayedLenRef.current = 0; sr.streamPromptIdRef.current = null;
     }
-    streamTargetTextRef.current = ""; streamDisplayedLenRef.current = 0; streamPromptIdRef.current = null;
     if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
     const pending = chatTypingPendingRef.current;
-    if (pending) { setChatMessages((prev) => prev.map((m) => (m.id === pending.promptId ? { ...m, aiResponse: pending.fullText } : m))); pending.resolve(); chatTypingPendingRef.current = null; }
+    if (pending && (!bid || pending.boardId === bid)) {
+      patchThreadMessages((prev) => prev.map((m) => (m.id === pending.promptId ? { ...m, aiResponse: pending.fullText } : m)), pending.boardId);
+      pending.resolve();
+      chatTypingPendingRef.current = null;
+    }
+    if (bid) {
+      sendingBoardsRef.current.delete(bid);
+      streamRuntimeRef.current.delete(bid);
+      patchThreadSnapshot(bid, { isChatLoading: false });
+    }
+    isSendingRef.current = sendingBoardsRef.current.size > 0;
     setIsChatLoading(false);
-    isSendingRef.current = false;
     setChatFlowMode("idle");
     setChatStatusText("Stopped");
-  }, []);
+  }, [boardId, routeBoardId, patchThreadMessages]);
 
   const handleDictateToggle = useCallback(() => {
     if (isDictating) {
@@ -1971,6 +2215,40 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       recorder.start(); setIsDictating(true);
     }).catch(() => setIsDictating(false));
   }, [isDictating, setChatInput]);
+
+  /* ---------- Voice Mode ---------- */
+
+  const setVoiceMode = useCallback((on: boolean) => {
+    voiceModeOnRef.current = on;
+    setVoiceModeOn(on);
+    if (!on) {
+      // Leaving voice mode: cut off any audio still playing.
+      void import("@/lib/ai/speakText").then(({ stopSpeaking }) => stopSpeaking()).catch(() => {});
+    }
+  }, []);
+
+  const toggleVoiceMode = useCallback(() => {
+    setVoiceMode(!voiceModeOnRef.current);
+  }, [setVoiceMode]);
+
+  // Drive one voice conversation turn through the normal chat pipeline and
+  // hand the assistant's final reply text back to the voice overlay so it
+  // can speak it. The full reply lands on the prompt message in the thread
+  // snapshot once the orchestrator resolves.
+  const sendVoiceTurn = useCallback(async (text: string): Promise<string> => {
+    const clean = String(text || "").trim();
+    if (!clean) return "";
+    const streamBoardId = String(routeBoardId || boardId || "");
+    setChatInput(clean);
+    const before = getThreadSnapshot(streamBoardId)?.chatMessages?.length ?? 0;
+    await handleChatSend();
+    const after = getThreadSnapshot(streamBoardId);
+    const msgs = after?.chatMessages ?? [];
+    // The turn we just sent is the most recent prompt; its aiResponse holds
+    // the post-processed reply.
+    const last = msgs.length >= before ? msgs[msgs.length - 1] : undefined;
+    return String(last?.aiResponse || "").trim();
+  }, [routeBoardId, boardId, setChatInput, handleChatSend]);
 
   const handleChatPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // Branch on either HTML OR a structured paste payload (e.g. images,
@@ -2068,7 +2346,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
     chatTypingTimerRef.current = null;
     chatTypingPendingRef.current = null;
-    if (streamTypingRafRef.current) { cancelAnimationFrame(streamTypingRafRef.current); streamTypingRafRef.current = null; }
+    if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
+    for (const sr of streamRuntimeRef.current.values()) {
+      if (sr.streamTypingRafRef.current) { clearTimeout(sr.streamTypingRafRef.current); sr.streamTypingRafRef.current = null; }
+    }
   }, []);
 
   return {
@@ -2081,12 +2362,14 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     copiedMsgId, setCopiedMsgId,
     assistantTaskChecks,
     isDictating, isTranscribing,
+    voiceModeOn,
     chatMessagesRef, aiThreadRef,
     chatScrollRef, chatPanelInputRef, centerChatInputRef,
     chatUserScrolledUpRef, chatProgrammaticScrollRef,
     pendingAiBrickActionRef, pendingBrickActionDataRef,
     youtubeTranscriptCacheRef,
     handleChatSend, handleStopAi, handleDictateToggle,
+    toggleVoiceMode, setVoiceMode, sendVoiceTurn,
     handleChatPaste, handleOpenAttachments,
     removeFocusedAttachment, addFocusedAttachment,
     applyVaultDropToChat, resizeChatInput,

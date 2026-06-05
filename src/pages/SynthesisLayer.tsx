@@ -77,6 +77,7 @@ import {
   type UserProject,
 } from "@/lib/userProjects";
 import ProjectPanel from "@/components/synthesis/ProjectPanel";
+import { PROJECTS_CHANGED_EVENT } from "@/lib/synthesis/projectLiveSync";
 
 // Demo grid boards have real preview routes (see demoGrids.js), so they're
 // navigable even though their ids match the `demo-*` pattern. Other demo
@@ -90,6 +91,42 @@ const isBlockedDemoId = (id: string | null | undefined): boolean => {
   if (isDemoGridId(id)) return false;
   return isDemoNodeId(id);
 };
+
+/** Neuron kinds shown in the create/add-to-project picker. */
+const PROJECT_KIND_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "vault", label: "Vault" },
+  { id: "belief", label: "Beliefs" },
+  { id: "concept", label: "Concepts" },
+  { id: "fact", label: "Facts" },
+  { id: "learned", label: "Learned" },
+  { id: "perspective", label: "Perspectives" },
+  { id: "chat", label: "Chats" },
+] as const;
+
+type ProjectKindFilter = (typeof PROJECT_KIND_FILTERS)[number]["id"];
+
+const isProjectAddableNode = (n: MindNode): boolean =>
+  n.kind !== "root" && n.kind !== "category" && n.kind !== "project";
+
+/** Bucket a graph node into a project-picker filter chip. */
+const projectNodeBucket = (n: MindNode): Exclude<ProjectKindFilter, "all"> => {
+  if (n.kind === "grid") return "chat";
+  if (n.kind === "neuron" && n.meta?.source === "manual_fact") return "fact";
+  if (n.kind === "neuron") return "learned";
+  return n.kind as Exclude<ProjectKindFilter, "all">;
+};
+
+const projectNodeKindLabel = (n: MindNode): string => {
+  const bucket = projectNodeBucket(n);
+  if (bucket === "fact" && n.meta?.kindLabel) return String(n.meta.kindLabel);
+  if (bucket === "learned" && n.meta?.neuronKind) return String(n.meta.neuronKind);
+  const chip = PROJECT_KIND_FILTERS.find((f) => f.id === bucket);
+  return chip?.label ?? bucket;
+};
+
+const projectNodeSearchHaystack = (n: MindNode): string =>
+  `${n.label || ""} ${projectNodeKindLabel(n)} ${projectNodeBucket(n)} ${n.meta?.kindLabel || ""} ${n.meta?.neuronKind || ""}`.toLowerCase();
 
 
 /* ------------------------------------------------------------------ */
@@ -1256,6 +1293,7 @@ function buildGraph(
         projectStatus: p.status,
         projectCreatedByClient: p.createdByClient,
         projectMemberCount: memberCount,
+        projectPushCount: p.pushCount,
         projectLastActiveAt: p.lastActiveAt,
       },
     });
@@ -4007,6 +4045,7 @@ export default function SynthesisLayer() {
   // hundred nodes. Cleared whenever we enter or exit project
   // mode so a stale query doesn't ghost across sessions.
   const [projectSearchQuery, setProjectSearchQuery] = useState("");
+  const [projectKindFilter, setProjectKindFilter] = useState<ProjectKindFilter>("all");
 
   // Project side-panel selection. Independent of `filterProjectId`
   // (which drives the scene's focus-glow) because the user might
@@ -4145,6 +4184,8 @@ export default function SynthesisLayer() {
       // re-chunk the note.
       notes: ["mindmap_vault_graph", uid],
       boards: ["mindmap_boards", uid],
+      projects: ["lykn_projects", uid],
+      project_state: ["lykn_project_state", uid],
     };
     const schedule = (...keys: string[]) => {
       for (const k of keys) pendingKeys.add(k);
@@ -4203,17 +4244,41 @@ export default function SynthesisLayer() {
           schedule("boards");
         },
       )
-      // (Used to also listen on `lykn_project_state` to refresh the
-      // projects list — dropped along with the projects category when the
-      // sidebar projects feature was retired. The load-in greeting still
-      // pulls the latest project_state on every fresh /app load via
-      // /api/v1/synthesis/activity, so external MCP pushes still surface
-      // in the briefing; they just no longer animate a node into the 3D
-      // graph here.)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "lykn_projects", filter: `user_id=eq.${uid}` },
+        () => {
+          schedule("projects");
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "lykn_project_neurons", filter: `user_id=eq.${uid}` },
+        () => {
+          schedule("projects");
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "lykn_project_state", filter: `user_id=eq.${uid}` },
+        () => {
+          // AI pushes (MCP + in-LYKN chat) land here — refresh the
+          // project panel Updates section + push counts on the graph.
+          schedule("projects", "project_state");
+        },
+      )
       .subscribe();
+
+    const onProjectsChanged = (evt: Event) => {
+      const detail = (evt as CustomEvent<{ userId?: string | null }>).detail;
+      if (detail?.userId && detail.userId !== uid) return;
+      schedule("projects", "project_state");
+    };
+    window.addEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
 
     return () => {
       if (flushTimer) window.clearTimeout(flushTimer);
+      window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
       void supabase.removeChannel(channel);
     };
   }, [user?.id, queryClient]);
@@ -5073,6 +5138,7 @@ export default function SynthesisLayer() {
     setProjectSubmitting(false);
     setProjectAddTargetId(null);
     setProjectSearchQuery("");
+    setProjectKindFilter("all");
     setProjectMode(true);
     // Defensive: bail out of linking + close the right-side panel +
     // close the "+" menu so the project action bar owns the screen.
@@ -5091,6 +5157,7 @@ export default function SynthesisLayer() {
     setProjectSubmitting(false);
     setProjectAddTargetId(null);
     setProjectSearchQuery("");
+    setProjectKindFilter("all");
   }, []);
 
   const commitProject = useCallback(async () => {
@@ -5243,6 +5310,7 @@ export default function SynthesisLayer() {
     setProjectSubmitting(false);
     setProjectAddTargetId(projectId);
     setProjectSearchQuery("");
+    setProjectKindFilter("all");
     setProjectMode(true);
     setLinkingMode(false);
     setLinkSelection(new Set());
@@ -6341,12 +6409,23 @@ export default function SynthesisLayer() {
             addingTo ? addingTo.members.map((m) => m.nodeId) : [],
           );
           const queryLower = projectSearchQuery.trim().toLowerCase();
-          const addableMatches = allNodes
+          const addablePool = allNodes.filter(
+            (n) => isProjectAddableNode(n) && !existingMemberIds.has(n.id),
+          );
+          const kindFilterOptions = PROJECT_KIND_FILTERS.filter((chip) => {
+            if (chip.id === "all") return true;
+            return addablePool.some((n) => projectNodeBucket(n) === chip.id);
+          });
+          const effectiveKindFilter = kindFilterOptions.some((c) => c.id === projectKindFilter)
+            ? projectKindFilter
+            : "all";
+          const addableMatches = addablePool
             .filter((n) => {
-              if (n.kind === "root" || n.kind === "category") return false;
-              if (existingMemberIds.has(n.id)) return false;
+              if (effectiveKindFilter !== "all" && projectNodeBucket(n) !== effectiveKindFilter) {
+                return false;
+              }
               if (!queryLower) return true;
-              return (n.label || "").toLowerCase().includes(queryLower);
+              return projectNodeSearchHaystack(n).includes(queryLower);
             })
             // Selected items float to the top so the running
             // selection is always visible at a glance, then the
@@ -6356,12 +6435,9 @@ export default function SynthesisLayer() {
               const bSel = projectSelection.has(b.id) ? 0 : 1;
               if (aSel !== bSel) return aSel - bSel;
               return (a.label || "").localeCompare(b.label || "");
-            })
-            // Cap to keep the dropdown bounded; 80 rows fits
-            // comfortably with the max-h scroll while still
-            // letting the user see "a lot" of options when
-            // they haven't typed a query.
-            .slice(0, 80);
+            });
+          const hasActiveFilter =
+            !!queryLower || effectiveKindFilter !== "all";
           return (
             <motion.div
               key="project-mode-bar"
@@ -6428,28 +6504,57 @@ export default function SynthesisLayer() {
                   same neuron in the 3D scene; the two input
                   surfaces stay perfectly in sync. */}
               <div className="mt-3 space-y-1.5">
-                <div className="relative">
-                  <Search
-                    size={11}
-                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none"
-                  />
-                  <input
-                    type="text"
-                    value={projectSearchQuery}
-                    onChange={(e) => setProjectSearchQuery(e.target.value)}
-                    placeholder={
-                      isAdding
-                        ? "Search neurons to add…"
-                        : "Search neurons by name…"
-                    }
-                    className="w-full bg-black/30 border border-white/15 rounded-lg pl-7 pr-2.5 py-1.5 text-[0.72rem] text-white/95 placeholder:text-white/30 focus:outline-none focus:border-white/30"
-                  />
+                <div className="flex gap-2">
+                  <div className="relative flex-1 min-w-0">
+                    <Search
+                      size={11}
+                      className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none"
+                    />
+                    <input
+                      type="text"
+                      value={projectSearchQuery}
+                      onChange={(e) => setProjectSearchQuery(e.target.value)}
+                      placeholder={
+                        isAdding
+                          ? "Search neurons to add…"
+                          : "Search neurons by name…"
+                      }
+                      className="w-full bg-black/30 border border-white/15 rounded-lg pl-7 pr-2.5 py-1.5 text-[0.72rem] text-white/95 placeholder:text-white/30 focus:outline-none focus:border-white/30"
+                    />
+                  </div>
+                  <div className="relative shrink-0 w-[8.75rem]">
+                    <select
+                      value={effectiveKindFilter}
+                      onChange={(e) =>
+                        setProjectKindFilter(e.target.value as ProjectKindFilter)
+                      }
+                      aria-label="Filter by neuron type"
+                      className="w-full appearance-none bg-black/30 border border-white/15 rounded-lg pl-2 pr-7 py-1.5 text-[0.72rem] text-white/95 focus:outline-none focus:border-white/30 cursor-pointer"
+                    >
+                      {kindFilterOptions.map((chip) => {
+                        const count =
+                          chip.id === "all"
+                            ? addablePool.length
+                            : addablePool.filter((n) => projectNodeBucket(n) === chip.id)
+                                .length;
+                        return (
+                          <option key={chip.id} value={chip.id}>
+                            {chip.label} ({count})
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <ChevronDown
+                      size={11}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none"
+                    />
+                  </div>
                 </div>
-                <div className="max-h-44 overflow-y-auto rounded-lg border border-white/10 bg-black/20 scrollbar-hide">
+                <div className="max-h-60 overflow-y-auto rounded-lg border border-white/10 bg-black/20 scrollbar-hide">
                   {addableMatches.length === 0 ? (
                     <p className="px-3 py-3 text-[0.7rem] text-white/45 leading-relaxed">
-                      {queryLower
-                        ? `No neurons match “${projectSearchQuery.trim()}”.`
+                      {hasActiveFilter
+                        ? "No neurons match your search or filter."
                         : isAdding
                           ? "Every neuron is already in this project."
                           : "No neurons in your brain yet."}
@@ -6494,13 +6599,20 @@ export default function SynthesisLayer() {
                             {n.label || "(unlabeled)"}
                           </span>
                           <span className="shrink-0 text-[0.55rem] uppercase tracking-[0.12em] text-white/40">
-                            {n.kind}
+                            {projectNodeKindLabel(n)}
                           </span>
                         </button>
                       );
                     })
                   )}
                 </div>
+                {addablePool.length > 0 && (
+                  <p className="text-[0.58rem] text-white/40 tabular-nums">
+                    {hasActiveFilter
+                      ? `Showing ${addableMatches.length} of ${addablePool.length} neurons`
+                      : `${addablePool.length} neurons`}
+                  </p>
+                )}
               </div>
 
               {!isAdding && (

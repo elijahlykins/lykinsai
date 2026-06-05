@@ -1,17 +1,6 @@
 // Plan-aware model gating. Shared between the client (picker locks +
 // auto-downgrade) and the server (request validation). Keep in sync
 // with `PLAN_LIMITS.modelTier` in `src/lib/pricing-config.js`.
-//
-//   - lykn              : LYKN brand model. Free + Pro.
-//   - frontier picks    : GPT / Claude / Gemini / Grok. Pro only.
-//
-// Plan → access mapping:
-//   - free        : LYKN only
-//   - studio (Pro): LYKN + frontier
-//
-// `modelTier` strings from pricing-config.js:
-//   "basic"      → LYKN only
-//   "top+media"  → LYKN + frontier
 
 import {
   LYKN_ID,
@@ -23,8 +12,6 @@ import {
   FRONTIER_GOOGLE_ID,
   FRONTIER_XAI_ID,
   KNOWN_MODEL_IDS,
-  AGENT_BUILDER_MODEL_IDS,
-  AGENT_BUILDER_DEFAULT_MODEL,
   CLAUDE_OPUS_4_8_ID,
 } from "./modelCatalog.js";
 
@@ -38,6 +25,8 @@ const FRONTIER_MODEL_IDS = new Set([
   FRONTIER_ANTHROPIC_ID,
   FRONTIER_GOOGLE_ID,
   FRONTIER_XAI_ID,
+  CLAUDE_OPUS_4_8_ID,
+  "gpt-4.1",
 ]);
 
 const LEGACY_ALIASES = {
@@ -80,40 +69,6 @@ export function isModelAllowedForPlan(modelId, planModelTier) {
 
 export function defaultModelForTier(_planModelTier) {
   return LYKN_ID;
-}
-
-/** Older Agent Studio / localStorage ids → Opus 4.8 */
-const AGENT_BUILDER_ALIASES = {
-  "claude-opus-4-7": CLAUDE_OPUS_4_8_ID,
-  "claude-opus-4-6": CLAUDE_OPUS_4_8_ID,
-  "claude-opus-4-6-code": CLAUDE_OPUS_4_8_ID,
-  "claude-3-opus-20240229": CLAUDE_OPUS_4_8_ID,
-};
-
-export function canonicalizeAgentBuilderModelId(modelId) {
-  const id = String(modelId || "").trim();
-  if (!id) return null;
-  if (AGENT_BUILDER_ALIASES[id]) return AGENT_BUILDER_ALIASES[id];
-  if (AGENT_BUILDER_MODEL_IDS.includes(id)) return id;
-  return null;
-}
-
-/**
- * Agent Studio models are Pro-tier frontier picks (not the LYKN alias).
- * @param {{ devUnlock?: boolean }} [opts] — true in local Agent Studio dev to skip plan lock.
- */
-export function isAgentBuilderModelAllowed(modelId, planModelTier, opts = {}) {
-  const canonical = canonicalizeAgentBuilderModelId(modelId);
-  if (!canonical) return false;
-  if (opts.devUnlock) return true;
-  return allowedTiersForPlan(planModelTier).has(MODEL_TIER_FRONTIER);
-}
-
-export function defaultAgentBuilderModelForPlan(planModelTier, opts = {}) {
-  for (const id of AGENT_BUILDER_MODEL_IDS) {
-    if (isAgentBuilderModelAllowed(id, planModelTier, opts)) return id;
-  }
-  return AGENT_BUILDER_DEFAULT_MODEL;
 }
 
 export {

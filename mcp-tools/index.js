@@ -41,12 +41,12 @@ import { getFactsTool } from './getFacts.js';
 import { searchVaultTool } from './searchVault.js';
 import { getContextBlockTool } from './getContextBlock.js';
 import { recordRuleApplicationTool } from './recordRuleApplication.js';
-import { proposeBeliefTool } from './proposeBelief.js';
 import { proposeFactTool } from './proposeFact.js';
 import { setActiveProjectTool } from './setActiveProject.js';
 import { pushProjectStateTool } from './pushProjectState.js';
 import { getProjectStateTool } from './getProjectState.js';
 import { listProjectsTool } from './listProjects.js';
+import { resolveProjectTool } from './resolveProject.js';
 import { updateProjectTool } from './updateProject.js';
 import { addProjectNeuronsTool } from './addProjectNeurons.js';
 import { removeProjectNeuronsTool } from './removeProjectNeurons.js';
@@ -70,10 +70,10 @@ export const MCP_TOOLS = [
   // Tier 1 — Core beliefs (governance, ratified)
   getBeliefsTool,
   getRulesTool,
-  proposeBeliefTool,
   recordRuleApplicationTool,
   // Tier 2 — Project state (working memory, git-style)
   listProjectsTool,
+  resolveProjectTool,
   setActiveProjectTool,
   updateProjectTool,
   deleteProjectTool,
@@ -117,49 +117,12 @@ export const MCP_TOOLS_BY_NAME = Object.freeze(
 );
 
 // ---------------------------------------------------------------------------
-// Shared helpers used by tool handlers
+// Shared helpers used by tool handlers (re-exported from content.js)
 // ---------------------------------------------------------------------------
 
-/**
- * Wrap a plain JS value as an MCP "content" block. MCP clients render
- * `text` blocks; structured data goes in JSON-encoded text. Cursor /
- * Claude Desktop both support `type: 'text'`. Some clients also support
- * `type: 'json'` natively but the safe baseline is text-with-JSON.
- */
-export function jsonContent(value) {
-  return {
-    content: [
-      { type: 'text', text: JSON.stringify(value, null, 2) },
-    ],
-  };
-}
-
-export function textContent(text) {
-  return {
-    content: [{ type: 'text', text: String(text || '') }],
-  };
-}
-
-export function errorContent(message) {
-  return {
-    content: [{ type: 'text', text: `Error: ${String(message || 'unknown')}` }],
-    isError: true,
-  };
-}
-
-/**
- * Tools that mutate state guard themselves with this. JWT (web app)
- * requests always have full access; MCP-token requests need the
- * 'write' scope on the token. Mints default to read+write on every
- * plan, so this only fires if the caller explicitly minted a
- * read-only token (e.g. for a third-party they want to give look-only
- * access to).
- */
-export function requireWrite(ctx) {
-  if (!ctx?.mcpAuth) return null; // JWT path — pass
-  const scopes = Array.isArray(ctx.mcpAuth.scopes) ? ctx.mcpAuth.scopes : [];
-  if (scopes.includes('write')) return null;
-  return errorContent(
-    'This tool requires a write-capable token, but the bearer presented is read-only. Re-mint the token from /connections without restricting scopes (the default mint is read+write).',
-  );
-}
+export {
+  jsonContent,
+  textContent,
+  errorContent,
+  requireWrite,
+} from './content.js';

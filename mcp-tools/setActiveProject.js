@@ -28,6 +28,7 @@
 // user has genuinely shifted to new work.
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
+import { isAiWritableProject } from '../lib/projectWriteTarget.js';
 
 const NAME_MAX = 120;
 const DESC_MAX = 320;
@@ -47,6 +48,7 @@ async function recentProjectsForHint(ctx) {
     .select('id, name, description, status, created_by_client, last_active_at')
     .eq('user_id', ctx.userId)
     .eq('status', 'active')
+    .eq('created_by', 'user')
     .order('last_active_at', { ascending: false })
     .limit(RECENT_HINT_LIMIT);
   return Array.isArray(data) ? data : [];
@@ -82,15 +84,14 @@ export const setActiveProjectTool = {
     'TWO MODES — pick the right one:',
     '  • RESUME existing project (preferred):',
     '      lykn_setActiveProject({ project_id: "<uuid from listProjects>" })',
-    '    Call lykn_listProjects first to find the id. This is how you avoid',
-    '    spawning duplicate projects when the user works across multiple',
-    '    AI clients ("LYKN MCP work" vs "LYKN MCP integration").',
+    '    Call lykn_listProjects or lykn_resolveProject first to find the id.',
+    '    This is how you avoid spawning duplicate projects when the user works',
+    '    across multiple AI clients.',
     '',
-    '  • CREATE a new project (only when nothing existing fits):',
-    '      lykn_setActiveProject({ name: "Q1 fundraising deck", create: true })',
-    '    `create: true` is REQUIRED to insert. Without it, an unknown name',
-    '    returns ok:false with reason="project_not_found" and a list of',
-    '    recent projects so you can retry with the right project_id.',
+    '  • PROJECT CREATION is USER-ONLY:',
+    '    AI agents must NEVER create projects. If nothing matches, ask the user',
+    '    to create a main project or branch in the LYKN synthesis layer',
+    '    (+ → Create project). Then lykn_setActiveProject({ project_id }).',
     '',
     'NAME-ONLY lookup (no create, no project_id):',
     '  lykn_setActiveProject({ name: "..." }) does a case-insensitive',
@@ -119,7 +120,7 @@ export const setActiveProjectTool = {
       },
       create: {
         type: 'boolean',
-        description: 'If true AND `name` doesn\'t match any existing project, create one. If false (the default) an unknown name returns project_not_found with a list of recent projects to pick from. Set explicitly to opt into creation.',
+        description: 'IGNORED — project creation is user-only in LYKN. Always returns creation_not_allowed if true.',
       },
     },
     additionalProperties: false,
@@ -152,7 +153,7 @@ export const setActiveProjectTool = {
     if (projectIdArg) {
       const { data: byId, error: byIdErr } = await ctx.supabaseAdmin
         .from('lykn_projects')
-        .select('id, name, description, status, created_at, last_active_at, created_by_client')
+        .select('id, name, description, status, created_at, last_active_at, created_by_client, created_by')
         .eq('user_id', ctx.userId)
         .eq('id', projectIdArg)
         .maybeSingle();
@@ -164,7 +165,17 @@ export const setActiveProjectTool = {
         return jsonContent({
           ok: false,
           reason: 'project_not_found',
-          message: 'That project_id is not in the user\'s project list. Call lykn_listProjects to see what exists, or pass `name` with `create: true` to start a new project.',
+          message: 'That project_id is not in the user\'s project list. Call lykn_listProjects or lykn_resolveProject to see what exists.',
+          recent_projects: recent,
+        });
+      }
+      if (!isAiWritableProject(byId)) {
+        const recent = await recentProjectsForHint(ctx);
+        return jsonContent({
+          ok: false,
+          reason: 'legacy_project_not_writable',
+          message:
+            'That project was AI-inferred (legacy) and is read-only. Ask the user to create a project in the LYKN synthesis layer, then activate it by project_id.',
           recent_projects: recent,
         });
       }
@@ -214,9 +225,10 @@ export const setActiveProjectTool = {
 
     const { data: existing, error: findErr } = await ctx.supabaseAdmin
       .from('lykn_projects')
-      .select('id, name, description, status, created_at, last_active_at, created_by_client')
+      .select('id, name, description, status, created_at, last_active_at, created_by_client, created_by')
       .eq('user_id', ctx.userId)
       .eq('name_key', nameKey)
+      .eq('created_by', 'user')
       .maybeSingle();
     if (findErr) {
       return errorContent(`project lookup failed: ${findErr.message}`);
@@ -265,44 +277,18 @@ export const setActiveProjectTool = {
       return jsonContent({
         ok: false,
         reason: 'project_not_found',
-        message: `No project matches "${name}". To resume an existing project, call lykn_setActiveProject with one of the project_ids below. To start a new project under this name, re-call with create: true.`,
+        message: `No project matches "${name}". Projects are user-created only — ask the user to create one in the LYKN synthesis layer, or call lykn_setActiveProject with a project_id from lykn_listProjects / lykn_resolveProject.`,
         searched_name: name,
         recent_projects: recent,
       });
     }
 
-    const { data: inserted, error: insErr } = await ctx.supabaseAdmin
-      .from('lykn_projects')
-      .insert({
-        user_id: ctx.userId,
-        name,
-        name_key: nameKey,
-        description,
-        status: 'active',
-        created_by_client: clientKind,
-        last_active_at: new Date().toISOString(),
-      })
-      .select('id, name, description, status, created_at, last_active_at, created_by_client')
-      .single();
-    if (insErr) {
-      return errorContent(`project create failed: ${insErr.message}`);
-    }
-
-    await stampActive(ctx, inserted.id);
-
+    const recent = await recentProjectsForHint(ctx);
     return jsonContent({
-      ok: true,
-      was_created: true,
-      resolved_by: 'created',
-      project: {
-        id: inserted.id,
-        name: inserted.name,
-        description: inserted.description,
-        status: inserted.status,
-        created_by_client: inserted.created_by_client,
-        last_active_at: inserted.last_active_at,
-      },
-      message: `Project "${inserted.name}" created and set active.`,
+      ok: false,
+      reason: 'creation_not_allowed',
+      message: 'Projects are user-created only in the LYKN synthesis layer (+ → Create project). AI agents may read and update any existing project but cannot create new ones. Ask the user to create a main project or branch, then call lykn_setActiveProject({ project_id }).',
+      recent_projects: recent,
     });
   },
 };

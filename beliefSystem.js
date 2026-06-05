@@ -938,6 +938,7 @@ export function formatBeliefsAndRulesForPrompt(beliefs, rules, opts = {}) {
     '[BELIEFS_AND_RULES]',
     'The user\'s ratified principles + the if-then rules they\'ve agreed should shape your behavior.',
     'PREFER answering through these. Only consult [USER_MODEL] long-tail facts when this section can\'t cover the question.',
+    'Beliefs are USER-AUTHORED ONLY — do not propose, offer, or suggest new core beliefs.',
     'When you DO follow a rule, end your reply with a single hidden tag:',
     '  <applied rule_id="<uuid>">one short sentence (≤25 words) explaining HOW the rule shaped this reply</applied>',
     'Use a rule_id from the list below. Do NOT invent rule_ids. No tag = honest "this reply was not rule-driven".',
@@ -982,6 +983,7 @@ export function formatBeliefsAndRulesForPromptOutsideClient(beliefs, rules, opts
       '[BELIEFS_AND_RULES]',
       'These are the LYKN user\'s ratified principles + the if-then rules they\'ve agreed should shape an AI\'s replies.',
       'PREFER answering through these. They are user-ratified, falsifiable, and revocable.',
+      'Beliefs are USER-AUTHORED ONLY — do not propose, offer, or suggest new core beliefs.',
       '',
       'When a reply is materially shaped by one of the rules below, call the MCP tool:',
       '  lykn_recordRuleApplication({ rule_id: "<uuid>", message_id: "<your reply id>", reason: "<≤25 words on how the rule shaped this reply>" })',
@@ -1022,19 +1024,23 @@ export function formatBeliefsAndRulesForPromptOutsideClient(beliefs, rules, opts
  * whether to emit anything at all.
  *
  *   otherProjects = [{ id, name, description, last_active_at,
- *                      state_key_count }]
+ *                      state_key_count, parent_project_id, main_project_name,
+ *                      is_branch }]
  */
 export function formatOtherProjectsForPromptOutsideClient(otherProjects) {
   const list = Array.isArray(otherProjects) ? otherProjects.filter(Boolean) : [];
   if (list.length === 0) return '';
 
   const lines = [
-    '[OTHER_PROJECTS]',
-    'Other projects the user has touched (NOT the current focus). If the',
-    'user mentions one of these by name, switch into it instead of saying',
-    '"I can\'t find that project" — call lykn_setActiveProject({ project_id })',
-    'with the id below, or lykn_getProjectState({ project_id }) to read',
-    'without changing focus.',
+    '[PROJECT_CATALOG]',
+    'All active projects the user owns (main + branches). ONLY the user creates',
+    'projects in LYKN — you may read/update any project by id but never create',
+    'one. Pick the best match for this conversation (like checking out the',
+    'right GitHub branch), then lykn_setActiveProject({ project_id }) or',
+    'lykn_getProjectState({ project_id }) without paraphrasing the name.',
+    '',
+    'Structure: main projects have no parent. Branches belong to a main and',
+    'hold exploratory working memory that rolls up conceptually to that main.',
     '',
   ];
 
@@ -1046,10 +1052,70 @@ export function formatOtherProjectsForPromptOutsideClient(otherProjects) {
     const desc = p.description
       ? ` — ${String(p.description).replace(/\s+/g, ' ').trim().slice(0, 120)}`
       : '';
-    lines.push(`- ${p.name || '(unnamed)'} [id=${p.id}] last=${last} state_keys=${stateCount}${desc}`);
+    const branchTag = p.is_branch && p.main_project_name
+      ? ` branch of "${p.main_project_name}"`
+      : p.is_branch
+        ? ' branch'
+        : ' main';
+    lines.push(`- ${p.name || '(unnamed)'}${branchTag} [id=${p.id}] last=${last} state_keys=${stateCount}${desc}`);
   }
 
   return lines.join('\n').trim();
+}
+
+const PROJECT_CLIENT_LABELS = {
+  'lykn-chat': 'LYKN Chat',
+  'claude-desktop': 'Claude Desktop',
+  'claude-code': 'Claude Code',
+  cursor: 'Cursor',
+  chatgpt: 'ChatGPT',
+  'custom-agent': 'Custom Agent',
+};
+
+function labelForProjectClient(kind) {
+  const k = String(kind || '').trim();
+  if (!k) return '';
+  return PROJECT_CLIENT_LABELS[k] || k.replace(/-/g, ' ');
+}
+
+function formatProjectTimestamp(iso) {
+  const raw = String(iso || '').trim();
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString();
+}
+
+/** One kv entry with when + who pushed it. */
+function formatProjectStateEntryLine(key, entry) {
+  const at = formatProjectTimestamp(entry?.set_at);
+  const client = labelForProjectClient(entry?.set_by_client);
+  const meta = [at, client].filter(Boolean).join(' · ');
+  const metaSuffix = meta ? ` @ ${meta}` : '';
+  const value = String(entry?.value || '').replace(/\s+/g, ' ').trim();
+  return `- ${key}${metaSuffix}: ${value}`;
+}
+
+/** Chronological push log — helps models reason about sequence of decisions. */
+function formatProjectRecentActivityLines(recentActivity) {
+  const list = Array.isArray(recentActivity) ? recentActivity.filter(Boolean) : [];
+  if (!list.length) return [];
+  const lines = [
+    '',
+    'Recent updates (chronological — newest first):',
+    'Each line is one push; the client/model in parentheses is who wrote it.',
+  ];
+  for (const row of list.slice(0, 16)) {
+    const at = formatProjectTimestamp(row.set_at);
+    const client = labelForProjectClient(row.set_by_client);
+    const meta = [at, client].filter(Boolean).join(' · ');
+    const value = String(row.value || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    lines.push(`- ${row.state_key}${meta ? ` (${meta})` : ''}: ${value}`);
+  }
+  if (list.length > 16) {
+    lines.push(`(+ ${list.length - 16} older — call lykn_getProjectState with include_history for more)`);
+  }
+  return lines;
 }
 
 /**
@@ -1074,7 +1140,7 @@ export function formatOtherProjectsForPromptOutsideClient(otherProjects) {
  */
 export function formatProjectStateForPromptOutsideClient(projectContext) {
   if (!projectContext || !projectContext.project) return '';
-  const { project, state, neurons } = projectContext;
+  const { project, state, neurons, recentActivity, mainContext } = projectContext;
   const stateEntries = state && typeof state === 'object' ? Object.entries(state) : [];
 
   // Header. We tell the model the project name + description (if any)
@@ -1091,6 +1157,11 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
   if (project.description) header.push(`Description: ${project.description}`);
   if (lastActive) header.push(`Last activity: ${lastActive}`);
   if (project.created_by_client) header.push(`Started in: ${project.created_by_client}`);
+  if (project.parent_project_id && project.main_project_name) {
+    header.push(`Branch of main: ${project.main_project_name} [id=${project.parent_project_id}]`);
+  } else if (!project.parent_project_id) {
+    header.push('Type: main project');
+  }
 
   // State kv-pairs. Sort so the most-recently-set keys appear first —
   // the model is more likely to lean on recent decisions, and recency
@@ -1106,11 +1177,24 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
     .slice(0, 24);
 
   const stateLines = sorted.length
-    ? sorted.map(([key, entry]) => {
-        const client = entry.set_by_client ? ` [${entry.set_by_client}]` : '';
-        return `- ${key}${client}: ${String(entry.value).replace(/\s+/g, ' ').trim()}`;
-      })
+    ? sorted.map(([key, entry]) => formatProjectStateEntryLine(key, entry))
     : ['(no state pushes yet — this project was just created)'];
+
+  const activityLines = formatProjectRecentActivityLines(recentActivity);
+
+  const mainLines = [];
+  if (mainContext?.project && mainContext?.state) {
+    const mainEntries = Object.entries(mainContext.state).filter(([, v]) => v?.value).slice(0, 8);
+    if (mainEntries.length) {
+      mainLines.push(
+        '',
+        `Main project context (${mainContext.project.name || 'main'} — inherited baseline for this branch):`,
+      );
+      for (const [key, entry] of mainEntries) {
+        mainLines.push(formatProjectStateEntryLine(key, entry));
+      }
+    }
+  }
 
   // Clustered neurons. The user explicitly grouped these synthesis-
   // layer neurons into the project from LYKN's "+ Create project"
@@ -1139,8 +1223,10 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
 
   const footer = [
     '',
-    'When this conversation produces a meaningful decision, milestone, or',
-    'change to one of the keys above, call:',
+    'Timestamps and client labels show WHEN each key was last updated and WHICH',
+    'AI client pushed it — do not attribute a push to yourself unless you made it',
+    'in this conversation. When this conversation produces a meaningful decision,',
+    'milestone, or change to one of the keys above, call:',
     '  lykn_pushProjectState({ state_key: "<slug>", state_value: "<≤2000 chars>" })',
     'Reuse keys (e.g. "current_blocker", "tech_stack") so the value replaces,',
     'not appends. New keys are fine when the topic is genuinely new.',
@@ -1149,8 +1235,10 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
   return [
     ...header,
     '',
-    'Current state (most recent first):',
+    'Current state (sorted by most recently updated key):',
     ...stateLines,
+    ...mainLines,
+    ...activityLines,
     ...neuronLines,
     ...footer,
   ].join('\n').trim();
@@ -1169,7 +1257,7 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
  */
 export function formatProjectStateForPromptInLykn(projectContext) {
   if (!projectContext || !projectContext.project) return '';
-  const { project, state, neurons } = projectContext;
+  const { project, state, neurons, recentActivity, mainContext } = projectContext;
   const stateEntries = state && typeof state === 'object' ? Object.entries(state) : [];
 
   const lastActive = project.last_active_at
@@ -1185,6 +1273,11 @@ export function formatProjectStateForPromptInLykn(projectContext) {
   if (project.description) header.push(`Description: ${project.description}`);
   if (lastActive) header.push(`Last activity: ${lastActive}`);
   if (project.created_by_client) header.push(`Started in: ${project.created_by_client}`);
+  if (project.parent_project_id && project.main_project_name) {
+    header.push(`Branch of main: ${project.main_project_name} [id=${project.parent_project_id}]`);
+  } else if (!project.parent_project_id) {
+    header.push('Type: main project');
+  }
 
   const sorted = stateEntries
     .filter(([, v]) => v && v.value)
@@ -1196,11 +1289,24 @@ export function formatProjectStateForPromptInLykn(projectContext) {
     .slice(0, 24);
 
   const stateLines = sorted.length
-    ? sorted.map(([key, entry]) => {
-        const client = entry.set_by_client ? ` [${entry.set_by_client}]` : '';
-        return `- ${key}${client}: ${String(entry.value).replace(/\s+/g, ' ').trim()}`;
-      })
+    ? sorted.map(([key, entry]) => formatProjectStateEntryLine(key, entry))
     : ['(no state pushes yet — this project was just created)'];
+
+  const activityLines = formatProjectRecentActivityLines(recentActivity);
+
+  const mainLines = [];
+  if (mainContext?.project && mainContext?.state) {
+    const mainEntries = Object.entries(mainContext.state).filter(([, v]) => v?.value).slice(0, 8);
+    if (mainEntries.length) {
+      mainLines.push(
+        '',
+        `Main project context (${mainContext.project.name || 'main'} — inherited baseline for this branch):`,
+      );
+      for (const [key, entry] of mainEntries) {
+        mainLines.push(formatProjectStateEntryLine(key, entry));
+      }
+    }
+  }
 
   const neuronList = Array.isArray(neurons) ? neurons : [];
   const neuronLines = [];
@@ -1218,6 +1324,9 @@ export function formatProjectStateForPromptInLykn(projectContext) {
 
   const footer = [
     '',
+    'Timestamps and client labels show WHEN each key was last updated and WHICH',
+    'AI client pushed it. Prior assistant replies in [CONVERSATION] are labeled',
+    'with their model — those were written by that model, not necessarily you.',
     'If this conversation produces a meaningful new decision, blocker, or',
     'milestone for this project, suggest the user capture it on the',
     'synthesis page so other AI clients pick it up next time. Outside AI',
@@ -1229,53 +1338,40 @@ export function formatProjectStateForPromptInLykn(projectContext) {
   return [
     ...header,
     '',
-    'Current state (most recent first):',
+    'Current state (sorted by most recently updated key):',
     ...stateLines,
+    ...mainLines,
+    ...activityLines,
     ...neuronLines,
     ...footer,
   ].join('\n').trim();
 }
 
 /**
- * Load the user's active project + its current kv state + clustered
- * neurons. Mirrors what mcp-tools/getContextBlock.js used to do
- * inline; lifted here so server.js (in-LYKN chat enrichment) and the
- * MCP tool can share the exact same loader and stay in lockstep.
- *
- * Best-effort: any failure (missing profile, missing tables, network
- * blip) returns null so the caller can keep going without project
- * context. Tables involved:
- *   • lykn_user_synthesis_profile.active_project_id  → which project
- *   • lykn_projects                                  → header
- *   • lykn_project_state (superseded_at IS NULL)     → kv state
- *   • lykn_project_neurons (migration 063, optional) → cluster members
- *
- * Returns:
- *   null
- *   | {
- *       project:  { id, name, description, status, created_by_client, last_active_at },
- *       state:    { [state_key]: { value, set_by_client, set_at } },
- *       neurons:  [{ node_id, label, kind }],
- *     }
+ * Load one project's context (state + neurons + recent activity).
+ * Used by active-project loader and by resolve/focus flows.
  */
-export async function loadActiveProjectContext(client, userId) {
-  if (!client || !userId) return null;
+export async function loadProjectContextById(client, userId, projectId) {
+  if (!client || !userId || !projectId) return null;
   try {
-    const { data: profile } = await client
-      .from('lykn_user_synthesis_profile')
-      .select('active_project_id')
-      .eq('user_id', userId)
-      .maybeSingle();
-    const projectId = profile?.active_project_id;
-    if (!projectId) return null;
-
     const { data: project } = await client
       .from('lykn_projects')
-      .select('id, name, description, status, created_by_client, last_active_at')
+      .select('id, name, description, status, created_by_client, created_by, parent_project_id, last_active_at')
       .eq('id', projectId)
       .eq('user_id', userId)
       .maybeSingle();
     if (!project || project.status !== 'active') return null;
+
+    let mainProjectName = null;
+    if (project.parent_project_id) {
+      const { data: mainRow } = await client
+        .from('lykn_projects')
+        .select('name')
+        .eq('id', project.parent_project_id)
+        .eq('user_id', userId)
+        .maybeSingle();
+      mainProjectName = mainRow?.name || null;
+    }
 
     const { data: rows } = await client
       .from('lykn_project_state')
@@ -1297,6 +1393,25 @@ export async function loadActiveProjectContext(client, userId) {
       }
     }
 
+    let recentActivity = [];
+    try {
+      const { data: activityRows } = await client
+        .from('lykn_project_state')
+        .select('state_key, state_value, set_by_client, created_at')
+        .eq('user_id', userId)
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false })
+        .limit(20);
+      recentActivity = (activityRows || []).map((row) => ({
+        state_key: row.state_key,
+        value: row.state_value,
+        set_by_client: row.set_by_client,
+        set_at: row.created_at,
+      }));
+    } catch (err) {
+      console.warn('[beliefSystem] project activity load failed:', err?.message || err);
+    }
+
     let neurons = [];
     try {
       const { data: memberRows } = await client
@@ -1315,7 +1430,67 @@ export async function loadActiveProjectContext(client, userId) {
       console.warn('[beliefSystem] project neuron load failed:', err?.message || err);
     }
 
-    return { project, state, neurons };
+    let mainContext = null;
+    if (project.parent_project_id) {
+      mainContext = await loadProjectContextById(client, userId, project.parent_project_id);
+    }
+
+    return {
+      project: {
+        ...project,
+        main_project_name: mainProjectName,
+      },
+      state,
+      neurons,
+      recentActivity,
+      mainContext: mainContext
+        ? {
+            project: mainContext.project,
+            state: mainContext.state,
+          }
+        : null,
+    };
+  } catch (err) {
+    console.warn('[beliefSystem] project context load failed:', err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * Load the user's active project + its current kv state + clustered
+ * neurons. Mirrors what mcp-tools/getContextBlock.js used to do
+ * inline; lifted here so server.js (in-LYKN chat enrichment) and the
+ * MCP tool can share the exact same loader and stay in lockstep.
+ *
+ * Best-effort: any failure (missing profile, missing tables, network
+ * blip) returns null so the caller can keep going without project
+ * context. Tables involved:
+ *   • lykn_user_synthesis_profile.active_project_id  → which project
+ *   • lykn_projects                                  → header
+ *   • lykn_project_state (superseded_at IS NULL)     → kv state
+ *   • lykn_project_neurons (migration 063, optional) → cluster members
+ *
+ * Returns:
+ *   null
+ *   | {
+ *       project:  { id, name, description, status, created_by_client, last_active_at },
+ *       state:    { [state_key]: { value, set_by_client, set_at } },
+ *       state:    { [state_key]: { value, set_by_client, set_at } },
+ *       neurons:  [{ node_id, label, kind }],
+ *       recentActivity: [{ state_key, value, set_by_client, set_at }],
+ *     }
+ */
+export async function loadActiveProjectContext(client, userId) {
+  if (!client || !userId) return null;
+  try {
+    const { data: profile } = await client
+      .from('lykn_user_synthesis_profile')
+      .select('active_project_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    const projectId = profile?.active_project_id;
+    if (!projectId) return null;
+    return loadProjectContextById(client, userId, projectId);
   } catch (err) {
     console.warn('[beliefSystem] active project load failed:', err?.message || err);
     return null;
@@ -1348,7 +1523,7 @@ export async function loadOtherProjectsForUser(client, userId, opts = {}) {
   try {
     let q = client
       .from('lykn_projects')
-      .select('id, name, description, last_active_at')
+      .select('id, name, description, last_active_at, parent_project_id')
       .eq('user_id', userId)
       .eq('status', 'active')
       .order('last_active_at', { ascending: false })
@@ -1364,6 +1539,8 @@ export async function loadOtherProjectsForUser(client, userId, opts = {}) {
       .filter((r) => r && r.id !== excludeId)
       .slice(0, limit);
     if (filtered.length === 0) return [];
+
+    const nameById = new Map((rows || []).map((r) => [r.id, r.name]));
 
     // Tally state_key_count per candidate so the model can tell at a
     // glance which "other" projects have working memory accumulated
@@ -1390,6 +1567,9 @@ export async function loadOtherProjectsForUser(client, userId, opts = {}) {
       description: r.description,
       last_active_at: r.last_active_at,
       state_key_count: counts.get(r.id) || 0,
+      parent_project_id: r.parent_project_id || null,
+      is_branch: Boolean(r.parent_project_id),
+      main_project_name: r.parent_project_id ? (nameById.get(r.parent_project_id) || null) : null,
     }));
   } catch (err) {
     console.warn('[beliefSystem] other projects load threw:', err?.message || err);

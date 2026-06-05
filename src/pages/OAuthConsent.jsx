@@ -291,7 +291,7 @@ function labelForScope(scope) {
     case "lykn:read":
       return "Read your beliefs, rules, facts, vault, and active project state.";
     case "lykn:write":
-      return "Propose new beliefs/facts and push project state on your behalf.";
+      return "Propose new facts and push project state on your behalf. Beliefs are user-authored only.";
     case "offline_access":
       return "Stay connected after this session ends (refresh tokens — no re-prompt).";
     default:

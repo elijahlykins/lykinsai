@@ -107,6 +107,7 @@ const MODEL_PRICING = {
 const FIXED_COSTS = {
   image_gen_grok:    0.04,
   image_gen_dalle:   0.04,
+  image_gen_google:  0.039,
   video_gen_grok:    0.10,
   image_edit_gemini: 0.02,
 };
@@ -355,11 +356,15 @@ async function logAiUsage({
 
   // Update session totals in the background (only for logged-in users with sessions)
   if (sessionId) {
-    updateSessionTotals(sessionId, {
-      cost: costUsd,
-      tokens: totalTokens,
-      credits: creditsUsed,
-    }).catch(() => {});
+    try {
+      updateSessionTotals(sessionId, {
+        cost: costUsd,
+        tokens: totalTokens,
+        credits: creditsUsed,
+      });
+    } catch {
+      /* ignore */
+    }
   }
 
   const who = userId ? `uid=${String(userId).slice(0, 8)}` : `guest=${String(guestSessionId || '').slice(0, 8)}`;

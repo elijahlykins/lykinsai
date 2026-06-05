@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  Blocks,
   Brain,
   Bug,
   CreditCard,
@@ -153,6 +154,16 @@ export default function MobileTabBar() {
                     flushAndNavigate(nav, "/connections");
                   }}
                 />
+                {user ? (
+                  <MoreItem
+                    icon={Blocks}
+                    label="Model builder"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      flushAndNavigate(nav, "/builder");
+                    }}
+                  />
+                ) : null}
                 <MoreItem
                   icon={SettingsIcon}
                   label="Settings"

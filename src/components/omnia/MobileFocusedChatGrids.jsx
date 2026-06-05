@@ -14,6 +14,8 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { toUserFacingError } from "@/lib/ai/userFacingErrors";
+import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
+import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isDemoGridId } from "@/lib/demoGrids";
@@ -81,19 +83,21 @@ export default function MobileFocusedChatGrids() {
     setOpen(false);
     if (!user?.id) return;
     if (location.pathname === `/grid/${id}`) return;
+    addOpenThread(id);
     flushAndNavigate(nav, `/grid/${id}`);
   };
 
-  const createNewGrid = () => {
+  const createNewGrid = async () => {
     if (!user?.id) return;
-    const newId = (typeof crypto !== "undefined" && crypto.randomUUID)
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     setOpen(false);
-    // Navigating to /grid/:id mounts a fresh OmniaGrid. On phone-class
-    // viewports OmniaGrid auto-forces chatMode=true, so the user stays
-    // in focused chat — no extra wiring needed here.
-    flushAndNavigate(nav, `/grid/${newId}`);
+    try {
+      const { boardId } = await createNewChat(user.id);
+      addOpenThread(boardId);
+      invalidateBoardListQueries(queryClient, user.id);
+      flushAndNavigate(nav, `/grid/${boardId}`);
+    } catch {
+      /* ignore */
+    }
   };
 
   const renameGrid = async (boardId, currentTitle) => {

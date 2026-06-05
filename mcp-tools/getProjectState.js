@@ -19,6 +19,7 @@
 // the model's context window.
 
 import { jsonContent, errorContent } from './index.js';
+import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const STATE_LIMIT = 50;
 
@@ -69,46 +70,19 @@ export const getProjectStateTool = {
 
     const includeHistory = Boolean(args?.include_history);
 
-    // Resolve project: explicit > active.
-    let projectId = args?.project_id ? String(args.project_id).trim() : null;
-    if (!projectId) {
-      const { data: profile, error: profileErr } = await ctx.supabaseAdmin
-        .from('lykn_user_synthesis_profile')
-        .select('active_project_id')
-        .eq('user_id', ctx.userId)
-        .maybeSingle();
-      if (profileErr) {
-        return errorContent(`profile lookup failed: ${profileErr.message}`);
-      }
-      projectId = profile?.active_project_id || null;
-    }
+    const explicitId = args?.project_id ? String(args.project_id).trim() : null;
+    const { project, resolvedBy } = await resolveWriteProjectTarget(ctx, explicitId);
 
-    if (!projectId) {
+    if (!project) {
       return jsonContent({
         ok: true,
         project: null,
         state: {},
         message:
-          'No active project. The user hasn\'t set one yet — proceed without project context, or call lykn_setActiveProject if you can name the work from this conversation.',
+          'No writable project in scope. User-created projects live in the LYKN synthesis layer (+ → Create project). Custom-model chats bind to linked_project_id automatically.',
       });
     }
-
-    const { data: project, error: pjErr } = await ctx.supabaseAdmin
-      .from('lykn_projects')
-      .select('id, name, description, status, created_by_client, created_at, last_active_at')
-      .eq('id', projectId)
-      .eq('user_id', ctx.userId)
-      .maybeSingle();
-    if (pjErr) {
-      return errorContent(`project lookup failed: ${pjErr.message}`);
-    }
-    if (!project) {
-      return jsonContent({
-        ok: false,
-        reason: 'project_not_found',
-        message: 'That project_id is not in the user\'s project list.',
-      });
-    }
+    const projectId = project.id;
 
     // Latest non-superseded rows at each state_key. Capped at
     // STATE_LIMIT so a project that grows pathologically doesn't blow

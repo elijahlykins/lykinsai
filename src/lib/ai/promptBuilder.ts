@@ -6,6 +6,8 @@
  * and the Express streaming endpoint (server.js).
  */
 
+import { compressConversation as compressConversationMessages } from "./conversationFormat.js";
+
 export const CONTEXT_BUDGETS = {
   focusedBlocks: 6000,
   nearbyBlocks: 6000,
@@ -23,45 +25,18 @@ export const CONTEXT_BUDGETS = {
  * Compress a conversation array into a formatted string.
  * The most recent `fullCount` messages are kept in full;
  * older messages are summarised to role + first 80 chars.
+ * Optional `model` / `at` on each message label who sent what and when.
  */
 export function compressConversation(
-  messages: Array<{ role: string; content: string }> | undefined | null,
+  messages: Array<{ role: string; content: string; model?: string; aiModel?: string; at?: string; timestamp?: string; createdAt?: string }> | undefined | null,
   opts?: { fullCount?: number; maxChars?: number },
 ): string {
-  if (!Array.isArray(messages) || !messages.length) return "";
-
-  const fullCount = opts?.fullCount ?? 6;
-  const maxChars = opts?.maxChars ?? CONTEXT_BUDGETS.conversation;
-
-  const capped = messages.slice(-20);
-  const splitAt = Math.max(0, capped.length - fullCount);
-  const older = capped.slice(0, splitAt);
-  const recent = capped.slice(splitAt);
-
-  const olderLines = older
-    .map((m) => {
-      const role = String(m?.role || "user").toUpperCase();
-      const snippet = String(m?.content || "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 80);
-      return snippet ? `${role}: ${snippet}…` : "";
-    })
-    .filter(Boolean);
-
-  const recentLines = recent
-    .map((m) => {
-      const role = String(m?.role || "user").toUpperCase();
-      const content = String(m?.content || "").trim();
-      if (!content) return "";
-      const truncated =
-        content.length > 2000 ? `${content.slice(0, 2000)}…` : content;
-      return `${role}: ${truncated}`;
-    })
-    .filter(Boolean);
-
-  const joined = [...olderLines, ...recentLines].join("\n");
-  return joined.length > maxChars ? `${joined.slice(0, maxChars)}…` : joined;
+  return compressConversationMessages(messages, {
+    fullCount: opts?.fullCount ?? 6,
+    maxChars: opts?.maxChars ?? CONTEXT_BUDGETS.conversation,
+    recentMessageMax: 2000,
+    olderSnippetMax: 80,
+  });
 }
 
 export type BuildPromptInput = {

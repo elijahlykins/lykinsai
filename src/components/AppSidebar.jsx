@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Bot,
+  Blocks,
   Brain,
   ChevronLeft,
   ChevronRight,
@@ -13,7 +13,6 @@ import {
   MessageCircle,
   MoreHorizontal,
   Plug,
-  Plus,
   SquarePen,
   Search as SearchIcon,
   Settings as SettingsIcon,
@@ -21,11 +20,15 @@ import {
 } from "lucide-react";
 import FeedbackModal from "@/components/FeedbackModal";
 import { supabase } from "@/lib/supabase";
-import { fetchBoardsWithContext, invalidateBoardListQueries, mergeActiveRouteBoard } from "@/lib/board/fetchBoardsWithContext";
+import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
+import { createNewChat } from "@/lib/chat/chatThreadsClient";
+import ChatThreadSidebarGroups from "@/components/chat/ChatThreadSidebarGroups";
+import { fetchBoardsWithContext, invalidateBoardListQueries } from "@/lib/board/fetchBoardsWithContext";
+import { fetchPublishedCustomModels } from "@/lib/modelBuilder/customModelsClient";
+import ChatModelFilterSelect from "@/components/chat/ChatModelFilterSelect";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import SignInPill from "@/components/SignInPill";
-import { isAgentStudioEnabled } from "@/lib/agentStudioDev";
 
 export default function AppSidebar({
   controlledOpen,
@@ -52,10 +55,16 @@ export default function AppSidebar({
     setTimeout(() => nav(path), 80);
   };
 
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
     if (!user?.id) return;
-    const newId = crypto.randomUUID();
-    goTo(`/grid/${newId}`);
+    try {
+      const { boardId } = await createNewChat(user.id);
+      addOpenThread(boardId);
+      invalidateBoardListQueries(queryClient, user.id);
+      goTo(`/grid/${boardId}`);
+    } catch {
+      /* ignore */
+    }
   };
 
   const [internalOpen, setInternalOpen] = useState(false);
@@ -76,6 +85,7 @@ export default function AppSidebar({
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
   const [searchQuery, setSearchQuery] = useState("");
+  const [modelFilter, setModelFilter] = useState("all");
   const menuRef = useRef(null);
 
   const { data: boards = [] } = useQuery({
@@ -87,21 +97,28 @@ export default function AppSidebar({
     enabled: !!user?.id,
   });
 
-  // Filter chats by the sidebar search input. Case-insensitive match
-  // against the board title; empty query passes everything through.
-  const normalizedQuery = searchQuery.trim().toLowerCase();
-  const visibleBoards = mergeActiveRouteBoard(boards, location.pathname);
-  const filteredBoards = normalizedQuery
-    ? visibleBoards.filter((b) =>
-        (b.title || "New Chat").toLowerCase().includes(normalizedQuery),
-      )
-    : visibleBoards;
+  const { data: customModels = [] } = useQuery({
+    queryKey: ["published-custom-models", user?.id],
+    queryFn: async () => {
+      if (!user?.id) return [];
+      return fetchPublishedCustomModels();
+    },
+    enabled: !!user?.id,
+  });
+
+  // Sidebar search — passed to thread groups
+  const normalizedQuery = searchQuery.trim();
 
   useEffect(() => {
     const onBoardsChanged = () => invalidateBoardListQueries(queryClient, user?.id);
+    const onModelsChanged = () => {
+      queryClient.invalidateQueries({ queryKey: ["published-custom-models", user?.id] });
+    };
     window.addEventListener("lykinsai_boards_changed", onBoardsChanged);
+    window.addEventListener("lykn_custom_models_changed", onModelsChanged);
     return () => {
       window.removeEventListener("lykinsai_boards_changed", onBoardsChanged);
+      window.removeEventListener("lykn_custom_models_changed", onModelsChanged);
     };
   }, [queryClient, user?.id]);
 
@@ -213,14 +230,26 @@ export default function AppSidebar({
             <button
               type="button"
               onClick={() => goTo("/app")}
-              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
+                location.pathname === "/app" || location.pathname.startsWith("/grid/") ? "bg-blue-500/10" : ""
+              }`}
             >
               <MessageCircle className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
               Chat
             </button>
+            <button
+              type="button"
+              onClick={() => goTo("/vault")}
+              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
+                location.pathname === "/vault" || location.pathname.startsWith("/vault/") ? "bg-blue-500/10" : ""
+              }`}
+            >
+              <Plug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              Vault
+            </button>
           </div>
 
-          <div className="flex flex-col gap-0.5 mt-0.5">
+          <div className="flex flex-col gap-0.5 mt-1.5 pt-1.5 border-t border-black/5 dark:border-white/5">
             <button
               type="button"
               onClick={(e) => {
@@ -248,27 +277,16 @@ export default function AppSidebar({
               />
               <span className="flex-1">Synthesis Layer</span>
             </button>
-            <button
-              type="button"
-              onClick={() => goTo("/vault")}
-              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-            >
-              <Plug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-              Connections
-            </button>
-            {isAgentStudioEnabled && user ? (
+            {user ? (
               <button
                 type="button"
-                onClick={() => goTo("/agents")}
+                onClick={() => goTo("/builder")}
                 className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
-                  location.pathname === "/agents" ? "bg-blue-500/10" : ""
+                  location.pathname === "/builder" ? "bg-blue-500/10" : ""
                 }`}
               >
-                <Bot className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-                <span className="flex-1">Agents</span>
-                <span className="text-[0.5625rem] uppercase tracking-wide text-violet-500/80 dark:text-violet-300/80">
-                  Dev
-                </span>
+                <Blocks className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+                <span className="flex-1">Model builder</span>
               </button>
             ) : null}
           </div>
@@ -279,60 +297,26 @@ export default function AppSidebar({
           <div className="flex-shrink-0 flex items-center justify-between px-2 py-0.5">
             <span className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/50 dark:text-white/50">Chats</span>
           </div>
-          <div className="flex-shrink-0">
-            <button
-              type="button"
-              onClick={handleNewChat}
-              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 text-black/60 dark:text-white/60"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add New Chat
-            </button>
-          </div>
+          {user?.id ? (
+            <ChatModelFilterSelect
+              customModels={customModels}
+              value={modelFilter}
+              onChange={setModelFilter}
+            />
+          ) : null}
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
-            <div className="flex flex-col gap-0.5">
-              {!user?.id ? (
-                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No chats yet</div>
-              ) : boards.length === 0 ? (
-                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No chats yet</div>
-              ) : filteredBoards.length === 0 ? (
-                <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">No matches</div>
-              ) : (
-                filteredBoards.map((board) => {
-                  const isActive = location.pathname === `/grid/${board.id}`;
-                  return (
-                    <div key={board.id} className="group relative flex items-center">
-                      <button
-                        type="button"
-                        onClick={() => goTo(`/grid/${board.id}`)}
-                        className={`flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1 rounded-md flex items-center gap-2 transition-colors ${
-                          isActive ? "bg-blue-500/15" : "hover:bg-blue-500/15"
-                        }`}
-                      >
-                        <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30"}`} />
-                        <span className="truncate">{board.title || "New Chat"}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (menuBoardId === board.id) {
-                            setMenuBoardId(null);
-                          } else {
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            setMenuPos({ top: rect.bottom + 4, left: rect.right });
-                            setMenuBoardId(board.id);
-                          }
-                        }}
-                        className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
-                      >
-                        <MoreHorizontal className="w-3 h-3 text-black/50 dark:text-white/50" />
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+            <ChatThreadSidebarGroups
+              userId={user?.id}
+              modelFilter={modelFilter}
+              searchQuery={normalizedQuery}
+              onOpenChat={(boardId) => {
+                addOpenThread(boardId);
+                goTo(`/grid/${boardId}`);
+              }}
+              menuBoardId={menuBoardId}
+              onMenuBoardId={setMenuBoardId}
+              onMenuPos={setMenuPos}
+            />
           </div>
         </div>
 

@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Atom,
   BookOpen,
@@ -25,6 +25,10 @@ import {
   type ProjectMergePreview,
   type UserProject,
 } from "@/lib/userProjects";
+import {
+  PROJECTS_CHANGED_EVENT,
+  type ProjectsChangedDetail,
+} from "@/lib/synthesis/projectLiveSync";
 
 /**
  * ProjectPanel — the right-side detail surface that opens when the
@@ -139,6 +143,7 @@ export default function ProjectPanel({
   allProjects = [],
   onMergeComplete,
 }: ProjectPanelProps) {
+  const queryClient = useQueryClient();
   // Local merge state. We deliberately keep ALL of this inside the
   // panel rather than lifting it to the page: the picker, the dry-run
   // preview, the inflight flag, and any error messaging are entirely
@@ -225,8 +230,27 @@ export default function ProjectPanel({
     queryKey: ["lykn_project_state", userId || "guest", project?.id || "none"],
     queryFn: () => listProjectStateUpdates(userId, project?.id || ""),
     enabled: open && !!project?.id && !!userId,
-    staleTime: 30 * 1000,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: open ? 15_000 : false,
   });
+
+  useEffect(() => {
+    if (!open || !project?.id || !userId) return;
+    const onProjectsChanged = (evt: Event) => {
+      const detail = (evt as CustomEvent<ProjectsChangedDetail>).detail;
+      if (detail?.userId && detail.userId !== userId) return;
+    if (detail?.projectId && detail.projectId !== project.id) return;
+      queryClient.invalidateQueries({
+        queryKey: ["lykn_project_state", userId || "guest", project.id],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["lykn_projects", userId],
+      });
+    };
+    window.addEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
+    return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
+  }, [open, project?.id, userId, queryClient]);
 
   const sortedMembers = useMemo(() => {
     if (!project) return [];
@@ -313,6 +337,14 @@ export default function ProjectPanel({
               </div>
               <div>
                 <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                  AI pushes
+                </p>
+                <p className="text-[0.75rem] text-white/75">
+                  {project.pushCount || 0}
+                </p>
+              </div>
+              <div>
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
                   Members
                 </p>
                 <p className="text-[0.75rem] text-white/75">
@@ -333,10 +365,10 @@ export default function ProjectPanel({
                 </div>
               ) : updates.length === 0 ? (
                 <p className="text-[0.7rem] text-white/40 leading-relaxed">
-                  No updates yet. When Claude, Cursor, or any
-                  connected AI client makes a decision about this
-                  project they'll push an update here through MCP
-                  and you'll see it land.
+                  No updates yet. When a model in LYKN chat, Claude, Cursor,
+                  or any connected client records a decision about this
+                  project, it lands here — working memory the whole brain
+                  can read back.
                 </p>
               ) : (
                 <div className="space-y-2">

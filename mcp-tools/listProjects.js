@@ -60,8 +60,9 @@ export const listProjectsTool = {
     '"archived" or "all" only when the user explicitly asks to resume',
     'older work.',
     '',
-    'If the right project genuinely doesn\'t exist yet, call',
-    'lykn_setActiveProject with `name` AND `create: true` to create it.',
+    'If the right project genuinely doesn\'t exist yet, ask the user to create',
+    'a main project or branch in the LYKN synthesis layer (+ → Create project).',
+    'AI agents cannot create projects — only read and update them.',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -101,8 +102,9 @@ export const listProjectsTool = {
 
     let q = ctx.supabaseAdmin
       .from('lykn_projects')
-      .select('id, name, description, status, created_by_client, created_at, last_active_at')
+      .select('id, name, description, status, created_by_client, created_by, parent_project_id, created_at, last_active_at')
       .eq('user_id', ctx.userId)
+      .eq('created_by', 'user')
       .order('last_active_at', { ascending: false })
       .limit(limit);
 
@@ -200,14 +202,22 @@ export const listProjectsTool = {
 
     const projects = (rows || []).map((row) => {
       const neurons = neuronsByProject.get(row.id) || [];
+      const parent = row.parent_project_id
+        ? (rows || []).find((r) => r.id === row.parent_project_id)
+        : null;
       return {
         id: row.id,
         name: row.name,
         description: row.description,
         status: row.status,
+        created_by: row.created_by || 'user',
         created_by_client: row.created_by_client,
         created_at: row.created_at,
         last_active_at: row.last_active_at,
+        parent_project_id: row.parent_project_id || null,
+        is_branch: Boolean(row.parent_project_id),
+        main_project_id: row.parent_project_id || row.id,
+        main_project_name: parent?.name || null,
         // `is_focus` (renamed from the previous `is_active`) means
         // "this is the project lykn_getContextBlock auto-injects."
         // The old field name collided with `status: 'active'` and
@@ -239,7 +249,7 @@ export const listProjectsTool = {
       message: projects.length
         ? null
         : status === 'active'
-          ? 'No active projects yet. The user hasn\'t started anything the synthesis layer is tracking — call lykn_setActiveProject with a name AND create: true once you can name this conversation\'s work.'
+          ? 'No active projects yet. Ask the user to create a main project in the LYKN synthesis layer (+ → Create project). AI agents cannot create projects.'
           : 'No projects matched that filter.',
     });
   },
