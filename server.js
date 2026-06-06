@@ -13640,10 +13640,17 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
 // the ability to read + update project state and save to the vault by voice.
 // Each maps to an existing, auth-gated server capability in
 // POST /api/ai/realtime/tool (the dispatch endpoint below).
-const LYKN_REALTIME_TOOLS = [
+// Single source of truth for the voice tool surface. Each def carries an
+// optional `mcp` name; the dispatch endpoint runs that MCP tool with the args
+// passed straight through (search_vault / get_project_state are special-cased
+// to reuse the same grounded fetchers the text chat uses). Adding a tool here
+// + to the ElevenLabs agent (client tools) is all it takes to widen voice's
+// reach into the synthesis layer.
+const LYKN_VOICE_TOOL_DEFS = [
+  // ── Vault / retrieval ────────────────────────────────────────────────
   {
-    type: 'function',
     name: 'search_vault',
+    special: 'search_vault',
     description:
       "Semantic search across the user's LYKN vault and synthesis layer (notes, saved articles, " +
       'connected-source content like Notion/Gmail/Slack, and embedded knowledge). Call this WHENEVER ' +
@@ -13652,32 +13659,126 @@ const LYKN_REALTIME_TOOLS = [
       'Returns matched snippets you should ground your spoken answer in.',
     parameters: {
       type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'What to look for, phrased as a search query (a topic or question).',
-        },
-      },
+      properties: { query: { type: 'string', description: 'What to look for, phrased as a search query (a topic or question).' } },
       required: ['query'],
     },
   },
   {
-    type: 'function',
+    name: 'find_connections',
+    mcp: 'lykn_findConnections',
+    description:
+      "Cross-store related-neuron search: given a topic, return the closest related items from EVERY part " +
+      "of the synthesis layer at once — beliefs, facts, concepts, and vault notes — so you can answer " +
+      '"what do I already think/know about X?". Use when the user wants a broad pull across their whole ' +
+      'knowledge base rather than just saved notes (use search_vault for note/document content specifically).',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'The topic to map onto the user\'s knowledge (e.g. "design tooling", "Q1 plans").' } },
+      required: ['query'],
+    },
+  },
+  // ── Identity: beliefs, rules, facts ──────────────────────────────────
+  {
+    name: 'get_beliefs',
+    mcp: 'lykn_getBeliefs',
+    description:
+      "Read the user's ratified core beliefs — the durable principles/values they authored that should " +
+      'shape how you respond. Call when the user asks "what do you know about how I think", when a ' +
+      'decision hinges on their values, or to ground your tone/recommendations in who they are.',
+    parameters: { type: 'object', properties: { limit: { type: 'integer', description: 'Optional max number of beliefs (default server-side).' } }, required: [] },
+  },
+  {
+    name: 'get_rules',
+    mcp: 'lykn_getRules',
+    description:
+      "Read the user's active IF-THEN rules — concrete behaviours they ratified for how an AI should act " +
+      'toward them. Call early so you can follow a rule when the conversation matches its trigger.',
+    parameters: { type: 'object', properties: { limit: { type: 'integer', description: 'Optional max number of rules.' } }, required: [] },
+  },
+  {
+    name: 'get_facts',
+    mcp: 'lykn_getFacts',
+    description:
+      "Read atomic identity facts about the user (\"works as a designer\", \"building a spatial AI workspace\", " +
+      '"prefers terse replies"). Use for recall questions ("what do you know about me?") or when their ' +
+      'stated preferences matter for a choice. Pass an optional query to filter.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Optional free-text filter against the facts.' },
+        kind: { type: 'string', description: 'Optional fact kind: identity, focus, theme, preference, constraint, goal.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'propose_fact',
+    mcp: 'lykn_proposeFact',
+    description:
+      'Record a NEW atomic fact you just learned about the user — short, third-person, durable ("works at ' +
+      'Acme", "is exploring spatial UIs"). Call when the user discloses something concrete about their ' +
+      'identity, focus, preferences, constraints, or goals. NOT for transient state, NOT for beliefs ' +
+      '(beliefs are user-authored only). Confirm out loud that you noted it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The fact, third-person, <=240 chars.' },
+        kind: { type: 'string', description: 'Optional: identity, focus, theme, preference, constraint, goal (default identity).' },
+        reason: { type: 'string', description: 'Optional one-sentence justification — what the user said that supports it.' },
+      },
+      required: ['text'],
+    },
+  },
+  // ── Projects (working memory) ────────────────────────────────────────
+  {
+    name: 'list_projects',
+    mcp: 'lykn_listProjects',
+    description:
+      "List the user's projects, most-recently-active first. Use to discover what work the synthesis layer " +
+      'is tracking before switching projects, or when the user asks "what am I working on / what projects do I have".',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', description: "Optional filter: 'active' (default), 'archived', or 'all'." },
+        limit: { type: 'integer', description: 'Optional max number of projects.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'get_project_state',
+    special: 'get_project_state',
     description:
       "Read the user's active project and its current working state (decisions, blockers, milestones, " +
-      'tech stack, etc.). Call this when the user asks about "the project", "where we left off", ' +
+      'tech stack, etc.). Call when the user asks about "the project", "where we left off", ' +
       '"what\'s the current status", or before you update project state so you know what already exists.',
     parameters: { type: 'object', properties: {}, required: [] },
   },
   {
-    type: 'function',
+    name: 'set_active_project',
+    mcp: 'lykn_setActiveProject',
+    description:
+      "Switch the user's ACTIVE project (so subsequent reads/writes target it), or create a new one. Call " +
+      'when the user says "switch to project X", "let\'s work on Y", or "start a new project for Z". Prefer ' +
+      'passing an existing project_id from list_projects; pass name + create:true to start a new one.',
+    parameters: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', description: 'Existing project id to resume (preferred when known).' },
+        name: { type: 'string', description: 'Project name to switch to or create.' },
+        create: { type: 'boolean', description: 'Set true to create the project if it does not exist.' },
+        description: { type: 'string', description: 'Optional short description when creating.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'update_project_state',
+    mcp: 'lykn_pushProjectState',
     description:
       "Push a decision, milestone, blocker, or piece of working state into the user's ACTIVE project so " +
-      "their other AI tools see it later (git-style: each push at the same key replaces the prior value). " +
-      'Call this when the conversation produces something durable worth recording — e.g. the user says ' +
-      '"the new blocker is…", "we decided to…", "next milestone is…". Confirm out loud what you recorded.',
+      'their other AI tools see it later (git-style: each push at the same key replaces the prior value). ' +
+      'Call when the conversation produces something durable worth recording. Confirm out loud what you recorded.',
     parameters: {
       type: 'object',
       properties: {
@@ -13687,24 +13788,36 @@ const LYKN_REALTIME_TOOLS = [
             'Stable slug key (lowercase letters/digits/underscores). Reuse across pushes. Suggested: ' +
             'current_blocker, next_milestone, recent_decisions, tech_stack, architecture, open_questions, scope, progress_summary.',
         },
-        state_value: {
-          type: 'string',
-          description: 'The current value at this key (concise; <=2000 chars). Replaces any prior value at the same key.',
-        },
-        reason: {
-          type: 'string',
-          description: 'Optional one-sentence justification for why this is worth recording.',
-        },
+        state_value: { type: 'string', description: 'The current value at this key (concise; <=2000 chars). Replaces any prior value at the same key.' },
+        reason: { type: 'string', description: 'Optional one-sentence justification.' },
       },
       required: ['state_key', 'state_value'],
     },
   },
+  // ── Activity feed ────────────────────────────────────────────────────
   {
-    type: 'function',
+    name: 'get_recent_activity',
+    mcp: 'lykn_getRecentActivity',
+    description:
+      'Get a reverse-chronological feed of what changed recently across the WHOLE synthesis layer — ' +
+      'beliefs, facts, concepts, vault notes, projects, and links. Use to answer "what have I been up to ' +
+      'lately / what changed this week" or to reorient at the start of a session.',
+    parameters: {
+      type: 'object',
+      properties: {
+        days: { type: 'integer', description: 'Look-back window in days (default 7, max 90).' },
+        kind: { type: 'string', description: 'Optional filter: belief, fact, concept, vault, project, or link.' },
+      },
+      required: [],
+    },
+  },
+  // ── Vault writes ─────────────────────────────────────────────────────
+  {
     name: 'save_to_vault',
+    mcp: 'lykn_createVaultNote',
     description:
       "Save a note into the user's LYKN vault (their long-term memory) — a summary, idea, draft, or " +
-      "snippet worth keeping past this conversation. ONLY call this after the user clearly asks you to " +
+      'snippet worth keeping past this conversation. ONLY call after the user clearly asks you to ' +
       'save / capture / "put this in my vault" / "remember this". Never save silently.',
     parameters: {
       type: 'object',
@@ -13716,6 +13829,19 @@ const LYKN_REALTIME_TOOLS = [
     },
   },
 ];
+
+// Map of voice tool name → MCP tool name, for the generic dispatch path.
+const LYKN_VOICE_TOOL_MCP = Object.freeze(
+  Object.fromEntries(LYKN_VOICE_TOOL_DEFS.filter((t) => t.mcp).map((t) => [t.name, t.mcp])),
+);
+
+// Shape consumed by the OpenAI Realtime session config.
+const LYKN_REALTIME_TOOLS = LYKN_VOICE_TOOL_DEFS.map((t) => ({
+  type: 'function',
+  name: t.name,
+  description: t.description,
+  parameters: t.parameters,
+}));
 
 /**
  * Build the user's synthesis-layer grounding (beliefs + if-then rules +
@@ -13851,50 +13977,46 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
       return { ok: !result?.isError };
     };
 
-    switch (name) {
-      case 'search_vault': {
-        const query = String(args.query || '').trim();
-        if (!query) return res.json({ ok: false, error: 'query is required.' });
-        // Prefer semantic synthesis retrieval (spans embedded chunks +
-        // connected sources); fall back to substring vault search.
-        const block = await fetchSynthesisRetrievalSection(authHeader, query, userId);
-        if (block && block.trim()) {
-          return res.json({ ok: true, results: block.slice(0, 6000) });
-        }
-        const fb = await runMcp('lykn_searchVault', { query, limit: 6 });
-        const hits = Array.isArray(fb?.hits) ? fb.hits : [];
-        if (hits.length) {
-          const lines = hits.slice(0, 6).map((h, i) =>
-            `${i + 1}. ${h.title || '(untitled)'}: ${String(h.snippet || '').replace(/\s+/g, ' ').slice(0, 300)}`);
-          return res.json({ ok: true, results: lines.join('\n') });
-        }
-        return res.json({ ok: true, results: 'No matching items found in the vault or synthesis layer for that query.' });
+    // Two tools reuse the same grounded fetchers the text chat uses (semantic
+    // retrieval + formatted project section). Everything else is a thin
+    // pass-through to the matching MCP tool handler.
+    if (name === 'search_vault') {
+      const query = String(args.query || '').trim();
+      if (!query) return res.json({ ok: false, error: 'query is required.' });
+      // Prefer semantic synthesis retrieval (spans embedded chunks +
+      // connected sources); fall back to substring vault search.
+      const block = await fetchSynthesisRetrievalSection(authHeader, query, userId);
+      if (block && block.trim()) {
+        return res.json({ ok: true, results: block.slice(0, 6000) });
       }
-      case 'get_project_state': {
-        const text = await fetchProjectSection(authHeader, userId);
-        return res.json({
-          ok: true,
-          project_state: text && text.trim() ? text.slice(0, 6000) : 'No active project is set, or it has no recorded state yet.',
-        });
+      const fb = await runMcp('lykn_searchVault', { query, limit: 6 });
+      const hits = Array.isArray(fb?.hits) ? fb.hits : [];
+      if (hits.length) {
+        const lines = hits.slice(0, 6).map((h, i) =>
+          `${i + 1}. ${h.title || '(untitled)'}: ${String(h.snippet || '').replace(/\s+/g, ' ').slice(0, 300)}`);
+        return res.json({ ok: true, results: lines.join('\n') });
       }
-      case 'update_project_state': {
-        const out = await runMcp('lykn_pushProjectState', {
-          state_key: args.state_key,
-          state_value: args.state_value,
-          reason: args.reason,
-        });
-        return res.json(out);
-      }
-      case 'save_to_vault': {
-        const out = await runMcp('lykn_createVaultNote', {
-          title: args.title,
-          content: args.content,
-        });
-        return res.json(out);
-      }
-      default:
-        return res.status(404).json({ ok: false, error: 'unknown_tool' });
+      return res.json({ ok: true, results: 'No matching items found in the vault or synthesis layer for that query.' });
     }
+
+    if (name === 'get_project_state') {
+      const text = await fetchProjectSection(authHeader, userId);
+      return res.json({
+        ok: true,
+        project_state: text && text.trim() ? text.slice(0, 6000) : 'No active project is set, or it has no recorded state yet.',
+      });
+    }
+
+    // Generic synthesis-layer tools → run the mapped MCP handler with the
+    // model-provided args passed straight through (each handler validates +
+    // applies its own defaults / write-scope).
+    const mcpName = LYKN_VOICE_TOOL_MCP[name];
+    if (mcpName) {
+      const out = await runMcp(mcpName, args);
+      return res.json(out);
+    }
+
+    return res.status(404).json({ ok: false, error: 'unknown_tool' });
   } catch (e) {
     console.error('❌ /api/ai/realtime/tool:', e?.message || e);
     return res.status(500).json({ ok: false, error: 'tool_failed' });

@@ -91,17 +91,76 @@ const clientTool = (name, description, properties, required) => ({
   parameters: { type: 'object', properties, required: required || [] },
 });
 
+// Full synthesis-layer surface. Names + params MUST match LYKN_VOICE_TOOL_DEFS
+// in server.js and TOOL_NAMES in OmniaVoiceModeEleven.tsx.
 const tools = [
   clientTool(
     'search_vault',
-    "Semantic search across the user's LYKN vault and synthesis layer. Use when the user asks about anything they saved, wrote, or might know.",
+    "Semantic search across the user's LYKN vault and synthesis layer (notes, saved articles, connected sources). Use when the user asks about anything they saved, wrote, or might know.",
     { query: { type: 'string', description: 'A topic or question to look up.' } },
     ['query'],
+  ),
+  clientTool(
+    'find_connections',
+    "Cross-store search across the WHOLE synthesis layer (beliefs, facts, concepts, vault notes) for a topic. Use for 'what do I already think/know about X?'.",
+    { query: { type: 'string', description: 'The topic to map onto the user\'s knowledge.' } },
+    ['query'],
+  ),
+  clientTool(
+    'get_beliefs',
+    "Read the user's ratified core beliefs — durable principles/values that should shape how you respond.",
+    { limit: { type: 'integer', description: 'Optional max number of beliefs.' } },
+    [],
+  ),
+  clientTool(
+    'get_rules',
+    "Read the user's active IF-THEN rules for how an AI should behave toward them. Follow a rule when the conversation matches its trigger.",
+    { limit: { type: 'integer', description: 'Optional max number of rules.' } },
+    [],
+  ),
+  clientTool(
+    'get_facts',
+    "Read atomic identity facts about the user. Use for recall ('what do you know about me?') or when their preferences matter.",
+    {
+      query: { type: 'string', description: 'Optional free-text filter.' },
+      kind: { type: 'string', description: 'Optional kind: identity, focus, theme, preference, constraint, goal.' },
+    },
+    [],
+  ),
+  clientTool(
+    'propose_fact',
+    "Record a NEW atomic fact you learned about the user (third-person, durable). Not for transient state, not for beliefs.",
+    {
+      text: { type: 'string', description: 'The fact, third-person, <=240 chars.' },
+      kind: { type: 'string', description: 'Optional kind (default identity).' },
+      reason: { type: 'string', description: 'Optional one-sentence justification.' },
+    },
+    ['text'],
+  ),
+  clientTool(
+    'list_projects',
+    "List the user's projects, most-recently-active first. Use to discover work before switching projects.",
+    {
+      status: { type: 'string', description: "Optional: 'active' (default), 'archived', 'all'." },
+      limit: { type: 'integer', description: 'Optional max.' },
+    },
+    [],
   ),
   clientTool(
     'get_project_state',
     "Read the user's active project and its current working state (decisions, blockers, milestones).",
     {},
+    [],
+  ),
+  clientTool(
+    'set_active_project',
+    "Switch the user's active project or create a new one. Prefer an existing project_id; pass name + create:true to start new.",
+    {
+      project_id: { type: 'string', description: 'Existing project id to resume.' },
+      name: { type: 'string', description: 'Project name to switch to or create.' },
+      create: { type: 'boolean', description: 'Create if it does not exist.' },
+      description: { type: 'string', description: 'Optional description when creating.' },
+    },
     [],
   ),
   clientTool(
@@ -113,6 +172,15 @@ const tools = [
       reason: { type: 'string', description: 'Optional one-sentence justification.' },
     },
     ['state_key', 'state_value'],
+  ),
+  clientTool(
+    'get_recent_activity',
+    "Reverse-chronological feed of recent changes across the whole synthesis layer. Use for 'what have I been up to lately?'.",
+    {
+      days: { type: 'integer', description: 'Look-back window in days (default 7, max 90).' },
+      kind: { type: 'string', description: 'Optional: belief, fact, concept, vault, project, link.' },
+    },
+    [],
   ),
   clientTool(
     'save_to_vault',

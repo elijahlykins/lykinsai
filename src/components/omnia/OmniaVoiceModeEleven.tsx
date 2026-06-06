@@ -38,7 +38,23 @@ const STATUS_COPY: Record<VoiceUiState, string> = {
   error: "Something went wrong",
 };
 
-const TOOL_NAMES = ["search_vault", "get_project_state", "update_project_state", "save_to_vault"] as const;
+// Full synthesis-layer surface exposed to the voice agent. Each name must
+// match a tool registered on the ElevenLabs agent and a case the server's
+// /api/ai/realtime/tool dispatch handles.
+const TOOL_NAMES = [
+  "search_vault",
+  "find_connections",
+  "get_beliefs",
+  "get_rules",
+  "get_facts",
+  "propose_fact",
+  "list_projects",
+  "get_project_state",
+  "set_active_project",
+  "update_project_state",
+  "get_recent_activity",
+  "save_to_vault",
+] as const;
 
 async function authHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
