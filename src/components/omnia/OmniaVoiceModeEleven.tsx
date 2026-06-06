@@ -16,6 +16,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { API_BASE_URL } from "@/lib/api-config";
+import { VOICE_FIRST_MESSAGE_OVERRIDE } from "@/lib/voice/voiceConfig";
 import VoiceTechOrb from "./VoiceTechOrb";
 
 type VoiceUiState = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "error";
@@ -167,6 +168,7 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
 
     let signedUrl = "";
     let sessionToken = "";
+    let serverFirstMessage = "";
     try {
       const headers = await authHeaders();
       const res = await fetch(`${API_BASE_URL}/api/ai/elevenlabs/signed-url`, {
@@ -183,6 +185,7 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
       }
       signedUrl = data.signedUrl;
       sessionToken = data.sessionToken || "";
+      serverFirstMessage = typeof data.firstMessage === "string" ? data.firstMessage : "";
     } catch {
       setErrorText("Couldn't reach the voice service.");
       setUiState("error");
@@ -193,15 +196,24 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
     try {
       // The session token rides in the agent prompt so the custom-LLM endpoint
       // can bind this conversation to the LYKN user and inject grounding.
+      //
+      // Opening line precedence (the agent allows the first-message override):
+      //   1. VITE_VOICE_FIRST_MESSAGE env override, when set (incl. "" to mute)
+      //   2. the server's personalised, rotating greeting for this user
+      // If neither yields a line, the agent's baked-in default plays.
+      const firstMessage =
+        VOICE_FIRST_MESSAGE_OVERRIDE !== null ? VOICE_FIRST_MESSAGE_OVERRIDE : serverFirstMessage;
+      const agentOverride: Record<string, unknown> = {};
+      if (sessionToken) agentOverride.prompt = { prompt: `LYKN_SESSION_TOKEN=${sessionToken}` };
+      if (firstMessage) agentOverride.firstMessage = firstMessage;
+      const overrides = Object.keys(agentOverride).length > 0 ? { agent: agentOverride } : undefined;
       await startSession({
         signedUrl,
         // A signed URL only supports the WebSocket transport (WebRTC requires a
         // conversation token instead). Audio still streams directly to
         // ElevenLabs/LiveKit — this only changes the signaling transport.
         connectionType: "websocket",
-        overrides: sessionToken
-          ? { agent: { prompt: { prompt: `LYKN_SESSION_TOKEN=${sessionToken}` } } }
-          : undefined,
+        overrides,
       } as Parameters<typeof startSession>[0]);
     } catch (e: unknown) {
       const msg = (e as { message?: string })?.message || "Couldn't start the voice connection.";

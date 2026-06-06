@@ -48,6 +48,82 @@ const notifiedDowngrades = new Set<string>();
 const autoNamedBoardsSucceeded = new Set<string>();
 const autoNamedBoardsAttempts = new Map<string, number>();
 const AUTO_NAME_MAX_ATTEMPTS = 4;
+
+/**
+ * Auto-name a chat board from a single user→assistant exchange, mirroring
+ * what the regular send path does. Safe to call repeatedly: it self-gates on
+ * the placeholder title, a per-session success cache, and a per-board retry
+ * budget, so callers (regular text sends *and* Voice Mode turns) don't need to
+ * track any of that themselves.
+ *
+ * Fire-and-forget — errors are swallowed; a missed title just leaves the
+ * "New Chat" placeholder in place.
+ */
+export function maybeAutoNameChat(args: {
+  boardId: string | null | undefined;
+  userId: string | null | undefined;
+  currentTitle: string | null | undefined;
+  userMessage: string;
+  assistantReply: string;
+}): void {
+  const namingBoardId = args.boardId ? String(args.boardId) : "";
+  const currentTitle = String(args.currentTitle || "").trim();
+  const titleIsDefault =
+    !currentTitle || currentTitle === "New Chat" || currentTitle === "Untitled board";
+  const userMessage = String(args.userMessage || "").trim();
+  const assistantReply = String(args.assistantReply || "").trim();
+  const prevAttempts = namingBoardId ? autoNamedBoardsAttempts.get(namingBoardId) || 0 : 0;
+  if (
+    !args.userId ||
+    !namingBoardId ||
+    !titleIsDefault ||
+    (!userMessage && !assistantReply) ||
+    autoNamedBoardsSucceeded.has(namingBoardId) ||
+    prevAttempts >= AUTO_NAME_MAX_ATTEMPTS
+  ) {
+    return;
+  }
+  autoNamedBoardsAttempts.set(namingBoardId, prevAttempts + 1);
+  void (async () => {
+    try {
+      const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
+      const res = await fetch(`${apiBase}/api/ai/name-chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          boardId: namingBoardId,
+          userMessage,
+          assistantReply,
+        }),
+      });
+      if (!res.ok) return;
+      const json = await res.json().catch(() => null);
+      // `already_named` (manual rename in another tab, or a previous
+      // auto-name that succeeded but raced our local cache) returns
+      // applied:false but still includes the live title — treat that
+      // as success so we stop retrying and pick up the real title.
+      if (json?.reason === "already_named" && typeof json?.title === "string" && json.title.trim()) {
+        autoNamedBoardsSucceeded.add(namingBoardId);
+        return;
+      }
+      const newTitle = json?.applied && typeof json.title === "string" ? json.title.trim() : "";
+      if (!newTitle) return;
+      autoNamedBoardsSucceeded.add(namingBoardId);
+      // Mirror the manual-rename event contract in MobileFocusedChatGrids
+      // / AppSidebar so OmniaGrid's rename listener picks up the title
+      // (which also syncs `titleRef.current`, preventing the next
+      // autosave from writing the stale local copy back).
+      window.dispatchEvent(
+        new CustomEvent("omnia_board_renamed", {
+          detail: { boardId: namingBoardId, title: newTitle },
+        }),
+      );
+      window.dispatchEvent(new Event("lykinsai_boards_changed"));
+    } catch {
+      // Auto-naming is purely cosmetic — never let a flake bubble up.
+    }
+  })();
+}
 function maybeNotifyModelDowngrade(res: Response | null | undefined) {
   if (!res) return;
   const header = res.headers.get("x-model-downgraded");
@@ -1966,59 +2042,13 @@ async function postProcessResponse(
   //
   // Errors are silent — a missed title just means the chat keeps the
   // "New Chat" placeholder, which is exactly what it shows today.
-  const namingBoardId = identity.routeBoardId || identity.boardId;
-  const currentTitle = String(p.context.titleRef.current || "").trim();
-  const titleIsDefault =
-    !currentTitle || currentTitle === "New Chat" || currentTitle === "Untitled board";
-  const prevAttempts = namingBoardId ? autoNamedBoardsAttempts.get(namingBoardId) || 0 : 0;
-  if (
-    identity.userId &&
-    namingBoardId &&
-    titleIsDefault &&
-    !autoNamedBoardsSucceeded.has(namingBoardId) &&
-    prevAttempts < AUTO_NAME_MAX_ATTEMPTS
-  ) {
-    autoNamedBoardsAttempts.set(namingBoardId, prevAttempts + 1);
-    void (async () => {
-      try {
-        const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
-        const res = await fetch(`${apiBase}/api/ai/name-chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            boardId: namingBoardId,
-            userMessage: cappedText,
-            assistantReply: finalDisplayText,
-          }),
-        });
-        if (!res.ok) return;
-        const json = await res.json().catch(() => null);
-        // `already_named` (manual rename in another tab, or a previous
-        // auto-name that succeeded but raced our local cache) returns
-        // applied:false but still includes the live title — treat that
-        // as success so we stop retrying and pick up the real title.
-        if (json?.reason === "already_named" && typeof json?.title === "string" && json.title.trim()) {
-          autoNamedBoardsSucceeded.add(namingBoardId);
-          return;
-        }
-        const newTitle = json?.applied && typeof json.title === "string" ? json.title.trim() : "";
-        if (!newTitle) return;
-        autoNamedBoardsSucceeded.add(namingBoardId);
-        // Mirror the manual-rename event contract in MobileFocusedChatGrids
-        // / AppSidebar so OmniaGrid's rename listener picks up the title
-        // (which also syncs `titleRef.current`, preventing the next
-        // autosave from writing the stale local copy back).
-        window.dispatchEvent(
-          new CustomEvent("omnia_board_renamed", {
-            detail: { boardId: namingBoardId, title: newTitle },
-          }),
-        );
-        window.dispatchEvent(new Event("lykinsai_boards_changed"));
-      } catch {
-        // Auto-naming is purely cosmetic — never let a flake bubble up.
-      }
-    })();
-  }
+  maybeAutoNameChat({
+    boardId: identity.routeBoardId || identity.boardId,
+    userId: identity.userId,
+    currentTitle: p.context.titleRef.current,
+    userMessage: cappedText,
+    assistantReply: finalDisplayText,
+  });
   if (responseBlockId) {
     const normalized = canvas.normalizeAiTextForBlock(finalDisplayText);
     const curBlk: any = canvas.getCanvasState().blocks?.[responseBlockId];

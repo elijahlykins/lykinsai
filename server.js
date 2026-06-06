@@ -2882,6 +2882,40 @@ function pickUserDisplayName(user) {
   return '';
 }
 
+// ============================================
+// Voice Mode opening line — personalised + rotating
+// --------------------------------------------
+// The first thing LYKN says when a voice session connects. We pick at random
+// from a small pool each session so it never feels scripted, and personalise
+// with the user's first name when we have one. Falls back to name-less
+// variants for anonymous / name-less accounts. Returned by the signed-url
+// endpoint and applied as the ElevenLabs first-message override per session.
+// ============================================
+const VOICE_GREETINGS_NAMED = [
+  'Welcome back, {name}. What do you want to tackle next?',
+  'Hey {name}, good to see you. What\'s on your mind?',
+  'Welcome back, {name}. Where should we pick things up?',
+  'Hi {name}. What are we working on today?',
+  'Good to have you back, {name}. What\'s first?',
+  'Hey {name}. What\'s the most important thing on your plate right now?',
+  'Welcome back, {name}. What are we diving into?',
+];
+const VOICE_GREETINGS_ANON = [
+  'Welcome back. What do you want to tackle next?',
+  'Hey, good to see you. What\'s on your mind?',
+  'Where should we pick things up?',
+  'What are we working on today?',
+  'What\'s first on your plate right now?',
+  'What are we diving into?',
+];
+
+function buildVoiceFirstMessage(user) {
+  const firstName = pickUserDisplayName(user);
+  const pool = firstName ? VOICE_GREETINGS_NAMED : VOICE_GREETINGS_ANON;
+  const pick = pool[Math.floor(Math.random() * pool.length)] || pool[0];
+  return firstName ? pick.replace(/\{name\}/g, firstName) : pick;
+}
+
 function formatUserIdentityBlock({ firstName, projects }) {
   const lines = [];
   if (firstName) lines.push(`First name: ${firstName}`);
@@ -14119,7 +14153,9 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, aiLimiter, checkAiUsageLi
       });
     }).catch(() => {});
 
-    return res.json({ signedUrl, sessionToken });
+    const firstMessage = buildVoiceFirstMessage(req.user);
+
+    return res.json({ signedUrl, sessionToken, firstMessage });
   } catch (error) {
     return res.status(500).json({ error: `ElevenLabs signed URL failed: ${error?.message || 'Unknown error'}` });
   }

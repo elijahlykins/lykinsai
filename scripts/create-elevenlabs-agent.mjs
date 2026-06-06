@@ -33,6 +33,10 @@ const llmModel = process.env.ELEVENLABS_LLM_MODEL || 'gpt-4o';
 // Default male voice — "Adam" is a long-standing, widely available ElevenLabs
 // voice id. Override with ELEVENLABS_VOICE_ID once you've browsed the library.
 const voiceId = process.env.ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB';
+// The agent's default opening line. The client also overrides this per session
+// (VITE_VOICE_FIRST_MESSAGE) so it can change without re-provisioning, but we
+// keep the baked-in default in sync via VOICE_FIRST_MESSAGE here.
+const firstMessage = process.env.VOICE_FIRST_MESSAGE || "Hey, I'm here. What's on your mind?";
 
 function die(msg) { console.error(`\n❌ ${msg}\n`); process.exit(1); }
 
@@ -205,7 +209,7 @@ const body = {
   name: 'LYKN Voice',
   conversation_config: {
     agent: {
-      first_message: 'Hey, I\'m here. What\'s on your mind?',
+      first_message: firstMessage,
       language: 'en',
       prompt: {
         prompt: basePrompt,

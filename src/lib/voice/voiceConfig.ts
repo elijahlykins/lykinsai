@@ -18,3 +18,23 @@ export const VOICE_PROVIDER: VoiceProvider =
     : "openai";
 
 export const isElevenLabsVoice = VOICE_PROVIDER === "elevenlabs";
+
+/**
+ * The line LYKN speaks first when a voice session connects.
+ *
+ * By default the SERVER builds a personalised, rotating greeting per session
+ * ("Welcome back, {name}. What do you want to tackle next?" etc.) and returns
+ * it from the signed-url endpoint. The client uses that automatically.
+ *
+ * `VITE_VOICE_FIRST_MESSAGE` is a manual escape hatch: set it to pin a fixed
+ * greeting (no agent re-provision needed — the agent permits a per-session
+ * first-message override), or set it to an empty string to suppress the spoken
+ * greeting entirely and let the user speak first. When unset, the server's
+ * personalised greeting wins.
+ */
+export const VOICE_FIRST_MESSAGE_OVERRIDE: string | null = (() => {
+  const raw = import.meta.env.VITE_VOICE_FIRST_MESSAGE as string | undefined;
+  // Undefined → no override (defer to the server's personalised greeting).
+  // Any explicit value (including "") is a deliberate override.
+  return raw === undefined ? null : String(raw);
+})();

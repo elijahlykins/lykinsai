@@ -32,6 +32,7 @@ import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { buildTieredCanvasContext, buildActionCanvasContext } from "@/lib/ai/buildCanvasContext";
+import { maybeAutoNameChat } from "@/lib/ai/chatSendOrchestrator";
 import { getVaultSidebarWidth, useIsTouchOnlyDevice, getIsTouchOnlyDevice } from "@/hooks/useViewportTier";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
@@ -2893,6 +2894,7 @@ export default function OmniaGridPage() {
   // live transcript is intentionally NOT shown in the voice UI; this is the
   // single source of truth for what was said.
   const voiceTurnIdRef = useRef<string | null>(null);
+  const lastVoiceUserTextRef = useRef<string>("");
   const newMsgId = useCallback(
     () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `voice-${Date.now().toString(36)}`),
     [],
@@ -2903,6 +2905,7 @@ export default function OmniaGridPage() {
     if (!content) return;
     const id = newMsgId();
     voiceTurnIdRef.current = id;
+    lastVoiceUserTextRef.current = content;
     const msg = { id, role: "user", content, kind: "prompt", viaVoice: true } as unknown as PromptMessage;
     setChatMessages((prev) => [...prev, msg]);
     try { aiThreadRef.current = [...(aiThreadRef.current || []), { role: "user", content }]; } catch { /* ignore */ }
@@ -2924,7 +2927,19 @@ export default function OmniaGridPage() {
     });
     voiceTurnIdRef.current = null;
     try { aiThreadRef.current = [...(aiThreadRef.current || []), { role: "assistant", content: reply }]; } catch { /* ignore */ }
-  }, [newMsgId, setChatMessages, aiThreadRef]);
+    // Auto-name the chat from this voice exchange exactly like a typed turn
+    // would, so voice-only conversations show a real title in history
+    // instead of being stuck on "New Chat".
+    try {
+      maybeAutoNameChat({
+        boardId: routeBoardId || boardId,
+        userId: user?.id,
+        currentTitle: titleRef.current,
+        userMessage: lastVoiceUserTextRef.current,
+        assistantReply: reply,
+      });
+    } catch { /* auto-name is cosmetic */ }
+  }, [newMsgId, setChatMessages, aiThreadRef, routeBoardId, boardId, titleRef, user?.id]);
 
   const chatBarToolbarProps = useMemo(() => ({
     chatInputHasText, isChatLoading, isDictating, isTranscribing,
