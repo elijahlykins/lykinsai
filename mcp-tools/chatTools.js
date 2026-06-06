@@ -25,6 +25,7 @@ import { delegateToSubModelTool } from './delegateToSubModel.js';
 import { listSubModelTasksTool } from './listSubModelTasks.js';
 import { getSubModelTaskTool } from './getSubModelTask.js';
 import { communicateWithModelTool } from './communicateWithModel.js';
+import { saveFileToVaultTool } from './saveFileToVault.js';
 
 const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   ...MCP_TOOLS_BY_NAME,
@@ -33,6 +34,7 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   [listSubModelTasksTool.name]: listSubModelTasksTool,
   [getSubModelTaskTool.name]: getSubModelTaskTool,
   [communicateWithModelTool.name]: communicateWithModelTool,
+  [saveFileToVaultTool.name]: saveFileToVaultTool,
 });
 
 // ---------------------------------------------------------------------------
@@ -87,6 +89,12 @@ export const CHAT_TOOL_NAMES = [
   // ── New-neuron proposals (write into facts / vault — beliefs are user-only) ─
   'lykn_proposeFact',
   'lykn_createVaultNote',
+  // Keep a GENERATED artifact (a doc/plan/deck/spreadsheet the model or a
+  // capability tool just produced, or a sub-agent's report) in the vault —
+  // text body becomes the searchable item, an optional generated file is
+  // preserved as a durable reference + download link. Reach for this after
+  // build_template / build_spreadsheet / generate_image / communicate_with_model.
+  'lykn_saveFileToVault',
   // URL-specialised vault save (rich link card, URL dedupe). The agent
   // should reach for this whenever the thing being saved is a link the
   // user pasted/dropped; createVaultNote stays the path for plain text
