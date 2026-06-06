@@ -65,6 +65,10 @@ import { updateUserPreferenceTool } from './updateUserPreference.js';
 import { getRecentActivityTool } from './getRecentActivity.js';
 import { recommendToolsTool } from './recommendTools.js';
 import { saveLinkToVaultTool } from './saveLinkToVault.js';
+import { createReminderTool } from './createReminder.js';
+import { listRemindersTool } from './listReminders.js';
+import { updateReminderTool } from './updateReminder.js';
+import { listCustomModelsTool } from './listCustomModels.js';
 
 export const MCP_TOOLS = [
   // Tier 1 — Core beliefs (governance, ratified)
@@ -102,6 +106,12 @@ export const MCP_TOOLS = [
   createNeuronLinkTool,
   getNeuronLinksTool,
   touchConceptTool,
+  // Reminders — time-anchored prompts the AI sets in text or voice mode
+  createReminderTool,
+  listRemindersTool,
+  updateReminderTool,
+  // Custom models — read the user's Model Builder creations
+  listCustomModelsTool,
   // Preferences & activity feed (server-honoured user policy + cross-store deltas)
   getUserPreferencesTool,
   updateUserPreferenceTool,

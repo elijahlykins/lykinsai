@@ -55,7 +55,15 @@ function snippet(text, query, max = 200) {
 }
 
 function escapeLike(s) {
-  return String(s).replace(/[%_]/g, '\\$&');
+  // Two layers of escaping:
+  //   1. `,` `(` `)` are PostgREST `.or()` logic-tree delimiters. A raw comma
+  //      in the query (e.g. "Greg, Mark models") splits the filter mid-value
+  //      and throws "failed to parse logic tree". Neutralise to spaces so the
+  //      same pattern is safe in both `.or(...)` and single-column `.ilike()`.
+  //   2. `%` `_` are SQL LIKE wildcards — escape so they match literally.
+  return String(s)
+    .replace(/[,()]/g, ' ')
+    .replace(/[%_]/g, '\\$&');
 }
 
 // ---------------------------------------------------------------------------

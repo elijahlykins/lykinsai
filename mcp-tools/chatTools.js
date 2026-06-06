@@ -24,6 +24,7 @@ import { EXTERIOR_TOOLS_BY_NAME } from './exterior/index.js';
 import { delegateToSubModelTool } from './delegateToSubModel.js';
 import { listSubModelTasksTool } from './listSubModelTasks.js';
 import { getSubModelTaskTool } from './getSubModelTask.js';
+import { communicateWithModelTool } from './communicateWithModel.js';
 
 const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   ...MCP_TOOLS_BY_NAME,
@@ -31,6 +32,7 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   [delegateToSubModelTool.name]: delegateToSubModelTool,
   [listSubModelTasksTool.name]: listSubModelTasksTool,
   [getSubModelTaskTool.name]: getSubModelTaskTool,
+  [communicateWithModelTool.name]: communicateWithModelTool,
 });
 
 // ---------------------------------------------------------------------------
@@ -90,6 +92,15 @@ export const CHAT_TOOL_NAMES = [
   // user pasted/dropped; createVaultNote stays the path for plain text
   // / snippet / code-block saves.
   'lykn_saveLinkToVault',
+  // ── Reminders (time-anchored prompts; pull-based surfacing) ──────
+  'lykn_createReminder',
+  'lykn_listReminders',
+  'lykn_updateReminder',
+  // ── Custom models (read the user's Model Builder creations) ──────
+  'lykn_listCustomModels',
+  // Talk to ANY published model (sub-agent), main agent or not — sends a
+  // message and returns the model's report. Always available.
+  'lykn_communicate_with_model',
   // ── Preference write (ASK FIRST — see tool description) ──────────
   'lykn_updateUserPreference',
   // ── Capability-aware routing (read-only catalog lookup) ──────────

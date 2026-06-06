@@ -25,6 +25,7 @@
  */
 
 import dotenv from 'dotenv';
+import { LYKN_VOICE_CLIENT_TOOLS } from './lib/elevenlabsVoiceTools.mjs';
 dotenv.config();
 
 const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -74,6 +75,12 @@ const voiceId = await resolveVoiceId();
 // Build the PATCH body. Always (re)enable the overrides LYKN depends on; only
 // touch the voice when one was resolved.
 // ---------------------------------------------------------------------------
+// Whether to push the code's tool list onto the agent. On by default so the
+// live agent stays in lockstep with scripts/lib/elevenlabsVoiceTools.mjs (PATCH
+// deep-merges, so the array replaces cleanly while custom_llm config is kept).
+// Set SKIP_TOOL_SYNC=1 to leave the agent's tools untouched.
+const syncTools = process.env.SKIP_TOOL_SYNC !== '1';
+
 const body = {
   platform_settings: {
     overrides: {
@@ -88,8 +95,11 @@ const body = {
     },
   },
 };
-if (voiceId) {
-  body.conversation_config = { tts: { voice_id: voiceId } };
+if (voiceId || syncTools) {
+  body.conversation_config = { agent: {} };
+  if (voiceId) body.conversation_config.tts = { voice_id: voiceId };
+  // Only set prompt.tools (PATCH deep-merge preserves prompt.custom_llm etc.).
+  if (syncTools) body.conversation_config.agent.prompt = { tools: LYKN_VOICE_CLIENT_TOOLS };
 }
 
 console.log(`\n→ Updating agent ${agentId}…`);
@@ -116,8 +126,11 @@ const agent = await verifyRes.json().catch(() => ({}));
 const cc = agent?.conversation_config || {};
 const ov = agent?.platform_settings?.overrides?.conversation_config_override || {};
 
+const liveTools = Array.isArray(cc?.agent?.prompt?.tools) ? cc.agent.prompt.tools : [];
+
 console.log('\n✅ Agent updated.');
 console.log(`   Voice id:            ${cc?.tts?.voice_id || '(unchanged / unknown)'}`);
+console.log(`   Tools on agent:      ${syncTools ? `${liveTools.length} synced` : 'left unchanged'}${syncTools && liveTools.length ? ` (${liveTools.map((t) => t.name).join(', ')})` : ''}`);
 console.log(`   first_message override: ${ov?.agent?.first_message === true ? 'ENABLED' : 'NOT enabled'}`);
 console.log(`   prompt override:        ${ov?.agent?.prompt?.prompt === true ? 'ENABLED' : 'NOT enabled'}`);
 console.log(`   voice override:         ${ov?.tts?.voice_id === true ? 'ENABLED' : 'NOT enabled'}`);

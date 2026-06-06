@@ -3763,9 +3763,12 @@ mark {
     align-items: center;
     justify-content: center;
     padding-inline: 0.85rem;
-    padding-top: max(0.5rem, env(safe-area-inset-top, 0px));
-    padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
-    gap: 0.55rem;
+    /* Top: clear the fixed Sign-in pill (top-4, ~2rem tall) so it never
+       overlaps the preview. Bottom: leave room for the pinned
+       "Scroll for more" hint + the bottom nav arrows. */
+    padding-top: calc(3.5rem + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+    gap: 0;
     box-sizing: border-box;
   }
 
@@ -3777,9 +3780,9 @@ mark {
     align-items: center;
     justify-content: center;
     padding-inline: clamp(0.85rem, 4vw, 1.25rem);
-    padding-top: max(0.5rem, env(safe-area-inset-top, 0px));
-    padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
-    gap: 0.4rem;
+    padding-top: calc(3.5rem + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(4.25rem + env(safe-area-inset-bottom, 0px));
+    gap: 0;
     box-sizing: border-box;
   }
 
@@ -3789,11 +3792,15 @@ mark {
   .lykn-wake-product-preview {
     width: 100%;
     max-width: 30rem;
-    height: min(calc(100svh - 8.5rem), 620px);
-    max-height: calc(100svh - 8.5rem);
+    /* Fill the band between the Sign-in pill (top) and the scroll hint +
+       nav arrows (bottom) so the whole preview scales to the screen
+       instead of being clamped to a fixed pixel height. The matching
+       hero padding (3.5rem top + 4.25rem bottom) reserves that chrome. */
+    height: calc(100svh - 7.75rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100svh - 7.75rem);
     aspect-ratio: auto;
     margin-inline: auto;
-    flex-shrink: 1;
+    flex: 0 0 auto;
     align-self: center;
     border-radius: 20px;
     box-shadow:
@@ -3834,12 +3841,13 @@ mark {
   }
 
   .lykn-wake-product-scroll-hint {
-    position: static;
-    left: auto;
-    bottom: auto;
-    transform: none;
+    position: absolute;
+    left: 50%;
+    right: auto;
+    bottom: calc(1.1rem + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
     margin: 0;
-    flex-shrink: 0;
+    z-index: 6;
     font-size: 0.58rem;
     letter-spacing: 0.12em;
     color: rgba(255, 255, 255, 0.42);

@@ -172,6 +172,7 @@ import {
 import { buildMcpHandler, buildMcpStreamHandler, mcpMethodNotAllowed, MCP_DISCOVERY } from './mcp-server.js';
 import { mountOauthServer } from './oauth-server.js';
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools/index.js';
+import { communicateWithModelTool } from './mcp-tools/communicateWithModel.js';
 import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, supportsTools } from './mcp-tools/chatTools.js';
 import {
   formatBoundProjectGuidance,
@@ -382,7 +383,7 @@ const SKIP_SEARCH_PATTERNS = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|sur
 const KNOWLEDGE_QUESTION = /\b(what is|who is|who are|where is|when did|how does|how do|how to|why does|why is|explain|tell me about|define|describe|compare|difference between|history of|meaning of)\b/i;
 const SITE_REFERENCE = /\b\w+\.(com|org|net|io|co|gov|edu|store|shop|app|dev|ai)\b/i;
 
-const WORKSPACE_SCOPED_PATTERNS = /\b(my\s+(?:board|notes?|project|ideas?|media|files?|workspace|vault|saved|bricks?|blocks?|grid|canvas|stuff|content|work|progress)|on\s+(?:the|this)\s+(?:board|grid|canvas)|(?:in|from)\s+(?:my|the)\s+(?:project|workspace|notes?|media|vault)|what\s+(?:do\s+)?(?:i|we)\s+have|what(?:'s| is)\s+(?:on|in)\s+(?:my|the|this)|(?:help|assist)\s+(?:me\s+)?(?:with\s+)?(?:this|my)|(?:summarize|explain|break\s+down|rewrite|improve|edit|update|organize|review)\s+(?:this|my|the|it))\b/i;
+const WORKSPACE_SCOPED_PATTERNS = /\b(my\s+(?:board|notes?|project|ideas?|media|files?|workspace|vault|saved|bricks?|blocks?|grid|canvas|stuff|content|work|progress|models?|agents?|reminders?)|(?:models?|agents?|reminders?)\s+(?:i|we)\s+(?:built|made|created|have|set\s*up)|model\s+builder|on\s+(?:the|this)\s+(?:board|grid|canvas)|(?:in|from)\s+(?:my|the)\s+(?:project|workspace|notes?|media|vault)|what\s+(?:do\s+)?(?:i|we)\s+have|what(?:'s| is)\s+(?:on|in)\s+(?:my|the|this)|(?:help|assist)\s+(?:me\s+)?(?:with\s+)?(?:this|my)|(?:summarize|explain|break\s+down|rewrite|improve|edit|update|organize|review)\s+(?:this|my|the|it))\b/i;
 
 const LOCATION_AWARE_PATTERNS = /\b(near\s+me|in\s+my\s+(?:area|town|city|neighborhood|region)|around\s+here|local|nearby|closest|nearest|in\s+(?:downtown|midtown|uptown)|in\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:,\s*[A-Z]{2})?)\b/i;
 
@@ -2916,6 +2917,279 @@ function buildVoiceFirstMessage(user) {
   return firstName ? pick.replace(/\{name\}/g, firstName) : pick;
 }
 
+// ============================================
+// Voice Mode opening OFFER + injected briefing
+// --------------------------------------------
+// When a voice session connects, LYKN gives a Jarvis-style greeting that
+// OFFERS to run through the user's recent updates ("Welcome back, sir. Do you
+// want to hear your recent updates?") rather than dumping a briefing unprompted.
+// The actual briefing content (active project status, what recently got done,
+// new Vault items) is injected into the session grounding so the conversational
+// model delivers it the moment the user says "yes" / asks for their updates,
+// grounded strictly in real facts. The opening line itself is deterministic —
+// no pre-call LLM round-trip. Anonymous sessions get the plain rotating greeting.
+// ============================================
+const VOICE_BRIEFING_WINDOW_DAYS = Math.max(1, Number(process.env.VOICE_BRIEFING_WINDOW_DAYS || 7));
+// How LYKN addresses the user in the opening line. Defaults to "sir" for the
+// Jarvis feel; set to a blank string to address them by first name instead, or
+// to any other word. NOTE: a fixed honorific like "sir" is gendered — override
+// per deployment if your users aren't all addressed that way.
+const VOICE_BRIEFING_HONORIFIC = (process.env.VOICE_BRIEFING_HONORIFIC ?? 'sir').trim();
+
+// Pull the raw facts the briefing is allowed to talk about: the active
+// project + its recent state pushes (progress / things that got done) and
+// the Vault notes created inside the lookback window (new uploads).
+async function gatherVoiceBriefingData(authHeader, userId) {
+  const client = supabaseAdmin || createSynthesisUserClient(authHeader);
+  if (!client || !userId) return null;
+  const cutoffMs = Date.now() - VOICE_BRIEFING_WINDOW_DAYS * 86_400_000;
+  const cutoffIso = new Date(cutoffMs).toISOString();
+
+  let project = null;
+  let recentUpdates = [];
+  try {
+    const ctx = await loadActiveProjectContext(client, userId);
+    if (ctx?.project) {
+      project = {
+        name: String(ctx.project.name || '').trim() || 'your project',
+        description: String(ctx.project.description || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+      };
+      recentUpdates = (ctx.recentActivity || [])
+        .filter((a) => a?.set_at && Date.parse(a.set_at) >= cutoffMs)
+        .slice(0, 6)
+        .map((a) => ({
+          key: String(a.state_key || '').replace(/[_-]+/g, ' ').trim(),
+          value: String(a.value || '').replace(/\s+/g, ' ').trim().slice(0, 240),
+          client: String(a.set_by_client || '').trim(),
+        }))
+        .filter((u) => u.key || u.value);
+    }
+  } catch (e) {
+    console.warn('⚠️ voice briefing project load:', e?.message || e);
+  }
+
+  let recentNotes = [];
+  try {
+    const { data } = await client
+      .from('notes')
+      .select('title, ai_summary, tags, created_at')
+      .eq('user_id', userId)
+      .gte('created_at', cutoffIso)
+      .order('created_at', { ascending: false })
+      .limit(8);
+    recentNotes = (data || []).map((n) => ({
+      title: String(n.title || 'Untitled').replace(/\s+/g, ' ').trim().slice(0, 120),
+      summary: String(n.ai_summary || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      tags: Array.isArray(n.tags) ? n.tags.filter(Boolean).slice(0, 4).join(', ') : '',
+    }));
+  } catch (e) {
+    console.warn('⚠️ voice briefing vault load:', e?.message || e);
+  }
+
+  // Pending reminders the user should hear about: anything already due
+  // (overdue) plus anything coming up in the next couple of days. Pull-based
+  // delivery — the briefing IS the surfacing mechanism.
+  let reminders = [];
+  try {
+    const now = Date.now();
+    const upcomingCutoffIso = new Date(now + 2 * 86_400_000).toISOString();
+    const { data } = await client
+      .from('lykn_reminders')
+      .select('title, remind_at, remind_at_text, status')
+      .eq('user_id', userId)
+      .eq('status', 'pending')
+      .lte('remind_at', upcomingCutoffIso)
+      .order('remind_at', { ascending: true })
+      .limit(6);
+    reminders = (data || []).map((r) => ({
+      title: String(r.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      when: String(r.remind_at_text || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      overdue: Date.parse(r.remind_at) <= now,
+    })).filter((r) => r.title);
+  } catch (e) {
+    console.warn('⚠️ voice briefing reminders load:', e?.message || e);
+  }
+
+  // Recent neurons the user made in the window: newly authored beliefs,
+  // newly learned facts, and newly formed concepts. Merged + capped so the
+  // briefing names a few without reciting the whole synthesis layer.
+  let recentNeurons = [];
+  try {
+    const [factsRes, beliefsRes, conceptsRes] = await Promise.all([
+      client.from('lykn_user_model_facts')
+        .select('fact_text, created_at').eq('user_id', userId)
+        .gte('created_at', cutoffIso).order('created_at', { ascending: false }).limit(6),
+      client.from('lykn_beliefs')
+        .select('belief_text, created_at').eq('user_id', userId)
+        .gte('created_at', cutoffIso).order('created_at', { ascending: false }).limit(6),
+      client.from('lykn_concepts')
+        .select('label, created_at').eq('user_id', userId)
+        .is('merged_into_id', null).neq('status', 'dismissed')
+        .gte('created_at', cutoffIso).order('created_at', { ascending: false }).limit(6),
+    ]);
+    const merged = [];
+    for (const f of (factsRes?.data || [])) merged.push({ kind: 'fact', label: f.fact_text, at: f.created_at });
+    for (const b of (beliefsRes?.data || [])) merged.push({ kind: 'belief', label: b.belief_text, at: b.created_at });
+    for (const c of (conceptsRes?.data || [])) merged.push({ kind: 'concept', label: c.label, at: c.created_at });
+    merged.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    recentNeurons = merged
+      .map((n) => ({ kind: n.kind, label: String(n.label || '').replace(/\s+/g, ' ').trim().slice(0, 120) }))
+      .filter((n) => n.label)
+      .slice(0, 6);
+  } catch (e) {
+    console.warn('⚠️ voice briefing neurons load:', e?.message || e);
+  }
+
+  // Custom models the user built/updated in the window (Model Builder).
+  let recentModels = [];
+  try {
+    const { data } = await client
+      .from('lykn_custom_models')
+      .select('name, status, created_at, updated_at, published_at')
+      .eq('user_id', userId)
+      .gte('updated_at', cutoffIso)
+      .order('updated_at', { ascending: false })
+      .limit(6);
+    recentModels = (data || []).map((m) => ({
+      name: String(m.name || 'Untitled model').replace(/\s+/g, ' ').trim().slice(0, 120),
+      status: m.status === 'published' ? 'published' : 'draft',
+    })).filter((m) => m.name);
+  } catch (e) {
+    console.warn('⚠️ voice briefing models load:', e?.message || e);
+  }
+
+  return {
+    project, recentUpdates, recentNotes, reminders, recentNeurons, recentModels,
+    windowDays: VOICE_BRIEFING_WINDOW_DAYS,
+  };
+}
+
+// Flatten the gathered facts into a compact, labelled block the LLM composes
+// the spoken line from. Empty categories are explicitly marked "none" so the
+// model knows to skip them rather than hallucinate.
+function formatVoiceBriefingFacts(firstName, data) {
+  const lines = [];
+  if (firstName) lines.push(`User first name: ${firstName}`);
+  lines.push(`Lookback window: last ${data.windowDays} day(s).`);
+
+  if (data.project) {
+    lines.push('', `ACTIVE PROJECT: ${data.project.name}`);
+    if (data.project.description) lines.push(`Description: ${data.project.description}`);
+  } else {
+    lines.push('', 'ACTIVE PROJECT: none set.');
+  }
+
+  if (data.recentUpdates.length) {
+    lines.push('', 'RECENT PROJECT UPDATES (newest first — progress / things that got done):');
+    for (const u of data.recentUpdates) {
+      const who = u.client ? ` (via ${u.client})` : '';
+      lines.push(`- ${u.key ? `${u.key}: ` : ''}${u.value}${who}`);
+    }
+  } else {
+    lines.push('', 'RECENT PROJECT UPDATES: none in the window.');
+  }
+
+  if (data.recentNotes.length) {
+    lines.push('', 'NEW IN THE VAULT (recently added items):');
+    for (const n of data.recentNotes) {
+      const extra = n.summary ? ` — ${n.summary}` : n.tags ? ` [${n.tags}]` : '';
+      lines.push(`- ${n.title}${extra}`);
+    }
+  } else {
+    lines.push('', 'NEW IN THE VAULT: nothing added in the window.');
+  }
+
+  if (data.recentNeurons?.length) {
+    lines.push('', 'NEW NEURONS (beliefs/facts/concepts recently formed in the synthesis layer):');
+    for (const n of data.recentNeurons) {
+      lines.push(`- [${n.kind}] ${n.label}`);
+    }
+  } else {
+    lines.push('', 'NEW NEURONS: none formed in the window.');
+  }
+
+  if (data.recentModels?.length) {
+    lines.push('', 'MODELS BUILT (custom models the user made in Model Builder):');
+    for (const m of data.recentModels) {
+      lines.push(`- ${m.name} (${m.status})`);
+    }
+  } else {
+    lines.push('', 'MODELS BUILT: none in the window.');
+  }
+
+  if (data.reminders?.length) {
+    lines.push('', 'REMINDERS (due now or coming up — mention these first, they are time-sensitive):');
+    for (const r of data.reminders) {
+      const when = r.when ? ` (${r.when})` : '';
+      lines.push(`- ${r.overdue ? 'OVERDUE: ' : ''}${r.title}${when}`);
+    }
+  } else {
+    lines.push('', 'REMINDERS: none due or coming up.');
+  }
+
+  return lines.join('\n');
+}
+
+function voiceBriefingHasContent(data) {
+  return Boolean(data?.project)
+    || (data?.recentUpdates?.length || 0) > 0
+    || (data?.recentNotes?.length || 0) > 0
+    || (data?.recentNeurons?.length || 0) > 0
+    || (data?.recentModels?.length || 0) > 0
+    || (data?.reminders?.length || 0) > 0;
+}
+
+// How LYKN addresses the user in the opening line — the honorific ("sir") when
+// configured, otherwise their first name, otherwise nothing.
+function voiceBriefingAddressee(user) {
+  if (VOICE_BRIEFING_HONORIFIC) return VOICE_BRIEFING_HONORIFIC;
+  return pickUserDisplayName(user) || '';
+}
+
+const VOICE_BRIEFING_OFFERS = [
+  'Welcome back{addr}. Do you want to hear your recent updates?',
+  'Welcome back{addr}. Want me to run through your recent updates?',
+  'Welcome back{addr}. Shall I catch you up on your recent updates?',
+  'Good to have you back{addr}. Want to hear what\'s new since last time?',
+];
+
+// The spoken opening line: a Jarvis-style greeting that OFFERS the briefing
+// when there's something to report, or quietly notes there's nothing new and
+// hands it back. Deterministic — no LLM call on the connect path.
+function buildVoiceBriefingOffer(user, data) {
+  const addressee = voiceBriefingAddressee(user);
+  const addr = addressee ? `, ${addressee}` : '';
+  if (!voiceBriefingHasContent(data)) {
+    return `Welcome back${addr}. Nothing new to report since last time — where do you want to start?`;
+  }
+  const pick = VOICE_BRIEFING_OFFERS[Math.floor(Math.random() * VOICE_BRIEFING_OFFERS.length)] || VOICE_BRIEFING_OFFERS[0];
+  return pick.replace('{addr}', addr);
+}
+
+// Grounding block injected into the session so the conversational model can
+// deliver the briefing on request (after the opening offer). The model only
+// speaks these facts — it never invents updates — and skips the briefing if
+// the user declines.
+function formatVoiceBriefingInstructionBlock(user, data) {
+  const firstName = pickUserDisplayName(user);
+  const header = [
+    '[VOICE_BRIEFING]',
+    'The user just opened Voice Mode and your spoken opening line OFFERED to run through their recent updates. Behaviour for THIS session:',
+    '- If the user says yes / "go ahead" / "sure", or asks for their updates, status, progress, or what\'s new, deliver a SHORT spoken briefing from the FACTS below: lead with any due/upcoming REMINDERS (they are time-sensitive), then where the active project stands and what recently got done, then anything new in the Vault, any new neurons (beliefs/facts/concepts) formed, and any custom models they built. 2-4 calm sentences, spoken style, no lists or markdown — group naturally, don\'t robotically read every category.',
+    '- Use ONLY these facts. Never invent projects, updates, vault items, numbers, dates, or names.',
+    '- If the user declines or jumps straight into another topic, skip the briefing entirely and just help with what they asked.',
+    '- After delivering the briefing, hand it back with one short, open question.',
+  ];
+  if (!voiceBriefingHasContent(data)) {
+    return [
+      ...header,
+      '',
+      'FACTS: There is nothing new to report in the lookback window. If they ask for updates, tell them plainly there is nothing new since last time, then ask where they want to start.',
+    ].join('\n');
+  }
+  return [...header, '', formatVoiceBriefingFacts(firstName, data)].join('\n');
+}
+
 function formatUserIdentityBlock({ firstName, projects }) {
   const lines = [];
   if (firstName) lines.push(`First name: ${firstName}`);
@@ -4785,6 +5059,26 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   'chosen lykn_findConnections call. The end-of-turn project',
   'push/proposal above is the ONE exception: it does not count against',
   'this bias and must still happen whenever a project was mentioned.',
+  '',
+  'REMINDERS (time-anchored prompts the user voices/types):',
+  '  • lykn_createReminder — when the user says "remind me to X (at/in) Y".',
+  '    YOU resolve the time: pass an absolute ISO 8601 remind_at WITH a',
+  '    timezone offset, or in_minutes for relative ("in an hour"). If you are',
+  '    not certain of the current date/time, call lykn_get_current_time first.',
+  '    ALWAYS pass remind_at_text with the user\'s own phrasing ("tomorrow at',
+  '    3pm"). Reminders are PULL-BASED — surfaced when the user next checks in',
+  '    (e.g. their voice briefing); there is no push alert, so don\'t promise a',
+  '    notification will fire at the minute. Confirm what + when after saving.',
+  '  • lykn_listReminders — "what are my reminders / what\'s overdue / what\'s',
+  '    coming up". Defaults to pending, soonest-first. Read remind_at_text back,',
+  '    not raw ISO timestamps.',
+  '  • lykn_updateReminder — complete ("mark that done"), cancel, reschedule,',
+  '    or edit a reminder. Get its id from lykn_listReminders first.',
+  '',
+  'CUSTOM MODELS (the user\'s Model Builder creations):',
+  '  • lykn_listCustomModels — "what models have I made", "which of my models',
+  '    is published", "what\'s my main agent". Returns name, status, base model,',
+  '    training mode, main-agent flag, and belief/rule counts.',
   '',
   'EXTERIOR CAPABILITIES (on-demand — call when needed, not every turn):',
   '  • lykn_web_search — live web results when vault/synthesis cannot answer.',
@@ -13663,7 +13957,13 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "NEVER read them aloud, never say words like 'rule_id', 'applied', or bracketed section names, and never emit any tags. " +
   "You also have live TOOLS you can call during the conversation: search_vault (look up anything the user saved or might " +
   "know), get_project_state (read their active project status), update_project_state (record a decision/blocker/milestone), " +
-  "and save_to_vault (save a note — only when the user explicitly asks). Use search_vault proactively the moment a question " +
+  "create_reminder / list_reminders / update_reminder (set or manage time-anchored reminders when the user says 'remind me to…'), " +
+  "list_custom_models (see every model the user built AND each model's purpose), " +
+  "communicate_with_model (hand a task or question to one of the user's OTHER models — a sub-agent, main or not — and read back the report it returns), " +
+  "and save_to_vault (save a note — only when the user explicitly asks). " +
+  "When the user asks what their models do, what one is working on, or asks you to have a model do something, " +
+  "use list_custom_models to find it (and its purpose/id), then communicate_with_model to reach it and relay its report. " +
+  "Use search_vault proactively the moment a question " +
   "depends on the user's own saved knowledge rather than guessing. When a tool is running, keep your spoken acknowledgement " +
   "brief (e.g. 'let me check'). " +
   "If you don't know something from the user's context and a tool can't help, say so honestly and briefly.";
@@ -13845,6 +14145,107 @@ const LYKN_VOICE_TOOL_DEFS = [
       required: [],
     },
   },
+  // ── Reminders ────────────────────────────────────────────────────────
+  {
+    name: 'create_reminder',
+    mcp: 'lykn_createReminder',
+    description:
+      'Set a time-anchored reminder when the user asks to be reminded of something ("remind me to ' +
+      'call the dentist tomorrow at 3", "in an hour, nudge me about the deploy"). YOU resolve the ' +
+      'time: pass in_minutes for relative ("in an hour" = 60), or an absolute ISO 8601 remind_at with ' +
+      'timezone when you know the date/time (the CURRENT TIME is provided in your context). ALWAYS pass ' +
+      "remind_at_text with the user's own phrasing. Reminders are surfaced when they next check in " +
+      '(e.g. their briefing) — there is no push alert yet, so confirm it is saved without promising a ping.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'What to remind the user about (e.g. "Call the dentist").' },
+        remind_at: { type: 'string', description: 'Absolute ISO 8601 instant with timezone, e.g. "2026-06-07T15:00:00-06:00". Provide this OR in_minutes.' },
+        in_minutes: { type: 'integer', description: 'Minutes from now (e.g. 60 = in an hour). Provide this OR remind_at.' },
+        remind_at_text: { type: 'string', description: "The user's own phrasing of the time (\"tomorrow at 3pm\", \"in 20 minutes\")." },
+        body: { type: 'string', description: 'Optional extra detail/context.' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'list_reminders',
+    mcp: 'lykn_listReminders',
+    description:
+      'List the user\'s reminders — call for "what are my reminders", "what\'s overdue", "what do I have ' +
+      'coming up", or before completing/cancelling one so you have its id. Defaults to pending, soonest ' +
+      'first. Read the remind_at_text back naturally; never recite ISO timestamps aloud.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', description: 'pending (default), completed, cancelled, or all.' },
+        due_only: { type: 'boolean', description: 'true = only reminders already due.' },
+        limit: { type: 'integer', description: 'Max to return (default 25).' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'update_reminder',
+    mcp: 'lykn_updateReminder',
+    description:
+      'Complete ("mark that done"), cancel, reschedule, or edit an existing reminder. Get its id from ' +
+      'list_reminders first. Set status to completed/cancelled, or pass in_minutes/remind_at to reschedule ' +
+      '(which reopens it), or title/body to edit. Confirm what changed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The reminder id (from list_reminders).' },
+        status: { type: 'string', description: 'completed, cancelled, or pending (reactivate).' },
+        remind_at: { type: 'string', description: 'New absolute ISO 8601 time with timezone.' },
+        in_minutes: { type: 'integer', description: 'New time as minutes from now.' },
+        remind_at_text: { type: 'string', description: 'Updated human phrasing of the new time.' },
+        title: { type: 'string', description: 'New reminder text.' },
+        body: { type: 'string', description: 'New detail/context.' },
+      },
+      required: ['id'],
+    },
+  },
+  // ── Custom models ─────────────────────────────────────────────────────
+  {
+    name: 'list_custom_models',
+    mcp: 'lykn_listCustomModels',
+    description:
+      'List the custom models the user built in LYKN\'s Model Builder, most-recently-updated first. ' +
+      'Call for "what models have I made", "which of my models is published", "what\'s my main agent", ' +
+      'or "what is each of my models for". Returns each model\'s name, PURPOSE (its one-line description ' +
+      'of what it does), status (draft/published), base model, training mode, main-agent flag, and ' +
+      'belief/rule counts. Use the purposes to decide which model to hand a task to via communicate_with_model.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', description: 'draft, published, or all (default).' },
+        query: { type: 'string', description: 'Optional name substring filter.' },
+        limit: { type: 'integer', description: 'Max to return (default 50).' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'communicate_with_model',
+    special: 'communicate_with_model',
+    description:
+      "Talk to one of the user's OTHER models (a sub-agent) and get its report back. Works for ANY " +
+      'published model — it does NOT have to be a main agent. Call when the user says "ask my <model> ' +
+      'about X", "check in with <model>", "have <model> do Y", or "what is <model> working on / what can ' +
+      'it do". First use list_custom_models to find the right model and its id, then send your message. ' +
+      'The model reports back on its activity and result — relay that to the user out loud, briefly.',
+    parameters: {
+      type: 'object',
+      properties: {
+        model_id: { type: 'string', description: 'UUID of the model to talk to (from list_custom_models). Preferred.' },
+        model_name: { type: 'string', description: 'Name of the model (used when you do not have its id).' },
+        message: { type: 'string', description: 'What to ask or assign the model (a question, task, or "report on what you do").' },
+        context: { type: 'string', description: 'Optional background from the conversation the model needs.' },
+      },
+      required: ['message'],
+    },
+  },
   // ── Vault writes ─────────────────────────────────────────────────────
   {
     name: 'save_to_vault',
@@ -13876,6 +14277,20 @@ const LYKN_REALTIME_TOOLS = LYKN_VOICE_TOOL_DEFS.map((t) => ({
   description: t.description,
   parameters: t.parameters,
 }));
+
+// Current-time context for the voice models. The voice LLM has no inherent
+// clock, so it can't compute an absolute remind_at without this. We give it
+// "now" in UTC + guidance to prefer relative (in_minutes) phrasing, which is
+// timezone-independent and covers the common voice case ("remind me in an
+// hour"). Refreshed per session / per custom-LLM turn so it stays accurate.
+function currentTimeContextLine() {
+  const now = new Date();
+  return [
+    `[CURRENT_TIME] Right now it is ${now.toISOString()} (UTC).`,
+    'When setting a reminder for a RELATIVE time ("in an hour", "in 20 minutes", "tonight"), pass in_minutes — it does not need a timezone.',
+    'For a specific clock time, include a timezone offset in remind_at. If you do not know the user\'s timezone, briefly ask or use in_minutes.',
+  ].join(' ');
+}
 
 /**
  * Build the user's synthesis-layer grounding (beliefs + if-then rules +
@@ -13913,6 +14328,7 @@ app.post('/api/ai/realtime/session', requireAuth, aiLimiter, checkAiUsageLimit, 
     const synthesisGrounding = await buildRealtimeSynthesisGrounding(req.headers.authorization, req.user?.id);
     const clientGrounding = String(req.body?.instructions || '').slice(0, 8000).trim();
     const contextParts = [];
+    contextParts.push(currentTimeContextLine());
     if (synthesisGrounding) contextParts.push(synthesisGrounding);
     if (clientGrounding) contextParts.push(`[WORKSPACE_AND_CONVERSATION]\n${clientGrounding}`);
     const instructions = (contextParts.length
@@ -14041,6 +14457,20 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
       });
     }
 
+    // Communicate with one of the user's OTHER models (a sub-agent) and read
+    // back its report. Not a plain MCP passthrough (the tool runs the sub-model
+    // delegate), so run its self-contained handler with the JWT ctx directly.
+    if (name === 'communicate_with_model') {
+      const ctx = buildToolCtx(req);
+      const result = await communicateWithModelTool.handler(args, ctx);
+      const block = Array.isArray(result?.content) ? result.content[0] : null;
+      if (block?.type === 'text') {
+        try { return res.json(JSON.parse(block.text)); }
+        catch { return res.json({ ok: !result?.isError, text: String(block.text) }); }
+      }
+      return res.json({ ok: !result?.isError });
+    }
+
     // Generic synthesis-layer tools → run the mapped MCP handler with the
     // model-provided args passed straight through (each handler validates +
     // applies its own defaults / write-scope).
@@ -14130,11 +14560,22 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, aiLimiter, checkAiUsageLi
       return res.status(r.status || 500).json({ error: `ElevenLabs: ${msg}` });
     }
 
+    // Gather the opening-briefing facts once: used both to phrase the spoken
+    // offer line and to inject the briefing into the session grounding so the
+    // model can deliver it when the user accepts the offer.
+    const briefingData = await gatherVoiceBriefingData(req.headers.authorization, req.user?.id).catch((e) => {
+      console.warn('⚠️ voice briefing gather:', e?.message || e);
+      return null;
+    });
+
     // Build the same grounded instructions the OpenAI path uses, stash them so
     // the custom-LLM endpoint can recover the client context for this call.
     const synthesisGrounding = await buildRealtimeSynthesisGrounding(req.headers.authorization, req.user?.id);
     const clientGrounding = String(req.body?.instructions || '').slice(0, 8000).trim();
     const parts = [];
+    // Briefing block goes first so it survives the 14k truncation below.
+    const briefingBlock = formatVoiceBriefingInstructionBlock(req.user, briefingData);
+    if (briefingBlock) parts.push(briefingBlock);
     if (synthesisGrounding) parts.push(synthesisGrounding);
     if (clientGrounding) parts.push(`[WORKSPACE_AND_CONVERSATION]\n${clientGrounding}`);
     const instructions = (parts.length
@@ -14153,7 +14594,9 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, aiLimiter, checkAiUsageLi
       });
     }).catch(() => {});
 
-    const firstMessage = buildVoiceFirstMessage(req.user);
+    // Opening line: a Jarvis-style greeting that offers the briefing (the
+    // briefing itself is in the grounding above, delivered on acceptance).
+    const firstMessage = buildVoiceBriefingOffer(req.user, briefingData);
 
     return res.json({ signedUrl, sessionToken, firstMessage });
   } catch (error) {
@@ -14242,6 +14685,7 @@ const elevenCustomLlmHandler = async (req, res) => {
     // per-turn retrieval next, then the original turns with the token line
     // scrubbed out of any system message.
     const rebuilt = [{ role: 'system', content: grounding }];
+    rebuilt.push({ role: 'system', content: currentTimeContextLine() });
     if (retrievalBlock && retrievalBlock.trim()) {
       rebuilt.push({
         role: 'system',

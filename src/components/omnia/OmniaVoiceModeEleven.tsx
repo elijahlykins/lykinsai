@@ -54,6 +54,11 @@ const TOOL_NAMES = [
   "set_active_project",
   "update_project_state",
   "get_recent_activity",
+  "create_reminder",
+  "list_reminders",
+  "update_reminder",
+  "list_custom_models",
+  "communicate_with_model",
   "save_to_vault",
 ] as const;
 
