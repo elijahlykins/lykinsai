@@ -159,7 +159,7 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
   ),
   clientTool(
     'communicate_with_model',
-    "Talk to one of the user's OTHER models (a sub-agent) and get its report back. Works for ANY published model, main agent or not. Use for 'ask my <model> about X', 'check in with <model>', 'have <model> do Y', or 'what is <model> working on / what can it do'. Find the model + its id with list_custom_models first, then send your message and relay the report.",
+    "Talk to one of the user's OTHER models (a sub-agent) and get its report back. Works for ANY published model, main agent or not. Use for 'ask my <model> about X', 'check in with <model>', 'have <model> do Y', or 'what is <model> working on / what can it do'. Find the model + its id with list_custom_models first, then send your message. SYNCHRONOUS: it runs the model now and returns the report in this same call — wait for it and read it back. NOT a background task; never say you'll follow up later or that the model is still working. If the model is a draft (not published) the call errors — tell the user.",
     {
       model_id: { type: 'string', description: 'UUID of the model to talk to (from list_custom_models). Preferred.' },
       model_name: { type: 'string', description: 'Name of the model (when you do not have its id).' },

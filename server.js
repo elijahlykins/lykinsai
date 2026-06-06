@@ -111,6 +111,8 @@ import {
   readSubModelIds,
   loadSubModelRoster,
   formatMainAgentOrchestrationBlock,
+  loadPublishedRoster,
+  formatDefaultMainAgentBlock,
 } from './lib/modelBuilder/mainAgentOrchestration.js';
 import { runSubModelDelegate } from './lib/modelBuilder/runSubModelDelegate.js';
 import {
@@ -12240,6 +12242,28 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     if (streamChatAgentCtx?.instructionsBlock) {
       prompt += `\n\n${streamChatAgentCtx.instructionsBlock}`;
     }
+    // Default main agent: when this turn is NOT a configured custom main agent
+    // but tools are on and communicate_with_model is reachable, LYKN still acts
+    // as the user's main agent over ALL their published models — it can hand
+    // tasks to any of them synchronously. (Configured main agents already have
+    // a richer async-orchestration block set above; don't double up.)
+    const streamCanCommunicate =
+      !Array.isArray(streamChatToolNames) ||
+      streamChatToolNames.includes('lykn_communicate_with_model');
+    if (useTools && streamCanCommunicate && !streamOrchestrationCtx?.isMainAgent && req.user?.id && supabaseAdmin) {
+      try {
+        const defaultRoster = await loadPublishedRoster(supabaseAdmin, req.user.id, {
+          excludeId: streamCustomModelCtx.customModel?.id || null,
+          limit: 16,
+        });
+        const defaultBlock = formatDefaultMainAgentBlock(defaultRoster);
+        if (defaultBlock) {
+          streamOrchestrationCtx = { ...(streamOrchestrationCtx || {}), orchestrationBlock: defaultBlock };
+        }
+      } catch (e) {
+        console.warn('[default-main-agent] roster load failed:', e?.message || e);
+      }
+    }
     if (streamOrchestrationCtx?.orchestrationBlock) {
       prompt += `\n\n${streamOrchestrationCtx.orchestrationBlock}`;
     }
@@ -13963,6 +13987,11 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "and save_to_vault (save a note — only when the user explicitly asks). " +
   "When the user asks what their models do, what one is working on, or asks you to have a model do something, " +
   "use list_custom_models to find it (and its purpose/id), then communicate_with_model to reach it and relay its report. " +
+  "CRITICAL — communicate_with_model is SYNCHRONOUS: it runs that model right now and returns its full report in the SAME step. " +
+  "WAIT for the tool result, then read the report back to the user in the same turn. It is NOT a background job and nothing runs after the call returns. " +
+  "NEVER say 'I'll get back to you when <model> finishes', 'they're still working on it', or 'let me check if they're done' — there is no later. " +
+  "If you have not just received a report from the tool, you have not contacted the model yet, so call communicate_with_model now. " +
+  "If the tool returns an error (e.g. the model is a draft / not published), tell the user that plainly. " +
   "Use search_vault proactively the moment a question " +
   "depends on the user's own saved knowledge rather than guessing. When a tool is running, keep your spoken acknowledgement " +
   "brief (e.g. 'let me check'). " +
@@ -14234,7 +14263,9 @@ const LYKN_VOICE_TOOL_DEFS = [
       'published model — it does NOT have to be a main agent. Call when the user says "ask my <model> ' +
       'about X", "check in with <model>", "have <model> do Y", or "what is <model> working on / what can ' +
       'it do". First use list_custom_models to find the right model and its id, then send your message. ' +
-      'The model reports back on its activity and result — relay that to the user out loud, briefly.',
+      'SYNCHRONOUS: this runs the model NOW and the report comes back in this same call — wait for it and ' +
+      'read it back to the user. It is NOT a background task; never promise to follow up later or say the ' +
+      'model is still working. If the model is a draft (not published) the call errors — tell the user.',
     parameters: {
       type: 'object',
       properties: {
@@ -14309,6 +14340,17 @@ async function buildRealtimeSynthesisGrounding(authHeader, userId) {
     if (projectSection) sections.push(projectSection);
   } catch (e) {
     console.warn('⚠️ buildRealtimeSynthesisGrounding:', e?.message || e);
+  }
+  // Voice agent is the user's main agent over their published models: list them
+  // (with purposes) so it knows who it can hand tasks to via communicate_with_model.
+  try {
+    if (supabaseAdmin) {
+      const roster = await loadPublishedRoster(supabaseAdmin, userId, { limit: 16 });
+      const block = formatDefaultMainAgentBlock(roster, { voice: true });
+      if (block) sections.push(block);
+    }
+  } catch (e) {
+    console.warn('⚠️ voice main-agent roster:', e?.message || e);
   }
   return sections.join('\n\n');
 }
