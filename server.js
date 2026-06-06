@@ -14009,9 +14009,10 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, aiLimiter, checkAiUsageLi
 // the agent declares are passed through untouched (ElevenLabs executes the
 // resulting tool_calls as client tools in the browser).
 const LYKN_SESSION_TOKEN_RE = /LYKN_SESSION_TOKEN=(\S+)/;
-app.post('/api/ai/elevenlabs/llm/chat/completions', async (req, res) => {
+const elevenCustomLlmHandler = async (req, res) => {
   customLlmStats.hits += 1;
   customLlmStats.lastHitAt = new Date().toISOString();
+  customLlmStats.lastPath = req.originalUrl;
   try {
     // Auth: ElevenLabs sends the configured custom-LLM API key as a bearer.
     const expected = process.env.ELEVENLABS_LLM_SECRET;
@@ -14122,17 +14123,24 @@ app.post('/api/ai/elevenlabs/llm/chat/completions', async (req, res) => {
     if (!res.headersSent) res.status(500).json({ error: 'custom_llm_failed' });
     else { try { res.end(); } catch { /* ignore */ } }
   }
-});
+};
+
+// ElevenLabs may treat the configured custom-LLM URL as a BASE and append
+// "/chat/completions" itself, or use it verbatim. Mount the handler on every
+// plausible path so the agent reaches us regardless of that convention.
+app.post('/api/ai/elevenlabs/llm/chat/completions', elevenCustomLlmHandler);
+app.post('/api/ai/elevenlabs/llm', elevenCustomLlmHandler);
+app.post('/api/ai/elevenlabs/llm/chat/completions/chat/completions', elevenCustomLlmHandler);
 
 // Custom-LLM diagnostics, for remote debugging. Guarded by the same secret
 // ElevenLabs uses, so only callers with the shared secret can read it.
 let lastCustomLlmError = null;
-const customLlmStats = { hits: 0, authFails: 0, lastHitAt: null, lastResult: null, lastAuthFail: null };
+const customLlmStats = { hits: 0, authFails: 0, lastHitAt: null, lastResult: null, lastAuthFail: null, lastPath: null };
 app.get('/api/ai/elevenlabs/llm/_debug', (req, res) => {
   const expected = process.env.ELEVENLABS_LLM_SECRET;
   const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
   if (!expected || presented !== expected) return res.status(401).json({ error: 'Unauthorized' });
-  return res.json({ customLlmStats, lastCustomLlmError });
+  return res.json({ customLlmStats, lastCustomLlmError, configuredAgentUrlHint: '/api/ai/elevenlabs/llm (base) — EL appends /chat/completions' });
 });
 
 // YouTube API endpoints
