@@ -11938,16 +11938,24 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
     }
     if (streamOrchestrationCtx?.isMainAgent) {
       const names = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : [];
+      // Main agents always get the orchestration trio (delegate/list/get) AND
+      // live web reach (search + fetch). The default LYKN chat already has web
+      // tools via the full whitelist; a CUSTOM main agent's tool set is gated
+      // to what the user toggled in Model Builder, so an orchestrator could be
+      // unable to "go research this online" for the user. Force these on so
+      // every main agent can browse and scrape, mirroring the delegation tools.
       for (const toolName of [
         'lykn_delegate_to_sub_model',
         'lykn_list_sub_model_tasks',
         'lykn_get_sub_model_task',
+        'lykn_web_search',
+        'lykn_web_fetch',
       ]) {
         if (!names.includes(toolName)) names.push(toolName);
       }
       streamChatToolNames = names;
       useTools = useTools || names.length > 0;
-      console.log('🎯 Main agent delegation tools enabled');
+      console.log('🎯 Main agent delegation + web tools enabled');
     }
     // Custom AI instructions are Studio+. Strip them for basic-tier callers.
     if (streamPlan.modelTier === 'basic' && userPrompt) {
