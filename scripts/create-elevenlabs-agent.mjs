@@ -236,7 +236,12 @@ const body = {
         agent: {
           prompt: { prompt: true },
           first_message: true,
+          language: true,
         },
+        // Allow swapping the voice per session too (handy for testing voices
+        // without re-provisioning). LYKN normally bakes the voice into the
+        // agent, but enabling the override keeps that door open.
+        tts: { voice_id: true },
       },
     },
   },
