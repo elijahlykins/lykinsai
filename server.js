@@ -14176,9 +14176,42 @@ const elevenCustomLlmHandler = async (req, res) => {
       grounding = LYKN_REALTIME_BASE_INSTRUCTIONS;
     }
 
-    // Rebuild the message list: our grounded system message first, then the
-    // original turns with the token line scrubbed out of any system message.
+    // Per-turn semantic retrieval — the static grounding above only carries
+    // beliefs/project/workspace. The text chat ALSO injects fresh vault +
+    // synthesis-layer retrieval on every message; do the same here so voice
+    // grounds each answer in what the user actually saved/knows (instead of
+    // hoping the model decides to call search_vault). Keyed off the latest
+    // user utterance.
+    let retrievalBlock = '';
+    if (userId) {
+      let lastUser = '';
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]?.role === 'user' && typeof messages[i].content === 'string') {
+          lastUser = messages[i].content.trim();
+          break;
+        }
+      }
+      if (lastUser) {
+        try {
+          retrievalBlock = await fetchSynthesisRetrievalSection(null, lastUser.slice(0, 500), userId);
+        } catch (e) {
+          console.warn('⚠️ voice retrieval:', e?.message || e);
+          retrievalBlock = '';
+        }
+      }
+    }
+    customLlmStats.lastRetrievalChars = retrievalBlock ? retrievalBlock.length : 0;
+
+    // Rebuild the message list: our grounded system message first, the fresh
+    // per-turn retrieval next, then the original turns with the token line
+    // scrubbed out of any system message.
     const rebuilt = [{ role: 'system', content: grounding }];
+    if (retrievalBlock && retrievalBlock.trim()) {
+      rebuilt.push({
+        role: 'system',
+        content: `[RELEVANT_FROM_VAULT_AND_SYNTHESIS — grounded snippets for the user's latest message; cite/use these, and call tools for anything deeper]\n${retrievalBlock.slice(0, 6000)}`,
+      });
+    }
     for (const m of messages) {
       if (m?.role === 'system' && typeof m.content === 'string') {
         const scrubbed = m.content.replace(LYKN_SESSION_TOKEN_RE, '').trim();
@@ -14257,7 +14290,7 @@ app.post('/api/ai/elevenlabs/llm/chat/completions/chat/completions', elevenCusto
 // Custom-LLM diagnostics, for remote debugging. Guarded by the same secret
 // ElevenLabs uses, so only callers with the shared secret can read it.
 let lastCustomLlmError = null;
-const customLlmStats = { hits: 0, authFails: 0, lastHitAt: null, lastResult: null, lastAuthFail: null, lastPath: null };
+const customLlmStats = { hits: 0, authFails: 0, lastHitAt: null, lastResult: null, lastAuthFail: null, lastPath: null, lastRetrievalChars: null };
 app.get('/api/ai/elevenlabs/llm/_debug', (req, res) => {
   const expected = process.env.ELEVENLABS_LLM_SECRET;
   const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
