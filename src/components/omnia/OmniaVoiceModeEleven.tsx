@@ -179,7 +179,10 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
       // can bind this conversation to the LYKN user and inject grounding.
       await startSession({
         signedUrl,
-        connectionType: "webrtc",
+        // A signed URL only supports the WebSocket transport (WebRTC requires a
+        // conversation token instead). Audio still streams directly to
+        // ElevenLabs/LiveKit — this only changes the signaling transport.
+        connectionType: "websocket",
         overrides: sessionToken
           ? { agent: { prompt: { prompt: `LYKN_SESSION_TOKEN=${sessionToken}` } } }
           : undefined,
