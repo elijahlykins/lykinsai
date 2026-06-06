@@ -14010,14 +14010,21 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, aiLimiter, checkAiUsageLi
 // resulting tool_calls as client tools in the browser).
 const LYKN_SESSION_TOKEN_RE = /LYKN_SESSION_TOKEN=(\S+)/;
 app.post('/api/ai/elevenlabs/llm/chat/completions', async (req, res) => {
+  customLlmStats.hits += 1;
+  customLlmStats.lastHitAt = new Date().toISOString();
   try {
     // Auth: ElevenLabs sends the configured custom-LLM API key as a bearer.
     const expected = process.env.ELEVENLABS_LLM_SECRET;
-    if (!expected) return res.status(503).json({ error: 'Custom LLM not configured.' });
+    if (!expected) { customLlmStats.lastResult = 'no_secret_configured'; return res.status(503).json({ error: 'Custom LLM not configured.' }); }
     const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-    if (presented !== expected) return res.status(401).json({ error: 'Unauthorized' });
+    if (presented !== expected) {
+      customLlmStats.authFails += 1;
+      customLlmStats.lastResult = 'auth_fail';
+      customLlmStats.lastAuthFail = { at: new Date().toISOString(), presentedLen: presented.length, presentedPrefix: presented.slice(0, 6) };
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
 
-    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'OpenAI not configured.' });
+    if (!process.env.OPENAI_API_KEY) { customLlmStats.lastResult = 'no_openai'; return res.status(503).json({ error: 'OpenAI not configured.' }); }
 
     const body = (req.body && typeof req.body === 'object') ? req.body : {};
     const messages = Array.isArray(body.messages) ? [...body.messages] : [];
@@ -14099,6 +14106,7 @@ app.post('/api/ai/elevenlabs/llm/chat/completions', async (req, res) => {
       return res.send(errText);
     }
 
+    customLlmStats.lastResult = `ok_${upstream.status}_${body.stream ? 'stream' : 'json'}`;
     res.status(upstream.status);
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'text/event-stream');
     if (upstream.body && typeof upstream.body.pipe === 'function') {
@@ -14116,14 +14124,15 @@ app.post('/api/ai/elevenlabs/llm/chat/completions', async (req, res) => {
   }
 });
 
-// Last custom-LLM failure, for remote debugging. Guarded by the same secret
+// Custom-LLM diagnostics, for remote debugging. Guarded by the same secret
 // ElevenLabs uses, so only callers with the shared secret can read it.
 let lastCustomLlmError = null;
+const customLlmStats = { hits: 0, authFails: 0, lastHitAt: null, lastResult: null, lastAuthFail: null };
 app.get('/api/ai/elevenlabs/llm/_debug', (req, res) => {
   const expected = process.env.ELEVENLABS_LLM_SECRET;
   const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
   if (!expected || presented !== expected) return res.status(401).json({ error: 'Unauthorized' });
-  return res.json({ lastCustomLlmError });
+  return res.json({ customLlmStats, lastCustomLlmError });
 });
 
 // YouTube API endpoints
