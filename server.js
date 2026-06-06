@@ -14080,6 +14080,25 @@ app.post('/api/ai/elevenlabs/llm/chat/completions', async (req, res) => {
       }).catch(() => {});
     }
 
+    // On upstream failure, capture the error body so we can see exactly what
+    // OpenAI rejected (ElevenLabs only reports "custom_llm generation failed").
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => '');
+      console.error(`❌ custom-LLM upstream ${upstream.status}:`, errText.slice(0, 1000));
+      lastCustomLlmError = {
+        at: new Date().toISOString(),
+        status: upstream.status,
+        upstreamBodyError: errText.slice(0, 2000),
+        sentKeys: Object.keys(body),
+        model: upstreamBody.model,
+        messageRoles: rebuilt.map((m) => m.role),
+        toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+      };
+      res.status(upstream.status);
+      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
+      return res.send(errText);
+    }
+
     res.status(upstream.status);
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'text/event-stream');
     if (upstream.body && typeof upstream.body.pipe === 'function') {
@@ -14091,9 +14110,20 @@ app.post('/api/ai/elevenlabs/llm/chat/completions', async (req, res) => {
     }
   } catch (error) {
     console.error('❌ /api/ai/elevenlabs/llm/chat/completions:', error?.message || error);
+    lastCustomLlmError = { at: new Date().toISOString(), thrown: String(error?.message || error) };
     if (!res.headersSent) res.status(500).json({ error: 'custom_llm_failed' });
     else { try { res.end(); } catch { /* ignore */ } }
   }
+});
+
+// Last custom-LLM failure, for remote debugging. Guarded by the same secret
+// ElevenLabs uses, so only callers with the shared secret can read it.
+let lastCustomLlmError = null;
+app.get('/api/ai/elevenlabs/llm/_debug', (req, res) => {
+  const expected = process.env.ELEVENLABS_LLM_SECRET;
+  const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  if (!expected || presented !== expected) return res.status(401).json({ error: 'Unauthorized' });
+  return res.json({ lastCustomLlmError });
 });
 
 // YouTube API endpoints
