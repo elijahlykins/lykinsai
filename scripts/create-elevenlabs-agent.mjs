@@ -40,7 +40,10 @@ if (!apiKey) die('ELEVENLABS_API_KEY is required.');
 if (!publicUrl) die('PUBLIC_SERVER_URL (or FRONTEND_URL) is required — the public origin of this server.');
 if (!llmSecret) die('ELEVENLABS_LLM_SECRET is required.');
 
-const customLlmUrl = `${publicUrl}/api/ai/elevenlabs/llm/chat/completions`;
+// ElevenLabs treats the custom-LLM URL as a BASE and appends "/chat/completions"
+// itself. So configure the base path here (NOT the full .../chat/completions, or
+// the agent would call .../chat/completions/chat/completions and 404).
+const customLlmUrl = `${publicUrl}/api/ai/elevenlabs/llm`;
 
 // ElevenLabs requires the custom-LLM api_key to reference a STORED workspace
 // secret (a "secret locator"), not a raw string. Create the secret first (or
