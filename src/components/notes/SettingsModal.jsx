@@ -698,6 +698,13 @@ export default function SettingsModal({ isOpen, onClose }) {
             >
               {hasStripeCustomer ? 'Change plan' : 'View plans'}
             </button>
+            <button
+              type="button"
+              onClick={() => { onClose(); nav('/billing#faq'); }}
+              className="w-full text-left px-1 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
+            >
+              Billing FAQ
+            </button>
           </div>
         </div>
       ) : (

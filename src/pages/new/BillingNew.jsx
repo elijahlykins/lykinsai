@@ -223,10 +223,18 @@ function PlanCard({
 }
 
 function FAQItem({ item, isOpen, onToggle }) {
+  const itemId = item.id || item.question.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const buttonId = `billing-faq-button-${itemId}`;
+  const panelId = `billing-faq-panel-${itemId}`;
+
   return (
     <div className="border-b border-black/[0.05] dark:border-white/[0.10] last:border-0">
       <button
+        type="button"
         onClick={onToggle}
+        id={buttonId}
+        aria-expanded={isOpen}
+        aria-controls={panelId}
         className="w-full flex items-center justify-between py-4 text-left group"
       >
         <span className="text-sm font-medium text-black/75 dark:text-white/80 group-hover:text-black/90 dark:group-hover:text-white transition-colors pr-4">
@@ -247,6 +255,9 @@ function FAQItem({ item, isOpen, onToggle }) {
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.25, ease: "easeInOut" }}
+            id={panelId}
+            role="region"
+            aria-labelledby={buttonId}
             className="overflow-hidden"
           >
             <p className="text-sm text-black/50 dark:text-white/60 leading-relaxed pb-4">
@@ -346,6 +357,25 @@ export default function BillingNew() {
     window.history.replaceState({}, "", url.toString());
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const scrollToFaq = () => {
+      if (window.location.hash !== "#faq") return;
+      window.requestAnimationFrame(() => {
+        const faq = document.getElementById("faq");
+        if (!faq) return;
+        setOpenFaq((prev) => (prev == null ? 0 : prev));
+        faq.scrollIntoView({ behavior: "smooth", block: "start" });
+        faq.focus({ preventScroll: true });
+      });
+    };
+
+    scrollToFaq();
+    window.addEventListener("hashchange", scrollToFaq);
+    return () => window.removeEventListener("hashchange", scrollToFaq);
+  }, []);
+
   const handleCheckout = useCallback(
     async (planId) => {
       if (planId === currentPlan) return;
@@ -424,14 +454,22 @@ export default function BillingNew() {
         </div>
 
         {/* FAQ */}
-        <div className="max-w-2xl mx-auto mb-16">
-          <h3 className="text-xl font-semibold text-black/85 dark:text-white/90 text-center mb-8">
+        <div
+          id="faq"
+          tabIndex={-1}
+          aria-labelledby="billing-faq-heading"
+          className="max-w-2xl mx-auto mb-16 scroll-mt-8 focus:outline-none"
+        >
+          <h3
+            id="billing-faq-heading"
+            className="text-xl font-semibold text-black/85 dark:text-white/90 text-center mb-8"
+          >
             Frequently asked questions
           </h3>
           <div className="rounded-2xl bg-white dark:bg-zinc-900/85 border border-black/[0.06] dark:border-white/[0.12] shadow-sm dark:shadow-black/30 p-6">
             {FAQ_ITEMS.map((item, i) => (
               <FAQItem
-                key={i}
+                key={item.id || item.question}
                 item={item}
                 isOpen={openFaq === i}
                 onToggle={() => toggleFaq(i)}

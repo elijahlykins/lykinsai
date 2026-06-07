@@ -69,31 +69,49 @@ export const PLANS = [
 
 export const FAQ_ITEMS = [
   {
+    id: "free-plan",
     question: "What do I get on the Free plan?",
     answer:
-      "Every account starts on Free. You get a limited number of neurons and Vault cards, the LYKN model for chat, and one input connection plus Claude. It's enough to feel how LYKN's synthesis layer follows you across tools before you upgrade.",
+      "Every account starts on Free. You get 100 synthesis neurons, 50 Vault cards, the LYKN model for chat, and Claude plus one input connection. It's enough to feel how LYKN's synthesis layer follows you across tools before you upgrade.",
   },
   {
+    id: "pro-included",
     question: "What does Pro include?",
     answer:
-      "Pro ($25/mo, or $17/mo billed annually) unlocks unlimited neurons, unlimited Vault cards, every model in the picker — including GPT, Claude, Gemini, and Grok frontier picks — and every connection.",
+      "Pro unlocks unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection. It is $25/month on monthly billing or $17/month when billed annually ($204/year).",
   },
   {
+    id: "trial",
     question: "Is there a free trial?",
     answer:
-      "Yes. Every new account starts with a 7-day Pro trial. Add a card at signup to unlock the app. You will not be charged until the trial ends, and you can cancel anytime from billing settings.",
+      "Yes. New accounts start with a 7-day Pro trial. Add a card at signup to unlock the app; you will not be charged until the trial ends, and you can cancel before then from billing settings.",
   },
   {
+    id: "annual-savings",
     question: "How much do I save by paying yearly?",
     answer:
       "Roughly a third off. Pro is $25/mo monthly or $17/mo when billed annually ($204/yr).",
   },
   {
+    id: "switch-or-cancel",
     question: "Can I switch plans anytime?",
     answer:
-      "Yes. You can upgrade or cancel at any time from the billing portal. Upgrades take effect immediately and you're charged a prorated amount. Cancellation keeps access through the end of your billing period.",
+      "Yes. You can upgrade, change billing cadence, or cancel from the billing portal. Upgrades take effect immediately and are prorated; cancellations keep Pro access active through the end of the current billing period.",
   },
   {
+    id: "manage-billing",
+    question: "Where do I update my card or download invoices?",
+    answer:
+      "Open Settings, go to Payment, and choose Manage subscription. The Stripe billing portal lets you update payment methods, review invoices, change your plan, or cancel.",
+  },
+  {
+    id: "after-checkout",
+    question: "What happens after checkout?",
+    answer:
+      "After Stripe confirms checkout, LYKN refreshes your billing status automatically. If your plan does not update right away, refresh the page; webhooks can take a few moments to finish.",
+  },
+  {
+    id: "teams",
     question: "When is Teams available?",
     answer:
       "Teams is our shared-workspace plan — one synthesis layer your whole team can lean on. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
