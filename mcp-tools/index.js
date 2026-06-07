@@ -69,6 +69,8 @@ import { createReminderTool } from './createReminder.js';
 import { listRemindersTool } from './listReminders.js';
 import { updateReminderTool } from './updateReminder.js';
 import { listCustomModelsTool } from './listCustomModels.js';
+import { buildWithCursorTool } from './buildWithCursor.js';
+import { checkCursorBuildTool } from './checkCursorBuild.js';
 
 export const MCP_TOOLS = [
   // Tier 1 — Core beliefs (governance, ratified)
@@ -112,6 +114,10 @@ export const MCP_TOOLS = [
   updateReminderTool,
   // Custom models — read the user's Model Builder creations
   listCustomModelsTool,
+  // Cursor cloud-agent builds — hand a coding task to Cursor (opens a PR) and
+  // check on it. Async; the server poller surfaces completion to the user.
+  buildWithCursorTool,
+  checkCursorBuildTool,
   // Preferences & activity feed (server-honoured user policy + cross-store deltas)
   getUserPreferencesTool,
   updateUserPreferenceTool,

@@ -109,6 +109,10 @@ export const CHAT_TOOL_NAMES = [
   // Talk to ANY published model (sub-agent), main agent or not — sends a
   // message and returns the model's report. Always available.
   'lykn_communicate_with_model',
+  // Hand a coding task to a Cursor cloud agent (opens a PR) and check on it.
+  // Async — the server poller surfaces completion; deploy stays manual.
+  'lykn_build_with_cursor',
+  'lykn_check_cursor_build',
   // ── Preference write (ASK FIRST — see tool description) ──────────
   'lykn_updateUserPreference',
   // ── Capability-aware routing (read-only catalog lookup) ──────────

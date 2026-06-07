@@ -26,6 +26,11 @@ import {
 import { searchWeb, formatSearchResultsForPrompt } from './lib/exterior/webSearch.js';
 import { fetchWebPage } from './lib/exterior/webFetch.js';
 import {
+  pollRunningBuilds,
+  claimUnannouncedBuilds,
+  isCursorBuildsConfigured,
+} from './lib/cursor/cursorBuilds.js';
+import {
   getOrCreateSession,
   logAiUsage,
   classifyActionType,
@@ -3061,8 +3066,24 @@ async function gatherVoiceBriefingData(authHeader, userId) {
     console.warn('⚠️ voice briefing models load:', e?.message || e);
   }
 
+  // Cursor cloud-agent builds that finished since we last told the user.
+  // Claim them here (mark announced) because the deterministic opening line
+  // below speaks them — this is the proactive "Cursor finished X" notice.
+  let cursorBuilds = [];
+  try {
+    const claimed = await claimUnannouncedBuilds(client, userId);
+    cursorBuilds = (claimed || []).map((b) => ({
+      instruction: String(b.instruction || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      status: b.status,
+      pr_url: b.pr_url || null,
+    })).filter((b) => b.instruction);
+  } catch (e) {
+    console.warn('⚠️ voice briefing cursor builds load:', e?.message || e);
+  }
+
   return {
     project, recentUpdates, recentNotes, reminders, recentNeurons, recentModels,
+    cursorBuilds,
     windowDays: VOICE_BRIEFING_WINDOW_DAYS,
   };
 }
@@ -3130,6 +3151,15 @@ function formatVoiceBriefingFacts(firstName, data) {
     lines.push('', 'REMINDERS: none due or coming up.');
   }
 
+  if (data.cursorBuilds?.length) {
+    lines.push('', 'CURSOR BUILDS JUST FINISHED (your opening line already mentioned these — they are ready for the user to test; deploy is manual):');
+    for (const b of data.cursorBuilds) {
+      const outcome = b.status === 'completed' ? 'ready for testing' : `did not finish (${b.status})`;
+      const pr = b.pr_url ? ` — PR: ${b.pr_url}` : '';
+      lines.push(`- ${b.instruction} (${outcome})${pr}`);
+    }
+  }
+
   return lines.join('\n');
 }
 
@@ -3139,7 +3169,8 @@ function voiceBriefingHasContent(data) {
     || (data?.recentNotes?.length || 0) > 0
     || (data?.recentNeurons?.length || 0) > 0
     || (data?.recentModels?.length || 0) > 0
-    || (data?.reminders?.length || 0) > 0;
+    || (data?.reminders?.length || 0) > 0
+    || (data?.cursorBuilds?.length || 0) > 0;
 }
 
 // How LYKN addresses the user in the opening line — the honorific ("sir") when
@@ -3162,9 +3193,38 @@ const VOICE_BRIEFING_OFFERS = [
 function buildVoiceBriefingOffer(user, data) {
   const addressee = voiceBriefingAddressee(user);
   const addr = addressee ? `, ${addressee}` : '';
+
+  // Cursor builds are proactively promised ("I'll tell you when it's ready"),
+  // so lead the opening line with them rather than burying them in the offer.
+  const builds = Array.isArray(data?.cursorBuilds) ? data.cursorBuilds : [];
+  let buildLine = '';
+  if (builds.length) {
+    const done = builds.filter((b) => b.status === 'completed');
+    const failed = builds.filter((b) => b.status !== 'completed');
+    const parts = [];
+    if (done.length === 1) parts.push(`Cursor finished ${done[0].instruction} — it's ready for testing`);
+    else if (done.length > 1) parts.push(`Cursor finished ${done.length} builds — they're ready for testing`);
+    if (failed.length === 1) parts.push(`the build for ${failed[0].instruction} didn't finish`);
+    else if (failed.length > 1) parts.push(`${failed.length} builds didn't finish`);
+    if (parts.length) buildLine = `${parts.join(', and ')}. `;
+  }
+
   if (!voiceBriefingHasContent(data)) {
     return `Welcome back${addr}. Nothing new to report since last time — where do you want to start?`;
   }
+
+  if (buildLine) {
+    const hasOther = Boolean(data?.project)
+      || (data?.recentUpdates?.length || 0) > 0
+      || (data?.recentNotes?.length || 0) > 0
+      || (data?.recentNeurons?.length || 0) > 0
+      || (data?.recentModels?.length || 0) > 0
+      || (data?.reminders?.length || 0) > 0;
+    return hasOther
+      ? `Welcome back${addr}. ${buildLine}Want to hear your other recent updates?`
+      : `Welcome back${addr}. ${buildLine}Anything you'd like to do next?`;
+  }
+
   const pick = VOICE_BRIEFING_OFFERS[Math.floor(Math.random() * VOICE_BRIEFING_OFFERS.length)] || VOICE_BRIEFING_OFFERS[0];
   return pick.replace('{addr}', addr);
 }
@@ -12251,6 +12311,24 @@ app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req
         prompt += '\n\n' + formatBoundProjectGuidance(boundRow);
       }
     }
+    // Cursor cloud-agent builds that finished since we last told the user.
+    // Surface once in the in-app chat too (same one-shot claim the voice
+    // briefing uses), gated to substantive turns to avoid a write per message.
+    if (!streamSkipBeliefs && req.user?.id && supabaseAdmin && isCursorBuildsConfigured()) {
+      try {
+        const finishedBuilds = await claimUnannouncedBuilds(supabaseAdmin, req.user.id);
+        if (finishedBuilds.length) {
+          const buildLines = finishedBuilds.map((b) => {
+            const outcome = b.status === 'completed' ? 'ready for testing' : `did not finish (${b.status})`;
+            const pr = b.pr_url ? ` PR: ${b.pr_url}` : '';
+            return `- ${String(b.instruction).slice(0, 200)} (${outcome})${pr}`;
+          });
+          prompt += '\n\n[CURSOR_BUILDS_FINISHED — mention this near the start of your reply: a Cursor build you started has finished. It is ready for the user to test; deployment is manual. Share the PR link if present; never invent one.]\n' + buildLines.join('\n');
+        }
+      } catch (e) {
+        console.warn('⚠️ stream cursor builds surface:', e?.message || e);
+      }
+    }
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
     if (streamCustomModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(streamCustomModelKnowledge);
@@ -14016,6 +14094,11 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "NEVER say 'I'll get back to you when <model> finishes', 'they're still working on it', or 'let me check if they're done' — there is no later. " +
   "If you have not just received a report from the tool, you have not contacted the model yet, so call communicate_with_model now. " +
   "If the tool returns an error (e.g. the model is a draft / not published), tell the user that plainly. " +
+  "build_with_cursor / check_cursor_build: when the user EXPLICITLY asks you to build, implement, add, fix, or change " +
+  "something in their code or app, hand it to Cursor with build_with_cursor (give it a clear, self-contained instruction). " +
+  "This is ASYNC — it only STARTS the build (which takes minutes) and opens a pull request when done. Tell the user it's " +
+  "underway and that you'll let them know when it's ready for testing; do NOT say it's finished, and do NOT invent a PR link. " +
+  "If they ask whether it's done, call check_cursor_build and read back the real status. Only build when they actually ask you to. " +
   "ROUTING — web vs vault (important): search_vault is ONLY for the user's OWN saved notes, files, and synthesis " +
   "(their personal knowledge). World news, weather, prices, sports, stocks/crypto, and current events are NEVER in the " +
   "vault. When the user asks for news, 'the latest', 'today', 'current', or anything about the outside world, call " +
@@ -14338,6 +14421,43 @@ const LYKN_VOICE_TOOL_DEFS = [
         context: { type: 'string', description: 'Optional background from the conversation the model needs.' },
       },
       required: ['message'],
+    },
+  },
+  // ── Cursor cloud-agent builds ─────────────────────────────────────────
+  {
+    name: 'build_with_cursor',
+    mcp: 'lykn_build_with_cursor',
+    description:
+      'Hand a CODING task to a Cursor cloud agent — it builds the change against the user\'s repo and opens ' +
+      'a pull request. Call ONLY when the user explicitly asks you to build, implement, add, fix, or change ' +
+      'something in their code/app ("have Cursor add X", "build me Y", "fix the Z bug", "get Cursor started ' +
+      'on…"). Confirm the concrete task first; never on a vague wish. ASYNC — this returns once the build has ' +
+      'STARTED (it takes minutes). Tell the user it\'s underway and that you\'ll let them know when it\'s ready ' +
+      'for testing. Do NOT say it\'s finished and do NOT invent a PR link. Write a clear, self-contained ' +
+      'instruction — the cloud agent does not hear this conversation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        instruction: { type: 'string', description: 'Clear, self-contained description of what to build/change, with any constraints.' },
+      },
+      required: ['instruction'],
+    },
+  },
+  {
+    name: 'check_cursor_build',
+    mcp: 'lykn_check_cursor_build',
+    description:
+      'Check on builds you handed to Cursor. Call when the user asks "is Cursor done", "did the build finish", ' +
+      '"what\'s the status of the build", or "is the PR up yet". Refreshes status from Cursor and returns the ' +
+      'recent builds with their status (running/completed/failed), pull-request link, and a short summary. ' +
+      'Read it back plainly; if it\'s still running, say so — do not claim it\'s done or invent a PR link.',
+    parameters: {
+      type: 'object',
+      properties: {
+        build_id: { type: 'string', description: 'Optional id of a specific build. Omit to get recent builds.' },
+        limit: { type: 'integer', description: 'How many recent builds (default 5).' },
+      },
+      required: [],
     },
   },
   // ── Vault writes ─────────────────────────────────────────────────────
@@ -17525,6 +17645,22 @@ app.post('/api/connections/poll-due', async (req, res) => {
   }
 });
 
+// Admin / cron endpoint: sync in-flight Cursor cloud-agent builds. Serverless
+// fallback for the in-process poller (which Render/self-hosted run on an
+// interval). Same shared-secret auth as the other poll-due endpoints.
+app.post('/api/ai/cursor-builds/poll-due', async (req, res) => {
+  try {
+    if (!verifyAdminIngestSecret(req)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
+    const result = await pollRunningBuilds(supabaseAdmin);
+    return res.json({ ok: true, ...result });
+  } catch (err) {
+    return res.status(500).json({ error: 'Poll failed' });
+  }
+});
+
 // ============================================
 // CONNECTOR FRAMEWORK (OAuth providers — GitHub, Reddit, Notion, ...)
 // ============================================
@@ -18179,6 +18315,25 @@ if (process.env.NODE_ENV !== 'test') {
       console.log(
         '→ Connector poller: ⚪ disabled (set CONNECTOR_POLLER_ENABLED=1 or schedule a cron against POST /api/connections/poll-due)',
       );
+    }
+
+    // Cursor build poller — checks in-flight Cursor cloud-agent builds for
+    // completion, records the PR + result, and leaves them unannounced so the
+    // next voice briefing tells the user. Same serverless rules as above; on
+    // serverless, schedule a cron against POST /api/ai/cursor-builds/poll-due.
+    if (!isServerless && supabaseAdmin && isCursorBuildsConfigured()) {
+      const intervalMs = Math.max(10_000, Number(process.env.CURSOR_BUILD_POLL_MS) || 30_000);
+      const tick = () => {
+        pollRunningBuilds(supabaseAdmin)
+          .then((r) => {
+            if (r?.completed) console.log(`🛠️  Cursor builds: ${r.completed} finished (scanned ${r.scanned})`);
+          })
+          .catch((e) => console.warn('⚠️ cursor build poller:', e?.message || e));
+      };
+      setInterval(tick, intervalMs).unref?.();
+      console.log(`→ Cursor build poller: ✅ every ${Math.round(intervalMs / 1000)}s`);
+    } else if (!isCursorBuildsConfigured()) {
+      console.log('→ Cursor build poller: ⚪ disabled (set CURSOR_API_KEY to enable lykn_build_with_cursor)');
     }
 
     // Quick boot summary of which providers are wired up.

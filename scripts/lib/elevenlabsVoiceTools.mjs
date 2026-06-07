@@ -189,6 +189,25 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
     50, // the sub-agent runs a full model call — allow up to ~45s + slack.
   ),
   clientTool(
+    'build_with_cursor',
+    "Hand a CODING task to a Cursor cloud agent — it builds the change against the user's repo and opens a pull request. Call ONLY when the user explicitly asks you to build, implement, add, fix, or change something in their code/app ('have Cursor add X', 'build me Y', 'fix the Z bug'). Confirm the concrete task first; never on a vague wish. ASYNC: this returns once the build has STARTED (it takes minutes). Tell the user it's underway and that you'll let them know when it's ready for testing — do NOT say it's done, and do NOT invent a PR link. Write a clear, self-contained instruction; the cloud agent does not hear this conversation.",
+    {
+      instruction: { type: 'string', description: 'Clear, self-contained description of what to build/change, with any constraints.' },
+    },
+    ['instruction'],
+    25, // launching the cloud agent is a quick API call; generous slack.
+  ),
+  clientTool(
+    'check_cursor_build',
+    "Check on builds you handed to Cursor. Call when the user asks 'is Cursor done', 'did the build finish', 'what's the status of the build', or 'is the PR up yet'. Refreshes status from Cursor and returns recent builds with status (running/completed/failed), the pull-request link, and a short summary. Read it back plainly; if still running, say so — never claim it's done or invent a PR link.",
+    {
+      build_id: { type: 'string', description: 'Optional id of a specific build. Omit to get recent builds.' },
+      limit: { type: 'integer', description: 'How many recent builds (default 5).' },
+    },
+    [],
+    20,
+  ),
+  clientTool(
     'save_to_vault',
     "Save a note into the user's LYKN vault. Only call when the user explicitly asks to save/remember something.",
     {

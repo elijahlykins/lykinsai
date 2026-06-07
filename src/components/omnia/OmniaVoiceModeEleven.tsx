@@ -61,6 +61,8 @@ const TOOL_NAMES = [
   "update_reminder",
   "list_custom_models",
   "communicate_with_model",
+  "build_with_cursor",
+  "check_cursor_build",
   "save_to_vault",
 ] as const;
 
