@@ -3218,6 +3218,37 @@ mark {
   background: hsl(0 0% 12%);
 }
 
+/* Proportional scaler for phone previews (see WakePreviewFit.tsx). The outer
+   box is the real preview-window size; the inner is laid out at a fixed
+   desktop "design" width and uniformly transform-scaled to fill it, so every
+   element (cards, chat bar, text) shrinks together instead of squishing. */
+.lykn-wake-preview-fit {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-self: stretch;
+  overflow: hidden;
+}
+
+.lykn-wake-preview-fit-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+  will-change: transform;
+}
+
+/* The vault masonry uses viewport-based column utilities, which collapse to a
+   single column at a phone viewport even though we render it at a wide design
+   width inside the scaler. Force a real multi-column grid so the cards tile
+   (and scale down together) instead of stacking full-width. Only applies when
+   wrapped by the scaler, i.e. on phones. */
+.lykn-wake-preview-fit .lykn-wake-vault-preview-masonry {
+  columns: 3;
+}
+
 .lykn-wake-vault-live-preview {
   position: relative;
   overflow: hidden;
@@ -3792,12 +3823,15 @@ mark {
   .lykn-wake-product-preview {
     width: 100%;
     max-width: 30rem;
-    /* Fill the band between the Sign-in pill (top) and the scroll hint +
-       nav arrows (bottom) so the whole preview scales to the screen
-       instead of being clamped to a fixed pixel height. The matching
-       hero padding (3.5rem top + 4.25rem bottom) reserves that chrome. */
-    height: calc(100svh - 7.75rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-    max-height: calc(100svh - 7.75rem);
+    /* A compact "app window" that floats in the band between the Sign-in pill
+       (top) and the scroll hint + nav arrows (bottom). The window stays short;
+       WakePreviewFit renders each surface at a desktop design width and scales
+       the whole thing down to fill it, so the content is a proportional
+       miniature rather than a cramped, squished layout. */
+    height: min(
+      calc(100svh - 9rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)),
+      30rem
+    );
     aspect-ratio: auto;
     margin-inline: auto;
     flex: 0 0 auto;

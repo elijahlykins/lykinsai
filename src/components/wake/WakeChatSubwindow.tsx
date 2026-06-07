@@ -1,4 +1,5 @@
 import WakeChatTourPreview from "@/components/wake/WakeChatTourPreview";
+import WakePreviewFit from "@/components/wake/WakePreviewFit";
 
 interface WakeChatSubwindowProps {
   active: boolean;
@@ -22,7 +23,11 @@ export default function WakeChatSubwindow({
         <span className="lykn-wake-subwindow-title">Chat</span>
       </div>
       <div className="lykn-wake-subwindow-body">
-        {showPreview ? <WakeChatTourPreview active={active} /> : null}
+        {showPreview ? (
+          <WakePreviewFit designWidth={720}>
+            <WakeChatTourPreview active={active} />
+          </WakePreviewFit>
+        ) : null}
       </div>
     </div>
   );

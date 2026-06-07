@@ -6425,7 +6425,7 @@ User: ${text}`;
                 )}
               <div className={
                 isWakePreview
-                  ? "col-start-1 col-span-2 row-start-2 columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"
+                  ? "lykn-wake-vault-preview-masonry col-start-1 col-span-2 row-start-2 columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"
                   : isEmbeddedMode
                   ? vaultView === "grid"
                     ? "grid grid-cols-2 gap-3"

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import VaultNew from "@/pages/new/VaultNew";
 import Connections from "@/pages/Connections";
+import WakePreviewFit from "@/components/wake/WakePreviewFit";
 
 type WakeVaultPanel = "vault" | "connections";
 
@@ -34,10 +35,14 @@ export default function WakeVaultSubwindow({
       </div>
       <div className="lykn-wake-subwindow-body">
         {showPreview && panel === "vault" ? (
-          <VaultNew wakePreview onWakePreviewTabChange={setPanel} />
+          <WakePreviewFit designWidth={1000}>
+            <VaultNew wakePreview onWakePreviewTabChange={setPanel} />
+          </WakePreviewFit>
         ) : null}
         {showPreview && panel === "connections" ? (
-          <Connections wakePreview onWakePreviewTabChange={setPanel} />
+          <WakePreviewFit designWidth={1000}>
+            <Connections wakePreview onWakePreviewTabChange={setPanel} />
+          </WakePreviewFit>
         ) : null}
       </div>
     </div>
