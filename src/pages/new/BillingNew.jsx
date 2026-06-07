@@ -285,8 +285,10 @@ async function postBilling(path, body) {
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(json?.message || json?.error || `Request failed: ${res.status}`);
-    err.code = json?.error;
+    const err = Object.assign(
+      new Error(json?.message || json?.error || `Request failed: ${res.status}`),
+      { code: json?.error },
+    );
     throw err;
   }
   return json;
