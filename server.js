@@ -14016,9 +14016,14 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "NEVER say 'I'll get back to you when <model> finishes', 'they're still working on it', or 'let me check if they're done' — there is no later. " +
   "If you have not just received a report from the tool, you have not contacted the model yet, so call communicate_with_model now. " +
   "If the tool returns an error (e.g. the model is a draft / not published), tell the user that plainly. " +
-  "Use search_vault proactively the moment a question " +
-  "depends on the user's own saved knowledge rather than guessing; use web_search the moment it depends on CURRENT or " +
-  "external facts you don't have, instead of guessing or saying you can't browse — you can. When a tool is running, keep your spoken acknowledgement " +
+  "ROUTING — web vs vault (important): search_vault is ONLY for the user's OWN saved notes, files, and synthesis " +
+  "(their personal knowledge). World news, weather, prices, sports, stocks/crypto, and current events are NEVER in the " +
+  "vault. When the user asks for news, 'the latest', 'today', 'current', or anything about the outside world, call " +
+  "web_search IMMEDIATELY — do NOT search the vault first, and NEVER say 'I couldn't find that in your saved data' for " +
+  "outside-world info. Only reach for search_vault when the question is about what the USER saved or knows. " +
+  "NO-STALL RULE: when you decide to use a tool, CALL it in this SAME turn. Do not say 'let me search… one moment' and " +
+  "then stop — announcing a search without actually calling web_search is a failure. Call the tool, wait for its result, " +
+  "then speak the findings. When a tool is running, keep your spoken acknowledgement " +
   "brief (e.g. 'let me check'). " +
   "If you don't know something from the user's context and a tool can't help, say so honestly and briefly.";
 
