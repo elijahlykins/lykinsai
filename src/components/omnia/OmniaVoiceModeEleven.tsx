@@ -44,6 +44,8 @@ const STATUS_COPY: Record<VoiceUiState, string> = {
 // /api/ai/realtime/tool dispatch handles.
 const TOOL_NAMES = [
   "search_vault",
+  "web_search",
+  "web_fetch",
   "find_connections",
   "get_beliefs",
   "get_rules",

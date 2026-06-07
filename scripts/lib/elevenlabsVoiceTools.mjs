@@ -30,6 +30,25 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
     ['query'],
   ),
   clientTool(
+    'web_search',
+    "Search the live web for CURRENT information the user does NOT already have saved — news, prices, recent events, 'what happened today', facts after your training cutoff. Use when the user asks you to look something up / search / google, or when answering needs live data. Do NOT use for the user's own saved notes (use search_vault). Summarise findings out loud and say where they came from; never invent results.",
+    {
+      query: { type: 'string', description: 'Concise search query.' },
+      num_results: { type: 'integer', description: 'How many results (1-10, default 5).' },
+    },
+    ['query'],
+    30, // live search + deep-browse of top results can take a while.
+  ),
+  clientTool(
+    'web_fetch',
+    "Fetch ONE web page and read its main text — to read, summarise, or quote a specific URL the user mentioned or a promising link from web_search. If the page can't be read, say so; never fabricate its contents.",
+    {
+      url: { type: 'string', description: 'The http(s) URL to read.' },
+    },
+    ['url'],
+    25,
+  ),
+  clientTool(
     'find_connections',
     "Cross-store search across the WHOLE synthesis layer (beliefs, facts, concepts, vault notes) for a topic. Use for 'what do I already think/know about X?'.",
     { query: { type: 'string', description: 'The topic to map onto the user\'s knowledge.' } },

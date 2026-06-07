@@ -174,6 +174,7 @@ import {
 import { buildMcpHandler, buildMcpStreamHandler, mcpMethodNotAllowed, MCP_DISCOVERY } from './mcp-server.js';
 import { mountOauthServer } from './oauth-server.js';
 import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools/index.js';
+import { EXTERIOR_TOOLS_BY_NAME } from './mcp-tools/exterior/index.js';
 import { communicateWithModelTool } from './mcp-tools/communicateWithModel.js';
 import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, supportsTools } from './mcp-tools/chatTools.js';
 import {
@@ -14001,7 +14002,9 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "[CURRENT_PROJECT]), identifiers like rule_id=..., and tags like <applied>. These are silent guidance for you ONLY. " +
   "NEVER read them aloud, never say words like 'rule_id', 'applied', or bracketed section names, and never emit any tags. " +
   "You also have live TOOLS you can call during the conversation: search_vault (look up anything the user saved or might " +
-  "know), get_project_state (read their active project status), update_project_state (record a decision/blocker/milestone), " +
+  "know), web_search (search the live web for current info the user does NOT already have saved — news, prices, recent " +
+  "events, anything after your training cutoff) and web_fetch (read one specific URL), " +
+  "get_project_state (read their active project status), update_project_state (record a decision/blocker/milestone), " +
   "create_reminder / list_reminders / update_reminder (set or manage time-anchored reminders when the user says 'remind me to…'), " +
   "list_custom_models (see every model the user built AND each model's purpose), " +
   "communicate_with_model (hand a task or question to one of the user's OTHER models — a sub-agent, main or not — and read back the report it returns), " +
@@ -14014,7 +14017,8 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "If you have not just received a report from the tool, you have not contacted the model yet, so call communicate_with_model now. " +
   "If the tool returns an error (e.g. the model is a draft / not published), tell the user that plainly. " +
   "Use search_vault proactively the moment a question " +
-  "depends on the user's own saved knowledge rather than guessing. When a tool is running, keep your spoken acknowledgement " +
+  "depends on the user's own saved knowledge rather than guessing; use web_search the moment it depends on CURRENT or " +
+  "external facts you don't have, instead of guessing or saying you can't browse — you can. When a tool is running, keep your spoken acknowledgement " +
   "brief (e.g. 'let me check'). " +
   "If you don't know something from the user's context and a tool can't help, say so honestly and briefly.";
 
@@ -14256,6 +14260,39 @@ const LYKN_VOICE_TOOL_DEFS = [
       required: ['id'],
     },
   },
+  // ── Live web (current info beyond the user's own knowledge) ───────────
+  {
+    name: 'web_search',
+    mcp: 'lykn_web_search',
+    description:
+      'Search the live web for CURRENT information that is not in the user\'s vault or synthesis layer — ' +
+      'news, prices, recent events, "what happened today", facts after your training cutoff. Call when the ' +
+      'user asks you to look something up / search / google, or when answering clearly needs live data. ' +
+      'Do NOT use it for the user\'s own saved notes (use search_vault). Returns ranked snippets; ' +
+      'summarise the findings out loud and say where they came from. Never invent results you did not get.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Concise search query.' },
+        num_results: { type: 'integer', description: 'How many results (1-10, default 5).' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'web_fetch',
+    mcp: 'lykn_web_fetch',
+    description:
+      'Fetch ONE web page and read its main text — use to read, summarise, or quote a specific URL the user ' +
+      'mentioned, or a promising link from web_search. If the page cannot be read, say so; never fabricate its contents.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'The http(s) URL to read.' },
+      },
+      required: ['url'],
+    },
+  },
   // ── Custom models ─────────────────────────────────────────────────────
   {
     name: 'list_custom_models',
@@ -14478,7 +14515,10 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
     // privileges — no read-only token gate), unwrapping its content block
     // into plain JSON.
     const runMcp = async (mcpName, mcpArgs) => {
-      const tool = MCP_TOOLS_BY_NAME[mcpName];
+      // Synthesis-layer tools live in MCP_TOOLS_BY_NAME; on-demand exterior
+      // capabilities (web search/fetch, etc.) live in EXTERIOR_TOOLS_BY_NAME.
+      // Voice tool defs can map to either, so fall through to exterior.
+      const tool = MCP_TOOLS_BY_NAME[mcpName] || EXTERIOR_TOOLS_BY_NAME[mcpName];
       if (!tool) return { ok: false, error: 'tool_unavailable' };
       const ctx = buildToolCtx(req);
       const result = await tool.handler(mcpArgs, ctx);
