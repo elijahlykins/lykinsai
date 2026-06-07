@@ -14579,6 +14579,39 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
       return res.json({ ok: !result?.isError });
     }
 
+    // Web search for VOICE is snippets-only: the default lykn_web_search
+    // handler deep-browses the top 3 result pages, which routinely blows past
+    // the voice client's tool timeout (the user just hears "I'm having trouble
+    // getting the latest news"). The spoken answer only needs titles +
+    // snippets, so skip deepBrowse and cap results for a ~1-2s response.
+    if (name === 'web_search') {
+      const query = String(args.query || '').trim();
+      if (!query) return res.json({ ok: false, error: 'query is required.' });
+      const num = Math.max(1, Math.min(6, Number(args.num_results) || 5));
+      const out = await searchWeb(query, { num, deepBrowse: false });
+      if (!out?.ok) {
+        return res.json({
+          ok: false,
+          error: out?.error || 'search_failed',
+          message:
+            out?.error === 'web_search_not_configured'
+              ? 'Web search is not configured on the server (missing SERPER_API_KEY).'
+              : 'Could not complete the web search.',
+        });
+      }
+      const results = (out.results || []).map((r) => ({
+        title: r.title,
+        url: r.url,
+        snippet: r.snippet,
+      }));
+      return res.json({
+        ok: true,
+        query: out.query,
+        result_count: results.length,
+        results,
+      });
+    }
+
     // Generic synthesis-layer tools → run the mapped MCP handler with the
     // model-provided args passed straight through (each handler validates +
     // applies its own defaults / write-scope).
