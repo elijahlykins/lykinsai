@@ -8,7 +8,7 @@ import {
   CreditCard,
   Lock,
   LogOut,
-  MessageSquare,
+  MessageCircle,
   MoreHorizontal,
   Plug,
   Settings as SettingsIcon,
@@ -29,8 +29,8 @@ function TabButton({ active, label, onClick, icon: Icon }) {
       onClick={onClick}
       className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 transition-colors ${
         active
-          ? "text-blue-600 dark:text-blue-400"
-          : "text-black/55 dark:text-white/55 hover:text-black/80 dark:hover:text-white/80"
+          ? "text-blue-400"
+          : "text-white/55 hover:text-white/80"
       }`}
       aria-label={label}
     >
@@ -62,14 +62,14 @@ export default function MobileTabBar() {
   return (
     <>
       <nav
-        className="fixed inset-x-0 bottom-0 z-[75] pb-safe border-t border-black/8 dark:border-white/8 bg-white/85 dark:bg-[rgba(20,20,24,0.92)] backdrop-blur-xl"
+        className="fixed inset-x-0 bottom-0 z-[75] pb-safe border-t border-white/8 bg-[rgba(42,42,46,0.96)] backdrop-blur-xl"
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
         <div className="flex items-stretch">
           <TabButton
             active={isChatActive}
             label="Chat"
-            icon={MessageSquare}
+            icon={MessageCircle}
             onClick={() => flushAndNavigate(nav, "/app")}
           />
           <TabButton

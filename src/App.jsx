@@ -177,8 +177,10 @@ function AppShell() {
   const isStandalone =
     isLoginPage || isStartTrialPage || isLandingPage || isSharedGridView || isSharePage;
   const chromeHidden = isEmbeddedRoute || isStandalone;
+  // On mobile the account lives in the More menu (MobileTabBar), so the
+  // floating top-left pill is only needed on chrome-less standalone pages.
   const showSignInPillGlobally =
-    !isLoginPage && !isEmbeddedRoute && (chromeHidden || isMobile);
+    !isLoginPage && !isEmbeddedRoute && chromeHidden;
 
   if (subscriptionGate.loading) {
     return null;
