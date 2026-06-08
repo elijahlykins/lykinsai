@@ -3639,7 +3639,10 @@ mark {
   position: absolute;
   right: 1.25rem;
   bottom: 1.25rem;
-  z-index: 4;
+  /* Must sit above the drei <Html> node labels in the 3D scene
+     (zIndexRange max = 10) so the "build neuron" menu is never
+     painted behind the synthesis model. */
+  z-index: 20;
   width: 3rem;
   height: 3rem;
 }
@@ -3703,7 +3706,7 @@ mark {
 .lykn-wake-synth-gate-backdrop {
   position: absolute;
   inset: 0;
-  z-index: 8;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: center;

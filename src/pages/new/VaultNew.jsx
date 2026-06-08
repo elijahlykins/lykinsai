@@ -5854,7 +5854,7 @@ User: ${text}`;
                         <ChevronDown className={`w-3 h-3 transition-transform ${showVaultViewDropdown ? "rotate-180" : ""}`} />
                       </button>
                       {showVaultViewDropdown && (
-                        <div className="absolute top-full right-0 mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1">
+                        <div className={`absolute top-full mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 ${isWakePreview ? "left-0" : "right-0"}`}>
                           {VAULT_VIEW_OPTIONS.map((v) => {
                             const Icon = v.icon;
                             const active = vaultView === v.id;
@@ -5906,7 +5906,7 @@ User: ${text}`;
                       )}
                     </div>
                     {showEmbeddedTagDropdown && (
-                      <div className="absolute top-full right-0 mt-1 w-64 max-h-72 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide">
+                      <div className={`absolute top-full mt-1 w-64 max-h-72 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide ${isWakePreview ? "left-0" : "right-0"}`}>
                         {(() => {
                           const untaggedActive = selectedFilterTags.includes("__untagged__");
                           return (
@@ -6353,10 +6353,10 @@ User: ${text}`;
                 <div ref={loadMoreRef} className="h-6" />
               </div>
             ) : (
-              <div className={isWakePreview ? "grid grid-cols-[auto_1fr] gap-x-4 gap-y-4 items-start" : undefined}>
+              <div className={isWakePreview ? "grid grid-cols-3 gap-3 items-start" : undefined}>
                 {isWakePreview && (
                   <>
-                    <div className="col-start-1 row-start-1 shrink-0 w-fit rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
+                    <div className="col-start-1 row-start-1 w-full rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[11rem] gap-2">
                       <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
                       <div className="flex gap-2">
                         <button
@@ -6381,8 +6381,8 @@ User: ${text}`;
                         </button>
                       </div>
                     </div>
-                    <div className="col-start-2 row-start-1 min-w-0 self-start">
-                      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+                    <div className="col-start-2 col-span-2 row-start-1 min-w-0 self-start">
+                      <div className="grid grid-cols-2 gap-3">
                         {wakeConnectorStripCards.map((card) => (
                           <article
                             key={card.id}
@@ -6391,7 +6391,7 @@ User: ${text}`;
                             onClick={(e) => handleCardPress(e, card)}
                             className="rounded-2xl relative cursor-pointer overflow-visible"
                           >
-                            {renderAttachmentCard(card, "h-28")}
+                            {renderAttachmentCard(card, "h-20")}
                             {card.tags?.length > 0 && (
                               <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
                                 {card.tags.map((t) => (
@@ -6430,7 +6430,7 @@ User: ${text}`;
                 )}
               <div className={
                 isWakePreview
-                  ? "lykn-wake-vault-preview-grid col-start-1 col-span-2 row-start-2 grid grid-cols-3 gap-3"
+                  ? "lykn-wake-vault-preview-grid col-start-1 col-span-3 row-start-2 grid grid-cols-3 gap-3"
                   : isEmbeddedMode
                   ? vaultView === "grid"
                     ? "grid grid-cols-2 gap-3"
@@ -6764,7 +6764,7 @@ User: ${text}`;
           onClick={handleToggleQuickNote}
           title="New quick note"
           aria-label="New quick note"
-          className="absolute bottom-4 right-4 z-[70] w-14 h-14 aspect-square shrink-0 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation bg-white text-black hover:bg-white/90"
+          className="absolute bottom-4 right-4 z-[200] w-14 h-14 aspect-square shrink-0 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation bg-white text-black hover:bg-white/90"
         >
           <Plus className="w-6 h-6" />
         </button>
