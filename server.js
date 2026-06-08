@@ -5252,8 +5252,8 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  • lykn_updateReminder — complete ("mark that done"), cancel, reschedule,',
   '    or edit a reminder. Get its id from lykn_listReminders first.',
   '',
-  'CALENDAR (native LYKN events the user schedules — LYKN IS the calendar,',
-  'it does NOT sync to Google/Apple/Outlook):',
+  'CALENDAR (the user\'s LYKN calendar — events they schedule here, PLUS',
+  'read-only events synced in from their Google/Apple calendar):',
   '  • lykn_createEvent — when the user schedules something ("put lunch with',
   '    Sarah Thursday at noon", "block 2-4pm tomorrow", "my birthday is the',
   '    14th"). YOU resolve the time: pass an absolute ISO 8601 starts_at WITH a',
@@ -5264,10 +5264,19 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    for a one-off "nudge me" with no duration.',
   '  • lykn_listEvents — "what\'s on my calendar", "what do I have Friday",',
   '    "what does next week look like". Window by from/to or days_ahead',
-  '    (default 14). Read back natural local times, never raw ISO.',
+  '    (default 14). Read back natural local times, never raw ISO. Each event',
+  '    carries read_only + external_provider; read_only:true means it came from',
+  '    the user\'s Google/Apple calendar.',
   '  • lykn_updateEvent — reschedule/edit/cancel; get the id from lykn_listEvents.',
   '  • lykn_deleteEvent — permanently remove an event (prefer updateEvent with',
   '    status "cancelled" if the user only wants it off the calendar but kept).',
+  '  IMPORTANT — synced events are READ-ONLY: any event with read_only:true',
+  '  (external_provider google/apple) CANNOT be edited, cancelled, or deleted in',
+  '  LYKN. If the user asks to remove or change one, do not keep retrying the',
+  '  tool — tell them it\'s synced from their Google/Apple calendar, so they need',
+  '  to delete/edit it in that app and it will update LYKN on the next sync. When',
+  '  a title is ambiguous (e.g. two events named the same), disambiguate by time',
+  '  and by whether it\'s a LYKN event or a synced one before acting.',
   '',
   'CUSTOM MODELS (the user\'s Model Builder creations):',
   '  • lykn_listCustomModels — "what models have I made", "which of my models',
@@ -14892,7 +14901,9 @@ const LYKN_VOICE_TOOL_DEFS = [
     description:
       'List the user\'s calendar events, earliest-first — call for "what\'s on my calendar", "what do I have ' +
       'Friday", "what does next week look like", "am I free Tuesday", or before editing/deleting an event so ' +
-      'you have its id. Window by from/to (ISO) or days_ahead (default 14). Speak natural local times, never ISO.',
+      'you have its id. Window by from/to (ISO) or days_ahead (default 14). Speak natural local times, never ISO. ' +
+      'Each event includes read_only/external_provider — read_only:true means it is synced from the user\'s ' +
+      'Google/Apple calendar and cannot be edited or deleted in LYKN.',
     parameters: {
       type: 'object',
       properties: {
@@ -14912,7 +14923,8 @@ const LYKN_VOICE_TOOL_DEFS = [
       'Reschedule ("move my dentist to 4pm"), change the length, edit text/location, toggle all-day, or cancel ' +
       'an existing event. Get its id from list_events first. Pass starts_at/in_minutes to reschedule, ' +
       'ends_at/duration_minutes for length, title/description/location to edit, or status (cancelled hides it, ' +
-      'confirmed restores). Confirm what changed.',
+      'confirmed restores). Confirm what changed. NOTE: events with read_only:true are synced from the user\'s ' +
+      'Google/Apple calendar and CANNOT be changed here — tell them to edit it in that app instead of retrying.',
     parameters: {
       type: 'object',
       properties: {
@@ -14936,7 +14948,9 @@ const LYKN_VOICE_TOOL_DEFS = [
     description:
       'Permanently delete a calendar event ("delete that meeting", "take it off my calendar"). Get its id from ' +
       'list_events first. If the user only wants it off the calendar but kept, prefer update_event with status ' +
-      'cancelled. Confirm the deletion; it cannot be undone.',
+      'cancelled. Confirm the deletion; it cannot be undone. NOTE: events with read_only:true are synced from the ' +
+      'user\'s Google/Apple calendar and CANNOT be deleted here — if they ask, tell them to remove it in that app ' +
+      '(it drops off LYKN on the next sync) instead of retrying.',
     parameters: {
       type: 'object',
       properties: {
