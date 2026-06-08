@@ -349,7 +349,9 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
   // column's easing on `left` so the dock glides in lockstep with it.
   const outerCls = isVertical
     ? "fixed top-1/2 -translate-y-1/2 z-[65] pointer-events-none transition-[left] duration-300 ease-in-out"
-    : "fixed bottom-6 left-1/2 -translate-x-1/2 z-[65] pointer-events-none";
+    // Horizontal dock is hidden on phones (the bottom tab bar already owns
+    // the bottom edge there); it returns at the md breakpoint and up.
+    : "hidden md:block fixed bottom-6 left-1/2 -translate-x-1/2 z-[65] pointer-events-none";
   const outerStyle = isVertical
     ? { left: "calc(var(--sidebar-offset, 0px) + 0.75rem)" }
     : undefined;
