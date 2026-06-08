@@ -3645,6 +3645,13 @@ mark {
   z-index: 20;
   width: 3rem;
   height: 3rem;
+  /* The 3D scene's WebGL <canvas> is promoted to its own GPU compositing
+     layer. On mobile (notably iOS Safari) that layer can paint OVER a plain
+     z-indexed DOM overlay, so the neurons bleed in front of the add button +
+     "build neuron" menu even though z-index says otherwise. Promoting this
+     overlay to its own layer too (translateZ) makes the compositor honor the
+     stacking order again. */
+  transform: translateZ(0);
 }
 
 .lykn-wake-synth-preview-add-ring {
@@ -3687,6 +3694,10 @@ mark {
   background: #000;
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
   animation: lykn-wake-synth-menu-in 140ms ease-out both;
+  /* Keep this popup on its own compositing layer (see the note on
+     .lykn-wake-synth-preview-add) so the WebGL neuron layer can't paint over
+     it on mobile. translateZ persists after the open animation settles. */
+  transform: translateZ(0);
 }
 
 .lykn-wake-synth-add-menu-item {
@@ -3714,6 +3725,9 @@ mark {
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(4px);
   animation: lykn-wake-synth-menu-in 160ms ease-out both;
+  /* Own compositing layer so the WebGL neuron layer stays behind this gate on
+     mobile (same fix as .lykn-wake-synth-preview-add). */
+  transform: translateZ(0);
 }
 
 .lykn-wake-synth-gate-card {
