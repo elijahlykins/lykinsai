@@ -721,7 +721,7 @@ export default function ConnectionsAppGrid({
               <ChevronDown className={`w-3 h-3 transition-transform ${showFilterDropdown ? "rotate-180" : ""}`} />
             </button>
             {showFilterDropdown && (
-              <div className="absolute top-full right-0 mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1">
+              <div className="absolute top-full left-0 md:left-auto md:right-0 mt-1 w-44 max-w-[calc(100vw-1.5rem)] rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1">
                 {FILTERS.map((f) => {
                   const active = filter === f.id;
                   return (

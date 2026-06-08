@@ -5854,7 +5854,7 @@ User: ${text}`;
                         <ChevronDown className={`w-3 h-3 transition-transform ${showVaultViewDropdown ? "rotate-180" : ""}`} />
                       </button>
                       {showVaultViewDropdown && (
-                        <div className={`absolute top-full mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 ${isWakePreview ? "left-0" : "right-0"}`}>
+                        <div className={`absolute top-full mt-1 w-44 max-w-[calc(100vw-1.5rem)] rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
                           {VAULT_VIEW_OPTIONS.map((v) => {
                             const Icon = v.icon;
                             const active = vaultView === v.id;
@@ -5906,7 +5906,7 @@ User: ${text}`;
                       )}
                     </div>
                     {showEmbeddedTagDropdown && (
-                      <div className={`absolute top-full mt-1 w-64 max-h-72 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide ${isWakePreview ? "left-0" : "right-0"}`}>
+                      <div className={`absolute top-full mt-1 w-56 md:w-64 max-w-[calc(100vw-1.5rem)] max-h-72 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
                         {(() => {
                           const untaggedActive = selectedFilterTags.includes("__untagged__");
                           return (
