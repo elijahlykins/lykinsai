@@ -189,6 +189,7 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
   const [appleForm, setAppleForm] = useState({ email: "", password: "" });
   const [appleSaving, setAppleSaving] = useState(false);
   const [appleReveal, setAppleReveal] = useState(false);
+  const [refreshingAll, setRefreshingAll] = useState(false);
 
   const grid = useMemo(() => buildMonthGrid(cursor.year, cursor.month), [cursor]);
 
@@ -392,6 +393,53 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
     [refreshConnections],
   );
 
+  // One-click "refresh": re-pull every connected external calendar (Google /
+  // Apple), then reload the grid. Falls back to a plain grid reload when no
+  // external calendars are connected.
+  const handleRefreshAll = useCallback(async () => {
+    setRefreshingAll(true);
+    try {
+      let conns = [];
+      try {
+        const res = await authedFetch("/api/connections");
+        if (res.ok) conns = (await res.json()).connections || [];
+      } catch {
+        /* offline / not signed in — still reload the grid below */
+      }
+      setConnections(conns);
+      const external = conns.filter(
+        (c) => (c.provider === GOOGLE_PROVIDER || c.provider === APPLE_PROVIDER) && c.status === "active",
+      );
+      let totalSaved = 0;
+      let anyReauth = false;
+      for (const c of external) {
+        try {
+          const res = await authedFetch(`/api/connections/${c.id}/sync`, { method: "POST" });
+          const data = await res.json();
+          if (res.ok) {
+            totalSaved += data.saved || 0;
+            if (data.status === "reauth") anyReauth = true;
+          }
+        } catch {
+          /* keep going — one provider failing shouldn't block the others */
+        }
+      }
+      await loadEvents();
+      await refreshConnections();
+      if (anyReauth) {
+        toast({ title: "Reconnect needed", description: "A calendar's credential was rejected.", variant: "destructive" });
+      } else if (external.length === 0) {
+        toast({ title: "Calendar refreshed" });
+      } else {
+        toast({
+          title: totalSaved > 0 ? `Synced ${totalSaved} update${totalSaved === 1 ? "" : "s"}` : "Up to date",
+        });
+      }
+    } finally {
+      setRefreshingAll(false);
+    }
+  }, [loadEvents, refreshConnections]);
+
   // Group events by local day-key for fast cell lookup.
   const eventsByDay = useMemo(() => {
     const map = new Map();
@@ -564,9 +612,18 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
+                    onClick={handleRefreshAll}
+                    disabled={refreshingAll}
+                    className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center text-black/60 dark:text-white/60 transition-colors disabled:opacity-50"
+                    title="Refresh — re-pull connected calendars"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${refreshingAll ? "animate-spin" : ""}`} />
+                  </button>
+                  <button
+                    type="button"
                     onClick={openSyncView}
                     className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center text-black/60 dark:text-white/60 transition-colors"
-                    title="Sync Google / Apple calendars"
+                    title="Connect Google / Apple calendars"
                   >
                     <Link2 className="w-4 h-4" />
                   </button>

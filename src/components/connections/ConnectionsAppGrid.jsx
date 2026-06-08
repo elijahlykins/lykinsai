@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Check, CheckCircle2, ChevronDown, Code2, Plug, ShieldAlert, Loader2, Search, X } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, Code2, Plug, ShieldAlert, Loader2, Search, Webhook, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
@@ -998,10 +998,10 @@ export default function ConnectionsAppGrid({
                 anchorId={connector.id}
                 logoDomain={connector.domain}
                 logoUrl={connector.iconUrl}
-                iconNode={connector.customApi ? Plug : undefined}
+                iconNode={connector.customApi ? Webhook : undefined}
                 iconAccentClass={
                   connector.customApi
-                    ? "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 ring-indigo-500/20"
+                    ? "bg-sky-500/10 text-sky-600 dark:text-sky-400 ring-sky-500/20"
                     : undefined
                 }
                 name={connector.name}
