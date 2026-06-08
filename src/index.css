@@ -3249,6 +3249,31 @@ mark {
   columns: 3;
 }
 
+/* Chat preview: inside the scaler it's laid out at a desktop design width, so
+   the phone rule that stretches .lykn-wake-chat-preview-inner to max-width:100%
+   makes the chat bar run edge-to-edge with a tiny-looking placeholder. Restore
+   a centered, narrower composer column and scale the field text up so the
+   "Ask me anything" placeholder reads proportionally next to the bar. */
+.lykn-wake-preview-fit .lykn-wake-chat-preview-inner {
+  max-width: 30rem;
+  margin-inline: auto;
+  gap: 1rem;
+}
+
+.lykn-wake-preview-fit .lykn-wake-chat-preview-stage {
+  padding: 1.25rem 1rem;
+}
+
+.lykn-wake-preview-fit .lykn-wake-chat-preview .omnia-neu-chat-field {
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.lykn-wake-preview-fit .lykn-wake-chat-preview-prompt {
+  font-size: 1.15rem;
+  line-height: 1.3;
+}
+
 .lykn-wake-vault-live-preview {
   position: relative;
   overflow: hidden;
