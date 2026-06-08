@@ -6391,7 +6391,7 @@ User: ${text}`;
                             onClick={(e) => handleCardPress(e, card)}
                             className="rounded-2xl relative cursor-pointer overflow-visible"
                           >
-                            {renderAttachmentCard(card, getAttachmentHeightClass(card))}
+                            {renderAttachmentCard(card, "h-28")}
                             {card.tags?.length > 0 && (
                               <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
                                 {card.tags.map((t) => (
@@ -6764,9 +6764,9 @@ User: ${text}`;
           onClick={handleToggleQuickNote}
           title="New quick note"
           aria-label="New quick note"
-          className="absolute bottom-3 right-3 z-[70] w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation bg-white text-black hover:bg-white/90"
+          className="absolute bottom-4 right-4 z-[70] w-14 h-14 aspect-square shrink-0 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation bg-white text-black hover:bg-white/90"
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="w-6 h-6" />
         </button>
       )}
 

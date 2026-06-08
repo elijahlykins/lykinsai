@@ -35,12 +35,12 @@ export default function WakeVaultSubwindow({
       </div>
       <div className="lykn-wake-subwindow-body">
         {showPreview && panel === "vault" ? (
-          <WakePreviewFit designWidth={1000}>
+          <WakePreviewFit designWidth={640}>
             <VaultNew wakePreview onWakePreviewTabChange={setPanel} />
           </WakePreviewFit>
         ) : null}
         {showPreview && panel === "connections" ? (
-          <WakePreviewFit designWidth={1000}>
+          <WakePreviewFit designWidth={640}>
             <Connections wakePreview onWakePreviewTabChange={setPanel} />
           </WakePreviewFit>
         ) : null}
