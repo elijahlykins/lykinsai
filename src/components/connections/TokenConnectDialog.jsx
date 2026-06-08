@@ -257,7 +257,8 @@ export default function TokenConnectDialog({ open, onOpenChange, connector }) {
             ))}
           </ul>
           <div className="mt-2 text-[10.5px] text-black/45 dark:text-white/45">
-            Read-only. The credential is encrypted at rest. You can revoke it any time.
+            {connector.accessNote ||
+              "Read-only. The credential is encrypted at rest. You can revoke it any time."}
           </div>
         </div>
 

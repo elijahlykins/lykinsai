@@ -45,6 +45,7 @@ import { createHash } from 'crypto';
 
 import { ConnectorAuthError } from '../../connectors-service.js';
 import { saveConnectorNote } from '../_save.js';
+import { upsertExternalEvent, pruneStaleExternalEvents } from '../_calendarEvent.js';
 
 const ICLOUD_CALDAV = 'https://caldav.icloud.com';
 
@@ -217,6 +218,11 @@ export const appleCalendarAdapter = {
     const start = new Date(Date.now() - PAST_DAYS * 86_400_000).toISOString();
     const end = new Date(Date.now() + FUTURE_DAYS * 86_400_000).toISOString();
 
+    // Captured BEFORE the loop. Every event still present upstream gets
+    // re-upserted (updated_at >= syncStartedAt); any read_only Apple row left
+    // in the window with an older updated_at vanished upstream and is pruned.
+    const syncStartedAt = new Date().toISOString();
+
     let saved = 0;
     let skipped = 0;
 
@@ -273,15 +279,66 @@ export const appleCalendarAdapter = {
             calendarName,
             email,
           });
+          // Mirror onto the native LYKN calendar grid (read-only). Best-effort.
+          await mirrorEventToCalendar({
+            supabaseAdmin,
+            userId: connection.user_id,
+            event: ev,
+            calendarName,
+          });
           if (result === 'saved' || result === 'updated') saved++;
           else skipped++;
         }
       }
     }
 
+    // CalDAV re-fetches the whole window each sync, so anything we mirrored
+    // before but didn't see this run (deleted/cancelled upstream) is stale.
+    await pruneStaleExternalEvents({
+      supabaseAdmin,
+      userId: connection.user_id,
+      provider: 'apple',
+      fromIso: start,
+      toIso: end,
+      syncedSince: syncStartedAt,
+    });
+
     return { saved, skipped };
   },
 };
+
+// The per-occurrence key mirrors saveCalendarEvent's dedupe needle so the
+// LYKN-calendar row and the vault note stay 1:1 with the same upstream event.
+function occurrenceKey(event) {
+  if (!event?.uid) return '';
+  if (event.recurrenceId) return `${event.uid}#${event.recurrenceId}`;
+  if (event.startISO) return `${event.uid}#${event.startISO}`;
+  return event.uid;
+}
+
+// Mirror an Apple (iCloud) event onto the native LYKN calendar (lykn_events)
+// as a read-only row so it renders in the calendar pop-up. Separate from the
+// vault note: the vault is for search/synthesis, this is for the grid.
+async function mirrorEventToCalendar({ supabaseAdmin, userId, event, calendarName }) {
+  const key = occurrenceKey(event);
+  if (!key || !event.startISO) return;
+  await upsertExternalEvent({
+    supabaseAdmin,
+    userId,
+    provider: 'apple',
+    externalId: key,
+    title: event.summary || '(no title)',
+    description: event.description
+      ? event.description.replace(/\s+/g, ' ').trim()
+      : null,
+    startsAt: event.startISO,
+    endsAt: event.endISO || null,
+    allDay: Boolean(event.allDay),
+    location: event.location || null,
+    status: event.status === 'TENTATIVE' ? 'tentative' : 'confirmed',
+    calendarName,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Persistence

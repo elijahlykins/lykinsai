@@ -167,6 +167,58 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
     ['id'],
   ),
   clientTool(
+    'create_event',
+    "Put an event on the user's LYKN calendar when they schedule something ('lunch with Sarah Thursday at noon', 'block 2-4pm tomorrow', 'my birthday is the 14th'). YOU resolve the time: pass an absolute ISO 8601 starts_at with timezone (current time is in your context) or in_minutes for relative. Give an end via ends_at or duration_minutes (timed events default to 60 min). Set all_day:true for day-level events. Use create_reminder instead for a one-off nudge with no duration. LYKN is the calendar — this does NOT sync to Google/Apple.",
+    {
+      title: { type: 'string', description: 'The event name.' },
+      starts_at: { type: 'string', description: 'Absolute ISO 8601 start with timezone. Provide this OR in_minutes.' },
+      in_minutes: { type: 'integer', description: 'Relative start, minutes from now. Provide this OR starts_at.' },
+      ends_at: { type: 'string', description: 'Absolute ISO 8601 end (>= start). Provide this OR duration_minutes.' },
+      duration_minutes: { type: 'integer', description: 'Event length in minutes (120 = 2 hours). Defaults to 60.' },
+      all_day: { type: 'boolean', description: 'True for day-level events.' },
+      location: { type: 'string', description: 'Optional place or meeting link.' },
+      description: { type: 'string', description: 'Optional agenda / notes.' },
+    },
+    ['title'],
+  ),
+  clientTool(
+    'list_events',
+    "List the user's calendar events, earliest-first ('what's on my calendar', 'what do I have Friday', 'what does next week look like'), or to find an id before editing/deleting. Window by from/to (ISO) or days_ahead (default 14).",
+    {
+      from: { type: 'string', description: 'Window start as ISO 8601. Pair with to.' },
+      to: { type: 'string', description: 'Window end as ISO 8601. Pair with from.' },
+      days_ahead: { type: 'integer', description: 'Look-ahead from now in days (default 14).' },
+      status: { type: 'string', description: 'confirmed, tentative, cancelled, or all.' },
+      limit: { type: 'integer', description: 'Max to return (default 100).' },
+    },
+    [],
+  ),
+  clientTool(
+    'update_event',
+    "Reschedule ('move my dentist to 4pm'), change length, edit text/location, toggle all-day, or cancel an event. Get its id from list_events first. Pass starts_at/in_minutes to reschedule, ends_at/duration_minutes for length, title/description/location to edit, or status (cancelled hides it).",
+    {
+      id: { type: 'string', description: 'The event id (from list_events).' },
+      starts_at: { type: 'string', description: 'New absolute ISO 8601 start with timezone.' },
+      in_minutes: { type: 'integer', description: 'New start as minutes from now.' },
+      ends_at: { type: 'string', description: 'New absolute ISO 8601 end (>= start).' },
+      duration_minutes: { type: 'integer', description: 'New length in minutes from the start.' },
+      all_day: { type: 'boolean', description: 'Toggle the all-day flag.' },
+      title: { type: 'string', description: 'New event name.' },
+      description: { type: 'string', description: 'New notes/agenda.' },
+      location: { type: 'string', description: 'New location/meeting link.' },
+      status: { type: 'string', description: 'confirmed, tentative, or cancelled.' },
+    },
+    ['id'],
+  ),
+  clientTool(
+    'delete_event',
+    "Permanently delete a calendar event ('delete that meeting', 'take it off my calendar'). Get its id from list_events first. If the user only wants it off the calendar but kept, prefer update_event with status cancelled.",
+    {
+      id: { type: 'string', description: 'The event id to delete (from list_events).' },
+    },
+    ['id'],
+  ),
+  clientTool(
     'list_custom_models',
     "List the custom models the user built in Model Builder ('what models have I made', 'which is published', 'what's my main agent', 'what is each model for'). Returns each model's name, PURPOSE (one-line description), status, base model, training mode, and main-agent flag. Use the purposes to pick which model to hand a task to via communicate_with_model.",
     {

@@ -50,6 +50,7 @@ import { linkdingAdapter } from './connectors/linkding.js';
 import { goodreadsAdapter } from './connectors/goodreads.js';
 import { amazonWishlistAdapter } from './connectors/amazon-wishlist.js';
 import { appleCalendarAdapter } from './connectors/apple/calendar.js';
+import { cursorAdapter } from './connectors/cursor.js';
 
 // ---------------------------------------------------------------------------
 // Adapter spec (informal — JS, no types)
@@ -116,6 +117,11 @@ export const CONNECTOR_REGISTRY = {
   // generated at appleid.apple.com. Same token-mode plumbing as Trello /
   // Bluesky app-passwords / Pinboard.
   'apple-calendar': appleCalendarAdapter,
+  // ── Cursor (bring-your-own API key — ACTION connector, not a vault pull) ──
+  // Attaching it lets the LYKN agent dispatch coding builds to a Cursor cloud
+  // agent on the USER'S OWN account (lib/cursor/cursorBuilds.js). No shared
+  // server key; each user pastes a key from Cursor Dashboard → Integrations.
+  cursor: cursorAdapter,
 };
 
 // Where each provider's credentials live in process.env. Keeping this as a

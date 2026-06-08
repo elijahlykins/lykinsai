@@ -104,6 +104,11 @@ export const CHAT_TOOL_NAMES = [
   'lykn_createReminder',
   'lykn_listReminders',
   'lykn_updateReminder',
+  // ── Calendar (native LYKN events; rendered in the calendar pop-up) ─
+  'lykn_createEvent',
+  'lykn_listEvents',
+  'lykn_updateEvent',
+  'lykn_deleteEvent',
   // ── Custom models (read the user's Model Builder creations) ──────
   'lykn_listCustomModels',
   // Talk to ANY published model (sub-agent), main agent or not — sends a
@@ -113,6 +118,11 @@ export const CHAT_TOOL_NAMES = [
   // Async — the server poller surfaces completion; deploy stays manual.
   'lykn_build_with_cursor',
   'lykn_check_cursor_build',
+  // ── Universal app access (bring-your-own API key for any app) ────
+  // Discover the user's custom API connections and call them, with the
+  // stored key injected server-side. Writes gated per-connection.
+  'lykn_list_apps',
+  'lykn_call_app',
   // ── Preference write (ASK FIRST — see tool description) ──────────
   'lykn_updateUserPreference',
   // ── Capability-aware routing (read-only catalog lookup) ──────────

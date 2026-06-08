@@ -173,11 +173,11 @@ export const CONNECTORS = [
     statusLabel: "Live",
     summary: "Workspace pages you share with LYKN become searchable inside the Vault.",
   },
-  // Google Keep has no consumer API — Google explicitly restricts the
+  // Google Keep has no consumer API - Google explicitly restricts the
   // Keep REST API to Workspace accounts and excludes @gmail.com users
   // (see https://developers.google.com/keep/api/reference/rest). We
   // surface the tile as `no-api` / capture-only so users still get a
-  // clear story for "how do my Keep notes get into LYKN" — same shape
+  // clear story for "how do my Keep notes get into LYKN" - same shape
   // as the Instagram / Figma / Behance tiles below. Capture paths:
   // browser extension on keep.google.com, mobile share sheet from the
   // Keep Android app, and Email-to-Vault forwarding.
@@ -198,7 +198,7 @@ export const CONNECTORS = [
   },
   // Google family (Drive / Docs / Sheets / Calendar / Gmail / YouTube).
   // All share one OAuth client (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`).
-  // Status: `verification` — adapters are live and the handshake works
+  // Status: `verification` - adapters are live and the handshake works
   // for Google Cloud test users today; production users see Google's
   // "unverified app" warning and have to click through. Brand
   // verification submission is the unlock for a clean consent screen.
@@ -215,7 +215,7 @@ export const CONNECTORS = [
     status: "verification",
     statusLabel: "Pending Google review",
     summary:
-      "Auto-imports every video you Like. Pre-verification: Google Cloud test users only — others see an unverified-app warning.",
+      "Auto-imports every video you Like. Pre-verification: Google Cloud test users only - others see an unverified-app warning.",
   },
   {
     id: "google-drive",
@@ -283,7 +283,7 @@ export const CONNECTORS = [
     status: "verification",
     statusLabel: "Pending Google review",
     summary:
-      "Imports events from your primary calendar. Pre-verification: Google Cloud test users only.",
+      "Imports events from your primary calendar onto your LYKN calendar (read-only) and into your Vault. Pre-verification: Google Cloud test users only.",
   },
   {
     id: "gmail",
@@ -517,6 +517,43 @@ export const CONNECTORS = [
       "Apple Reminders has no public API. Use the iOS/macOS share sheet or an Apple Shortcut to push reminders into LYKN.",
   },
   {
+    id: "apple-calendar",
+    category: "productivity",
+    name: "Apple Calendar",
+    domain: "icloud.com",
+    color: "#FF3B30",
+    auth: "App-specific password",
+    authMode: "token",
+    pulls: ["Events (−7 to +30 days)"],
+    realtime: "Polling (60 min)",
+    status: "available",
+    statusLabel: "Live",
+    summary:
+      "Syncs your iCloud calendars onto your LYKN calendar (read-only) and into your Vault. Uses an app-specific password, never your Apple ID password.",
+    accessNote:
+      "Read-only over iCloud CalDAV. The app-specific password is encrypted at rest and grants only calendar access — revoke it any time at appleid.apple.com or here.",
+    connectFields: [
+      {
+        name: "email",
+        label: "Apple ID email",
+        placeholder: "you@icloud.com",
+        secret: false,
+        required: true,
+      },
+      {
+        name: "password",
+        label: "App-specific password",
+        placeholder: "abcd-efgh-ijkl-mnop",
+        secret: true,
+        required: true,
+        helpText:
+          "Generate at appleid.apple.com → Sign-In & Security → App-Specific Passwords. This is NOT your Apple ID password.",
+      },
+    ],
+    tokenHelpUrl: "https://appleid.apple.com/account/manage",
+    tokenHelpLabel: "Create an app-specific password",
+  },
+  {
     id: "discord",
     category: "productivity",
     name: "Discord",
@@ -683,7 +720,7 @@ export const CONNECTORS = [
     status: "no-api",
     statusLabel: "Capture only",
     summary:
-      "Obsidian vaults are local Markdown — no cloud API. Use the LYKN browser extension on Obsidian Publish pages, or paste vault file contents. Future: optional vault-folder bridge over Dropbox/iCloud.",
+      "Obsidian vaults are local Markdown - no cloud API. Use the LYKN browser extension on Obsidian Publish pages, or paste vault file contents. Future: optional vault-folder bridge over Dropbox/iCloud.",
   },
   {
     id: "logseq",
@@ -697,7 +734,7 @@ export const CONNECTORS = [
     status: "no-api",
     statusLabel: "Capture only",
     summary:
-      "Logseq graphs are local Markdown — no cloud API. Use the LYKN browser extension or paste page contents.",
+      "Logseq graphs are local Markdown - no cloud API. Use the LYKN browser extension or paste page contents.",
   },
   {
     id: "apple-notes",
@@ -839,7 +876,7 @@ export const CONNECTORS = [
     status: "soon",
     statusLabel: "Coming soon",
     summary:
-      "Channels become folders, blocks become vault items — Are.na's mental model maps 1:1 to LYKN. Adapter not wired yet.",
+      "Channels become folders, blocks become vault items - Are.na's mental model maps 1:1 to LYKN. Adapter not wired yet.",
   },
   {
     id: "figma",
@@ -1010,7 +1047,7 @@ export const CONNECTORS = [
     status: "no-api",
     statusLabel: "Use Readwise bridge",
     summary:
-      "Apple Books has no public sync API. Connect Readwise — its Apple Books importer pulls your highlights, which then flow into LYKN.",
+      "Apple Books has no public sync API. Connect Readwise - its Apple Books importer pulls your highlights, which then flow into LYKN.",
   },
   {
     id: "kobo",
@@ -1024,7 +1061,7 @@ export const CONNECTORS = [
     status: "no-api",
     statusLabel: "Use Readwise bridge",
     summary:
-      "Kobo has no public sync API. Connect Readwise — its Kobo importer pulls your highlights, which then flow into LYKN.",
+      "Kobo has no public sync API. Connect Readwise - its Kobo importer pulls your highlights, which then flow into LYKN.",
   },
   {
     id: "raindrop",
@@ -1065,7 +1102,7 @@ export const CONNECTORS = [
     status: "no-api",
     statusLabel: "Use Readwise bridge",
     summary:
-      "Matter has no public API. Enable Matter's built-in 'Auto-export to Readwise' setting, then connect Readwise here — your Matter highlights flow in via Readwise.",
+      "Matter has no public API. Enable Matter's built-in 'Auto-export to Readwise' setting, then connect Readwise here - your Matter highlights flow in via Readwise.",
   },
   {
     id: "pocket",
@@ -1125,7 +1162,7 @@ export const CONNECTORS = [
     status: "no-api",
     statusLabel: "Use Readwise bridge",
     summary:
-      "Snipd has no public API yet, but ships a first-class \"Auto-export to Readwise\" integration. Enable it in Snipd, then connect Readwise here — your snips flow in via Readwise.",
+      "Snipd has no public API yet, but ships a first-class \"Auto-export to Readwise\" integration. Enable it in Snipd, then connect Readwise here - your snips flow in via Readwise.",
   },
   {
     id: "pocket-casts",
@@ -1167,7 +1204,7 @@ export const CONNECTORS = [
     status: "no-api",
     statusLabel: "OPML import only",
     summary:
-      "Overcast has no remote API. Export your subscriptions as OPML and import — episodes then flow into LYKN via their show RSS feeds.",
+      "Overcast has no remote API. Export your subscriptions as OPML and import - episodes then flow into LYKN via their show RSS feeds.",
   },
   {
     id: "castro",
@@ -1295,7 +1332,7 @@ export const CONNECTORS = [
     status: "soon",
     statusLabel: "Coming soon",
     summary:
-      "Activities and daily stats from Garmin Connect flow into your Vault. Adapter not wired yet — Garmin requires a registered developer program account.",
+      "Activities and daily stats from Garmin Connect flow into your Vault. Adapter not wired yet - Garmin requires a registered developer program account.",
   },
   {
     id: "fitbit",
@@ -1329,7 +1366,7 @@ export const CONNECTORS = [
   // Universal Capture surfaces (share-target / browser-extension /
   // bookmarklet) cut from the Connections page launch lineup pending a
   // user-visible polish pass. Code paths still live in extensions/ and
-  // public manifests — re-adding them is a catalog copy-back when ready.
+  // public manifests - re-adding them is a catalog copy-back when ready.
   {
     id: "email-to-vault",
     category: "capture",
@@ -1343,6 +1380,68 @@ export const CONNECTORS = [
       "A unique email address for your vault. Forward newsletters, share links, anything.",
   },
   // ── Automation & AI ──────────────────────────────────────────────
+  // Universal bring-your-own-API-key tile. Unlike every other connector,
+  // this isn't a single provider - it's an entry point to attach ANY app by
+  // base URL + API key. The grid opens CustomApiDialog (customApi flag) where
+  // the user manages their own list of connections. The LYKN agent then acts
+  // on them via lykn_call_app.
+  {
+    id: "custom-api",
+    category: "automation",
+    name: "Custom API",
+    domain: "",
+    color: "#0F172A",
+    auth: "API key",
+    pulls: ["Let LYKN call any app you connect", "Read &/or write via your own API key"],
+    realtime: "On request",
+    status: "available",
+    statusLabel: "Live",
+    summary:
+      "Connect ANY app with a base URL and an API key, and let LYKN act on it for you - read data, search, or (when you allow it) create and update. Your key is encrypted at rest and injected server-side; the agent never sees it.",
+    customApi: true,
+  },
+  // Cursor is an ACTION connector, not a vault pull: attaching your own
+  // Cursor account lets the LYKN agent hand coding tasks to a Cursor cloud
+  // agent that builds on your repos and opens PRs. Token-paste (Cursor has
+  // no third-party OAuth); the key is encrypted at rest like every other
+  // credential and only ever runs on YOUR account.
+  {
+    id: "cursor",
+    category: "automation",
+    name: "Cursor",
+    domain: "cursor.com",
+    color: "#000000",
+    auth: "API key",
+    pulls: ["Runs coding builds on your repos", "Opens pull requests for you to review"],
+    realtime: "On request",
+    status: "available",
+    statusLabel: "Live",
+    summary:
+      "Attach your own Cursor account so LYKN can hand coding tasks to a Cursor cloud agent. It builds on your repos and opens a PR for you to review, test, and deploy. Your API key is encrypted at rest and runs only on your account.",
+    authMode: "token",
+    accessNote:
+      "LYKN uses this key to start cloud-agent builds on your account. Builds open pull requests - they never merge or deploy. Revoke any time from Cursor or here.",
+    connectFields: [
+      {
+        name: "api_key",
+        label: "Cursor API key",
+        placeholder: "key_...",
+        secret: true,
+        required: true,
+        helpText:
+          "Create one at cursor.com/dashboard → Integrations (it needs Cloud Agents access). Connect your GitHub to Cursor too, so the agent can clone repos and open PRs.",
+      },
+      {
+        name: "repo",
+        label: "Default repo (optional)",
+        placeholder: "https://github.com/you/your-repo",
+        secret: false,
+        required: false,
+        helpText:
+          "Used when you don't name a repo for a build. The agent can target any repo your Cursor key can reach.",
+      },
+    ],
+  },
   {
     id: "mcp",
     category: "automation",
@@ -1352,14 +1451,14 @@ export const CONNECTORS = [
     pulls: ["Any MCP-compatible tool"],
     realtime: "Live",
     status: "soon",
-    // NOTE: this is the INBOUND direction — LYKN as MCP CLIENT pulling
+    // NOTE: this is the INBOUND direction - LYKN as MCP CLIENT pulling
     // data from someone else's MCP server. The opposite direction (LYKN
     // exposing its synthesis layer TO Claude / Cursor / Claude Code via
     // its OWN MCP server) lives in src/lib/connectors/outboundTargets.js
     // and is rendered as a separate "Use LYKN with your AI" section on
     // the Connections page. Don't conflate the two.
     summary:
-      "Future: connect any external MCP server as a LYKN data source. Today the more interesting direction is OUTBOUND — see 'Use LYKN with your AI' below.",
+      "Future: connect any external MCP server as a LYKN data source. Today the more interesting direction is OUTBOUND - see 'Use LYKN with your AI' below.",
   },
   {
     id: "zapier",
@@ -1414,7 +1513,7 @@ export const CONNECTOR_STATUSES = {
 //
 // Every adapter under `/connectors/*.js` calls `saveConnectorNote(...)`
 // (or the Google/Apple equivalents) with a `source:` slug that lands on
-// `notes.source`. The synthesis layer keys provenance off that slug —
+// `notes.source`. The synthesis layer keys provenance off that slug -
 // `get_belief_provenance` / `get_connector_synthesis_counts` aggregate
 // by `notes.source`, and the briefing / tile / graph UIs need to walk
 // from a catalog connector id back to its slugs to render footer chips
@@ -1430,7 +1529,7 @@ export const CONNECTOR_STATUSES = {
 //
 // Catalog ids without a `notes.source` slug (capture-only / soon /
 // no-api tiles, automation outbound entries) intentionally omit from
-// this map — UIs gracefully render a zero-count footer for them.
+// this map - UIs gracefully render a zero-count footer for them.
 export const CONNECTOR_NOTES_SOURCES = {
   // Productivity & docs
   notion: ["notion_page"],
@@ -1439,7 +1538,7 @@ export const CONNECTOR_NOTES_SOURCES = {
   linear: ["linear_issue"],
   todoist: ["todoist_task"],
   trello: ["trello_card"],
-  // Google family — each aliased tile maps to its specific slug so the
+  // Google family - each aliased tile maps to its specific slug so the
   // per-tile count reflects that app's items only.
   "google-drive": ["gdrive_starred", "gslides_starred"],
   "google-docs": ["gdocs_starred"],
@@ -1475,7 +1574,7 @@ export const CONNECTOR_NOTES_SOURCES = {
   // Apple
   "apple-reminders": [],
   "apple-calendar": ["apple_calendar_event"],
-  // Health & activity — adapters aren't shipped yet but the slugs
+  // Health & activity - adapters aren't shipped yet but the slugs
   // they'll write are documented in src/lib/synthesis/loadInUpdates.ts.
   oura: ["oura_daily"],
   whoop: ["whoop_daily"],
@@ -1489,7 +1588,7 @@ export const CONNECTOR_NOTES_SOURCES = {
  * Resolve a connector id to the set of `notes.source` slugs that
  * adapter writes. Honors `aliasOf` so e.g. asking for "ms-teams" (whose
  * adapter isn't wired) does not silently fall back to the Microsoft
- * parent's slugs — only the parent's own tile aggregates those.
+ * parent's slugs - only the parent's own tile aggregates those.
  *
  * @param {string} connectorId
  * @returns {string[]} list of `notes.source` slugs, possibly empty.

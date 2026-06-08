@@ -5,6 +5,7 @@ import {
   Blocks,
   Brain,
   Bug,
+  CalendarDays,
   CreditCard,
   Lock,
   LogOut,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
 import FeedbackModal from "@/components/FeedbackModal";
+import LyknCalendarDialog from "@/components/calendar/LyknCalendarDialog";
 
 const flushAndNavigate = (nav, path) => {
   window.dispatchEvent(new Event("omnia_flush_save"));
@@ -46,6 +48,13 @@ export default function MobileTabBar() {
   const { user, signInWithOAuth, signOut } = useAuth();
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+
+  React.useEffect(() => {
+    const onOpenCalendar = () => setCalendarOpen(true);
+    window.addEventListener("lykn_open_calendar", onOpenCalendar);
+    return () => window.removeEventListener("lykn_open_calendar", onOpenCalendar);
+  }, []);
 
   const isChatActive =
     location.pathname === "/app" ||
@@ -154,6 +163,14 @@ export default function MobileTabBar() {
                     flushAndNavigate(nav, "/connections");
                   }}
                 />
+                <MoreItem
+                  icon={CalendarDays}
+                  label="Calendar"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    setCalendarOpen(true);
+                  }}
+                />
                 {user ? (
                   <MoreItem
                     icon={Blocks}
@@ -207,6 +224,8 @@ export default function MobileTabBar() {
         )}
 
       <FeedbackModal open={feedbackOpen} onOpenChange={setFeedbackOpen} defaultType="bug" />
+
+      <LyknCalendarDialog open={calendarOpen} onOpenChange={setCalendarOpen} />
     </>
   );
 }

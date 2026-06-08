@@ -86,6 +86,14 @@ import {
   testCustomAgent,
   CustomAgentValidationError,
 } from './custom-agents-service.js';
+import {
+  listCustomConnections,
+  createCustomConnection,
+  updateCustomConnection,
+  deleteCustomConnection,
+  callApp,
+  CustomConnectionError,
+} from './lib/customConnections/customConnections.js';
 import { registerTrainingSetRoutes } from './training-sets-routes.js';
 import { registerCustomModelRoutes } from './custom-models-routes.js';
 import { registerLoraRoutes } from './lora-routes.js';
@@ -2413,7 +2421,22 @@ async function fetchConnectedToolsSection(authHeader, userId) {
     console.warn('⚠️ fetchConnectedToolsSection:', e?.message || e);
   }
 
-  if (rows.length === 0) {
+  // Custom API connections (universal bring-your-own-key apps). These are
+  // ACTIONABLE via lykn_call_app, not just synced sources, so they get their
+  // own block + explicit call guidance.
+  let customConns = [];
+  try {
+    const { data } = await client
+      .from('lykn_custom_connections')
+      .select('name, slug, base_url, description, allow_writes, status')
+      .eq('user_id', userId)
+      .eq('status', 'active');
+    if (Array.isArray(data)) customConns = data;
+  } catch (e) {
+    console.warn('⚠️ fetchConnectedToolsSection custom:', e?.message || e);
+  }
+
+  if (rows.length === 0 && customConns.length === 0) {
     connectedToolsSectionCache.set(userId, { text: '', at: Date.now() });
     return '';
   }
@@ -2447,11 +2470,29 @@ async function fetchConnectedToolsSection(authHeader, userId) {
     lines.push(`- ${name}${accountStr}${pausedStr}${hint}`);
   }
 
+  // Actionable custom-API connections — the agent can CALL these.
+  const customLines = customConns.slice(0, 25).map((c) => {
+    const writes = c.allow_writes ? 'read+write' : 'read-only';
+    const desc = c.description ? ` — ${String(c.description).replace(/\s+/g, ' ').slice(0, 160)}` : '';
+    return `- ${c.name} [slug: ${c.slug}] (${writes}) ${c.base_url}${desc}`;
+  });
+
+  const customBlock = customLines.length
+    ? [
+        '',
+        '[CONNECTED_APPS — actionable]',
+        'The user attached these apps with their own API key. You can ACT on them: call lykn_list_apps to see them, then lykn_call_app with the slug to make requests (the API key is injected server-side — never ask for it). GET works on all; only "read+write" connections accept POST/PUT/PATCH/DELETE. Confirm destructive actions first.',
+        '',
+        ...customLines,
+      ].join('\n')
+    : '';
+
   const text = [
     '[CONNECTED_TOOLS]',
     "These are the external apps this user has actively connected to LYKN. Synced content from each one already lives in their Vault and shows up inside [WORKSPACE_CONTEXT] / [SYNTHESIS_RETRIEVAL]. USE THIS LIST when giving advice — prefer specific, actionable suggestions tied to tools they actually use (e.g. \"drop a ticket for this in Linear\", \"save this to your Notion\", \"add it to your Todoist inbox\"). Never invent or assume a tool that isn't on this list. If a clearly relevant tool from the broader connector catalog is NOT connected and would obviously help (e.g. the user is talking about engineering tickets but has no issue tracker connected), you may briefly mention they could connect it from the Connections page — at most one such nudge per reply, and only when it's directly useful.",
     '',
     ...lines,
+    customBlock,
   ].join('\n').trim();
 
   const finalText = text.length > CONNECTED_TOOLS_SECTION_MAX_CHARS
@@ -3022,6 +3063,44 @@ async function gatherVoiceBriefingData(authHeader, userId) {
     console.warn('⚠️ voice briefing reminders load:', e?.message || e);
   }
 
+  // Calendar events on deck: from the start of today through the next couple
+  // of days, so the briefing can say "here's what's on your calendar". Mirrors
+  // the reminders window; cancelled events are excluded.
+  let events = [];
+  try {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const upcomingCutoffIso = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const { data } = await client
+      .from('lykn_events')
+      .select('title, starts_at, all_day, location, timezone, status')
+      .eq('user_id', userId)
+      .neq('status', 'cancelled')
+      .gte('starts_at', startOfToday.toISOString())
+      .lte('starts_at', upcomingCutoffIso)
+      .order('starts_at', { ascending: true })
+      .limit(6);
+    events = (data || []).map((ev) => {
+      const start = new Date(ev.starts_at);
+      const tz = ev.timezone || 'UTC';
+      let when;
+      try {
+        when = ev.all_day
+          ? `${start.toLocaleDateString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric' })} (all day)`
+          : start.toLocaleString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      } catch {
+        when = start.toISOString();
+      }
+      return {
+        title: String(ev.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+        when,
+        location: String(ev.location || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      };
+    }).filter((ev) => ev.title);
+  } catch (e) {
+    console.warn('⚠️ voice briefing events load:', e?.message || e);
+  }
+
   // Recent neurons the user made in the window: newly authored beliefs,
   // newly learned facts, and newly formed concepts. Merged + capped so the
   // briefing names a few without reciting the whole synthesis layer.
@@ -3086,7 +3165,7 @@ async function gatherVoiceBriefingData(authHeader, userId) {
   }
 
   return {
-    project, recentUpdates, recentNotes, reminders, recentNeurons, recentModels,
+    project, recentUpdates, recentNotes, reminders, events, recentNeurons, recentModels,
     cursorBuilds,
     windowDays: VOICE_BRIEFING_WINDOW_DAYS,
   };
@@ -3155,6 +3234,16 @@ function formatVoiceBriefingFacts(firstName, data) {
     lines.push('', 'REMINDERS: none due or coming up.');
   }
 
+  if (data.events?.length) {
+    lines.push('', 'CALENDAR (events scheduled today or coming up — time-sensitive, mention near the top alongside reminders):');
+    for (const ev of data.events) {
+      const where = ev.location ? ` @ ${ev.location}` : '';
+      lines.push(`- ${ev.title}${ev.when ? ` — ${ev.when}` : ''}${where}`);
+    }
+  } else {
+    lines.push('', 'CALENDAR: nothing scheduled today or coming up.');
+  }
+
   if (data.cursorBuilds?.length) {
     lines.push('', 'CURSOR BUILDS JUST FINISHED (your opening line already mentioned these — they are ready for the user to test; deploy is manual):');
     for (const b of data.cursorBuilds) {
@@ -3174,6 +3263,7 @@ function voiceBriefingHasContent(data) {
     || (data?.recentNeurons?.length || 0) > 0
     || (data?.recentModels?.length || 0) > 0
     || (data?.reminders?.length || 0) > 0
+    || (data?.events?.length || 0) > 0
     || (data?.cursorBuilds?.length || 0) > 0;
 }
 
@@ -3223,7 +3313,8 @@ function buildVoiceBriefingOffer(user, data) {
       || (data?.recentNotes?.length || 0) > 0
       || (data?.recentNeurons?.length || 0) > 0
       || (data?.recentModels?.length || 0) > 0
-      || (data?.reminders?.length || 0) > 0;
+      || (data?.reminders?.length || 0) > 0
+      || (data?.events?.length || 0) > 0;
     return hasOther
       ? `Welcome back${addr}. ${buildLine}Want to hear your other recent updates?`
       : `Welcome back${addr}. ${buildLine}Anything you'd like to do next?`;
@@ -3242,7 +3333,7 @@ function formatVoiceBriefingInstructionBlock(user, data) {
   const header = [
     '[VOICE_BRIEFING]',
     'The user just opened Voice Mode and your spoken opening line OFFERED to run through their recent updates. Behaviour for THIS session:',
-    '- If the user says yes / "go ahead" / "sure", or asks for their updates, status, progress, or what\'s new, deliver a SHORT spoken briefing from the FACTS below: lead with any due/upcoming REMINDERS (they are time-sensitive), then where the active project stands and what recently got done, then anything new in the Vault, any new neurons (beliefs/facts/concepts) formed, and any custom models they built. 2-4 calm sentences, spoken style, no lists or markdown — group naturally, don\'t robotically read every category.',
+    '- If the user says yes / "go ahead" / "sure", or asks for their updates, status, progress, or what\'s new, deliver a SHORT spoken briefing from the FACTS below: lead with any due/upcoming REMINDERS and CALENDAR events (they are time-sensitive), then where the active project stands and what recently got done, then anything new in the Vault, any new neurons (beliefs/facts/concepts) formed, and any custom models they built. 2-4 calm sentences, spoken style, no lists or markdown — group naturally, don\'t robotically read every category.',
     '- Use ONLY these facts. Never invent projects, updates, vault items, numbers, dates, or names.',
     '- If the user declines or jumps straight into another topic, skip the briefing entirely and just help with what they asked.',
     '- After delivering the briefing, hand it back with one short, open question.',
@@ -5160,6 +5251,23 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    not raw ISO timestamps.',
   '  • lykn_updateReminder — complete ("mark that done"), cancel, reschedule,',
   '    or edit a reminder. Get its id from lykn_listReminders first.',
+  '',
+  'CALENDAR (native LYKN events the user schedules — LYKN IS the calendar,',
+  'it does NOT sync to Google/Apple/Outlook):',
+  '  • lykn_createEvent — when the user schedules something ("put lunch with',
+  '    Sarah Thursday at noon", "block 2-4pm tomorrow", "my birthday is the',
+  '    14th"). YOU resolve the time: pass an absolute ISO 8601 starts_at WITH a',
+  '    timezone offset (call lykn_get_current_time first if unsure of "now"), or',
+  '    in_minutes for relative. Give an end via ends_at or duration_minutes;',
+  '    timed events default to 60 min. Set all_day:true for day-level events.',
+  '    Use this for SCHEDULED things with a start/end; use lykn_createReminder',
+  '    for a one-off "nudge me" with no duration.',
+  '  • lykn_listEvents — "what\'s on my calendar", "what do I have Friday",',
+  '    "what does next week look like". Window by from/to or days_ahead',
+  '    (default 14). Read back natural local times, never raw ISO.',
+  '  • lykn_updateEvent — reschedule/edit/cancel; get the id from lykn_listEvents.',
+  '  • lykn_deleteEvent — permanently remove an event (prefer updateEvent with',
+  '    status "cancelled" if the user only wants it off the calendar but kept).',
   '',
   'CUSTOM MODELS (the user\'s Model Builder creations):',
   '  • lykn_listCustomModels — "what models have I made", "which of my models',
@@ -7552,6 +7660,97 @@ app.post('/api/v1/custom-agents/:id/test', requireAuth, async (req, res) => {
     return res.json({ ok: true, result });
   } catch (e) {
     const { status, body } = _customAgentErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+// --- Custom connections (universal bring-your-own-API-key) ----------------
+// The user attaches ANY app (base URL + API key + how to send it); the LYKN
+// agent then acts on it via lykn_call_app, with the secret injected
+// server-side. The secret is write-only from the client's POV — it is never
+// returned by these routes (the service strips it).
+function _customConnErr(e) {
+  if (e instanceof CustomConnectionError || e?.isValidation) {
+    return { status: 400, body: { error: 'validation', message: e.message } };
+  }
+  console.error('❌ custom-connections:', e?.message || e);
+  return { status: 500, body: { error: 'internal' } };
+}
+
+app.get('/api/custom-connections', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    const connections = await listCustomConnections(supabaseAdmin, userId);
+    return res.json({ ok: true, connections });
+  } catch (e) {
+    const { status, body } = _customConnErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+app.post('/api/custom-connections', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    const connection = await createCustomConnection(supabaseAdmin, userId, req.body || {});
+    invalidateConnectedToolsCache(userId);
+    return res.json({ ok: true, connection });
+  } catch (e) {
+    const { status, body } = _customConnErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+app.patch('/api/custom-connections/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    const connection = await updateCustomConnection(supabaseAdmin, userId, String(req.params.id || ''), req.body || {});
+    if (!connection) return res.status(404).json({ error: 'not_found' });
+    invalidateConnectedToolsCache(userId);
+    return res.json({ ok: true, connection });
+  } catch (e) {
+    const { status, body } = _customConnErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+app.delete('/api/custom-connections/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    await deleteCustomConnection(supabaseAdmin, userId, String(req.params.id || ''));
+    invalidateConnectedToolsCache(userId);
+    return res.json({ ok: true });
+  } catch (e) {
+    const { status, body } = _customConnErr(e);
+    return res.status(status).json(body);
+  }
+});
+
+// One-shot test call so the user can verify the credential + base URL work
+// before relying on the agent. Always a GET against the given path (default
+// the base URL itself), so it never triggers a write.
+app.post('/api/custom-connections/:id/test', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    const result = await callApp({
+      client: supabaseAdmin,
+      userId,
+      connection: String(req.params.id || ''),
+      method: 'GET',
+      path: typeof req.body?.path === 'string' ? req.body.path : '',
+    });
+    return res.json({ ok: true, result });
+  } catch (e) {
+    const { status, body } = _customConnErr(e);
     return res.status(status).json(body);
   }
 });
@@ -13551,6 +13750,274 @@ app.post('/api/storage/signed-url', requireAuth, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// REUSABLE: generate a 2-3 sentence description for a vault item (image/text)
+// ---------------------------------------------------------------------------
+// Mirrors the /api/ai/describe-image LLM path so the background backfill sweep
+// can reuse the exact same vision/text prompts + the shared description cache.
+// Returns the description string, or null on any failure (never throws — the
+// sweep treats null as "couldn't describe" and moves on / falls back).
+async function generateVaultItemDescription({ userId, imageUrl, textContent, fileType, fileName, boardId } = {}) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  const url = String(imageUrl || '').trim();
+  const text = String(textContent || '').trim();
+  if (!url && !text) return null;
+
+  const isVisual = url && !url.startsWith('data:') && /image|video/i.test(fileType || '');
+  const cacheInput = isVisual ? url : [text.slice(0, 6000), fileType, fileName].join('|');
+  const urlHash = sha256(cacheInput);
+
+  if (userId && supabaseAdmin) {
+    try {
+      const { data: cached } = await supabaseAdmin
+        .from('ai_description_cache')
+        .select('description')
+        .eq('user_id', userId)
+        .eq('url_hash', urlHash)
+        .maybeSingle();
+      if (cached?.description) return cached.description;
+    } catch { /* cache miss — proceed to LLM */ }
+  }
+
+  let messages;
+  if (isVisual) {
+    messages = [{
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: 'Describe this image concisely in 2-3 sentences. Cover: main subject, dominant colors and tones, style or aesthetic, any visible text or logos, mood, and what category this image likely belongs to (e.g. marketing material, personal photo, reference image, screenshot, moodboard, product photo, texture, illustration, etc). Be specific about colors.',
+        },
+        { type: 'image_url', image_url: { url, detail: 'low' } },
+      ],
+    }];
+  } else {
+    const contextParts = [];
+    if (fileName) contextParts.push(`File: ${fileName}`);
+    if (fileType) contextParts.push(`Type: ${fileType}`);
+    if (text) contextParts.push(`Content:\n${text.slice(0, 6000)}`);
+    if (!contextParts.length) return null;
+    messages = [{
+      role: 'user',
+      content: `Summarize this vault item in 2-3 concise sentences. Describe what it is, what it's about, its key topics/themes, and what category it belongs to (e.g. article, document, reference, tutorial, bookmark, spreadsheet, audio recording, etc). Be specific.\n\n${contextParts.join('\n')}`,
+    }];
+  }
+
+  const describeModel = isVisual ? 'gpt-4o-mini' : 'gpt-4.1-nano';
+  try {
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: describeModel,
+        messages,
+        max_tokens: 180,
+        prompt_cache_key: `describe-image:${userId || 'anon'}:${isVisual ? 'visual' : 'text'}`,
+      }),
+    });
+    if (!openaiRes.ok) {
+      console.warn('⚠️ generateVaultItemDescription OpenAI', openaiRes.status);
+      return null;
+    }
+    const data = await openaiRes.json();
+    const description = data.choices?.[0]?.message?.content?.trim() || '';
+    if (!description) return null;
+
+    try {
+      const usage = extractOpenAIUsage(data);
+      const session = await getOrCreateSession(userId, boardId);
+      logAiUsage({
+        sessionId: session?.id, userId,
+        actionType: isVisual ? 'image_analysis' : 'describe_text',
+        model: describeModel, provider: 'openai',
+        inputTokens: usage.input_tokens || estimateTokens(cacheInput),
+        outputTokens: usage.output_tokens || estimateTokens(description),
+        metadata: { source: 'vault_backfill' },
+      });
+    } catch { /* telemetry never blocks */ }
+
+    if (userId && supabaseAdmin) {
+      supabaseAdmin.from('ai_description_cache').upsert({
+        user_id: userId,
+        url_hash: urlHash,
+        url: (isVisual ? url : (fileName || fileType || '')).slice(0, 2000),
+        description,
+        model: describeModel,
+      }, { onConflict: 'user_id,url_hash' }).then(() => {}).catch(() => {});
+    }
+    return description;
+  } catch (e) {
+    console.warn('⚠️ generateVaultItemDescription error:', e?.message || e);
+    return null;
+  }
+}
+
+// Resolves a fetchable URL for an attachment so vision can read it. Prefers a
+// freshly-signed URL off the stored storagePath (the inline `url` can be a
+// stale/expired signed link); falls back to a plain https url if present.
+async function resolveSignedAttachmentUrl(att, userId) {
+  if (!att || typeof att !== 'object') return null;
+  const path = String(att.storagePath || '').trim();
+  const bucket = String(att.storageBucket || 'user-files').trim();
+  if (path && path.startsWith(`${userId}/`) && supabaseAdmin) {
+    try {
+      const { data } = await supabaseAdmin.storage.from(bucket).createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
+      if (data?.signedUrl) return data.signedUrl;
+    } catch { /* fall through to inline url */ }
+  }
+  const url = String(att.url || '').trim();
+  if (/^https?:/i.test(url)) return url;
+  return null;
+}
+
+function attachmentIsVisual(att) {
+  const mime = String(att?.mimeType || '').toLowerCase();
+  const type = String(att?.type || '').toLowerCase();
+  const name = String(att?.name || '').toLowerCase();
+  if (/^(image|video)\//.test(mime)) return true;
+  if (/\b(image|video|photo|picture|screenshot)\b/.test(type)) return true;
+  return /\.(png|jpe?g|gif|webp|heic|heif|bmp|svg|mp4|mov|webm|m4v)$/.test(name);
+}
+
+// SQL filter that selects vault notes still missing a description: either no
+// AI summary yet, OR they carry an attachments marker that has no
+// aiDescription on it. Shared by the worker + the remaining-count query so the
+// sweep is guaranteed to terminate (every processed note ends up with a
+// summary AND a description on every attachment, clearing both clauses).
+const VAULT_BACKFILL_OR_FILTER =
+  'ai_summary.is.null,and(content.ilike.*ATTACHMENTS_JSON*,content.not.ilike.*aiDescription*)';
+
+// ---------------------------------------------------------------------------
+// VAULT DESCRIPTION BACKFILL — process one batch of items missing descriptions
+// ---------------------------------------------------------------------------
+// The client calls this in a loop (small batches) until `done`. Each note:
+//   1. gets a vision/text description written onto every attachment that lacks
+//      one (so images become searchable by what they depict),
+//   2. gets an ai_summary via enrichVaultNoteSummary,
+//   3. is re-embedded so semantic + keyword vault search both find it.
+// Idempotent + resumable: already-described items are skipped by the filter.
+app.post('/api/vault/backfill-descriptions', requireAuth, describeLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+
+    const authHeader = req.headers.authorization;
+    const batchSize = Math.max(1, Math.min(12, Number(req.body?.batchSize) || 6));
+
+    const { data: notes, error } = await client
+      .from('notes')
+      .select('id, title, content, updated_at, ai_summary')
+      .eq('user_id', userId)
+      .or(VAULT_BACKFILL_OR_FILTER)
+      .order('updated_at', { ascending: true })
+      .limit(batchSize);
+    if (error) {
+      console.warn('[vault:backfill] candidate query:', error.message);
+      return res.status(500).json({ error: 'backfill_query_failed' });
+    }
+
+    let processed = 0;
+    let descriptionsAdded = 0;
+    for (const note of notes || []) {
+      try {
+        let content = String(note.content || '');
+        const span = findAttachmentsMarkerSpan(content);
+        if (span && Array.isArray(span.attachments) && span.attachments.length) {
+          const atts = span.attachments.map((a) => (a && typeof a === 'object' ? { ...a } : a));
+          let changed = false;
+          for (const att of atts) {
+            if (!att || typeof att !== 'object') continue;
+            if (String(att.aiDescription || '').trim()) continue;
+            let desc = null;
+            if (attachmentIsVisual(att)) {
+              const url = await resolveSignedAttachmentUrl(att, userId);
+              if (url) {
+                desc = await generateVaultItemDescription({
+                  userId, imageUrl: url,
+                  fileType: String(att.mimeType || att.type || 'image'),
+                  fileName: att.name,
+                });
+              }
+            } else {
+              const body = extractBodyAfterAttachmentsMarker(content);
+              desc = await generateVaultItemDescription({
+                userId,
+                textContent: body || att.name || note.title,
+                fileType: String(att.mimeType || att.type || ''),
+                fileName: att.name,
+              });
+            }
+            // Fallback guarantees the marker gains an aiDescription so the
+            // note clears the filter and the sweep terminates even when the
+            // LLM couldn't help (unreachable file, unsupported type, etc).
+            if (!desc) desc = String(att.name || note.title || att.type || 'file').slice(0, 500);
+            att.aiDescription = desc;
+            changed = true;
+            descriptionsAdded += 1;
+          }
+          if (changed) {
+            const rebuilt = `${content.slice(0, span.start)}[ATTACHMENTS_JSON:${JSON.stringify(atts)}]${content.slice(span.markerEnd)}`
+              .replace(/\n{3,}/g, '\n\n');
+            const { error: upErr } = await client
+              .from('notes')
+              .update({ content: rebuilt })
+              .eq('id', note.id)
+              .eq('user_id', userId)
+              .eq('updated_at', note.updated_at);
+            if (!upErr) content = rebuilt;
+          }
+        }
+
+        // Summary (reads the just-patched content, so image notes summarise
+        // on their vision description rather than a bare filename).
+        const enr = await enrichVaultNoteSummary({ userId, noteId: note.id, supabaseAdmin: client });
+
+        // Re-embed for retrieval with the summary prepended as a dense key.
+        const { data: after } = await client
+          .from('notes')
+          .select('title, content')
+          .eq('id', note.id)
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (after) {
+          const baseText = backfillVaultText(after.title, after.content);
+          const summary = (enr && enr.summary) || note.ai_summary || '';
+          const embedRaw = summary ? `Summary (AI):\n${summary}\n\n${baseText}` : baseText;
+          const chunks = chunkTextForSynthesis(embedRaw);
+          if (chunks.length) {
+            await replaceSynthesisChunks(userId, authHeader, 'vault_note', note.id, chunks, {
+              title: after.title,
+              vaultBackfilled: true,
+            });
+          }
+        }
+        processed += 1;
+      } catch (e) {
+        console.warn('[vault:backfill] note failed', note.id, e?.message || e);
+      }
+    }
+
+    let remaining = 0;
+    try {
+      const { count } = await client
+        .from('notes')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId)
+        .or(VAULT_BACKFILL_OR_FILTER);
+      remaining = Math.max(0, count || 0);
+    } catch { /* best-effort; client loop also stops when processed === 0 */ }
+
+    return res.json({ ok: true, processed, descriptionsAdded, remaining, done: remaining === 0 });
+  } catch (e) {
+    console.error('❌ vault backfill-descriptions:', e?.message || e);
+    return res.status(500).json({ error: 'backfill_failed' });
+  }
+});
+
 app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res) => {
   try {
     const { imageUrl, textContent, fileType, fileName } = req.body || {};
@@ -14127,6 +14594,7 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "events, anything after your training cutoff) and web_fetch (read one specific URL), " +
   "get_project_state (read their active project status), update_project_state (record a decision/blocker/milestone), " +
   "create_reminder / list_reminders / update_reminder (set or manage time-anchored reminders when the user says 'remind me to…'), " +
+  "create_event / list_events / update_event / delete_event (build and manage the user's LYKN calendar when they schedule something — 'put X on my calendar', 'what do I have Friday'), " +
   "list_custom_models (see every model the user built AND each model's purpose), " +
   "communicate_with_model (hand a task or question to one of the user's OTHER models — a sub-agent, main or not — and read back the report it returns), " +
   "and save_to_vault (save a note — only when the user explicitly asks). " +
@@ -14391,6 +14859,92 @@ const LYKN_VOICE_TOOL_DEFS = [
       required: ['id'],
     },
   },
+  // ── Calendar (native LYKN events with a start/end — LYKN is the calendar) ─
+  {
+    name: 'create_event',
+    mcp: 'lykn_createEvent',
+    description:
+      'Put an event on the user\'s LYKN calendar when they schedule something ("lunch with Sarah Thursday ' +
+      'at noon", "block 2-4pm tomorrow for deep work", "my birthday is the 14th"). YOU resolve the time: ' +
+      'pass an absolute ISO 8601 starts_at with timezone (the CURRENT TIME is in your context), or in_minutes ' +
+      'for relative. Give an end via ends_at OR duration_minutes (timed events default to 60 min). Set ' +
+      'all_day:true for day-level events. Use this for things with a start/end; use create_reminder for a ' +
+      'one-off nudge. Confirm what + when after saving. LYKN is the calendar — this does NOT sync to Google/Apple.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'The event name (e.g. "Lunch with Sarah").' },
+        starts_at: { type: 'string', description: 'Absolute ISO 8601 start with timezone, e.g. "2026-06-11T12:00:00-06:00". Provide this OR in_minutes.' },
+        in_minutes: { type: 'integer', description: 'Relative start, minutes from now. Provide this OR starts_at.' },
+        ends_at: { type: 'string', description: 'Absolute ISO 8601 end (>= start). Provide this OR duration_minutes.' },
+        duration_minutes: { type: 'integer', description: 'Event length in minutes (e.g. 120 = 2 hours). Defaults to 60 for timed events.' },
+        all_day: { type: 'boolean', description: 'True for day-level events (birthdays, trips, deadlines).' },
+        location: { type: 'string', description: 'Optional place, room, or meeting link.' },
+        description: { type: 'string', description: 'Optional agenda / notes.' },
+        timezone: { type: 'string', description: 'Optional IANA timezone, e.g. "America/Denver".' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'list_events',
+    mcp: 'lykn_listEvents',
+    description:
+      'List the user\'s calendar events, earliest-first — call for "what\'s on my calendar", "what do I have ' +
+      'Friday", "what does next week look like", "am I free Tuesday", or before editing/deleting an event so ' +
+      'you have its id. Window by from/to (ISO) or days_ahead (default 14). Speak natural local times, never ISO.',
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Window start as ISO 8601. Pair with to.' },
+        to: { type: 'string', description: 'Window end as ISO 8601. Pair with from.' },
+        days_ahead: { type: 'integer', description: 'Look-ahead from now in days (default 14).' },
+        status: { type: 'string', description: 'confirmed, tentative, cancelled, or all. Default excludes cancelled.' },
+        limit: { type: 'integer', description: 'Max to return (default 100).' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'update_event',
+    mcp: 'lykn_updateEvent',
+    description:
+      'Reschedule ("move my dentist to 4pm"), change the length, edit text/location, toggle all-day, or cancel ' +
+      'an existing event. Get its id from list_events first. Pass starts_at/in_minutes to reschedule, ' +
+      'ends_at/duration_minutes for length, title/description/location to edit, or status (cancelled hides it, ' +
+      'confirmed restores). Confirm what changed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The event id (from list_events).' },
+        starts_at: { type: 'string', description: 'New absolute ISO 8601 start with timezone.' },
+        in_minutes: { type: 'integer', description: 'New start as minutes from now.' },
+        ends_at: { type: 'string', description: 'New absolute ISO 8601 end (>= start).' },
+        duration_minutes: { type: 'integer', description: 'New length in minutes from the start.' },
+        all_day: { type: 'boolean', description: 'Toggle the all-day flag.' },
+        title: { type: 'string', description: 'New event name.' },
+        description: { type: 'string', description: 'New notes/agenda.' },
+        location: { type: 'string', description: 'New location/meeting link.' },
+        status: { type: 'string', description: 'confirmed, tentative, or cancelled.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete_event',
+    mcp: 'lykn_deleteEvent',
+    description:
+      'Permanently delete a calendar event ("delete that meeting", "take it off my calendar"). Get its id from ' +
+      'list_events first. If the user only wants it off the calendar but kept, prefer update_event with status ' +
+      'cancelled. Confirm the deletion; it cannot be undone.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The event id to delete (from list_events).' },
+      },
+      required: ['id'],
+    },
+  },
   // ── Live web (current info beyond the user's own knowledge) ───────────
   {
     name: 'web_search',
@@ -14501,6 +15055,39 @@ const LYKN_VOICE_TOOL_DEFS = [
         limit: { type: 'integer', description: 'How many recent builds (default 5).' },
       },
       required: [],
+    },
+  },
+  // ── Universal app access (bring-your-own API key for any app) ─────────
+  {
+    name: 'list_apps',
+    mcp: 'lykn_list_apps',
+    description:
+      'List the apps the user connected with their own API key (Connections → Custom API). Call when the ' +
+      'user asks you to do something in one of their tools and you need its slug, or asks "what apps have I ' +
+      'connected". Returns each connection\'s slug, name, what it does, and whether writes are allowed. ' +
+      'Then use call_app to actually do the thing. Never ask the user for the API key — it is stored securely.',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'call_app',
+    mcp: 'lykn_call_app',
+    description:
+      'Make an API call to one of the user\'s connected apps to actually DO something (read records, search, ' +
+      'create/update items). Pass connection = the app\'s slug (from list_apps), the HTTP method, a path ' +
+      'relative to the app\'s base URL, and optional query/body. The user\'s API key is added automatically — ' +
+      'never include or ask for it. GET always works; writes (POST/PUT/PATCH/DELETE) only if that connection ' +
+      'has writes enabled — if blocked, tell the user to enable writes in Connections rather than retrying. ' +
+      'Confirm destructive actions out loud first. Read the result status + body back plainly.',
+    parameters: {
+      type: 'object',
+      properties: {
+        connection: { type: 'string', description: 'Slug of the connected app (from list_apps).' },
+        method: { type: 'string', description: 'GET, POST, PUT, PATCH, DELETE, or HEAD. Defaults to GET.' },
+        path: { type: 'string', description: 'Path relative to the app\'s base URL, e.g. "/v1/items".' },
+        query: { type: 'object', description: 'Optional query-string params as a flat key→value object.' },
+        body: { type: 'object', description: 'Optional JSON body for write methods.' },
+      },
+      required: ['connection'],
     },
   },
   // ── Vault writes ─────────────────────────────────────────────────────

@@ -86,6 +86,24 @@ async function openAiEmbedMany(strings) {
 }
 
 /**
+ * Embed a single query/text string into a 1536-dim vector. Returns the float
+ * array on success, or `null` if embeddings are unavailable (no API key,
+ * empty/too-short input, or a transient OpenAI failure). Callers MUST treat
+ * `null` as "semantic search unavailable" and fall back gracefully — never
+ * throw. Used by the agent-facing vault search to embed the user's query
+ * before hitting the admin match RPC.
+ *
+ * @param {string} text
+ * @returns {Promise<number[]|null>}
+ */
+export async function embedSingleText(text) {
+  const input = String(text || '').trim().slice(0, 8000);
+  if (input.length < 4) return null;
+  const out = await openAiEmbedMany([input]);
+  return out && out[0] ? out[0] : null;
+}
+
+/**
  * Embed `text` into `lykn_synthesis_chunks` for one source (e.g. one vault
  * note). Idempotent: hash-skips when nothing changed; upserts on the unique
  * `(user_id, source_type, source_id, chunk_index)` constraint; trims tail

@@ -2,16 +2,19 @@
 // mcp-tools/buildWithCursor.js — hand a coding task to a Cursor cloud agent
 // ============================================================================
 // Write. Launches a Cursor CLOUD AGENT that builds the requested change on a
-// Cursor-hosted VM against the server's allowlisted repo and opens a PR. The
-// build runs ASYNC (minutes): this tool returns as soon as it's started. The
-// server polls for completion and the next voice briefing / chat tells the user
-// "Cursor finished X — ready for testing". Deploy stays manual.
+// Cursor-hosted VM and opens a PR. The build runs ASYNC (minutes): this tool
+// returns as soon as it's started. The server polls for completion and the
+// next voice briefing / chat tells the user "Cursor finished X — ready for
+// testing". Deploy stays manual.
+//
+// Bring-your-own account: the build runs on the user's OWN attached Cursor key
+// (Connections → Cursor), against any repo that key can reach. If the user
+// hasn't connected a Cursor account, the tool reports that so the agent can
+// ask them to attach one.
 //
 // Guardrails:
 //   • Only call when the user EXPLICITLY asks to build / implement / fix / add
 //     something in code. Never on a vague wish.
-//   • The repo is fixed server-side (CURSOR_BUILD_REPO) — the model cannot
-//     target an arbitrary repo.
 //   • The agent opens a PR; it never merges or deploys.
 
 import { jsonContent, errorContent, requireWrite } from './content.js';
@@ -38,9 +41,12 @@ export const buildWithCursorTool = {
     'Later, the user will be told automatically when it finishes; they can also',
     'ask for status, which you answer with lykn_check_cursor_build.',
     '',
-    'The repo is fixed by the server; you only supply the instruction. Write a',
-    'clear, self-contained instruction (what to build and any constraints) — the',
-    'cloud agent does not see this conversation.',
+    'Runs on the user\'s OWN connected Cursor account. If the tool reports the',
+    'account is not connected, tell the user to attach their Cursor API key',
+    'under Connections → Cursor — do NOT retry blindly. Write a clear,',
+    'self-contained instruction (what to build and any constraints) — the cloud',
+    'agent does not see this conversation. Pass a repo only if the user names',
+    'one or has no default set.',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -49,6 +55,11 @@ export const buildWithCursorTool = {
         type: 'string',
         description:
           'A clear, self-contained description of what to build/change, including any constraints. The cloud agent only sees this text, not the conversation.',
+      },
+      repo: {
+        type: 'string',
+        description:
+          'Optional repo to build in — a GitHub URL or "owner/repo". Must be reachable by the user\'s Cursor account. Omit to use the default repo set on their Cursor connection.',
       },
       project_id: {
         type: 'string',
@@ -72,14 +83,15 @@ export const buildWithCursorTool = {
     }
 
     let launchCursorBuild;
-    let getCursorBuildRepo;
     let resolveWriteProjectTarget;
     try {
-      ({ launchCursorBuild, getCursorBuildRepo } = await import('../lib/cursor/cursorBuilds.js'));
+      ({ launchCursorBuild } = await import('../lib/cursor/cursorBuilds.js'));
       ({ resolveWriteProjectTarget } = await import('../lib/projectWriteTarget.js'));
     } catch (e) {
       return errorContent(`cursor_builds_unavailable: ${e?.message || e}`);
     }
+
+    const repo = typeof args.repo === 'string' && args.repo.trim() ? args.repo.trim() : null;
 
     // Capture which project the completed build should report into (best-effort).
     let projectId = null;
@@ -92,6 +104,7 @@ export const buildWithCursorTool = {
       client: ctx.supabaseAdmin,
       userId: ctx.userId,
       instruction,
+      repo,
       projectId,
     });
 
@@ -108,7 +121,7 @@ export const buildWithCursorTool = {
       ok: true,
       build_id: build.id || null,
       status: 'running',
-      repo: build.repo || (getCursorBuildRepo ? getCursorBuildRepo() : null),
+      repo: build.repo || null,
       agent_url: build.agent_url || null,
       message:
         result.message ||

@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   Blocks,
   Brain,
+  CalendarDays,
   ChevronLeft,
   ChevronRight,
   CreditCard,
@@ -11,7 +12,6 @@ import {
   Bug,
   LogOut,
   MessageCircle,
-  MoreHorizontal,
   Plug,
   SquarePen,
   Search as SearchIcon,
@@ -19,6 +19,7 @@ import {
   Trash2,
 } from "lucide-react";
 import FeedbackModal from "@/components/FeedbackModal";
+import LyknCalendarDialog from "@/components/calendar/LyknCalendarDialog";
 import { supabase } from "@/lib/supabase";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
@@ -84,6 +85,7 @@ export default function AppSidebar({
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [modelFilter, setModelFilter] = useState("all");
   const menuRef = useRef(null);
@@ -114,11 +116,14 @@ export default function AppSidebar({
     const onModelsChanged = () => {
       queryClient.invalidateQueries({ queryKey: ["published-custom-models", user?.id] });
     };
+    const onOpenCalendar = () => setCalendarOpen(true);
     window.addEventListener("lykinsai_boards_changed", onBoardsChanged);
     window.addEventListener("lykn_custom_models_changed", onModelsChanged);
+    window.addEventListener("lykn_open_calendar", onOpenCalendar);
     return () => {
       window.removeEventListener("lykinsai_boards_changed", onBoardsChanged);
       window.removeEventListener("lykn_custom_models_changed", onModelsChanged);
+      window.removeEventListener("lykn_open_calendar", onOpenCalendar);
     };
   }, [queryClient, user?.id]);
 
@@ -247,6 +252,14 @@ export default function AppSidebar({
               <Plug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
               Vault
             </button>
+            <button
+              type="button"
+              onClick={() => setCalendarOpen(true)}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            >
+              <CalendarDays className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              Calendar
+            </button>
           </div>
 
           <div className="flex flex-col gap-0.5 mt-1.5 pt-1.5 border-t border-black/5 dark:border-white/5">
@@ -364,6 +377,8 @@ export default function AppSidebar({
         onOpenChange={setFeedbackOpen}
         defaultType={feedbackType}
       />
+
+      <LyknCalendarDialog open={calendarOpen} onOpenChange={setCalendarOpen} />
 
       {menuBoardId && ReactDOM.createPortal(
         <div

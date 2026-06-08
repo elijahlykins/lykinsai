@@ -13,12 +13,14 @@ import {
 } from "@/lib/connectors/catalog";
 import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
+import TokenConnectDialog from "@/components/connections/TokenConnectDialog";
+import CustomApiDialog from "@/components/connections/CustomApiDialog";
 import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
 
 // Unified "app store" view for the Connections page. Everything LYKN
-// can plug into — AI tools (Claude, Cursor, ChatGPT, …) and input
-// tools (Gmail, Notion, Slack, …) — renders as the same tile shape so
+// can plug into - AI tools (Claude, Cursor, ChatGPT, …) and input
+// tools (Gmail, Notion, Slack, …) - renders as the same tile shape so
 // the answer to "what can I connect?" is one glance.
 //
 // Two data sources behind the scenes:
@@ -31,26 +33,26 @@ import VaultConnectionsToggle from "@/components/connections/VaultConnectionsTog
 // Filter pill at the top swaps between All / AI tools / Input tools.
 
 // The Connections page only renders input connectors whose adapter is
-// actually wired in code — even if the upstream gate is still pending.
+// actually wired in code - even if the upstream gate is still pending.
 // That means we INCLUDE:
-//   • "available" — live and syncing today.
-//   • "beta"      — live first-party capture surfaces (share sheet,
+//   • "available" - live and syncing today.
+//   • "beta"      - live first-party capture surfaces (share sheet,
 //                   browser extension, bookmarklet, RSS).
-//   • "verification" — fully built; blocked on Google brand-verification
+//   • "verification" - fully built; blocked on Google brand-verification
 //                      review (YouTube, Drive, Docs, Sheets, Calendar,
 //                      Gmail). OAuth works for Google Cloud test users
 //                      so the tile is still useful to render.
-//   • "paid"      — fully built; OAuth works, data sync gated on a paid
+//   • "paid"      - fully built; OAuth works, data sync gated on a paid
 //                   upstream tier (X/Twitter bookmarks). Paid-plan
 //                   warning is surfaced at click time.
 // We EXCLUDE:
-//   • "soon"   — no adapter in code yet. Showing these advertises
+//   • "soon"   - no adapter in code yet. Showing these advertises
 //                connections we can't actually make.
-//   • "no-api" — capture-only surfaces ("How to capture"). Per the
+//   • "no-api" - capture-only surfaces ("How to capture"). Per the
 //                product decision, leave these out until we have a
 //                clean ingest story for each.
 // The catalog itself stays exhaustive; this is just the view filter.
-// AI tools (OUTBOUND_TARGETS) are unaffected — their tier 1 curation
+// AI tools (OUTBOUND_TARGETS) are unaffected - their tier 1 curation
 // lives upstream.
 const CONNECTABLE_INPUT_STATUSES = new Set([
   "available",
@@ -77,13 +79,13 @@ const FILTERS = [
 // `clientKinds` references the `clientKind` field on each target in
 // `outboundTargets.js`. A target whose clientKind isn't listed in any
 // bucket lands in `coding` as a fallback (current tier-1 lineup has
-// no such target — every entry is mapped explicitly — but the
+// no such target - every entry is mapped explicitly - but the
 // fallback keeps the page resilient to future catalog additions).
 const AI_SUBGROUPS = [
   {
     id: "chat",
     label: "Chat",
-    description: "Conversational assistants — your synthesis layer follows you in.",
+    description: "Conversational assistants - your synthesis layer follows you in.",
     clientKinds: new Set(["claude", "chatgpt", "gemini", "grok"]),
   },
   {
@@ -140,8 +142,8 @@ function getInputPaidWarning(connector) {
 
 // Two "universal" tiles that lead the AI Tools section. Same AppTile
 // shape as every other card; pinned to the top of the AI bucket so the
-// honest framing — "you don't need a per-tool integration to use any
-// modern AI client" — is the first thing the user sees, ahead of the
+// honest framing - "you don't need a per-tool integration to use any
+// modern AI client" - is the first thing the user sees, ahead of the
 // curated shortcuts.
 //
 // `buildTarget(base)` synthesises the OUTBOUND_TARGETS row passed to
@@ -150,7 +152,7 @@ function getInputPaidWarning(connector) {
 // universal flow doesn't bleed dev-facing labels ("Anything else (raw)",
 // "Custom Agent") into the user surface. The MCP tile in particular
 // pivots from the catalog entry's `installType: "raw"` (paste a bearer
-// into your config) to `oauth-mcp` + `connectMode: "copy-only"` — the
+// into your config) to `oauth-mcp` + `connectMode: "copy-only"` - the
 // same OAuth/DCR flow Claude/Cursor/etc. use, because virtually every
 // actively-maintained MCP client now supports it. The API tile keeps
 // the `custom-agent` install path (token mint + code snippets) since
@@ -161,19 +163,19 @@ const UNIVERSAL_AI_TILES = [
     targetId: "other-mcp",
     name: "Any AI tool via MCP",
     description:
-      "Use LYKN inside any MCP-aware client — Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, or whatever ships next. Paste our MCP URL into the client's server config; it handles the OAuth handshake itself. No token to copy, nothing per-app to wire.",
+      "Use LYKN inside any MCP-aware client - Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, or whatever ships next. Paste our MCP URL into the client's server config; it handles the OAuth handshake itself. No token to copy, nothing per-app to wire.",
     iconNode: Plug,
     accentClass: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 ring-indigo-500/20",
     buildTarget: (base) => ({
       ...base,
       name: "any MCP client",
       summary:
-        "Paste LYKN's MCP URL into any MCP-aware client (Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, …). The client handles OAuth itself — you'll approve a LYKN consent screen, no bearer token to copy.",
+        "Paste LYKN's MCP URL into any MCP-aware client (Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, …). The client handles OAuth itself - you'll approve a LYKN consent screen, no bearer token to copy.",
       installType: "oauth-mcp",
       connectMode: "copy-only",
       installSteps: [
         "Open your MCP client (Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, …).",
-        "Find its MCP server config — usually Settings → MCP, or a JSON file like ~/.cursor/mcp.json or ~/.config/cline/mcp_settings.json.",
+        "Find its MCP server config - usually Settings → MCP, or a JSON file like ~/.cursor/mcp.json or ~/.config/cline/mcp_settings.json.",
         "Add a new server using the URL above as the endpoint. Save / reload.",
         "Approve the LYKN consent screen when your client pops it.",
       ],
@@ -184,14 +186,14 @@ const UNIVERSAL_AI_TILES = [
     targetId: "custom-agent",
     name: "Build with the LYKN API",
     description:
-      "Wire LYKN into something you built yourself — LangChain, n8n, Vapi, a FastAPI service, a robot. Mint one bearer here, then call our REST endpoints (or MCP) from any language that speaks HTTP. Read your context block, search your vault, push project state back.",
+      "Wire LYKN into something you built yourself - LangChain, n8n, Vapi, a FastAPI service, a robot. Mint one bearer here, then call our REST endpoints (or MCP) from any language that speaks HTTP. Read your context block, search your vault, push project state back.",
     iconNode: Code2,
     accentClass: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 ring-emerald-500/20",
     buildTarget: (base) => ({
       ...base,
       name: "the LYKN API",
       summary:
-        "Mint a bearer token and embed it in your own code — LangChain, n8n, Vapi, FastAPI, or any HTTP client. Both the REST mirror and the raw MCP endpoint accept the same token.",
+        "Mint a bearer token and embed it in your own code - LangChain, n8n, Vapi, FastAPI, or any HTTP client. Both the REST mirror and the raw MCP endpoint accept the same token.",
     }),
   },
 ];
@@ -233,6 +235,11 @@ export default function ConnectionsAppGrid({
   const [loading, setLoading] = useState(false);
   const [activeAiTarget, setActiveAiTarget] = useState(null);
   const [activeInputConnector, setActiveInputConnector] = useState(null);
+  // Token-paste providers (Cursor, Trello, Readwise, …) use a credential-paste
+  // dialog rather than the OAuth popup.
+  const [activeTokenConnector, setActiveTokenConnector] = useState(null);
+  // Universal "Custom API" tile opens its own manage-connections dialog.
+  const [customApiOpen, setCustomApiOpen] = useState(false);
   // Per-AI-subgroup expansion. Empty set = every subgroup is collapsed
   // to its first AI_SUBGROUP_DEFAULT_VISIBLE tiles. Clicking the
   // subgroup's "Show all" pill flips it open; the active text-search
@@ -267,7 +274,7 @@ export default function ConnectionsAppGrid({
       const [connRes, tokRes, countsRes] = await Promise.all([
         authedFetch("/api/connections"),
         authedFetch("/api/v1/synthesis/tokens"),
-        // Direct supabase RPC — auth.uid() scopes results to this user.
+        // Direct supabase RPC - auth.uid() scopes results to this user.
         // Network failure or RLS denial falls through to a zero-counts
         // map so tiles silently omit the footer rather than blocking
         // the page.
@@ -295,7 +302,7 @@ export default function ConnectionsAppGrid({
         setSynthesisCounts(m);
       }
     } catch {
-      // Silent — the dialogs each have their own load/retry path.
+      // Silent - the dialogs each have their own load/retry path.
     } finally {
       setLoading(false);
     }
@@ -321,7 +328,7 @@ export default function ConnectionsAppGrid({
   // multiple slugs (Gmail → gmail_starred + gmail_inbox, Mastodon →
   // bookmark + favourite, Drive → starred + slides). Aliased tiles
   // (Google Docs / Sheets) get their *own* slug here so the per-tile
-  // footer reflects that app's items only — not the whole Drive pile.
+  // footer reflects that app's items only - not the whole Drive pile.
   // Map<connectorId, { notes, facts, beliefs }>
   const synthesisCountsByConnector = useMemo(() => {
     const m = new Map();
@@ -366,60 +373,84 @@ export default function ConnectionsAppGrid({
   // section per connector category in CONNECTOR_CATEGORIES order, with
   // every visible connector for that category grouped under it. We
   // iterate categories first (instead of walking the catalog in source
-  // order) so a single out-of-order entry — e.g. YouTube sitting in
+  // order) so a single out-of-order entry - e.g. YouTube sitting in
   // `social` between Notion and the rest of the Google productivity
-  // tiles — can't cause the same heading to render twice. Section
+  // tiles - can't cause the same heading to render twice. Section
   // tiles render as a full-width band inside the grid (col-span-full)
   // and are filtered out when their bucket is empty under the current
   // filter (see `visibleTiles`).
   const allTiles = useMemo(() => {
     const out = [];
 
-    const tierOneAi = OUTBOUND_TARGETS.filter((t) => t.tier === 1);
-    const aiTargets = tierOneAi;
+    // ── 1. Universal entry points (top of the page) ──────────────────
+    // Three "connect anything" cards grouped together, ahead of every
+    // curated shortcut: let LYKN act on any app you connect (Custom API),
+    // use LYKN inside any MCP client, or build on the LYKN API. These
+    // generalize every per-tool integration, so they lead. Each carries
+    // bucket: "universal" so the filter pills never hide them.
+    out.push({
+      key: "section:universal",
+      kind: "section",
+      sectionBucket: "universal",
+      label: "Universal",
+      description:
+        "One connection that works everywhere. Let LYKN act on any app you connect, use LYKN inside any MCP client, or build on the LYKN API.",
+    });
 
-    if (aiTargets.length > 0 || UNIVERSAL_AI_TILES.length > 0) {
+    // Custom API first (let LYKN act on any app you connect). Renders
+    // through the shared `input` branch so the click opens CustomApiDialog
+    // via the customApi flag; excluded from the input group below so it
+    // never renders twice.
+    const customApiConnector = CONNECTORS.find(
+      (c) => c.customApi && CONNECTABLE_INPUT_STATUSES.has(c.status),
+    );
+    if (customApiConnector) {
+      out.push({
+        key: `input:${customApiConnector.id}`,
+        kind: "input",
+        connector: customApiConnector,
+        bucket: "universal",
+      });
+    }
+
+    // Then the two LYKN-as-endpoint universal tiles (MCP + Build API). We
+    // resolve the OUTBOUND_TARGETS entry here (not in render) so a renamed
+    // id surfaces as a single console warning at construct time rather than
+    // a silently-broken tile at click time.
+    for (const u of UNIVERSAL_AI_TILES) {
+      const base = OUTBOUND_TARGETS.find((t) => t.id === u.targetId);
+      if (!base) {
+        // eslint-disable-next-line no-console
+        console.warn(`[ConnectionsAppGrid] universal tile "${u.key}" references missing target id "${u.targetId}"`);
+        continue;
+      }
+      const target = typeof u.buildTarget === "function" ? u.buildTarget(base) : base;
+      out.push({
+        key: u.key,
+        kind: "ai-universal",
+        target,
+        name: u.name,
+        description: u.description,
+        iconNode: u.iconNode,
+        accentClass: u.accentClass,
+        bucket: "universal",
+      });
+    }
+
+    // ── 2. AI tools (curated MCP clients) ────────────────────────────
+    const aiTargets = OUTBOUND_TARGETS.filter((t) => t.tier === 1);
+    if (aiTargets.length > 0) {
       out.push({
         key: "section:ai",
         kind: "section",
         sectionBucket: "ai",
-        label: "AI Tools",
+        label: "AI tools",
         description: "Use LYKN's synthesis layer inside your AI of choice.",
       });
 
-      // Universal tiles lead the AI Tools section so the honest framing
-      // ("one token, every client") is the first thing the user sees —
-      // ahead of the curated per-client shortcuts. We resolve the
-      // OUTBOUND_TARGETS entry here (not in render) so a renamed id
-      // surfaces as a single console warning at construct time rather
-      // than a silently-broken tile at click time.
-      for (const u of UNIVERSAL_AI_TILES) {
-        const base = OUTBOUND_TARGETS.find((t) => t.id === u.targetId);
-        if (!base) {
-          // eslint-disable-next-line no-console
-          console.warn(`[ConnectionsAppGrid] universal tile "${u.key}" references missing target id "${u.targetId}"`);
-          continue;
-        }
-        // Resolve the dialog target NOW (not at click time) so a
-        // renamed/missing buildTarget surfaces immediately. Falls back
-        // to the bare catalog entry if no override is declared.
-        const target = typeof u.buildTarget === "function" ? u.buildTarget(base) : base;
-        out.push({
-          key: u.key,
-          kind: "ai-universal",
-          target,
-          name: u.name,
-          description: u.description,
-          iconNode: u.iconNode,
-          accentClass: u.accentClass,
-        });
-      }
-
-      // Bucket each tier-1 target into its subgroup, keeping the
-      // catalog ordering within the bucket so curation upstream still
-      // wins. Empty buckets are silently dropped so a future change to
-      // the catalog (e.g. removing all Docs tools) doesn't leave a
-      // dangling subgroup header.
+      // Bucket each tier-1 target into its subgroup, keeping the catalog
+      // ordering within the bucket so curation upstream still wins. Empty
+      // buckets are silently dropped.
       const bySubgroup = new Map(AI_SUBGROUPS.map((g) => [g.id, []]));
       for (const target of aiTargets) {
         bySubgroup.get(aiSubgroupIdFor(target)).push(target);
@@ -446,21 +477,30 @@ export default function ConnectionsAppGrid({
       }
     }
 
+    // ── 3. Connected apps (all OAuth/input connectors, one group) ────
+    // Every connectable input connector in a single group instead of one
+    // section per category. We still walk CONNECTOR_CATEGORIES order so
+    // related apps cluster, but emit no per-category headers. The Custom
+    // API connector is skipped here (it leads as a universal tile above).
+    const inputConnectors = [];
     for (const cat of CONNECTOR_CATEGORIES) {
-      const connectorsInCat = CONNECTORS.filter((c) => {
-        if (c.category !== cat.id) return false;
-        if (!CONNECTABLE_INPUT_STATUSES.has(c.status)) return false;
-        return true;
-      });
-      if (connectorsInCat.length === 0) continue;
+      for (const c of CONNECTORS) {
+        if (c.category !== cat.id) continue;
+        if (c.customApi) continue;
+        if (!CONNECTABLE_INPUT_STATUSES.has(c.status)) continue;
+        inputConnectors.push(c);
+      }
+    }
+    if (inputConnectors.length > 0) {
       out.push({
-        key: `section:${cat.id}`,
+        key: "section:input",
         kind: "section",
         sectionBucket: "input",
-        label: cat.label || cat.id,
-        description: cat.description,
+        label: "Your apps",
+        description:
+          "OAuth into the apps you already use so LYKN can pull your notes, docs, saved items, and activity into the vault.",
       });
-      for (const connector of connectorsInCat) {
+      for (const connector of inputConnectors) {
         out.push({ key: `input:${connector.id}`, kind: "input", connector });
       }
     }
@@ -468,22 +508,25 @@ export default function ConnectionsAppGrid({
     return out;
     // All data sources this memo reads are module-level
     // (OUTBOUND_TARGETS, CONNECTORS, CONNECTOR_CATEGORIES,
-    // UNIVERSAL_AI_TILES) so the dep list is intentionally empty —
+    // UNIVERSAL_AI_TILES) so the dep list is intentionally empty -
     // recomputing on every render would just re-allocate identical
     // arrays.
   }, []);
 
   // Filter: drop tiles outside the current bucket, apply the free-text
-  // search to app tiles (section/subgroup headers always pass — they
+  // search to app tiles (section/subgroup headers always pass - they
   // get culled below if their group ends up empty), then drop empty
   // headers, then apply the per-AI-subgroup collapse pass.
   const visibleTiles = useMemo(() => {
     const keepBucket = (t) => {
       if (filter === "all") return true;
+      // Universal entry points (the lead group) stay visible under every
+      // filter - they're the "connect anything" cards, not specific to AI
+      // or input.
+      if (t.bucket === "universal" || t.sectionBucket === "universal") return true;
       if (filter === "ai") {
         return (
           t.kind === "ai" ||
-          t.kind === "ai-universal" ||
           t.kind === "aiSubgroup" ||
           (t.kind === "section" && t.sectionBucket === "ai")
         );
@@ -534,7 +577,7 @@ export default function ConnectionsAppGrid({
     // Drop empty headers:
     //   • aiSubgroup with no following AI tile from the same subgroup
     //     (means the user's search excluded every entry in this
-    //     bucket — hide the heading too).
+    //     bucket - hide the heading too).
     //   • section with no following non-header tile at all.
     const noEmpty = [];
     for (let i = 0; i < filtered.length; i++) {
@@ -559,7 +602,7 @@ export default function ConnectionsAppGrid({
       noEmpty.push(t);
     }
 
-    // Active search bypasses the collapse pass — users always see every
+    // Active search bypasses the collapse pass - users always see every
     // matching tile regardless of which bucket they're in. Wake preview
     // does the same so the walkthrough grid shows the full lineup (e.g.
     // Grok in Chat) without a "Show N more" pill.
@@ -596,7 +639,7 @@ export default function ConnectionsAppGrid({
         shownPerSubgroup.set(t.subgroupId, shown + 1);
         continue;
       }
-      // First tile that overflows the visible cap — emit the
+      // First tile that overflows the visible cap - emit the
       // single show-all pill, then suppress the rest of this
       // subgroup's tiles. Subsequent overflow tiles fall through
       // to the skip branch below.
@@ -610,7 +653,7 @@ export default function ConnectionsAppGrid({
         });
         shownPerSubgroup.set(t.subgroupId, shown + 1);
       }
-      // else: skip this tile — pill already emitted.
+      // else: skip this tile - pill already emitted.
     }
     return out;
   }, [filter, allTiles, query, expandedAiSubgroups, wakePreview]);
@@ -653,7 +696,7 @@ export default function ConnectionsAppGrid({
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search connections — type an app name, category, or keyword"
+              placeholder="Search connections - type an app name, category, or keyword"
               aria-label="Search connections"
               className="w-full h-11 rounded-2xl glass-control pl-10 pr-10 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
             />
@@ -796,7 +839,7 @@ export default function ConnectionsAppGrid({
             // Universal tile: same AppTile shell as every other card,
             // but driven by a lucide icon (no favicon lookup) and a
             // friendlier label. The dialog target was pre-synthesized
-            // in `allTiles` (see `buildTarget`) — for the MCP tile
+            // in `allTiles` (see `buildTarget`) - for the MCP tile
             // that flips the underlying catalog row from a manual-
             // bearer flow to OAuth-MCP, matching how the curated
             // Claude/Cursor/etc. tiles work.
@@ -862,7 +905,7 @@ export default function ConnectionsAppGrid({
                   }
                   // Paid-plan gate fires BEFORE opening the dialog so the
                   // user gets one clear "this costs money on the upstream
-                  // side" prompt — no surprise wall mid-flow. UseLyknWithDialog
+                  // side" prompt - no surprise wall mid-flow. UseLyknWithDialog
                   // also has its own confirm as a safety net.
                   if (!isConnected && paidWarning) {
                     // eslint-disable-next-line no-alert
@@ -890,7 +933,7 @@ export default function ConnectionsAppGrid({
             const paidWarning = getInputPaidWarning(connector);
             // Capture-only tiles (Google Keep, Instagram, Figma, …)
             // surface a clear "no programmatic sync available" story.
-            // Clicking the tile is informational — it explains the
+            // Clicking the tile is informational - it explains the
             // alternate ingest paths (browser extension, share sheet,
             // email-to-vault) rather than opening an OAuth dialog that
             // would just fail.
@@ -914,7 +957,7 @@ export default function ConnectionsAppGrid({
             // has produced, how many user-model facts cite those notes,
             // and how many beliefs were promoted from those facts.
             // Only rendered when the tile is actually connected AND
-            // we have at least one non-zero count — unconnected /
+            // we have at least one non-zero count - unconnected /
             // capture-only tiles stay quiet to avoid clutter.
             const counts =
               isConnected && !isCaptureOnly && !isComingSoon
@@ -923,7 +966,7 @@ export default function ConnectionsAppGrid({
             // Deep-link targets for each chip. We pass the first slug
             // for the connector (most are 1:1) so the receiving page
             // can filter to that one source. Pages that don't yet read
-            // ?source= ignore it harmlessly — the click still lands on
+            // ?source= ignore it harmlessly - the click still lands on
             // the right surface.
             const primarySlug = getConnectorSourceSlugs(connector.id)[0] || "";
             const chips = counts
@@ -955,8 +998,14 @@ export default function ConnectionsAppGrid({
                 anchorId={connector.id}
                 logoDomain={connector.domain}
                 logoUrl={connector.iconUrl}
+                iconNode={connector.customApi ? Plug : undefined}
+                iconAccentClass={
+                  connector.customApi
+                    ? "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 ring-indigo-500/20"
+                    : undefined
+                }
                 name={connector.name}
-                typeLabel="Input tool"
+                typeLabel={connector.customApi ? "Action tool" : "Input tool"}
                 description={connector.summary}
                 badge={badge}
                 chips={chips}
@@ -977,7 +1026,7 @@ export default function ConnectionsAppGrid({
                   }
                   if (isCaptureOnly) {
                     toast({
-                      title: `${connector.name} — capture-only`,
+                      title: `${connector.name} - capture-only`,
                       description:
                         connector.summary ||
                         "No programmatic API. Use the LYKN browser extension or mobile share sheet to save items one at a time.",
@@ -989,13 +1038,24 @@ export default function ConnectionsAppGrid({
                       title: `${connector.name} is on the way`,
                       description:
                         connector.summary ||
-                        "Adapter not wired yet — we'll light this card up when it lands.",
+                        "Adapter not wired yet - we'll light this card up when it lands.",
                     });
                     return;
                   }
                   if (!isConnected && paidWarning) {
                     // eslint-disable-next-line no-alert
                     if (!window.confirm(`${paidWarning.title}\n\n${paidWarning.message}`)) return;
+                  }
+                  // Universal bring-your-own-API-key tile manages its own list.
+                  if (authConnector.customApi) {
+                    setCustomApiOpen(true);
+                    return;
+                  }
+                  // Token-paste providers (Cursor, Trello, Readwise, …) open
+                  // the credential dialog instead of the OAuth popup.
+                  if (authConnector.authMode === "token") {
+                    setActiveTokenConnector(authConnector);
+                    return;
                   }
                   // For alias tiles we open the dialog against the
                   // parent connector so the OAuth handshake hits the
@@ -1053,6 +1113,25 @@ export default function ConnectionsAppGrid({
           }
         }}
         connector={activeInputConnector}
+      />
+      <TokenConnectDialog
+        open={Boolean(activeTokenConnector)}
+        onOpenChange={(o) => {
+          if (!o) {
+            setActiveTokenConnector(null);
+            refresh();
+          }
+        }}
+        connector={activeTokenConnector}
+      />
+      <CustomApiDialog
+        open={customApiOpen}
+        onOpenChange={(o) => {
+          if (!o) {
+            setCustomApiOpen(false);
+            refresh();
+          }
+        }}
       />
     </>
   );
@@ -1115,7 +1194,7 @@ function AppTile({
       <div className="flex items-start gap-3">
         {iconNode ? (
           // Universal tiles (or any caller passing iconNode) skip the
-          // favicon pipeline entirely — useful when the tile isn't tied
+          // favicon pipeline entirely - useful when the tile isn't tied
           // to a specific upstream domain. Accent ring/tint differentiates
           // them from the favicon-on-white-square treatment used by
           // every connector-backed tile.
@@ -1200,7 +1279,7 @@ function AppTile({
 function AppFavicon({ domain, iconUrl, name }) {
   const [attempt, setAttempt] = useState(0);
   // Prefer an explicit catalog-level `iconUrl` over the S2 favicon
-  // service. Google Workspace apps in particular need this — S2 returns
+  // service. Google Workspace apps in particular need this - S2 returns
   // the same generic Google "G" for docs.google.com / sheets.google.com /
   // mail.google.com, so all the Google tiles end up looking identical.
   // Falling through to the favicon services keeps every other connector

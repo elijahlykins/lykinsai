@@ -2,6 +2,23 @@ import { useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { clearPrototypeState } from '@/lib/prototypeHandoff';
 import { AuthContext } from '@/lib/authContext';
+import {
+  startVaultDescriptionBackfill,
+  resetVaultDescriptionBackfill,
+} from '@/lib/vault/backfillDescriptions';
+
+// Lazily fill in missing vault descriptions once the user is signed in, so the
+// assistant's vault search has a description on every item to match against.
+// Deferred + self-throttled inside the driver; only runs once per session.
+function kickoffVaultBackfill() {
+  setTimeout(() => {
+    try {
+      startVaultDescriptionBackfill();
+    } catch {
+      /* fire-and-forget */
+    }
+  }, 8000);
+}
 
 export function SupabaseAuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -59,6 +76,7 @@ export function SupabaseAuthProvider({ children }) {
           userRef.current = nextUser;
           setUser(nextUser);
           setLoading(false);
+          if (nextUser) kickoffVaultBackfill();
           return;
         }
 
@@ -67,8 +85,10 @@ export function SupabaseAuthProvider({ children }) {
             clearTimeout(signOutTimerRef.current);
             signOutTimerRef.current = null;
           }
+          const wasSignedOut = !userRef.current;
           userRef.current = session.user;
           setUser(session.user);
+          if (wasSignedOut) kickoffVaultBackfill();
           return;
         }
 
@@ -80,6 +100,7 @@ export function SupabaseAuthProvider({ children }) {
           }
           userRef.current = null;
           setUser(null);
+          resetVaultDescriptionBackfill();
           return;
         }
 

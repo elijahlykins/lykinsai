@@ -15,6 +15,11 @@
 // ============================================================================
 
 import { createGoogleAdapter, gFetch, saveGoogleNote } from './_shared.js';
+import {
+  upsertExternalEvent,
+  markExternalEventCancelled,
+  normalizeGoogleTimes,
+} from '../_calendarEvent.js';
 
 const CAL_API = 'https://www.googleapis.com/calendar/v3';
 const SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'];
@@ -74,12 +79,29 @@ async function syncCalendarEvents({ connection, supabaseAdmin, accessToken }) {
 
     const items = data.items || [];
     for (const event of items) {
-      // Cancelled events come back via incremental sync; skip them.
+      // Cancelled events come back via incremental sync. They never enter the
+      // vault, but if we'd previously mirrored one onto the LYKN calendar we
+      // flip it to cancelled so it drops off the grid.
       if (event.status === 'cancelled') {
         skipped++;
+        if (event.id) {
+          await markExternalEventCancelled({
+            supabaseAdmin,
+            userId: connection.user_id,
+            provider: 'google',
+            externalId: event.id,
+          });
+        }
         continue;
       }
       const result = await saveCalendarEvent({
+        supabaseAdmin,
+        userId: connection.user_id,
+        event,
+      });
+      // Also mirror onto the LYKN calendar grid (read-only). Best-effort: a
+      // failure here never breaks the vault sync above.
+      await mirrorEventToCalendar({
         supabaseAdmin,
         userId: connection.user_id,
         event,
@@ -171,6 +193,39 @@ async function saveCalendarEvent({ supabaseAdmin, userId, event }) {
       starts_at: start || null,
       ends_at: end || null,
     },
+  });
+}
+
+// Mirror a Google event onto the native LYKN calendar (lykn_events) as a
+// read-only row so it renders in the calendar pop-up next to LYKN-native
+// events. Separate from the vault note above — the vault is for search /
+// synthesis retrieval, this is for the grid.
+async function mirrorEventToCalendar({ supabaseAdmin, userId, event }) {
+  if (!event?.id) return;
+  const { startsAt, endsAt, allDay } = normalizeGoogleTimes(event.start, event.end);
+  if (!startsAt) return;
+
+  const meetLink = event.hangoutLink || extractConferenceLink(event);
+  const cleanedDesc = (event.description || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  await upsertExternalEvent({
+    supabaseAdmin,
+    userId,
+    provider: 'google',
+    externalId: event.id,
+    title: event.summary || '(no title)',
+    description: [meetLink ? `Conference: ${meetLink}` : '', cleanedDesc]
+      .filter(Boolean)
+      .join('\n') || null,
+    startsAt,
+    endsAt,
+    allDay,
+    location: event.location || null,
+    timezone: event.start?.timeZone || event.end?.timeZone || null,
+    status: event.status === 'tentative' ? 'tentative' : 'confirmed',
   });
 }
 

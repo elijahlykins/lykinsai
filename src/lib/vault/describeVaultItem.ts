@@ -3,6 +3,8 @@ import {
   findAttachmentsMarker,
   withAttachmentsMarker,
 } from "@/lib/vault/attachmentsMarker";
+import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
+import { vaultNoteTextForSynthesis } from "@/lib/synthesis/sourceText";
 
 /**
  * Fire-and-forget: asks the server to describe a vault item (image / text / file)
@@ -46,7 +48,7 @@ export function describeVaultItemInBackground(
 
       const { data: note } = await supabase
         .from("notes")
-        .select("content, updated_at")
+        .select("title, content, updated_at")
         .eq("id", noteId)
         .eq("user_id", userId)
         .single();
@@ -70,12 +72,25 @@ export function describeVaultItemInBackground(
       // Lost-update guard: only commit if the row hasn't moved since we
       // read it. The user could have edited the note title/content while
       // the AI request was in flight; clobbering that would be data loss.
-      await supabase
+      const { error: updateErr } = await supabase
         .from("notes")
         .update({ content: updatedContent })
         .eq("id", noteId)
         .eq("user_id", userId)
         .eq("updated_at", note.updated_at);
+      if (updateErr) return;
+
+      // The vision description only just landed in the note. The original
+      // post-save reindex embedded the image as title-only (no description
+      // existed yet), so without a fresh reindex the assistant's semantic
+      // vault search can never match the image by what it depicts. Re-embed
+      // now with the description folded in via vaultNoteTextForSynthesis.
+      scheduleSynthesisReindex({
+        sourceType: "vault_note",
+        sourceId: noteId,
+        text: vaultNoteTextForSynthesis(String(note.title || ""), updatedContent),
+        metadata: { title: note.title, describedReindex: true },
+      });
     } catch (err: any) {
       if (import.meta.env.DEV) console.warn("Background vault item describe failed:", err?.message);
     }

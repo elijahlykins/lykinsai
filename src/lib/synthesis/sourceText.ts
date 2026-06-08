@@ -2,14 +2,49 @@
  * Plain text for synthesis embedding (vectors), separate from tiered AI canvas context.
  */
 
+import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
+
 export function stripAttachmentPayload(content: string): string {
   return String(content || "").replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, "").trim();
+}
+
+/**
+ * Pulls human-meaningful text OUT of the `[ATTACHMENTS_JSON:…]` marker so it
+ * can be embedded. For image / file uploads the note body is JUST the marker,
+ * so without this an image embeds as title-only and semantic search can never
+ * find it by its visual content. We surface the AI vision description
+ * (`aiDescription`), any OCR/extracted text, the filename, and alt text —
+ * the exact fields a user would phrase a query against ("my sunset photo",
+ * "the receipt from the hardware store").
+ */
+export function attachmentTextForSynthesis(content: string): string {
+  const attachments = parseAttachmentsFromContent(content);
+  if (!attachments.length) return "";
+  const lines: string[] = [];
+  for (const att of attachments) {
+    if (!att || typeof att !== "object") continue;
+    const a = att as Record<string, unknown>;
+    const name = String(a.name || a.title || a.fileName || "").trim();
+    const desc = String(a.aiDescription || "").trim();
+    const extracted = String(a.extractedText || a.text || a.ocr || "").trim();
+    const alt = String(a.alt || a.caption || "").trim();
+    const kind = String(a.type || a.kind || "").trim();
+    const parts = [
+      kind && name ? `[${kind}] ${name}` : name || (kind ? `[${kind}]` : ""),
+      desc ? `Description: ${desc}` : "",
+      alt && alt !== desc ? `Caption: ${alt}` : "",
+      extracted ? `Text: ${extracted.slice(0, 4000)}` : "",
+    ].filter(Boolean);
+    if (parts.length) lines.push(parts.join("\n"));
+  }
+  return lines.join("\n\n").trim();
 }
 
 export function vaultNoteTextForSynthesis(title: string, content: string): string {
   const t = String(title || "").trim();
   const body = stripAttachmentPayload(content);
-  const parts = [t ? `Title: ${t}` : "", body].filter(Boolean);
+  const attachments = attachmentTextForSynthesis(content);
+  const parts = [t ? `Title: ${t}` : "", body, attachments].filter(Boolean);
   return parts.join("\n\n").slice(0, 120_000);
 }
 
