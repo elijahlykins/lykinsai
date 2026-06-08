@@ -183,7 +183,7 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
   ),
   clientTool(
     'list_events',
-    "List the user's calendar events, earliest-first ('what's on my calendar', 'what do I have Friday', 'what does next week look like'), or to find an id before editing/deleting. Window by from/to (ISO) or days_ahead (default 14).",
+    "List the user's calendar events, earliest-first ('what's on my calendar', 'what do I have Friday', 'what does next week look like'), or to find an id before editing/deleting. Window by from/to (ISO) or days_ahead (default 14). Each event includes read_only/external_provider — read_only:true means it is synced from the user's Google/Apple calendar and CANNOT be edited or deleted in LYKN.",
     {
       from: { type: 'string', description: 'Window start as ISO 8601. Pair with to.' },
       to: { type: 'string', description: 'Window end as ISO 8601. Pair with from.' },
@@ -195,7 +195,7 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
   ),
   clientTool(
     'update_event',
-    "Reschedule ('move my dentist to 4pm'), change length, edit text/location, toggle all-day, or cancel an event. Get its id from list_events first. Pass starts_at/in_minutes to reschedule, ends_at/duration_minutes for length, title/description/location to edit, or status (cancelled hides it).",
+    "Reschedule ('move my dentist to 4pm'), change length, edit text/location, toggle all-day, or cancel an event. Get its id from list_events first. Pass starts_at/in_minutes to reschedule, ends_at/duration_minutes for length, title/description/location to edit, or status (cancelled hides it). NOTE: events with read_only:true are synced from the user's Google/Apple calendar and CANNOT be changed here — tell them to edit it in that app instead of retrying.",
     {
       id: { type: 'string', description: 'The event id (from list_events).' },
       starts_at: { type: 'string', description: 'New absolute ISO 8601 start with timezone.' },
@@ -212,7 +212,7 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
   ),
   clientTool(
     'delete_event',
-    "Permanently delete a calendar event ('delete that meeting', 'take it off my calendar'). Get its id from list_events first. If the user only wants it off the calendar but kept, prefer update_event with status cancelled.",
+    "Permanently delete a calendar event ('delete that meeting', 'take it off my calendar'). Get its id from list_events first. If the user only wants it off the calendar but kept, prefer update_event with status cancelled. NOTE: events with read_only:true are synced from the user's Google/Apple calendar and CANNOT be deleted here — tell them to remove it in that app (it drops off LYKN on the next sync) instead of retrying.",
     {
       id: { type: 'string', description: 'The event id to delete (from list_events).' },
     },

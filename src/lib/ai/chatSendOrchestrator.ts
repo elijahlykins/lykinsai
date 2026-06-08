@@ -34,6 +34,18 @@ import {
 } from "@/lib/synthesis/projectLiveSync";
 import { toast } from "@/components/ui/use-toast";
 
+// The browser's IANA timezone (e.g. "America/Denver"). Sent with each chat
+// request so the server can hand the model the user's LOCAL current time +
+// offset — otherwise scheduling tools resolve "3pm" against UTC and land
+// events hours off.
+function resolveLocalTimezone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
+}
+
 // Show a one-shot toast when the server downgrades the model. The server
 // annotates responses with `X-Model-Downgraded: from->to` whenever the caller
 // requests a model locked behind their plan. Toast once per session per pair
@@ -2464,6 +2476,11 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     // events with text deltas. Server forces an OpenAI tool-capable model
     // when this is on; X-Tool-Route header announces the swap.
     useTools: true,
+    // The user's IANA timezone (browser-resolved) so the server can give the
+    // model the user's LOCAL "now" + offset. Without this, scheduling tools
+    // (createEvent/createReminder) land events at the wrong time because the
+    // model has no idea what timezone the user means by "3pm".
+    timezone: resolveLocalTimezone(),
     ...(trimmedCanvasContext ? { context: trimmedCanvasContext } : {}),
     ...(hasFocusedBricks ? { hasFocusedBricks: true } : {}),
     ...(mediaContext ? { mediaContext: mediaContext.slice(0, 8000) } : {}),

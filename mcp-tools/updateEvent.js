@@ -12,6 +12,7 @@
 // enforces it again under JWT). For permanent removal use lykn_deleteEvent.
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
+import { resolveInstant } from './_time.js';
 
 const TITLE_MAX = 280;
 const DESC_MAX = 4000;
@@ -111,7 +112,7 @@ export const updateEventTool = {
     // duration-based end against the (possibly new) start.
     const { data: current, error: loadErr } = await ctx.supabaseAdmin
       .from('lykn_events')
-      .select('id, starts_at, ends_at, all_day, read_only, external_provider')
+      .select('id, starts_at, ends_at, all_day, timezone, read_only, external_provider')
       .eq('id', id)
       .eq('user_id', ctx.userId)
       .maybeSingle();
@@ -133,14 +134,19 @@ export const updateEventTool = {
     }
 
     const patch = {};
+    // Resolve a NAIVE starts_at/ends_at against this tz (arg, else the event's
+    // stored timezone) so "move it to 3pm" doesn't drift to UTC.
+    const tzHint = (typeof args?.timezone === 'string' && args.timezone.trim())
+      ? args.timezone.trim()
+      : (typeof current.timezone === 'string' ? current.timezone : '');
 
     // Reschedule the start.
     let newStart = new Date(current.starts_at);
     const hasInMinutes = args?.in_minutes !== undefined && args?.in_minutes !== null && args?.in_minutes !== '';
     const hasStartsAt = typeof args?.starts_at === 'string' && args.starts_at.trim();
     if (hasStartsAt) {
-      const parsed = new Date(args.starts_at.trim());
-      if (Number.isNaN(parsed.getTime())) {
+      const parsed = resolveInstant(args.starts_at, tzHint);
+      if (!parsed) {
         return errorContent('starts_at is not a valid ISO 8601 timestamp.');
       }
       newStart = parsed;
@@ -161,8 +167,8 @@ export const updateEventTool = {
     const hasEndsAt = typeof args?.ends_at === 'string' && args.ends_at.trim();
     const hasDuration = args?.duration_minutes !== undefined && args?.duration_minutes !== null && args?.duration_minutes !== '';
     if (hasEndsAt) {
-      const parsed = new Date(args.ends_at.trim());
-      if (Number.isNaN(parsed.getTime())) {
+      const parsed = resolveInstant(args.ends_at, tzHint);
+      if (!parsed) {
         return errorContent('ends_at is not a valid ISO 8601 timestamp.');
       }
       if (parsed.getTime() < newStart.getTime()) {

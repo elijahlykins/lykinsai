@@ -18,6 +18,7 @@
 // they see in the calendar pop-up. It does NOT push to Google/Apple/Outlook.
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
+import { resolveInstant } from './_time.js';
 
 const TITLE_MAX = 280;
 const DESC_MAX = 4000;
@@ -96,7 +97,7 @@ export const createEventTool = {
       },
       timezone: {
         type: 'string',
-        description: 'Optional IANA timezone the user meant, e.g. "America/Denver" (<=64 chars).',
+        description: 'IANA timezone the user is in, e.g. "America/Denver" (<=64 chars). If you pass a naive starts_at/ends_at (no offset), it is interpreted in THIS timezone — so always include timezone when you do not put an explicit offset on the timestamp.',
       },
       color: {
         type: 'string',
@@ -121,6 +122,9 @@ export const createEventTool = {
     if (!title) return errorContent('title is required — what is the event called?');
 
     const allDay = args?.all_day === true;
+    // The IANA timezone the user meant — used to resolve a NAIVE starts_at/ends_at
+    // (one with no offset) to the right instant instead of treating it as UTC.
+    const tzHint = typeof args?.timezone === 'string' ? args.timezone.trim() : '';
 
     // Resolve the start from exactly one of starts_at / in_minutes.
     let startsAt = null;
@@ -128,8 +132,8 @@ export const createEventTool = {
     const hasStartsAt = typeof args?.starts_at === 'string' && args.starts_at.trim();
 
     if (hasStartsAt) {
-      const parsed = new Date(args.starts_at.trim());
-      if (Number.isNaN(parsed.getTime())) {
+      const parsed = resolveInstant(args.starts_at, tzHint);
+      if (!parsed) {
         return errorContent('starts_at is not a valid ISO 8601 timestamp. Use e.g. "2026-06-11T12:00:00-06:00", or pass in_minutes instead.');
       }
       startsAt = parsed;
@@ -151,8 +155,8 @@ export const createEventTool = {
     const hasEndsAt = typeof args?.ends_at === 'string' && args.ends_at.trim();
     const hasDuration = args?.duration_minutes !== undefined && args?.duration_minutes !== null && args?.duration_minutes !== '';
     if (hasEndsAt) {
-      const parsed = new Date(args.ends_at.trim());
-      if (Number.isNaN(parsed.getTime())) {
+      const parsed = resolveInstant(args.ends_at, tzHint);
+      if (!parsed) {
         return errorContent('ends_at is not a valid ISO 8601 timestamp.');
       }
       if (parsed.getTime() < startsAt.getTime()) {
