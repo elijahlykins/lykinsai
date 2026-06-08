@@ -2444,8 +2444,24 @@ export default function OmniaGridPage() {
 
   useEffect(() => {
     if (!chatMode) return;
-    const t = window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
-    return () => window.clearTimeout(t);
+    // Land the user directly in the composer (ChatGPT/Claude-style) with no
+    // extra tap. The composer can mount a frame or two after chatMode flips
+    // (especially on mobile entry), so retry focus briefly until it's there.
+    // Note: iOS Safari only raises the soft keyboard from a user gesture, so
+    // on iOS this places the cursor; Android/installed PWAs open the keyboard.
+    const timers: number[] = [];
+    const tryFocus = (attempt: number) => {
+      const el = chatPanelInputRef.current;
+      if (el) {
+        el.focus();
+        return;
+      }
+      if (attempt < 6) {
+        timers.push(window.setTimeout(() => tryFocus(attempt + 1), 50));
+      }
+    };
+    timers.push(window.setTimeout(() => tryFocus(0), 0));
+    return () => timers.forEach((t) => window.clearTimeout(t));
   }, [chatMode]);
 
   const chatTransitionTimerRef = useRef<number | null>(null);

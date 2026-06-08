@@ -3,7 +3,7 @@ import ReactDOM from "react-dom";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   Edit2,
-  MessageSquare,
+  MessageCircle,
   MoreHorizontal,
   Plus,
   Search as SearchIcon,
@@ -163,7 +163,7 @@ export default function MobileFocusedChatGrids() {
         aria-label="Open chats"
         title="Switch chats"
       >
-        <MessageSquare className="w-3.5 h-3.5 opacity-80" />
+        <MessageCircle className="w-3.5 h-3.5 opacity-80" />
         Chats
       </button>
 
@@ -223,7 +223,7 @@ export default function MobileFocusedChatGrids() {
               {filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-10 text-center">
                   <div className="w-12 h-12 rounded-2xl bg-black/[0.04] dark:bg-white/5 flex items-center justify-center mb-3">
-                    <MessageSquare className="w-5 h-5 text-black/40 dark:text-white/40" />
+                    <MessageCircle className="w-5 h-5 text-black/40 dark:text-white/40" />
                   </div>
                   <p className="text-sm text-black/60 dark:text-white/60 mb-3">
                     {search ? "No chats match your search." : "You don't have any chats yet."}
@@ -265,7 +265,7 @@ export default function MobileFocusedChatGrids() {
                                   : "bg-black/[0.05] dark:bg-white/5 text-black/55 dark:text-white/55"
                               }`}
                             >
-                              <MessageSquare className="w-4 h-4" />
+                              <MessageCircle className="w-4 h-4" />
                             </span>
                             <span className="flex-1 min-w-0">
                               <span className="block text-sm font-medium truncate">

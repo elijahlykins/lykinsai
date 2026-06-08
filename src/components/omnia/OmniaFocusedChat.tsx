@@ -1846,6 +1846,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
               ) : (
                 <textarea
                   ref={chatPanelInputRef}
+                  autoFocus={isMobilePhone}
                   data-min-h="52"
                   {...(isControlledInput
                     ? { value: chatInputValue }
@@ -1944,6 +1945,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
               ) : (
                 <textarea
                   ref={chatPanelInputRef}
+                  autoFocus={isMobilePhone}
                   data-min-h="52"
                   {...(isControlledInput
                     ? { value: chatInputValue }
