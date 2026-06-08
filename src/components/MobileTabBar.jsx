@@ -148,7 +148,7 @@ export default function MobileTabBar() {
                 />
                 <MoreItem
                   icon={Plug}
-                  label="Connections"
+                  label="Vault"
                   onClick={() => {
                     setMoreOpen(false);
                     flushAndNavigate(nav, "/connections");

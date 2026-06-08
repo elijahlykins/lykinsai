@@ -50,7 +50,7 @@ export default function Connections({
   return (
     <>
       {!isEmbeddedMode && (
-        <div className="fixed top-3 left-0 right-0 z-[70] px-3 flex items-center justify-end pointer-events-none">
+        <div className="fixed top-3 left-0 right-0 z-[70] px-3 hidden md:flex items-center justify-end pointer-events-none">
           <div className="pointer-events-auto">
             <VaultConnectionsToggle active="connections" />
           </div>
