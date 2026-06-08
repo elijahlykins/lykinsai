@@ -925,6 +925,11 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   const [isSaveLinkSaving, setIsSaveLinkSaving] = useState(false);
   const [vaultSearch, setVaultSearch] = useState("");
   const [vaultView, setVaultView] = useState(() => {
+    // The wake walkthrough preview always uses the uniform grid view: the
+    // collage/masonry layout gives cards Pinterest-style variable heights,
+    // which reads as "weirdly spaced, some big some small" inside the small
+    // scaled preview window. A grid of equal tiles looks clean and even.
+    if (isWakePreview) return "grid";
     try {
       if (typeof window !== "undefined") {
         const params = new URLSearchParams(window.location.search);
@@ -6425,7 +6430,7 @@ User: ${text}`;
                 )}
               <div className={
                 isWakePreview
-                  ? "lykn-wake-vault-preview-masonry col-start-1 col-span-2 row-start-2 columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"
+                  ? "lykn-wake-vault-preview-grid col-start-1 col-span-2 row-start-2 grid grid-cols-3 gap-3"
                   : isEmbeddedMode
                   ? vaultView === "grid"
                     ? "grid grid-cols-2 gap-3"

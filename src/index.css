@@ -3240,15 +3240,6 @@ mark {
   will-change: transform;
 }
 
-/* The vault masonry uses viewport-based column utilities, which collapse to a
-   single column at a phone viewport even though we render it at a wide design
-   width inside the scaler. Force a real multi-column grid so the cards tile
-   (and scale down together) instead of stacking full-width. Only applies when
-   wrapped by the scaler, i.e. on phones. */
-.lykn-wake-preview-fit .lykn-wake-vault-preview-masonry {
-  columns: 3;
-}
-
 /* Chat preview: inside the scaler it's laid out at a desktop design width, so
    the phone rule that stretches .lykn-wake-chat-preview-inner to max-width:100%
    makes the chat bar run edge-to-edge with a tiny-looking placeholder. Restore
