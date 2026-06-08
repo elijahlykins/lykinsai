@@ -276,7 +276,7 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg bg-white dark:bg-zinc-950 border border-black/10 dark:border-white/10">
+      <DialogContent className="w-[calc(100vw-1.5rem)] max-w-lg max-h-[88dvh] overflow-y-auto bg-white dark:bg-zinc-950 border border-black/10 dark:border-white/10 sm:w-full">
         <DialogHeader>
           <DialogTitle className="text-[18px] font-semibold tracking-tight flex items-center gap-2">
             <ProviderFavicon connector={connector} />
