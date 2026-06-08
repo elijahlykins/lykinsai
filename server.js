@@ -4182,9 +4182,14 @@ const GUEST_MODEL_CHAIN_ONBOARDING_FIRST = [
   { provider: 'google', model: 'gemini-flash-latest', envKey: 'GOOGLE_API_KEY' },
 ];
 const GUEST_MODEL_CHAIN_DEFAULT = [
-  // Cheap + fast default for everything else: subsequent onboarding turns,
-  // the landing-grid demo, etc. Guests don't get top-shelf models on
-  // every message.
+  // Cheap + fast default for everything else: the walkthrough chat preview,
+  // subsequent onboarding turns, the landing-grid demo, etc. We lead with
+  // gpt-4.1-nano — the same model the regular in-app LYKN chat uses (the
+  // `lykn` brand alias) — because it has sub-1s TTFT and felt noticeably
+  // snappier than Gemini Flash-Lite in the walkthrough. Gemini Flash-Lite /
+  // Flash stay as fallbacks so a missing OpenAI key or an OpenAI outage
+  // (e.g. quota) still serves a guest reply.
+  { provider: 'openai', model: 'gpt-4.1-nano', envKey: 'OPENAI_API_KEY' },
   { provider: 'google', model: 'gemini-3.1-flash-lite', envKey: 'GOOGLE_API_KEY' },
   { provider: 'google', model: 'gemini-flash-latest', envKey: 'GOOGLE_API_KEY' },
 ];
