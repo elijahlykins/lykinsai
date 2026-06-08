@@ -5,12 +5,19 @@ import { useUserPlan } from "@/lib/useUserPlan";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { PLAN_LIMITS, planLabel } from "@/lib/pricing-config";
 
-// Plans ordered cheapest → priciest. Legacy paid ids rank the same as Pro.
-const PLAN_ORDER = ["free", "studio", "studio_pro", "studio_max"];
+// Access rank by entitlement, not price. `free` is the floor; every paid tier
+// (Student + Pro + legacy ids) shares full access, so they rank equal. Mirrors
+// PLAN_RANK in server.js.
+const PLAN_RANK = {
+  free: 0,
+  student: 1,
+  studio: 1,
+  studio_pro: 1,
+  studio_max: 1,
+};
 
 function planRank(planId) {
-  const idx = PLAN_ORDER.indexOf(String(planId || "free"));
-  return idx === -1 ? 0 : idx;
+  return PLAN_RANK[String(planId || "free").toLowerCase()] ?? 0;
 }
 
 /**

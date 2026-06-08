@@ -745,6 +745,10 @@ function trialCheckoutCustomText(trialDays = STRIPE_TRIAL_DAYS) {
 }
 
 const STRIPE_PRICE_MAP = {
+  student: {
+    monthly: process.env.STRIPE_PRICE_STUDENT_MONTHLY,
+    annual: process.env.STRIPE_PRICE_STUDENT_ANNUAL,
+  },
   studio: {
     monthly: process.env.STRIPE_PRICE_STUDIO_MONTHLY,
     annual: process.env.STRIPE_PRICE_STUDIO_ANNUAL,
@@ -3757,6 +3761,7 @@ app.use('/api/', globalLimiter);
 // can be reintroduced without touching call sites.
 const PLAN_REQUEST_LIMITS = {
   free: Infinity,
+  student: Infinity,
   studio: Infinity,
   studio_pro: Infinity,
   studio_max: Infinity,
@@ -9643,13 +9648,19 @@ async function enrichVaultNoteSummary({ userId, noteId, supabaseAdmin: clientOve
     // instead of nuking it. Critical: without this, every Notion / Gmail /
     // Slack page enrich call would summarise just the title.
     const stripped = backfillStripAttachments(note.content);
-    const contentHash = sha256(stripped.slice(0, 12000));
+    // Fold the attachment's AI vision description / OCR into the corpus so
+    // image + file notes summarise (and hash) on their actual content, not a
+    // bare filename. Without this, an image note's ai_summary is useless for
+    // search and the row never reflects what the picture shows.
+    const attachmentText = attachmentTextForBackfill(note.content);
+    const corpus = [stripped, attachmentText].filter(Boolean).join('\n\n');
+    const contentHash = sha256(corpus.slice(0, 12000));
 
     if (note.ai_content_hash === contentHash && note.ai_summary) {
       return { ok: true, skipped: true, reason: 'content_unchanged', summary: note.ai_summary };
     }
 
-    const llmInput = `Title: ${String(note.title || '').trim()}\n\n${stripped.slice(0, 12000)}`;
+    const llmInput = `Title: ${String(note.title || '').trim()}\n\n${corpus.slice(0, 12000)}`;
     const sys = `You compress vault items for search and UI. Output ONLY valid JSON:
 {"summary":"2-5 sentences: what this item is, topics, and type (document, link, media, bookmark, etc.)","signals":{"themes":["short labels"],"entities":["names or products if any"]}}
 Use empty arrays if unknown. Be factual; infer only from the text.`;
@@ -9874,10 +9885,37 @@ function extractBodyAfterAttachmentsMarker(content) {
   return raw.slice(span.markerEnd).trim();
 }
 
+// Server mirror of src/lib/synthesis/sourceText.ts#attachmentTextForSynthesis.
+// Surfaces the AI vision description / OCR / filename embedded in the
+// ATTACHMENTS_JSON marker so image + file uploads become searchable by their
+// visual content (and the enrich LLM summarises the picture, not the filename).
+function attachmentTextForBackfill(content) {
+  const span = findAttachmentsMarkerSpan(content);
+  if (!span || !Array.isArray(span.attachments) || !span.attachments.length) return '';
+  const lines = [];
+  for (const att of span.attachments) {
+    if (!att || typeof att !== 'object') continue;
+    const name = String(att.name || att.title || att.fileName || '').trim();
+    const desc = String(att.aiDescription || '').trim();
+    const extracted = String(att.extractedText || att.text || att.ocr || '').trim();
+    const alt = String(att.alt || att.caption || '').trim();
+    const kind = String(att.type || att.kind || '').trim();
+    const parts = [
+      kind && name ? `[${kind}] ${name}` : name || (kind ? `[${kind}]` : ''),
+      desc ? `Description: ${desc}` : '',
+      alt && alt !== desc ? `Caption: ${alt}` : '',
+      extracted ? `Text: ${extracted.slice(0, 4000)}` : '',
+    ].filter(Boolean);
+    if (parts.length) lines.push(parts.join('\n'));
+  }
+  return lines.join('\n\n').trim();
+}
+
 function backfillVaultText(title, content) {
   const t = String(title || '').trim();
   const body = backfillStripAttachments(content);
-  const parts = [t ? `Title: ${t}` : '', body].filter(Boolean);
+  const attachments = attachmentTextForBackfill(content);
+  const parts = [t ? `Title: ${t}` : '', body, attachments].filter(Boolean);
   return parts.join('\n\n').slice(0, 120_000);
 }
 
@@ -16622,9 +16660,10 @@ app.get('/api/admin/security/audit', requireAuth, requireAdmin, async (req, res)
 // STRIPE BILLING — customer + checkout + portal + webhook handler
 // ============================================
 
-// Only Pro (`studio`) is offered at checkout. Legacy price ids for
-// studio_pro / studio_max still map via STRIPE_PRICE_MAP for existing subs.
-const PLAN_IDS = new Set(['studio']);
+// Student (`student`) and Pro (`studio`) are offered at checkout. Legacy price
+// ids for studio_pro / studio_max still map via STRIPE_PRICE_MAP for existing
+// subs.
+const PLAN_IDS = new Set(['student', 'studio']);
 const BILLING_PERIODS = new Set(['monthly', 'annual']);
 
 // ---------------------------------------------------------------------------
@@ -16640,7 +16679,7 @@ const BILLING_PERIODS = new Set(['monthly', 'annual']);
 // product rule is "once upgraded, always upgraded" — payment-collection
 // belongs to Stripe + status flags, not to the access-control gate.
 // ---------------------------------------------------------------------------
-const PLAN_RANK = { free: 0, studio: 1, studio_pro: 1, studio_max: 1 };
+const PLAN_RANK = { free: 0, student: 1, studio: 1, studio_pro: 1, studio_max: 1 };
 
 function planRank(plan) {
   return PLAN_RANK[String(plan || 'free').toLowerCase()] ?? 0;
@@ -18338,7 +18377,7 @@ if (process.env.NODE_ENV !== 'test') {
       setInterval(tick, intervalMs).unref?.();
       console.log(`→ Cursor build poller: ✅ every ${Math.round(intervalMs / 1000)}s`);
     } else if (!isCursorBuildsConfigured()) {
-      console.log('→ Cursor build poller: ⚪ disabled (set CURSOR_API_KEY to enable lykn_build_with_cursor)');
+      console.log('→ Cursor build poller: ⚪ disabled (set CONNECTOR_TOKEN_KEY to enable; unset CURSOR_BUILDS_DISABLED. Builds run on each user\'s own connected Cursor account.)');
     }
 
     // Quick boot summary of which providers are wired up.

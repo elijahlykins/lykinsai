@@ -25,7 +25,7 @@ function BillingToggle({ period, onChange }) {
           onClick={() => onChange(opt.key)}
           className={`relative px-3 py-1 text-xs font-medium rounded transition-all duration-200 ${
             period === opt.key
-              ? "bg-white dark:bg-zinc-100 text-black/85 dark:text-zinc-900 shadow-sm"
+              ? "bg-white dark:bg-neutral-100 text-black/85 dark:text-neutral-900 shadow-sm"
               : "text-black/40 dark:text-white/45 hover:text-black/60 dark:hover:text-white/70"
           }`}
         >
@@ -132,8 +132,8 @@ function PlanCard({
       transition={{ duration: 0.4 }}
       className={`relative flex flex-col rounded-2xl border p-5 transition-shadow duration-300 ${
         plan.highlighted
-          ? "border-black/15 dark:border-white/25 bg-white dark:bg-zinc-900/90 shadow-xl shadow-black/[0.06] dark:shadow-black/40 ring-1 ring-black/[0.06] dark:ring-white/10"
-          : "border-black/[0.06] dark:border-white/[0.12] bg-white dark:bg-zinc-900/85 shadow-sm dark:shadow-black/30 hover:shadow-md"
+          ? "border-black/15 dark:border-white/25 bg-white dark:bg-neutral-900 shadow-xl shadow-black/[0.06] dark:shadow-black/40 ring-1 ring-black/[0.06] dark:ring-white/10"
+          : "border-black/[0.06] dark:border-white/[0.12] bg-white dark:bg-neutral-900 shadow-sm dark:shadow-black/30 hover:shadow-md"
       } ${plan.comingSoon ? "opacity-[0.88]" : ""}`}
     >
       {plan.comingSoon && (
@@ -423,8 +423,8 @@ export default function BillingNew() {
             Pick the plan that fits how you work
           </h2>
           <p className="text-base text-black/45 dark:text-white/60 mt-3 max-w-lg mx-auto leading-relaxed">
-            Start free, upgrade to Pro for every model and unlimited workspace.
-            Cancel anytime, no hidden fees.
+            Go Pro for every model and an unlimited workspace, or get the same
+            on the Student plan for $15/mo. Cancel anytime, no hidden fees.
           </p>
         </div>
 
@@ -468,7 +468,7 @@ export default function BillingNew() {
           >
             Frequently asked questions
           </h3>
-          <div className="rounded-2xl bg-white dark:bg-zinc-900/85 border border-black/[0.06] dark:border-white/[0.12] shadow-sm dark:shadow-black/30 p-6">
+          <div className="rounded-2xl bg-white dark:bg-neutral-900 border border-black/[0.06] dark:border-white/[0.12] shadow-sm dark:shadow-black/30 p-6">
             {FAQ_ITEMS.map((item, i) => (
               <FAQItem
                 key={item.id || item.question}

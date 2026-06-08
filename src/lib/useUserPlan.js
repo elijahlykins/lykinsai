@@ -25,7 +25,7 @@ function resolvePlanId(billing) {
  * per session (react-query cached) and derives the tier from PLAN_LIMITS.
  *
  * @returns {{
- *   planId: "free" | "studio" | "studio_pro" | "studio_max",
+ *   planId: "free" | "student" | "studio" | "studio_pro" | "studio_max",
  *   modelTier: "basic" | "top" | "top+media",
  *   isGuest: boolean,
  *   isActive: boolean,

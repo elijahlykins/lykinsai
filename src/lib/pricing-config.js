@@ -5,26 +5,35 @@ export const BILLING_PERIODS = {
 
 // Plan IDs are used as primary keys throughout the app (DB `user_billing.plan`,
 // Stripe price map in server.js, PLAN_LIMITS below). Don't rename without a
-// migration. The user-facing paid tier is Pro ($25/mo or $17/mo billed
-// annually). Legacy ids `studio_pro` / `studio_max` may still appear on
-// older billing rows — they resolve to the same limits as `studio`.
+// migration. The user-facing paid tiers are Student ($15/mo, full Pro
+// entitlements for verified students) and Pro ($25/mo or $17/mo billed
+// annually). `free` is no longer offered at checkout but remains the implicit
+// default for accounts without a billing row. Legacy ids `studio_pro` /
+// `studio_max` may still appear on older billing rows — they resolve to the
+// same limits as `studio`.
 export const PLANS = [
   {
-    id: "free",
-    name: "Free",
-    tagline: "Try LYKN's synthesis layer across your tools before you upgrade.",
-    monthlyPrice: 0,
-    annualPrice: 0,
-    cta: "Always free",
+    id: "student",
+    name: "Student",
+    tagline: "Everything in Pro at a student price — verify with your school email.",
+    monthlyPrice: 15,
+    // $15/mo billed annually = $180/yr (no extra annual discount).
+    annualPrice: 180,
+    cta: "Get Student",
     ctaVariant: "outline",
     highlighted: false,
-    checkout: false,
+    checkout: true,
     comingSoon: false,
     features: [
-      { text: "100 synthesis neurons", included: true },
-      { text: "50 Vault cards", included: true },
-      { text: "LYKN model", included: true },
-      { text: "Claude + one input connection", included: true },
+      { text: "Unlimited neurons", included: true },
+      { text: "Unlimited Vault cards", included: true },
+      { text: "All models — LYKN + frontier picks", included: true },
+      { text: "All connections unlocked", included: true },
+      {
+        text: "Requires a valid student email",
+        included: true,
+        note: "Verified at checkout",
+      },
     ],
   },
   {
@@ -69,10 +78,16 @@ export const PLANS = [
 
 export const FAQ_ITEMS = [
   {
-    id: "free-plan",
-    question: "What do I get on the Free plan?",
+    id: "student-plan",
+    question: "What is the Student plan?",
     answer:
-      "Every account starts on Free. You get 100 synthesis neurons, 50 Vault cards, the LYKN model for chat, and Claude plus one input connection. It's enough to feel how LYKN's synthesis layer follows you across tools before you upgrade.",
+      "The Student plan is the full Pro experience for $15/month: unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection. It's built for students, so verify with a valid student email at checkout to unlock the student price.",
+  },
+  {
+    id: "student-eligibility",
+    question: "Who qualifies for the Student plan?",
+    answer:
+      "Anyone with a valid student email (typically a .edu or recognized school domain). You confirm eligibility during checkout. If your school email isn't accepted, reach out to support and we'll help verify you.",
   },
   {
     id: "pro-included",
@@ -143,6 +158,17 @@ export const PLAN_LIMITS = {
     seats: 1,
     modelTier: "basic",
   },
+  // Student — full Pro entitlements at the discounted student price.
+  student: {
+    requests: Infinity,
+    vaultCards: Infinity,
+    blocksPerGrid: Infinity,
+    grids: Infinity,
+    projects: Infinity,
+    synthesisNodes: Infinity,
+    seats: 1,
+    modelTier: "top+media",
+  },
   studio: {
     requests: Infinity,
     vaultCards: Infinity,
@@ -184,6 +210,7 @@ export const PLAN_LIMITS = {
 // ---------------------------------------------------------------------------
 export const UPLOAD_RATE_LIMITS = {
   free:       { perMinute: 20,  perHour: 120  },
+  student:    { perMinute: 300, perHour: 3600 },
   studio:     { perMinute: 300, perHour: 3600 },
   studio_pro: { perMinute: 300, perHour: 3600 },
   studio_max: { perMinute: 600, perHour: 7200 },
@@ -202,6 +229,7 @@ export const VAULT_UPLOAD_LIMITS = {
 
 export const PLAN_LABELS = {
   free: "Free",
+  student: "Student",
   studio: "Pro",
   studio_pro: "Pro",
   studio_max: "Pro",
