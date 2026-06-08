@@ -8,7 +8,6 @@ import {
   PanelRightClose,
   Plus,
   Share2,
-  Undo2,
 } from "lucide-react";
 import {
   Select,
@@ -40,7 +39,6 @@ interface OmniaToolbarProps {
   notesOpen: boolean;
   modelSelectMenu: React.ReactNode;
   onShareGrid?: () => void;
-  onUndo?: () => void;
   // Voice Mode: a Chat ⇆ Voice switch. Only shown when the active model is
   // voice-eligible (default LYKN model or the main-agent orchestrator).
   voiceModeEligible?: boolean;
@@ -67,7 +65,6 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
   notesOpen,
   modelSelectMenu,
   onShareGrid,
-  onUndo,
   voiceModeEligible = false,
   voiceModeOn = false,
   onVoiceModeToggle,
@@ -200,18 +197,6 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
               )}
 
               <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-
-              {onUndo && (
-                <button
-                  type="button"
-                  onClick={onUndo}
-                  className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-                  title="Undo"
-                >
-                  <Undo2 className="w-4 h-4" />
-                  <span className="sr-only">Undo</span>
-                </button>
-              )}
 
               <button
                 type="button"

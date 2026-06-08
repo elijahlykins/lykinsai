@@ -693,7 +693,6 @@ export default function OmniaGridPage() {
   const addListBlockAt = useCanvasStore((s) => s.addListBlockAt);
   const setListItems = useCanvasStore((s) => s.setListItems);
   const deleteBlock = useCanvasStore((s) => s.deleteBlock);
-  const undo = useCanvasStore((s) => s.undo);
   const setCamera = useCanvasStore((s) => s.setCamera);
   const loadBlocks = useCanvasStore((s) => s.loadBlocks);
   const reset = useCanvasStore((s) => s.reset);
@@ -3439,15 +3438,6 @@ export default function OmniaGridPage() {
     setMediaSuggestions([]);
   }, []);
 
-  const handleTopPanelUndo = useCallback(() => {
-    const selectedIds = (useCanvasStore.getState().selectedIds || []).map((x) => String(x));
-    const detail: { handled?: boolean; selectedIds: string[] } = { selectedIds };
-    window.dispatchEvent(new CustomEvent("omnia_grid_undo_request", { detail }));
-    if (!detail.handled) {
-      undo();
-    }
-  }, [undo]);
-
   return (
     <div className={`w-full relative overflow-hidden omnia-grid-bg ${isEmbeddedMode ? "h-full min-h-0" : "h-[100svh]"}`}>
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
@@ -3494,7 +3484,6 @@ export default function OmniaGridPage() {
         notesOpen={notesOpen}
         modelSelectMenu={modelSelectMenu}
         onShareGrid={() => setShowShareDialog(true)}
-        onUndo={handleTopPanelUndo}
         voiceModeEligible={voiceModeEligible}
         voiceModeOn={voiceModeOn}
         onVoiceModeToggle={toggleVoiceMode}
