@@ -187,7 +187,13 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
       const res = await fetch(`${API_BASE_URL}/api/ai/elevenlabs/signed-url`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ instructions, boardId: boardIdRef.current }),
+        body: JSON.stringify({
+          instructions,
+          boardId: boardIdRef.current,
+          // Browser IANA timezone so the voice model resolves clock times
+          // ("3pm") to the user's local instant instead of UTC.
+          timezone: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; } })(),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data?.signedUrl) {

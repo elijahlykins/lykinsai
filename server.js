@@ -15526,7 +15526,11 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, aiLimiter, checkAiUsageLi
 
     const sessionToken = signLyknVoiceToken({ uid: req.user?.id, board: req.body?.boardId || null });
     pruneVoiceSessions();
-    voiceSessionGrounding.set(sessionToken, { instructions, at: Date.now() });
+    // Capture the browser's IANA timezone so the custom-LLM endpoint can give
+    // the voice model the user's LOCAL "now" (the custom-LLM calls come from
+    // ElevenLabs, which has no idea what timezone the user is in).
+    const sessionTz = typeof req.body?.timezone === 'string' ? req.body.timezone.trim().slice(0, 64) : '';
+    voiceSessionGrounding.set(sessionToken, { instructions, tz: sessionTz, at: Date.now() });
 
     getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
       logAiUsage({
@@ -15584,8 +15588,11 @@ const elevenCustomLlmHandler = async (req, res) => {
     const userId = session?.uid || null;
 
     let grounding = '';
+    let sessionTz = '';
     if (sessionToken && voiceSessionGrounding.has(sessionToken)) {
-      grounding = voiceSessionGrounding.get(sessionToken)?.instructions || '';
+      const stored = voiceSessionGrounding.get(sessionToken);
+      grounding = stored?.instructions || '';
+      sessionTz = stored?.tz || '';
     } else if (userId) {
       const synth = await buildRealtimeSynthesisGrounding(null, userId);
       grounding = (synth
@@ -15626,7 +15633,7 @@ const elevenCustomLlmHandler = async (req, res) => {
     // per-turn retrieval next, then the original turns with the token line
     // scrubbed out of any system message.
     const rebuilt = [{ role: 'system', content: grounding }];
-    rebuilt.push({ role: 'system', content: currentTimeContextLine() });
+    rebuilt.push({ role: 'system', content: localTimeContextLine(sessionTz) });
     if (retrievalBlock && retrievalBlock.trim()) {
       rebuilt.push({
         role: 'system',
