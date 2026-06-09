@@ -89,14 +89,14 @@ export const cursorAdapter = {
    */
   async connectWithToken({ fields }) {
     const apiKey = String(fields?.api_key || fields?.token || '').trim();
-    if (!apiKey) throw new Error('A Cursor API key is required.');
+    if (!apiKey) throw new ConnectorAuthError('A Cursor API key is required.');
 
     let me;
     try {
       me = await cursorMe(apiKey);
     } catch (err) {
       if (err instanceof ConnectorAuthError || /401|403|rejected/i.test(err.message)) {
-        throw new Error('Cursor rejected this API key. Create a new one at cursor.com/dashboard → Integrations (it needs Cloud Agents access).');
+        throw new ConnectorAuthError('Cursor rejected this API key. Create a new one at cursor.com/dashboard -> Integrations (it needs Cloud Agents access).');
       }
       throw err;
     }

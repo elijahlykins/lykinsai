@@ -214,7 +214,7 @@ export default function WakeSynthesisTourPreview({
                       <div className="text-[0.72rem] font-medium text-white">
                         {item.label}
                       </div>
-                      <div className="text-[0.62rem] text-white/55 mt-0.5 leading-snug">
+                      <div className="lykn-wake-synth-add-menu-blurb text-[0.62rem] text-white/55 mt-0.5 leading-snug">
                         {item.blurb}
                       </div>
                     </div>

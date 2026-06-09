@@ -18693,7 +18693,23 @@ app.post(
 
     return res.json({ connection });
   } catch (err) {
-    return res.status(400).json({ error: 'Connect failed' });
+    // Log the real cause server-side (this block previously swallowed it,
+    // making token-connect failures impossible to diagnose). Surface the
+    // adapter's own message to the client when it's a short, user-facing
+    // string (e.g. "Cursor rejected this API key…") so the dialog can show
+    // something actionable instead of a generic "trouble connecting".
+    console.error(
+      `[connectors] connect-token failed for ${req.params?.provider}:`,
+      err?.stack || err?.message || err,
+    );
+    // Only surface messages the adapter explicitly marked user-facing
+    // (ConnectorAuthError / isUserFacing) — e.g. "Cursor rejected this API
+    // key…". Anything else (DB/Postgres internals, unexpected throws) stays
+    // generic so we don't leak internals into the UI.
+    const raw = typeof err?.message === 'string' ? err.message.trim() : '';
+    const userFacing = Boolean(err?.isAuthError || err?.isUserFacing);
+    const safe = userFacing && raw && raw.length <= 300 ? raw : 'Connect failed';
+    return res.status(400).json({ error: safe });
   }
   },
 );

@@ -12,6 +12,7 @@ import {
   getConnectorSourceSlugs,
 } from "@/lib/connectors/catalog";
 import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
+import { CUSTOM_API_PRESETS } from "@/lib/connectors/customApiPresets";
 import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import TokenConnectDialog from "@/components/connections/TokenConnectDialog";
 import CustomApiDialog from "@/components/connections/CustomApiDialog";
@@ -111,6 +112,11 @@ const AI_SUBGROUPS = [
   },
 ];
 const AI_SUBGROUP_DEFAULT_VISIBLE = 3;
+
+// "Popular APIs" (Custom-API presets) initial visible count before the
+// "Show all" pill. Six fills two grid rows on desktop without burying the
+// AI tools section below a wall of bring-your-own-key cards.
+const PRESET_DEFAULT_VISIBLE = 6;
 function aiSubgroupIdFor(target) {
   for (const g of AI_SUBGROUPS) {
     if (g.clientKinds.has(target.clientKind)) return g.id;
@@ -240,6 +246,12 @@ export default function ConnectionsAppGrid({
   const [activeTokenConnector, setActiveTokenConnector] = useState(null);
   // Universal "Custom API" tile opens its own manage-connections dialog.
   const [customApiOpen, setCustomApiOpen] = useState(false);
+  // When a "Popular APIs" preset card is clicked, the dialog opens straight
+  // into that app's form (base URL + auth prefilled, key field ready).
+  const [customApiPresetId, setCustomApiPresetId] = useState(null);
+  // Popular-APIs section starts collapsed to its first PRESET_DEFAULT_VISIBLE
+  // tiles behind a "Show all" pill so the lead of the page stays scannable.
+  const [presetsExpanded, setPresetsExpanded] = useState(false);
   // Per-AI-subgroup expansion. Empty set = every subgroup is collapsed
   // to its first AI_SUBGROUP_DEFAULT_VISIBLE tiles. Clicking the
   // subgroup's "Show all" pill flips it open; the active text-search
@@ -437,6 +449,26 @@ export default function ConnectionsAppGrid({
       });
     }
 
+    // ── 1b. Popular APIs (bring-your-own-key quick connect) ──────────
+    // One card per Custom-API preset (OpenAI, Slack, Stripe, …). Clicking a
+    // card opens CustomApiDialog pre-filled for that app, so the user only
+    // pastes a key. These are the same recipes the dialog's picker offers,
+    // surfaced as first-class cards so they're discoverable from the page.
+    // bucket: "presets" keeps them visible under All + Input (not AI).
+    if (CUSTOM_API_PRESETS.length > 0) {
+      out.push({
+        key: "section:presets",
+        kind: "section",
+        sectionBucket: "presets",
+        label: "Popular APIs",
+        description:
+          "Bring your own key - pick an app, paste your key, and LYKN can act on it. Powered by Custom API.",
+      });
+      for (const preset of CUSTOM_API_PRESETS) {
+        out.push({ key: `preset:${preset.id}`, kind: "preset", preset, bucket: "presets" });
+      }
+    }
+
     // ── 2. AI tools (curated MCP clients) ────────────────────────────
     const aiTargets = OUTBOUND_TARGETS.filter((t) => t.tier === 1);
     if (aiTargets.length > 0) {
@@ -531,7 +563,13 @@ export default function ConnectionsAppGrid({
           (t.kind === "section" && t.sectionBucket === "ai")
         );
       }
-      if (filter === "input") return t.kind === "input" || (t.kind === "section" && t.sectionBucket === "input");
+      if (filter === "input") {
+        return (
+          t.kind === "input" ||
+          t.kind === "preset" ||
+          (t.kind === "section" && (t.sectionBucket === "input" || t.sectionBucket === "presets"))
+        );
+      }
       return true;
     };
     const q = query.trim().toLowerCase();
@@ -556,6 +594,16 @@ export default function ConnectionsAppGrid({
           (target.clientKind || "").toLowerCase().includes(q) ||
           (target.id || "").toLowerCase().includes(q) ||
           "ai tool".includes(q)
+        );
+      }
+      if (t.kind === "preset") {
+        const p = t.preset;
+        return (
+          (p.name || "").toLowerCase().includes(q) ||
+          (p.description || "").toLowerCase().includes(q) ||
+          (p.id || "").toLowerCase().includes(q) ||
+          "api".includes(q) ||
+          "custom".includes(q)
         );
       }
       if (t.kind === "input") {
@@ -615,6 +663,8 @@ export default function ConnectionsAppGrid({
     const out = [];
     const shownPerSubgroup = new Map();
     const totalPerSubgroup = new Map();
+    const totalPresets = noEmpty.filter((t) => t.kind === "preset").length;
+    let presetShown = 0;
     for (const t of noEmpty) {
       if (t.kind === "ai") {
         totalPerSubgroup.set(
@@ -624,6 +674,28 @@ export default function ConnectionsAppGrid({
       }
     }
     for (const t of noEmpty) {
+      // Popular-APIs collapse: show the first PRESET_DEFAULT_VISIBLE cards,
+      // then a single "Show all N more" pill (unless already expanded).
+      if (t.kind === "preset") {
+        if (presetsExpanded) {
+          out.push(t);
+          continue;
+        }
+        if (presetShown < PRESET_DEFAULT_VISIBLE) {
+          out.push(t);
+          presetShown += 1;
+          continue;
+        }
+        if (presetShown === PRESET_DEFAULT_VISIBLE) {
+          out.push({
+            key: "presetShowMore",
+            kind: "presetShowMore",
+            hiddenCount: totalPresets - PRESET_DEFAULT_VISIBLE,
+          });
+          presetShown += 1;
+        }
+        continue;
+      }
       if (t.kind !== "ai") {
         out.push(t);
         continue;
@@ -656,7 +728,7 @@ export default function ConnectionsAppGrid({
       // else: skip this tile - pill already emitted.
     }
     return out;
-  }, [filter, allTiles, query, expandedAiSubgroups, wakePreview]);
+  }, [filter, allTiles, query, expandedAiSubgroups, presetsExpanded, wakePreview]);
 
   const hasResults = visibleTiles.some((t) => t.kind !== "section");
 
@@ -765,11 +837,27 @@ export default function ConnectionsAppGrid({
         {visibleTiles.map((tile) => {
           if (tile.kind === "section") {
             if (compactGrid) return null;
+            const showPresetCollapse =
+              tile.sectionBucket === "presets" &&
+              presetsExpanded &&
+              CUSTOM_API_PRESETS.length > PRESET_DEFAULT_VISIBLE &&
+              !query.trim();
             return (
               <div key={tile.key} className="col-span-full mt-3 first:mt-0">
-                <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-black/55 dark:text-white/55">
-                  {tile.label}
-                </h2>
+                <div className="flex items-baseline justify-between gap-3">
+                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-black/55 dark:text-white/55">
+                    {tile.label}
+                  </h2>
+                  {showPresetCollapse && (
+                    <button
+                      type="button"
+                      onClick={() => setPresetsExpanded(false)}
+                      className="text-[10.5px] font-medium text-black/55 dark:text-white/55 hover:text-black/80 dark:hover:text-white/85 transition-colors underline-offset-2 hover:underline shrink-0"
+                    >
+                      Show less
+                    </button>
+                  )}
+                </div>
                 {tile.description && (
                   <p className="mt-0.5 text-[11.5px] text-black/45 dark:text-white/45">
                     {tile.description}
@@ -833,6 +921,46 @@ export default function ConnectionsAppGrid({
                   <ChevronDown className="w-3 h-3" />
                 </button>
               </div>
+            );
+          }
+          if (tile.kind === "presetShowMore") {
+            return (
+              <div key={tile.key} className="col-span-full -mt-1">
+                <button
+                  type="button"
+                  onClick={() => setPresetsExpanded(true)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-black/15 dark:border-white/15 px-3 py-1 text-[11px] font-medium text-black/60 dark:text-white/65 hover:text-black/85 dark:hover:text-white/85 hover:border-black/30 dark:hover:border-white/30 transition-colors"
+                >
+                  Show all {tile.hiddenCount} more
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+              </div>
+            );
+          }
+          if (tile.kind === "preset") {
+            const p = tile.preset;
+            return (
+              <AppTile
+                key={tile.key}
+                anchorId={`preset-${p.id}`}
+                logoDomain={p.domain}
+                logoUrl={undefined}
+                name={p.name}
+                typeLabel="Bring your key"
+                description={p.keyHint || p.description}
+                badge={null}
+                chips={null}
+                ctaLabel="Connect"
+                ctaVariant="primary"
+                onClick={() => {
+                  if (!user) {
+                    toast({ title: "Sign in to connect", description: "Custom API keys are tied to your LYKN account." });
+                    return;
+                  }
+                  setCustomApiPresetId(p.id);
+                  setCustomApiOpen(true);
+                }}
+              />
             );
           }
           if (tile.kind === "ai-universal") {
@@ -1126,9 +1254,11 @@ export default function ConnectionsAppGrid({
       />
       <CustomApiDialog
         open={customApiOpen}
+        initialPresetId={customApiPresetId}
         onOpenChange={(o) => {
           if (!o) {
             setCustomApiOpen(false);
+            setCustomApiPresetId(null);
             refresh();
           }
         }}

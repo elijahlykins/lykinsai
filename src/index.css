@@ -4038,9 +4038,25 @@ mark {
   }
 
   .lykn-wake-synth-add-menu {
-    width: min(14.5rem, calc(100vw - 2.5rem));
+    width: min(13.5rem, calc(100vw - 2.5rem));
     right: 0.35rem;
     bottom: calc(100% + 0.35rem);
+    /* The preview window is short on phones, and this menu opens upward — so
+       collapse each row to a single icon + label line (blurbs hidden below)
+       and cap the height so it can never run past the top of the preview. */
+    max-height: 15rem;
+    overflow-y: auto;
+  }
+
+  /* Drop the descriptive sub-text on phones so the 7-item menu stays compact
+     and fits inside the short preview window. */
+  .lykn-wake-synth-add-menu-blurb {
+    display: none;
+  }
+
+  .lykn-wake-synth-add-menu-item {
+    align-items: center;
+    padding: 0.4rem 0.6rem;
   }
 
   .lykn-wake-chat-preview-stage {

@@ -132,10 +132,18 @@ export default function TokenConnectDialog({ open, onOpenChange, connector }) {
           ),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (!res.ok) {
+          // The connect-token route returns either a vetted, user-facing
+          // adapter message (e.g. "Cursor rejected this API key…") or the
+          // generic "Connect failed". Surface that directly so the user can
+          // act on credential problems, falling back to the canonical
+          // connectivity copy only when the server gave us nothing useful.
+          const serverMsg = typeof data?.error === "string" ? data.error.trim() : "";
+          throw new Error(serverMsg && serverMsg !== "Connect failed" ? serverMsg : "");
+        }
         toast({
           title: `Connected to ${connector.name}`,
-          description: "Initial sync started — check your Vault in a moment.",
+          description: "Initial sync started - check your Vault in a moment.",
         });
         setValues({});
         setRevealed({});
@@ -143,7 +151,7 @@ export default function TokenConnectDialog({ open, onOpenChange, connector }) {
       } catch (err) {
         toast({
           title: "Couldn't connect",
-          description: toUserFacingError(err),
+          description: err?.message ? err.message : toUserFacingError(err),
           variant: "destructive",
         });
       } finally {
