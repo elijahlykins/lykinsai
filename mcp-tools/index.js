@@ -72,6 +72,10 @@ import { createEventTool } from './createEvent.js';
 import { listEventsTool } from './listEvents.js';
 import { updateEventTool } from './updateEvent.js';
 import { deleteEventTool } from './deleteEvent.js';
+import { createTodoTool } from './createTodo.js';
+import { listTodosTool } from './listTodos.js';
+import { updateTodoTool } from './updateTodo.js';
+import { deleteTodoTool } from './deleteTodo.js';
 import { listCustomModelsTool } from './listCustomModels.js';
 import { buildWithCursorTool } from './buildWithCursor.js';
 import { checkCursorBuildTool } from './checkCursorBuild.js';
@@ -124,6 +128,12 @@ export const MCP_TOOLS = [
   listEventsTool,
   updateEventTool,
   deleteEventTool,
+  // To-dos — native LYKN task list the AI manages in text/voice + the user
+  // checks off in the to-do pop-up (lykn_todos; sibling of reminders/events).
+  createTodoTool,
+  listTodosTool,
+  updateTodoTool,
+  deleteTodoTool,
   // Custom models — read the user's Model Builder creations
   listCustomModelsTool,
   // Cursor cloud-agent builds — hand a coding task to Cursor (opens a PR) and

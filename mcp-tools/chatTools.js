@@ -109,6 +109,11 @@ export const CHAT_TOOL_NAMES = [
   'lykn_listEvents',
   'lykn_updateEvent',
   'lykn_deleteEvent',
+  // ── To-dos (native task list; rendered in the to-do pop-up) ──────
+  'lykn_createTodo',
+  'lykn_listTodos',
+  'lykn_updateTodo',
+  'lykn_deleteTodo',
   // ── Custom models (read the user's Model Builder creations) ──────
   'lykn_listCustomModels',
   // Talk to ANY published model (sub-agent), main agent or not — sends a

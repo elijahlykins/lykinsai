@@ -219,6 +219,53 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
     ['id'],
   ),
   clientTool(
+    'create_todo',
+    "Add a task to the user's to-do list when they say they need/want to do something with no fixed clock time ('add email Sam to my todo list', 'I need to renew my passport', 'put pick up dry cleaning on my list'). A due date is OPTIONAL — only set due_at (absolute ISO 8601 with timezone, current time is in your context) or in_minutes when they give a soft deadline, and pass due_at_text with their phrasing ('by Friday'). Set priority high for urgent items. Use create_reminder instead for a point-in-time nudge, and create_event for a scheduled thing with a start/end.",
+    {
+      title: { type: 'string', description: 'The task (e.g. "Email Sam the contract").' },
+      notes: { type: 'string', description: 'Optional extra detail / sub-steps.' },
+      priority: { type: 'string', description: 'low, normal (default), or high.' },
+      due_at: { type: 'string', description: 'Optional absolute ISO 8601 due date with timezone. Provide this OR in_minutes, or neither.' },
+      in_minutes: { type: 'integer', description: 'Optional relative due, minutes from now.' },
+      due_at_text: { type: 'string', description: "The user's own phrasing of the deadline ('by Friday')." },
+    },
+    ['title'],
+  ),
+  clientTool(
+    'list_todos',
+    "List the user's to-dos ('what's on my todo list', 'what do I have to do', 'what's on my plate', 'what's overdue'), or to find an id before completing/editing/deleting one. Defaults to open tasks, highest-priority and soonest-due first. Read due_at_text back naturally; many tasks have no due date and that's fine.",
+    {
+      status: { type: 'string', description: 'open (default), completed, cancelled, or all.' },
+      due_only: { type: 'boolean', description: 'true = only open tasks that are overdue.' },
+      limit: { type: 'integer', description: 'Max to return (default 50).' },
+    },
+    [],
+  ),
+  clientTool(
+    'update_todo',
+    "Complete ('mark that done', 'I did that'), reopen, cancel/drop, reprioritise, set/clear a due date, or edit a to-do. Get its id from list_todos first.",
+    {
+      id: { type: 'string', description: 'The to-do id (from list_todos).' },
+      status: { type: 'string', description: 'completed, cancelled, or open (reopen).' },
+      priority: { type: 'string', description: 'high, normal, or low.' },
+      due_at: { type: 'string', description: 'New absolute ISO 8601 due date with timezone.' },
+      in_minutes: { type: 'integer', description: 'New due date as minutes from now.' },
+      due_at_text: { type: 'string', description: 'Updated human phrasing of the deadline.' },
+      clear_due: { type: 'boolean', description: 'true = remove the due date entirely.' },
+      title: { type: 'string', description: 'New task text.' },
+      notes: { type: 'string', description: 'New detail/context.' },
+    },
+    ['id'],
+  ),
+  clientTool(
+    'delete_todo',
+    "Permanently delete a to-do ('delete that', 'take it off my list'). Get its id from list_todos first. If the user FINISHED it, prefer update_todo with status completed; if they changed their mind, status cancelled (both keep a record).",
+    {
+      id: { type: 'string', description: 'The to-do id to delete (from list_todos).' },
+    },
+    ['id'],
+  ),
+  clientTool(
     'list_custom_models',
     "List the custom models the user built in Model Builder ('what models have I made', 'which is published', 'what's my main agent', 'what is each model for'). Returns each model's name, PURPOSE (one-line description), status, base model, training mode, and main-agent flag. Use the purposes to pick which model to hand a task to via communicate_with_model.",
     {

@@ -3196,6 +3196,40 @@ async function gatherVoiceBriefingData(authHeader, userId) {
     console.warn('⚠️ voice briefing events load:', e?.message || e);
   }
 
+  // Open to-dos the user should hear about: everything still on the list,
+  // overdue items flagged. Unlike reminders/events these are not windowed by
+  // time (a to-do can be undated) — cap to the top few open tasks.
+  let todos = [];
+  try {
+    const now = Date.now();
+    const { data } = await client
+      .from('lykn_todos')
+      .select('title, status, priority, due_at, due_at_text')
+      .eq('user_id', userId)
+      .eq('status', 'open')
+      .order('created_at', { ascending: false })
+      .limit(20);
+    const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
+    todos = (data || []).map((t) => ({
+      title: String(t.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      priority: t.priority || 'normal',
+      when: String(t.due_at_text || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      overdue: t.due_at != null && Date.parse(t.due_at) <= now,
+      _due: t.due_at ? Date.parse(t.due_at) : Infinity,
+    })).filter((t) => t.title);
+    // Surface the most actionable few: overdue, then priority, then soonest due.
+    todos.sort((a, b) => {
+      if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
+      const ra = PRIORITY_RANK[a.priority] ?? 1;
+      const rb = PRIORITY_RANK[b.priority] ?? 1;
+      if (ra !== rb) return ra - rb;
+      return a._due - b._due;
+    });
+    todos = todos.slice(0, 6).map(({ _due, ...t }) => t);
+  } catch (e) {
+    console.warn('⚠️ voice briefing todos load:', e?.message || e);
+  }
+
   // Recent neurons the user made in the window: newly authored beliefs,
   // newly learned facts, and newly formed concepts. Merged + capped so the
   // briefing names a few without reciting the whole synthesis layer.
@@ -3260,7 +3294,7 @@ async function gatherVoiceBriefingData(authHeader, userId) {
   }
 
   return {
-    project, recentUpdates, recentNotes, reminders, events, recentNeurons, recentModels,
+    project, recentUpdates, recentNotes, reminders, events, todos, recentNeurons, recentModels,
     cursorBuilds,
     windowDays: VOICE_BRIEFING_WINDOW_DAYS,
   };
@@ -3339,6 +3373,17 @@ function formatVoiceBriefingFacts(firstName, data) {
     lines.push('', 'CALENDAR: nothing scheduled today or coming up.');
   }
 
+  if (data.todos?.length) {
+    lines.push('', 'TO-DO LIST (open tasks — mention overdue/high-priority ones, but keep it brief):');
+    for (const t of data.todos) {
+      const when = t.when ? ` (${t.when})` : '';
+      const pri = t.priority === 'high' ? '[high] ' : '';
+      lines.push(`- ${t.overdue ? 'OVERDUE: ' : ''}${pri}${t.title}${when}`);
+    }
+  } else {
+    lines.push('', 'TO-DO LIST: nothing open right now.');
+  }
+
   if (data.cursorBuilds?.length) {
     lines.push('', 'CURSOR BUILDS JUST FINISHED (your opening line already mentioned these — they are ready for the user to test; deploy is manual):');
     for (const b of data.cursorBuilds) {
@@ -3359,6 +3404,7 @@ function voiceBriefingHasContent(data) {
     || (data?.recentModels?.length || 0) > 0
     || (data?.reminders?.length || 0) > 0
     || (data?.events?.length || 0) > 0
+    || (data?.todos?.length || 0) > 0
     || (data?.cursorBuilds?.length || 0) > 0;
 }
 
@@ -3409,7 +3455,8 @@ function buildVoiceBriefingOffer(user, data) {
       || (data?.recentNeurons?.length || 0) > 0
       || (data?.recentModels?.length || 0) > 0
       || (data?.reminders?.length || 0) > 0
-      || (data?.events?.length || 0) > 0;
+      || (data?.events?.length || 0) > 0
+      || (data?.todos?.length || 0) > 0;
     return hasOther
       ? `Welcome back${addr}. ${buildLine}Want to hear your other recent updates?`
       : `Welcome back${addr}. ${buildLine}Anything you'd like to do next?`;
@@ -3428,7 +3475,7 @@ function formatVoiceBriefingInstructionBlock(user, data) {
   const header = [
     '[VOICE_BRIEFING]',
     'The user just opened Voice Mode and your spoken opening line OFFERED to run through their recent updates. Behaviour for THIS session:',
-    '- If the user says yes / "go ahead" / "sure", or asks for their updates, status, progress, or what\'s new, deliver a SHORT spoken briefing from the FACTS below: lead with any due/upcoming REMINDERS and CALENDAR events (they are time-sensitive), then where the active project stands and what recently got done, then anything new in the Vault, any new neurons (beliefs/facts/concepts) formed, and any custom models they built. 2-4 calm sentences, spoken style, no lists or markdown — group naturally, don\'t robotically read every category.',
+    '- If the user says yes / "go ahead" / "sure", or asks for their updates, status, progress, or what\'s new, deliver a SHORT spoken briefing from the FACTS below: lead with any due/upcoming REMINDERS and CALENDAR events (they are time-sensitive), then any overdue/high-priority TO-DOS, then where the active project stands and what recently got done, then anything new in the Vault, any new neurons (beliefs/facts/concepts) formed, and any custom models they built. 2-4 calm sentences, spoken style, no lists or markdown — group naturally, don\'t robotically read every category.',
     '- Use ONLY these facts. Never invent projects, updates, vault items, numbers, dates, or names.',
     '- If the user declines or jumps straight into another topic, skip the briefing entirely and just help with what they asked.',
     '- After delivering the briefing, hand it back with one short, open question.',
@@ -5398,6 +5445,25 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  to delete/edit it in that app and it will update LYKN on the next sync. When',
   '  a title is ambiguous (e.g. two events named the same), disambiguate by time',
   '  and by whether it\'s a LYKN event or a synced one before acting.',
+  '',
+  'TO-DOS (the user\'s task list — open tasks they want to get done):',
+  '  • lykn_createTodo — when the user says they need/want to do something with',
+  '    no fixed clock time ("add X to my todo list", "I need to renew my',
+  '    passport", "put \'pick up dry cleaning\' on my list"). A due date is',
+  '    OPTIONAL — only set due_at/in_minutes (+ due_at_text) when they give a',
+  '    soft deadline ("by Friday"). Set priority "high" for urgent/important.',
+  '    Choose the RIGHT bucket: a TO-DO is an open task; use lykn_createReminder',
+  '    for a point-in-time nudge ("remind me at 3pm"), lykn_createEvent for a',
+  '    scheduled thing with a start/end ("lunch Thursday at noon").',
+  '  • lykn_listTodos — "what\'s on my todo list", "what do I have to do",',
+  '    "what\'s on my plate", "what\'s overdue". Defaults to open tasks,',
+  '    highest-priority + soonest-due first. Read due_at_text back, not raw ISO.',
+  '  • lykn_updateTodo — complete ("mark that done", "I did that"), reopen,',
+  '    cancel/drop, reprioritise, set/clear a due date, or edit title/notes.',
+  '    Get the id from lykn_listTodos first.',
+  '  • lykn_deleteTodo — permanently remove a task (prefer updateTodo with',
+  '    status "completed" when they FINISHED it, "cancelled" when they changed',
+  '    their mind — both keep a record; delete only when they want it gone).',
   '',
   'CUSTOM MODELS (the user\'s Model Builder creations):',
   '  • lykn_listCustomModels — "what models have I made", "which of my models',
@@ -14729,6 +14795,7 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "get_project_state (read their active project status), update_project_state (record a decision/blocker/milestone), " +
   "create_reminder / list_reminders / update_reminder (set or manage time-anchored reminders when the user says 'remind me to…'), " +
   "create_event / list_events / update_event / delete_event (build and manage the user's LYKN calendar when they schedule something — 'put X on my calendar', 'what do I have Friday'), " +
+  "create_todo / list_todos / update_todo / delete_todo (manage the user's to-do list — open tasks they want to get done, with an OPTIONAL due date; use these for 'add X to my todo list', 'what's on my list', 'mark that done'), " +
   "list_custom_models (see every model the user built AND each model's purpose), " +
   "communicate_with_model (hand a task or question to one of the user's OTHER models — a sub-agent, main or not — and read back the report it returns), " +
   "and save_to_vault (save a note — only when the user explicitly asks). " +
@@ -15080,6 +15147,87 @@ const LYKN_VOICE_TOOL_DEFS = [
       type: 'object',
       properties: {
         id: { type: 'string', description: 'The event id to delete (from list_events).' },
+      },
+      required: ['id'],
+    },
+  },
+  // ── To-dos (native task list — open tasks, OPTIONAL due date) ─────────
+  {
+    name: 'create_todo',
+    mcp: 'lykn_createTodo',
+    description:
+      'Add a task to the user\'s to-do list when they say they need/want to do something with no fixed clock ' +
+      'time ("add \'email Sam\' to my todo list", "I need to renew my passport", "put \'pick up dry cleaning\' on ' +
+      'my list"). A due date is OPTIONAL — only set due_at (absolute ISO 8601 with timezone, current time is in ' +
+      'your context) or in_minutes when they give a soft deadline, and pass due_at_text with their phrasing ("by ' +
+      'Friday"). Set priority "high" for urgent items. Use create_reminder instead for a point-in-time nudge, and ' +
+      'create_event for a scheduled thing with a start/end. Confirm what was added.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'The task (e.g. "Email Sam the contract").' },
+        notes: { type: 'string', description: 'Optional extra detail / sub-steps.' },
+        priority: { type: 'string', description: 'low, normal (default), or high.' },
+        due_at: { type: 'string', description: 'Optional absolute ISO 8601 due date with timezone. Provide this OR in_minutes, or neither.' },
+        in_minutes: { type: 'integer', description: 'Optional relative due, minutes from now. Provide this OR due_at, or neither.' },
+        due_at_text: { type: 'string', description: "The user's own phrasing of the deadline (\"by Friday\")." },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'list_todos',
+    mcp: 'lykn_listTodos',
+    description:
+      'List the user\'s to-dos — call for "what\'s on my todo list", "what do I have to do", "what\'s on my ' +
+      'plate", "what\'s overdue", or before completing/editing/deleting a task so you have its id. Defaults to ' +
+      'open tasks, highest-priority and soonest-due first. Read due_at_text back naturally; never recite ISO ' +
+      'timestamps aloud. Many tasks have no due date — that is fine.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', description: 'open (default), completed, cancelled, or all.' },
+        due_only: { type: 'boolean', description: 'true = only open tasks that are overdue.' },
+        limit: { type: 'integer', description: 'Max to return (default 50).' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'update_todo',
+    mcp: 'lykn_updateTodo',
+    description:
+      'Complete ("mark that done", "I did that"), reopen, cancel/drop, reprioritise, set/clear a due date, or ' +
+      'edit an existing to-do. Get its id from list_todos first. Set status to completed/cancelled/open, priority ' +
+      'to high/normal/low, due_at/in_minutes (+ due_at_text) to set a deadline, clear_due:true to remove it, or ' +
+      'title/notes to edit. Confirm what changed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The to-do id (from list_todos).' },
+        status: { type: 'string', description: 'completed, cancelled, or open (reopen).' },
+        priority: { type: 'string', description: 'high, normal, or low.' },
+        due_at: { type: 'string', description: 'New absolute ISO 8601 due date with timezone.' },
+        in_minutes: { type: 'integer', description: 'New due date as minutes from now.' },
+        due_at_text: { type: 'string', description: 'Updated human phrasing of the deadline.' },
+        clear_due: { type: 'boolean', description: 'true = remove the due date entirely.' },
+        title: { type: 'string', description: 'New task text.' },
+        notes: { type: 'string', description: 'New detail/context.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete_todo',
+    mcp: 'lykn_deleteTodo',
+    description:
+      'Permanently delete a to-do ("delete that", "take it off my list"). Get its id from list_todos first. If ' +
+      'the user FINISHED it, prefer update_todo with status completed; if they changed their mind, status ' +
+      'cancelled (both keep a record). Delete only when they want it gone. Confirm; it cannot be undone.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The to-do id to delete (from list_todos).' },
       },
       required: ['id'],
     },

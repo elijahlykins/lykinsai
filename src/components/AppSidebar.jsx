@@ -5,6 +5,7 @@ import {
   Blocks,
   Brain,
   CalendarDays,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   CreditCard,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import FeedbackModal from "@/components/FeedbackModal";
 import LyknCalendarDialog from "@/components/calendar/LyknCalendarDialog";
+import LyknTodosDialog from "@/components/todos/LyknTodosDialog";
 import { supabase } from "@/lib/supabase";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
@@ -86,6 +88,7 @@ export default function AppSidebar({
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [todosOpen, setTodosOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [modelFilter, setModelFilter] = useState("all");
   const menuRef = useRef(null);
@@ -117,13 +120,16 @@ export default function AppSidebar({
       queryClient.invalidateQueries({ queryKey: ["published-custom-models", user?.id] });
     };
     const onOpenCalendar = () => setCalendarOpen(true);
+    const onOpenTodos = () => setTodosOpen(true);
     window.addEventListener("lykinsai_boards_changed", onBoardsChanged);
     window.addEventListener("lykn_custom_models_changed", onModelsChanged);
     window.addEventListener("lykn_open_calendar", onOpenCalendar);
+    window.addEventListener("lykn_open_todos", onOpenTodos);
     return () => {
       window.removeEventListener("lykinsai_boards_changed", onBoardsChanged);
       window.removeEventListener("lykn_custom_models_changed", onModelsChanged);
       window.removeEventListener("lykn_open_calendar", onOpenCalendar);
+      window.removeEventListener("lykn_open_todos", onOpenTodos);
     };
   }, [queryClient, user?.id]);
 
@@ -260,6 +266,14 @@ export default function AppSidebar({
               <CalendarDays className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
               Calendar
             </button>
+            <button
+              type="button"
+              onClick={() => setTodosOpen(true)}
+              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              To-dos
+            </button>
           </div>
 
           <div className="flex flex-col gap-0.5 mt-1.5 pt-1.5 border-t border-black/5 dark:border-white/5">
@@ -379,6 +393,7 @@ export default function AppSidebar({
       />
 
       <LyknCalendarDialog open={calendarOpen} onOpenChange={setCalendarOpen} />
+      <LyknTodosDialog open={todosOpen} onOpenChange={setTodosOpen} />
 
       {menuBoardId && ReactDOM.createPortal(
         <div
