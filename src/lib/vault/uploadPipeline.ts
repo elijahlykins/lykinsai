@@ -200,6 +200,17 @@ type StartFileUploadsInput = {
 
 const UPLOAD_PARALLELISM = 4;
 
+// Optimistic ghost-card previews are created at drop time so the grid feels
+// instant — the user sees every dropped image/video immediately, before any
+// compression/upload/DB write. We create them for bulk imports too (the case
+// that needs instant feedback MOST), but cap the count so a pathological
+// 200-file drop doesn't pin hundreds of decoded blobs in memory or jank the
+// grid. Files past the cap still upload normally; they just don't get a ghost
+// card and instead pop in when their real note lands. Each preview URL is
+// revoked by the upload store on terminal state / merge, so this is a bound on
+// *concurrent* previews, not total uploads.
+const MAX_OPTIMISTIC_PREVIEWS = 120;
+
 // ---------------------------------------------------------------------------
 // In-flight dedup
 //
@@ -911,6 +922,11 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
     dedupKey: string;
   }> = [];
 
+  // Budget for optimistic ghost previews shared across the whole batch.
+  // Decremented each time we mint an object URL; once exhausted, remaining
+  // files upload without a ghost card (they appear when their note lands).
+  let previewBudget = MAX_OPTIMISTIC_PREVIEWS;
+
   for (const entry of preflight.accepted) {
     // Skip files already mid-flight in this session. Without this the
     // user could drop the same image twice (because the toast was slow
@@ -931,10 +947,14 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
     const itemId = crypto.randomUUID();
     const mimeType = entry.file.type || "";
     const fileType = getFileType(mimeType, entry.filename);
+    // Create an optimistic preview for both normal AND bulk imports — the
+    // big drop is exactly when the user most needs instant visual feedback.
+    // Bounded by previewBudget so a 200-file drop stays memory-safe.
     let previewUrl: string | null = null;
-    if (canPreview(fileType) && !preflight.isBulkImport) {
+    if (canPreview(fileType) && previewBudget > 0) {
       try {
         previewUrl = URL.createObjectURL(entry.file);
+        previewBudget -= 1;
       } catch {
         previewUrl = null;
       }
