@@ -129,7 +129,7 @@ export const FAQ_ITEMS = [
     id: "teams",
     question: "When is Teams available?",
     answer:
-      "Teams is our shared-workspace plan — one synthesis layer your whole team can lean on. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
+      "Teams is our shared-workspace plan, one synthesis layer your whole team can lean on. It's coming soon. Join the waitlist from the plan card and we'll reach out when it goes live.",
   },
 ];
 
