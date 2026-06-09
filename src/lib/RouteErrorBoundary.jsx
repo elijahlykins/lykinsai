@@ -6,10 +6,34 @@ import {
   reportClientError,
 } from '@/lib/errorRecovery';
 
+// How many times we'll silently self-heal a transient render crash before
+// surfacing the full "Clear Cache & Retry" recovery UI. A hooks-count
+// mismatch (#310) or a first-render data race on a heavy lazy route (the
+// synthesis canvas pulls in three.js + r3f + the Bloom pipeline) typically
+// heals in a single re-render, so a small budget keeps the recovery
+// invisible without masking a genuinely broken page forever.
+const MAX_SILENT_RECOVERIES = 2;
+// How long the boundary has to stay error-free before we forgive past
+// silent recoveries, so a fresh, unrelated transient error later in the
+// session still gets its own quiet self-heal instead of flashing the UI.
+const RECOVERY_DECAY_MS = 4000;
+
 class RouteErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null, errorInfo: null, retryCount: 0, autoRecoveryAttempted: false };
+    this.state = {
+      hasError: false,
+      error: null,
+      errorInfo: null,
+      retryCount: 0,
+      // `recovering` gates the UI: while true we render a quiet, neutral
+      // loader instead of the alarming recovery page, so a self-healing
+      // transient crash never flashes "This page ran into an issue".
+      recovering: false,
+      recoveryAttempts: 0,
+    };
+    this.recoverTimer = null;
+    this.decayTimer = null;
   }
 
   static getDerivedStateFromError(error) {
@@ -19,40 +43,106 @@ class RouteErrorBoundary extends React.Component {
   componentDidCatch(error, errorInfo) {
     console.error('[RouteErrorBoundary]', error, errorInfo);
     reportClientError(error, errorInfo, 'route');
-    this.setState({ errorInfo });
+
+    // A fresh crash invalidates any pending "forgive past recoveries" timer.
+    if (this.decayTimer) { clearTimeout(this.decayTimer); this.decayTimer = null; }
 
     // Stale-bundle self-heal. Hard-reload with cache-bust ONCE per session
     // (sessionStorage guard) so we can't infinite-loop if the chunk really
-    // is broken on origin.
+    // is broken on origin. Flag `recovering` so the paint before the reload
+    // shows the quiet loader rather than the scary error page.
     const STALE_BUNDLE_KEY = 'lykn_route_boundary_stale_reload_done';
     if (isLikelyStaleBundleError(error)) {
       let alreadyTried = false;
       try { alreadyTried = sessionStorage.getItem(STALE_BUNDLE_KEY) === '1'; } catch { /* private mode */ }
       if (!alreadyTried) {
         try { sessionStorage.setItem(STALE_BUNDLE_KEY, '1'); } catch { /* ignore */ }
+        this.setState({ errorInfo, recovering: true });
         cacheBustReload();
         return;
       }
+      // Reload already attempted and the chunk still won't load — surface
+      // the real recovery UI so the user can clear cache / go home.
+      this.setState({ errorInfo, recovering: false });
+      return;
     }
 
-    const isHookError = error?.message?.includes('#310') || error?.message?.includes('more hooks');
-    if (!this.state.autoRecoveryAttempted && isHookError) {
-      this.setState({ autoRecoveryAttempted: true });
-      clearOmniaLocalStorage();
-      setTimeout(() => {
-        this.setState({ hasError: false, error: null, errorInfo: null, retryCount: 0 });
-      }, 50);
+    // Transient render crash (hooks #310, first-render data race, a GPU
+    // hiccup in the lazy 3D scene, …). Give it a small budget of silent
+    // re-renders before we ever show the recovery page.
+    if (this.state.recoveryAttempts < MAX_SILENT_RECOVERIES) {
+      const isHookError = error?.message?.includes('#310') || error?.message?.includes('more hooks');
+      // A hooks-count mismatch is the one case where stale persisted draft
+      // state can wedge the render, so wipe the omnia cache on that path.
+      if (isHookError) clearOmniaLocalStorage();
+      this.setState((prev) => ({
+        errorInfo,
+        recovering: true,
+        recoveryAttempts: prev.recoveryAttempts + 1,
+      }));
+      if (this.recoverTimer) clearTimeout(this.recoverTimer);
+      this.recoverTimer = setTimeout(() => {
+        this.recoverTimer = null;
+        this.setState({ hasError: false, error: null, errorInfo: null, recovering: false });
+      }, 60);
+      return;
     }
+
+    // Silent budget exhausted: the crash is persistent, so stop hiding it.
+    this.setState({ errorInfo, recovering: false });
   }
 
   componentDidUpdate(prevProps) {
     if (this.state.hasError && prevProps.children !== this.props.children) {
-      this.setState({ hasError: false, error: null, errorInfo: null });
+      this.setState({ hasError: false, error: null, errorInfo: null, recovering: false });
     }
+    // Once we've rendered children cleanly again, start a timer to forgive
+    // the silent-recovery budget. If another crash lands first it clears
+    // this timer (see componentDidCatch), so a persistent loop still
+    // escalates to the full UI rather than self-healing forever.
+    if (!this.state.hasError && this.state.recoveryAttempts > 0 && !this.decayTimer) {
+      this.decayTimer = setTimeout(() => {
+        this.decayTimer = null;
+        this.setState({ recoveryAttempts: 0 });
+      }, RECOVERY_DECAY_MS);
+    }
+  }
+
+  componentWillUnmount() {
+    if (this.recoverTimer) clearTimeout(this.recoverTimer);
+    if (this.decayTimer) clearTimeout(this.decayTimer);
   }
 
   render() {
     if (!this.state.hasError) return this.props.children;
+
+    // While silently self-healing, render a quiet, theme-neutral loader so
+    // the transient crash never flashes the alarming recovery page.
+    if (this.state.recovering) {
+      return (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: '60vh',
+          padding: '40px 20px',
+        }}>
+          <div
+            aria-label="Loading"
+            role="status"
+            style={{
+              width: '28px',
+              height: '28px',
+              border: '3px solid rgba(127,127,127,0.25)',
+              borderTopColor: 'rgba(127,127,127,0.75)',
+              borderRadius: '50%',
+              animation: 'lykn-route-boundary-spin 0.8s linear infinite',
+            }}
+          />
+          <style>{'@keyframes lykn-route-boundary-spin{to{transform:rotate(360deg)}}'}</style>
+        </div>
+      );
+    }
 
     const handleRetry = () => {
       if (this.state.retryCount >= 1) {
@@ -64,6 +154,8 @@ class RouteErrorBoundary extends React.Component {
         error: null,
         errorInfo: null,
         retryCount: prev.retryCount + 1,
+        recovering: false,
+        recoveryAttempts: 0,
       }));
     };
 

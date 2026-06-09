@@ -13,6 +13,13 @@ import {
 // VaultUploadToast), and React Router itself. RouteErrorBoundary only
 // catches throws that happen INSIDE Routes, so a crash in any of the
 // always-on chrome bypasses it and lands here.
+// Mirror of RouteErrorBoundary's silent-recovery budget: how many times the
+// root boundary will quietly self-heal a transient crash before surfacing
+// the full recovery UI, and how long it must stay error-free before that
+// budget is forgiven for a later, unrelated transient error.
+const MAX_SILENT_RECOVERIES = 2;
+const RECOVERY_DECAY_MS = 4000;
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -21,8 +28,13 @@ class ErrorBoundary extends React.Component {
       error: null,
       errorInfo: null,
       retryCount: 0,
-      autoRecoveryAttempted: false,
+      // While true, render a quiet loader instead of the recovery page so a
+      // self-healing transient crash never flashes "Something went wrong".
+      recovering: false,
+      recoveryAttempts: 0,
     };
+    this.recoverTimer = null;
+    this.decayTimer = null;
   }
 
   static getDerivedStateFromError(error) {
@@ -32,7 +44,8 @@ class ErrorBoundary extends React.Component {
   componentDidCatch(error, errorInfo) {
     console.error('[ErrorBoundary]', error, errorInfo);
     reportClientError(error, errorInfo, 'root');
-    this.setState({ errorInfo });
+
+    if (this.decayTimer) { clearTimeout(this.decayTimer); this.decayTimer = null; }
 
     // Stale-bundle self-heal — same logic as RouteErrorBoundary, but
     // gated on its own sessionStorage key so the two boundaries don't
@@ -43,23 +56,71 @@ class ErrorBoundary extends React.Component {
       try { alreadyTried = sessionStorage.getItem(STALE_BUNDLE_KEY) === '1'; } catch { /* private mode */ }
       if (!alreadyTried) {
         try { sessionStorage.setItem(STALE_BUNDLE_KEY, '1'); } catch { /* ignore */ }
+        this.setState({ errorInfo, recovering: true });
         cacheBustReload();
         return;
       }
+      this.setState({ errorInfo, recovering: false });
+      return;
     }
 
-    if (!this.state.autoRecoveryAttempted) {
-      this.setState({ autoRecoveryAttempted: true });
+    if (this.state.recoveryAttempts < MAX_SILENT_RECOVERIES) {
       const cleared = clearOmniaLocalStorage();
-      if (import.meta.env.DEV) console.warn(`[ErrorBoundary] Cleared ${cleared} cached keys — attempting auto-recovery`);
-      setTimeout(() => {
-        this.setState({ hasError: false, error: null, errorInfo: null });
+      if (import.meta.env.DEV) console.warn(`[ErrorBoundary] Cleared ${cleared} cached keys — attempting silent recovery`);
+      this.setState((prev) => ({
+        errorInfo,
+        recovering: true,
+        recoveryAttempts: prev.recoveryAttempts + 1,
+      }));
+      if (this.recoverTimer) clearTimeout(this.recoverTimer);
+      this.recoverTimer = setTimeout(() => {
+        this.recoverTimer = null;
+        this.setState({ hasError: false, error: null, errorInfo: null, recovering: false });
       }, 100);
+      return;
     }
+
+    // Silent budget exhausted — the crash is persistent, surface the UI.
+    this.setState({ errorInfo, recovering: false });
+  }
+
+  componentDidUpdate() {
+    if (!this.state.hasError && this.state.recoveryAttempts > 0 && !this.decayTimer) {
+      this.decayTimer = setTimeout(() => {
+        this.decayTimer = null;
+        this.setState({ recoveryAttempts: 0 });
+      }, RECOVERY_DECAY_MS);
+    }
+  }
+
+  componentWillUnmount() {
+    if (this.recoverTimer) clearTimeout(this.recoverTimer);
+    if (this.decayTimer) clearTimeout(this.decayTimer);
   }
 
   render() {
     if (!this.state.hasError) return this.props.children;
+
+    // Quiet, theme-neutral loader while silently self-healing.
+    if (this.state.recovering) {
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', padding: '40px 20px' }}>
+          <div
+            aria-label="Loading"
+            role="status"
+            style={{
+              width: '28px',
+              height: '28px',
+              border: '3px solid rgba(127,127,127,0.25)',
+              borderTopColor: 'rgba(127,127,127,0.75)',
+              borderRadius: '50%',
+              animation: 'lykn-root-boundary-spin 0.8s linear infinite',
+            }}
+          />
+          <style>{'@keyframes lykn-root-boundary-spin{to{transform:rotate(360deg)}}'}</style>
+        </div>
+      );
+    }
 
     const handleRetry = () => {
       if (this.state.retryCount >= 1) {
@@ -71,7 +132,8 @@ class ErrorBoundary extends React.Component {
         error: null,
         errorInfo: null,
         retryCount: prev.retryCount + 1,
-        autoRecoveryAttempted: false,
+        recovering: false,
+        recoveryAttempts: 0,
       }));
     };
 
