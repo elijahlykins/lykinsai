@@ -2422,10 +2422,20 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   // AI loses access to nearly all of the synced body content.
   const wantsVaultDetail =
     wantsMediaPull ||
-    /\b(vault|saved\s*(item|items|note|notes|file|files|link|links|content|stuff|things)|my\s*(notes?|saved)|knowledge\s*base|memory|memories|library)\b/i.test(
+    /\b(vault|saved\s*(item|items|note|notes|file|files|link|links|content|stuff|things)|my\s*(notes?|saved)|knowledge\s*base)\b/i.test(
       text,
     ) ||
-    /\b(?:my|the|saved|connected|synced)?\s*(notion|gmail|outlook|slack|github|linear|todoist|trello|loom|vimeo|figma|canva|dribbble|behance|readwise|raindrop|instapaper|matter|pocket|spotify|apple\s*music|soundcloud|pinterest|bluesky|reddit|mastodon|google\s*(drive|calendar)|drive|calendar)\b/i.test(
+    // Distinctive connected-source brand names — safe to match bare; these
+    // are very unlikely to appear in ordinary prose without meaning the
+    // synced source ("what's in my notion?", "the slack message I saved").
+    /\b(notion|gmail|outlook|slack|github|linear|todoist|trello|readwise|raindrop|instapaper|dribbble|behance|bluesky|mastodon|pinterest|soundcloud|vimeo|figma|canva|spotify|reddit|apple\s*music)\b/i.test(
+      text,
+    ) ||
+    // Ambiguous common English words (drive, calendar, matter, pocket,
+    // memory, memories, library) only count as a vault-source mention when
+    // explicitly qualified as the user's connected/saved source — otherwise
+    // "I need to drive home" or "from memory" would wrongly dump the vault.
+    /\b(?:(?:my|the|saved|connected|synced)\s+(?:google\s+)?(?:drive|calendar|matter|pocket|memory|memories|library)|google\s+(?:drive|calendar))\b/i.test(
       text,
     );
 
@@ -2435,17 +2445,33 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       ? fetchNotesForVaultAi(identity.userId)
       : Promise.resolve([] as VaultAiNoteRow[]),
   ]);
-  let workspaceContextStr = (wsContext?.full || "").slice(0, CONTEXT_BUDGETS.workspaceContext);
-  try {
-    if (wantsVaultDetail && vaultNotesForAi.length > 0) {
-      const { block: vaultBlock } = buildVaultDetailForGridAi(vaultNotesForAi);
-      const boardsOnly = wsContext?.boards || "";
-      if (vaultBlock) {
-        workspaceContextStr = [vaultBlock, boardsOnly].filter(Boolean).join("\n\n").slice(0, CONTEXT_BUDGETS.workspaceContext);
+  // Only ship vault contents into the prompt when this turn actually concerns
+  // saved/vault content (wantsVaultDetail). Previously the compact
+  // `wsContext.full` summary (the 25 most-recent vault items) was injected on
+  // EVERY authenticated turn, so the model saw — and routinely "pulled in" —
+  // unrelated saved items (e.g. a random saved article) on questions that had
+  // nothing to do with the vault. That is the "vault search pulls in random
+  // things even when I'm not asking" report. On non-vault turns the model can
+  // still reach saved content on demand via the lykn_searchVault tool, so
+  // gating here costs no real recall.
+  let workspaceContextStr = "";
+  if (wantsVaultDetail) {
+    try {
+      if (vaultNotesForAi.length > 0) {
+        const { block: vaultBlock } = buildVaultDetailForGridAi(vaultNotesForAi);
+        const boardsOnly = wsContext?.boards || "";
+        workspaceContextStr = [vaultBlock, boardsOnly]
+          .filter(Boolean)
+          .join("\n\n")
+          .slice(0, CONTEXT_BUDGETS.workspaceContext);
       }
+      // Fall back to the compact summary if the detailed build produced nothing.
+      if (!workspaceContextStr) {
+        workspaceContextStr = (wsContext?.full || "").slice(0, CONTEXT_BUDGETS.workspaceContext);
+      }
+    } catch {
+      workspaceContextStr = (wsContext?.full || "").slice(0, CONTEXT_BUDGETS.workspaceContext);
     }
-  } catch {
-    // vault detail failed; using compact workspace summary only
   }
 
   // Trim the request body to only what the server needs. With the canvas
