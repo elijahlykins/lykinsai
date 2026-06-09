@@ -105,7 +105,7 @@ export function AppliedRulePill({
       >
         <span
           aria-hidden
-          className="w-1.5 h-1.5 rounded-full bg-blue-300 shadow-[0_0_8px_rgba(147,197,253,1)]"
+          className="w-1.5 h-1.5 rounded-full bg-blue-300"
         />
         Applied a rule
       </button>

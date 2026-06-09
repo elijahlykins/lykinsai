@@ -41,8 +41,8 @@ export function NeuronPill({
   const isUpd = Boolean(fact.isUpdate);
   const label = isUpd ? "Neuron updated" : "Neuron created";
   const dotClass = isUpd
-    ? "w-1.5 h-1.5 rounded-full bg-violet-300 shadow-[0_0_8px_rgba(196,181,253,1)]"
-    : "w-1.5 h-1.5 rounded-full bg-blue-300 shadow-[0_0_8px_rgba(96,165,250,1)]";
+    ? "w-1.5 h-1.5 rounded-full bg-violet-300"
+    : "w-1.5 h-1.5 rounded-full bg-blue-300";
   const baseClass =
     "lykn-wake-neuron-pill inline-flex items-center gap-1.5 rounded-full font-semibold tracking-wide transition-colors cursor-pointer";
   const palette = isUpd

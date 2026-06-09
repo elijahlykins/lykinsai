@@ -4359,23 +4359,11 @@ mark {
   box-shadow: 0 0 12px rgba(96, 165, 250, 0.18) inset;
 }
 
-/* "Neuron created" pill that lives at the end of an AI response.
-   Persistent gentle pulse so the user notices it's actionable. */
+/* Status pill that lives at the end of an AI response. Static blue ring
+   only — no pulse, no diffuse glow — so it reads as a quiet, actionable
+   badge rather than something demanding attention. */
 .lykn-wake-neuron-pill {
-  animation: lykn-wake-neuron-pulse 2.4s ease-in-out infinite;
-}
-
-@keyframes lykn-wake-neuron-pulse {
-  0%, 100% {
-    box-shadow:
-      0 0 0 1px rgba(96, 165, 250, 0.35),
-      0 0 14px rgba(59, 130, 246, 0.30);
-  }
-  50% {
-    box-shadow:
-      0 0 0 1px rgba(147, 197, 253, 0.7),
-      0 0 26px rgba(96, 165, 250, 0.55);
-  }
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.45);
 }
 
 /* Each fact node card animates in with a brief electric-blue pulse so it

@@ -779,11 +779,17 @@ export function ToolCallPill({
   const isError = call.status === "error";
   const isDone = call.status === "done";
 
-  // Hide pills for completed tools that returned an empty / no-op
-  // result so the chat only shows tools that actually moved the needle.
-  // Errors stay visible (failures shouldn't be silent); running stays
-  // visible (we don't know the result yet).
-  if (isDone && isToolResultEmpty(call.name, call.result)) {
+  // Hide "finished" pills — the user doesn't need a badge just to be
+  // told a tool completed. The ONE exception is a done pill that links
+  // somewhere useful (it has a `navTo`, e.g. "Found 3 vault hits" → the
+  // Vault, project pills → the synthesis layer): those stay because the
+  // click-through is the point, not the "finished" signal. Errors stay
+  // visible (failures shouldn't be silent) and running stays visible
+  // (it's an in-flight indicator, not a "finished" one).
+  //
+  // Empty / no-op done results are dropped even when navigable, so the
+  // chat never surfaces a tool that didn't actually move the needle.
+  if (isDone && (!copy.navTo || isToolResultEmpty(call.name, call.result))) {
     return null;
   }
 
@@ -801,10 +807,10 @@ export function ToolCallPill({
   // the divergence read as "another product." Running stays slate
   // (neutral in-flight), error stays rose (the canonical danger).
   const dotClass = isRunning
-    ? "w-1.5 h-1.5 rounded-full bg-slate-300 shadow-[0_0_8px_rgba(203,213,225,0.9)] animate-pulse"
+    ? "w-1.5 h-1.5 rounded-full bg-slate-300 animate-pulse"
     : isError
-      ? "w-1.5 h-1.5 rounded-full bg-rose-300 shadow-[0_0_8px_rgba(252,165,165,1)]"
-      : "w-1.5 h-1.5 rounded-full bg-blue-300 shadow-[0_0_8px_rgba(96,165,250,1)]";
+      ? "w-1.5 h-1.5 rounded-full bg-rose-300"
+      : "w-1.5 h-1.5 rounded-full bg-blue-300";
 
   const palette = isRunning
     ? "text-slate-700 dark:text-slate-100 border border-slate-400/45 bg-slate-500/[0.10] hover:bg-slate-500/[0.18] hover:text-slate-900 dark:hover:text-white"
