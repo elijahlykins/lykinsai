@@ -221,21 +221,30 @@ const LOAD_NEURON_KINDS = new Set(["vault", "belief", "fact", "concept"]);
 // "random media popping into chat" complaint.
 
 // Verbs/phrases that signal the user wants a saved item rendered in chat.
-// Broad on the verb side so legitimate "show me my porsche pics" still
-// renders (the topic isn't a vault keyword), but a plain topical question
-// ("how do I price my SaaS?", "explain transformers") matches none of these.
+// Broad on purpose: the model-side prompt guardrail does the precise work
+// of deciding WHETHER to load, so this client gate only needs to reliably
+// recognise an explicit ask and block the clearly-unprompted case (a plain
+// topical question like "how do I price my SaaS?" matches none of these).
+// Missing a real ask is the worse failure (the card silently never shows),
+// so we err toward catching every natural surfacing verb.
 const VAULT_SURFACE_REQUEST_RE =
-  /\b(show|see|view|open|pull|bring|load|display|render|embed|attach|surface|reveal|lemme)\b/i;
+  /\b(show|see|view|look|open|pull|bring|load|display|render|embed|attach|surface|reveal|include|drop|put|add|insert|place|share|grab|find|lemme)\b/i;
+
+// Placement phrases that mean "into the conversation" even without a verb
+// from the list above ("I want that in the chat", "put it here").
+const VAULT_SURFACE_PLACEMENT_RE =
+  /\b(in(?:to)?\s+(?:the\s+|this\s+)?chat|in\s+here|right\s+here|in\s+the\s+(?:conversation|thread))\b/i;
 
 // Short affirmations that count as "yes, bring them in" — but ONLY when the
 // assistant's previous turn actually offered to surface saved items.
 const VAULT_AFFIRMATION_RE =
   /^(?:\s*(?:yes|yep|yeah|yup|ya|sure|ok|okay|k|please|do\s*it|go(?:\s*ahead)?|go\s*for\s*it|sounds?\s*good|that\s*one|those|them|all\s*(?:of\s*)?(?:them|those)|the\s+\w+\s+ones?)\b[\s.,!]*)+$/i;
 
-// Did the assistant's previous turn offer to surface saved items? (e.g.
-// "want me to pull those up?", "I can bring them into the chat").
+// Did the assistant's previous turn offer to surface saved items, or even
+// just reference saved/vault content the user could now say "yes" to? Kept
+// permissive so a bare "yes" / "do it" reliably brings the items in.
 const VAULT_SURFACE_OFFER_RE =
-  /\b(pull\s*(?:them|those|it|up|in)|bring\s*(?:them|those|it|up|in)|show\s*(?:you|them|those|it)|open\s*(?:them|those|it)|load\s*(?:them|those|it)|want\s*me\s*to\s*(?:pull|show|bring|open|load|surface)|surface\s*(?:them|those|it))\b/i;
+  /\b(pull\s*(?:them|those|it|up|in)|bring\s*(?:them|those|it|up|in)|show\s*(?:you|them|those|it)|open\s*(?:them|those|it)|load\s*(?:them|those|it)|surface\s*(?:them|those|it)|want\s*me\s*to\s*(?:pull|show|bring|open|load|surface|display)|i\s*(?:can|could)\s*(?:pull|show|bring|open|load|surface|display)|in\s*(?:your\s*)?vault|you\s*(?:have|saved)|saved\s*(?:note|notes|item|items|image|images|file|files|article|articles))\b/i;
 
 /**
  * True when the user has asked, THIS turn, to bring a saved vault item into
@@ -248,7 +257,7 @@ function userRequestedVaultSurface(
 ): boolean {
   const t = String(userText || "").trim();
   if (!t) return false;
-  if (VAULT_SURFACE_REQUEST_RE.test(t)) return true;
+  if (VAULT_SURFACE_REQUEST_RE.test(t) || VAULT_SURFACE_PLACEMENT_RE.test(t)) return true;
   if (VAULT_AFFIRMATION_RE.test(t)) {
     for (let i = aiThread.length - 1; i >= 0; i--) {
       const m = aiThread[i];
