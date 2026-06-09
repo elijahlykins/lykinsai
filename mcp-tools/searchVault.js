@@ -21,10 +21,17 @@
 
 import { jsonContent, errorContent } from './index.js';
 import { embedSingleText } from '../synthesis-service.js';
+import { reciprocalRankFusion } from '../lib/rag/rrf.js';
+import { rerankCandidates, rerankProvider } from '../lib/rag/rerank.js';
+import { expandQuery } from '../lib/rag/queryExpansion.js';
 
 const MAX_QUERY_LEN = 200;
 const MAX_RESULTS = 25;
 const SEMANTIC_MATCH_COUNT = 24;
+// First-stage retrievers over-fetch into a shared pool; RRF fuses them and the
+// reranker (if configured) reorders before we cut to the caller's limit.
+const CANDIDATE_POOL = 40;
+const BM25_MATCH_COUNT = 30;
 // Lowered from 0.5 → 0.35: short, single-word queries ("porsches") have low
 // cosine similarity against long vision descriptions, so a 0.5 floor silently
 // dropped legitimate image/file matches. 0.35 keeps obvious noise out while
@@ -173,23 +180,6 @@ export const searchVaultTool = {
       ...extra,
     });
 
-    // --- Pass 1: keyword/substring on title + content + ai_summary ----------
-    // Tokenized + singular/plural-tolerant so "porsches" still finds a note
-    // whose vision description only contains "Porsche" (the literal-substring
-    // miss that made the assistant wrongly say "nothing saved").
-    const keywordOr = buildKeywordOr(queryRaw);
-
-    const { data: kwData, error: kwError } = await ctx.supabaseAdmin
-      .from('notes')
-      .select('id, title, content, created_at, updated_at, tags, ai_summary')
-      .eq('user_id', ctx.userId)
-      .or(keywordOr)
-      .order('updated_at', { ascending: false, nullsFirst: false })
-      .limit(MAX_RESULTS);
-    if (kwError) {
-      console.warn('[mcp:searchVault] keyword pass:', kwError.message);
-    }
-
     const ql = queryRaw.toLowerCase();
     const snippetFor = (n) => {
       const text = String(n.content || '');
@@ -202,19 +192,58 @@ export const searchVaultTool = {
       return text.slice(0, 240).trim();
     };
 
-    const byId = new Map();
-    for (const n of kwData || []) {
-      if (!n?.id || byId.has(n.id)) continue;
-      byId.set(n.id, makeHit(n, { snippet: snippetFor(n), match: 'keyword' }));
+    // Multi-query expansion (Level 5): split a compound/vague question into a
+    // few focused sub-probes. Returns just [queryRaw] unless RAG_QUERY_EXPANSION
+    // is enabled, so default behaviour is a single query.
+    const queries = await expandQuery(queryRaw);
+
+    // Each (retriever × sub-query) produces one ranked list; RRF fuses them all.
+    const rankedLists = [];
+    // Best similarity + snippet seen for a note across any dense sub-query.
+    const semanticMeta = new Map();
+
+    // --- Lexical retriever: BM25 (Postgres full-text), ilike as fallback -----
+    let bm25Available = true;
+    for (let qi = 0; qi < queries.length; qi++) {
+      const { data: bm, error: bmErr } = await ctx.supabaseAdmin.rpc('search_notes_bm25', {
+        p_user_id: ctx.userId,
+        p_query: queries[qi],
+        match_count: BM25_MATCH_COUNT,
+      });
+      if (bmErr) {
+        // Most likely: migration 098 not applied yet. Stop trying BM25 and fall
+        // back to the legacy substring pass below.
+        bm25Available = false;
+        console.warn('[mcp:searchVault] bm25 rpc:', bmErr.message);
+        break;
+      }
+      const items = (bm || []).map((r) => ({ id: String(r.id) })).filter((x) => x.id);
+      if (items.length) rankedLists.push({ label: `bm25_q${qi}`, items, weight: 1 });
     }
 
-    // --- Pass 2: semantic vector search over the embedded index -------------
-    // Degrades silently to keyword-only if embeddings are unavailable or the
-    // admin match RPC isn't deployed yet (migration 092).
+    if (!bm25Available) {
+      // Legacy keyword pass: tokenized, singular/plural-tolerant substring match
+      // on title + content + ai_summary. Lower quality than BM25 (no ranking,
+      // no stemming) but keeps lexical recall alive pre-migration.
+      const keywordOr = buildKeywordOr(queryRaw);
+      const { data: kwData, error: kwError } = await ctx.supabaseAdmin
+        .from('notes')
+        .select('id')
+        .eq('user_id', ctx.userId)
+        .or(keywordOr)
+        .order('updated_at', { ascending: false, nullsFirst: false })
+        .limit(MAX_RESULTS);
+      if (kwError) console.warn('[mcp:searchVault] keyword fallback:', kwError.message);
+      const items = (kwData || []).map((n) => ({ id: String(n.id) })).filter((x) => x.id);
+      if (items.length) rankedLists.push({ label: 'ilike', items, weight: 1 });
+    }
+
+    // --- Dense retriever: vector search per sub-query ------------------------
     let semanticError = null;
-    try {
-      const embedding = await embedSingleText(queryRaw);
-      if (embedding) {
+    for (let qi = 0; qi < queries.length; qi++) {
+      try {
+        const embedding = await embedSingleText(queries[qi]);
+        if (!embedding) continue;
         const { data: rows, error: rpcError } = await ctx.supabaseAdmin.rpc(
           'match_lykn_synthesis_chunks_for_user',
           {
@@ -226,66 +255,111 @@ export const searchVaultTool = {
         );
         if (rpcError) {
           semanticError = rpcError.message;
-          console.warn('[mcp:searchVault] semantic pass:', rpcError.message);
-        } else {
-          // Collapse chunks → best chunk per vault note, keep similarity order.
-          const noteScores = new Map(); // noteId -> { similarity, snippet }
-          for (const r of rows || []) {
-            if (String(r.source_type) !== 'vault_note') continue;
-            const noteId = String(r.source_id || '');
-            if (!noteId) continue;
-            const sim = typeof r.similarity === 'number' ? r.similarity : 0;
-            const prev = noteScores.get(noteId);
-            if (!prev || sim > prev.similarity) {
-              noteScores.set(noteId, {
-                similarity: sim,
-                snippet: String(r.content || '').replace(/\s+/g, ' ').trim().slice(0, 240),
-              });
-            }
-          }
-
-          // Only fetch note rows we don't already have from the keyword pass.
-          const newIds = [...noteScores.keys()].filter((id) => !byId.has(id));
-          let noteRows = [];
-          if (newIds.length) {
-            const { data: nd, error: ndErr } = await ctx.supabaseAdmin
-              .from('notes')
-              .select('id, title, content, created_at, updated_at, tags, ai_summary')
-              .eq('user_id', ctx.userId)
-              .in('id', newIds);
-            if (ndErr) console.warn('[mcp:searchVault] semantic note hydrate:', ndErr.message);
-            else noteRows = nd || [];
-          }
-          const rowById = new Map(noteRows.map((n) => [n.id, n]));
-
-          // Append semantic-only hits, best similarity first.
-          const ordered = [...noteScores.entries()]
-            .filter(([id]) => !byId.has(id))
-            .sort((a, b) => b[1].similarity - a[1].similarity);
-          for (const [noteId, score] of ordered) {
-            const n = rowById.get(noteId);
-            if (!n) continue; // chunk orphaned (note deleted) — skip
-            byId.set(noteId, makeHit(n, {
-              snippet: score.snippet || snippetFor(n),
-              match: 'semantic',
-              similarity: Number(score.similarity.toFixed(3)),
-            }));
+          console.warn('[mcp:searchVault] dense pass:', rpcError.message);
+          continue;
+        }
+        const noteBest = new Map(); // noteId -> best similarity for THIS sub-query
+        for (const r of rows || []) {
+          if (String(r.source_type) !== 'vault_note') continue;
+          const noteId = String(r.source_id || '');
+          if (!noteId) continue;
+          const sim = typeof r.similarity === 'number' ? r.similarity : 0;
+          if (!noteBest.has(noteId) || sim > noteBest.get(noteId)) noteBest.set(noteId, sim);
+          const gm = semanticMeta.get(noteId);
+          if (!gm || sim > gm.similarity) {
+            semanticMeta.set(noteId, {
+              similarity: sim,
+              snippet: String(r.content || '').replace(/\s+/g, ' ').trim().slice(0, 240),
+            });
           }
         }
+        const ordered = [...noteBest.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([id]) => ({ id }));
+        if (ordered.length) rankedLists.push({ label: `dense_q${qi}`, items: ordered, weight: 1 });
+      } catch (e) {
+        semanticError = e?.message || String(e);
+        console.warn('[mcp:searchVault] dense pass threw:', semanticError);
       }
-    } catch (e) {
-      semanticError = e?.message || String(e);
-      console.warn('[mcp:searchVault] semantic pass threw:', semanticError);
     }
 
-    // Keyword hits (recency-ordered) first, then semantic extras (already
-    // appended in similarity order). Cap to the caller's limit.
-    const hits = [...byId.values()].slice(0, limit);
+    // --- Fuse every ranked list with Reciprocal Rank Fusion -----------------
+    const fused = reciprocalRankFusion(rankedLists, { limit: CANDIDATE_POOL });
+    if (!fused.length) {
+      return jsonContent({
+        ok: true,
+        query: queryRaw,
+        count: 0,
+        hits: [],
+        retrieval: { retrievers: rankedLists.map((l) => l.label), reranker: rerankProvider() },
+      });
+    }
+
+    // Hydrate the fused candidate notes in a single round-trip.
+    const { data: noteRows, error: hydErr } = await ctx.supabaseAdmin
+      .from('notes')
+      .select('id, title, content, created_at, updated_at, tags, ai_summary')
+      .eq('user_id', ctx.userId)
+      .in('id', fused.map((f) => f.id));
+    if (hydErr) console.warn('[mcp:searchVault] hydrate:', hydErr.message);
+    const rowById = new Map((noteRows || []).map((n) => [String(n.id), n]));
+
+    let candidates = fused
+      .map((f) => {
+        const n = rowById.get(f.id);
+        if (!n) return null; // orphan: note deleted but chunk lingered
+        const sem = semanticMeta.get(f.id);
+        return {
+          id: f.id,
+          note: n,
+          sources: f.sources,
+          snippet: (sem && sem.snippet) || snippetFor(n),
+          similarity: sem ? Number(sem.similarity.toFixed(3)) : undefined,
+        };
+      })
+      .filter(Boolean);
+
+    // --- Rerank (Level 3 ceiling): cross-encoder reorders the pool ----------
+    // No-op (identity) unless a rerank provider key is configured.
+    const provider = rerankProvider();
+    if (provider !== 'none' && candidates.length > 1) {
+      const reranked = await rerankCandidates(
+        queryRaw,
+        candidates.map((c) => ({
+          id: c.id,
+          text: `${c.note.title || ''}\n${c.snippet || ''}`,
+          payload: c,
+        })),
+        { topN: Math.max(limit, 12) },
+      );
+      if (reranked.length) {
+        candidates = reranked.map((r) => ({ ...r.payload, rerankScore: r.rerankScore }));
+      }
+    }
+
+    const hits = candidates.slice(0, limit).map((c) => {
+      const hasDense = (c.sources || []).some((s) => s.startsWith('dense'));
+      const hasLexical = (c.sources || []).some((s) => s.startsWith('bm25') || s === 'ilike');
+      const match = hasDense && hasLexical ? 'hybrid' : hasDense ? 'semantic' : 'keyword';
+      return makeHit(c.note, {
+        snippet: c.snippet,
+        match,
+        ...(c.similarity != null ? { similarity: c.similarity } : {}),
+        ...(typeof c.rerankScore === 'number' ? { rerank: Number(c.rerankScore.toFixed(4)) } : {}),
+      });
+    });
 
     return jsonContent({
       ok: true,
       query: queryRaw,
+      ...(queries.length > 1 ? { subQueries: queries.slice(1) } : {}),
       count: hits.length,
+      retrieval: {
+        retrievers: rankedLists.map((l) => l.label),
+        fused: fused.length,
+        reranker: provider,
+        ...(semanticError ? { semanticError } : {}),
+      },
       hits,
     });
   },

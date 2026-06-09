@@ -25,6 +25,8 @@ import {
 } from './youtubeQa.js';
 import { searchWeb, formatSearchResultsForPrompt } from './lib/exterior/webSearch.js';
 import { fetchWebPage } from './lib/exterior/webFetch.js';
+import { chunkTextForSynthesis } from './synthesis-service.js';
+import { contextualizeChunks } from './lib/rag/contextualize.js';
 import {
   pollRunningBuilds,
   claimUnannouncedBuilds,
@@ -1590,6 +1592,69 @@ function logSynthesisRetrievalStats(rows, opts = {}) {
 /**
  * Returns a prompt section or empty string. Uses the caller's JWT so RLS/auth.uid() apply.
  */
+// Parent / sentence-window expansion for synthesis retrieval. For the top
+// matched chunks, fetch the neighbouring chunk_index rows (±1) from the same
+// source and stitch them into a single window so the model gets context around
+// the hit, not an isolated fragment. Returns an array aligned to `rows` where
+// each entry is the windowed text (or undefined to fall back to the raw chunk).
+// One bounded REST query; any failure returns an empty map (safe fallback).
+async function expandSynthesisChunkWindows(authHeader, rows) {
+  if (process.env.RAG_PARENT_WINDOW === '0') return null;
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  try {
+    const TOP = Math.min(rows.length, 6); // only expand the strongest hits
+    const sourceIds = new Set();
+    const neededIdx = new Set();
+    for (let i = 0; i < TOP; i++) {
+      const r = rows[i];
+      const sid = r?.source_id;
+      const ci = Number(r?.chunk_index);
+      if (sid == null || !Number.isInteger(ci)) continue;
+      sourceIds.add(String(sid));
+      for (const n of [ci - 1, ci, ci + 1]) if (n >= 0) neededIdx.add(n);
+    }
+    if (sourceIds.size === 0 || neededIdx.size === 0) return null;
+
+    const idList = [...sourceIds].map((s) => `"${s.replace(/"/g, '')}"`).join(',');
+    const ciList = [...neededIdx].join(',');
+    const url =
+      `${SUPABASE_URL}/rest/v1/lykn_synthesis_chunks` +
+      `?select=source_type,source_id,chunk_index,content` +
+      `&source_id=in.(${encodeURIComponent(idList)})` +
+      `&chunk_index=in.(${encodeURIComponent(ciList)})`;
+    const res = await fetch(url, {
+      headers: { Authorization: authHeader, apikey: SUPABASE_ANON_KEY },
+    });
+    if (!res.ok) return null;
+    const chunkRows = await res.json();
+    if (!Array.isArray(chunkRows)) return null;
+
+    // key: source_type|source_id -> Map(chunk_index -> content)
+    const bySource = new Map();
+    for (const c of chunkRows) {
+      const key = `${c.source_type}|${c.source_id}`;
+      if (!bySource.has(key)) bySource.set(key, new Map());
+      bySource.get(key).set(Number(c.chunk_index), String(c.content || ''));
+    }
+
+    const out = new Array(rows.length);
+    for (let i = 0; i < TOP; i++) {
+      const r = rows[i];
+      const ci = Number(r?.chunk_index);
+      const map = bySource.get(`${r.source_type}|${r.source_id}`);
+      if (!map || !Number.isInteger(ci)) continue;
+      const parts = [map.get(ci - 1), map.get(ci) ?? r.content, map.get(ci + 1)]
+        .map((s) => String(s || '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+      if (parts.length) out[i] = parts.join(' … ');
+    }
+    return out;
+  } catch (e) {
+    console.warn('⚠️ Synthesis window expansion:', e?.message || e);
+    return null;
+  }
+}
+
 async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = null) {
   if (!authHeader || !String(authHeader).startsWith('Bearer ')) return '';
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return '';
@@ -1620,6 +1685,13 @@ async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = nu
       return '';
     }
 
+    // Parent / sentence-window expansion (Level 4): a matched chunk is small by
+    // design (good for precision) but loses surrounding context. Pull the
+    // immediate neighbour chunks (index ±1) for the top hits so the model reads
+    // a coherent window, not a sentence in isolation. Degrade-safe + bounded;
+    // disable with RAG_PARENT_WINDOW=0.
+    const windowByRow = await expandSynthesisChunkWindows(authHeader, rows);
+
     const lines = [
       '[SYNTHESIS_RETRIEVAL]',
       'Semantically matched snippets from this user\'s embedded workspace index (vector search). May be empty for new accounts.',
@@ -1630,7 +1702,7 @@ async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = nu
       const r = rows[i];
       const sim = typeof r.similarity === 'number' ? r.similarity.toFixed(3) : '?';
       const src = `${r.source_type || '?'}|${r.source_id ?? ''}|${r.chunk_index ?? 0}`;
-      const body = String(r.content || '').replace(/\s+/g, ' ').trim();
+      const body = (windowByRow && windowByRow[i]) || String(r.content || '').replace(/\s+/g, ' ').trim();
       if (!body) continue;
       lines.push(`${i + 1}. [${src}] similarity=${sim}`);
       lines.push(body);
@@ -2063,23 +2135,9 @@ async function fetchVaultNotesByUrls(userId, urlMatches) {
 // SYNTHESIS LAYER — embed + store (Phase 3)
 // ============================================
 const SYNTHESIS_ALLOWED_SOURCES = new Set(['vault_note', 'grid_board', 'conversation_exchange']);
-const SYNTHESIS_CHUNK_CHARS = 900;
-/** Sliding window step = chunk size minus overlap — reduces boundary noise at retrieval time. */
-const SYNTHESIS_CHUNK_OVERLAP = 100;
-const SYNTHESIS_MAX_CHUNKS = 64;
+// Chunking now lives in synthesis-service.js (single source of truth, imported
+// above as `chunkTextForSynthesis`) — no more drifting duplicate.
 const SYNTHESIS_EMBED_BATCH = 32;
-
-function chunkTextForSynthesis(raw) {
-  const t = String(raw || '').trim().slice(0, 200_000);
-  if (t.length < 8) return [];
-  if (t.length <= SYNTHESIS_CHUNK_CHARS) return [t];
-  const step = Math.max(1, SYNTHESIS_CHUNK_CHARS - SYNTHESIS_CHUNK_OVERLAP);
-  const out = [];
-  for (let i = 0; i < t.length && out.length < SYNTHESIS_MAX_CHUNKS; i += step) {
-    out.push(t.slice(i, i + SYNTHESIS_CHUNK_CHARS));
-  }
-  return out;
-}
 
 async function openAiEmbedMany(strings, { userId = null, actionType = 'embedding_reindex', metadata = null } = {}) {
   if (!process.env.OPENAI_API_KEY || !strings.length) return null;
@@ -2157,7 +2215,21 @@ function createSynthesisUserClient(authHeader) {
   });
 }
 
-async function replaceSynthesisChunks(userId, authHeader, sourceType, sourceId, textChunks, baseMeta) {
+async function replaceSynthesisChunks(userId, authHeader, sourceType, sourceId, textChunks, baseMeta, fullText = '') {
+  // Contextual Retrieval (Level 4): situate each chunk inside its parent doc
+  // before embedding. No-op unless RAG_CONTEXTUAL_RETRIEVAL=1 AND the caller
+  // passed the full source text. Done before the hash-skip so the cache key
+  // reflects what actually gets stored/embedded.
+  if (fullText && process.env.RAG_CONTEXTUAL_RETRIEVAL === '1') {
+    try {
+      textChunks = await contextualizeChunks(fullText, textChunks, {
+        title: String(baseMeta?.title || ''),
+      });
+    } catch (e) {
+      console.warn('⚠️ Contextual retrieval skipped:', e?.message || e);
+    }
+  }
+
   // Hash-skip path: if existing chunks for this source match the new
   // chunks exactly (same count, same content in the same order), there's
   // nothing to embed — bail before paying for the API call.
@@ -2204,7 +2276,9 @@ async function replaceSynthesisChunks(userId, authHeader, sourceType, sourceId, 
     chunk_index,
     content,
     embedding: embeddings[chunk_index],
-    metadata: { ...baseMeta, chunk_index },
+    // `total_chunks` lets retrieval expand to neighbouring chunks (parent /
+    // sentence-window) without a separate count query.
+    metadata: { ...baseMeta, chunk_index, total_chunks: textChunks.length },
   }));
 
   // Idempotent replace: upsert on the unique constraint
@@ -6006,7 +6080,7 @@ app.post('/api/synthesis/reindex', requireAuth, synthesisLimiter, async (req, re
       return res.json({ ok: true, chunks: 0, cleared: true });
     }
     const meta = metadata && typeof metadata === 'object' ? metadata : {};
-    const n = await replaceSynthesisChunks(userId, req.headers.authorization, sourceType, sid, chunks, meta);
+    const n = await replaceSynthesisChunks(userId, req.headers.authorization, sourceType, sid, chunks, meta, String(text || ''));
     console.log(`📚 Synthesis reindexed ${sourceType}/${sid}: ${n} chunk(s)`);
     return res.json({ ok: true, chunks: n });
   } catch (e) {

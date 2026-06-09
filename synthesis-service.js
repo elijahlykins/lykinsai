@@ -26,22 +26,137 @@
 // OpenAI 429 to prevent users from seeing their Notion pages.
 // ============================================================================
 
-const SYNTHESIS_CHUNK_CHARS = 900;
-const SYNTHESIS_CHUNK_OVERLAP = 100;
-const SYNTHESIS_MAX_CHUNKS = 64;
-const SYNTHESIS_EMBED_BATCH = 32;
+import { contextualizeChunks } from './lib/rag/contextualize.js';
 
-// Mirror of server.js#chunkTextForSynthesis. Keep in sync if either changes.
-export function chunkTextForSynthesis(raw) {
-  const t = String(raw || '').trim().slice(0, 200_000);
-  if (t.length < 8) return [];
-  if (t.length <= SYNTHESIS_CHUNK_CHARS) return [t];
-  const step = Math.max(1, SYNTHESIS_CHUNK_CHARS - SYNTHESIS_CHUNK_OVERLAP);
+// ---------------------------------------------------------------------------
+// Chunking (Level 2 — "stop splitting blindly")
+// ---------------------------------------------------------------------------
+// The old splitter cut the text every 900 chars regardless of where it landed,
+// routinely slicing through the middle of a sentence so neither half embedded
+// cleanly. This version is STRUCTURE- and SENTENCE-aware:
+//   • short docs stay whole (one chunk) — no fragmentation of a tweet/note;
+//   • long docs split on paragraph then sentence boundaries, never mid-sentence
+//     (unless a single sentence is itself larger than the hard ceiling);
+//   • consecutive chunks share a one-sentence overlap so a fact spanning a
+//     boundary is still recoverable from either side;
+//   • a runt tail chunk is merged back into its predecessor.
+//
+// Sizing is token-budgeted via a chars≈tokens/4 heuristic. Target ~275 tokens
+// per chunk (good recall granularity) with a ~400-token hard ceiling. This is
+// the single source of truth — server.js imports it (no more drifting copy).
+export const SYNTHESIS_CHUNK_CHARS = 1100; // ~275 tokens target
+const SYNTHESIS_CHUNK_MAX_CHARS = 1600; // ~400 tokens hard ceiling / keep-whole threshold
+const SYNTHESIS_CHUNK_MIN_CHARS = 250; // merge a tail smaller than this
+export const SYNTHESIS_MAX_CHUNKS = 64;
+export const SYNTHESIS_EMBED_BATCH = 32;
+
+const SYNTHESIS_INPUT_CAP = 200_000;
+
+/** Rough token estimate (OpenAI BPE averages ~4 chars/token for English). */
+export function estimateTokensApprox(text) {
+  return Math.ceil(String(text || '').length / 4);
+}
+
+/** Split a paragraph into sentence-ish units without breaking decimals/abbrevs too badly. */
+function splitSentences(paragraph) {
+  const p = String(paragraph || '').trim();
+  if (!p) return [];
+  // Break after . ! ? (and closing quote/paren) when followed by whitespace +
+  // a capital/quote/digit — keeps "3.5", "e.g." etc. mostly intact.
+  const parts = p.split(/(?<=[.!?]["')\]]?)\s+(?=[A-Z0-9"'(\[])/);
+  return parts.map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Break raw text into ordered "units" (heading lines, list items, sentences)
+ * that we never split across — the atoms the packer assembles into chunks.
+ */
+function textToUnits(text) {
+  const units = [];
+  // Paragraph blocks first (blank-line separated). Headings/list lines survive
+  // as their own blocks because they're typically on their own line.
+  const blocks = text.split(/\n{2,}/);
+  for (const block of blocks) {
+    const b = block.trim();
+    if (!b) continue;
+    // A markdown heading or a short single line stays atomic.
+    const isHeading = /^#{1,6}\s/.test(b) || /^([-*+]|\d+[.)])\s/.test(b);
+    if (isHeading || b.length <= SYNTHESIS_CHUNK_CHARS) {
+      units.push(b);
+      continue;
+    }
+    for (const s of splitSentences(b)) units.push(s);
+  }
+  return units;
+}
+
+/** Hard-split a single oversized unit on char boundaries (last resort). */
+function hardSplit(unit) {
   const out = [];
-  for (let i = 0; i < t.length && out.length < SYNTHESIS_MAX_CHUNKS; i += step) {
-    out.push(t.slice(i, i + SYNTHESIS_CHUNK_CHARS));
+  for (let i = 0; i < unit.length; i += SYNTHESIS_CHUNK_MAX_CHARS) {
+    out.push(unit.slice(i, i + SYNTHESIS_CHUNK_MAX_CHARS));
   }
   return out;
+}
+
+/**
+ * Structure/sentence-aware chunker. Returns an array of chunk strings.
+ * Single source of truth shared by the reindex API and connector adapters.
+ */
+export function chunkTextForSynthesis(raw) {
+  const t = String(raw || '').trim().slice(0, SYNTHESIS_INPUT_CAP);
+  if (t.length < 8) return [];
+  if (t.length <= SYNTHESIS_CHUNK_MAX_CHARS) return [t];
+
+  const units = textToUnits(t);
+  if (units.length === 0) return [t.slice(0, SYNTHESIS_CHUNK_MAX_CHARS)];
+
+  const chunks = [];
+  let current = [];
+  let currentLen = 0;
+
+  const flush = () => {
+    if (!current.length) return;
+    chunks.push(current.join(' ').trim());
+    // One-unit overlap: carry the last sentence forward, but only if it's small
+    // enough to be a cheap bridge (not a whole oversized paragraph).
+    const last = current[current.length - 1];
+    current = last && last.length <= 300 ? [last] : [];
+    currentLen = current.reduce((a, u) => a + u.length + 1, 0);
+  };
+
+  for (const rawUnit of units) {
+    if (chunks.length >= SYNTHESIS_MAX_CHUNKS) break;
+    const pieces = rawUnit.length > SYNTHESIS_CHUNK_MAX_CHARS ? hardSplit(rawUnit) : [rawUnit];
+    for (const unit of pieces) {
+      const addLen = unit.length + 1;
+      // If adding this unit overflows the target and we already have content,
+      // flush first so we break on the boundary, not inside the unit.
+      if (currentLen > 0 && currentLen + addLen > SYNTHESIS_CHUNK_CHARS) {
+        flush();
+        if (chunks.length >= SYNTHESIS_MAX_CHUNKS) break;
+      }
+      current.push(unit);
+      currentLen += addLen;
+    }
+  }
+  if (current.length && chunks.length < SYNTHESIS_MAX_CHUNKS) {
+    chunks.push(current.join(' ').trim());
+  }
+
+  // Merge a runt final chunk into its predecessor (overlap can leave a tiny tail).
+  if (
+    chunks.length >= 2 &&
+    chunks[chunks.length - 1].length < SYNTHESIS_CHUNK_MIN_CHARS
+  ) {
+    const tail = chunks.pop();
+    chunks[chunks.length - 1] = `${chunks[chunks.length - 1]} ${tail}`.slice(
+      0,
+      SYNTHESIS_CHUNK_MAX_CHARS + 400,
+    );
+  }
+
+  return chunks.filter((c) => c && c.length >= 8).slice(0, SYNTHESIS_MAX_CHUNKS);
 }
 
 async function openAiEmbedMany(strings) {
@@ -136,10 +251,10 @@ export async function embedAndStoreChunks({
     return { ok: false, chunks: 0, reason: 'openai_key_missing' };
   }
 
-  const chunks = chunkTextForSynthesis(text);
+  const baseChunks = chunkTextForSynthesis(text);
 
   // Empty content → drop any existing chunks (cleared note edge case).
-  if (chunks.length === 0) {
+  if (baseChunks.length === 0) {
     await supabaseAdmin
       .from('lykn_synthesis_chunks')
       .delete()
@@ -148,6 +263,14 @@ export async function embedAndStoreChunks({
       .eq('source_id', String(sourceId));
     return { ok: true, chunks: 0, skipped: true, reason: 'no_content' };
   }
+
+  // Contextual Retrieval (Level 4): prepend a situating line to each chunk
+  // before embedding. No-op unless RAG_CONTEXTUAL_RETRIEVAL=1. We store the
+  // contextualized text so snippets and the hash-skip stay consistent with
+  // what was embedded.
+  const chunks = await contextualizeChunks(text, baseChunks, {
+    title: String(metadata?.title || ''),
+  });
 
   // Hash-skip: if existing chunks match exactly, don't burn embed budget.
   try {
@@ -182,7 +305,9 @@ export async function embedAndStoreChunks({
     chunk_index,
     content,
     embedding: embeddings[chunk_index],
-    metadata: { ...metadata, chunk_index },
+    // `total_chunks` lets retrieval do parent/sentence-window expansion (pull
+    // neighbouring chunk_index rows) without an extra count query.
+    metadata: { ...metadata, chunk_index, total_chunks: chunks.length },
   }));
 
   const { error: upsertErr } = await supabaseAdmin

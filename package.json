@@ -12,6 +12,7 @@
     "lint:fix": "eslint . --fix",
     "test": "node --test",
     "test:vault": "node --import ./scripts/test-alias-loader.mjs --test src/lib/vault/attachmentsMarker.test.ts src/lib/synthesis/sourceText.test.ts src/lib/vaultContent.test.ts",
+    "test:rag": "node --test lib/rag/rag.test.mjs",
     "typecheck": "tsc -p ./jsconfig.json",
     "preview": "vite preview",
     "ios:sync": "cap sync ios",
