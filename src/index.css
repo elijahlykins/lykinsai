@@ -2118,34 +2118,42 @@ mark {
 .lykn-wake-slides-track {
   display: flex;
   height: 100%;
-  width: 600%;
+  width: 800%;
   transition: transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
 }
 
 .lykn-wake-slides-at-problems {
-  transform: translateX(calc(-100% / 6));
+  transform: translateX(calc(-100% / 8));
 }
 
 .lykn-wake-slides-at-platform {
-  transform: translateX(calc(-200% / 6));
+  transform: translateX(calc(-200% / 8));
 }
 
 .lykn-wake-slides-at-vault {
-  transform: translateX(calc(-300% / 6));
+  transform: translateX(calc(-300% / 8));
 }
 
 .lykn-wake-slides-at-chat {
-  transform: translateX(calc(-400% / 6));
+  transform: translateX(calc(-400% / 8));
+}
+
+.lykn-wake-slides-at-voice {
+  transform: translateX(calc(-500% / 8));
+}
+
+.lykn-wake-slides-at-agents {
+  transform: translateX(calc(-600% / 8));
 }
 
 .lykn-wake-slides-at-account {
-  transform: translateX(calc(-500% / 6));
+  transform: translateX(calc(-700% / 8));
 }
 
 .lykn-wake-slide {
-  flex: 0 0 calc(100% / 6);
-  width: calc(100% / 6);
+  flex: 0 0 calc(100% / 8);
+  width: calc(100% / 8);
   height: 100%;
   min-height: 0;
   display: flex;
@@ -3216,6 +3224,13 @@ mark {
   min-height: 0;
   overflow: hidden;
   background: hsl(0 0% 12%);
+}
+
+/* The Voice Mode + Model Builder slide previews embed the real product
+   surfaces (VoiceTechOrb and the ModelBuilder page), which paint their own
+   backgrounds, so let the embedded ModelBuilder fill the subwindow body. */
+.lykn-wake-subwindow-body .model-builder-page {
+  height: 100%;
 }
 
 /* Proportional scaler for phone previews (see WakePreviewFit.tsx). The outer

@@ -1,4 +1,9 @@
-export type WakeSurfaceId = "synthesis" | "vault" | "chat";
+export type WakeSurfaceId =
+  | "synthesis"
+  | "vault"
+  | "chat"
+  | "voice"
+  | "agents";
 
 export interface WakeExplainerStat {
   value: string;
@@ -303,6 +308,170 @@ export const WAKE_SURFACE_EXPLAINERS: Record<
       title: "Where it all comes together",
       body:
         "Chat is the surface most people live in. Underneath, LYKN is doing the work: reading your synthesis layer, honoring your rules, and answering like it has known you for years. Because in a sense, it has.",
+    },
+  },
+  voice: {
+    eyebrow: "Voice & Cloud Agents",
+    title: "LYKN is your JARVIS",
+    overview:
+      "Talk to LYKN like you would a chief of staff. Voice mode hears you, answers out loud, and hands long jobs to cloud agents that keep working after you close the app, then report back when it is done.",
+    stats: [
+      { value: "Live", label: "Real-time voice conversation" },
+      { value: "Hands-free", label: "Earbuds, phone, or desktop" },
+      { value: "24/7", label: "Cloud agents run in the background" },
+    ],
+    blocks: [
+      {
+        eyebrow: "Voice mode",
+        title: "Speak naturally, get answers out loud",
+        body:
+          "Tap once and start talking. LYKN listens in real time, understands your intent, and replies in a natural voice, grounded in your synthesis layer and vault the same way text chat is. No wake-word gymnastics, no robotic menu trees. Just a conversation.",
+        bullets: [
+          "Low-latency, full-duplex voice you can interrupt mid-sentence",
+          "Choose the voice that fits you from the model builder",
+          "Works through your earbuds for fully screen-free use",
+          "Every spoken answer is grounded in your beliefs, facts, and files",
+        ],
+      },
+      {
+        eyebrow: "Capable",
+        title: "It does things, not just talks",
+        body:
+          "Voice LYKN has hands. It can search the web, pull from your vault, add calendar events, set reminders, and read your daily briefing aloud. Ask it to look something up or schedule a meeting and it actually executes, then tells you it is done.",
+        bullets: [
+          "Web search and live page fetch from a spoken question",
+          "Add, edit, and read calendar events and reminders by voice",
+          "Pull saved knowledge straight out of your vault",
+          "Get a spoken morning briefing of what matters today",
+        ],
+      },
+      {
+        eyebrow: "Cloud agents",
+        title: "Hand off the long jobs",
+        body:
+          "Some work takes minutes, not seconds. Cloud agents run those jobs on LYKN's infrastructure, independent of your device. Kick one off by voice or text, close the app, and it keeps going, then surfaces the finished result and saves it where you can use it.",
+        bullets: [
+          "Long research, builds, and multi-step tasks run server-side",
+          "Keeps working after you lock your phone or close the tab",
+          "Results land back in chat and can be saved to your vault",
+          "You stay in the loop without having to babysit the task",
+        ],
+      },
+      {
+        eyebrow: "The JARVIS idea",
+        title: "An intelligence layer you can just ask",
+        body:
+          "The promise is simple: a single assistant that knows you, hears you, and acts for you. Voice is the most human way to reach your intelligence layer, and cloud agents are the muscle behind it. Together they turn LYKN from something you type into into something you talk to.",
+      },
+    ],
+    howItWorks: [
+      {
+        step: "01",
+        title: "Open voice mode",
+        body: "Tap the mic. LYKN connects a live voice session loaded with your synthesis layer.",
+      },
+      {
+        step: "02",
+        title: "Just talk",
+        body: "Ask a question, dictate a note, or fire off a task. LYKN replies out loud in real time.",
+      },
+      {
+        step: "03",
+        title: "Hand off heavy work",
+        body: "Long jobs go to a cloud agent that keeps running after you walk away.",
+      },
+      {
+        step: "04",
+        title: "Get the result",
+        body: "The agent reports back in chat when it finishes and can save the output to your vault.",
+      },
+    ],
+    closing: {
+      title: "Your voice, your agent, your call",
+      body:
+        "This is what people mean when they say they want a JARVIS: an assistant that listens, understands the full context of who you are, and gets things done while you live your life. LYKN voice and cloud agents are that, grounded in your own brain.",
+    },
+  },
+  agents: {
+    eyebrow: "Model Builder",
+    title: "Build an army of AI agents",
+    overview:
+      "Spin up custom agents the way you would hire a team. Give each one a role, a model, a voice, and the tools it is allowed to touch. Then let your main agent delegate to its subagents like a manager running employees.",
+    stats: [
+      { value: "∞", label: "Custom agents you can build" },
+      { value: "Sub", label: "Agents that delegate to agents" },
+      { value: "Scoped", label: "Per-agent tools and permissions" },
+    ],
+    blocks: [
+      {
+        eyebrow: "Build",
+        title: "Design an agent in minutes",
+        body:
+          "The model builder turns a blank prompt into a specialist. Name it, write its instructions, pick the underlying LLM, and choose a voice for voice mode. You are not configuring a chatbot, you are defining a role: a researcher, an editor, an analyst, a scheduler.",
+        bullets: [
+          "Custom system instructions that define the agent's job",
+          "Pick the LLM that fits the work, fast or deep",
+          "Assign a voice so the agent can speak in voice mode",
+          "Scope exactly which tools each agent is allowed to use",
+        ],
+      },
+      {
+        eyebrow: "Delegate",
+        title: "Agents that command agents",
+        body:
+          "Set one agent as your main agent and let it run the rest. When a task is bigger than one role, the main agent breaks it down and delegates to subagents, each handling its piece, then synthesizes their reports into a single answer. It is an org chart that actually does the work.",
+        bullets: [
+          "Promote any agent to main agent from the builder",
+          "The main agent fans tasks out to specialized subagents",
+          "Subagents browse, research, and ground their own results",
+          "Reports flow back up and merge into one coherent answer",
+        ],
+      },
+      {
+        eyebrow: "Your workforce",
+        title: "An army of employees that never sleeps",
+        body:
+          "Think of it as staffing a company you fully control. A research agent that scours the web. A writing agent that drafts in your voice. A planning agent that manages your calendar. Each one knows your synthesis layer, so the whole team works from the same understanding of you.",
+        bullets: [
+          "Stand up a roster of specialists for the work you repeat",
+          "Every agent inherits your beliefs, facts, and vault context",
+          "Run them by text or by voice, solo or as a delegated team",
+          "Grow the roster as your needs change. No headcount limit",
+        ],
+      },
+      {
+        eyebrow: "Governed",
+        title: "Power with guardrails",
+        body:
+          "An army needs rules of engagement. Subagents run autonomously, so the builder keeps write and persistence actions with the agent you actually talk to. You decide what each agent can touch, and the consent stays with you, not a loop running unattended.",
+      },
+    ],
+    howItWorks: [
+      {
+        step: "01",
+        title: "Create an agent",
+        body: "Open the model builder, name your agent, and write the role it should play.",
+      },
+      {
+        step: "02",
+        title: "Pick model, voice, and tools",
+        body: "Choose the LLM, assign a voice, and scope exactly which tools the agent can use.",
+      },
+      {
+        step: "03",
+        title: "Set a main agent",
+        body: "Promote one agent to lead. It delegates to the rest like a manager running a team.",
+      },
+      {
+        step: "04",
+        title: "Put them to work",
+        body: "Ask the main agent for something big. It splits the job across your subagents and reports back.",
+      },
+    ],
+    closing: {
+      title: "Stop prompting. Start managing.",
+      body:
+        "Most people use one model for everything. With the model builder you build a team: specialists that delegate, collaborate, and execute, all grounded in your synthesis layer. It is the difference between a tool and a workforce.",
     },
   },
 };

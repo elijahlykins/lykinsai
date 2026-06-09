@@ -81,7 +81,7 @@ const STORAGE_KEY = "lykn_model_builder_draft_v1";
 
 const TRAIN_STEP_INDEX = MODEL_BUILDER_STAGES.findIndex((s) => s.id === "train");
 
-export default function ModelBuilder() {
+export default function ModelBuilder({ wakePreview = false } = {}) {
   const { user } = useAuth();
   const [view, setView] = useState("home");
   const [draft, setDraft] = useState(emptyModelDraft);
@@ -486,10 +486,11 @@ export default function ModelBuilder() {
   ]);
 
   useEffect(() => {
+    if (wakePreview) return;
     fetchLoraConfig()
       .then((cfg) => setLoraConfigured(!!cfg?.configured))
       .catch(() => setLoraConfigured(false));
-  }, []);
+  }, [wakePreview]);
 
   useEffect(() => {
     if (!user?.id || !draft.id) {
@@ -915,7 +916,12 @@ export default function ModelBuilder() {
 
 
   return (
-    <div className="model-builder-page w-full min-h-[100svh] flex flex-col overflow-hidden omnia-grid-bg text-foreground">
+    <div
+      className={cn(
+        "model-builder-page w-full flex flex-col overflow-hidden omnia-grid-bg text-foreground",
+        wakePreview ? "h-full min-h-0" : "min-h-[100svh]",
+      )}
+    >
       {view === "builder" ? (
       <ModelBuilderStepNav
         stepIndex={stepIndex}

@@ -20,6 +20,8 @@ import WakeProductSlide from "@/components/wake/WakeProductSlide";
 import WakeSynthesisSubwindow from "@/components/wake/WakeSynthesisSubwindow";
 import WakeVaultSubwindow from "@/components/wake/WakeVaultSubwindow";
 import WakeChatSubwindow from "@/components/wake/WakeChatSubwindow";
+import WakeVoiceSubwindow from "@/components/wake/WakeVoiceSubwindow";
+import WakeAgentsSubwindow from "@/components/wake/WakeAgentsSubwindow";
 import WakeIntroTagline from "@/components/wake/WakeIntroTagline";
 
 // Prototype "wake" landing experience.
@@ -27,9 +29,10 @@ import WakeIntroTagline from "@/components/wake/WakeIntroTagline";
 // Sequence:
 //   1. Black screen + blue perimeter trace sweeps the edge while the
 //      logo + "Create beyond yourself" fade in at center together.
-//   2. Left/right arrows slide between welcome, problems, synthesis, vault, chat, and create account.
-//   3. Synthesis, vault, and chat slides show a product preview plus a
-//      scroll-down landing-page explainer beneath it.
+//   2. Left/right arrows slide between welcome, problems, synthesis, vault,
+//      chat, voice, model builder, and create account.
+//   3. Synthesis, vault, chat, voice, and model-builder slides show a product
+//      preview plus a scroll-down landing-page explainer beneath it.
 //   4. Create-account slide is the last carousel step (Google or email signup).
 //      a. Chat bar drops to the bottom (first send only)
 //      b. AI "thinking" bubble appears, then a real conversational reply
@@ -137,7 +140,15 @@ interface ChatMsg {
 
 const CHAT_TIMEOUT_MS = 30_000;
 
-type IntroPhase = "welcome" | "problems" | "platform" | "vault" | "chat" | "account";
+type IntroPhase =
+  | "welcome"
+  | "problems"
+  | "platform"
+  | "vault"
+  | "chat"
+  | "voice"
+  | "agents"
+  | "account";
 
 const FALLBACK_REPLY = AI_TEMPORARY_FAILURE_TEXT;
 
@@ -371,6 +382,14 @@ const LandingPrototype = () => {
 
   const handleIntroBack = () => {
     if (introPhase === "account") {
+      setIntroPhase("agents");
+      return;
+    }
+    if (introPhase === "agents") {
+      setIntroPhase("voice");
+      return;
+    }
+    if (introPhase === "voice") {
       setIntroPhase("chat");
       return;
     }
@@ -402,6 +421,14 @@ const LandingPrototype = () => {
   };
 
   const handleChatAdvance = () => {
+    setIntroPhase("voice");
+  };
+
+  const handleVoiceAdvance = () => {
+    setIntroPhase("agents");
+  };
+
+  const handleAgentsAdvance = () => {
     setIntroPhase("account");
   };
 
@@ -424,6 +451,14 @@ const LandingPrototype = () => {
     }
     if (introPhase === "chat") {
       handleChatAdvance();
+      return;
+    }
+    if (introPhase === "voice") {
+      handleVoiceAdvance();
+      return;
+    }
+    if (introPhase === "agents") {
+      handleAgentsAdvance();
     }
   };
 
@@ -685,6 +720,10 @@ const LandingPrototype = () => {
               className={`lykn-wake-slides-track ${
                 introPhase === "account"
                   ? "lykn-wake-slides-at-account"
+                  : introPhase === "agents"
+                  ? "lykn-wake-slides-at-agents"
+                  : introPhase === "voice"
+                  ? "lykn-wake-slides-at-voice"
                   : introPhase === "chat"
                   ? "lykn-wake-slides-at-chat"
                   : introPhase === "vault"
@@ -743,6 +782,28 @@ const LandingPrototype = () => {
               >
                 <WakeChatSubwindow
                   active={introPhase === "chat"}
+                  preload={warmSlidePreviews}
+                />
+              </WakeProductSlide>
+
+              <WakeProductSlide
+                active={introPhase === "voice"}
+                surface="voice"
+                fadingOut={problemsFadingOut}
+              >
+                <WakeVoiceSubwindow
+                  active={introPhase === "voice"}
+                  preload={warmSlidePreviews}
+                />
+              </WakeProductSlide>
+
+              <WakeProductSlide
+                active={introPhase === "agents"}
+                surface="agents"
+                fadingOut={problemsFadingOut}
+              >
+                <WakeAgentsSubwindow
+                  active={introPhase === "agents"}
                   preload={warmSlidePreviews}
                 />
               </WakeProductSlide>
