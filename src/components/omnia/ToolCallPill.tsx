@@ -2,6 +2,7 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 
 import type { ToolCallEvent } from "@/lib/ai/chatSendOrchestrator";
+import { flushAndNavigate } from "@/lib/chat/flushAndNavigate";
 
 /**
  * Inline pill rendered under an AI response for each tool the in-app
@@ -825,7 +826,7 @@ export function ToolCallPill({
     const target = typeof copy.navTo === "function"
       ? copy.navTo(call.result)
       : copy.navTo;
-    if (target) navigate(target);
+    if (target) flushAndNavigate(navigate, target);
   };
 
   return (

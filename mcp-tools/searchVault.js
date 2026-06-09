@@ -25,7 +25,67 @@ import { embedSingleText } from '../synthesis-service.js';
 const MAX_QUERY_LEN = 200;
 const MAX_RESULTS = 25;
 const SEMANTIC_MATCH_COUNT = 24;
-const SEMANTIC_MATCH_THRESHOLD = 0.5;
+// Lowered from 0.5 → 0.35: short, single-word queries ("porsches") have low
+// cosine similarity against long vision descriptions, so a 0.5 floor silently
+// dropped legitimate image/file matches. 0.35 keeps obvious noise out while
+// recovering the "I definitely have this saved" false-negatives.
+const SEMANTIC_MATCH_THRESHOLD = 0.35;
+
+// Query filler + vault-domain words that carry no matching signal. Stripped
+// from the keyword pass so the distinctive nouns ("porsche") drive recall.
+const KEYWORD_STOPWORDS = new Set([
+  'the', 'and', 'for', 'any', 'anything', 'about', 'have', 'has', 'had',
+  'with', 'that', 'this', 'from', 'your', 'mine', 'vault', 'note', 'notes',
+  'saved', 'save', 'find', 'show', 'pull', 'pulled', 'bring', 'image',
+  'images', 'img', 'photo', 'photos', 'picture', 'pictures', 'pic', 'pics',
+  'file', 'files', 'some', 'all', 'did', 'was', 'are', 'can', 'you', 'get',
+  'got', 'what', 'when', 'where', 'there', 'their', 'they', 'them', 'whats',
+  'something', 'anyting', 'stuff', 'thing', 'things', 'item', 'items',
+  'percent', 'definitely', 'definately',
+]);
+
+// Singular/plural-tolerant variants for a single token. "porsches" → also
+// search "porsche"; "porsche" → also search "porsches". This is the fix for
+// the literal-substring miss where the user pluralised a noun the saved item
+// stored in the singular (and vice-versa).
+function keywordVariants(tok) {
+  const v = new Set([tok]);
+  if (tok.endsWith('ies') && tok.length > 4) v.add(`${tok.slice(0, -3)}y`); // categories→category
+  if (tok.endsWith('es') && tok.length > 4) v.add(tok.slice(0, -2)); // boxes→box
+  if (tok.endsWith('s') && tok.length > 3) v.add(tok.slice(0, -1)); // porsches→porsche
+  v.add(`${tok}s`); // porsche→porsches
+  return [...v];
+}
+
+// Build the PostgREST `.or()` condition string for the keyword pass: the full
+// phrase plus every significant token (with plural variants), each matched as
+// a case-insensitive substring against title + content + ai_summary.
+function buildKeywordOr(queryRaw) {
+  const esc = (s) => s.replace(/[%_,()]/g, '\\$&');
+  const patterns = new Set();
+  const add = (term) => {
+    const t = term.trim();
+    if (!t) return;
+    const p = `%${esc(t)}%`;
+    patterns.add(`title.ilike.${p}`);
+    patterns.add(`content.ilike.${p}`);
+    patterns.add(`ai_summary.ilike.${p}`);
+  };
+
+  // Full phrase first (precise multi-word matches).
+  add(queryRaw);
+
+  // Then each distinctive token + its singular/plural variants.
+  const tokens = queryRaw
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter((t) => t.length >= 3 && !KEYWORD_STOPWORDS.has(t));
+  for (const tok of tokens) {
+    for (const variant of keywordVariants(tok)) add(variant);
+  }
+
+  return [...patterns].join(',');
+}
 
 export const searchVaultTool = {
   name: 'lykn_searchVault',
@@ -114,14 +174,16 @@ export const searchVaultTool = {
     });
 
     // --- Pass 1: keyword/substring on title + content + ai_summary ----------
-    const escaped = queryRaw.replace(/[%_]/g, '\\$&');
-    const pattern = `%${escaped}%`;
+    // Tokenized + singular/plural-tolerant so "porsches" still finds a note
+    // whose vision description only contains "Porsche" (the literal-substring
+    // miss that made the assistant wrongly say "nothing saved").
+    const keywordOr = buildKeywordOr(queryRaw);
 
     const { data: kwData, error: kwError } = await ctx.supabaseAdmin
       .from('notes')
       .select('id, title, content, created_at, updated_at, tags, ai_summary')
       .eq('user_id', ctx.userId)
-      .or(`title.ilike.${pattern},content.ilike.${pattern},ai_summary.ilike.${pattern}`)
+      .or(keywordOr)
       .order('updated_at', { ascending: false, nullsFirst: false })
       .limit(MAX_RESULTS);
     if (kwError) {

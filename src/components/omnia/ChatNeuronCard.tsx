@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import VaultAttachment from "@/components/synthesis/VaultAttachment";
 import { parseVaultContent } from "@/lib/vaultContent";
+import { flushAndNavigate } from "@/lib/chat/flushAndNavigate";
 import { supabase } from "@/lib/supabase";
 import {
   addNeuronsToProject,
@@ -617,7 +618,7 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
         </span>
         <button
           type="button"
-          onClick={() => navigate(href)}
+          onClick={() => flushAndNavigate(navigate, href)}
           className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.625rem] text-black/55 dark:text-white/55 hover:text-black/90 dark:hover:text-white/95 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
           title={openLabel}
           aria-label={openLabel}

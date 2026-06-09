@@ -2,6 +2,7 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 
 import type { FactNeuron } from "@/lib/ai/learnedTag";
+import { flushAndNavigate } from "@/lib/chat/flushAndNavigate";
 
 /**
  * "Neuron created" / "Neuron updated" pill that lives directly under an
@@ -57,7 +58,7 @@ export function NeuronPill({
     <div className={`mt-2 lykn-wake-question-fade ${className}`}>
       <button
         type="button"
-        onClick={() => navigate("/synthesis-layer")}
+        onClick={() => flushAndNavigate(navigate, "/synthesis-layer")}
         className={pillClass}
         title={title}
       >

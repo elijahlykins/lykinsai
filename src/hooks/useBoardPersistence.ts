@@ -1222,6 +1222,11 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       saveSnapshotRef.current({ isFinal: true });
     };
     const onFlushSave = () => {
+      // Synchronously persist the draft FIRST so a navigation that unmounts
+      // the grid (e.g. tapping an in-chat vault/neuron pill) can never race
+      // ahead of the async DB save and lose the conversation. The local
+      // draft is what hydration restores from on the way back.
+      writeDraftSync();
       savingRef.current = false;
       saveSnapshotRef.current();
     };

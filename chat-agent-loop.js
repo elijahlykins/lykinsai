@@ -937,6 +937,163 @@ async function runGeminiLoop({
 }
 
 // ===========================================================================
+// Deterministic "show me what I saved" safety net
+// ===========================================================================
+// The #1 chat complaint: the user asks to SEE a saved item ("pull them in",
+// "show me my porsche pics"), the model runs lykn_searchVault, narrates the
+// hits, but never calls lykn_loadNeurons — so nothing actually renders in the
+// chat (searchVault hits are snippets; only loadNeuron(s) produce the visible
+// cards). Prompt guidance reduces this but can't guarantee it. This net runs
+// AFTER the model's turn: if the user clearly wanted to view saved items and
+// the model searched the vault but never loaded the results, we load the top
+// hits ourselves and emit the tool_call events so the cards appear.
+
+const AUTO_LOAD_MAX = 6;
+
+// View intent = the user wants to LOOK at the thing, not just discuss it or
+// hear a list of titles. Existence/list questions ("do I have any porsche
+// images?", "what notes do I have on X?") deliberately don't match — those
+// should get a normal answer, not a stack of cards.
+const VIEW_INTENT_RE = /\b(show|see|view|open|display|render|pull|bring|drop|load)\b/i;
+
+// Words to strip when deriving a search topic from the user's message: the
+// view verbs themselves plus pronouns / filler / vault-domain nouns that
+// carry no topic signal. What's left should be the actual subject ("porsche").
+const QUERY_STOPWORDS = new Set([
+  // view verbs
+  'show', 'see', 'view', 'open', 'display', 'render', 'pull', 'bring', 'drop',
+  'load', 'pullup', 'bringin',
+  // pronouns / determiners / filler
+  'the', 'them', 'they', 'those', 'these', 'that', 'this', 'it', 'its', 'my',
+  'mine', 'our', 'your', 'his', 'her', 'into', 'over', 'here', 'there', 'now',
+  'all', 'any', 'some', 'please', 'can', 'could', 'would', 'will', 'you',
+  'want', 'wanna', 'like', 'get', 'from', 'for', 'and', 'with', 'about', 'out',
+  'have', 'has', 'had', 'are', 'was', 'were', 'plz', 'pls',
+  // vault-domain nouns
+  'vault', 'saved', 'save', 'note', 'notes', 'image', 'images', 'img', 'pic',
+  'pics', 'picture', 'pictures', 'photo', 'photos', 'file', 'files', 'item',
+  'items', 'thing', 'things', 'stuff', 'link', 'links', 'content',
+]);
+
+function extractUserText(userContent) {
+  if (typeof userContent === 'string') return userContent;
+  if (Array.isArray(userContent)) {
+    return userContent
+      .map((p) => (typeof p === 'string' ? p : (typeof p?.text === 'string' ? p.text : '')))
+      .join(' ');
+  }
+  return '';
+}
+
+// Reduce the user's message to its topic words so we can run a vault search
+// when the model answered from injected context instead of calling the tool.
+// Returns '' when nothing meaningful is left (e.g. a bare "pull them in").
+function deriveVaultQuery(userText) {
+  const tokens = String(userText || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter((t) => t.length >= 3 && !QUERY_STOPWORDS.has(t));
+  return [...new Set(tokens)].join(' ').trim();
+}
+
+function collectVaultNodeIds(searchHits, into = [], seen = new Set()) {
+  for (const h of searchHits || []) {
+    const id = typeof h?.node_id === 'string' ? h.node_id : '';
+    if (!id.startsWith('vault_') || seen.has(id)) continue;
+    seen.add(id);
+    into.push(id);
+    if (into.length >= AUTO_LOAD_MAX) break;
+  }
+  return into;
+}
+
+/**
+ * Make "show me / pull in my saved X" actually render the items as cards,
+ * deterministically — independent of whether the model remembered to call
+ * the tools. Runs AFTER the model's turn when:
+ *   • the user expressed a view intent, AND
+ *   • the model did NOT already loadNeuron(s) this turn.
+ *
+ * Node_ids come from (1) a searchVault the model ran this turn, or — when the
+ * model answered straight from the injected vault dossier without searching —
+ * (2) a search we run ourselves on the topic in the user's message. Then we
+ * loadNeurons the top hits and emit the tool_call events so the cards appear.
+ * Mutates `result.toolCalls`. Best-effort: failures are swallowed.
+ */
+async function autoLoadVaultNeuronsIfMissed(opts, result) {
+  if (!result || result.reason !== 'stop') return; // only on a clean finish
+  if (!opts?.ctx?.userId) return;
+
+  const userText = extractUserText(opts.userContent);
+  if (!userText || !VIEW_INTENT_RE.test(userText)) return;
+
+  const calls = Array.isArray(result.toolCalls) ? result.toolCalls : [];
+  // The model already brought items into view this turn → nothing to repair.
+  if (calls.some((c) => c.name === 'lykn_loadNeurons' || c.name === 'lykn_loadNeuron')) return;
+
+  const allowedToolNames = Array.isArray(opts.chatToolNames) ? opts.chatToolNames : null;
+  // If loadNeurons isn't reachable for this model (custom agent with a
+  // narrowed tool set), skip rather than emit a misleading error card.
+  if (allowedToolNames && !allowedToolNames.includes('lykn_loadNeurons')) return;
+  const toolOpts = allowedToolNames ? { allowedToolNames } : {};
+
+  // 1) Prefer node_ids from a searchVault the model already ran this turn.
+  //    searchVault orders keyword hits first, then semantic by similarity,
+  //    so the natural order is the best order to surface.
+  const nodeIds = [];
+  const seen = new Set();
+  for (const c of calls) {
+    if (c.name !== 'lykn_searchVault' || c.status !== 'done') continue;
+    collectVaultNodeIds(c.result?.hits, nodeIds, seen);
+    if (nodeIds.length >= AUTO_LOAD_MAX) break;
+  }
+
+  // 2) The model answered from the injected vault dossier without searching.
+  //    Run our own search on the topic in the user's message so the cards
+  //    still render. Skip if there's no searchable topic (bare anaphora like
+  //    "pull them in" — the prompt guidance handles re-search in that case).
+  if (nodeIds.length === 0) {
+    if (allowedToolNames && !allowedToolNames.includes('lykn_searchVault')) return;
+    const query = deriveVaultQuery(userText);
+    if (!query) return;
+    const sv = await runChatTool('lykn_searchVault', { query, limit: AUTO_LOAD_MAX }, opts.ctx, toolOpts);
+    collectVaultNodeIds(sv?.payload?.hits, nodeIds, seen);
+  }
+
+  if (nodeIds.length === 0) return;
+
+  const id = `auto_load_${Date.now()}`;
+  const args = { node_ids: nodeIds };
+  const emit = (evt) => { try { opts.onToolCall?.(evt); } catch { /* swallow */ } };
+
+  emit({ id, name: 'lykn_loadNeurons', args, status: 'running' });
+  const { payload, isError, latencyMs } = await runChatTool(
+    'lykn_loadNeurons',
+    args,
+    opts.ctx,
+    toolOpts,
+  );
+  emit({
+    id,
+    name: 'lykn_loadNeurons',
+    args,
+    status: isError ? 'error' : 'done',
+    result: payload,
+    latencyMs,
+  });
+  calls.push({
+    id,
+    name: 'lykn_loadNeurons',
+    args,
+    status: isError ? 'error' : 'done',
+    result: payload,
+    error: isError ? (payload?.error || 'auto-load failed') : undefined,
+    latencyMs,
+  });
+  result.toolCalls = calls;
+}
+
+// ===========================================================================
 // Dispatcher
 // ===========================================================================
 /**
@@ -964,31 +1121,36 @@ async function runGeminiLoop({
  */
 export async function runAgentLoop(opts) {
   const provider = String(opts?.provider || '').toLowerCase();
+  let result;
   switch (provider) {
     case 'openai':
-      return runOpenAiCompatLoop({
+      result = await runOpenAiCompatLoop({
         ...opts,
         apiKey: opts.env?.OPENAI_API_KEY,
         baseUrl: 'https://api.openai.com/v1',
         providerLabel: 'openai',
       });
+      break;
     case 'grok':
-      return runOpenAiCompatLoop({
+      result = await runOpenAiCompatLoop({
         ...opts,
         apiKey: opts.env?.XAI_API_KEY,
         baseUrl: 'https://api.x.ai/v1',
         providerLabel: 'grok',
       });
+      break;
     case 'anthropic':
-      return runAnthropicLoop({
+      result = await runAnthropicLoop({
         ...opts,
         apiKey: opts.env?.ANTHROPIC_API_KEY,
       });
+      break;
     case 'gemini':
-      return runGeminiLoop({
+      result = await runGeminiLoop({
         ...opts,
         apiKey: opts.env?.GOOGLE_API_KEY,
       });
+      break;
     default:
       return {
         ok: false,
@@ -998,6 +1160,18 @@ export async function runAgentLoop(opts) {
         errorMessage: `unsupported provider: ${provider}`,
       };
   }
+
+  // Deterministic safety net: if the user asked to SEE saved items and the
+  // model searched the vault but never loaded the hits into view, load them
+  // now so the cards actually render in the chat. Runs before the caller
+  // closes the SSE stream, so the emitted tool_call events reach the client.
+  try {
+    await autoLoadVaultNeuronsIfMissed(opts, result);
+  } catch (err) {
+    console.warn('[chat-agent-loop] auto-load vault neurons failed:', err?.message || err);
+  }
+
+  return result;
 }
 
 // Back-compat export — early version of /api/ai/stream used this name.
