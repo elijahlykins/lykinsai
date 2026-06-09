@@ -464,8 +464,6 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
       const m = c.month + 1;
       return m > 11 ? { year: c.year + 1, month: 0 } : { year: c.year, month: m };
     });
-  const goToday = () => setCursor({ year: today.getFullYear(), month: today.getMonth() });
-
   // Open the focused single-day view, keeping the month grid in sync so a
   // "back" lands on the right month.
   const openDayView = (day) => {
@@ -626,13 +624,6 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
                     title="Connect Google / Apple calendars"
                   >
                     <Link2 className="w-4 h-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={goToday}
-                    className="text-xs px-2 py-1 rounded-md hover:bg-black/5 dark:hover:bg-white/10 text-black/60 dark:text-white/60 transition-colors"
-                  >
-                    Today
                   </button>
                   <button type="button" onClick={goPrevMonth} className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors" title="Previous month">
                     <ChevronLeft className="w-4 h-4" />
