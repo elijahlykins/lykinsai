@@ -208,6 +208,57 @@ export type ChatNeuronAttachment = {
 // also what ChatNeuronCard renders per-kind layouts for.
 const LOAD_NEURON_KINDS = new Set(["vault", "belief", "fact", "concept"]);
 
+// --- Vault-surface gate ----------------------------------------------------
+// A saved VAULT item should only render as a card in the chat when the user
+// actually asked to SEE it. The agent (model) decides whether to call
+// lykn_loadNeuron, and it sometimes over-eagerly surfaces vault items that
+// have nothing to do with the conversation. This client-side gate is the
+// deterministic backstop: even if the model loads a vault neuron, we only
+// render the card when the user's words this turn requested it (or they
+// confirmed a surfacing offer the assistant just made). Belief / fact /
+// concept neurons are NOT gated — those are synthesis-layer text the user
+// pulls up by asking "what do I believe about X", and they aren't the
+// "random media popping into chat" complaint.
+
+// Verbs/phrases that signal the user wants a saved item rendered in chat.
+// Broad on the verb side so legitimate "show me my porsche pics" still
+// renders (the topic isn't a vault keyword), but a plain topical question
+// ("how do I price my SaaS?", "explain transformers") matches none of these.
+const VAULT_SURFACE_REQUEST_RE =
+  /\b(show|see|view|open|pull|bring|load|display|render|embed|attach|surface|reveal|lemme)\b/i;
+
+// Short affirmations that count as "yes, bring them in" — but ONLY when the
+// assistant's previous turn actually offered to surface saved items.
+const VAULT_AFFIRMATION_RE =
+  /^(?:\s*(?:yes|yep|yeah|yup|ya|sure|ok|okay|k|please|do\s*it|go(?:\s*ahead)?|go\s*for\s*it|sounds?\s*good|that\s*one|those|them|all\s*(?:of\s*)?(?:them|those)|the\s+\w+\s+ones?)\b[\s.,!]*)+$/i;
+
+// Did the assistant's previous turn offer to surface saved items? (e.g.
+// "want me to pull those up?", "I can bring them into the chat").
+const VAULT_SURFACE_OFFER_RE =
+  /\b(pull\s*(?:them|those|it|up|in)|bring\s*(?:them|those|it|up|in)|show\s*(?:you|them|those|it)|open\s*(?:them|those|it)|load\s*(?:them|those|it)|want\s*me\s*to\s*(?:pull|show|bring|open|load|surface)|surface\s*(?:them|those|it))\b/i;
+
+/**
+ * True when the user has asked, THIS turn, to bring a saved vault item into
+ * the chat — either by using a surfacing verb directly, or by affirming a
+ * surfacing offer the assistant made on the immediately preceding turn.
+ */
+function userRequestedVaultSurface(
+  userText: string,
+  aiThread: Array<{ role: "user" | "assistant"; content: string }>,
+): boolean {
+  const t = String(userText || "").trim();
+  if (!t) return false;
+  if (VAULT_SURFACE_REQUEST_RE.test(t)) return true;
+  if (VAULT_AFFIRMATION_RE.test(t)) {
+    for (let i = aiThread.length - 1; i >= 0; i--) {
+      const m = aiThread[i];
+      if (m?.role !== "assistant") continue;
+      return VAULT_SURFACE_OFFER_RE.test(String(m.content || ""));
+    }
+  }
+  return false;
+}
+
 export type PromptMessage = {
   id: string;
   role: "user";
@@ -962,7 +1013,11 @@ async function handleStreamingResponse(
   let firstToken = true;
   let sseBuffer = "";
   let serverErrorMsg = "";
-  void userText;
+  // Deterministic backstop: only let the agent render a VAULT item as a
+  // card in the chat when the user actually asked to see it this turn (or
+  // confirmed a surfacing offer). The model is told the same thing in the
+  // prompt, but this guarantees no random saved item gets embedded.
+  const allowVaultSurface = userRequestedVaultSurface(userText, p.aiThread);
   // 90s inactivity. The server sends a `data: ` heartbeat every ~15s
   // during long thinking gaps so this should only fire on a truly
   // stuck network connection or wedged provider.
@@ -1044,9 +1099,13 @@ async function handleStreamingResponse(
                 && typeof tc.result === "object"
                 && tc.result.ok === true
               ) {
+                // Vault items render only when the user asked to see them
+                // this turn; belief/fact/concept neurons are never gated.
+                const kindAllowed = (kind: string) =>
+                  LOAD_NEURON_KINDS.has(kind) && (kind !== "vault" || allowVaultSurface);
                 if (
                   tc.name === "lykn_loadNeuron"
-                  && LOAD_NEURON_KINDS.has(String(tc.result.kind))
+                  && kindAllowed(String(tc.result.kind))
                 ) {
                   newAttachments.push({ id: tc.id, payload: tc.result, addedAt: now });
                 } else if (
@@ -1060,7 +1119,7 @@ async function handleStreamingResponse(
                     if (
                       entry
                       && entry.ok === true
-                      && LOAD_NEURON_KINDS.has(String(entry.kind))
+                      && kindAllowed(String(entry.kind))
                     ) {
                       newAttachments.push({
                         id: `${tc.id}#${i}`,
