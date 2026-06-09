@@ -1,4 +1,8 @@
 import { supabase } from "@/lib/supabase";
+import {
+  parseAttachmentsFromContent,
+  stripAttachmentsMarker,
+} from "@/lib/vault/attachmentsMarker";
 
 export type WorkspaceSummary = {
   boards: string;
@@ -11,28 +15,16 @@ const truncate = (s: string, max: number) => {
   return clean.length <= max ? clean : `${clean.slice(0, max)}…`;
 };
 
+// Marker handling is delegated to the shared, JSON-string-aware scanner in
+// `attachmentsMarker.ts`. The previous inline copies counted raw `[`/`]`
+// characters with no string-state tracking, so a filename like
+// `report[2025].pdf` desynchronised the counter — yielding empty attachment
+// arrays and mis-reported file types in the AI workspace context.
 const stripAttachmentMarker = (content: string) =>
-  String(content || "").replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, "").trim();
+  stripAttachmentsMarker(String(content || ""));
 
 function parseAttachments(content: string): any[] {
-  const marker = "[ATTACHMENTS_JSON:";
-  const start = (content || "").indexOf(marker);
-  if (start === -1) return [];
-  const jsonStart = start + marker.length;
-  let bracketCount = 0;
-  let jsonEnd = jsonStart;
-  for (let i = jsonStart; i < content.length; i++) {
-    if (content[i] === "[") bracketCount += 1;
-    if (content[i] === "]") {
-      bracketCount -= 1;
-      if (bracketCount === 0) { jsonEnd = i + 1; break; }
-    }
-  }
-  if (jsonEnd <= jsonStart) return [];
-  try {
-    const parsed = JSON.parse(content.slice(jsonStart, jsonEnd));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch { return []; }
+  return parseAttachmentsFromContent(content || "") as any[];
 }
 
 /** User-written notes on a vault attachment (same shape as VaultNew `parseAttachmentNotes`). */

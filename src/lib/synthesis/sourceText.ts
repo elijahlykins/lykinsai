@@ -2,10 +2,22 @@
  * Plain text for synthesis embedding (vectors), separate from tiered AI canvas context.
  */
 
-import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
+import {
+  parseAttachmentsFromContent,
+  stripAttachmentsMarker,
+} from "@/lib/vault/attachmentsMarker";
 
+/**
+ * Returns the note body with ONLY the `[ATTACHMENTS_JSON:…]` marker span
+ * removed. The previous implementation used `\[ATTACHMENTS_JSON:[\s\S]*$`,
+ * which deleted everything from the marker to end-of-string. Connector-synced
+ * notes (Notion, Gmail, Slack, etc.) store their flattened page body AFTER the
+ * marker, so that regex silently dropped the entire body and synthesis only
+ * ever embedded the title. Delegating to `stripAttachmentsMarker()` excises
+ * just the marker and preserves any pre- and post-marker prose.
+ */
 export function stripAttachmentPayload(content: string): string {
-  return String(content || "").replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, "").trim();
+  return stripAttachmentsMarker(String(content || ""));
 }
 
 /**
