@@ -11,7 +11,6 @@ import {
   LogOut,
   MessageCircle,
   MoreHorizontal,
-  Plug,
   Settings as SettingsIcon,
   X,
 } from "lucide-react";
@@ -153,14 +152,6 @@ export default function MobileTabBar() {
                   onClick={() => {
                     setMoreOpen(false);
                     flushAndNavigate(nav, "/synthesis-layer");
-                  }}
-                />
-                <MoreItem
-                  icon={Plug}
-                  label="Connections"
-                  onClick={() => {
-                    setMoreOpen(false);
-                    flushAndNavigate(nav, "/connections");
                   }}
                 />
                 <MoreItem

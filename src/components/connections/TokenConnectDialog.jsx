@@ -17,12 +17,12 @@ import {
   Play,
   Unplug,
   CheckCircle2,
-  Shield,
   ArrowUpRight,
   ExternalLink,
   Eye,
   EyeOff,
 } from "lucide-react";
+import { ConnectorDetailHeader } from "./ConnectorDetail";
 
 /**
  * TokenConnectDialog — generic credential-paste connection dialog.
@@ -237,38 +237,27 @@ export default function TokenConnectDialog({ open, onOpenChange, connector }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg bg-white dark:bg-zinc-950 border border-black/10 dark:border-white/10">
-        <DialogHeader>
-          <DialogTitle className="text-[18px] font-semibold tracking-tight flex items-center gap-2">
-            <ProviderFavicon connector={connector} />
-            {connector.name}
-          </DialogTitle>
-          <DialogDescription className="text-[12.5px] leading-relaxed text-black/60 dark:text-white/60">
-            {connector.summary}
-          </DialogDescription>
+        <DialogHeader className="sr-only">
+          <DialogTitle>{connector.name}</DialogTitle>
+          <DialogDescription>{connector.summary}</DialogDescription>
         </DialogHeader>
 
-        {/* ── Scopes / what we pull ───────────────────────── */}
-        <div className="rounded-xl border border-black/[0.08] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] p-3">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-black/65 dark:text-white/70 mb-1.5">
-            <Shield className="h-3 w-3" />
-            What LYKN reads
-          </div>
-          <ul className="space-y-1">
-            {(connector.pulls || []).map((p) => (
-              <li
-                key={p}
-                className="text-[12px] text-black/75 dark:text-white/80 flex items-start gap-2"
-              >
-                <span className="mt-1 h-1 w-1 rounded-full bg-black/40 dark:bg-white/40 flex-shrink-0" />
-                {p}
-              </li>
-            ))}
-          </ul>
-          <div className="mt-2 text-[10.5px] text-black/45 dark:text-white/45">
-            {connector.accessNote ||
-              "Read-only. The credential is encrypted at rest. You can revoke it any time."}
-          </div>
-        </div>
+        <ConnectorDetailHeader
+          name={connector.name}
+          domain={connector.domain}
+          tagline={connector.summary}
+          description={connector.description}
+          developer={connector.developer || connector.name}
+          tools={connector.pulls}
+          toolsLabel="What LYKN reads"
+          toolsNote={
+            connector.accessNote ||
+            "Read-only. The credential is encrypted at rest. You can revoke it any time."
+          }
+          connectorUrl={connector.domain ? `https://${connector.domain}` : undefined}
+          author={connector.developer || connector.name}
+          trustNote={`You're pasting a credential so LYKN can read from ${connector.name}. It's encrypted at rest, injected server-side, and revocable at any time.`}
+        />
 
         {/* ── Already-connected accounts ──────────────────── */}
         {myConnections.length > 0 && (
@@ -461,23 +450,6 @@ function ConnectionRow({ conn, syncing, onSync, onToggle, onDisconnect }) {
         />
       </div>
     </li>
-  );
-}
-
-function ProviderFavicon({ connector }) {
-  const url = connector.domain
-    ? `https://www.google.com/s2/favicons?domain=${connector.domain}&sz=64`
-    : "";
-  if (!url) return null;
-  return (
-    <img
-      src={url}
-      alt=""
-      className="h-5 w-5 rounded-sm object-cover bg-black/[0.04] dark:bg-white/[0.06]"
-      onError={(e) => {
-        e.currentTarget.style.display = "none";
-      }}
-    />
   );
 }
 

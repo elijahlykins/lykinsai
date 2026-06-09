@@ -19,6 +19,7 @@ import {
   Mic,
   MoreHorizontal,
   Music,
+  Plug,
   Plus,
   Search,
   StickyNote,
@@ -701,6 +702,43 @@ function getAttachmentHeightClass(card) {
   return "h-56 md:h-64 xl:h-72";
 }
 
+// Relative height estimate (taller = bigger number) used ONLY to assign a
+// card to a masonry column. It must be DETERMINISTIC and independent of async
+// load state — we base it on attachment metadata / type defaults, never on
+// live-measured dimensions — so the column a card lands in never changes as
+// images resolve or more pages append. Approximate balance is fine; stability
+// is the goal. The unit is "height relative to one column's width" (1 / aspect)
+// plus a small constant for the tag/action footer.
+function estimateCardHeightUnit(card) {
+  if (!card) return 1;
+  const FOOTER = 0.28;
+  if (card.kind === "source-folder") return 0.62;
+  if (card.kind === "chat-preview") return 1.0 + FOOTER;
+  if (card.kind === "quick-note") {
+    const len = String(card.excerpt || "").length;
+    const text = Math.min(1.4, 0.45 + len / 600);
+    return text + FOOTER;
+  }
+  if (card.kind === "attachment") {
+    const t = card.type;
+    if (t === "audio") return 0.32 + FOOTER;
+    if (t === "youtube") {
+      const isShort = isYouTubeShortUrl(String(card.attachment?.url || ""));
+      return (isShort ? 1.78 : 0.5625) + FOOTER;
+    }
+    if (t === "image" || t === "video") {
+      const ratio = resolveAttachmentAspectRatio(card.attachment) || (t === "video" ? 16 / 9 : 1);
+      const unit = ratio > 0 ? 1 / ratio : 1;
+      // Clamp so a freak ratio can't dominate a column's estimate.
+      return Math.min(2.2, Math.max(0.4, unit)) + FOOTER;
+    }
+    if (t === "pdf" || t === "doc" || t === "word" || t === "file") return 0.85 + FOOTER;
+    if (t === "instagram" || t === "tiktok" || t === "facebook") return 1.4 + FOOTER;
+    return 0.9 + FOOTER; // bookmark / link / unknown
+  }
+  return 0.9 + FOOTER;
+}
+
 // `h-auto` tiles reserve zero height in masonry/collage columns, so the
 // skeleton collapses and every subsequent image load shoves the column
 // downward. Always map to a stable bucket before first paint.
@@ -1316,9 +1354,13 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
         seen.add(id);
         deduped.push(note);
       }
+      // Sort by created_at (upload time) DESC to match both the grid's
+      // display order and the keyset pagination cursor (which reads the last
+      // item's created_at). Sorting by updated_at here would desync the
+      // collapsed-page cursor and could skip/refetch rows after an upload.
       deduped.sort((a, b) => {
-        const at = new Date(a?.updated_at || a?.created_at || 0).getTime();
-        const bt = new Date(b?.updated_at || b?.created_at || 0).getTime();
+        const at = new Date(a?.created_at || a?.updated_at || 0).getTime();
+        const bt = new Date(b?.created_at || b?.updated_at || 0).getTime();
         return bt - at;
       });
       return deduped;
@@ -1350,27 +1392,33 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
 
   const fetchNotesBatch = useCallback(
     async (cursor) => {
-      // Cursor is `{ updatedAt, id }` so we can break ties on equal
-      // `updated_at`. Plain `.lt("updated_at", cursor)` skips every row
-      // that shares the boundary timestamp with the last item of the
-      // previous page, silently dropping notes from the user's view.
-      // The `.or("updated_at.lt.X,and(updated_at.eq.X,id.lt.Y)")` form
-      // is a stable secondary keyset on `id` (we already order by both).
+      // Paginate by `created_at` (UPLOAD time) DESC so the fetch order
+      // matches the grid's display order (orderedVisibleCards also sorts by
+      // createdAtMs desc). If we paginated by `updated_at` while displaying
+      // by `created_at`, each newly-loaded page would land in the MIDDLE of
+      // the list (its rows' upload times interleave with already-shown ones),
+      // reshuffling the grid as the user scrolls — the load-in "glitch".
+      //
+      // Cursor is `{ createdAt, id }` so we can break ties on equal
+      // `created_at`. Plain `.lt("created_at", cursor)` would skip every row
+      // that shares the boundary timestamp with the last item of the previous
+      // page, silently dropping notes; the `.or(...and(...id.lt))` form is a
+      // stable secondary keyset on `id` (we order by both).
       const buildQuery = (cols) => {
         let q = supabase
           .from("notes")
           .select(cols)
           .eq("user_id", user.id)
-          .order("updated_at", { ascending: false })
+          .order("created_at", { ascending: false })
           .order("id", { ascending: false })
           .limit(MEMORY_PAGE_SIZE);
-        if (cursor && cursor.updatedAt) {
+        if (cursor && cursor.createdAt) {
           if (cursor.id) {
             q = q.or(
-              `updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`,
+              `created_at.lt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
             );
           } else {
-            q = q.lt("updated_at", cursor.updatedAt);
+            q = q.lt("created_at", cursor.createdAt);
           }
         }
         return q;
@@ -1413,8 +1461,8 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     getNextPageParam: (lastPage) => {
       if (!Array.isArray(lastPage) || lastPage.length < MEMORY_PAGE_SIZE) return undefined;
       const last = lastPage[lastPage.length - 1];
-      if (!last?.updated_at) return undefined;
-      return { updatedAt: last.updated_at, id: last.id ?? null };
+      if (!last?.created_at) return undefined;
+      return { createdAt: last.created_at, id: last.id ?? null };
     },
     enabled: !!user?.id && !loading,
     // Keep notes fresh for 30s; within that window, remounts use cache immediately.
@@ -1644,6 +1692,10 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
         noteExcerpt: "",
         dateLabel: "Uploading…",
         tags: [],
+        // In-progress uploads are the newest thing in the vault by
+        // definition, so pin them to the very top of the upload-time sort.
+        createdAtMs: Date.now(),
+        lastTouchedMs: Date.now(),
       });
     }
     return out;
@@ -1784,7 +1836,11 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
       const cleanContent = stripAttachmentJsonMarker(note.content || "");
       const chatPreview = extractChatPreview(cleanContent);
       const youtubeLinks = extractYouTubeLinks(cleanContent);
-      const dateLabel = formatDate(note.updated_at || note.created_at);
+      // Show the UPLOAD time (created_at), not last-touched. Background AI
+      // enrichment (vision descriptions, summaries) writes back to the row
+      // and bumps `updated_at`, which would otherwise make a card's date —
+      // and its sort position — drift after the user uploaded it.
+      const dateLabel = formatDate(note.created_at || note.updated_at);
       const rawSource = String(note?.source || "").toLowerCase();
       const rawTags = Array.isArray(note?.tags) ? note.tags.map((t) => String(t).toLowerCase()) : [];
       // Legacy guard: normalize older rows to the source values the
@@ -1884,6 +1940,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
           tags: noteTags,
           source: noteSource,
           lastTouchedMs,
+          createdAtMs,
         });
       });
 
@@ -1909,6 +1966,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
             tags: noteTags,
             source: noteSource,
             lastTouchedMs,
+            createdAtMs,
           });
         });
       }
@@ -1927,6 +1985,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
           tags: noteTags,
           source: noteSource,
           lastTouchedMs,
+          createdAtMs,
         });
       }
 
@@ -1943,6 +2002,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
           comments: parseQuickNoteComments(note),
           source: noteSource,
           lastTouchedMs,
+          createdAtMs,
         });
       }
     });
@@ -3134,11 +3194,20 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     }
     folderCards.sort((a, b) => (b.lastTouchedMs || 0) - (a.lastTouchedMs || 0));
 
+    // Default ordering for the user's own memories is UPLOAD TIME, newest
+    // first, so freshly uploaded items always surface right below the
+    // connected-app folders. Any card the user has explicitly drag-reordered
+    // is pinned by `orderByPage` and keeps its manual position BELOW the
+    // freshly-sorted ones (the drag handler snapshots the full visible order,
+    // so once a user arranges things, those ids live in `currentOrder`).
     const currentOrder = orderByPage.everything || [];
+    const orderedIdSet = new Set(currentOrder);
     const visibleMap = new Map(otherCards.map((card) => [card.id, card]));
-    const ordered = currentOrder.map((id) => visibleMap.get(id)).filter(Boolean);
-    const remaining = otherCards.filter((card) => !currentOrder.includes(card.id));
-    return [...folderCards, ...ordered, ...remaining];
+    const manuallyOrdered = currentOrder.map((id) => visibleMap.get(id)).filter(Boolean);
+    const byUploadTime = otherCards
+      .filter((card) => !orderedIdSet.has(card.id))
+      .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+    return [...folderCards, ...byUploadTime, ...manuallyOrdered];
   }, [filteredVisibleCards, orderByPage]);
 
   const wakeConnectorStripCards = useMemo(() => {
@@ -3155,6 +3224,328 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   }, [isWakePreview, orderedVisibleCards]);
 
   const collageGridCards = isWakePreview ? wakeCollageCards : orderedVisibleCards;
+
+  // ── Fixed-column JS masonry (collage view) ──
+  //
+  // The collage previously used CSS multi-column (`columns-*`). CSS columns
+  // re-balance ALL columns whenever total content height changes — i.e. every
+  // time an image resolves or a new page appends on scroll — which visually
+  // threw cards in and out of order. Instead we assign each card to a fixed
+  // column with a greedy "shortest column" pass over a DETERMINISTIC height
+  // estimate (see `estimateCardHeightUnit`). Because the estimate never changes
+  // as content loads and the greedy pass is order-preserving, a card's column
+  // and position are stable across loads and pagination — nothing already on
+  // screen ever moves. Grid view (CSS grid, row-major) and the wake marketing
+  // preview keep their own layouts and don't use this.
+  const computeCollageColumns = useCallback(() => {
+    if (typeof window === "undefined") return isEmbeddedMode ? 2 : 3;
+    if (isEmbeddedMode) return 2;
+    const w = window.innerWidth;
+    if (w >= 1536) return 5; // 2xl
+    if (w >= 1280) return 4; // xl
+    if (w >= 768) return 3; // md
+    if (w >= 640) return 2; // sm
+    return 1;
+  }, [isEmbeddedMode]);
+
+  const [collageColumns, setCollageColumns] = useState(computeCollageColumns);
+  useEffect(() => {
+    const onResize = () => setCollageColumns(computeCollageColumns());
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [computeCollageColumns]);
+
+  const useMasonryLayout = !isWakePreview && vaultView !== "grid";
+
+  const collageColumnBuckets = useMemo(() => {
+    const count = Math.max(1, collageColumns);
+    const buckets = Array.from({ length: count }, () => []);
+    if (!useMasonryLayout) return buckets;
+    const heights = new Array(count).fill(0);
+    for (const card of collageGridCards) {
+      let min = 0;
+      for (let i = 1; i < count; i += 1) {
+        if (heights[i] < heights[min]) min = i;
+      }
+      buckets[min].push(card);
+      heights[min] += estimateCardHeightUnit(card);
+    }
+    return buckets;
+  }, [collageGridCards, collageColumns, useMasonryLayout]);
+
+  // Single source of truth for a collage/grid card's JSX, so the masonry
+  // columns and the grid/wake layouts render identical cards. Defined in
+  // component scope (not module scope) so it closes over the drag handlers,
+  // selection state, and render helpers it needs.
+  const renderCollageCard = (card) => {
+    const isSelected = selectedCardIds.has(card.id);
+    return (
+                  <motion.article
+                    initial={
+                      isVaultFirstPaintRef.current || initialCardIdsRef.current?.has(card.id)
+                        ? false
+                        : { opacity: 0, scale: 0.97 }
+                    }
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.2, ease: "easeOut" }}
+                    key={card.id}
+                    data-vault-card-id={card.id}
+                    data-card-id={card.id}
+                    ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
+                    draggable={!isPickerMode}
+                    onDragStart={(e) => handleCardDragStart(e, card)}
+                    onDrag={handleCardDrag}
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      if (!draggedCardId || draggedCardId === card.id) return;
+                      // While the dragged card is overlapping the trash, suspend
+                      // the live "push cards around" reorder so dropping deletes
+                      // cleanly rather than racing with a reorder.
+                      if (vaultTrashHover || vaultTrashHoldReady) return;
+                      if (lastHoverTargetRef.current === card.id) return;
+                      lastHoverTargetRef.current = card.id;
+                      setDropTargetCardId(card.id);
+                      reorderActivePage(draggedCardId, card.id);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      if (vaultTrashHover || vaultTrashHoldReady) return;
+                      setDropTargetCardId(card.id);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      // Trash overlap takes precedence — let dragend run the
+                      // delete; don't reorder onto the hovered card.
+                      if (vaultTrashHoldReady) {
+                        setDropTargetCardId(null);
+                        return;
+                      }
+                      const droppedId = e.dataTransfer.getData("application/x-lykins-vault-card-id") || draggedCardId;
+                      if (droppedId && droppedId !== card.id) {
+                        reorderActivePage(droppedId, card.id);
+                      }
+                      setDraggedCardId(null);
+                      setDropTargetCardId(null);
+                      lastHoverTargetRef.current = null;
+                      window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_end"));
+                    }}
+                    onDragEnd={handleCardDragEnd}
+                    onClick={(e) => handleCardPress(e, card)}
+                    // Browser-native off-screen culling for large vaults.
+                    // While being dragged, opt OUT — `content-visibility:
+                    // hidden` (which the browser applies under the hood
+                    // for off-screen content) would clip the drag image
+                    // mid-flight if we crossed the threshold during the
+                    // drag. Currently-dragged card always paints.
+                    style={
+                      virtualizedCardStyle && draggedCardId !== card.id
+                        ? virtualizedCardStyle
+                        : undefined
+                    }
+                    className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${isEmbeddedMode ? "mb-0" : vaultView === "grid" ? "" : "mb-5"} rounded-2xl relative ${
+                      card.kind === "chat-preview" ? "overflow-hidden" : vaultView === "grid" ? "overflow-hidden" : "overflow-visible"
+                    } ${
+                      card.kind === "attachment" || card.kind === "quick-note"
+                        ? "bg-transparent border-0 shadow-none backdrop-blur-0"
+                        : "glass-control"
+                    } ${
+                      draggedCardId === card.id
+                        ? "opacity-30 cursor-grabbing ring-2 ring-blue-400/50"
+                        : "cursor-pointer"
+                    } ${dropTargetCardId === card.id && draggedCardId !== card.id ? "ring-2 ring-blue-400/40" : ""} ${
+                      isSelected ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-transparent" : ""
+                    } ${
+                      card.kind === "attachment" && card.type === "youtube"
+                        ? getYouTubeOffsetClass(card.id)
+                        : ""
+                    } ${
+                      openAttachmentNotesCardId === card.id
+                        ? "z-[310]"
+                        : "z-0"
+                    }`}
+                  >
+                    {isSelected && (
+                      <span
+                        data-no-preview="true"
+                        className="absolute top-2 right-2 z-[120] w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center shadow-md pointer-events-none"
+                      >
+                        <Check className="w-3 h-3" strokeWidth={3} />
+                      </span>
+                    )}
+                    {card.isDemo && !isWakePreview && (
+                      <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
+                        Sample
+                      </span>
+                    )}
+                    {card.kind === "source-folder" ? (
+                      <SourceFolderTile
+                        card={card}
+                        heightClass={vaultView === "grid" ? "h-44" : "h-44"}
+                      />
+                    ) : card.kind === "attachment" ? (
+                      <>
+                        {renderAttachmentCard(card, vaultView === "grid" ? "h-44" : getAttachmentHeightClass(card))}
+                        {parseAttachmentNotes(card.attachment).length > 0 && (
+                          <button
+                            type="button"
+                            data-no-drag="true"
+                            draggable={false}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (openAttachmentNotesCardId === card.id) {
+                                closeAttachmentNotes();
+                              } else {
+                                openAttachmentNotesForAnchor(card.id, e.currentTarget);
+                              }
+                            }}
+                            className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
+                            title="View comments"
+                          >
+                            <MessageSquare className="w-3 h-3 text-black" />
+                            <span>{parseAttachmentNotes(card.attachment).length}</span>
+                          </button>
+                        )}
+                        {card.tags?.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
+                            {card.tags.map((t) => (
+                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="mt-2 flex justify-end px-1" data-no-drag="true">
+                          <div className="relative">
+                            <button
+                              type="button"
+                              data-no-drag="true"
+                              draggable={false}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (openCardMenuId === card.id) {
+                                  setOpenCardMenuId(null);
+                                  return;
+                                }
+                                openCardMenuForAnchor(card.id, e.currentTarget);
+                              }}
+                              className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
+                              title="Actions"
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    ) : card.kind === "chat-preview" ? (
+                      <div className={`p-4 space-y-3 ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
+                        <div className="flex items-center justify-between">
+                          <h2 className="text-sm font-semibold text-black/90 dark:text-white/90 truncate">{card.title}</h2>
+                          <span className="text-[0.6875rem] text-black/60 dark:text-white/60">{card.turnsCount} turns</span>
+                        </div>
+                        <div className="rounded-xl bg-white/40 border border-white/45 px-3 py-2">
+                          <p className={`text-[0.75rem] text-black/80 dark:text-white/80 ${vaultView === "grid" ? "line-clamp-2" : "line-clamp-3"}`}>{card.question}</p>
+                        </div>
+                        {card.answer && vaultView !== "grid" && (
+                          <div className="rounded-xl bg-black/10 border border-white/30 px-3 py-2">
+                            <p className="text-[0.75rem] text-black/75 dark:text-white/75 line-clamp-4">{card.answer}</p>
+                          </div>
+                        )}
+                        {card.tags?.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {card.tags.map((t) => (
+                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {vaultView !== "grid" && (
+                        <div className="text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          <span>{card.dateLabel}</span>
+                        </div>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className={`glass-control rounded-2xl p-4 relative ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
+                          <div className="flex items-center gap-2 text-black/70 dark:text-white/70 mb-2">
+                            <StickyNote className="w-4 h-4" />
+                            <span className="text-xs font-medium">Quick Note</span>
+                          </div>
+                          <div className={vaultView === "grid" ? "overflow-hidden" : "max-h-56 overflow-y-auto scrollbar-hide"}>
+                            <p className={`text-sm text-black/70 dark:text-white/70 whitespace-pre-wrap break-words ${vaultView === "grid" ? "line-clamp-5" : ""}`}>{card.excerpt}</p>
+                          </div>
+                          {card.tags?.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {card.tags.map((t) => (
+                                <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <div className="mt-3 text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            <span>{card.dateLabel}</span>
+                          </div>
+                          {(card.comments?.length || 0) > 0 && (
+                            <button
+                              type="button"
+                              data-no-drag="true"
+                              draggable={false}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (openAttachmentNotesCardId === card.id) {
+                                  closeAttachmentNotes();
+                                } else {
+                                  openAttachmentNotesForAnchor(card.id, e.currentTarget);
+                                }
+                              }}
+                              className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
+                              title="View comments"
+                            >
+                              <MessageSquare className="w-3 h-3 text-black" />
+                              <span>{card.comments.length}</span>
+                            </button>
+                          )}
+                        </div>
+                        <div className="mt-2 flex justify-end px-1" data-no-drag="true">
+                          <div className="relative">
+                            <button
+                              type="button"
+                              data-no-drag="true"
+                              draggable={false}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (openCardMenuId === card.id) {
+                                  setOpenCardMenuId(null);
+                                  return;
+                                }
+                                openCardMenuForAnchor(card.id, e.currentTarget);
+                              }}
+                              className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
+                              title="Quick note actions"
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                    <VaultPickerTapOverlay
+                      show={isPickerMode && isSelectableCard(card)}
+                    />
+                  </motion.article>
+    );
+  };
 
   // ── Off-screen card culling (browser-native virtualization) ──
   //
@@ -4485,9 +4876,38 @@ User: ${text}`;
       const hasResolvedUrl = !!resolvedAttachmentUrls[card.id];
       const hasFailed = failedImageIds.has(card.id);
 
+      // Compute the reserved aspect ratio BEFORE the skeleton/failed returns
+      // so the placeholder, the loaded image, and the error state all occupy
+      // the SAME height. Previously the skeleton used a fixed `stableTileHeight`
+      // and the loaded image switched to its real `aspectRatio`, so every
+      // async signed-URL resolve changed a card's height — and in the CSS
+      // multi-column collage that rebalances all columns, throwing cards in
+      // and out of order as they load (and again as more resolve on scroll).
+      const learnedDims = resolvedUrl ? learnedImageDimsRef.current.get(resolvedUrl) : null;
+      const metaW =
+        toNumber(attachment.width) ??
+        toNumber(attachment.imageWidth) ??
+        toNumber(attachment.metadata?.width) ??
+        toNumber(attachment.metadata?.imageWidth);
+      const metaH =
+        toNumber(attachment.height) ??
+        toNumber(attachment.imageHeight) ??
+        toNumber(attachment.metadata?.height) ??
+        toNumber(attachment.metadata?.imageHeight);
+      const reservedW = metaW || learnedDims?.w || null;
+      const reservedH = metaH || learnedDims?.h || null;
+      const hasReservedAspect = !!(reservedW && reservedH && reservedW > 0 && reservedH > 0);
+      const reservedAspectStyle = hasReservedAspect
+        ? { aspectRatio: `${reservedW} / ${reservedH}` }
+        : undefined;
+      const reservedHeightClass = hasReservedAspect ? "" : stableTileHeight;
+
       if (isStorageBacked && !hasResolvedUrl && !hasFailed) {
         return (
-          <div className={`w-full ${stableTileHeight} rounded-2xl bg-white/5 animate-pulse flex items-center justify-center`}>
+          <div
+            className={`w-full ${reservedHeightClass} rounded-2xl bg-white/5 animate-pulse flex items-center justify-center`}
+            style={reservedAspectStyle}
+          >
             <Loader2 className="w-6 h-6 text-white/20 animate-spin" />
           </div>
         );
@@ -4495,7 +4915,10 @@ User: ${text}`;
 
       if (hasFailed) {
         return (
-          <div className={`w-full ${stableTileHeight} rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3`}>
+          <div
+            className={`w-full ${reservedHeightClass} rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3`}
+            style={reservedAspectStyle}
+          >
             <FileText className="w-8 h-8 text-black/20 dark:text-white/20" />
             <span className="text-xs text-black/40 dark:text-white/40 text-center truncate max-w-full">{title}</span>
             {isStorageBacked && (
@@ -4539,38 +4962,18 @@ User: ${text}`;
         wakeDemoCard || (!!resolvedUrl && preDecodedUrlsRef.current.has(resolvedUrl));
       const skipEntryFade = isVaultFirstPaintRef.current || isPreDecoded || wakeDemoCard;
 
-      // Aspect-ratio reservation: use attachment metadata first, then
-      // fall back to learned dims from a previous load. Setting the
-      // `width` + `height` HTML attributes (modern browsers' "aspect
-      // ratio mapping") tells the browser to reserve the correct slot
-      // BEFORE the image loads, eliminating the layout shift that
-      // caused cards to "shift and move and cut up and down" on first
-      // scroll.
-      const learnedDims = resolvedUrl ? learnedImageDimsRef.current.get(resolvedUrl) : null;
-      const metaW =
-        toNumber(attachment.width) ??
-        toNumber(attachment.imageWidth) ??
-        toNumber(attachment.metadata?.width) ??
-        toNumber(attachment.metadata?.imageWidth);
-      const metaH =
-        toNumber(attachment.height) ??
-        toNumber(attachment.imageHeight) ??
-        toNumber(attachment.metadata?.height) ??
-        toNumber(attachment.metadata?.imageHeight);
-      const reservedW = metaW || learnedDims?.w || null;
-      const reservedH = metaH || learnedDims?.h || null;
-      const hasReservedAspect = !!(reservedW && reservedH && reservedW > 0 && reservedH > 0);
+      // Aspect-ratio reservation (`reservedW`/`reservedH`/`hasReservedAspect`)
+      // is computed once at the top of the image branch so the skeleton,
+      // loaded image, and error state share one reserved height. Setting the
+      // `width` + `height` HTML attributes (modern browsers' "aspect ratio
+      // mapping") tells the browser to reserve the correct slot BEFORE the
+      // image loads, eliminating the layout shift that caused cards to "shift
+      // and move and cut up and down" on first scroll.
 
       return (
         <div
-          className={`w-full rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] flex items-center justify-center overflow-hidden ${
-            hasReservedAspect ? "" : stableTileHeight
-          }`}
-          style={
-            hasReservedAspect
-              ? { aspectRatio: `${reservedW} / ${reservedH}` }
-              : undefined
-          }
+          className={`w-full rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] flex items-center justify-center overflow-hidden ${reservedHeightClass}`}
+          style={reservedAspectStyle}
         >
         <img
           key={resolvedUrl}
@@ -4674,9 +5077,39 @@ User: ${text}`;
       const videoStorageTarget = parseStorageTarget(attachment || {});
       const videoIsStorageBacked = !!(videoStorageTarget?.bucket && videoStorageTarget?.path);
 
+      // Reserve the video's aspect ratio (same approach as images) so the
+      // tile is exactly as tall as the frame from the FIRST paint — the old
+      // fixed-height box came from a coarse height bucket that rarely matched
+      // the real shape, leaving dead letterbox space. Videos don't carry
+      // stored dimensions, so when the real shape is unknown we reserve a
+      // 16:9 slot (the overwhelming majority of uploads); `onLoadedMetadata`
+      // only nudges the rare non-16:9 clip. Computed before the loading
+      // skeleton so the skeleton and the loaded video share one slot and the
+      // tile never jumps as the URL resolves / scrolls in.
+      const learnedVideoDims = resolvedUrl ? learnedImageDimsRef.current.get(resolvedUrl) : null;
+      const reservedVW =
+        toNumber(attachment.videoWidth) ??
+        toNumber(attachment.width) ??
+        toNumber(attachment.metadata?.videoWidth) ??
+        toNumber(attachment.metadata?.width) ??
+        learnedVideoDims?.w ??
+        null;
+      const reservedVH =
+        toNumber(attachment.videoHeight) ??
+        toNumber(attachment.height) ??
+        toNumber(attachment.metadata?.videoHeight) ??
+        toNumber(attachment.metadata?.height) ??
+        learnedVideoDims?.h ??
+        null;
+      const hasReservedVideoAspect = !!(reservedVW && reservedVH && reservedVW > 0 && reservedVH > 0);
+      const videoAspect = hasReservedVideoAspect ? `${reservedVW} / ${reservedVH}` : "16 / 9";
+
       if (videoIsStorageBacked && !resolvedAttachmentUrls[card.id]) {
         return (
-          <div className={`w-full ${stableTileHeight} rounded-2xl bg-black/10 animate-pulse flex items-center justify-center`}>
+          <div
+            className="w-full rounded-2xl bg-black/10 animate-pulse flex items-center justify-center"
+            style={{ aspectRatio: videoAspect }}
+          >
             <Loader2 className="w-6 h-6 text-white/20 animate-spin" />
           </div>
         );
@@ -4685,10 +5118,13 @@ User: ${text}`;
       const skipVideoFade = isVaultFirstPaintRef.current || wakeDemoCard;
 
       return (
-        <div className={`w-full ${stableTileHeight} rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] pointer-events-none flex items-center justify-center overflow-hidden`}>
+        <div
+          className="w-full rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] pointer-events-none flex items-center justify-center overflow-hidden"
+          style={{ aspectRatio: videoAspect }}
+        >
           <video
             key={resolvedUrl}
-            className={`max-w-full max-h-full w-auto h-auto rounded-2xl bg-black/10 ${
+            className={`max-w-full max-h-full w-auto h-auto object-contain rounded-2xl bg-black/10 ${
               skipVideoFade ? "" : "opacity-0 transition-opacity duration-150 ease-out"
             }`}
             controls={!isPickerMode}
@@ -4696,6 +5132,24 @@ User: ${text}`;
             preload="metadata"
             draggable={false}
             muted={isPickerMode}
+            onLoadedMetadata={(e) => {
+              // Videos often have no width/height stored at upload time, so
+              // learn the real frame dims here and collapse the tile to the
+              // exact aspect ratio right away (inline style beats the fixed
+              // Tailwind height class, including its responsive variants).
+              const vw = e.currentTarget.videoWidth;
+              const vh = e.currentTarget.videoHeight;
+              if (vw > 0 && vh > 0) {
+                if (resolvedUrl && !learnedImageDimsRef.current.has(resolvedUrl)) {
+                  learnedImageDimsRef.current.set(resolvedUrl, { w: vw, h: vh });
+                }
+                const wrapper = e.currentTarget.parentElement;
+                if (wrapper) {
+                  wrapper.style.aspectRatio = `${vw} / ${vh}`;
+                  wrapper.style.height = "auto";
+                }
+              }
+            }}
             onLoadedData={(e) => {
               e.currentTarget.style.opacity = "1";
               const wrapper = e.currentTarget.parentElement;
@@ -5586,14 +6040,6 @@ User: ${text}`;
       {!isEmbeddedMode && (
         <>
           {!isWakePreview && (
-            <div className="fixed top-3 left-0 right-0 z-[70] px-3 hidden md:flex items-center justify-end pointer-events-none">
-              <div className="pointer-events-auto">
-                <VaultConnectionsToggle active="vault" />
-              </div>
-            </div>
-          )}
-
-          {!isWakePreview && (
           <>
           {/* Bottom-right FAB: voice or written note chooser. */}
           <button
@@ -5954,6 +6400,17 @@ User: ${text}`;
                       </div>
                     )}
                   </div>
+                )}
+                {!isWakePreview && (
+                  <button
+                    type="button"
+                    onClick={() => nav("/settings?section=connections")}
+                    className="ml-auto shrink-0 inline-flex items-center gap-1.5 rounded-full bg-blue-500 px-3.5 py-2 text-[0.75rem] font-medium text-white shadow-sm hover:bg-blue-600 transition-colors"
+                    title="Connect apps to your Vault"
+                  >
+                    <Plug className="w-3.5 h-3.5" />
+                    Connect apps
+                  </button>
                 )}
                 {isWakePreview && (
                   <div className="ml-auto shrink-0">
@@ -6428,327 +6885,66 @@ User: ${text}`;
                     </div>
                   </>
                 )}
-              <div className={
-                isWakePreview
-                  ? "lykn-wake-vault-preview-grid col-start-1 col-span-3 row-start-2 grid grid-cols-3 gap-3"
-                  : isEmbeddedMode
-                  ? vaultView === "grid"
-                    ? "grid grid-cols-2 gap-3"
-                    : "columns-2 gap-3"
-                  : vaultView === "grid"
-                    ? "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
-                    : "columns-1 sm:columns-2 md:columns-3 xl:columns-4 2xl:columns-5 gap-4 md:gap-5"
-              }>
-                {vaultView === "collage" && !isWakePreview && (
-                <div className="break-inside-avoid mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
-                  <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={handleRequestAddMedia}
-                      className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
-                    >
-                      <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
-                        <Upload className="w-4 h-4 text-blue-500" />
-                      </div>
-                      <span className="text-[0.625rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleRequestSaveLink}
-                      className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
-                    >
-                      <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
-                        <Globe className="w-4 h-4 text-blue-500" />
-                      </div>
-                      <span className="text-[0.625rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
-                    </button>
-                  </div>
-                </div>
-                )}
-                {vaultView === "grid" && !isWakePreview && (
-                  <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center aspect-square gap-2">
-                    <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
-                    <div className="flex gap-1.5">
-                      <button type="button" onClick={handleRequestAddMedia} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
-                        <Upload className="w-3.5 h-3.5 text-blue-500" />
-                      </button>
-                      <button type="button" onClick={handleRequestSaveLink} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
-                        <Globe className="w-3.5 h-3.5 text-blue-500" />
-                      </button>
+              {useMasonryLayout ? (
+                <div className={`flex items-start ${isEmbeddedMode ? "gap-3" : "gap-4 md:gap-5"}`}>
+                  {collageColumnBuckets.map((bucket, colIdx) => (
+                    <div key={`vault-col-${colIdx}`} className="flex-1 min-w-0 flex flex-col">
+                      {colIdx === 0 && vaultView === "collage" && !isWakePreview && (
+                        <div className="mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
+                          <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={handleRequestAddMedia}
+                              className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
+                            >
+                              <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
+                                <Upload className="w-4 h-4 text-blue-500" />
+                              </div>
+                              <span className="text-[0.625rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Files</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleRequestSaveLink}
+                              className="group/opt flex flex-col items-center gap-1 rounded-xl px-3 py-2 hover:bg-blue-500/[0.06] transition-colors"
+                            >
+                              <div className="w-9 h-9 rounded-full bg-blue-500/10 flex items-center justify-center group-hover/opt:bg-blue-500/20 transition-colors">
+                                <Globe className="w-4 h-4 text-blue-500" />
+                              </div>
+                              <span className="text-[0.625rem] font-medium text-black/50 dark:text-white/50 group-hover/opt:text-blue-500 transition-colors">Link</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {bucket.map((card) => renderCollageCard(card))}
                     </div>
-                  </div>
-                )}
-                {collageGridCards.map((card) => {
-                  const isSelected = selectedCardIds.has(card.id);
-                  return (
-                  <motion.article
-                    initial={
-                      isVaultFirstPaintRef.current || initialCardIdsRef.current?.has(card.id)
-                        ? false
-                        : { opacity: 0, scale: 0.97 }
-                    }
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.2, ease: "easeOut" }}
-                    key={card.id}
-                    data-vault-card-id={card.id}
-                    data-card-id={card.id}
-                    ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
-                    draggable={!isPickerMode}
-                    onDragStart={(e) => handleCardDragStart(e, card)}
-                    onDrag={handleCardDrag}
-                    onDragEnter={(e) => {
-                      e.preventDefault();
-                      if (!draggedCardId || draggedCardId === card.id) return;
-                      // While the dragged card is overlapping the trash, suspend
-                      // the live "push cards around" reorder so dropping deletes
-                      // cleanly rather than racing with a reorder.
-                      if (vaultTrashHover || vaultTrashHoldReady) return;
-                      if (lastHoverTargetRef.current === card.id) return;
-                      lastHoverTargetRef.current = card.id;
-                      setDropTargetCardId(card.id);
-                      reorderActivePage(draggedCardId, card.id);
-                    }}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      if (vaultTrashHover || vaultTrashHoldReady) return;
-                      setDropTargetCardId(card.id);
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      // Trash overlap takes precedence — let dragend run the
-                      // delete; don't reorder onto the hovered card.
-                      if (vaultTrashHoldReady) {
-                        setDropTargetCardId(null);
-                        return;
-                      }
-                      const droppedId = e.dataTransfer.getData("application/x-lykins-vault-card-id") || draggedCardId;
-                      if (droppedId && droppedId !== card.id) {
-                        reorderActivePage(droppedId, card.id);
-                      }
-                      setDraggedCardId(null);
-                      setDropTargetCardId(null);
-                      lastHoverTargetRef.current = null;
-                      window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_end"));
-                    }}
-                    onDragEnd={handleCardDragEnd}
-                    onClick={(e) => handleCardPress(e, card)}
-                    // Browser-native off-screen culling for large vaults.
-                    // While being dragged, opt OUT — `content-visibility:
-                    // hidden` (which the browser applies under the hood
-                    // for off-screen content) would clip the drag image
-                    // mid-flight if we crossed the threshold during the
-                    // drag. Currently-dragged card always paints.
-                    style={
-                      virtualizedCardStyle && draggedCardId !== card.id
-                        ? virtualizedCardStyle
-                        : undefined
-                    }
-                    className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${isEmbeddedMode ? "mb-0" : vaultView === "grid" ? "" : "mb-5"} rounded-2xl relative ${
-                      card.kind === "chat-preview" ? "overflow-hidden" : vaultView === "grid" ? "overflow-hidden" : "overflow-visible"
-                    } ${
-                      card.kind === "attachment" || card.kind === "quick-note"
-                        ? "bg-transparent border-0 shadow-none backdrop-blur-0"
-                        : "glass-control"
-                    } ${
-                      draggedCardId === card.id
-                        ? "opacity-30 cursor-grabbing ring-2 ring-blue-400/50"
-                        : "cursor-pointer"
-                    } ${dropTargetCardId === card.id && draggedCardId !== card.id ? "ring-2 ring-blue-400/40" : ""} ${
-                      isSelected ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-transparent" : ""
-                    } ${
-                      card.kind === "attachment" && card.type === "youtube"
-                        ? getYouTubeOffsetClass(card.id)
-                        : ""
-                    } ${
-                      openAttachmentNotesCardId === card.id
-                        ? "z-[310]"
-                        : "z-0"
-                    }`}
-                  >
-                    {isSelected && (
-                      <span
-                        data-no-preview="true"
-                        className="absolute top-2 right-2 z-[120] w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center shadow-md pointer-events-none"
-                      >
-                        <Check className="w-3 h-3" strokeWidth={3} />
-                      </span>
-                    )}
-                    {card.isDemo && !isWakePreview && (
-                      <span className="absolute top-2 left-2 z-[120] rounded-full bg-black/45 text-white/95 text-[0.625rem] font-medium px-2 py-0.5 backdrop-blur-sm pointer-events-none">
-                        Sample
-                      </span>
-                    )}
-                    {card.kind === "source-folder" ? (
-                      <SourceFolderTile
-                        card={card}
-                        heightClass={vaultView === "grid" ? "h-44" : "h-44"}
-                      />
-                    ) : card.kind === "attachment" ? (
-                      <>
-                        {renderAttachmentCard(card, vaultView === "grid" ? "h-44" : getAttachmentHeightClass(card))}
-                        {parseAttachmentNotes(card.attachment).length > 0 && (
-                          <button
-                            type="button"
-                            data-no-drag="true"
-                            draggable={false}
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (openAttachmentNotesCardId === card.id) {
-                                closeAttachmentNotes();
-                              } else {
-                                openAttachmentNotesForAnchor(card.id, e.currentTarget);
-                              }
-                            }}
-                            className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
-                            title="View comments"
-                          >
-                            <MessageSquare className="w-3 h-3 text-black" />
-                            <span>{parseAttachmentNotes(card.attachment).length}</span>
-                          </button>
-                        )}
-                        {card.tags?.length > 0 && (
-                          <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
-                            {card.tags.map((t) => (
-                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
-                                {t}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <div className="relative">
-                            <button
-                              type="button"
-                              data-no-drag="true"
-                              draggable={false}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (openCardMenuId === card.id) {
-                                  setOpenCardMenuId(null);
-                                  return;
-                                }
-                                openCardMenuForAnchor(card.id, e.currentTarget);
-                              }}
-                              className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                              title="Actions"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </>
-                    ) : card.kind === "chat-preview" ? (
-                      <div className={`p-4 space-y-3 ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
-                        <div className="flex items-center justify-between">
-                          <h2 className="text-sm font-semibold text-black/90 dark:text-white/90 truncate">{card.title}</h2>
-                          <span className="text-[0.6875rem] text-black/60 dark:text-white/60">{card.turnsCount} turns</span>
-                        </div>
-                        <div className="rounded-xl bg-white/40 border border-white/45 px-3 py-2">
-                          <p className={`text-[0.75rem] text-black/80 dark:text-white/80 ${vaultView === "grid" ? "line-clamp-2" : "line-clamp-3"}`}>{card.question}</p>
-                        </div>
-                        {card.answer && vaultView !== "grid" && (
-                          <div className="rounded-xl bg-black/10 border border-white/30 px-3 py-2">
-                            <p className="text-[0.75rem] text-black/75 dark:text-white/75 line-clamp-4">{card.answer}</p>
-                          </div>
-                        )}
-                        {card.tags?.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {card.tags.map((t) => (
-                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
-                                {t}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        {vaultView !== "grid" && (
-                        <div className="text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          <span>{card.dateLabel}</span>
-                        </div>
-                        )}
+                  ))}
+                </div>
+              ) : (
+                <div className={
+                  isWakePreview
+                    ? "lykn-wake-vault-preview-grid col-start-1 col-span-3 row-start-2 grid grid-cols-3 gap-3"
+                    : isEmbeddedMode
+                    ? "grid grid-cols-2 gap-3"
+                    : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
+                }>
+                  {vaultView === "grid" && !isWakePreview && (
+                    <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center aspect-square gap-2">
+                      <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
+                      <div className="flex gap-1.5">
+                        <button type="button" onClick={handleRequestAddMedia} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
+                          <Upload className="w-3.5 h-3.5 text-blue-500" />
+                        </button>
+                        <button type="button" onClick={handleRequestSaveLink} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
+                          <Globe className="w-3.5 h-3.5 text-blue-500" />
+                        </button>
                       </div>
-                    ) : (
-                      <>
-                        <div className={`glass-control rounded-2xl p-4 relative ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
-                          <div className="flex items-center gap-2 text-black/70 dark:text-white/70 mb-2">
-                            <StickyNote className="w-4 h-4" />
-                            <span className="text-xs font-medium">Quick Note</span>
-                          </div>
-                          <div className={vaultView === "grid" ? "overflow-hidden" : "max-h-56 overflow-y-auto scrollbar-hide"}>
-                            <p className={`text-sm text-black/70 dark:text-white/70 whitespace-pre-wrap break-words ${vaultView === "grid" ? "line-clamp-5" : ""}`}>{card.excerpt}</p>
-                          </div>
-                          {card.tags?.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {card.tags.map((t) => (
-                                <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
-                                  {t}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          <div className="mt-3 text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            <span>{card.dateLabel}</span>
-                          </div>
-                          {(card.comments?.length || 0) > 0 && (
-                            <button
-                              type="button"
-                              data-no-drag="true"
-                              draggable={false}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (openAttachmentNotesCardId === card.id) {
-                                  closeAttachmentNotes();
-                                } else {
-                                  openAttachmentNotesForAnchor(card.id, e.currentTarget);
-                                }
-                              }}
-                              className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
-                              title="View comments"
-                            >
-                              <MessageSquare className="w-3 h-3 text-black" />
-                              <span>{card.comments.length}</span>
-                            </button>
-                          )}
-                        </div>
-                        <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <div className="relative">
-                            <button
-                              type="button"
-                              data-no-drag="true"
-                              draggable={false}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (openCardMenuId === card.id) {
-                                  setOpenCardMenuId(null);
-                                  return;
-                                }
-                                openCardMenuForAnchor(card.id, e.currentTarget);
-                              }}
-                              className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                              title="Quick note actions"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </>
-                    )}
-                    <VaultPickerTapOverlay
-                      show={isPickerMode && isSelectableCard(card)}
-                    />
-                  </motion.article>
-                  );
-                })}
-                <div ref={loadMoreRef} className="break-inside-avoid h-6" />
-              </div>
+                    </div>
+                  )}
+                  {collageGridCards.map((card) => renderCollageCard(card))}
+                </div>
+              )}
+              <div ref={loadMoreRef} className="h-6" />
               </div>
             )}
             {isLoadingMoreNotes && (

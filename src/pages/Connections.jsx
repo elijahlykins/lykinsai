@@ -4,7 +4,6 @@ import { useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
 import ConnectionsAppGrid from "@/components/connections/ConnectionsAppGrid";
-import CustomAgentsSection from "@/components/connections/CustomAgentsSection";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
 
 // Connections page is the "app store" for LYKN — one unified grid of
@@ -61,7 +60,6 @@ export default function Connections({
         style={{ maxWidth: "1560px" }}
       >
         <ConnectionsAppGrid user={user} />
-        {!isEmbeddedMode && <CustomAgentsSection user={user} />}
       </main>
     </>
   );

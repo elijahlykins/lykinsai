@@ -233,8 +233,12 @@ function AppShell() {
               }
             >
               <Route path="/vault" element={null} />
-              <Route path="/connections" element={null} />
             </Route>
+            {/* Connections moved into Settings → Connections. Redirect any
+                lingering /connections links (load-in greeting, bookmarks)
+                straight to the connect surface. */}
+            <Route path="/connections" element={<Navigate to="/settings?section=connections" replace />} />
+            <Route path="/connections/*" element={<Navigate to="/settings?section=connections" replace />} />
             <Route path="/share" element={<ShareReceiver />} />
             <Route
               path="/onboarding/connect"

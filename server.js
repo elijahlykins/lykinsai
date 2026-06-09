@@ -92,6 +92,7 @@ import {
   updateCustomConnection,
   deleteCustomConnection,
   callApp,
+  listOAuthBackedApps,
   CustomConnectionError,
 } from './lib/customConnections/customConnections.js';
 import { registerTrainingSetRoutes } from './training-sets-routes.js';
@@ -2436,7 +2437,20 @@ async function fetchConnectedToolsSection(authHeader, userId) {
     console.warn('⚠️ fetchConnectedToolsSection custom:', e?.message || e);
   }
 
-  if (rows.length === 0 && customConns.length === 0) {
+  // OAuth-backed action apps (e.g. Slack connected via one-click OAuth) the
+  // agent can ALSO call through lykn_call_app — surfaced in the actionable
+  // block so the model knows it can act, not just that the tool is "connected".
+  let oauthActionApps = [];
+  try {
+    oauthActionApps = await listOAuthBackedApps(client, userId);
+  } catch (e) {
+    console.warn('⚠️ fetchConnectedToolsSection oauth-action:', e?.message || e);
+  }
+  // A custom connection with the same slug wins (it's the user's explicit BYO).
+  const customSlugs = new Set(customConns.map((c) => c.slug));
+  oauthActionApps = oauthActionApps.filter((a) => !customSlugs.has(a.slug));
+
+  if (rows.length === 0 && customConns.length === 0 && oauthActionApps.length === 0) {
     connectedToolsSectionCache.set(userId, { text: '', at: Date.now() });
     return '';
   }
@@ -2470,12 +2484,19 @@ async function fetchConnectedToolsSection(authHeader, userId) {
     lines.push(`- ${name}${accountStr}${pausedStr}${hint}`);
   }
 
-  // Actionable custom-API connections — the agent can CALL these.
+  // Actionable connections — the agent can CALL these via lykn_call_app.
+  // Custom (BYO-key) connections plus OAuth-backed action apps (Slack, …),
+  // which use the same call contract with an OAuth-minted token.
   const customLines = customConns.slice(0, 25).map((c) => {
     const writes = c.allow_writes ? 'read+write' : 'read-only';
     const desc = c.description ? ` — ${String(c.description).replace(/\s+/g, ' ').slice(0, 160)}` : '';
     return `- ${c.name} [slug: ${c.slug}] (${writes}) ${c.base_url}${desc}`;
   });
+  for (const a of oauthActionApps.slice(0, 10)) {
+    const writes = a.allow_writes ? 'read+write' : 'read-only';
+    const desc = a.description ? ` — ${String(a.description).replace(/\s+/g, ' ').slice(0, 160)}` : '';
+    customLines.push(`- ${a.name} [slug: ${a.slug}] (${writes}, OAuth) ${a.base_url}${desc}`);
+  }
 
   const customBlock = customLines.length
     ? [

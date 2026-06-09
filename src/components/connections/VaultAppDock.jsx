@@ -208,7 +208,7 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
   const handleReconnect = useCallback(
     async (tile) => {
       if (tile.kind !== "input" || !tile.provider || tile.requiresPrefields) {
-        navigate("/connections");
+        navigate("/settings?section=connections");
         return;
       }
       setReconnectingProvider(tile.provider);
@@ -276,7 +276,7 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
           description: toUserFacingError(err),
           variant: "destructive",
         });
-        navigate("/connections");
+        navigate("/settings?section=connections");
       }
     },
     [navigate],
@@ -292,7 +292,7 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
       return;
     }
     if (!tile.launchUrl) {
-      navigate("/connections");
+      navigate("/settings?section=connections");
       return;
     }
     window.open(tile.launchUrl, "_blank", "noopener,noreferrer");
@@ -411,7 +411,7 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
           ))}
           <button
             type="button"
-            onClick={() => navigate("/connections")}
+            onClick={() => navigate("/settings?section=connections")}
             title={tiles.length > 0 ? "Connect another app" : "Connect an app"}
             className={plugCls}
           >

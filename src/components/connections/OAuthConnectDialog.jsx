@@ -10,6 +10,7 @@ import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
 import { toUserFacingError } from "@/lib/ai/userFacingErrors";
+import { ConnectorDetailHeader } from "./ConnectorDetail";
 import {
   Loader2,
   RefreshCw,
@@ -18,7 +19,6 @@ import {
   Unplug,
   CheckCircle2,
   AlertTriangle,
-  Shield,
   ArrowUpRight,
 } from "lucide-react";
 
@@ -277,37 +277,24 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[calc(100vw-1.5rem)] max-w-lg max-h-[88dvh] overflow-y-auto bg-white dark:bg-zinc-950 border border-black/10 dark:border-white/10 sm:w-full">
-        <DialogHeader>
-          <DialogTitle className="text-[18px] font-semibold tracking-tight flex items-center gap-2">
-            <ProviderFavicon connector={connector} />
-            {connector.name}
-          </DialogTitle>
-          <DialogDescription className="text-[12.5px] leading-relaxed text-black/60 dark:text-white/60">
-            {connector.summary}
-          </DialogDescription>
+        <DialogHeader className="sr-only">
+          <DialogTitle>{connector.name}</DialogTitle>
+          <DialogDescription>{connector.summary}</DialogDescription>
         </DialogHeader>
 
-        {/* ── Scopes / what we pull ───────────────────────── */}
-        <div className="rounded-xl border border-black/[0.08] dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] p-3">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-black/65 dark:text-white/70 mb-1.5">
-            <Shield className="h-3 w-3" />
-            What LYKN reads
-          </div>
-          <ul className="space-y-1">
-            {(connector.pulls || []).map((p) => (
-              <li
-                key={p}
-                className="text-[12px] text-black/75 dark:text-white/80 flex items-start gap-2"
-              >
-                <span className="mt-1 h-1 w-1 rounded-full bg-black/40 dark:bg-white/40 flex-shrink-0" />
-                {p}
-              </li>
-            ))}
-          </ul>
-          <div className="mt-2 text-[10.5px] text-black/45 dark:text-white/45">
-            Read-only. No posts, edits, follows, or DMs. You can disconnect any time.
-          </div>
-        </div>
+        <ConnectorDetailHeader
+          name={connector.name}
+          domain={connector.domain}
+          tagline={connector.summary}
+          description={connector.description}
+          developer={connector.developer || connector.name}
+          tools={connector.pulls}
+          toolsLabel="What LYKN reads"
+          toolsNote="Read-only. No posts, edits, follows, or DMs. You can disconnect any time."
+          connectorUrl={connector.domain ? `https://${connector.domain}` : undefined}
+          author={connector.developer || connector.name}
+          trustNote={`LYKN connects to ${connector.name} with read-only access to the items below. Nothing is posted or changed on your behalf, and you can disconnect at any time.`}
+        />
 
         {/* ── Provider not configured fallback ─────────────── */}
         {!providerConfigured && (
@@ -488,23 +475,6 @@ function ConnectionRow({ conn, syncing, onSync, onToggle, onDisconnect }) {
         />
       </div>
     </li>
-  );
-}
-
-function ProviderFavicon({ connector }) {
-  const url = connector.domain
-    ? `https://www.google.com/s2/favicons?domain=${connector.domain}&sz=64`
-    : "";
-  if (!url) return null;
-  return (
-    <img
-      src={url}
-      alt=""
-      className="h-5 w-5 rounded-sm object-cover bg-black/[0.04] dark:bg-white/[0.06]"
-      onError={(e) => {
-        e.currentTarget.style.display = "none";
-      }}
-    />
   );
 }
 

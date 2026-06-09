@@ -697,14 +697,6 @@ export default function OmniaGridPage() {
   const loadBlocks = useCanvasStore((s) => s.loadBlocks);
   const reset = useCanvasStore((s) => s.reset);
   const gridSize = useCanvasStore((s) => s.gridSize);
-  const [topPanelOpen, setTopPanelOpen] = useState(false);
-  // Collapse the top panel on every chat page load / switch. React-Router
-  // reuses the same OmniaGrid instance when navigating between `/grid/:id`
-  // boards, so without this effect a panel the user opened on one chat
-  // would stay open when they jumped to another.
-  useEffect(() => {
-    setTopPanelOpen(false);
-  }, [routeBoardId]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [showVaultSidebar, setShowVaultSidebar] = useState(false);
@@ -3443,47 +3435,10 @@ export default function OmniaGridPage() {
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       {!isEmbeddedMode && (
       <OmniaToolbar
-        title={title}
-        onTitleChange={setTitle}
-        onTitleCommit={commitBoardTitle}
-        topPanelOpen={topPanelOpen}
-        onTopPanelToggle={() => setTopPanelOpen((v) => !v)}
-        selectedModel={modelSelectValue}
-        onModelChange={persistSelectedModel}
-        chatMode={chatMode}
         isMobilePhone={isMobilePhone}
-        gridDisabled={GRID_DISABLED}
-        onChatModeToggle={() => {
-          // Grid is unplugged — chat mode is permanent, this toggle is a
-          // no-op. The corresponding button is hidden by the toolbar via
-          // `gridDisabled`.
-          if (GRID_DISABLED) return;
-          if (isMobilePhone) return; // Phones are chat-only — toggle is a no-op.
-          setChatMode((v) => {
-            if (!v) setChatRailVisible(false);
-            return !v;
-          });
-        }}
-        chatRailVisible={chatRailVisible}
-        onChatRailToggle={() => {
-          // Grid is unplugged — the side rail only renders when chatMode is
-          // false, so this toggle is meaningless right now.
-          if (GRID_DISABLED) return;
-          if (isMobilePhone) return; // No side rail on phones (it's an overlay-only chat).
-          setChatRailVisible((v) => {
-            if (!v) {
-              setChatRailOpen(true);
-              setChatMode(false);
-            }
-            return !v;
-          });
-          setCenterChatLeaving(false);
-        }}
         showVaultSidebar={showVaultSidebar}
         onVaultToggle={() => setShowVaultSidebar((v) => !v)}
         notesOpen={notesOpen}
-        modelSelectMenu={modelSelectMenu}
-        onShareGrid={() => setShowShareDialog(true)}
         voiceModeEligible={voiceModeEligible}
         voiceModeOn={voiceModeOn}
         onVoiceModeToggle={toggleVoiceMode}

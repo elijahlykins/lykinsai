@@ -11,7 +11,6 @@ export function readEmbeddedPreviewParams(search: string): {
 export function isEmbeddedSurfacePath(pathname: string): boolean {
   return (
     pathname === "/vault" ||
-    pathname.startsWith("/connections") ||
     pathname === "/app"
   );
 }

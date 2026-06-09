@@ -172,6 +172,12 @@ export const CONNECTORS = [
     status: "available",
     statusLabel: "Live",
     summary: "Workspace pages you share with LYKN become searchable inside the Vault.",
+    // Notion is a dual-role app: a data source (pull pages in) AND an AI
+    // surface (push LYKN into Notion AI's Custom Agents). The Connections
+    // grid renders ONE Notion card; clicking it asks which direction(s) the
+    // user wants. This id points at the matching OUTBOUND_TARGETS entry,
+    // which is then suppressed from the standalone AI-tools list.
+    outboundTargetId: "notion-ai",
   },
   // Google Keep has no consumer API - Google explicitly restricts the
   // Keep REST API to Workspace accounts and excludes @gmail.com users

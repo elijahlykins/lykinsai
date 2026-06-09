@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Check, CheckCircle2, ChevronDown, Code2, Plug, ShieldAlert, Loader2, Search, Webhook, X } from "lucide-react";
+import { CheckCircle2, ChevronLeft, Code2, KeyRound, Plug, ShieldAlert, Loader2, Search, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
@@ -62,12 +62,6 @@ const CONNECTABLE_INPUT_STATUSES = new Set([
   "paid",
 ]);
 
-const FILTERS = [
-  { id: "all", label: "All" },
-  { id: "ai", label: "AI tools" },
-  { id: "input", label: "Input tools" },
-];
-
 // AI Tools subgrouping. The flat list of 13 tier-1 outbound targets
 // (Claude / ChatGPT / Cursor / Windsurf / JetBrains / Copilot / …)
 // reads as a wall when the user lands on the Connections page,
@@ -88,6 +82,9 @@ const AI_SUBGROUPS = [
     label: "Chat",
     description: "Conversational assistants - your synthesis layer follows you in.",
     clientKinds: new Set(["claude", "chatgpt", "gemini", "grok"]),
+    // Always show every chat client (no "Show 1 more" pill) - the list is
+    // short and Grok shouldn't hide behind a collapse.
+    noCollapse: true,
   },
   {
     id: "coding",
@@ -111,12 +108,6 @@ const AI_SUBGROUPS = [
     clientKinds: new Set(["notion-ai"]),
   },
 ];
-const AI_SUBGROUP_DEFAULT_VISIBLE = 3;
-
-// "Popular APIs" (Custom-API presets) initial visible count before the
-// "Show all" pill. Six fills two grid rows on desktop without burying the
-// AI tools section below a wall of bring-your-own-key cards.
-const PRESET_DEFAULT_VISIBLE = 6;
 function aiSubgroupIdFor(target) {
   for (const g of AI_SUBGROUPS) {
     if (g.clientKinds.has(target.clientKind)) return g.id;
@@ -146,9 +137,9 @@ function getInputPaidWarning(connector) {
   };
 }
 
-// Two "universal" tiles that lead the AI Tools section. Same AppTile
-// shape as every other card; pinned to the top of the AI bucket so the
-// honest framing - "you don't need a per-tool integration to use any
+// Two "universal" tiles that lead the "Use LYKN elsewhere" section. Same
+// AppTile shape as every other card; pinned to the top so the honest
+// framing - "you don't need a per-tool integration to use any
 // modern AI client" - is the first thing the user sees, ahead of the
 // curated shortcuts.
 //
@@ -209,32 +200,20 @@ export default function ConnectionsAppGrid({
   compactPreview = false,
   wakePreview = false,
   onWakePreviewTabChange,
+  // When true the grid is rendered inside the Settings dialog. The picker
+  // renders inline (not as a fixed overlay) because a `fixed` element nested
+  // under Radix's transformed DialogContent anchors to the dialog, not the
+  // viewport. Cards stack tighter to fit the narrower surface.
+  embedded = false,
+  // Embedded only: called when the back button is pressed on the top-level
+  // cards view (i.e. leave Connections). The picker has its own back that
+  // returns to the cards, so Settings shows just one back button.
+  onBack,
 }) {
   const embeddedPreviewMode = compactPreview;
-  const showPageHeader = !embeddedPreviewMode && !wakePreview;
-  const showToolbar = !embeddedPreviewMode || wakePreview;
+  const showPageHeader = !embeddedPreviewMode && !wakePreview && !embedded;
   const compactGrid = embeddedPreviewMode && !wakePreview;
   const navigate = useNavigate();
-  const [filter, setFilter] = useState("all");
-  const [query, setQuery] = useState("");
-  const [showFilterDropdown, setShowFilterDropdown] = useState(false);
-  const filterDropdownRef = useRef(null);
-  useEffect(() => {
-    const onClick = (event) => {
-      if (filterDropdownRef.current && !filterDropdownRef.current.contains(event.target)) {
-        setShowFilterDropdown(false);
-      }
-    };
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") setShowFilterDropdown(false);
-    };
-    document.addEventListener("mousedown", onClick);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onClick);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, []);
   const [connections, setConnections] = useState([]);
   const [providerConfig, setProviderConfig] = useState({});
   const [tokens, setTokens] = useState([]);
@@ -246,25 +225,28 @@ export default function ConnectionsAppGrid({
   const [activeTokenConnector, setActiveTokenConnector] = useState(null);
   // Universal "Custom API" tile opens its own manage-connections dialog.
   const [customApiOpen, setCustomApiOpen] = useState(false);
-  // When a "Popular APIs" preset card is clicked, the dialog opens straight
-  // into that app's form (base URL + auth prefilled, key field ready).
+  // When a preset card is clicked, the dialog opens straight into that app's
+  // form (base URL + auth prefilled, key field ready).
   const [customApiPresetId, setCustomApiPresetId] = useState(null);
-  // Popular-APIs section starts collapsed to its first PRESET_DEFAULT_VISIBLE
-  // tiles behind a "Show all" pill so the lead of the page stays scannable.
-  const [presetsExpanded, setPresetsExpanded] = useState(false);
-  // Per-AI-subgroup expansion. Empty set = every subgroup is collapsed
-  // to its first AI_SUBGROUP_DEFAULT_VISIBLE tiles. Clicking the
-  // subgroup's "Show all" pill flips it open; the active text-search
-  // bypasses this entirely (see `visibleTiles`) so users always see
-  // every match regardless of which bucket is collapsed.
-  const [expandedAiSubgroups, setExpandedAiSubgroups] = useState(() => new Set());
-  const toggleAiSubgroup = useCallback((id) => {
-    setExpandedAiSubgroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // The page is three launcher cards. "Connect via API" and "Connect via MCP"
+  // open a picker modal listing every app reachable that way. `picker` holds
+  // which lane is open ("api" | "mcp" | null); `pickerQuery` is its search box.
+  const [picker, setPicker] = useState(null);
+  const [pickerQuery, setPickerQuery] = useState("");
+
+  // Open the inbound (pull-into-LYKN) flow for a connector, routing to the
+  // right dialog: Custom API manager, token-paste, or OAuth popup.
+  const openInboundConnector = useCallback((authConnector) => {
+    if (!authConnector) return;
+    if (authConnector.customApi) {
+      setCustomApiOpen(true);
+      return;
+    }
+    if (authConnector.authMode === "token") {
+      setActiveTokenConnector(authConnector);
+      return;
+    }
+    setActiveInputConnector(authConnector);
   }, []);
   // Per-`notes.source` aggregate of (notes, facts, beliefs) so each
   // input tile can show how much of the user's synthesis layer traces
@@ -391,549 +373,169 @@ export default function ConnectionsAppGrid({
   // tiles render as a full-width band inside the grid (col-span-full)
   // and are filtered out when their bucket is empty under the current
   // filter (see `visibleTiles`).
-  const allTiles = useMemo(() => {
-    const out = [];
-
-    // ── 1. Universal entry points (top of the page) ──────────────────
-    // Three "connect anything" cards grouped together, ahead of every
-    // curated shortcut: let LYKN act on any app you connect (Custom API),
-    // use LYKN inside any MCP client, or build on the LYKN API. These
-    // generalize every per-tool integration, so they lead. Each carries
-    // bucket: "universal" so the filter pills never hide them.
-    out.push({
-      key: "section:universal",
-      kind: "section",
-      sectionBucket: "universal",
-      label: "Universal",
-      description:
-        "One connection that works everywhere. Let LYKN act on any app you connect, use LYKN inside any MCP client, or build on the LYKN API.",
-    });
-
-    // Custom API first (let LYKN act on any app you connect). Renders
-    // through the shared `input` branch so the click opens CustomApiDialog
-    // via the customApi flag; excluded from the input group below so it
-    // never renders twice.
-    const customApiConnector = CONNECTORS.find(
-      (c) => c.customApi && CONNECTABLE_INPUT_STATUSES.has(c.status),
-    );
-    if (customApiConnector) {
-      out.push({
-        key: `input:${customApiConnector.id}`,
-        kind: "input",
-        connector: customApiConnector,
-        bucket: "universal",
-      });
-    }
-
-    // Then the two LYKN-as-endpoint universal tiles (MCP + Build API). We
-    // resolve the OUTBOUND_TARGETS entry here (not in render) so a renamed
-    // id surfaces as a single console warning at construct time rather than
-    // a silently-broken tile at click time.
-    for (const u of UNIVERSAL_AI_TILES) {
-      const base = OUTBOUND_TARGETS.find((t) => t.id === u.targetId);
-      if (!base) {
-        // eslint-disable-next-line no-console
-        console.warn(`[ConnectionsAppGrid] universal tile "${u.key}" references missing target id "${u.targetId}"`);
-        continue;
-      }
-      const target = typeof u.buildTarget === "function" ? u.buildTarget(base) : base;
-      out.push({
-        key: u.key,
-        kind: "ai-universal",
-        target,
-        name: u.name,
-        description: u.description,
-        iconNode: u.iconNode,
-        accentClass: u.accentClass,
-        bucket: "universal",
-      });
-    }
-
-    // ── 1b. Popular APIs (bring-your-own-key quick connect) ──────────
-    // One card per Custom-API preset (OpenAI, Slack, Stripe, …). Clicking a
-    // card opens CustomApiDialog pre-filled for that app, so the user only
-    // pastes a key. These are the same recipes the dialog's picker offers,
-    // surfaced as first-class cards so they're discoverable from the page.
-    // bucket: "presets" keeps them visible under All + Input (not AI).
-    if (CUSTOM_API_PRESETS.length > 0) {
-      out.push({
-        key: "section:presets",
-        kind: "section",
-        sectionBucket: "presets",
-        label: "Popular APIs",
-        description:
-          "Bring your own key - pick an app, paste your key, and LYKN can act on it. Powered by Custom API.",
-      });
-      for (const preset of CUSTOM_API_PRESETS) {
-        out.push({ key: `preset:${preset.id}`, kind: "preset", preset, bucket: "presets" });
-      }
-    }
-
-    // ── 2. AI tools (curated MCP clients) ────────────────────────────
-    const aiTargets = OUTBOUND_TARGETS.filter((t) => t.tier === 1);
-    if (aiTargets.length > 0) {
-      out.push({
-        key: "section:ai",
-        kind: "section",
-        sectionBucket: "ai",
-        label: "AI tools",
-        description: "Use LYKN's synthesis layer inside your AI of choice.",
-      });
-
-      // Bucket each tier-1 target into its subgroup, keeping the catalog
-      // ordering within the bucket so curation upstream still wins. Empty
-      // buckets are silently dropped.
-      const bySubgroup = new Map(AI_SUBGROUPS.map((g) => [g.id, []]));
-      for (const target of aiTargets) {
-        bySubgroup.get(aiSubgroupIdFor(target)).push(target);
-      }
-      for (const g of AI_SUBGROUPS) {
-        const items = bySubgroup.get(g.id) || [];
-        if (items.length === 0) continue;
-        out.push({
-          key: `aiSubgroup:${g.id}`,
-          kind: "aiSubgroup",
-          subgroupId: g.id,
-          label: g.label,
-          description: g.description,
-          totalInGroup: items.length,
-        });
-        for (const target of items) {
-          out.push({
-            key: `ai:${target.id}`,
-            kind: "ai",
-            target,
-            subgroupId: g.id,
-          });
-        }
-      }
-    }
-
-    // ── 3. Connected apps (all OAuth/input connectors, one group) ────
-    // Every connectable input connector in a single group instead of one
-    // section per category. We still walk CONNECTOR_CATEGORIES order so
-    // related apps cluster, but emit no per-category headers. The Custom
-    // API connector is skipped here (it leads as a universal tile above).
-    const inputConnectors = [];
+  // Apps reachable via their REST API / OAuth — the "Connect via API" lane.
+  // Native connectors first (category order), then BYO-key presets with no
+  // native equivalent, then the Custom API catch-all ("connect anything
+  // else") last. Module-level data sources → empty dep list.
+  const apiLaneTiles = useMemo(() => {
+    const tiles = [];
+    const nativeIds = new Set();
     for (const cat of CONNECTOR_CATEGORIES) {
       for (const c of CONNECTORS) {
         if (c.category !== cat.id) continue;
         if (c.customApi) continue;
         if (!CONNECTABLE_INPUT_STATUSES.has(c.status)) continue;
-        inputConnectors.push(c);
+        nativeIds.add(c.id);
+        tiles.push({ key: `input:${c.id}`, kind: "input", connector: c });
       }
     }
-    if (inputConnectors.length > 0) {
-      out.push({
-        key: "section:input",
-        kind: "section",
-        sectionBucket: "input",
-        label: "Your apps",
-        description:
-          "OAuth into the apps you already use so LYKN can pull your notes, docs, saved items, and activity into the vault.",
-      });
-      for (const connector of inputConnectors) {
-        out.push({ key: `input:${connector.id}`, kind: "input", connector });
-      }
+    for (const preset of CUSTOM_API_PRESETS) {
+      if (nativeIds.has(preset.id)) continue;
+      tiles.push({ key: `preset:${preset.id}`, kind: "preset", preset });
     }
-
-    return out;
-    // All data sources this memo reads are module-level
-    // (OUTBOUND_TARGETS, CONNECTORS, CONNECTOR_CATEGORIES,
-    // UNIVERSAL_AI_TILES) so the dep list is intentionally empty -
-    // recomputing on every render would just re-allocate identical
-    // arrays.
+    const customApiConnector = CONNECTORS.find(
+      (c) => c.customApi && CONNECTABLE_INPUT_STATUSES.has(c.status),
+    );
+    if (customApiConnector) {
+      tiles.push({ key: `input:${customApiConnector.id}`, kind: "input", connector: customApiConnector });
+    }
+    return tiles;
   }, []);
 
-  // Filter: drop tiles outside the current bucket, apply the free-text
-  // search to app tiles (section/subgroup headers always pass - they
-  // get culled below if their group ends up empty), then drop empty
-  // headers, then apply the per-AI-subgroup collapse pass.
-  const visibleTiles = useMemo(() => {
-    const keepBucket = (t) => {
-      if (filter === "all") return true;
-      // Universal entry points (the lead group) stay visible under every
-      // filter - they're the "connect anything" cards, not specific to AI
-      // or input.
-      if (t.bucket === "universal" || t.sectionBucket === "universal") return true;
-      if (filter === "ai") {
-        return (
-          t.kind === "ai" ||
-          t.kind === "aiSubgroup" ||
-          (t.kind === "section" && t.sectionBucket === "ai")
-        );
+  // Tools you use LYKN inside via MCP — the "Connect via MCP" lane. The
+  // generic "any MCP client" tile leads, then curated AI clients grouped
+  // Chat / Coding / Docs (all shown — the modal has its own search).
+  const mcpLaneTiles = useMemo(() => {
+    const tiles = [];
+    const mcpUniversal = UNIVERSAL_AI_TILES.find((u) => u.key === "ai-universal:mcp");
+    if (mcpUniversal) {
+      const base = OUTBOUND_TARGETS.find((t) => t.id === mcpUniversal.targetId);
+      if (base) {
+        const target = typeof mcpUniversal.buildTarget === "function" ? mcpUniversal.buildTarget(base) : base;
+        tiles.push({
+          key: mcpUniversal.key,
+          kind: "ai-universal",
+          target,
+          name: mcpUniversal.name,
+          description: mcpUniversal.description,
+          iconNode: mcpUniversal.iconNode,
+          accentClass: mcpUniversal.accentClass,
+        });
       }
-      if (filter === "input") {
-        return (
-          t.kind === "input" ||
-          t.kind === "preset" ||
-          (t.kind === "section" && (t.sectionBucket === "input" || t.sectionBucket === "presets"))
-        );
+    }
+    const aiTargets = OUTBOUND_TARGETS.filter((t) => t.tier === 1);
+    const bySubgroup = new Map(AI_SUBGROUPS.map((g) => [g.id, []]));
+    for (const target of aiTargets) {
+      bySubgroup.get(aiSubgroupIdFor(target)).push(target);
+    }
+    for (const g of AI_SUBGROUPS) {
+      const items = bySubgroup.get(g.id) || [];
+      if (items.length === 0) continue;
+      tiles.push({ key: `aiSubgroup:${g.id}`, kind: "section", label: g.label, description: g.description });
+      for (const target of items) {
+        tiles.push({ key: `ai:${target.id}`, kind: "ai", target, subgroupId: g.id });
       }
-      return true;
-    };
-    const q = query.trim().toLowerCase();
-    const matchesQuery = (t) => {
-      if (!q) return true;
-      if (t.kind === "section" || t.kind === "aiSubgroup") return true;
-      if (t.kind === "ai-universal") {
-        return (
-          (t.name || "").toLowerCase().includes(q) ||
-          (t.description || "").toLowerCase().includes(q) ||
-          "mcp".includes(q) ||
-          "api".includes(q) ||
-          "universal".includes(q) ||
-          "ai tool".includes(q)
-        );
-      }
-      if (t.kind === "ai") {
-        const target = t.target;
-        return (
-          (target.name || "").toLowerCase().includes(q) ||
-          (target.summary || "").toLowerCase().includes(q) ||
-          (target.clientKind || "").toLowerCase().includes(q) ||
-          (target.id || "").toLowerCase().includes(q) ||
-          "ai tool".includes(q)
-        );
-      }
-      if (t.kind === "preset") {
-        const p = t.preset;
-        return (
-          (p.name || "").toLowerCase().includes(q) ||
-          (p.description || "").toLowerCase().includes(q) ||
-          (p.id || "").toLowerCase().includes(q) ||
-          "api".includes(q) ||
-          "custom".includes(q)
-        );
-      }
-      if (t.kind === "input") {
-        const c = t.connector;
-        const cat = CONNECTOR_CATEGORIES.find((x) => x.id === c.category);
-        return (
-          (c.name || "").toLowerCase().includes(q) ||
-          (c.summary || "").toLowerCase().includes(q) ||
-          (c.id || "").toLowerCase().includes(q) ||
-          (c.category || "").toLowerCase().includes(q) ||
-          (cat?.label || "").toLowerCase().includes(q) ||
-          "input tool".includes(q)
-        );
-      }
-      return false;
-    };
-    const filtered = allTiles.filter((t) => keepBucket(t) && matchesQuery(t));
+    }
+    return tiles;
+  }, []);
 
-    // Drop empty headers:
-    //   • aiSubgroup with no following AI tile from the same subgroup
-    //     (means the user's search excluded every entry in this
-    //     bucket - hide the heading too).
-    //   • section with no following non-header tile at all.
-    const noEmpty = [];
+  // The "Build with the LYKN API" card opens this target directly (mint a
+  // bearer + show code snippets) — it's a single thing, no picker list.
+  const buildTarget = useMemo(() => {
+    const u = UNIVERSAL_AI_TILES.find((x) => x.key === "ai-universal:api");
+    if (!u) return null;
+    const base = OUTBOUND_TARGETS.find((t) => t.id === u.targetId);
+    if (!base) return null;
+    return typeof u.buildTarget === "function" ? u.buildTarget(base) : base;
+  }, []);
+
+  // Free-text filter for the picker modal. Section labels always pass; the
+  // empty ones get dropped afterward in `pickerTiles`.
+  const matchesPickerQuery = useCallback((tile, q) => {
+    const s = q.trim().toLowerCase();
+    if (!s) return true;
+    if (tile.kind === "section") return true;
+    if (tile.kind === "ai-universal") {
+      return (
+        (tile.name || "").toLowerCase().includes(s) ||
+        (tile.description || "").toLowerCase().includes(s) ||
+        "mcp".includes(s) ||
+        "api".includes(s)
+      );
+    }
+    if (tile.kind === "ai") {
+      const t = tile.target;
+      return (
+        (t.name || "").toLowerCase().includes(s) ||
+        (t.summary || "").toLowerCase().includes(s) ||
+        (t.clientKind || "").toLowerCase().includes(s) ||
+        (t.id || "").toLowerCase().includes(s)
+      );
+    }
+    if (tile.kind === "preset") {
+      const p = tile.preset;
+      return (
+        (p.name || "").toLowerCase().includes(s) ||
+        (p.description || "").toLowerCase().includes(s) ||
+        (p.id || "").toLowerCase().includes(s)
+      );
+    }
+    if (tile.kind === "input") {
+      const c = tile.connector;
+      const cat = CONNECTOR_CATEGORIES.find((x) => x.id === c.category);
+      return (
+        (c.name || "").toLowerCase().includes(s) ||
+        (c.summary || "").toLowerCase().includes(s) ||
+        (c.id || "").toLowerCase().includes(s) ||
+        (cat?.label || "").toLowerCase().includes(s)
+      );
+    }
+    return false;
+  }, []);
+
+  // The open lane's tiles, filtered by the modal search, with empty section
+  // labels dropped.
+  const pickerTiles = useMemo(() => {
+    if (!picker) return [];
+    const lane = picker === "api" ? apiLaneTiles : mcpLaneTiles;
+    const filtered = lane.filter((t) => matchesPickerQuery(t, pickerQuery));
+    const out = [];
     for (let i = 0; i < filtered.length; i++) {
       const t = filtered[i];
       if (t.kind === "section") {
-        const next = filtered.slice(i + 1).find(
-          (x) => x.kind !== "section" && x.kind !== "aiSubgroup",
-        );
+        const next = filtered.slice(i + 1).find((x) => x.kind !== "section");
         if (!next) continue;
-      } else if (t.kind === "aiSubgroup") {
-        let hasChild = false;
-        for (let j = i + 1; j < filtered.length; j++) {
-          const x = filtered[j];
-          if (x.kind === "section" || x.kind === "aiSubgroup") break;
-          if (x.kind === "ai" && x.subgroupId === t.subgroupId) {
-            hasChild = true;
-            break;
-          }
-        }
-        if (!hasChild) continue;
       }
-      noEmpty.push(t);
-    }
-
-    // Active search bypasses the collapse pass - users always see every
-    // matching tile regardless of which bucket they're in. Wake preview
-    // does the same so the walkthrough grid shows the full lineup (e.g.
-    // Grok in Chat) without a "Show N more" pill.
-    if (q || wakePreview) return noEmpty;
-
-    // Collapse pass: within each AI subgroup, show only the first
-    // AI_SUBGROUP_DEFAULT_VISIBLE tiles, then emit ONE `aiShowMore`
-    // pill that toggles `expandedAiSubgroups`. Already-expanded
-    // subgroups pass through untouched (sans the pill).
-    const out = [];
-    const shownPerSubgroup = new Map();
-    const totalPerSubgroup = new Map();
-    const totalPresets = noEmpty.filter((t) => t.kind === "preset").length;
-    let presetShown = 0;
-    for (const t of noEmpty) {
-      if (t.kind === "ai") {
-        totalPerSubgroup.set(
-          t.subgroupId,
-          (totalPerSubgroup.get(t.subgroupId) || 0) + 1,
-        );
-      }
-    }
-    for (const t of noEmpty) {
-      // Popular-APIs collapse: show the first PRESET_DEFAULT_VISIBLE cards,
-      // then a single "Show all N more" pill (unless already expanded).
-      if (t.kind === "preset") {
-        if (presetsExpanded) {
-          out.push(t);
-          continue;
-        }
-        if (presetShown < PRESET_DEFAULT_VISIBLE) {
-          out.push(t);
-          presetShown += 1;
-          continue;
-        }
-        if (presetShown === PRESET_DEFAULT_VISIBLE) {
-          out.push({
-            key: "presetShowMore",
-            kind: "presetShowMore",
-            hiddenCount: totalPresets - PRESET_DEFAULT_VISIBLE,
-          });
-          presetShown += 1;
-        }
-        continue;
-      }
-      if (t.kind !== "ai") {
-        out.push(t);
-        continue;
-      }
-      const expanded = expandedAiSubgroups.has(t.subgroupId);
-      if (expanded) {
-        out.push(t);
-        continue;
-      }
-      const shown = shownPerSubgroup.get(t.subgroupId) || 0;
-      if (shown < AI_SUBGROUP_DEFAULT_VISIBLE) {
-        out.push(t);
-        shownPerSubgroup.set(t.subgroupId, shown + 1);
-        continue;
-      }
-      // First tile that overflows the visible cap - emit the
-      // single show-all pill, then suppress the rest of this
-      // subgroup's tiles. Subsequent overflow tiles fall through
-      // to the skip branch below.
-      if (shown === AI_SUBGROUP_DEFAULT_VISIBLE) {
-        const total = totalPerSubgroup.get(t.subgroupId) || 0;
-        out.push({
-          key: `aiShowMore:${t.subgroupId}`,
-          kind: "aiShowMore",
-          subgroupId: t.subgroupId,
-          hiddenCount: total - AI_SUBGROUP_DEFAULT_VISIBLE,
-        });
-        shownPerSubgroup.set(t.subgroupId, shown + 1);
-      }
-      // else: skip this tile - pill already emitted.
+      out.push(t);
     }
     return out;
-  }, [filter, allTiles, query, expandedAiSubgroups, presetsExpanded, wakePreview]);
+  }, [picker, apiLaneTiles, mcpLaneTiles, pickerQuery, matchesPickerQuery]);
 
-  const hasResults = visibleTiles.some((t) => t.kind !== "section");
+  const hasPickerResults = pickerTiles.some((t) => t.kind !== "section");
 
-  const currentFilter = FILTERS.find((f) => f.id === filter) || FILTERS[0];
-
-  return (
+  // The picker's scrollable grid of app tiles + empty state. Shared by the
+  // inline (Settings `embedded`) and modal renders so the tile logic lives in
+  // one place.
+  const pickerBody = (
     <>
-      {/* ── Header + toolbar ───────────────────────────────────────── */}
-      {/* Section structure (h1 → description → search row → filter row)
-          mirrors the Vault page's section exactly so switching between
-          the two surfaces via the inline Vault ↔ Connections toggle
-          doesn't reflow the page chrome. Spacing values (`mt-1`, `mt-4`,
-          `mb-6`) match VaultNew.jsx 1:1. */}
-      <section className={compactGrid ? "h-full overflow-hidden" : "mb-6"}>
-        {showPageHeader && (
-          <>
-        <h1 className="text-3xl font-semibold">Apps</h1>
-        <p className="text-black/60 dark:text-white/60 mt-1">
-          Everything LYKN can plug into.{" "}
-          <strong className="font-semibold text-black/80 dark:text-white/85">AI tools</strong> get
-          your synthesis layer injected so every chat picks up where the last left off.{" "}
-          <strong className="font-semibold text-black/80 dark:text-white/85">Input tools</strong> feed LYKN the
-          evidence that makes your synthesis layer rich. All revocable any time.
-        </p>
-        {!user && (
-          <p className="mt-2 text-[11px] text-black/45 dark:text-white/45" data-preview-hide-signin="true">
-            Sign in to connect apps.
-          </p>
-        )}
-          </>
-        )}
-        {showToolbar && (
-        <div className={`flex flex-wrap items-center gap-3 relative z-[400] mt-4`}>
-          <div className="relative w-full sm:flex-1 sm:max-w-xl">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search connections - type an app name, category, or keyword"
-              aria-label="Search connections"
-              className="w-full h-11 rounded-2xl glass-control pl-10 pr-10 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
-            />
-            {query && (
-              <button
-                type="button"
-                onClick={() => setQuery("")}
-                aria-label="Clear search"
-                className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-full text-black/45 dark:text-white/45 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] hover:text-black/70 dark:hover:text-white/80 transition-colors"
-              >
-                <X className="h-4 w-4" strokeWidth={2.25} />
-              </button>
-            )}
-          </div>
-          <div className="relative shrink-0" ref={filterDropdownRef}>
-            <button
-              type="button"
-              onClick={() => setShowFilterDropdown((v) => !v)}
-              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[0.6875rem] font-medium text-black/65 dark:text-white/65 hover:text-black/90 dark:hover:text-white/90 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
-            >
-              {currentFilter.label}
-              <ChevronDown className={`w-3 h-3 transition-transform ${showFilterDropdown ? "rotate-180" : ""}`} />
-            </button>
-            {showFilterDropdown && (
-              <div className="absolute top-full left-0 md:left-auto md:right-0 mt-1 w-44 max-w-[calc(100vw-1.5rem)] rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1">
-                {FILTERS.map((f) => {
-                  const active = filter === f.id;
-                  return (
-                    <button
-                      key={f.id}
-                      type="button"
-                      onClick={() => {
-                        setFilter(f.id);
-                        setShowFilterDropdown(false);
-                      }}
-                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.6875rem] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors ${
-                        active ? "text-blue-600 dark:text-blue-400 font-medium" : "text-black/70 dark:text-white/70"
-                      }`}
-                    >
-                      <span className="flex-1 truncate">{f.label}</span>
-                      {active && <Check className="w-3 h-3" />}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          {wakePreview && (
-            <div className="ml-auto shrink-0">
-              <VaultConnectionsToggle
-                active="connections"
-                onPreviewTabChange={onWakePreviewTabChange}
-              />
-            </div>
-          )}
-        </div>
-        )}
-      </section>
-
-      {/* ── Unified grid ─────────────────────────────────────────── */}
-      <div className={`grid gap-2 ${
-        compactGrid
-          ? "grid-cols-3 pt-0 overflow-hidden"
-          : "gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
-      }`}>
-        {visibleTiles.map((tile) => {
+      <div
+        className={`grid gap-2 ${
+          embedded ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        }`}
+      >
+        {pickerTiles.map((tile) => {
           if (tile.kind === "section") {
             if (compactGrid) return null;
-            const showPresetCollapse =
-              tile.sectionBucket === "presets" &&
-              presetsExpanded &&
-              CUSTOM_API_PRESETS.length > PRESET_DEFAULT_VISIBLE &&
-              !query.trim();
             return (
               <div key={tile.key} className="col-span-full mt-3 first:mt-0">
-                <div className="flex items-baseline justify-between gap-3">
-                  <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-black/55 dark:text-white/55">
-                    {tile.label}
-                  </h2>
-                  {showPresetCollapse && (
-                    <button
-                      type="button"
-                      onClick={() => setPresetsExpanded(false)}
-                      className="text-[10.5px] font-medium text-black/55 dark:text-white/55 hover:text-black/80 dark:hover:text-white/85 transition-colors underline-offset-2 hover:underline shrink-0"
-                    >
-                      Show less
-                    </button>
-                  )}
-                </div>
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-black/55 dark:text-white/55">
+                  {tile.label}
+                </h2>
                 {tile.description && (
                   <p className="mt-0.5 text-[11.5px] text-black/45 dark:text-white/45">
                     {tile.description}
                   </p>
                 )}
-              </div>
-            );
-          }
-          if (tile.kind === "aiSubgroup") {
-            if (compactGrid) return null;
-            // Subgroup heading sits inside the parent "AI Tools"
-            // section. Visually lighter than a section header (less
-            // tracking, no caps) so the parent → subgroup hierarchy
-            // reads at a glance without two competing all-caps lines.
-            const expanded = expandedAiSubgroups.has(tile.subgroupId);
-            const showCollapseControl =
-              tile.totalInGroup > AI_SUBGROUP_DEFAULT_VISIBLE && expanded;
-            return (
-              <div key={tile.key} className="col-span-full mt-2 first:mt-0">
-                <div className="flex items-baseline justify-between gap-3">
-                  <div>
-                    <h3 className="text-[12px] font-semibold text-black/75 dark:text-white/80">
-                      {tile.label}
-                      <span className="ml-1.5 text-[10.5px] font-medium text-black/40 dark:text-white/40">
-                        {tile.totalInGroup}
-                      </span>
-                    </h3>
-                    {tile.description && (
-                      <p className="mt-0.5 text-[10.5px] text-black/45 dark:text-white/45">
-                        {tile.description}
-                      </p>
-                    )}
-                  </div>
-                  {showCollapseControl && (
-                    <button
-                      type="button"
-                      onClick={() => toggleAiSubgroup(tile.subgroupId)}
-                      className="text-[10.5px] font-medium text-black/55 dark:text-white/55 hover:text-black/80 dark:hover:text-white/85 transition-colors underline-offset-2 hover:underline shrink-0"
-                    >
-                      Show less
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          }
-          if (tile.kind === "aiShowMore") {
-            // One pill per collapsed subgroup, spans full grid width so
-            // it sits cleanly under the last visible tile rather than
-            // wedging into a column. Clicking flips the subgroup to
-            // expanded; the parent header gets a matching "Show less"
-            // button when it's open (see aiSubgroup branch above).
-            return (
-              <div key={tile.key} className="col-span-full -mt-1">
-                <button
-                  type="button"
-                  onClick={() => toggleAiSubgroup(tile.subgroupId)}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-black/15 dark:border-white/15 px-3 py-1 text-[11px] font-medium text-black/60 dark:text-white/65 hover:text-black/85 dark:hover:text-white/85 hover:border-black/30 dark:hover:border-white/30 transition-colors"
-                >
-                  Show all {tile.hiddenCount} more
-                  <ChevronDown className="w-3 h-3" />
-                </button>
-              </div>
-            );
-          }
-          if (tile.kind === "presetShowMore") {
-            return (
-              <div key={tile.key} className="col-span-full -mt-1">
-                <button
-                  type="button"
-                  onClick={() => setPresetsExpanded(true)}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-black/15 dark:border-white/15 px-3 py-1 text-[11px] font-medium text-black/60 dark:text-white/65 hover:text-black/85 dark:hover:text-white/85 hover:border-black/30 dark:hover:border-white/30 transition-colors"
-                >
-                  Show all {tile.hiddenCount} more
-                  <ChevronDown className="w-3 h-3" />
-                </button>
               </div>
             );
           }
@@ -1126,14 +728,14 @@ export default function ConnectionsAppGrid({
                 anchorId={connector.id}
                 logoDomain={connector.domain}
                 logoUrl={connector.iconUrl}
-                iconNode={connector.customApi ? Webhook : undefined}
+                iconNode={connector.customApi ? KeyRound : undefined}
                 iconAccentClass={
                   connector.customApi
                     ? "bg-sky-500/10 text-sky-600 dark:text-sky-400 ring-sky-500/20"
                     : undefined
                 }
                 name={connector.name}
-                typeLabel={connector.customApi ? "Action tool" : "Input tool"}
+                typeLabel={connector.customApi ? "Any other app" : undefined}
                 description={connector.summary}
                 badge={badge}
                 chips={chips}
@@ -1174,22 +776,11 @@ export default function ConnectionsAppGrid({
                     // eslint-disable-next-line no-alert
                     if (!window.confirm(`${paidWarning.title}\n\n${paidWarning.message}`)) return;
                   }
-                  // Universal bring-your-own-API-key tile manages its own list.
-                  if (authConnector.customApi) {
-                    setCustomApiOpen(true);
-                    return;
-                  }
-                  // Token-paste providers (Cursor, Trello, Readwise, …) open
-                  // the credential dialog instead of the OAuth popup.
-                  if (authConnector.authMode === "token") {
-                    setActiveTokenConnector(authConnector);
-                    return;
-                  }
-                  // For alias tiles we open the dialog against the
-                  // parent connector so the OAuth handshake hits the
-                  // adapter that actually exists on the server. The
-                  // alias's own catalog row has no `/start` endpoint.
-                  setActiveInputConnector(authConnector);
+                  // Route to the right connect flow: Custom API manager,
+                  // token-paste dialog, or OAuth popup. Alias tiles open
+                  // against their parent connector (the alias row has no
+                  // /start endpoint of its own).
+                  openInboundConnector(authConnector);
                 }}
               />
             );
@@ -1198,20 +789,199 @@ export default function ConnectionsAppGrid({
           return null;
         })}
       </div>
-
-      {!hasResults && query.trim() && (
+      {!hasPickerResults && pickerQuery.trim() && (
         <div className="mt-6 rounded-2xl border border-dashed border-black/10 dark:border-white/10 p-6 text-center">
           <p className="text-[12.5px] text-black/65 dark:text-white/65">
-            No connections match <span className="font-medium text-black/85 dark:text-white/90">“{query.trim()}”</span>.
+            No matches for <span className="font-medium text-black/85 dark:text-white/90">“{pickerQuery.trim()}”</span>.
           </p>
           <button
             type="button"
-            onClick={() => setQuery("")}
+            onClick={() => setPickerQuery("")}
             className="mt-2 text-[11px] font-medium text-black/55 dark:text-white/55 underline-offset-2 hover:underline hover:text-black/80 dark:hover:text-white/80"
           >
             Clear search
           </button>
         </div>
+      )}
+    </>
+  );
+
+  return (
+    <>
+      {/* ── Header ─────────────────────────────────────────────────── */}
+      <section className={compactGrid ? "h-full overflow-hidden" : "mb-6"}>
+        {showPageHeader && (
+          <>
+            <h1 className="text-3xl font-semibold">Apps</h1>
+            <p className="text-black/60 dark:text-white/60 mt-1">
+              Three ways to connect.{" "}
+              <strong className="font-semibold text-black/80 dark:text-white/85">Connect via API</strong> to let LYKN
+              read from and act on the apps you use.{" "}
+              <strong className="font-semibold text-black/80 dark:text-white/85">Connect via MCP</strong> to use LYKN
+              inside other AI tools. Or{" "}
+              <strong className="font-semibold text-black/80 dark:text-white/85">build with the LYKN API</strong>.
+              All revocable any time.
+            </p>
+            {!user && (
+              <p className="mt-2 text-[11px] text-black/45 dark:text-white/45" data-preview-hide-signin="true">
+                Sign in to connect apps.
+              </p>
+            )}
+          </>
+        )}
+        {wakePreview && (
+          <div className="flex justify-end mt-4">
+            <VaultConnectionsToggle
+              active="connections"
+              onPreviewTabChange={onWakePreviewTabChange}
+            />
+          </div>
+        )}
+      </section>
+
+      {/* ── Three launcher cards ───────────────────────────────────── */}
+      {/* Inside Settings the inline picker replaces the cards, so hide them
+          while a lane is open. */}
+      {!(embedded && picker) && (
+      <>
+      {embedded && onBack && (
+        <div className="flex items-center gap-2 mb-3">
+          <button
+            type="button"
+            onClick={onBack}
+            className="-ml-1.5 p-1.5 rounded-md text-black/50 dark:text-white/50 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+            aria-label="Back to settings"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <h3 className="text-sm font-semibold text-black/85 dark:text-white/90">Connections</h3>
+        </div>
+      )}
+      <div className="flex flex-col divide-y divide-black/[0.07] dark:divide-white/[0.08] rounded-xl border border-black/[0.07] dark:border-white/[0.08]">
+        <LauncherRow
+          title="Connect via API"
+          description="Connect Google, Slack, Notion, Stripe and more with a sign-in or API key."
+          ctaLabel="Browse apps"
+          onClick={() => {
+            setPickerQuery("");
+            setPicker("api");
+          }}
+        />
+        <LauncherRow
+          title="Connect via MCP"
+          description="Use LYKN inside Claude, Cursor, ChatGPT and any other MCP-aware client."
+          ctaLabel="Browse tools"
+          onClick={() => {
+            setPickerQuery("");
+            setPicker("mcp");
+          }}
+        />
+        <LauncherRow
+          title="Build with the LYKN API"
+          description="Mint a token and wire LYKN into your own code, agents or automations."
+          ctaLabel="Get a token"
+          onClick={() => {
+            if (!user) {
+              toast({ title: "Sign in to build", description: "API tokens are tied to your LYKN account." });
+              return;
+            }
+            if (buildTarget) setActiveAiTarget(buildTarget);
+          }}
+        />
+      </div>
+      </>
+      )}
+
+      {/* ── Picker (Connect via API / MCP) ─────────────────────────── */}
+      {/* Inline inside Settings (`embedded`); a centered modal otherwise. */}
+      {picker && (
+        embedded ? (
+          <div className="mt-5">
+            <div className="flex items-center gap-2 mb-1">
+              <button
+                type="button"
+                onClick={() => setPicker(null)}
+                className="-ml-1.5 p-1.5 rounded-md text-black/50 dark:text-white/50 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+                aria-label="Back to connection options"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <h3 className="text-sm font-semibold text-black/85 dark:text-white/90">
+                {picker === "api" ? "Connect via API" : "Connect via MCP"}
+              </h3>
+            </div>
+            <p className="ml-1 mb-3 text-[12px] text-black/55 dark:text-white/55">
+              {picker === "api"
+                ? "Pick an app. We'll walk you through connecting it."
+                : "Pick a tool to use LYKN inside. We'll walk you through the setup."}
+            </p>
+            <div className="relative mb-3">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
+              <input
+                type="search"
+                value={pickerQuery}
+                onChange={(e) => setPickerQuery(e.target.value)}
+                placeholder={picker === "api" ? "Search apps…" : "Search tools…"}
+                aria-label="Search"
+                autoFocus
+                className="w-full h-10 rounded-xl glass-control pl-10 pr-3 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
+              />
+            </div>
+            {pickerBody}
+          </div>
+        ) : (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={picker === "api" ? "Connect via API" : "Connect via MCP"}
+        >
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setPicker(null)} />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.98, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-900 shadow-xl"
+          >
+            <div className="p-4 border-b border-black/[0.06] dark:border-white/10">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h2 className="text-[16px] font-semibold text-black/85 dark:text-white/90">
+                    {picker === "api" ? "Connect via API" : "Connect via MCP"}
+                  </h2>
+                  <p className="mt-0.5 text-[12px] text-black/55 dark:text-white/55">
+                    {picker === "api"
+                      ? "Pick an app. We'll walk you through connecting it."
+                      : "Pick a tool to use LYKN inside. We'll walk you through the setup."}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPicker(null)}
+                  className="p-1 rounded-md text-black/40 hover:text-black/70 dark:text-white/40 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex-shrink-0"
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="relative mt-3">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
+                <input
+                  type="search"
+                  value={pickerQuery}
+                  onChange={(e) => setPickerQuery(e.target.value)}
+                  placeholder={picker === "api" ? "Search apps…" : "Search tools…"}
+                  aria-label="Search"
+                  autoFocus
+                  className="w-full h-10 rounded-xl glass-control pl-10 pr-3 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
+                />
+              </div>
+            </div>
+            <div className="p-4 overflow-y-auto">
+              {pickerBody}
+            </div>
+          </motion.div>
+        </div>
+        )
       )}
 
       {loading && (
@@ -1267,6 +1037,33 @@ export default function ConnectionsAppGrid({
   );
 }
 
+// ─── LauncherRow ─────────────────────────────────────────────────────────────
+// One of the three top-level connection options. A simple title + one-liner on
+// the left and a button on the right — no icon, no card chrome. Clicking the
+// button opens the picker (API / MCP) or the build dialog.
+
+function LauncherRow({ title, description, ctaLabel, onClick }) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+      <div className="min-w-0">
+        <h2 className="text-[13.5px] font-semibold text-black/85 dark:text-white/90">{title}</h2>
+        {description && (
+          <p className="mt-0.5 text-[11.5px] leading-snug text-black/55 dark:text-white/55">
+            {description}
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex-shrink-0 inline-flex items-center gap-1 rounded-lg bg-black text-white dark:bg-white dark:text-black px-3 py-1.5 text-[12px] font-medium hover:opacity-90 transition-opacity"
+      >
+        {ctaLabel}
+      </button>
+    </div>
+  );
+}
+
 // ─── AppTile ───────────────────────────────────────────────────────────────
 
 function AppTile({
@@ -1276,7 +1073,6 @@ function AppTile({
   iconNode,
   iconAccentClass,
   name,
-  typeLabel,
   description,
   badge,
   chips,
@@ -1315,13 +1111,13 @@ function AppTile({
       id={anchorId}
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`group relative rounded-2xl border bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md p-4 flex flex-col gap-3 transition-colors shadow-sm scroll-mt-24 ${
+      className={`group relative rounded-xl border bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md p-2.5 flex flex-col gap-1.5 transition-colors shadow-sm scroll-mt-24 ${
         highlight
           ? "border-emerald-400/70 ring-2 ring-emerald-400/40 shadow-[0_0_24px_rgba(16,185,129,0.25)]"
           : "border-black/[0.06] dark:border-white/10 hover:border-black/15 dark:hover:border-white/20"
       }`}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-2">
         {iconNode ? (
           // Universal tiles (or any caller passing iconNode) skip the
           // favicon pipeline entirely - useful when the tile isn't tied
@@ -1329,48 +1125,54 @@ function AppTile({
           // them from the favicon-on-white-square treatment used by
           // every connector-backed tile.
           <div
-            className={`h-12 w-12 rounded-2xl flex items-center justify-center flex-shrink-0 ring-1 ${
+            className={`h-7 w-7 rounded-lg flex items-center justify-center flex-shrink-0 ring-1 ${
               iconAccentClass ||
               "bg-black/[0.04] dark:bg-white/[0.06] text-black/70 dark:text-white/80 ring-black/[0.06] dark:ring-white/[0.08]"
             }`}
           >
             {(() => {
               const Icon = iconNode;
-              return <Icon className="h-5 w-5" strokeWidth={1.75} />;
+              return <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />;
             })()}
           </div>
         ) : (
-          <div className="h-12 w-12 rounded-2xl flex items-center justify-center flex-shrink-0 bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden">
+          <div className="h-7 w-7 rounded-lg flex items-center justify-center flex-shrink-0 bg-white dark:bg-white/95 ring-1 ring-black/[0.06] shadow-sm overflow-hidden">
             <AppFavicon domain={logoDomain} iconUrl={logoUrl} name={name} />
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="text-[13.5px] font-semibold text-black/85 dark:text-white/90 truncate">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <h3 className="text-[12px] font-semibold text-black/85 dark:text-white/90 truncate">
               {name}
             </h3>
             {badge && (
               <span
-                className={`inline-flex items-center gap-1 rounded-full border px-2 py-[2px] text-[10px] font-medium ${toneClass(badge.tone)}`}
+                className={`inline-flex items-center gap-0.5 rounded-full border px-1.5 py-[1px] text-[9px] font-medium ${toneClass(badge.tone)}`}
               >
-                {badge.icon ? <badge.icon className="h-2.5 w-2.5" /> : null}
+                {badge.icon ? <badge.icon className="h-2 w-2" /> : null}
                 {badge.label}
               </span>
             )}
           </div>
-          {typeLabel && (
-            <p className="mt-0.5 text-[10.5px] uppercase tracking-wider text-black/40 dark:text-white/40">
-              {typeLabel}
-            </p>
-          )}
         </div>
+        <button
+          type="button"
+          onClick={onClick}
+          className={`flex-shrink-0 text-[10px] font-medium rounded-full px-2 py-[3px] transition-colors ${
+            ctaVariant === "primary"
+              ? "bg-black text-white dark:bg-white dark:text-black hover:opacity-90"
+              : "border border-black/10 dark:border-white/15 text-black/65 dark:text-white/70 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+          }`}
+        >
+          {ctaLabel}
+        </button>
       </div>
-      <p className="text-[11.5px] leading-relaxed text-black/60 dark:text-white/60 line-clamp-3">
+      <p className="text-[10.5px] leading-snug text-black/55 dark:text-white/55 line-clamp-2 pl-9">
         {description}
       </p>
       {chips && chips.length > 0 && (
         <div
-          className="flex items-center gap-1.5 flex-wrap"
+          className="flex items-center gap-1 flex-wrap pl-9"
           aria-label={`${name} synthesis impact`}
         >
           {chips.map((chip) => (
@@ -1381,7 +1183,7 @@ function AppTile({
                 e.stopPropagation();
                 chip.onClick?.();
               }}
-              className="inline-flex items-center rounded-full border border-black/[0.08] dark:border-white/[0.12] bg-black/[0.03] dark:bg-white/[0.04] px-2 py-[2px] text-[10.5px] font-medium text-black/65 dark:text-white/65 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] hover:text-black/85 dark:hover:text-white/85 transition-colors"
+              className="inline-flex items-center rounded-full border border-black/[0.08] dark:border-white/[0.12] bg-black/[0.03] dark:bg-white/[0.04] px-1.5 py-[1px] text-[9.5px] font-medium text-black/65 dark:text-white/65 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] hover:text-black/85 dark:hover:text-white/85 transition-colors"
               title={`Open ${chip.label}`}
             >
               {chip.label}
@@ -1389,19 +1191,6 @@ function AppTile({
           ))}
         </div>
       )}
-      <div className="mt-auto flex items-center justify-end">
-        <button
-          type="button"
-          onClick={onClick}
-          className={`text-[11px] font-medium rounded-full px-3 py-1 transition-colors ${
-            ctaVariant === "primary"
-              ? "bg-black text-white dark:bg-white dark:text-black hover:opacity-90"
-              : "border border-black/10 dark:border-white/15 text-black/65 dark:text-white/70 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
-          }`}
-        >
-          {ctaLabel}
-        </button>
-      </div>
     </motion.div>
   );
 }
@@ -1421,20 +1210,20 @@ function AppFavicon({ domain, iconUrl, name }) {
     candidates.push(`https://icons.duckduckgo.com/ip3/${domain}.ico`);
   }
   if (!candidates.length || attempt >= candidates.length) {
-    return <ShieldAlert className="h-6 w-6 text-black/55 dark:text-white/65" strokeWidth={1.75} />;
+    return <ShieldAlert className="h-4 w-4 text-black/55 dark:text-white/65" strokeWidth={1.75} />;
   }
   return (
     <img
       key={attempt}
       src={candidates[attempt]}
       alt={`${name} logo`}
-      width={32}
-      height={32}
+      width={20}
+      height={20}
       loading="lazy"
       decoding="async"
       onError={() => setAttempt((a) => a + 1)}
       className="block object-contain"
-      style={{ width: 32, height: 32 }}
+      style={{ width: 20, height: 20 }}
     />
   );
 }

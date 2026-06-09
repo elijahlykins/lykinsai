@@ -18,7 +18,6 @@ import {
   ExternalLink,
   Loader2,
   ShieldAlert,
-  Sparkles,
   ArrowRight,
   Circle,
 } from "lucide-react";
@@ -40,6 +39,20 @@ import {
   buildLyknProjectInstructions,
   LYKN_PROJECT_INSTRUCTIONS_TARGETS,
 } from "@/lib/connectors/outboundTargets";
+import { ConnectorDetailHeader } from "./ConnectorDetail";
+
+// The MCP tools LYKN exposes to a connected client. Surfaced in the
+// connector-detail header so users see exactly what the client can do.
+const LYKN_MCP_TOOLS = [
+  "Load your context block at conversation start",
+  "Search your vault",
+  "Read your core beliefs",
+  "Read your governance rules",
+  "Read your identity facts",
+  "Read active project state",
+  "Push project state back",
+  "Record when a rule was applied",
+];
 
 /**
  * UseLyknWithDialog — issues a per-client MCP token and shows install
@@ -208,15 +221,24 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
           xl→2xl so the code blocks below have room to breathe before the
           inner `max-h-72 overflow-y-auto` on each <pre> takes over. */}
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-zinc-950 border border-black/10 dark:border-white/10">
-        <DialogHeader>
-          <DialogTitle className="text-[18px] font-semibold tracking-tight flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-amber-500" />
-            Use LYKN with {target.name}
-          </DialogTitle>
-          <DialogDescription className="text-[12.5px] leading-relaxed text-black/60 dark:text-white/60">
-            {target.summary}
-          </DialogDescription>
+        <DialogHeader className="sr-only">
+          <DialogTitle>Use LYKN with {target.name}</DialogTitle>
+          <DialogDescription>{target.summary}</DialogDescription>
         </DialogHeader>
+
+        <ConnectorDetailHeader
+          name={`LYKN in ${target.name}`}
+          hideIcon
+          tagline={target.summary}
+          description={`Use your LYKN synthesis layer inside ${target.name}. It connects over MCP — once linked, ${target.name} can read your context and push updates back without copying anything by hand.`}
+          developer="LYKN"
+          tools={LYKN_MCP_TOOLS}
+          toolsLabel="Tools LYKN exposes"
+          toolsNote="Beliefs are read-only — the AI can read them but never proposes new ones."
+          connectorUrl={mcpUrl}
+          author="LYKN"
+          trustNote={`This grants ${target.name} access to your LYKN synthesis layer. You can revoke it any time from Connected Clients below.`}
+        />
 
         {/* ── OAuth-MCP path: no token mint, just URL + steps ────────── */}
         {installType === "oauth-mcp" && (

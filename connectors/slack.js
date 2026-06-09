@@ -7,7 +7,7 @@
 //
 // Slack OAuth specifics:
 //   • Auth URL : https://slack.com/oauth/v2/authorize
-//                user_scope=stars:read,users:read,team:read   (no bot scopes)
+//                user_scope=<USER_SCOPES below>   (user token, no bot scopes)
 //   • Token URL: https://slack.com/api/oauth.v2.access
 //   • Token    : returned at `authed_user.access_token` (xoxp-…), no expiry
 //                by default (workspace can enforce 12h rotation; we don't
@@ -26,7 +26,31 @@ const SL_AUTH_URL = 'https://slack.com/oauth/v2/authorize';
 const SL_TOKEN_URL = 'https://slack.com/api/oauth.v2.access';
 const SL_API = 'https://slack.com/api';
 
-export const USER_SCOPES = ['stars:read', 'users:read', 'team:read', 'channels:read'];
+// User-token scopes. We request enough to both PULL saved messages into the
+// vault AND let the LYKN agent ACT on Slack via lykn_call_app (list/read
+// channels the user belongs to, search, and post as the user). A user token
+// reads any conversation the user is already in — no bot-invite dance — and
+// chat:write posts as the user. Workspace admins can still restrict these.
+export const USER_SCOPES = [
+  // identity + saved items (vault sync)
+  'team:read',
+  'users:read',
+  'stars:read',
+  // channel/conversation discovery
+  'channels:read',
+  'groups:read',
+  'im:read',
+  'mpim:read',
+  // message history (read)
+  'channels:history',
+  'groups:history',
+  'im:history',
+  'mpim:history',
+  // search
+  'search:read',
+  // post as the user (write)
+  'chat:write',
+];
 
 const FETCH_TIMEOUT_MS = 12_000;
 const PAGE_SIZE = 100;

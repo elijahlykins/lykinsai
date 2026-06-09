@@ -17,14 +17,16 @@ import {
   Download,
   Upload,
   FileArchive,
+  Plug,
   X,
   Loader2,
   Check,
   Mail,
   ExternalLink,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 
+import ConnectionsAppGrid from '@/components/connections/ConnectionsAppGrid';
 import ModelSelectOptions from '@/components/ModelSelectOptions';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
@@ -81,9 +83,11 @@ export default function SettingsModal({ isOpen, onClose }) {
   const { user, loading, signInWithOAuth, signOut } = useAuth();
   const { planId, modelTier, hasStripeCustomer } = useUserPlan();
   const nav = useNavigate();
+  const location = useLocation();
   const [portalBusy, setPortalBusy] = useState(false);
 
   // 'menu' | 'account' | 'privacy' | 'display' | 'import' | 'payment' | 'help'
+  // | 'connections'
   const [view, setView] = useState('menu');
 
   // ---- Import: chat-history .zip upload ----
@@ -96,6 +100,18 @@ export default function SettingsModal({ isOpen, onClose }) {
   useEffect(() => {
     if (!isOpen) setView('menu');
   }, [isOpen]);
+
+  // Deep-link straight to the connect surface. The app dock's "+" and any
+  // "connect an app" entry point route to /settings#connections (or
+  // ?section=connections) so the user lands on the cards, not the main menu.
+  useEffect(() => {
+    if (!isOpen) return;
+    const params = new URLSearchParams(location.search || '');
+    const wantsConnections =
+      (location.hash || '').replace(/^#/, '') === 'connections' ||
+      params.get('section') === 'connections';
+    if (wantsConnections) setView('connections');
+  }, [isOpen, location.hash, location.search]);
 
   const handleManageSubscription = useCallback(async () => {
     if (portalBusy) return;
@@ -334,6 +350,7 @@ export default function SettingsModal({ isOpen, onClose }) {
       )}
       <div className="flex flex-col">
         <MenuRow icon={User} title="Account" onClick={() => setView('account')} />
+        <MenuRow icon={Plug} title="Connections" onClick={() => setView('connections')} />
         <MenuRow icon={Shield} title="Privacy" onClick={() => setView('privacy')} />
         <MenuRow icon={Monitor} title="Display" onClick={() => setView('display')} />
         <MenuRow icon={Upload} title="Import" onClick={() => setView('import')} />
@@ -483,6 +500,19 @@ export default function SettingsModal({ isOpen, onClose }) {
           </form>
         </div>
       )}
+    </div>
+  );
+
+  // ===========================================================
+  // CONNECTIONS — the three connect cards (API / MCP / Build), formerly
+  // the standalone /connections page. ConnectionsAppGrid runs in
+  // `embedded` mode so its picker renders inline instead of as a fixed
+  // overlay (a `fixed` child of Radix's transformed DialogContent would
+  // anchor to the dialog, not the viewport).
+  // ===========================================================
+  const renderConnections = () => (
+    <div>
+      <ConnectionsAppGrid user={user} embedded onBack={() => setView('menu')} />
     </div>
   );
 
@@ -741,6 +771,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   const renderView = () => {
     switch (view) {
       case 'account': return renderAccount();
+      case 'connections': return renderConnections();
       case 'privacy': return renderPrivacy();
       case 'display': return renderDisplay();
       case 'import':  return renderImport();
@@ -752,7 +783,11 @@ export default function SettingsModal({ isOpen, onClose }) {
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className={`bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white backdrop-blur-md max-h-[90vh] overflow-y-auto ${
+          view === 'connections' ? 'max-w-2xl' : 'max-w-md'
+        }`}
+      >
         <DialogHeader>
           <DialogTitle className="text-black dark:text-white">Settings</DialogTitle>
         </DialogHeader>

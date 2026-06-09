@@ -256,6 +256,65 @@ export const CUSTOM_API_PRESETS = [
     description:
       "HubSpot CRM API. Contacts: GET /crm/v3/objects/contacts, POST /crm/v3/objects/contacts with { properties }. Companies: /crm/v3/objects/companies. Deals: /crm/v3/objects/deals. Search: POST /crm/v3/objects/{type}/search.",
   },
+  {
+    id: "figma",
+    name: "Figma",
+    domain: "figma.com",
+    base_url: "https://api.figma.com",
+    auth_type: "header",
+    auth_header_name: "X-Figma-Token",
+    body_format: "json",
+    keyPrefixes: ["figd_"],
+    keyHint: "Personal access token (figd_…) from Figma → Settings → Security → Personal access tokens",
+    docsUrl: "https://www.figma.com/developers/api",
+    testPath: "/v1/me",
+    description:
+      "Figma REST API. You: GET /v1/me. Read a file: GET /v1/files/{file_key}. Nodes: GET /v1/files/{file_key}/nodes?ids=. Comments: GET/POST /v1/files/{file_key}/comments. Team projects: GET /v1/teams/{team_id}/projects, then GET /v1/projects/{project_id}/files. The token goes in the X-Figma-Token header (set for you).",
+  },
+  {
+    id: "canva",
+    name: "Canva",
+    domain: "canva.com",
+    base_url: "https://api.canva.com/rest",
+    auth_type: "bearer",
+    body_format: "json",
+    keyPrefixes: [],
+    keyHint: "OAuth access token from your Canva Connect integration (canva.dev → Developers)",
+    docsUrl: "https://www.canva.dev/docs/connect/",
+    testPath: "/v1/users/me",
+    description:
+      "Canva Connect API. You: GET /v1/users/me. List designs: GET /v1/designs. Create a design: POST /v1/designs. Assets: GET /v1/assets/{id}, POST /v1/asset-uploads. Autofill a brand template: POST /v1/autofills. Export: POST /v1/exports then GET /v1/exports/{id}.",
+  },
+  {
+    id: "atlassian",
+    name: "Atlassian (Jira & Confluence)",
+    domain: "atlassian.com",
+    base_url: "https://your-site.atlassian.net",
+    auth_type: "basic",
+    body_format: "json",
+    keyPrefixes: [],
+    keyHint:
+      "Replace your-site in the base URL with your Atlassian site, then paste email:api_token (token from id.atlassian.com → Security → API tokens)",
+    docsUrl: "https://developer.atlassian.com/cloud/jira/platform/rest/v3/",
+    testPath: "/rest/api/3/myself",
+    description:
+      "Atlassian Cloud REST API (Jira + Confluence) for your site. Jira — you: GET /rest/api/3/myself; search issues: GET /rest/api/3/search?jql=; create issue: POST /rest/api/3/issue. Confluence — pages: GET /wiki/api/v2/pages, GET /wiki/rest/api/content?cql=. Auth is HTTP Basic as email:api_token (handled for you). IMPORTANT: edit the base URL to your real your-site.atlassian.net host.",
+  },
+  {
+    id: "microsoft365",
+    name: "Microsoft 365",
+    domain: "microsoft.com",
+    base_url: "https://graph.microsoft.com",
+    auth_type: "bearer",
+    body_format: "json",
+    keyPrefixes: [],
+    keyHint:
+      "Microsoft Graph access token (from your Entra app or Graph Explorer). Note: Graph tokens expire ~1 hour, so this is best for short tasks.",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/overview",
+    testPath: "/v1.0/me",
+    description:
+      "Microsoft Graph API (Microsoft 365: Outlook, OneDrive, SharePoint, Teams, Calendar). You: GET /v1.0/me. Mail: GET /v1.0/me/messages, POST /v1.0/me/sendMail. OneDrive: GET /v1.0/me/drive/root/children. Calendar: GET /v1.0/me/events. Teams: GET /v1.0/me/joinedTeams. SharePoint: GET /v1.0/sites?search=. Note: pasted Graph tokens typically expire after ~1 hour.",
+  },
 ];
 
 /**
