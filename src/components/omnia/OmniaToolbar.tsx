@@ -73,34 +73,24 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
   // panel, title) since the canvas is unmounted and a bottom tab bar handles
   // navigation. We keep just the model selector so users can still pick an AI.
   if (isMobilePhone) {
+    // The model selector lives in the chat bar on phones, so here we only keep
+    // the Voice Mode toggle. Render nothing when voice isn't eligible.
+    if (!voiceModeEligible) return null;
     return (
       <div
         className={`fixed top-2 right-0 left-0 px-3 flex items-center justify-end pointer-events-none ${notesOpen ? "z-[235]" : "z-[70]"}`}
       >
         <div className="pointer-events-auto flex items-center gap-1 p-1 rounded-full bg-background/85 backdrop-blur-md border border-black/8 dark:border-white/10 shadow-sm">
-          <Select value={selectedModel} onValueChange={onModelChange}>
-            <SelectTrigger className="w-[7.5rem] h-8 rounded-full glass-control hover:opacity-90 text-[0.6875rem] font-medium">
-              <SelectValue placeholder="Model" />
-            </SelectTrigger>
-            <SelectContent
-              align="end"
-              className="z-[250] glass-control border border-white/16 dark:border-white/8 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-md shadow-md max-h-[min(28rem,70vh)] overflow-y-auto"
-            >
-              {modelSelectMenu}
-            </SelectContent>
-          </Select>
-          {voiceModeEligible && (
-            <button
-              type="button"
-              onClick={onVoiceModeToggle}
-              className={`rounded-full w-8 h-8 p-0 transition-colors flex items-center justify-center ${voiceModeOn ? "bg-blue-500/20 text-blue-500" : "hover:bg-black/10 dark:hover:bg-white/15"}`}
-              title="Voice Mode"
-              aria-pressed={voiceModeOn}
-            >
-              <AudioLines className="w-4 h-4" />
-              <span className="sr-only">Voice Mode</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onVoiceModeToggle}
+            className={`rounded-full w-8 h-8 p-0 transition-colors flex items-center justify-center ${voiceModeOn ? "bg-blue-500/20 text-blue-500" : "hover:bg-black/10 dark:hover:bg-white/15"}`}
+            title="Voice Mode"
+            aria-pressed={voiceModeOn}
+          >
+            <AudioLines className="w-4 h-4" />
+            <span className="sr-only">Voice Mode</span>
+          </button>
         </div>
       </div>
     );
