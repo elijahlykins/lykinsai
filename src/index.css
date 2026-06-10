@@ -2054,14 +2054,9 @@ mark {
   background: transparent;
   color: rgba(191, 219, 254, 0.95);
   cursor: pointer;
-  filter:
-    drop-shadow(0 0 6px rgba(59, 130, 246, 0.55))
-    drop-shadow(0 0 14px rgba(59, 130, 246, 0.35));
   transition:
     color 220ms ease,
-    filter 220ms ease,
     transform 220ms ease;
-  animation: lykn-wake-advance-glow 2.8s ease-in-out infinite;
 }
 
 .lykn-wake-advance-btn-icon {
@@ -2072,11 +2067,6 @@ mark {
 .lykn-wake-advance-btn:hover:not(:disabled) {
   color: #ffffff;
   transform: scale(1.08);
-  filter:
-    drop-shadow(0 0 8px rgba(96, 165, 250, 0.95))
-    drop-shadow(0 0 18px rgba(59, 130, 246, 0.65))
-    drop-shadow(0 0 28px rgba(59, 130, 246, 0.35));
-  animation: none;
 }
 
 .lykn-wake-advance-btn:active:not(:disabled) {
@@ -2085,25 +2075,6 @@ mark {
 
 .lykn-wake-advance-btn:disabled {
   cursor: default;
-}
-
-@keyframes lykn-wake-advance-glow {
-  0%, 100% {
-    filter:
-      drop-shadow(0 0 6px rgba(59, 130, 246, 0.55))
-      drop-shadow(0 0 14px rgba(59, 130, 246, 0.35));
-  }
-  50% {
-    filter:
-      drop-shadow(0 0 10px rgba(96, 165, 250, 0.85))
-      drop-shadow(0 0 22px rgba(59, 130, 246, 0.5));
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .lykn-wake-advance-btn {
-    animation: none;
-  }
 }
 
 /* Intro slide carousel — welcome ↔ problems. */

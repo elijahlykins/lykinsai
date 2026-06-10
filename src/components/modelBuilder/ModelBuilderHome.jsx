@@ -1,5 +1,13 @@
+import { useState } from "react";
 import { Pencil, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const actionIconBoxClass =
   "flex h-14 w-14 items-center justify-center rounded-2xl border border-black/10 dark:border-white/12 bg-black/[0.03] dark:bg-white/[0.05] shadow-sm transition-colors group-hover:bg-blue-500/10 group-hover:border-blue-500/35";
@@ -7,7 +15,9 @@ const actionIconBoxClass =
 const actionIconClass =
   "text-foreground group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors";
 
-export default function ModelBuilderHome({ onCreate, onEdit, className }) {
+export default function ModelBuilderHome({ onCreate, onEdit, className, wakePreview = false }) {
+  const [noModelOpen, setNoModelOpen] = useState(false);
+  const handleEdit = wakePreview ? () => setNoModelOpen(true) : onEdit;
   return (
     <main
       className={cn(
@@ -38,7 +48,7 @@ export default function ModelBuilderHome({ onCreate, onEdit, className }) {
         </button>
         <button
           type="button"
-          onClick={onEdit}
+          onClick={handleEdit}
           className="group flex flex-col items-center gap-2"
           aria-label="Edit your models"
         >
@@ -48,6 +58,19 @@ export default function ModelBuilderHome({ onCreate, onEdit, className }) {
           <span className="text-[11px] font-medium text-muted-foreground">Edit</span>
         </button>
       </div>
+
+      {wakePreview ? (
+        <Dialog open={noModelOpen} onOpenChange={setNoModelOpen}>
+          <DialogContent className="max-w-sm sm:rounded-xl">
+            <DialogHeader className="text-left space-y-1">
+              <DialogTitle className="text-[16px]">No model to edit</DialogTitle>
+              <DialogDescription className="text-[13px]">
+                Create a new model to get started.
+              </DialogDescription>
+            </DialogHeader>
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </main>
   );
 }

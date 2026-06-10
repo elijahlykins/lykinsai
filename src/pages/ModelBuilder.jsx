@@ -33,6 +33,7 @@ import ModelBuilderStagePromptTools from "@/components/modelBuilder/ModelBuilder
 import {
   computeBuilderProgress,
   emptyModelDraft,
+  DEMO_SYSTEM_PROMPT_STARTER,
   TRAINING_MODES,
 } from "@/lib/modelBuilder/draftDefaults";
 import { normalizeModelBehavior } from "@/lib/modelBuilder/modelBehaviorSettings";
@@ -265,7 +266,11 @@ export default function ModelBuilder({ wakePreview = false } = {}) {
     setCreateErrors([]);
     setPromptErrors([]);
     setCreateKnowledgeErrors([]);
-    setCreateDraft(emptyModelDraft());
+    setCreateDraft(
+      wakePreview
+        ? { ...emptyModelDraft(), systemPrompt: DEMO_SYSTEM_PROMPT_STARTER }
+        : emptyModelDraft(),
+    );
     setPromptDialogOpen(false);
     setKnowledgeDialogOpen(false);
     setSummaryDialogOpen(false);
@@ -273,7 +278,7 @@ export default function ModelBuilder({ wakePreview = false } = {}) {
     createSavedRef.current = false;
     setCreateSaving(false);
     setCreateDialogOpen(true);
-  }, []);
+  }, [wakePreview]);
 
   const handleCreateDialogContinue = useCallback(() => {
     const v = validateBasicsStep(createDraft);
@@ -935,7 +940,11 @@ export default function ModelBuilder({ wakePreview = false } = {}) {
 
       <div className="flex-1 min-h-0 flex flex-col">
       {view === "home" ? (
-        <ModelBuilderHome onCreate={handleCreateModel} onEdit={handleOpenSelectModel} />
+        <ModelBuilderHome
+          onCreate={handleCreateModel}
+          onEdit={handleOpenSelectModel}
+          wakePreview={wakePreview}
+        />
       ) : currentStageId === "basics" ? (
         <main className="flex-1 min-h-0 overflow-y-auto scrollbar-hide px-4 sm:px-6 py-6">
           <ModelBuilderStageBasics

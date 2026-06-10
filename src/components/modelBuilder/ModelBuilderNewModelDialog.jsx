@@ -1,4 +1,5 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -40,7 +41,17 @@ export default function ModelBuilderNewModelDialog({
           />
         </div>
 
-        <DialogFooter className="shrink-0 px-6 py-4 border-t border-black/8 dark:border-white/10 sm:justify-end">
+        <DialogFooter className="shrink-0 px-6 py-4 border-t border-black/8 dark:border-white/10 flex-row items-center justify-between sm:justify-between">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="-ml-2"
+            onClick={() => onOpenChange?.(false)}
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Back
+          </Button>
           <button type="button" className="lykn-primary-btn" onClick={onContinue}>
             Continue
             <ChevronRight className="h-4 w-4" strokeWidth={2.25} />
