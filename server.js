@@ -10568,7 +10568,7 @@ app.post('/api/synthesis/backfill', async (req, res) => {
   }
 });
 
-app.post('/api/ai/invoke', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
+app.post('/api/ai/invoke', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     const normalizedModel = normalizeRequestedModel(req.body?.model);
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
@@ -12263,7 +12263,7 @@ ${t}
   }
 });
 
-app.post('/api/ai/stream', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
+app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, async (req, res) => {
   // ─── Latency diagnostics ─────────────────────────────────────────
   // We are chasing a "first message takes 20-30s" report and the
   // existing logs don't have timestamps so we can't see which phase
@@ -14331,7 +14331,7 @@ app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res
   }
 });
 
-app.post('/api/ai/transcribe', requireAuth, aiLimiter, checkAiUsageLimit, upload.single('audio'), async (req, res) => {
+app.post('/api/ai/transcribe', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, upload.single('audio'), async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({
@@ -14690,7 +14690,7 @@ app.post('/api/ai/name-chat', requireAuth, aiLimiter, async (req, res) => {
 // of times an hour.
 const _ttsCache = memCache('tts-mp3', { maxSize: 64, ttlMs: 30 * 60 * 1000 });
 
-app.post('/api/ai/tts', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
+app.post('/api/ai/tts', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured.' });
@@ -15487,7 +15487,7 @@ async function buildRealtimeSynthesisGrounding(authHeader, userId) {
   return sections.join('\n\n');
 }
 
-app.post('/api/ai/realtime/session', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
+app.post('/api/ai/realtime/session', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured.' });
@@ -15751,7 +15751,7 @@ function verifyLyknVoiceToken(token) {
 // Mint an ElevenLabs signed URL for the configured agent + a signed session
 // token that binds the conversation to this LYKN user. The client passes the
 // token to startSession as the `lykn_session_token` dynamic variable.
-app.post('/api/ai/elevenlabs/signed-url', requireAuth, aiLimiter, checkAiUsageLimit, async (req, res) => {
+app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     const apiKey = process.env.ELEVENLABS_API_KEY;
     const agentId = process.env.ELEVENLABS_AGENT_ID;
@@ -17322,6 +17322,205 @@ app.get('/api/admin/usage/diagnostics', requireAuth, requireAdmin, async (_req, 
 });
 
 // ============================================
+// ADMIN — Billing / subscription analytics
+// ============================================
+// Surfaces who's on trial, who's paying, and who canceled by reading
+// `user_billing` (current state, kept in sync by the Stripe webhook) and
+// `stripe_events` (raw webhook audit, for the cancellation feed). Emails are
+// resolved best-effort via the auth.admin API, mirroring /api/admin/usage.
+// MRR is computed live from Stripe for active/trialing subs (cached 60s) and
+// is null when Stripe isn't configured.
+
+const ACTIVE_SUB_STATUSES = ['active', 'trialing', 'past_due'];
+const CANCELED_SUB_STATUSES = ['canceled', 'unpaid', 'incomplete_expired'];
+
+let _billingMrrCache = { at: 0, value: null };
+
+async function computeStripeMrr(rows) {
+  if (!stripe) return null;
+  const now = Date.now();
+  if (_billingMrrCache.value && now - _billingMrrCache.at < 60_000) {
+    return _billingMrrCache.value;
+  }
+  const subIds = rows
+    .filter((r) => r.stripe_subscription_id && ACTIVE_SUB_STATUSES.includes(String(r.status || '').toLowerCase()))
+    .map((r) => r.stripe_subscription_id)
+    .slice(0, 200); // v1 cap — aggregate in-process like the usage panel
+  let cents = 0;
+  let currency = 'usd';
+  for (const subId of subIds) {
+    try {
+      const sub = await stripe.subscriptions.retrieve(subId);
+      for (const item of sub.items?.data || []) {
+        const price = item.price;
+        const qty = Number(item.quantity || 1);
+        const amount = Number(price?.unit_amount || 0) * qty;
+        if (!amount) continue;
+        if (price?.currency) currency = price.currency;
+        const interval = price?.recurring?.interval;
+        const intervalCount = Number(price?.recurring?.interval_count || 1) || 1;
+        // Normalize everything to a monthly figure.
+        if (interval === 'year') cents += Math.round(amount / (12 * intervalCount));
+        else if (interval === 'week') cents += Math.round((amount * 52) / (12 * intervalCount));
+        else if (interval === 'day') cents += Math.round((amount * 365) / (12 * intervalCount));
+        else cents += Math.round(amount / intervalCount); // month (default)
+      }
+    } catch {
+      // Skip subs we can't read; MRR stays best-effort.
+    }
+  }
+  const value = { mrr_cents: cents, currency };
+  _billingMrrCache = { at: now, value };
+  return value;
+}
+
+app.get('/api/admin/billing/overview', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+
+    const { data: rows, error } = await supabaseAdmin
+      .from('user_billing')
+      .select('user_id, plan, billing_period, status, current_period_end, cancel_at_period_end, stripe_subscription_id, stripe_customer_id')
+      .order('current_period_end', { ascending: false, nullsFirst: false });
+    if (error) throw new Error(error.message);
+
+    // Resolve emails once (page 1, ≤1000 users) — same approach as usage panel.
+    let emailById = new Map();
+    try {
+      if (typeof supabaseAdmin.auth?.admin?.listUsers === 'function') {
+        const { data: list } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
+        for (const u of (list?.users || [])) {
+          if (u?.id && u?.email) emailById.set(u.id, u.email);
+        }
+      }
+    } catch {
+      emailById = new Map();
+    }
+
+    const customerToEmail = new Map();
+    const totals = {
+      signups: 0,
+      free_inactive: 0,
+      trialing: 0,
+      active: 0,
+      past_due: 0,
+      canceled: 0,
+      comped: 0,
+      cancel_scheduled: 0,
+    };
+
+    const subscribers = (rows || []).map((r) => {
+      totals.signups += 1;
+      const status = String(r.status || 'inactive').toLowerCase();
+      const plan = String(r.plan || 'free').toLowerCase();
+      const hasSub = Boolean(r.stripe_subscription_id);
+      const email = emailById.get(r.user_id) || null;
+      if (r.stripe_customer_id && email) customerToEmail.set(r.stripe_customer_id, email);
+
+      if (status === 'trialing') totals.trialing += 1;
+      else if (status === 'active') totals.active += 1;
+      else if (status === 'past_due') totals.past_due += 1;
+      else if (CANCELED_SUB_STATUSES.includes(status)) totals.canceled += 1;
+      else if (plan === 'free') totals.free_inactive += 1;
+      // Paid plan on file with no Stripe subscription id = manual / comped grant.
+      if (!hasSub && plan !== 'free') totals.comped += 1;
+      if (r.cancel_at_period_end && ACTIVE_SUB_STATUSES.includes(status)) totals.cancel_scheduled += 1;
+
+      return {
+        user_id: r.user_id,
+        email,
+        plan,
+        billing_period: r.billing_period || null,
+        status,
+        current_period_end: r.current_period_end || null,
+        cancel_at_period_end: Boolean(r.cancel_at_period_end),
+        stripe_subscription_id: r.stripe_subscription_id || null,
+        stripe_customer_id: r.stripe_customer_id || null,
+      };
+    });
+
+    // Conversion funnel (best-effort, from current state only): everyone who
+    // got a subscription id went through trial-checkout (card on file).
+    const trialsStarted = subscribers.filter((s) => s.stripe_subscription_id).length;
+    const converted = subscribers.filter((s) => s.status === 'active').length;
+    const conversion = {
+      trials_started: trialsStarted,
+      converted,
+      still_trialing: totals.trialing,
+      churned: totals.canceled,
+      rate: trialsStarted > 0 ? Number((converted / trialsStarted).toFixed(4)) : null,
+    };
+
+    // Cancellation feed from the raw webhook audit. Pull the most recent
+    // events and keep deletions + cancel-scheduled updates.
+    let cancellations = [];
+    try {
+      const { data: events } = await supabaseAdmin
+        .from('stripe_events')
+        .select('id, type, payload')
+        .order('id', { ascending: false })
+        .limit(400);
+      for (const ev of events || []) {
+        const type = ev.type;
+        const obj = ev.payload?.data?.object || {};
+        const isDeletion = type === 'customer.subscription.deleted';
+        const isCancelScheduled =
+          type === 'customer.subscription.updated' && obj?.cancel_at_period_end === true;
+        if (!isDeletion && !isCancelScheduled) continue;
+        const customerId = typeof obj.customer === 'string' ? obj.customer : obj.customer?.id;
+        cancellations.push({
+          event_id: ev.id,
+          type,
+          kind: isDeletion ? 'ended' : 'cancel_scheduled',
+          at: ev.payload?.created ? new Date(ev.payload.created * 1000).toISOString() : null,
+          email: customerToEmail.get(customerId) || null,
+          customer_id: customerId || null,
+          subscription_id: obj.id || null,
+          status: obj.status || null,
+          cancel_at_period_end: Boolean(obj.cancel_at_period_end),
+        });
+      }
+      // De-dupe to the latest event per subscription so a sub that was
+      // canceled then deleted shows once (most recent wins).
+      const seenSub = new Set();
+      cancellations = cancellations.filter((c) => {
+        const key = c.subscription_id || c.event_id;
+        if (seenSub.has(key)) return false;
+        seenSub.add(key);
+        return true;
+      }).slice(0, 100);
+    } catch (err) {
+      console.warn('⚠️ admin/billing cancellation feed failed:', err?.message || err);
+    }
+
+    let mrr = null;
+    try {
+      mrr = await computeStripeMrr(subscribers);
+    } catch (err) {
+      console.warn('⚠️ admin/billing MRR compute failed:', err?.message || err);
+    }
+
+    return res.json({
+      generated_at: new Date().toISOString(),
+      stripe_configured: Boolean(stripe),
+      totals,
+      conversion,
+      mrr_cents: mrr?.mrr_cents ?? null,
+      mrr_currency: mrr?.currency || 'usd',
+      trial_days: STRIPE_TRIAL_DAYS,
+      subscribers,
+      cancellations,
+    });
+  } catch (error) {
+    console.error('❌ Admin billing overview error:', error.message);
+    return res.status(error?.status || 500).json({
+      error: error?.message || 'Failed to fetch billing overview',
+      code: error?.code || 'unknown',
+    });
+  }
+});
+
+// ============================================
 // ADMIN — MCP / context-backplane usage
 // ============================================
 // Pulls MCP and REST-mirror traffic out of `ai_usage_logs` (we tagged it
@@ -17689,6 +17888,55 @@ function hasSubscriptionAccess(row) {
   return ['trialing', 'active', 'past_due'].includes(status);
 }
 
+// Authoritative "may this user use the app?" check (revoke-on-period-end).
+// Replaces the old "paid once = access forever" rule for real Stripe subs:
+//   • Active states (trialing / active / past_due) → access.
+//   • Canceled/ended BUT still inside the paid period → access until it lapses
+//     (so a "cancel at period end" user keeps what they paid for, then loses it).
+//   • Manual / comped grants (a paid plan on file with NO Stripe subscription)
+//     stay admin-controlled and keep access — set-user-plan.mjs is the only
+//     supported way in/out of those.
+// Comped-by-email accounts are handled upstream via isCompedProEmail and never
+// reach here for the gate.
+function subscriptionPeriodStillActive(row) {
+  if (!row?.current_period_end) return false;
+  const end = new Date(row.current_period_end).getTime();
+  return Number.isFinite(end) && end > Date.now();
+}
+
+function hasAppAccessRow(row) {
+  if (!row) return false;
+  const status = String(row.status || '').toLowerCase();
+  if (!row.stripe_subscription_id) {
+    const plan = String(row.plan || 'free').toLowerCase();
+    return plan !== 'free' && Boolean(PLAN_LIMITS[plan]);
+  }
+  if (['trialing', 'active', 'past_due'].includes(status)) return true;
+  return subscriptionPeriodStillActive(row);
+}
+
+// Server-side gate for metered/generative endpoints so a user without an
+// active subscription can't bypass the frontend route gate and burn spend by
+// calling the API directly. Returns 402 with needs_trial_checkout so the
+// client can route them to /start-trial.
+async function requireAppAccess(req, res, next) {
+  try {
+    if (isCompedProEmail(req.user?.email)) return next();
+    const row = await loadBillingRow(req.user?.id);
+    if (hasAppAccessRow(row)) return next();
+    return res.status(402).json({
+      error: 'An active subscription is required.',
+      code: 'subscription_required',
+      needs_trial_checkout: true,
+    });
+  } catch (err) {
+    console.error('❌ requireAppAccess failed:', err?.message || err);
+    // Fail open on infra errors so a transient DB hiccup doesn't lock out
+    // paying users; the frontend gate still applies.
+    return next();
+  }
+}
+
 /** True when we already have a Stripe customer tied to a real subscription history. */
 function hasEstablishedStripeCustomer(row) {
   if (!row?.stripe_customer_id) return false;
@@ -17697,9 +17945,11 @@ function hasEstablishedStripeCustomer(row) {
 
 function billingMePayload(row, extra = {}) {
   const hasActive = hasSubscriptionAccess(row);
-  const rawPlan = String(row?.plan || 'free').toLowerCase();
-  const hasPaidPlanOnFile = rawPlan !== 'free' && Boolean(PLAN_LIMITS[rawPlan]);
   const hasStripeCustomer = hasEstablishedStripeCustomer(row);
+  // App access now follows revoke-on-period-end (hasAppAccessRow): a canceled
+  // sub keeps access only until current_period_end passes. needs_trial_checkout
+  // is the single source of truth the client gate trusts.
+  const hasAccess = hasAppAccessRow(row);
   return {
     plan: row?.plan || 'free',
     billing_period: row?.billing_period || null,
@@ -17709,7 +17959,7 @@ function billingMePayload(row, extra = {}) {
     has_stripe_customer: hasStripeCustomer,
     stripe_subscription_id: row?.stripe_subscription_id || null,
     has_active_subscription: hasActive,
-    needs_trial_checkout: !hasActive && !hasPaidPlanOnFile,
+    needs_trial_checkout: !hasAccess,
     trial_days: STRIPE_TRIAL_DAYS,
     ...extra,
   };
@@ -17842,6 +18092,29 @@ async function linkBillingRowFromCheckoutSession(session, subscription) {
   return true;
 }
 
+// Stripe ≥2025 (this repo runs stripe@^22) removed the top-level
+// `current_period_end` / `current_period_start` from the Subscription
+// object — they now live on each subscription ITEM. Older API versions
+// still send the top-level field. Read item-level first (take the latest
+// item's end so a multi-item sub doesn't under-report), fall back to the
+// legacy top-level, and return a unix-seconds number or null.
+function subscriptionPeriodEndUnix(subscription) {
+  const items = subscription?.items?.data || [];
+  let maxItemEnd = 0;
+  for (const item of items) {
+    const end = Number(item?.current_period_end || 0);
+    if (Number.isFinite(end) && end > maxItemEnd) maxItemEnd = end;
+  }
+  if (maxItemEnd > 0) return maxItemEnd;
+  const topLevel = Number(subscription?.current_period_end || 0);
+  return Number.isFinite(topLevel) && topLevel > 0 ? topLevel : null;
+}
+
+function subscriptionPeriodEndISO(subscription) {
+  const unix = subscriptionPeriodEndUnix(subscription);
+  return unix ? new Date(unix * 1000).toISOString() : null;
+}
+
 async function syncSubscriptionToBilling(subscription) {
   if (!supabaseAdmin) return;
   const customerId = typeof subscription.customer === 'string'
@@ -17902,9 +18175,7 @@ async function syncSubscriptionToBilling(subscription) {
     stripe_subscription_id: subscription.id,
     status: subscription.status,
     cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
-    current_period_end: subscription.current_period_end
-      ? new Date(subscription.current_period_end * 1000).toISOString()
-      : null,
+    current_period_end: subscriptionPeriodEndISO(subscription),
   };
   // billing_period mirrors the matched price's monthly/annual cycle.
   // Always update when we know it so the cycle display stays right.

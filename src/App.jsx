@@ -44,6 +44,7 @@ import ShareReceiver from "./pages/ShareReceiver";
 import Onboarding from "./pages/Onboarding";
 import StartTrial from "./pages/StartTrial";
 import AdminUsage from "./pages/AdminUsage";
+import AdminBilling from "./pages/AdminBilling";
 import OAuthConsent from "./pages/OAuthConsent";
 import AppsChatGPT from "./pages/AppsChatGPT";
 import AppsClaude from "./pages/AppsClaude";
@@ -303,6 +304,14 @@ function AppShell() {
               element={
                 <AdminOnly>
                   <AdminUsage />
+                </AdminOnly>
+              }
+            />
+            <Route
+              path="/admin/billing"
+              element={
+                <AdminOnly>
+                  <AdminBilling />
                 </AdminOnly>
               }
             />

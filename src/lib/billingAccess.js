@@ -1,22 +1,28 @@
 import { PLAN_LIMITS } from "@/lib/pricing-config";
 
-/** True when the user may use the app (trialing, paying, or comped). */
+/**
+ * True when the user may use the app (trialing, paying, comped, or a
+ * canceled sub still inside its paid period).
+ *
+ * The server (`billingMePayload` → `hasAppAccessRow`) is now authoritative:
+ * it implements revoke-on-period-end, so once a canceled subscription's
+ * `current_period_end` passes the user loses access. We trust its
+ * `needs_trial_checkout` flag and only fall back to local status checks for
+ * legacy payloads that don't carry it.
+ */
 export function hasAppAccess(billing) {
   if (!billing) return false;
   if (billing.comped) return true;
-  if (billing.has_active_subscription === true) return true;
-  // Monotone-up (client): honor a paid plan already on file even when
-  // Stripe status is canceled / inactive — matches resolveUserPlan on
-  // the server and useUserPlan's tier derivation.
-  const rawPlan = String(billing.plan || "free").toLowerCase();
-  if (rawPlan !== "free" && PLAN_LIMITS[rawPlan]) return true;
-  if (!billing.stripe_subscription_id && billing.has_stripe_customer) {
-    // Legacy payload without subscription id — fall back to status.
-    const status = String(billing.status || "").toLowerCase();
-    return ["trialing", "active", "past_due"].includes(status);
+  if (typeof billing.needs_trial_checkout === "boolean") {
+    return !billing.needs_trial_checkout;
   }
-  if (billing.needs_trial_checkout === false) return true;
-  if (billing.needs_trial_checkout === true) return false;
+  // Legacy / partial payload fallback: active subscription or a manual paid
+  // plan on file with no Stripe sub (admin-granted).
+  if (billing.has_active_subscription === true) return true;
+  const rawPlan = String(billing.plan || "free").toLowerCase();
+  if (!billing.stripe_subscription_id && rawPlan !== "free" && PLAN_LIMITS[rawPlan]) {
+    return true;
+  }
   const status = String(billing.status || "").toLowerCase();
   return (
     Boolean(billing.stripe_subscription_id) &&
