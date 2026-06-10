@@ -6046,10 +6046,10 @@ User: ${text}`;
             onClick={handleToggleQuickNote}
             title={showQuickNote ? "Hide quick note" : "New note"}
             aria-label={showQuickNote ? "Hide quick note" : "New note"}
-            className={`fixed bottom-6 right-6 z-[70] w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation ${
+            className={`fixed bottom-6 right-6 z-[70] w-12 h-12 rounded-full border shadow-lg backdrop-blur flex items-center justify-center transition-colors touch-manipulation ${
               showQuickNote || showNewNoteChooser
-                ? "bg-blue-500/15 text-blue-600 hover:bg-blue-500/25 dark:bg-blue-400/20 dark:text-blue-400 dark:hover:bg-blue-400/30"
-                : "bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90"
+                ? "bg-blue-500/15 text-blue-600 border-blue-500/30 hover:bg-blue-500/25 dark:bg-blue-400/20 dark:text-blue-400 dark:hover:bg-blue-400/30"
+                : "border-white/[0.14] bg-white/[0.06] text-white/90 hover:bg-white/[0.12] hover:border-white/25"
             }`}
           >
             <Plus className="w-5 h-5" />
@@ -6962,9 +6962,9 @@ User: ${text}`;
           onClick={handleToggleQuickNote}
           title="New quick note"
           aria-label="New quick note"
-          className="absolute bottom-4 right-4 z-[200] w-14 h-14 aspect-square shrink-0 rounded-full shadow-lg flex items-center justify-center transition-colors touch-manipulation bg-white text-black hover:bg-white/90"
+          className="absolute bottom-4 right-4 z-[200] w-12 h-12 aspect-square shrink-0 rounded-full border border-white/[0.14] bg-white/[0.06] text-white/90 backdrop-blur shadow-lg flex items-center justify-center transition-colors touch-manipulation hover:bg-white/[0.12] hover:border-white/25"
         >
-          <Plus className="w-6 h-6" />
+          <Plus className="w-5 h-5" />
         </button>
       )}
 
