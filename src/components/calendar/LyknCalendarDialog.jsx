@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   ArrowUpRight,
   CalendarClock,
+  CalendarDays,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -19,6 +20,7 @@ import {
   EyeOff,
   Link2,
   Loader2,
+  ListTodo,
   MapPin,
   Plus,
   RefreshCw,
@@ -29,6 +31,7 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
+import LyknTodosPanel from "@/components/todos/LyknTodosPanel";
 
 // ────────────────────────────────────────────────────────────────────────
 // LyknCalendarDialog — the calendar pop-up.
@@ -168,9 +171,36 @@ function AppleCalendarIcon() {
   );
 }
 
-export default function LyknCalendarDialog({ open, onOpenChange }) {
+// Segmented Calendar / To-dos switch shown at the top of the pop-up.
+function PanelToggle({ panel, onChange }) {
+  const base =
+    "inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-all duration-200 ease-out";
+  const activeCls = "bg-white text-black dark:bg-white dark:text-black shadow-sm";
+  const idleCls = "text-black/55 dark:text-white/55 hover:text-black dark:hover:text-white";
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-lg bg-black/5 dark:bg-white/10 p-0.5">
+      <button
+        type="button"
+        onClick={() => onChange("calendar")}
+        className={`${base} ${panel === "calendar" ? activeCls : idleCls}`}
+      >
+        <CalendarDays className="w-3.5 h-3.5" /> Calendar
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("todos")}
+        className={`${base} ${panel === "todos" ? activeCls : idleCls}`}
+      >
+        <ListTodo className="w-3.5 h-3.5" /> To-dos
+      </button>
+    </div>
+  );
+}
+
+export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = "calendar" }) {
   const { user } = useAuth();
   const today = useMemo(() => new Date(), []);
+  const [panel, setPanel] = useState("calendar"); // "calendar" | "todos"
   const [cursor, setCursor] = useState(() => ({ year: today.getFullYear(), month: today.getMonth() }));
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -219,6 +249,11 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
   useEffect(() => {
     if (open) void loadEvents();
   }, [open, loadEvents]);
+
+  // Open directly to the requested panel (calendar vs to-dos).
+  useEffect(() => {
+    if (open) setPanel(initialPanel === "todos" ? "todos" : "calendar");
+  }, [open, initialPanel]);
 
   // Realtime: reflect events the AI adds in text/voice without a refresh.
   useEffect(() => {
@@ -602,7 +637,29 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={(next) => { onOpenChange(next); if (!next) setView("month"); }}>
       <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-2xl backdrop-blur-md">
-        {view === "month" && (
+        {(panel === "todos" || view === "month") && (
+          <div className="flex items-center justify-center pb-1">
+            <PanelToggle panel={panel} onChange={setPanel} />
+          </div>
+        )}
+
+        <div
+          key={panel}
+          className="flex flex-col gap-4 animate-in fade-in-0 duration-200 ease-out"
+        >
+        {panel === "todos" && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="sr-only">To-dos</DialogTitle>
+              <DialogDescription className="text-[0.625rem] text-black/40 dark:text-white/40">
+                Tasks you and LYKN are tracking. Ask LYKN in chat or voice to add, complete, or clear items — they sync here live.
+              </DialogDescription>
+            </DialogHeader>
+            <LyknTodosPanel active={open && panel === "todos"} />
+          </>
+        )}
+
+        {panel === "calendar" && view === "month" && (
           <>
             <DialogHeader>
               <div className="flex items-center justify-between pr-6">
@@ -713,7 +770,7 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
           </>
         )}
 
-        {view === "day" && (
+        {panel === "calendar" && view === "day" && (
           <>
             <DialogHeader>
               <div className="flex items-center justify-between pr-6">
@@ -812,7 +869,7 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
           </>
         )}
 
-        {view === "sync" && (
+        {panel === "calendar" && view === "sync" && (
           <>
             <DialogHeader>
               <div className="flex items-center gap-2 pr-6">
@@ -930,7 +987,7 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
           </>
         )}
 
-        {view === "form" && (
+        {panel === "calendar" && view === "form" && (
           <>
             <DialogHeader>
               <div className="flex items-center gap-2 pr-6">
@@ -1080,6 +1137,7 @@ export default function LyknCalendarDialog({ open, onOpenChange }) {
             </form>
           </>
         )}
+        </div>
       </DialogContent>
     </Dialog>
   );

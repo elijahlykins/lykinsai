@@ -5,7 +5,6 @@ import {
   Blocks,
   Brain,
   CalendarDays,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   CreditCard,
@@ -21,7 +20,6 @@ import {
 } from "lucide-react";
 import FeedbackModal from "@/components/FeedbackModal";
 import LyknCalendarDialog from "@/components/calendar/LyknCalendarDialog";
-import LyknTodosDialog from "@/components/todos/LyknTodosDialog";
 import { supabase } from "@/lib/supabase";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
@@ -88,7 +86,7 @@ export default function AppSidebar({
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [todosOpen, setTodosOpen] = useState(false);
+  const [calendarPanel, setCalendarPanel] = useState("calendar"); // "calendar" | "todos"
   const [searchQuery, setSearchQuery] = useState("");
   const [modelFilter, setModelFilter] = useState("all");
   const menuRef = useRef(null);
@@ -119,8 +117,8 @@ export default function AppSidebar({
     const onModelsChanged = () => {
       queryClient.invalidateQueries({ queryKey: ["published-custom-models", user?.id] });
     };
-    const onOpenCalendar = () => setCalendarOpen(true);
-    const onOpenTodos = () => setTodosOpen(true);
+    const onOpenCalendar = () => { setCalendarPanel("calendar"); setCalendarOpen(true); };
+    const onOpenTodos = () => { setCalendarPanel("todos"); setCalendarOpen(true); };
     window.addEventListener("lykinsai_boards_changed", onBoardsChanged);
     window.addEventListener("lykn_custom_models_changed", onModelsChanged);
     window.addEventListener("lykn_open_calendar", onOpenCalendar);
@@ -260,19 +258,11 @@ export default function AppSidebar({
             </button>
             <button
               type="button"
-              onClick={() => setCalendarOpen(true)}
+              onClick={() => { setCalendarPanel("calendar"); setCalendarOpen(true); }}
               className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
             >
               <CalendarDays className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-              Calendar
-            </button>
-            <button
-              type="button"
-              onClick={() => setTodosOpen(true)}
-              className="w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2"
-            >
-              <CheckCircle2 className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-              To-dos
+              Calendar / To-do
             </button>
           </div>
 
@@ -392,8 +382,7 @@ export default function AppSidebar({
         defaultType={feedbackType}
       />
 
-      <LyknCalendarDialog open={calendarOpen} onOpenChange={setCalendarOpen} />
-      <LyknTodosDialog open={todosOpen} onOpenChange={setTodosOpen} />
+      <LyknCalendarDialog open={calendarOpen} onOpenChange={setCalendarOpen} initialPanel={calendarPanel} />
 
       {menuBoardId && ReactDOM.createPortal(
         <div

@@ -6,7 +6,6 @@ import {
   Brain,
   Bug,
   CalendarDays,
-  CheckCircle2,
   CreditCard,
   Lock,
   LogOut,
@@ -18,7 +17,6 @@ import {
 import { useAuth } from "@/lib/SupabaseAuth";
 import FeedbackModal from "@/components/FeedbackModal";
 import LyknCalendarDialog from "@/components/calendar/LyknCalendarDialog";
-import LyknTodosDialog from "@/components/todos/LyknTodosDialog";
 
 const flushAndNavigate = (nav, path) => {
   window.dispatchEvent(new Event("omnia_flush_save"));
@@ -50,11 +48,11 @@ export default function MobileTabBar() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [todosOpen, setTodosOpen] = useState(false);
+  const [calendarPanel, setCalendarPanel] = useState("calendar"); // "calendar" | "todos"
 
   React.useEffect(() => {
-    const onOpenCalendar = () => setCalendarOpen(true);
-    const onOpenTodos = () => setTodosOpen(true);
+    const onOpenCalendar = () => { setCalendarPanel("calendar"); setCalendarOpen(true); };
+    const onOpenTodos = () => { setCalendarPanel("todos"); setCalendarOpen(true); };
     window.addEventListener("lykn_open_calendar", onOpenCalendar);
     window.addEventListener("lykn_open_todos", onOpenTodos);
     return () => {
@@ -164,18 +162,11 @@ export default function MobileTabBar() {
                 />
                 <MoreItem
                   icon={CalendarDays}
-                  label="Calendar"
+                  label="Calendar / To-do"
                   onClick={() => {
                     setMoreOpen(false);
+                    setCalendarPanel("calendar");
                     setCalendarOpen(true);
-                  }}
-                />
-                <MoreItem
-                  icon={CheckCircle2}
-                  label="To-dos"
-                  onClick={() => {
-                    setMoreOpen(false);
-                    setTodosOpen(true);
                   }}
                 />
                 {user ? (
@@ -232,8 +223,7 @@ export default function MobileTabBar() {
 
       <FeedbackModal open={feedbackOpen} onOpenChange={setFeedbackOpen} defaultType="bug" />
 
-      <LyknCalendarDialog open={calendarOpen} onOpenChange={setCalendarOpen} />
-      <LyknTodosDialog open={todosOpen} onOpenChange={setTodosOpen} />
+      <LyknCalendarDialog open={calendarOpen} onOpenChange={setCalendarOpen} initialPanel={calendarPanel} />
     </>
   );
 }
