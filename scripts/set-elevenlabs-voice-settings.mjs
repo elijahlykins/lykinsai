@@ -20,7 +20,7 @@
  * Optional overrides (all clamped to ElevenLabs' valid ranges):
  *   VOICE_STABILITY=0.75        [0..1]  higher = steadier/calmer
  *   VOICE_STYLE=0               [0..1]  higher = more expressive/animated
- *   VOICE_SPEED=0.96            [0.7..1.2]
+ *   VOICE_SPEED=1.12            [0.7..1.2]  (matches the wake demo preview LYKN clips)
  *   VOICE_SIMILARITY_BOOST=0.8  [0..1]
  *   VOICE_SPEAKER_BOOST=true    (true|false)
  *
@@ -55,7 +55,7 @@ const bool = (envVal, dflt) => {
 // Calmer, more grounded defaults. Tunable via env if you want to nudge it.
 const stability = clamp(num(process.env.VOICE_STABILITY, 0.75), 0, 1);
 const style = clamp(num(process.env.VOICE_STYLE, 0), 0, 1);
-const speed = clamp(num(process.env.VOICE_SPEED, 0.96), 0.7, 1.2);
+const speed = clamp(num(process.env.VOICE_SPEED, 1.12), 0.7, 1.2);
 const similarityBoost = clamp(num(process.env.VOICE_SIMILARITY_BOOST, 0.8), 0, 1);
 const useSpeakerBoost = bool(process.env.VOICE_SPEAKER_BOOST, true);
 

@@ -209,10 +209,21 @@ export default function ConnectionsAppGrid({
   // cards view (i.e. leave Connections). The picker has its own back that
   // returns to the cards, so Settings shows just one back button.
   onBack,
+  // Open straight into a picker lane ("api" | "mcp") on mount instead of the
+  // three launcher rows — used by the wake preview so "Connect apps" lands
+  // directly on the connection-card grid.
+  initialPicker = null,
 }) {
   const embeddedPreviewMode = compactPreview;
   const showPageHeader = !embeddedPreviewMode && !wakePreview && !embedded;
   const compactGrid = embeddedPreviewMode && !wakePreview;
+  // Render the API/MCP picker inline (contained in the surface) rather than as
+  // a viewport-fixed modal whenever we're inside a transformed/clipped host:
+  // the Settings dialog (`embedded`) and the wake walkthrough preview
+  // (`wakePreview`). A `position: fixed` element nested under the walkthrough's
+  // transformed carousel track anchors to that transform, not the viewport, so
+  // the modal renders shifted "sideways" and breaks the preview.
+  const inlinePicker = embedded || wakePreview;
   const navigate = useNavigate();
   const [connections, setConnections] = useState([]);
   const [providerConfig, setProviderConfig] = useState({});
@@ -231,7 +242,7 @@ export default function ConnectionsAppGrid({
   // The page is three launcher cards. "Connect via API" and "Connect via MCP"
   // open a picker modal listing every app reachable that way. `picker` holds
   // which lane is open ("api" | "mcp" | null); `pickerQuery` is its search box.
-  const [picker, setPicker] = useState(null);
+  const [picker, setPicker] = useState(initialPicker);
   const [pickerQuery, setPickerQuery] = useState("");
 
   // Open the inbound (pull-into-LYKN) flow for a connector, routing to the
@@ -520,7 +531,7 @@ export default function ConnectionsAppGrid({
     <>
       <div
         className={`grid gap-2 ${
-          embedded ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+          inlinePicker ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
         }`}
       >
         {pickerTiles.map((tile) => {
@@ -840,9 +851,9 @@ export default function ConnectionsAppGrid({
       </section>
 
       {/* ── Three launcher cards ───────────────────────────────────── */}
-      {/* Inside Settings the inline picker replaces the cards, so hide them
-          while a lane is open. */}
-      {!(embedded && picker) && (
+      {/* When the picker is inline (Settings or wake preview) it replaces the
+          cards, so hide them while a lane is open. */}
+      {!(inlinePicker && picker) && (
       <>
       {embedded && onBack && (
         <div className="flex items-center gap-2 mb-3">
@@ -893,9 +904,10 @@ export default function ConnectionsAppGrid({
       )}
 
       {/* ── Picker (Connect via API / MCP) ─────────────────────────── */}
-      {/* Inline inside Settings (`embedded`); a centered modal otherwise. */}
+      {/* Inline inside Settings (`embedded`) and the wake preview
+          (`wakePreview`); a centered modal otherwise. */}
       {picker && (
-        embedded ? (
+        inlinePicker ? (
           <div className="mt-5">
             <div className="flex items-center gap-2 mb-1">
               <button

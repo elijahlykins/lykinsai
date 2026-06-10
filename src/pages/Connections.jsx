@@ -33,14 +33,15 @@ export default function Connections({
   }, [isEmbeddedMode]);
 
   if (wakePreview) {
+    // Mirror the production "Connect apps" destination: in the real app the
+    // Vault button routes to Settings → Connections, which renders
+    // ConnectionsAppGrid in `embedded` mode (inline picker, no fixed overlay).
+    // We render that exact embedded surface here, but omit `onBack` so there's
+    // no "back to settings" chrome — the walkthrough drives navigation itself.
     return (
       <div className="lykn-wake-connections-live-preview h-full min-h-0 relative">
         <main className="connections-preview-shell relative z-20 mx-auto w-full h-full overflow-y-auto px-4 sm:px-6 pt-4 pb-12 scrollbar-hide">
-          <ConnectionsAppGrid
-            user={user}
-            wakePreview
-            onWakePreviewTabChange={onWakePreviewTabChange}
-          />
+          <ConnectionsAppGrid user={user} embedded initialPicker="api" />
         </main>
       </div>
     );

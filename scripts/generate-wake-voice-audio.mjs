@@ -150,7 +150,7 @@ const USER_VOICE_SETTINGS = {
   similarity_boost: 0.85,
   style: 0.95,
   use_speaker_boost: true,
-  speed: 1.12,
+  speed: 1.0,
 };
 
 for (const line of targets) {

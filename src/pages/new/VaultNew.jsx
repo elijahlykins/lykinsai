@@ -89,7 +89,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
-import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
 import { CONNECTORS } from "@/lib/connectors/catalog";
 // Tracks whether the vault has completed its initial image-preload gating at
 // least once during this SPA session. Persists across route remounts so
@@ -6413,12 +6412,15 @@ User: ${text}`;
                   </button>
                 )}
                 {isWakePreview && (
-                  <div className="ml-auto shrink-0">
-                    <VaultConnectionsToggle
-                      active="vault"
-                      onPreviewTabChange={onWakePreviewTabChange}
-                    />
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onWakePreviewTabChange?.("connections")}
+                    className="ml-auto shrink-0 inline-flex items-center gap-1.5 rounded-full bg-blue-500 px-3.5 py-2 text-[0.75rem] font-medium text-white shadow-sm hover:bg-blue-600 transition-colors"
+                    title="Connect apps to your Vault"
+                  >
+                    <Plug className="w-3.5 h-3.5" />
+                    Connect apps
+                  </button>
                 )}
                 </div>
               {isConceptSearching && (
