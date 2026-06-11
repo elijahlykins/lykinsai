@@ -91,6 +91,9 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
   const [errorText, setErrorText] = useState("");
 
   const startedRef = useRef(false);
+  // Monotonic token: bumped whenever we (re)start or tear down a session, so an
+  // in-flight async begin() can detect it was cancelled and abort/clean up.
+  const beginGenRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const boardIdRef = useRef<string | null>(boardId ?? null);
   const buildInstructionsRef = useRef(buildInstructions);
@@ -145,6 +148,11 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
 
   const { startSession, endSession, status, isSpeaking, getInputVolume, getOutputVolume } = conversation;
 
+  // Keep the latest endSession in a ref so teardown always ends the CURRENT
+  // session, even if the effect cleanup captured an earlier render's closure.
+  const endSessionRef = useRef(endSession);
+  useEffect(() => { endSessionRef.current = endSession; }, [endSession]);
+
   // Orb meter: agent output level while speaking, mic input level otherwise.
   useEffect(() => {
     if (!open) return undefined;
@@ -169,19 +177,30 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
   const begin = useCallback(async () => {
     if (startedRef.current) return;
     startedRef.current = true;
+    const gen = ++beginGenRef.current;
+    // True once the user has left Voice Mode (or restarted) while this async
+    // begin() was still in flight. When that happens we must NOT bring up a
+    // live session — otherwise the agent keeps listening/talking with no UI.
+    const cancelled = () => beginGenRef.current !== gen;
     setErrorText("");
     setUiState("connecting");
     try {
-      await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Prompt for permission only; the SDK opens its own mic stream, so stop
+      // these throwaway tracks immediately or the mic stays "live" after exit.
+      const permStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      try { permStream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
     } catch {
+      if (cancelled()) return;
       setErrorText("Microphone permission was denied. Enable it to use Voice Mode.");
       setUiState("error");
       startedRef.current = false;
       return;
     }
+    if (cancelled()) return;
 
     let instructions = "";
     try { instructions = String((await buildInstructionsRef.current?.()) || ""); } catch { instructions = ""; }
+    if (cancelled()) return;
 
     let signedUrl = "";
     let sessionToken = "";
@@ -200,6 +219,7 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
         }),
       });
       const data = await res.json().catch(() => ({}));
+      if (cancelled()) return;
       if (!res.ok || !data?.signedUrl) {
         setErrorText(String(data?.error || "Couldn't start voice session."));
         setUiState("error");
@@ -210,11 +230,13 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
       sessionToken = data.sessionToken || "";
       serverFirstMessage = typeof data.firstMessage === "string" ? data.firstMessage : "";
     } catch {
+      if (cancelled()) return;
       setErrorText("Couldn't reach the voice service.");
       setUiState("error");
       startedRef.current = false;
       return;
     }
+    if (cancelled()) return;
 
     try {
       // The session token rides in the agent prompt so the custom-LLM endpoint
@@ -238,7 +260,15 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
         connectionType: "websocket",
         overrides,
       } as Parameters<typeof startSession>[0]);
+      // The user left Voice Mode while we were connecting: the session is now
+      // live but unwanted, so tear it right back down (otherwise it keeps
+      // capturing the mic and talking with no UI to stop it).
+      if (cancelled()) {
+        try { void endSessionRef.current?.(); } catch { /* ignore */ }
+        return;
+      }
     } catch (e: unknown) {
+      if (cancelled()) return;
       const msg = (e as { message?: string })?.message || "Couldn't start the voice connection.";
       setErrorText(msg);
       setUiState("error");
@@ -248,10 +278,12 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
 
   const stop = useCallback(() => {
     startedRef.current = false;
-    try { void endSession(); } catch { /* ignore */ }
+    // Invalidate any begin() still in flight so it aborts before going live.
+    beginGenRef.current++;
+    try { void endSessionRef.current?.(); } catch { /* ignore */ }
     setMicLevel(0);
     setUiState("idle");
-  }, [endSession]);
+  }, []);
 
   useEffect(() => {
     if (open) { void begin(); return () => { stop(); }; }

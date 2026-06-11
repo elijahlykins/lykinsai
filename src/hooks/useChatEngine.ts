@@ -5,6 +5,8 @@ import { useCanvasStore } from "@/store/canvasStore";
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 import { supabase } from "@/lib/supabase";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
+import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
+import { ChatCodeBlock } from "@/components/omnia/ChatCodeBlock";
 import { buildTieredCanvasContext, buildActionCanvasContext } from "@/lib/ai/buildCanvasContext";
 import { getVaultSidebarWidth } from "@/hooks/useViewportTier";
 import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
@@ -19,6 +21,7 @@ import {
   type OrchestratorResult,
   type ChatSendParams,
 } from "@/lib/ai/chatSendOrchestrator";
+import { type ChatArtifact, toArtifactEditContext, isEditableArtifact } from "@/lib/ai/chatArtifacts";
 import { markdownToTiptap } from "@/lib/markdownToTiptap";
 import { isDemoGridId } from "@/lib/demoGrids";
 import { toast } from "@/components/ui/use-toast";
@@ -38,6 +41,11 @@ import {
 } from "@/lib/chat/chatThreadRuntime";
 
 export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorResult };
+
+/** "+" menu capability mode applied to the next chat send. */
+// Artifact kinds buildable from the "+" → Create submenu (claude.ai-style).
+export type ArtifactKind = "deck" | "study" | "document" | "worksheet" | "chart" | "diagram" | "webapp";
+export type ComposerMode = "none" | "image" | "web" | "research" | `create:${ArtifactKind}`;
 
 /* ------------------------------------------------------------------ */
 /*  Shared utility functions (moved from OmniaGrid.tsx top-level)      */
@@ -75,6 +83,10 @@ export interface UseChatEngineDeps {
   customModelId?: string | null;
   notesPagesRef: React.MutableRefObject<Array<{ id: string; title: string; content: any }>>;
   projectId: string | null;
+  /** LYKN project the user explicitly scoped the chat to via the "+" menu. */
+  scopedProjectId?: string | null;
+  /** Display name of the scoped project, surfaced to the model verbatim. */
+  scopedProjectName?: string | null;
   gridSize: number;
   viewportWidth: number;
   chatMode: boolean;
@@ -144,6 +156,14 @@ export interface UseChatEngineReturn {
   isTranscribing: boolean;
   /* Voice Mode: full-screen hands-free voice conversation overlay. */
   voiceModeOn: boolean;
+  /* "+" menu capability mode applied to the next send (auto-clears on send). */
+  composerMode: ComposerMode;
+  setComposerMode: (mode: ComposerMode) => void;
+
+  /* Artifact open in the side panel (Claude-style pullout). The model refines
+   * THIS artifact in place when the user sends an edit request. */
+  activeArtifact: ChatArtifact | null;
+  setActiveArtifact: (artifact: ChatArtifact | null) => void;
 
   /* Refs (exposed for child component prop-passing) */
   chatMessagesRef: React.MutableRefObject<PromptMessage[]>;
@@ -174,6 +194,7 @@ export interface UseChatEngineReturn {
   handleOpenAttachments: () => void;
   removeFocusedAttachment: (id: string) => void;
   addFocusedAttachment: (att: FocusedChatAttachment) => void;
+  updateFocusedAttachment: (id: string, patch: Record<string, unknown>) => void;
   applyVaultDropToChat: (payload: any) => Promise<void>;
   resizeChatInput: (el: HTMLTextAreaElement | null) => void;
   toggleAiExpanded: (msgId: string) => void;
@@ -257,7 +278,7 @@ function findSmartPlacement(opts: {
 export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const {
     boardId, routeBoardId, user, title, titleRef, selectedModel, customModelId,
-    notesPagesRef, projectId, gridSize, viewportWidth, chatMode, chatRailVisible,
+    notesPagesRef, projectId, scopedProjectId, scopedProjectName, gridSize, viewportWidth, chatMode, chatRailVisible,
     chatMessages, setChatMessages, chatMessagesRef, aiThreadRef,
     convoSummaryRef, convoTurnsSinceSummaryRef,
     updateBlock, deleteBlock, addTextBlockAt, addListBlockAt, setListItems,
@@ -283,6 +304,22 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const [isDictating, setIsDictating] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceModeOn, setVoiceModeOn] = useState(false);
+  // Active "+" menu capability mode for the NEXT send. Steers the model to
+  // use a specific tool (image gen / web search / deep research) for this
+  // turn, then auto-clears once the message is sent.
+  const [activeArtifact, setActiveArtifactState] = useState<ChatArtifact | null>(null);
+  const activeArtifactRef = useRef<ChatArtifact | null>(null);
+  const setActiveArtifact = useCallback((artifact: ChatArtifact | null) => {
+    activeArtifactRef.current = artifact;
+    setActiveArtifactState(artifact);
+  }, []);
+
+  const [composerMode, setComposerModeState] = useState<ComposerMode>("none");
+  const composerModeRef = useRef<ComposerMode>("none");
+  const setComposerMode = useCallback((mode: ComposerMode) => {
+    composerModeRef.current = mode;
+    setComposerModeState(mode);
+  }, []);
 
   /* ---------- Refs (hook-local) ---------- */
   const voiceModeOnRef = useRef(false);
@@ -615,11 +652,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     ol: ({ children }: any) => React.createElement("ol", { className: "my-3 list-decimal pl-5 space-y-1.5" }, children),
     strong: ({ children }: any) => React.createElement("strong", { className: "font-semibold" }, children),
     blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic" }, children),
-    code: ({ children, className }: any) => {
-      const isBlock = className?.startsWith("language-");
-      if (isBlock) return React.createElement("pre", { className: "rounded-lg bg-black/5 p-3 my-2 overflow-x-auto text-[0.85em]" }, React.createElement("code", null, children));
-      return React.createElement("code", { className: "rounded bg-black/10 px-1.5 py-0.5 text-[0.85em]" }, children);
-    },
+    code: (props: any) => React.createElement(ChatCodeBlock, props),
     pre: ({ children }: any) => React.createElement(React.Fragment, null, children),
     table: ({ children }: any) => React.createElement("div", { className: "my-3 overflow-x-auto" }, React.createElement("table", { className: "w-full border-collapse text-sm" }, children)),
     thead: ({ children }: any) => React.createElement("thead", { className: "border-b border-black/20" }, children),
@@ -1967,6 +2000,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     const text = chatInputRef.current.trim();
     if (!text) return;
 
+    const sendMode = composerModeRef.current;
     const streamBoardId = String(routeBoardId || boardId || "");
     // Per-board guard: block a second send for THIS chat only. Other
     // chats in the thread can stream at the same time.
@@ -2015,6 +2049,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       sentAttachments.push({ type: "youtube", videoId: brickActionData.videoId, url: `https://www.youtube.com/watch?v=${brickActionData.videoId}`, name: `YouTube ${brickActionData.videoId}` } as any);
     }
     setChatInput("");
+    setComposerMode("none");
     setFocusedChatAttachments([]);
     threadState.setIsChatLoading(true);
     threadState.setChatStatusText("");
@@ -2035,9 +2070,15 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     chatMessagesRef.current = sendSnap.chatMessages;
 
     try {
+      const editArtifact = activeArtifactRef.current;
       await orchestrateChatSend({
         text,
         promptId,
+        composerMode: sendMode,
+        activeArtifact:
+          sendMode === "none" && isEditableArtifact(editArtifact)
+            ? toArtifactEditContext(editArtifact as ChatArtifact)
+            : null,
         sentAttachments,
         brickActionData,
         // Pull conversation context from THIS board's snapshot so chats
@@ -2052,6 +2093,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           boardId,
           routeBoardId,
           projectId,
+          scopedProjectId: scopedProjectId ?? null,
+          scopedProjectName: scopedProjectName ?? null,
           userId: user?.id,
         },
         context: {
@@ -2133,7 +2176,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       }
     }
   }, [
-    focusedChatAttachments, selectedModel, customModelId, boardId, routeBoardId, projectId, user?.id, setChatInput,
+    focusedChatAttachments, selectedModel, customModelId, boardId, routeBoardId, projectId, scopedProjectId, scopedProjectName, user?.id, setChatInput, setComposerMode,
     buildCanvasContext, getKnowledgeBaseContext, getCachedWorkspaceSummary,
     getAllYouTubeBlocks, buildYouTubeGrounding, isVideoQuestion, looksLikeDeflectingQuestion,
     sanitizeAssistantResponse, buildDirectVideoAnswerFromGrounding,
@@ -2250,34 +2293,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     return String(last?.aiResponse || "").trim();
   }, [routeBoardId, boardId, setChatInput, handleChatSend]);
 
-  const handleChatPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    // Branch on either HTML OR a structured paste payload (e.g. images,
-    // file lists). When neither is present, let the browser handle the
-    // plain-text paste natively — that path is also where we want default
-    // textarea behaviour (undo, IME, etc).
-    const html = e.clipboardData.getData("text/html");
-    const hasFiles = (e.clipboardData.files && e.clipboardData.files.length > 0) || false;
-    if (!html.trim() && !hasFiles) return;
-    e.preventDefault();
-    const ta = e.currentTarget;
-    const start = ta.selectionStart; const end = ta.selectionEnd;
-    const text = getStructuredPasteFromEvent(e);
-    const prev = chatInputRef.current;
-    const newVal = prev.slice(0, start) + text + prev.slice(end);
-    chatInputRef.current = newVal;
-    ta.value = newVal;
-    setChatInputHasText(!!newVal.trim());
-    resizeChatInputEl(ta);
-    const nc = start + text.length;
-    setTimeout(() => { ta.selectionStart = ta.selectionEnd = nc; ta.focus(); }, 0);
-  }, []);
-
-  const handleOpenAttachments = useCallback(() => setShowAttachMenu(true), [setShowAttachMenu]);
-
   const removeFocusedAttachment = useCallback((id: string) => {
     setFocusedChatAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
+  // Declared before `handleChatPaste` (which lists it in its deps array) so the
+  // const is initialized by the time React evaluates that dependency at render.
   const addFocusedAttachment = useCallback((att: FocusedChatAttachment) => {
     setFocusedChatAttachments((prev) => {
       const isDup = prev.some((ex) => {
@@ -2290,6 +2311,58 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       return isDup ? prev : [...prev, att];
     });
   }, []);
+
+  // Patch an existing composer attachment in place (e.g. to backfill a durable
+  // storagePath once a background upload lands). Keyed by attachment id.
+  const updateFocusedAttachment = useCallback((id: string, patch: Record<string, unknown>) => {
+    setFocusedChatAttachments((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+    );
+  }, []);
+
+  const handleChatPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    // Branch on HTML, a file payload (pasted screenshots / copied files), or
+    // neither. When only plain text is present we let the browser paste it
+    // natively — that path also preserves default textarea behaviour (undo,
+    // IME, etc).
+    const ta = e.currentTarget;
+    const html = e.clipboardData.getData("text/html");
+    // Materialize the FileList synchronously: it is tied to the event and
+    // becomes unusable once the handler returns (the File objects survive).
+    const pastedFiles = e.clipboardData.files ? Array.from(e.clipboardData.files) : [];
+    const hasFiles = pastedFiles.length > 0;
+    if (!html.trim() && !hasFiles) return;
+
+    // Pasted files (screenshots, copied images, file copies) become chat
+    // attachments via the same pipeline as the composer file picker.
+    if (hasFiles) {
+      e.preventDefault();
+      void ingestChatFiles(pastedFiles, addFocusedAttachment, {
+        userId: user?.id,
+        updateAttachment: updateFocusedAttachment,
+      });
+    }
+
+    const text = getStructuredPasteFromEvent(e);
+    // Image-only pastes have no text/html or text/plain → nothing to insert.
+    if (!text) {
+      if (hasFiles) setTimeout(() => ta?.focus?.(), 0);
+      return;
+    }
+
+    e.preventDefault();
+    const start = ta.selectionStart; const end = ta.selectionEnd;
+    const prev = chatInputRef.current;
+    const newVal = prev.slice(0, start) + text + prev.slice(end);
+    chatInputRef.current = newVal;
+    ta.value = newVal;
+    setChatInputHasText(!!newVal.trim());
+    resizeChatInputEl(ta);
+    const nc = start + text.length;
+    setTimeout(() => { ta.selectionStart = ta.selectionEnd = nc; ta.focus(); }, 0);
+  }, [addFocusedAttachment, updateFocusedAttachment, user?.id]);
+
+  const handleOpenAttachments = useCallback(() => setShowAttachMenu(true), [setShowAttachMenu]);
 
   const makeAttId = () => (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) || `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const inferUrlAttachmentType = useCallback((url: string) => {
@@ -2317,14 +2390,20 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         if (!videoId && attType === "youtube") videoId = extractYouTubeVideoId(url) || "";
         if (!url && videoId) url = `https://www.youtube.com/watch?v=${videoId}`;
         const pathOnly = String(att?.storagePath || "").trim();
+        const bucket = String(att?.storageBucket || "user-files").trim() || "user-files";
         if (!url || (!url.startsWith("http") && !url.startsWith("data:") && attType !== "youtube")) {
-          try { const path = pathOnly || url; if (path) { const { data } = await supabase.storage.from(att?.storageBucket || "user-files").createSignedUrl(path, 60 * 60 * 24 * 7); if (data?.signedUrl) url = data.signedUrl; } } catch {}
+          try { const path = pathOnly || url; if (path) { const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 7); if (data?.signedUrl) url = data.signedUrl; } } catch {}
         }
+        // Carry the durable storagePath onto the chat attachment. The signed
+        // `url` above is stripped when the chat is persisted (signed URLs are
+        // short-lived); keeping storagePath lets reSignChatAttachments mint a
+        // fresh URL on reload so the image doesn't break after leaving/returning.
+        const storageMeta = pathOnly ? { storagePath: pathOnly, storageBucket: bucket } : {};
         const transcript = String(att?.transcript || "").trim();
         const pdfText = String(att?.pdfText || att?.extractedText || "").trim();
-        if (!url && pdfText) { addFocusedAttachment({ id: makeAttId(), type: "pdf", url: "", name: String(att?.name || att?.title || title2 || "PDF").trim(), mime: String(att?.mime || "application/pdf"), size: Number(att?.size || 0), vaultTitle: title2, pdfText }); continue; }
+        if (!url && pdfText) { addFocusedAttachment({ id: makeAttId(), type: "pdf", url: "", name: String(att?.name || att?.title || title2 || "PDF").trim(), mime: String(att?.mime || "application/pdf"), size: Number(att?.size || 0), vaultTitle: title2, pdfText, ...storageMeta }); continue; }
         if (!url) continue;
-        addFocusedAttachment({ id: makeAttId(), type: attType || inferUrlAttachmentType(url), url, name: String(att?.name || att?.title || title2 || url).trim(), mime: String(att?.mime || ""), size: Number(att?.size || 0), vaultTitle: title2, ...(videoId ? { videoId } : {}), ...(transcript ? { transcript } : {}), ...(pdfText ? { pdfText } : {}) });
+        addFocusedAttachment({ id: makeAttId(), type: attType || inferUrlAttachmentType(url), url, name: String(att?.name || att?.title || title2 || url).trim(), mime: String(att?.mime || ""), size: Number(att?.size || 0), vaultTitle: title2, ...(videoId ? { videoId } : {}), ...(transcript ? { transcript } : {}), ...(pdfText ? { pdfText } : {}), ...storageMeta });
       }
     } else if (content) {
       addFocusedAttachment({ id: makeAttId(), type: "vault", url: "", name: title2 || "Vault item", mime: "", size: 0, vaultTitle: title2, vaultContent: content });
@@ -2363,6 +2442,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     assistantTaskChecks,
     isDictating, isTranscribing,
     voiceModeOn,
+    composerMode, setComposerMode,
+    activeArtifact, setActiveArtifact,
     chatMessagesRef, aiThreadRef,
     chatScrollRef, chatPanelInputRef, centerChatInputRef,
     chatUserScrolledUpRef, chatProgrammaticScrollRef,
@@ -2371,7 +2452,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     handleChatSend, handleStopAi, handleDictateToggle,
     toggleVoiceMode, setVoiceMode, sendVoiceTurn,
     handleChatPaste, handleOpenAttachments,
-    removeFocusedAttachment, addFocusedAttachment,
+    removeFocusedAttachment, addFocusedAttachment, updateFocusedAttachment,
     applyVaultDropToChat, resizeChatInput,
     toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
     updateTaskCheck, buildChatMarkdownComponents,

@@ -127,7 +127,8 @@ export const generateChartTool = {
   scope: 'read',
   description: [
     'Create a bar/line/pie chart from structured labels + datasets.',
-    'Returns a chart_url (QuickChart PNG) and a markdown table.',
+    'Returns a chart_url (QuickChart PNG) and a markdown table. The chart card',
+    'auto-offers PNG/SVG/PDF downloads, so the user can use it outside LYKN.',
     'Use when the user asks to graph, chart, or visualize numeric data.',
     'Include the chart as a markdown image: ![title](chart_url).',
   ].join('\n'),
@@ -176,6 +177,7 @@ export const generateDiagramTool = {
     'Build flowcharts, sequence diagrams, ER diagrams, timelines, etc.',
     'Pass valid Mermaid source. If omitted, wraps input as flowchart TD.',
     'Returns markdown with a ```mermaid block — include that in your reply.',
+    'The diagram card auto-offers SVG/PNG downloads for use outside LYKN.',
     'Use for architecture, process flows, decision trees, org charts.',
   ].join('\n'),
   inputSchema: {

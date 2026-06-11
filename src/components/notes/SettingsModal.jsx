@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import {
   LogOut,
@@ -591,6 +592,51 @@ export default function SettingsModal({ isOpen, onClose }) {
             </SelectTrigger>
             <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
               <ModelSelectOptions modelTier={modelTier} />
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700/60">
+          <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5 pt-2">
+            <Sparkles className="w-3 h-3" />
+            Custom instructions
+          </Label>
+          <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
+            Tell LYKN how to respond — tone, format, things to always or never do. Applied to every chat.
+          </p>
+          <Textarea
+            value={settings.userPrompt || ''}
+            onChange={(e) => setSettings((prev) => ({ ...prev, userPrompt: e.target.value }))}
+            onBlur={() => persistSettings(settings)}
+            maxLength={1500}
+            rows={4}
+            placeholder="e.g. Be concise and direct. Use bullet points. Skip the preamble."
+            className="resize-none text-sm bg-black/[0.02] dark:bg-white/[0.04] border-gray-200 dark:border-white/10"
+          />
+          <div className="text-right text-[10px] text-gray-400 dark:text-gray-600">
+            {(settings.userPrompt || '').length}/1500
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-xs text-gray-600 dark:text-gray-400">
+            Response length
+          </Label>
+          <Select
+            value={settings.responseLength || 'medium'}
+            onValueChange={(value) => {
+              const updated = { ...settings, responseLength: value };
+              setSettings(updated);
+              persistSettings(updated);
+            }}
+          >
+            <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-1 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+              <SelectItem value="concise">Concise</SelectItem>
+              <SelectItem value="medium">Balanced</SelectItem>
+              <SelectItem value="detailed">Detailed</SelectItem>
             </SelectContent>
           </Select>
         </div>

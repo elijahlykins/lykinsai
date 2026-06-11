@@ -8,13 +8,15 @@ import {
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } from "@/lib/chat/chatMarkdown";
 import NeuronPill from "@/components/synthesis/NeuronPill";
 import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
 import ToolCallPill from "@/components/omnia/ToolCallPill";
 import ChatArtifactCard from "@/components/omnia/ChatArtifactCard";
-import { extractChatArtifacts, sortArtifactsForDisplay } from "@/lib/ai/chatArtifacts";
+import OmniaArtifactPanel, { ARTIFACT_PANEL_WIDTH } from "@/components/omnia/OmniaArtifactPanel";
+import { extractChatArtifacts, sortArtifactsForDisplay, type ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ChatNeuronCard from "@/components/omnia/ChatNeuronCard";
+import LinkPreview from "@/components/LinkPreview";
 import type {
   ToolCallEvent,
   ChatNeuronAttachment,
@@ -24,8 +26,8 @@ import { supabase } from "@/lib/supabase";
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
-const normalizeChecklistSyntax = (value: string) =>
-  String(value || "")
+const normalizeChecklistSyntax = (value: string) => {
+  const checklist = String(value || "")
     .split(/\r?\n/)
     .map((line) => {
       const match = String(line || "").match(TASK_LINE_RE);
@@ -34,6 +36,8 @@ const normalizeChecklistSyntax = (value: string) =>
       return `- [${marker}] ${String(match[2] || "").trim()}`;
     })
     .join("\n");
+  return normalizeMathDelimiters(checklist);
+};
 
 const splitResponseIntoChunks = (text: string): string[] => {
   const raw = String(text || "").trim();
@@ -334,6 +338,12 @@ export interface OmniaFocusedChatProps {
   onRegenerateNonUser: (msgId: string, idx: number) => void;
 
   /**
+   * Edit a previously-sent user prompt: truncates the conversation from that
+   * turn onward and re-sends the edited text as a fresh turn.
+   */
+  onEditResend: (msgId: string, newText: string) => void;
+
+  /**
    * Refetches the load-in greeting payload and overlays it onto the
    * currently-rendered greeting message in place. Invoked by the
    * inline user-sections composer after every CRUD so the bubble (and
@@ -351,6 +361,16 @@ export interface OmniaFocusedChatProps {
   composerAbove?: React.ReactNode;
   /** Keep the composer pinned to the bottom even with no messages (e.g. new chat in a thread). */
   pinComposerToBottom?: boolean;
+
+  /**
+   * Artifact open in the Claude-style side pullout. When set, the panel shows
+   * it large and the next chat edit refines it in place. Owned by useChatEngine
+   * so the send path can include it as edit context.
+   */
+  activeArtifact?: ChatArtifact | null;
+  onActiveArtifactChange?: (artifact: ChatArtifact | null) => void;
+  /** Identifier for the currently-shown chat — switching it closes the panel. */
+  chatKey?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -383,6 +403,7 @@ type MessageItemProps = {
   onCopyMessage: (id: string, text: string) => void;
   onReaction: (id: string, kind: "like" | "dislike") => void;
   onRegenerate: (id: string, content: string) => void;
+  onEditResend: (id: string, newText: string) => void;
   onRegenerateNonUser: (id: string, idx: number) => void;
   onSaveYouTube: (videoId: string, url: string) => void;
   onSaveAttachment: (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => void;
@@ -398,6 +419,8 @@ type MessageItemProps = {
    * greeting bubble (and dashboard panel) pick up the new state.
    */
   onLoadInGreetingRefresh?: () => void | Promise<void>;
+  /** Open an artifact in the side pullout panel (Claude-style). */
+  onOpenArtifact?: (art: ChatArtifact) => void;
 };
 
 /**
@@ -873,14 +896,17 @@ const MessageItem = React.memo(function MessageItem({
   savedMediaUrls, savedYouTubeIds, selectedChunks,
   buildChatMarkdownComponents,
   toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
-  onCopyMessage, onReaction, onRegenerate, onRegenerateNonUser,
+  onCopyMessage, onReaction, onRegenerate, onEditResend, onRegenerateNonUser,
   onSaveYouTube, onSaveAttachment, onSaveAiImage, onSaveLink,
   addChatResponseToGrid,
   handleChunkClick, getSelectedText, registerChunks,
   onLoadInGreetingRefresh,
+  onOpenArtifact,
 }: MessageItemProps) {
   const aiResponse = msg.aiResponse || "";
   const navigate = useNavigate();
+  const [isEditingPrompt, setIsEditingPrompt] = useState(false);
+  const [editDraft, setEditDraft] = useState("");
 
   // Memoize the expensive chunk-split per message. During streaming this
   // recomputes only when this specific message's aiResponse grows; every
@@ -971,6 +997,25 @@ const MessageItem = React.memo(function MessageItem({
                     </div>
                   );
                 }
+                if ((at === "link" || at === "bookmark") && attUrl) {
+                  return (
+                    <div key={att.id} className="w-full max-w-[20rem]">
+                      <LinkPreview
+                        url={attUrl}
+                        title={att.linkTitle || att.name || ""}
+                        description={att.linkDescription || ""}
+                        image={att.linkImage || ""}
+                        siteName={att.linkSiteName || ""}
+                        favicon={att.linkFavicon || ""}
+                        authorName={att.authorName || ""}
+                        authorHandle={att.authorHandle || ""}
+                        oembedType={att.oembedType || ""}
+                        variant="vault"
+                      />
+                      {saveBtn}
+                    </div>
+                  );
+                }
                 return (
                   <div key={att.id}>
                     <div className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2"><FileText className="w-4 h-4 opacity-60" /><span className="text-xs truncate max-w-[12.5rem]">{att.name || att.url || "File"}</span></div>
@@ -987,27 +1032,80 @@ const MessageItem = React.memo(function MessageItem({
             const collapsedClampStyle = isLongPrompt && !isPromptExpanded
               ? { display: "-webkit-box" as const, WebkitLineClamp: 5 as any, WebkitBoxOrient: "vertical" as any, overflow: "hidden" as const }
               : undefined;
+            if (isEditingPrompt) {
+              const commitEdit = () => {
+                const next = editDraft.trim();
+                if (!next) return;
+                setIsEditingPrompt(false);
+                onEditResend(msg.id, next);
+              };
+              return (
+                <div className="max-w-[80%] w-full flex flex-col items-end gap-2">
+                  <textarea
+                    autoFocus
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitEdit(); }
+                      else if (e.key === "Escape") { e.preventDefault(); setIsEditingPrompt(false); }
+                    }}
+                    rows={Math.min(10, Math.max(2, editDraft.split("\n").length))}
+                    className="w-full min-w-[260px] rounded-2xl px-4 py-3 text-sm leading-relaxed text-black/90 dark:text-white/90 bg-background border border-black/10 dark:border-white/15 resize-none focus:outline-none focus:ring-1 focus:ring-blue-400/50"
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingPrompt(false)}
+                      className="px-3 py-1 rounded-md text-xs text-black/55 dark:text-white/55 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={commitEdit}
+                      disabled={!editDraft.trim()}
+                      className="px-3 py-1 rounded-md text-xs font-semibold bg-blue-500/15 border border-blue-400/40 text-blue-700 dark:text-blue-200 hover:bg-blue-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Send
+                    </button>
+                  </div>
+                </div>
+              );
+            }
             return (
-              <div className="max-w-[80%] flex flex-col items-end">
+              <div className="group max-w-[80%] flex flex-col items-end">
                 <div
                   className="rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:my-2 [&_td]:px-2 [&_th]:px-2"
                   style={collapsedClampStyle}
                 >
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{normalizeChecklistSyntax(promptText)}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>{normalizeChecklistSyntax(promptText)}</ReactMarkdown>
                 </div>
-                {isLongPrompt && msg.id && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); toggleUserPromptExpanded(msg.id); }}
-                    title={isPromptExpanded ? "Show less" : "Show full prompt"}
-                    aria-label={isPromptExpanded ? "Show less" : "Show full prompt"}
-                    className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs text-black/55 dark:text-white/55 hover:text-black/85 dark:hover:text-white/85 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-                  >
-                    {isPromptExpanded
-                      ? <span className="leading-none">Show less</span>
-                      : <><MoreHorizontal className="w-3.5 h-3.5" /><span className="leading-none">Show more</span></>}
-                  </button>
-                )}
+                <div className="flex items-center gap-1 mt-1">
+                  {msg.id && !isLoadInGreeting && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setEditDraft(promptText); setIsEditingPrompt(true); }}
+                      title="Edit & resend"
+                      aria-label="Edit & resend"
+                      className="opacity-0 group-hover:opacity-100 focus:opacity-100 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs text-black/45 dark:text-white/45 hover:text-black/85 dark:hover:text-white/85 hover:bg-black/5 dark:hover:bg-white/10 transition-all"
+                    >
+                      <Pencil className="w-3 h-3" /><span className="leading-none">Edit</span>
+                    </button>
+                  )}
+                  {isLongPrompt && msg.id && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); toggleUserPromptExpanded(msg.id); }}
+                      title={isPromptExpanded ? "Show less" : "Show full prompt"}
+                      aria-label={isPromptExpanded ? "Show less" : "Show full prompt"}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs text-black/55 dark:text-white/55 hover:text-black/85 dark:hover:text-white/85 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                    >
+                      {isPromptExpanded
+                        ? <span className="leading-none">Show less</span>
+                        : <><MoreHorizontal className="w-3.5 h-3.5" /><span className="leading-none">Show more</span></>}
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })()}
@@ -1088,7 +1186,7 @@ const MessageItem = React.memo(function MessageItem({
                       ) : null}
                       {body ? (
                         <div className="text-sm leading-relaxed break-words text-black/85 dark:text-white/85">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                          <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
                             {normalizeChecklistSyntax(body)}
                           </ReactMarkdown>
                         </div>
@@ -1155,7 +1253,7 @@ const MessageItem = React.memo(function MessageItem({
                           // before any bubble stack so the user gets
                           // the recap, then can drill into specifics.
                           <div className="text-sm leading-relaxed text-black/85 dark:text-white/85">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                            <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
                               {sec.summary}
                             </ReactMarkdown>
                           </div>
@@ -1525,6 +1623,36 @@ const MessageItem = React.memo(function MessageItem({
             {(() => {
               const artifacts = sortArtifactsForDisplay(extractChatArtifacts(msg.toolCalls));
               if (!artifacts.length) return null;
+              // With a panel handler, show a compact "open" chip (Claude-style)
+              // instead of the full inline preview; the artifact lives in the
+              // right-side pullout. Without a handler, fall back to the card.
+              if (onOpenArtifact) {
+                return (
+                  <div className="px-1 flex flex-col gap-2 max-w-[min(100%,30rem)] w-full">
+                    {artifacts.map((art) => (
+                      <button
+                        key={art.id}
+                        type="button"
+                        onClick={() => onOpenArtifact(art)}
+                        className="group flex items-center gap-3 rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] px-3.5 py-3 text-left shadow-sm transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.07] w-full"
+                      >
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#c2603f]/12 text-[#c2603f] dark:bg-[#e08e6f]/15 dark:text-[#e08e6f]">
+                          <FileText className="h-4 w-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[13px] font-semibold text-foreground">{art.title}</span>
+                          <span className="block text-[11px] text-muted-foreground">
+                            {art.kind === "html" ? "Artifact · click to open" : (art.format || "file").toUpperCase()}
+                          </span>
+                        </span>
+                        <span className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground group-hover:text-foreground transition-colors">
+                          Open
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              }
               return (
                 <div className="px-1 flex flex-col gap-2 max-w-[min(100%,42rem)] w-full">
                   {artifacts.map((art) => (
@@ -1566,7 +1694,7 @@ const MessageItem = React.memo(function MessageItem({
             <div className={`grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${isAiExpanded ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`}>
               <div className="overflow-hidden min-h-0">
                 <div className="px-4 py-3 text-sm leading-relaxed break-words text-black/85 dark:text-white/85">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                  <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
                     {normalizeChecklistSyntax(msg.content || "")}
                   </ReactMarkdown>
                 </div>
@@ -1676,15 +1804,67 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   chatReactions,
   onReaction,
   onRegenerate,
+  onEditResend,
   onRegenerateNonUser,
   onLoadInGreetingRefresh,
   compactPreview = false,
   threadFooter = null,
   composerAbove = null,
   pinComposerToBottom = false,
+  activeArtifact = null,
+  onActiveArtifactChange,
+  chatKey,
 }) {
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const chunkMapRef = useRef<Map<string, string>>(new Map());
+
+  // Claude-style artifact pullout: clicking a card opens it in the side panel,
+  // and a brand-new (or just-refined) artifact auto-opens / updates it in place.
+  const onOpenArtifact = useCallback(
+    (art: ChatArtifact) => { onActiveArtifactChange?.(art); },
+    [onActiveArtifactChange],
+  );
+  // When the artifact panel is open on desktop, the chat column shrinks to the
+  // left and the panel becomes a fixed right column (Claude-style split view).
+  const panelOpen = !!activeArtifact && !!onActiveArtifactChange;
+  const chatRightInset = panelOpen && !isMobilePhone ? ARTIFACT_PANEL_WIDTH : "0px";
+  const lastSeenArtifactRef = useRef<string | null>(null);
+  const artifactChatKeyRef = useRef<string | undefined>(undefined);
+  const artifactSeededRef = useRef(false);
+  useEffect(() => {
+    if (!onActiveArtifactChange) return;
+    let newest: ChatArtifact | null = null;
+    for (let i = chatMessages.length - 1; i >= 0 && !newest; i--) {
+      const arts = sortArtifactsForDisplay(extractChatArtifacts(chatMessages[i]?.toolCalls));
+      if (arts.length) newest = arts[0];
+    }
+    const key = newest?.toolCallId || newest?.id || null;
+
+    // Switched chats: close the panel (the artifact stays saved as a chip in
+    // the old chat) and re-baseline so the new chat's existing artifacts are
+    // NOT auto-opened — only artifacts the user builds from here on auto-open.
+    if (artifactChatKeyRef.current !== chatKey) {
+      artifactChatKeyRef.current = chatKey;
+      artifactSeededRef.current = false;
+      lastSeenArtifactRef.current = null;
+      onActiveArtifactChange(null);
+    }
+
+    // First time this chat's messages populate — establish a baseline without
+    // opening (covers async thread hydration after a switch / on initial load).
+    if (!artifactSeededRef.current) {
+      if (chatMessages.length > 0) {
+        artifactSeededRef.current = true;
+        lastSeenArtifactRef.current = key;
+      }
+      return;
+    }
+
+    if (newest && key && key !== lastSeenArtifactRef.current) {
+      lastSeenArtifactRef.current = key;
+      onActiveArtifactChange(newest);
+    }
+  }, [chatMessages, chatKey, onActiveArtifactChange]);
 
   const handleChunkClick = useCallback((e: React.MouseEvent, chunkKey: string, chunkText: string) => {
     chunkMapRef.current.set(chunkKey, chunkText);
@@ -1804,6 +1984,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
               ? undefined
               : {
                   left: isMobilePhone ? 0 : "var(--sidebar-offset, 0px)",
+                  right: chatRightInset,
                   bottom: "var(--mobile-tabbar-clear, 0px)",
                 }
           }
@@ -1871,6 +2052,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
           style={{
             top: isMobilePhone ? "2.75rem" : "var(--header-height-sm, 4.2rem)",
             bottom: "var(--mobile-tabbar-clear, 0px)",
+            right: chatRightInset,
             left: isMobilePhone
               ? 0
               : canvasFileBlocks.length > 0 && !isMobileGrid
@@ -1904,6 +2086,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                     onCopyMessage={onCopyMessage}
                     onReaction={onReaction}
                     onRegenerate={onRegenerate}
+                    onEditResend={onEditResend}
                     onRegenerateNonUser={onRegenerateNonUser}
                     onSaveYouTube={onSaveYouTube}
                     onSaveAttachment={onSaveAttachment}
@@ -1914,6 +2097,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
                     getSelectedText={getSelectedText}
                     registerChunks={registerChunks}
                     onLoadInGreetingRefresh={onLoadInGreetingRefresh}
+                    onOpenArtifact={onOpenArtifact}
                   />
                 ))}
                 {threadFooter}
@@ -1963,6 +2147,14 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
           </div>
         </div>
       )}
+      {onActiveArtifactChange ? (
+        <OmniaArtifactPanel
+          artifact={activeArtifact}
+          isUpdating={isChatLoading}
+          fullWidth={isMobilePhone}
+          onClose={() => onActiveArtifactChange(null)}
+        />
+      ) : null}
     </>
   );
 });

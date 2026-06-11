@@ -87,7 +87,7 @@ export interface UseBoardPersistenceParams {
   setChatRailOpen: Dispatch<SetStateAction<boolean>>;
   setChatRailVisible: Dispatch<SetStateAction<boolean>>;
   setChatMode: Dispatch<SetStateAction<boolean>>;
-  reSignChatAttachments: () => void;
+  reSignChatAttachments: (messages?: any[]) => void;
   restoreSavedToVaultState: (bid: string | null) => void;
   onCanvasChange?: () => void;
   onDraftEffectCleanup?: () => void;
@@ -325,10 +325,11 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
         }
       })();
 
-      const chatBoardId = hydrateBoardId ?? boardId;
+        const chatBoardId = hydrateBoardId ?? boardId;
       if (chatBoardId) {
         const boardChatKey = `omnia_chat_${chatBoardId}`;
         let chatLoaded = false;
+        let loadedChatMessages: any[] = [];
 
         try {
           const chatRaw = localStorage.getItem(boardChatKey);
@@ -336,6 +337,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
             const chatData = JSON.parse(chatRaw);
             if (Array.isArray(chatData.chatMessages) && chatData.chatMessages.length > 0) {
               setChatMessages(chatData.chatMessages);
+              loadedChatMessages = chatData.chatMessages;
               setChatRailOpen(true);
               setChatRailVisible(true);
               chatLoaded = true;
@@ -348,6 +350,7 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
 
         if (!chatLoaded && Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
           setChatMessages(snapshot.chatMessages);
+          loadedChatMessages = snapshot.chatMessages;
           setChatRailOpen(true);
           setChatRailVisible(true);
           if (Array.isArray(snapshot.aiThread) && snapshot.aiThread.length > 0) {
@@ -355,7 +358,11 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           }
         }
 
-        reSignChatAttachments();
+        // Pass the just-loaded messages directly: chatMessagesRef hasn't been
+        // synced from the setChatMessages calls above yet (that happens in a
+        // later effect), so reSign must work off this array to find and re-mint
+        // signed URLs for storage-backed attachments.
+        reSignChatAttachments(loadedChatMessages);
         restoreSavedToVaultState(chatBoardId);
       }
 
@@ -475,7 +482,19 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           if (Array.isArray(cleaned.attachments)) {
             cleaned.attachments = cleaned.attachments.map((a: any) => {
               const c = { ...a };
-              if (typeof c.url === "string" && (SIGNED_URL_RE.test(c.url) || c.url.startsWith("blob:"))) c.url = "";
+              // Strip heavy / short-lived inline URLs. When a durable
+              // storagePath exists we also drop data URLs (re-minted on load
+              // by reSignChatAttachments) so the saved state stays small;
+              // data URLs without a storagePath are kept since they're the
+              // only copy.
+              if (
+                typeof c.url === "string" &&
+                (SIGNED_URL_RE.test(c.url) ||
+                  c.url.startsWith("blob:") ||
+                  (c.storagePath && c.url.startsWith("data:")))
+              ) {
+                c.url = "";
+              }
               delete c.transcript;
               return c;
             });
@@ -1159,7 +1178,14 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
           if (Array.isArray(cleaned.attachments)) {
             cleaned.attachments = cleaned.attachments.map((a: any) => {
               const c = { ...a };
-              if (typeof c.url === "string" && (SIGNED_URL_RE.test(c.url) || c.url.startsWith("blob:"))) c.url = "";
+              if (
+                typeof c.url === "string" &&
+                (SIGNED_URL_RE.test(c.url) ||
+                  c.url.startsWith("blob:") ||
+                  (c.storagePath && c.url.startsWith("data:")))
+              ) {
+                c.url = "";
+              }
               delete c.transcript;
               return c;
             });

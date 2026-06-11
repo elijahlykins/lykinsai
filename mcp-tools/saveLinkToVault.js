@@ -200,6 +200,21 @@ export const saveLinkToVaultTool = {
     catch { return errorContent('url is not a valid URL.'); }
     const url = parsed.toString();
 
+    // Generated artifacts (a QuickChart image, a Supabase signed download URL)
+    // are NOT links to bookmark — saving them here strands a dead "quickchart.io"
+    // card with a broken image. Route them to lykn_saveFileToVault, which pulls
+    // the bytes into the vault and saves a real, viewable card.
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    const isGeneratedArtifact =
+      host === 'quickchart.io' ||
+      /\/storage\/v1\/object\/(sign|public)\//.test(parsed.pathname);
+    if (isGeneratedArtifact) {
+      return errorContent(
+        'This URL is a generated artifact (chart/image/file), not a link to bookmark. ' +
+        'Use lykn_saveFileToVault and pass this URL as file_url so it is saved as a viewable vault card.',
+      );
+    }
+
     const platform = detectPlatform(url);
     const platformLabel = platform ? PLATFORM_LABEL[platform] || platform : '';
     const hostname = safeHostname(url);

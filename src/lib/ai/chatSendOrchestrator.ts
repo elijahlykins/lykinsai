@@ -22,6 +22,8 @@ import {
   stripToolSyntaxFromStream,
   stripToolSyntaxFromFinal,
 } from "@/lib/ai/toolSyntaxStrip";
+import { ocrImageAttachments } from "@/lib/ai/imageOcr";
+import { toolRunningStatus } from "@/lib/ai/toolStatusVerbs";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { loadActiveCustomModelId } from "@/lib/modelBuilder/activeCustomModelStorage";
 import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
@@ -364,8 +366,31 @@ export type FocusedChatAttachment = {
   transcript?: string;
   pdfText?: string;
   extractedText?: string;
+  /** Client-side OCR text recovered from an image attachment (fallback so
+   *  dense/small text survives even on a weak-vision model). */
+  ocrText?: string;
   canvasBlockId?: string;
   rawFile?: File;
+  /** Durable Supabase Storage location for binary attachments (image / pdf /
+   *  file / video / audio). When set, the inline `url` (a data URL or a
+   *  short-lived signed URL) is stripped on persist and re-minted from this
+   *  path on reload by `reSignChatAttachments`, so the attachment survives
+   *  leaving and returning to the chat. Without it, a stripped url can never
+   *  be recovered and the image renders as "couldn't load image". */
+  storagePath?: string;
+  storageBucket?: string;
+  /** Open Graph metadata for `link`/`bookmark` attachments, populated by
+   *  the /api/unfurl endpoint so the chat renders the same rich
+   *  LinkPreview card the Vault shows (hero image, site name, title,
+   *  description) instead of a bare file chip. */
+  linkTitle?: string;
+  linkDescription?: string;
+  linkImage?: string;
+  linkSiteName?: string;
+  linkFavicon?: string;
+  oembedType?: string;
+  authorName?: string;
+  authorHandle?: string;
 };
 
 export type CreateAction =
@@ -434,6 +459,10 @@ export interface ChatSendIdentity {
   boardId: string | null;
   routeBoardId: string | undefined;
   projectId: string | null;
+  /** LYKN project the user explicitly scoped this chat to via the "+" menu. */
+  scopedProjectId?: string | null;
+  /** Display name of the scoped project. */
+  scopedProjectName?: string | null;
   userId: string | undefined;
 }
 
@@ -525,6 +554,21 @@ export interface ChatSendTyping {
 export interface ChatSendParams {
   text: string;
   promptId: string;
+  /** "+" menu capability mode for this turn (image / web / research). */
+  composerMode?: "none" | "image" | "web" | "research" | `create:${string}`;
+  /**
+   * Artifact currently open in the side panel. When present, the server lets
+   * the model refine it in place (rebuild via lykn_build_template) instead of
+   * starting from scratch. Shape: { toolName, title, templateType, sections, content }.
+   */
+  activeArtifact?: {
+    toolName: string;
+    title: string;
+    templateType?: string;
+    sections?: any[];
+    content?: string;
+    theme?: string;
+  } | null;
   sentAttachments: FocusedChatAttachment[];
   brickActionData: { imageUrl?: string; videoId?: string } | null;
   chatMessages: PromptMessage[];
@@ -571,7 +615,10 @@ function buildAttachmentContext(sentAttachments: FocusedChatAttachment[]): strin
     if (t === "video" || t === "audio") {
       return `${t === "video" ? "Video" : "Audio"} "${label}"${parts.length ? `\nTranscript: ${parts.join("\n")}` : " (no transcript available)"}`;
     }
-    if (t === "image") return `Image "${label}"${safeUrl ? ` — ${safeUrl}` : ""}`;
+    if (t === "image") {
+      const ocr = a.ocrText ? `\nText extracted from this image (OCR — may contain errors): ${String(a.ocrText).slice(0, 1500)}` : "";
+      return `Image "${label}"${safeUrl ? ` — ${safeUrl}` : ""}${ocr}`;
+    }
     if (t === "link") return `Link "${label}"${safeUrl ? ` — ${safeUrl}` : ""}${parts.length ? `\nContent: ${parts.join("\n")}` : ""}`;
     if (parts.length) return `${label}: ${parts.join("\n")}`;
     if (safeUrl) return `${t || "File"} "${label}" — ${safeUrl}`;
@@ -1190,9 +1237,11 @@ async function handleStreamingResponse(
                 }),
               );
               // Give the user a soft status line while tools run so the
-              // bubble doesn't sit silent during a multi-hop loop.
+              // bubble doesn't sit silent during a multi-hop loop. Narrate
+              // the ACTIVITY in plain English ("Building the template…",
+              // "Creating the image…") instead of leaking the raw tool name.
               if (tc.status === "running") {
-                state.setChatStatusText(`Running ${tc.name.replace(/^lykn_/, "")}…`);
+                state.setChatStatusText(toolRunningStatus(tc.name));
               } else if (
                 shouldEmitProjectsChanged(tc.name, tc.status, tc.result)
               ) {
@@ -2257,6 +2306,12 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   const signal = abortController.signal;
   const isBrickAction = Boolean(brickActionData);
   const cappedText = text.length > 3000 ? text.slice(0, 3000) : text;
+
+  // Phase 0: OCR fallback. Recover text from image attachments BEFORE the
+  // attachment context is assembled so the extracted text rides into the
+  // prompt. Best-effort + degrade-safe — never blocks on failure.
+  await ocrImageAttachments(sentAttachments, signal, state.setChatStatusText);
+
   const attachmentContext = buildAttachmentContext(sentAttachments);
 
   p.aiThread.push({
@@ -2561,8 +2616,21 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     conversationMemory: memoryText || undefined,
     workspaceContext: workspaceContextStr,
     projectId: identity.projectId,
+    ...(identity.scopedProjectId ? { scopedProjectId: identity.scopedProjectId } : {}),
+    ...(identity.scopedProjectName ? { scopedProjectName: identity.scopedProjectName } : {}),
     boardId: identity.routeBoardId || identity.boardId || undefined,
     skipWebSearch: hasVideoTranscript,
+    // Chat-bar "+" capability modes — the server forces the matching tool /
+    // web search deterministically for this turn (see /api/ai/stream).
+    ...(p.composerMode === "web" ? { forceWebSearch: true } : {}),
+    ...(p.composerMode === "research" ? { forceWebSearch: true, deepResearch: true } : {}),
+    ...(p.composerMode === "image" ? { forceImage: true } : {}),
+    // "+" → Create submenu: build a rich artifact (deck, study guide, chart…).
+    ...(typeof p.composerMode === "string" && p.composerMode.startsWith("create:")
+      ? { forceArtifact: true, artifactType: p.composerMode.slice("create:".length) }
+      : {}),
+    // Artifact open in the side panel — let the server refine it in place.
+    ...(p.activeArtifact ? { activeArtifact: p.activeArtifact } : {}),
     // Opt this turn into the agent loop (chat-agent-loop.js). Authenticated
     // chat path only — the model can call the in-app tool whitelist
     // (mcp-tools/chatTools.js) to read/write synthesis-layer state via
@@ -2598,31 +2666,82 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   let responseBlockId: string | null = null;
 
   /* Phase 5: streaming or invoke */
-  let streamResponse: Response | null = null;
-  let useStreaming = false;
-  try {
-    const timeout = setTimeout(() => abortController.abort(), 120000);
-    streamResponse = await fetch(`${apiBase}/api/ai/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal,
-    });
-    clearTimeout(timeout);
-    if (streamResponse.ok && streamResponse.headers.get("content-type")?.includes("text/event-stream")) {
-      useStreaming = true;
+  // A turn that comes back with NO usable text — only the connection-
+  // trouble fallback, or a clean-but-empty stream — is almost always a
+  // transient first-hit failure: a model that just went cold after a model
+  // switch, a momentary provider 429 / overload, or a first-token network
+  // blip. Re-firing the SAME request once clears the vast majority of
+  // these (it's why "sending a second prompt just works"), so we retry the
+  // streaming attempt a single time before surfacing the error. Guards:
+  //   • only while the abort signal is still live — a user Stop or the 120s
+  //     hard timeout already aborted the shared controller and we must not
+  //     fight that;
+  //   • at most ONE retry — no retry storms against a provider that's
+  //     genuinely down (the server already walked its own cross-provider
+  //     fallback chain before it ever returned the error).
+  const MAX_STREAM_RETRIES = 1;
+  const streamReturnedNoUsableText = (t: string) =>
+    !t.trim() || t.trim() === AI_TEMPORARY_FAILURE_TEXT;
+  let notifiedModelDowngrade = false;
+  const fetchChatStream = async (): Promise<Response | null> => {
+    try {
+      const timeout = setTimeout(() => abortController.abort(), 120000);
+      const res = await fetch(`${apiBase}/api/ai/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal,
+      });
+      clearTimeout(timeout);
+      // The server swaps to a cheaper model for out-of-tier requests; tell
+      // the user so they know why they got a different answer than expected.
+      // Only once per turn — a silent retry shouldn't double-toast.
+      if (!notifiedModelDowngrade) {
+        maybeNotifyModelDowngrade(res);
+        notifiedModelDowngrade = true;
+      }
+      if (res.ok && res.headers.get("content-type")?.includes("text/event-stream")) {
+        return res;
+      }
+      return null;
+    } catch {
+      return null;
     }
-    // The server swaps to a cheaper model for out-of-tier requests; tell the
-    // user so they know why they got a different answer than expected.
-    maybeNotifyModelDowngrade(streamResponse);
-  } catch {
-    streamResponse = null;
-  }
+  };
+  // Wipe the typing-animation state left over from a failed attempt so the
+  // retry streams into a clean bubble instead of fighting stale refs.
+  const resetStreamTypingState = () => {
+    if (streamRefs.streamTypingRafRef.current) {
+      clearTimeout(streamRefs.streamTypingRafRef.current);
+      streamRefs.streamTypingRafRef.current = null;
+    }
+    streamRefs.streamTargetTextRef.current = "";
+    streamRefs.streamDisplayedLenRef.current = 0;
+    streamRefs.streamPromptIdRef.current = null;
+  };
 
-  if (useStreaming && streamResponse) {
-    const streamResult = await handleStreamingResponse(p, streamResponse, promptId, responseBlockId, text);
+  const streamResponse = await fetchChatStream();
+
+  if (streamResponse) {
+    let streamResult = await handleStreamingResponse(p, streamResponse, promptId, responseBlockId, text);
     let accumulated = streamResult.accumulated;
     responseBlockId = streamResult.responseBlockId;
+
+    for (
+      let attempt = 0;
+      attempt < MAX_STREAM_RETRIES
+        && streamReturnedNoUsableText(accumulated)
+        && !signal.aborted;
+      attempt++
+    ) {
+      resetStreamTypingState();
+      state.setChatStatusText("Reconnecting…");
+      const retryResponse = await fetchChatStream();
+      if (!retryResponse) break;
+      streamResult = await handleStreamingResponse(p, retryResponse, promptId, responseBlockId, text);
+      accumulated = streamResult.accumulated;
+      responseBlockId = streamResult.responseBlockId;
+    }
 
     if (streamRefs.streamTypingRafRef.current) { clearTimeout(streamRefs.streamTypingRafRef.current); streamRefs.streamTypingRafRef.current = null; }
     if (streamRefs.streamPromptIdRef.current && streamRefs.streamDisplayedLenRef.current < streamRefs.streamTargetTextRef.current.length) {

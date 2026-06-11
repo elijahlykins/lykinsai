@@ -210,9 +210,10 @@ export const buildTemplateTool = {
   scope: 'read',
   description: [
     'Build slideshows, lessons, worksheets, documents, emails, forms, social posts, or layouts.',
-    'Exports markdown, JSON schema, HTML (presentable slideshow), and PPTX when signed in.',
-    'The chat UI renders HTML artifacts inline — use this for pitch decks and slides.',
+    'Exports a PDF (the easy, universal download), plus Markdown, JSON, HTML, and PPTX (slides) when signed in.',
+    'The chat UI renders HTML artifacts inline and offers the PDF/PPTX/Markdown downloads — use this for study guides, docs, and pitch decks.',
     'Pass export_formats: ["html","pptx"] for presentations. Summarise in prose after; no need to paste URLs.',
+    'Pass `theme` to set the accent color (name like "blue", "green", "purple", "red", "teal", "orange" or a hex like "#2563eb"). To recolor an existing artifact, rebuild it with the same sections and a new theme.',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -236,6 +237,10 @@ export const buildTemplateTool = {
       sections: { type: 'array', items: { type: 'object' } },
       metadata: { type: 'object' },
       content: { type: 'string' },
+      theme: {
+        type: 'string',
+        description: 'Accent color: a name (blue, green, purple, red, teal, indigo, rose, amber, slate, orange) or a hex like #2563eb.',
+      },
       export_formats: {
         type: 'array',
         items: { type: 'string', enum: ['markdown', 'json', 'html', 'pptx'] },

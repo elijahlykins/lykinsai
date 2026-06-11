@@ -86,6 +86,15 @@ function safeJsonParse(s) {
 // ---------------------------------------------------------------------------
 
 const STRIP_PATTERNS = [
+  // Supabase storage URLs must NEVER reach the user — generated/edited
+  // images, vault files, etc. are all rendered via artifact/attachment
+  // cards from the tool result, so a raw signed URL in the reply text is
+  // always a leak. Kill the markdown image/link wrapper first (so we don't
+  // leave a dangling `![]()`), then any bare URL. Covers signed / public /
+  // authenticated object paths on any *.supabase.co project host.
+  /!\[[^\]]*\]\(\s*https?:\/\/[a-z0-9-]+\.supabase\.co\/[^)]*\)/gi,
+  /\[[^\]]*\]\(\s*https?:\/\/[a-z0-9-]+\.supabase\.co\/[^)]*\)/gi,
+  /<?https?:\/\/[a-z0-9-]+\.supabase\.co\/[^\s)>\]]+>?/gi,
   // [lykn_xxx({...})] — bracketed call (most common imitation pattern,
   // and what shows up when smaller models echo the OpenAI-style
   // function descriptors).
@@ -118,6 +127,11 @@ const STRIP_OPENERS = [
   /<tool_use\b/i,
   /<tool[_a-z]*/i,
   /<function[_a-z]*/i,
+  // Hold the tail the moment a Supabase URL (or its markdown wrapper)
+  // starts, so a half-streamed signed URL can't flush before the closing
+  // token arrives and applyStripPatterns can remove the whole thing.
+  /!?\[[^\]]*\]\(\s*https?:\/\/[a-z0-9-]+\.supabase\.co/i,
+  /https?:\/\/[a-z0-9-]+\.supabase\.co/i,
 ];
 
 function applyStripPatterns(text) {
@@ -237,9 +251,28 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
   };
 }
 
+// Fields that are only useful for the client-side artifact renderer (e.g. the
+// full HTML used for an inline srcDoc preview). Stripping them keeps the
+// model's tool-result context lean and prevents the model from echoing raw
+// markup back into the chat.
+const CLIENT_ONLY_RESULT_FIELDS = ['preview_html'];
+
 function serialiseToolResult(payload) {
   try {
-    const json = JSON.stringify(payload);
+    let forModel = payload;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      let stripped = false;
+      const copy = {};
+      for (const [k, v] of Object.entries(payload)) {
+        if (CLIENT_ONLY_RESULT_FIELDS.includes(k)) {
+          stripped = true;
+          continue;
+        }
+        copy[k] = v;
+      }
+      if (stripped) forModel = copy;
+    }
+    const json = JSON.stringify(forModel);
     if (json.length <= TOOL_RESULT_CAP) return json;
     return JSON.stringify({
       ok: payload?.ok,
@@ -309,8 +342,19 @@ async function runToolBatch(calls, ctx, record, allowedToolNames) {
  *
  * Returns a Promise that resolves once the stream ends or rejects on
  * a transport error.
+ *
+ * `onActivity` (optional) fires on every raw chunk received from the
+ * upstream provider — BEFORE we parse / forward anything. The server's
+ * stall watchdog only refreshes on text/tool SSE events it forwards to
+ * the client, so a model that spends a long time streaming a large
+ * tool-call argument (e.g. building an interactive HTML page passed as
+ * tool args) emits no forwardable events for that whole stretch and the
+ * watchdog would otherwise abort a perfectly healthy stream. Counting
+ * raw upstream bytes as activity keeps the watchdog honest: it still
+ * catches a genuinely wedged provider (no bytes at all) but no longer
+ * kills a stream that's actively receiving argument tokens.
  */
-async function readSseStream(body, processPayload) {
+async function readSseStream(body, processPayload, onActivity) {
   if (!body) return;
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -335,6 +379,7 @@ async function readSseStream(body, processPayload) {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (value) { try { onActivity?.(); } catch { /* swallow */ } }
       buffer += decoder.decode(value, { stream: true });
       drainBuffered();
     }
@@ -360,10 +405,10 @@ async function readSseStream(body, processPayload) {
  * but we still try/catch each parse so a single malformed chunk
  * doesn't kill the whole stream.
  */
-async function readGeminiSseStream(body, processJson) {
+async function readGeminiSseStream(body, processJson, onActivity) {
   await readSseStream(body, (payload) => {
     try { processJson(JSON.parse(payload)); } catch { /* skip malformed */ }
-  });
+  }, onActivity);
 }
 
 function buildPriorTurns(priorTurns, openaiStyle = true) {
@@ -403,8 +448,10 @@ async function runOpenAiCompatLoop({
   onTextChunk,
   onToolCall,
   onStatus,
+  onActivity,                   // fires on every raw upstream chunk (stall-watchdog keepalive)
   providerLabel = 'openai',
   chatToolNames,
+  forceToolName,                // when set, force this tool on the first hop
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: `${providerLabel} API key missing` };
@@ -432,12 +479,18 @@ async function runOpenAiCompatLoop({
 
     let res;
     try {
+      // Force a specific tool on the first hop when requested (e.g. the
+      // chat-bar "+" Generate-image mode). Subsequent hops go back to 'auto'
+      // so the model can finish its reply after the forced call.
+      const forceThisHop = hop === 0 && forceToolName;
       const body = {
         model,
         messages,
         tools,
-        tool_choice: 'auto',
-        parallel_tool_calls: true,
+        tool_choice: forceThisHop
+          ? { type: 'function', function: { name: forceToolName } }
+          : 'auto',
+        parallel_tool_calls: forceThisHop ? false : true,
         max_completion_tokens: maxOutputTokens,
         stream: true,
         ...(promptCacheKey && providerLabel === 'openai' ? { prompt_cache_key: promptCacheKey } : {}),
@@ -488,7 +541,7 @@ async function runOpenAiCompatLoop({
           }
         }
         if (choice.finish_reason) finishReason = choice.finish_reason;
-      });
+      }, onActivity);
     } catch (err) {
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
@@ -575,7 +628,9 @@ async function runAnthropicLoop({
   onTextChunk,
   onToolCall,
   onStatus,
+  onActivity,                   // fires on every raw upstream chunk (stall-watchdog keepalive)
   chatToolNames,
+  forceToolName,                // when set, force this tool on the first hop
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'ANTHROPIC_API_KEY missing' };
@@ -604,12 +659,14 @@ async function runAnthropicLoop({
 
     let res;
     try {
+      const forceThisHop = hop === 0 && forceToolName;
       const body = {
         model,
         messages,
         tools,
         max_tokens: maxOutputTokens,
         stream: true,
+        ...(forceThisHop ? { tool_choice: { type: 'tool', name: forceToolName } } : {}),
       };
       if (systemPrompt) {
         // Cache the system block — Anthropic charges 25% extra on the
@@ -701,7 +758,7 @@ async function runAnthropicLoop({
           // nothing — readSseStream resolves on `end`
           return;
         }
-      });
+      }, onActivity);
     } catch (err) {
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
@@ -790,7 +847,9 @@ async function runGeminiLoop({
   onTextChunk,
   onToolCall,
   onStatus,
+  onActivity,                   // fires on every raw upstream chunk (stall-watchdog keepalive)
   chatToolNames,
+  forceToolName,                // when set, force this tool on the first hop
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'GOOGLE_API_KEY missing' };
@@ -828,6 +887,7 @@ async function runGeminiLoop({
 
     let res;
     try {
+      const forceThisHop = hop === 0 && forceToolName;
       const body = {
         contents,
         tools,
@@ -835,6 +895,9 @@ async function runGeminiLoop({
           maxOutputTokens,
           temperature: 0.7,
         },
+        ...(forceThisHop
+          ? { toolConfig: { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: [forceToolName] } } }
+          : {}),
       };
       if (systemPrompt) {
         body.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -890,7 +953,7 @@ async function runGeminiLoop({
             continue;
           }
         }
-      });
+      }, onActivity);
     } catch (err) {
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };

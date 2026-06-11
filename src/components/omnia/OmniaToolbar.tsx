@@ -1,14 +1,10 @@
 import React from "react";
 import {
   AudioLines,
-  PanelRightClose,
-  Plus,
 } from "lucide-react";
 
 interface OmniaToolbarProps {
   isMobilePhone?: boolean;
-  showVaultSidebar: boolean;
-  onVaultToggle: () => void;
   notesOpen: boolean;
   // Voice Mode: a Chat ⇆ Voice switch. Only shown when the active model is
   // voice-eligible (default LYKN model or the main-agent orchestrator).
@@ -19,18 +15,16 @@ interface OmniaToolbarProps {
 
 const OmniaToolbar = React.memo(function OmniaToolbar({
   isMobilePhone = false,
-  showVaultSidebar,
-  onVaultToggle,
   notesOpen,
   voiceModeEligible = false,
   voiceModeOn = false,
   onVoiceModeToggle,
 }: OmniaToolbarProps) {
-  // On phones we hide the grid-only top controls since the canvas is unmounted
-  // and a bottom tab bar handles navigation. We keep just the Voice Mode
-  // toggle here; render nothing when voice isn't eligible.
+  // The only top-right control left is the Voice Mode toggle, so render nothing
+  // when voice isn't eligible (the vault is now opened from the chat "+" menu).
+  if (!voiceModeEligible) return null;
+
   if (isMobilePhone) {
-    if (!voiceModeEligible) return null;
     return (
       <div
         className={`fixed top-2 right-0 left-0 px-3 flex items-center justify-end pointer-events-none ${notesOpen ? "z-[235]" : "z-[70]"}`}
@@ -62,28 +56,14 @@ const OmniaToolbar = React.memo(function OmniaToolbar({
           <div className="flex items-center gap-1 p-1 rounded-full bg-background border border-black/8 dark:border-white/10 shadow-sm flex-wrap">
             <button
               type="button"
-              onClick={onVaultToggle}
-              className="rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center"
-              title={showVaultSidebar ? "Hide vault sidebar" : "Open vault sidebar"}
+              onClick={onVoiceModeToggle}
+              className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${voiceModeOn ? "bg-blue-500/15" : ""}`}
+              title="Voice Mode — talk hands-free"
+              aria-pressed={voiceModeOn}
             >
-              {showVaultSidebar ? <PanelRightClose className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+              <AudioLines className={`w-4 h-4 ${voiceModeOn ? "text-blue-500" : ""}`} />
+              <span className="sr-only">Voice Mode</span>
             </button>
-
-            {voiceModeEligible && (
-              <>
-                <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-                <button
-                  type="button"
-                  onClick={onVoiceModeToggle}
-                  className={`rounded-full w-9 h-9 p-0 hover:bg-black/10 dark:hover:bg-white/15 transition-colors touch-manipulation flex items-center justify-center ${voiceModeOn ? "bg-blue-500/15" : ""}`}
-                  title="Voice Mode — talk hands-free"
-                  aria-pressed={voiceModeOn}
-                >
-                  <AudioLines className={`w-4 h-4 ${voiceModeOn ? "text-blue-500" : ""}`} />
-                  <span className="sr-only">Voice Mode</span>
-                </button>
-              </>
-            )}
           </div>
         </div>
       </div>

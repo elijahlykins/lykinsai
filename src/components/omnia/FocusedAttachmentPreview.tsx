@@ -1,6 +1,7 @@
 import React from "react";
 import { BookOpen, FileText, Link2, Music, Play, StickyNote, X } from "lucide-react";
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import LinkPreview from "@/components/LinkPreview";
 import type { FocusedChatAttachment } from "@/lib/ai/chatSendOrchestrator";
 
 type Props = {
@@ -139,6 +140,31 @@ export default function FocusedAttachmentPreview({ att, onRemove }: Props) {
           type="button"
           onClick={() => onRemove(att.id)}
           className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center flex-shrink-0"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+    );
+  }
+  if ((t === "link" || t === "bookmark") && att.url) {
+    return (
+      <div className="relative w-44 group">
+        <LinkPreview
+          url={att.url}
+          title={att.linkTitle || att.name || ""}
+          description={att.linkDescription || ""}
+          image={att.linkImage || ""}
+          siteName={att.linkSiteName || ""}
+          favicon={att.linkFavicon || ""}
+          authorName={att.authorName || ""}
+          authorHandle={att.authorHandle || ""}
+          oembedType={att.oembedType || ""}
+          variant="vault"
+        />
+        <button
+          type="button"
+          onClick={() => onRemove(att.id)}
+          className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
         >
           <X className="w-3 h-3" />
         </button>

@@ -56,10 +56,44 @@ type ToolCopy = {
 };
 
 const DEFAULT_COPY: ToolCopy = {
-  verbRunning: "Using a tool",
-  verbDone: () => "Tool finished",
-  verbError: "Tool failed",
+  verbRunning: "Working on it",
+  verbDone: () => "Done",
+  verbError: "Something went wrong",
 };
+
+/**
+ * Generic, tool-agnostic phrases shown while a tool is still RUNNING.
+ *
+ * We deliberately do NOT surface the per-tool `verbRunning` (e.g.
+ * "Searching the web", "Listing projects", "Searching vault") in the
+ * live pill — the user shouldn't see which underlying tool the AI
+ * reached for, just that it's actively working. The specific copy
+ * still drives the `done`/`error` states (where it's a result, not a
+ * leak of the AI's plumbing).
+ */
+const GENERIC_RUNNING_PHRASES = [
+  "Working on it",
+  "On it",
+  "Working through this",
+  "Looking into it",
+  "Just a moment",
+  "Pulling things together",
+] as const;
+
+/**
+ * Pick a stable generic phrase for a running pill. Keyed off the tool
+ * call id so the phrase doesn't flicker across re-renders, but varies
+ * between concurrent pills in a multi-hop turn so they don't all read
+ * the same.
+ */
+function genericRunningPhrase(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  }
+  const idx = Math.abs(hash) % GENERIC_RUNNING_PHRASES.length;
+  return GENERIC_RUNNING_PHRASES[idx];
+}
 
 /**
  * Build the synthesis-layer deep link for a tool result that names a
@@ -430,6 +464,108 @@ const TOOL_COPY: Record<string, ToolCopy> = {
     },
     verbError: "Task load failed",
   },
+
+  // ── Exterior capabilities ──────────────────────────────────────
+  // These tools have no in-app surface to navigate to, so their `done`
+  // pills auto-hide (no `navTo`) — only the running phrase + any error
+  // are surfaced. The copy is deliberately abstract ("Building a
+  // template", "Gathering resources") so the chat narrates WHAT the AI
+  // is doing rather than exposing the underlying tool name.
+  lykn_web_search: {
+    verbRunning: "Searching the web",
+    verbDone: () => "Web search done",
+    verbError: "Web search failed",
+  },
+  lykn_web_fetch: {
+    verbRunning: "Reading the page",
+    verbDone: () => "Page read",
+    verbError: "Couldn't read the page",
+  },
+  lykn_http_request: {
+    verbRunning: "Gathering resources",
+    verbDone: () => "Resources gathered",
+    verbError: "Request failed",
+  },
+  lykn_calculate: {
+    verbRunning: "Crunching the numbers",
+    verbDone: () => "Calculated",
+    verbError: "Calculation failed",
+  },
+  lykn_symbolic_math: {
+    verbRunning: "Working through the math",
+    verbDone: () => "Math solved",
+    verbError: "Couldn't solve that",
+  },
+  lykn_run_python: {
+    verbRunning: "Running the analysis",
+    verbDone: () => "Analysis complete",
+    verbError: "Analysis failed",
+  },
+  lykn_run_code: {
+    verbRunning: "Running the code",
+    verbDone: () => "Code ran",
+    verbError: "Code run failed",
+  },
+  lykn_generate_chart: {
+    verbRunning: "Building the chart",
+    verbDone: () => "Chart ready",
+    verbError: "Chart failed",
+  },
+  lykn_generate_diagram: {
+    verbRunning: "Drawing the diagram",
+    verbDone: () => "Diagram ready",
+    verbError: "Diagram failed",
+  },
+  lykn_generate_image: {
+    verbRunning: "Creating the image",
+    verbDone: () => "Image ready",
+    verbError: "Image generation failed",
+  },
+  lykn_build_template: {
+    verbRunning: "Building the template",
+    verbDone: () => "Template ready",
+    verbError: "Template build failed",
+  },
+  lykn_build_spreadsheet: {
+    verbRunning: "Building the spreadsheet",
+    verbDone: () => "Spreadsheet ready",
+    verbError: "Spreadsheet failed",
+  },
+  lykn_manage_file: {
+    verbRunning: "Preparing the file",
+    verbDone: () => "File ready",
+    verbError: "File operation failed",
+  },
+  lykn_parse_document: {
+    verbRunning: "Reading the document",
+    verbDone: () => "Document read",
+    verbError: "Couldn't read the document",
+  },
+  lykn_process_image: {
+    verbRunning: "Looking at the image",
+    verbDone: () => "Image processed",
+    verbError: "Image processing failed",
+  },
+  lykn_transcribe_audio: {
+    verbRunning: "Transcribing the audio",
+    verbDone: () => "Audio transcribed",
+    verbError: "Transcription failed",
+  },
+  lykn_generate_speech: {
+    verbRunning: "Generating the audio",
+    verbDone: () => "Audio ready",
+    verbError: "Audio generation failed",
+  },
+  lykn_translate: {
+    verbRunning: "Translating",
+    verbDone: () => "Translated",
+    verbError: "Translation failed",
+  },
+  lykn_get_current_time: {
+    verbRunning: "Checking the time",
+    verbDone: () => "Time checked",
+    verbError: "Couldn't get the time",
+  },
 };
 
 /**
@@ -794,7 +930,7 @@ export function ToolCallPill({
   }
 
   const label = isRunning
-    ? `${copy.verbRunning}…`
+    ? `${genericRunningPhrase(call.id)}…`
     : isError
       ? copy.verbError
       : copy.verbDone(call.result);

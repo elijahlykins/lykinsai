@@ -5,18 +5,21 @@ import {
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } from "@/lib/chat/chatMarkdown";
 import NeuronPill from "@/components/synthesis/NeuronPill";
 import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
 import ToolCallPill from "@/components/omnia/ToolCallPill";
+import ChatArtifactCard from "@/components/omnia/ChatArtifactCard";
+import { extractChatArtifacts, sortArtifactsForDisplay } from "@/lib/ai/chatArtifacts";
+import LinkPreview from "@/components/LinkPreview";
 import type { ToolCallEvent } from "@/lib/ai/chatSendOrchestrator";
 import type { AppliedAttribution } from "@/lib/ai/appliedTag";
 import type { FactNeuron } from "@/lib/ai/learnedTag";
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
-const normalizeChecklistSyntax = (value: string) =>
-  String(value || "")
+const normalizeChecklistSyntax = (value: string) => {
+  const checklist = String(value || "")
     .split(/\r?\n/)
     .map((line) => {
       const match = String(line || "").match(TASK_LINE_RE);
@@ -25,6 +28,8 @@ const normalizeChecklistSyntax = (value: string) =>
       return `- [${marker}] ${String(match[2] || "").trim()}`;
     })
     .join("\n");
+  return normalizeMathDelimiters(checklist);
+};
 
 const splitResponseIntoChunks = (text: string): string[] => {
   const raw = String(text || "").trim();
@@ -252,7 +257,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
       } ${isMobileGrid ? "inset-x-0 border-l-0" : ""}`}
       style={{
         top: isMobileGrid ? 0 : "var(--header-height, 4.9rem)",
-        right: isMobileGrid ? undefined : (showVaultSidebar ? `${vaultSidebarWidthPx}px` : "0px"),
+        right: isMobileGrid ? undefined : "0px",
         width: isMobileGrid ? undefined : `${chatRailWidthPx}px`,
         animation: "chatRailSlideIn 350ms cubic-bezier(0.22,1,0.36,1) both",
       }}
@@ -291,6 +296,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                   }
                   if (at === "image" && att.url) return <div key={att.id}><img src={att.url} alt={att.name || "Image"} className="max-w-[11.25rem] max-h-[120px] rounded-lg border border-white/30 object-cover" />{saveBtn}</div>;
                   if (at === "video" && att.url) return <div key={att.id}><div className="w-full max-w-[15rem] rounded-lg overflow-hidden border border-white/30"><video src={att.url} controls className="w-full" preload="metadata" /></div>{saveBtn}</div>;
+                  if ((at === "link" || at === "bookmark") && attUrl) return <div key={att.id} className="w-full max-w-[15rem]"><LinkPreview url={attUrl} title={att.linkTitle || att.name || ""} description={att.linkDescription || ""} image={att.linkImage || ""} siteName={att.linkSiteName || ""} favicon={att.linkFavicon || ""} authorName={att.authorName || ""} authorHandle={att.authorHandle || ""} oembedType={att.oembedType || ""} variant="vault" />{saveBtn}</div>;
                   return <div key={att.id}><div className="flex items-center gap-1 rounded-lg border border-white/30 bg-white/20 px-2 py-1 text-[0.625rem]"><FileText className="w-3 h-3 opacity-60" /><span className="truncate max-w-[7.5rem]">{att.name || "File"}</span></div>{saveBtn}</div>;
                 })}
               </div>
@@ -312,7 +318,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                         className="w-full rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] shadow-[0_4px_14px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_14px_rgba(0,0,0,0.16)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1 select-text cursor-text"
                         style={collapsedClampStyle}
                       >
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(promptText)}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={buildChatMarkdownComponents(msg.id)}>{normalizeChecklistSyntax(promptText)}</ReactMarkdown>
                       </div>
                       {isLongPrompt && msg.id && (
                         <button
@@ -392,7 +398,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
               </div>
             ) : (
               <div className="max-w-[94%] rounded-2xl rounded-bl-md px-3 py-2 text-xs leading-relaxed break-words border border-transparent bg-transparent hover:bg-white/50 dark:hover:bg-white/[0.02] hover:border-blue-300/40 dark:hover:border-white/[0.03] transition-all text-black/85 dark:text-white/85">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={buildChatMarkdownComponents(msg.id)}>
                   {normalizeChecklistSyntax(msg.content || "")}
                 </ReactMarkdown>
               </div>
@@ -479,7 +485,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                             <div className={`absolute left-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
                               <GripVertical className="w-3 h-3 text-blue-400/60" />
                             </div>
-                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildChatMarkdownComponents(msg.id)}>
+                            <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={buildChatMarkdownComponents(msg.id)}>
                               {normalizeChecklistSyntax(chunk)}
                             </ReactMarkdown>
                           </div>
@@ -516,6 +522,17 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                     ))}
                   </div>
                 )}
+                {(() => {
+                  const artifacts = sortArtifactsForDisplay(extractChatArtifacts(msg.toolCalls));
+                  if (!artifacts.length) return null;
+                  return (
+                    <div className="flex flex-col gap-2 w-full">
+                      {artifacts.map((art) => (
+                        <ChatArtifactCard key={art.id} artifact={art} />
+                      ))}
+                    </div>
+                  );
+                })()}
                 {msg.factNeuron && <NeuronPill fact={msg.factNeuron} size="compact" />}
                 {msg.appliedAttribution && <AppliedRulePill attribution={msg.appliedAttribution} size="compact" />}
               </div>

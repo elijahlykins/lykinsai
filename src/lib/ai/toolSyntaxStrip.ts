@@ -12,6 +12,12 @@
  */
 
 const STRIP_PATTERNS: RegExp[] = [
+  // Supabase storage URLs must never reach the user — images/files render
+  // via artifact cards, so a raw signed URL in the text is always a leak.
+  // Remove the markdown image/link wrapper first, then any bare URL.
+  /!\[[^\]]*\]\(\s*https?:\/\/[a-z0-9-]+\.supabase\.co\/[^)]*\)/gi,
+  /\[[^\]]*\]\(\s*https?:\/\/[a-z0-9-]+\.supabase\.co\/[^)]*\)/gi,
+  /<?https?:\/\/[a-z0-9-]+\.supabase\.co\/[^\s)>\]]+>?/gi,
   /\[\s*lykn_\w+\s*\([\s\S]*?\)\s*\]/g,
   /\blykn_\w+\s*\(\s*\{[\s\S]*?\}\s*\)/g,
   /\blykn_\w+\s*\(\s*\)/g,
@@ -30,6 +36,10 @@ const STREAM_OPENERS: RegExp[] = [
   /<function[_a-z]*/i,
   /\[\s*lykn_/,
   /\blykn_\w+\s*\(/,
+  // Hold the tail once a Supabase URL (or its markdown wrapper) starts so a
+  // half-streamed signed URL can't flush before it's complete + stripped.
+  /!?\[[^\]]*\]\(\s*https?:\/\/[a-z0-9-]+\.supabase\.co/i,
+  /https?:\/\/[a-z0-9-]+\.supabase\.co/i,
 ];
 
 /** Partial prefix at the tail of a streaming buffer. */

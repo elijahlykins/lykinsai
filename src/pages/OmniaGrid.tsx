@@ -4,7 +4,7 @@ import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
 import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
-import { ChevronDown, ChevronUp, ChevronRight, Plus, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, ArrowUp } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, FolderKanban, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, ArrowUp } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -24,6 +24,7 @@ import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
 import type { UniversalBlockType } from "@/canvas/blockSystem/types";
 import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import LinkPreview from "@/components/LinkPreview";
 import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
 import { promptFileDropMode } from "@/lib/fileDropModePrompt";
 import ReactMarkdown from "react-markdown";
@@ -33,6 +34,8 @@ import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { buildTieredCanvasContext, buildActionCanvasContext } from "@/lib/ai/buildCanvasContext";
 import { maybeAutoNameChat } from "@/lib/ai/chatSendOrchestrator";
+import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
+import { persistMessageFeedback } from "@/lib/chat/messageFeedback";
 import { getVaultSidebarWidth, useIsTouchOnlyDevice, getIsTouchOnlyDevice } from "@/hooks/useViewportTier";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
@@ -57,7 +60,7 @@ import MobileFocusedChatGrids from "@/components/omnia/MobileFocusedChatGrids";
 import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
 import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
-import { useChatEngine } from "@/hooks/useChatEngine";
+import { useChatEngine, type ComposerMode, type ArtifactKind } from "@/hooks/useChatEngine";
 import { fetchPublishedCustomModels } from "@/lib/modelBuilder/customModelsClient";
 import {
   loadActiveCustomModelId,
@@ -68,6 +71,8 @@ import {
   parseCustomModelSelectValue,
 } from "@/lib/modelBuilder/customModelSelect";
 import { toChatModelKey } from "@/lib/board/chatModelKey";
+import OmniaPlusMenu from "@/components/omnia/OmniaPlusMenu";
+import OmniaProjectPicker, { type OmniaScopedProject } from "@/components/omnia/OmniaProjectPicker";
 // Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
 // Keep this `true` to make the focused chat the main interface across `/app`,
 // `/grid/:boardId`, and `/omnia`. Flip back to `false` to re-enable the
@@ -556,10 +561,36 @@ function OmniaGridModelSelectMenuBody({
   );
 }
 
+const CREATE_MODE_LABELS: Record<ArtifactKind, string> = {
+  deck: "Pitch deck",
+  study: "Study guide",
+  document: "Document",
+  worksheet: "Worksheet",
+  chart: "Chart",
+  diagram: "Diagram",
+  webapp: "Interactive page",
+};
+
+function composerModeLabel(mode: ComposerMode): string {
+  if (mode === "image") return "Generate image";
+  if (mode === "web") return "Web search";
+  if (mode === "research") return "Deep research";
+  if (mode.startsWith("create:")) {
+    const kind = mode.slice("create:".length) as ArtifactKind;
+    return CREATE_MODE_LABELS[kind] ? `Create: ${CREATE_MODE_LABELS[kind]}` : "Create";
+  }
+  return "";
+}
+
 const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   compact, onSend, chatInputHasText, isChatLoading, isDictating, isTranscribing,
   modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
-  handleOpenAttachments, handleStopAi, handleDictateToggle,
+  handleStopAi, handleDictateToggle,
+  handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
+  handleWebSearchClick, handleDeepResearchClick,
+  handleSelectProjectClick, scopedProjectName, handleClearScopedProject,
+  handleCreateArtifact,
+  composerMode, setComposerMode,
 }: {
   compact?: boolean;
   onSend: () => void | Promise<void>;
@@ -571,9 +602,20 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   persistSelectedModel: (v: string) => void;
   modelTier?: string;
   modelSelectMenu: React.ReactNode;
-  handleOpenAttachments: () => void;
   handleStopAi: () => void;
   handleDictateToggle: () => void;
+  handlePickFiles: () => void;
+  handleAddLinkClick: () => void;
+  handlePullFromVault: () => void;
+  handleGenerateImageClick: () => void;
+  handleWebSearchClick: () => void;
+  handleDeepResearchClick: () => void;
+  handleSelectProjectClick: () => void;
+  scopedProjectName: string | null;
+  handleClearScopedProject: () => void;
+  handleCreateArtifact: (kind: ArtifactKind) => void;
+  composerMode: ComposerMode;
+  setComposerMode: (m: ComposerMode) => void;
 }) {
   const sendDisabled = !chatInputHasText || isChatLoading || isDictating || isTranscribing;
   const modelTriggerCls = compact
@@ -597,15 +639,42 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
           {modelSelectMenu}
         </SelectContent>
       </Select>
+      {composerMode !== "none" && (
+        <button
+          type="button"
+          onClick={() => setComposerMode("none")}
+          className="inline-flex items-center gap-1 rounded-full border border-blue-400/40 bg-blue-500/12 px-2 h-7 text-[0.6875rem] font-medium text-blue-700 dark:text-blue-300 shrink-0 hover:bg-blue-500/20 transition-colors"
+          title="Turn off"
+        >
+          {composerModeLabel(composerMode)}
+          <X className="w-3 h-3" />
+        </button>
+      )}
+      {scopedProjectName && (
+        <button
+          type="button"
+          onClick={handleClearScopedProject}
+          className="inline-flex items-center gap-1 rounded-full border border-blue-400/40 bg-blue-500/12 px-2 h-7 max-w-[10rem] text-[0.6875rem] font-medium text-blue-700 dark:text-blue-300 shrink-0 hover:bg-blue-500/20 transition-colors"
+          title="Stop chatting about this project"
+        >
+          <FolderKanban className="w-3 h-3 shrink-0" />
+          <span className="truncate">{scopedProjectName}</span>
+          <X className="w-3 h-3 shrink-0" />
+        </button>
+      )}
       <div className="flex-1 min-w-[4px]" aria-hidden />
-      <button
-        type="button"
-        onClick={handleOpenAttachments}
-        className={`${iconBtn} omnia-neu-chat-icon-plain flex items-center justify-center text-black/80 dark:text-white/85 shrink-0`}
-        title="Add attachments"
-      >
-        <Plus className={iconSm} />
-      </button>
+      <OmniaPlusMenu
+        iconBtnCls={iconBtn}
+        iconSmCls={iconSm}
+        onAddFiles={handlePickFiles}
+        onAddLink={handleAddLinkClick}
+        onPullVault={handlePullFromVault}
+        onProjects={handleSelectProjectClick}
+        onCreate={handleCreateArtifact}
+        onGenerateImage={handleGenerateImageClick}
+        onDeepResearch={handleDeepResearchClick}
+        onWebSearch={handleWebSearchClick}
+      />
       {isChatLoading ? (
         <button
           type="button"
@@ -1101,9 +1170,13 @@ export default function OmniaGridPage() {
   }, [createWelcomeText]);
 
 
-  const reSignChatAttachments = useCallback(() => {
+  const reSignChatAttachments = useCallback((messages?: any[]) => {
     (async () => {
-      const msgs = chatMessagesRef.current;
+      // Prefer the messages handed in by the loader. At load time the
+      // chatMessagesRef is still stale (it's synced from state via an effect
+      // that hasn't run yet), so reading the ref here would find nothing and
+      // silently skip re-signing — leaving storage-backed images broken.
+      const msgs = Array.isArray(messages) && messages.length ? messages : chatMessagesRef.current;
       const attachJobs: { msgId: string; attIdx: number; storagePath: string; bucket: string }[] = [];
       const imageJobs: { msgId: string; storagePath: string }[] = [];
 
@@ -1637,10 +1710,17 @@ export default function OmniaGridPage() {
   useEffect(() => {
     chatModelKeyRef.current = toChatModelKey(selectedModel, activeCustomModelId);
   }, [selectedModel, activeCustomModelId]);
+  // Chat "+" → Projects: when the user scopes the chat to a specific LYKN
+  // project, it overrides the board-derived Omnia project id so the server
+  // loads that project's neurons / working memory / activity for the chat.
+  const [chatScopedProject, setChatScopedProject] = useState<OmniaScopedProject | null>(null);
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const effectiveChatProjectId = chatScopedProject?.id ?? projectId ?? null;
+
   const chatEngine = useChatEngine({
     boardId, routeBoardId, user, title, titleRef, selectedModel,
     customModelId: activeCustomModelId,
-    notesPagesRef, projectId: projectId ?? null, gridSize, viewportWidth,
+    notesPagesRef, projectId: effectiveChatProjectId, scopedProjectId: chatScopedProject?.id ?? null, scopedProjectName: chatScopedProject?.name ?? null, gridSize, viewportWidth,
     chatMode, chatRailVisible,
     chatMessages, setChatMessages, chatMessagesRef, aiThreadRef,
     convoSummaryRef, convoTurnsSinceSummaryRef,
@@ -1660,13 +1740,15 @@ export default function OmniaGridPage() {
     copiedMsgId, setCopiedMsgId,
     assistantTaskChecks, isDictating, isTranscribing,
     voiceModeOn, setVoiceMode, toggleVoiceMode,
+    composerMode, setComposerMode,
+    activeArtifact, setActiveArtifact,
     chatScrollRef, chatPanelInputRef, centerChatInputRef,
     chatUserScrolledUpRef, chatProgrammaticScrollRef,
     pendingAiBrickActionRef, pendingBrickActionDataRef,
     youtubeTranscriptCacheRef,
     handleChatSend, handleStopAi, handleDictateToggle,
     handleChatPaste, handleOpenAttachments,
-    removeFocusedAttachment, addFocusedAttachment,
+    removeFocusedAttachment, addFocusedAttachment, updateFocusedAttachment,
     applyVaultDropToChat, resizeChatInput,
     toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
     updateTaskCheck, buildChatMarkdownComponents,
@@ -2135,10 +2217,16 @@ export default function OmniaGridPage() {
         if (import.meta.env.DEV) console.log("[VAULT-DRAG] drag-end received");
         setVaultDragActive(false);
       }
+      // Click-to-add from the embedded vault sidebar: the iframe posts the
+      // same payload it would send on drag, and we run the exact drop-to-chat
+      // logic so a single click attaches the item to the chat composer.
+      if (e.data.type === "omnia-vault-add" && e.data.data) {
+        void applyVaultDropToChat({ ...e.data.data, timestamp: Date.now() });
+      }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, []);
+  }, [applyVaultDropToChat]);
 
   const saveAiImageToMedia = useCallback(async (imageUrl: string, promptText?: string) => {
     if (!imageUrl) return;
@@ -2302,6 +2390,114 @@ export default function OmniaGridPage() {
       if (import.meta.env.DEV) console.warn("[LYKN] Error saving link to media:", err);
     }
   }, [user?.id, routeBoardId, boardId, requireSignIn]);
+
+  // Add a URL as a focused chat attachment. Shows the chip instantly, then
+  // unfurls Open Graph metadata in the background so the sent message renders
+  // the same rich LinkPreview card the Vault shows (hero image, site name,
+  // title, description) rather than a bare file chip. YouTube URLs stay as
+  // an embeddable youtube attachment.
+  const addLinkToChat = useCallback((rawUrl: string) => {
+    const trimmedUrl = String(rawUrl || "").trim();
+    if (!trimmedUrl) return;
+    const urlType = inferUrlAttachmentType(trimmedUrl);
+    const videoId = urlType === "youtube" ? (extractYouTubeVideoId(trimmedUrl) || "") : "";
+    const attId = makeAttId();
+    addFocusedAttachment({
+      id: attId,
+      type: urlType,
+      url: trimmedUrl,
+      name: trimmedUrl,
+      mime: "",
+      size: 0,
+      ...(videoId ? { videoId } : {}),
+    });
+    window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
+    if (urlType === "link") {
+      void (async () => {
+        try {
+          const { API_BASE_URL } = await import("@/lib/api-config");
+          const res = await fetch(`${API_BASE_URL}/api/unfurl?url=${encodeURIComponent(trimmedUrl)}`);
+          if (!res.ok) return;
+          const meta = await res.json();
+          setFocusedChatAttachments((prev) =>
+            prev.map((a) =>
+              a.id === attId
+                ? {
+                    ...a,
+                    name: meta?.title || a.name,
+                    linkTitle: meta?.title || "",
+                    linkDescription: meta?.description || "",
+                    linkImage: meta?.image || "",
+                    linkSiteName: meta?.siteName || "",
+                    linkFavicon: meta?.favicon || "",
+                    oembedType: meta?.oembedType || "",
+                    authorName: meta?.authorName || "",
+                    authorHandle: meta?.authorHandle || "",
+                  }
+                : a
+            )
+          );
+        } catch { /* unfurl is best-effort; the URL-only card still renders */ }
+      })();
+    }
+  }, [addFocusedAttachment, inferUrlAttachmentType, setFocusedChatAttachments]);
+
+  // --- Chat-bar "+" menu handlers ---------------------------------------
+  const handlePickFiles = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleAddLinkClick = useCallback(() => {
+    const url = prompt("Enter any URL:");
+    const trimmedUrl = String(url || "").trim();
+    if (!trimmedUrl) return;
+    if (chatMode) {
+      addLinkToChat(trimmedUrl);
+    } else {
+      window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: trimmedUrl } }));
+    }
+  }, [chatMode, addLinkToChat]);
+
+  // Open the same vault pullout the top-right "+" uses, so the user can browse
+  // the vault and drag items straight into the chat.
+  const handlePullFromVault = useCallback(() => {
+    setShowVaultSidebar(true);
+  }, []);
+
+  // Open the project picker so the user can scope the chat to a LYKN project.
+  const handleSelectProjectClick = useCallback(() => {
+    setProjectPickerOpen(true);
+  }, []);
+
+  const handleClearScopedProject = useCallback(() => {
+    setChatScopedProject(null);
+  }, []);
+
+  // Arm a "+" capability mode for the next send and focus the composer so the
+  // user can type their request. Picking the same mode again toggles it off.
+  // The mode rides into the send via useChatEngine → orchestrator, which
+  // injects a tool directive and then auto-clears the mode.
+  const armComposerMode = useCallback((mode: Exclude<ComposerMode, "none">) => {
+    setComposerMode(composerMode === mode ? "none" : mode);
+    const el = chatMode ? chatPanelInputRef.current : centerChatInputRef.current;
+    window.setTimeout(() => el?.focus(), 0);
+  }, [composerMode, setComposerMode, chatMode, chatPanelInputRef, centerChatInputRef]);
+
+  const handleCreateArtifact = useCallback((kind: ArtifactKind) => {
+    armComposerMode(`create:${kind}`);
+  }, [armComposerMode]);
+
+  const handleGenerateImageClick = useCallback(() => {
+    armComposerMode("image");
+  }, [armComposerMode]);
+
+  const handleWebSearchClick = useCallback(() => {
+    armComposerMode("web");
+  }, [armComposerMode]);
+
+  const handleDeepResearchClick = useCallback(() => {
+    armComposerMode("research");
+  }, [armComposerMode]);
 
   const saveAttachmentToMedia = useCallback(async (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => {
     if (!url) return;
@@ -2730,6 +2926,25 @@ export default function OmniaGridPage() {
         </div>
       );
     }
+    if ((t === "link" || t === "bookmark") && att.url) {
+      return (
+        <div className="relative w-44 group">
+          <LinkPreview
+            url={att.url}
+            title={att.linkTitle || att.name || ""}
+            description={att.linkDescription || ""}
+            image={att.linkImage || ""}
+            siteName={att.linkSiteName || ""}
+            favicon={att.linkFavicon || ""}
+            authorName={att.authorName || ""}
+            authorHandle={att.authorHandle || ""}
+            oembedType={att.oembedType || ""}
+            variant="vault"
+          />
+          <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"><X className="w-3 h-3" /></button>
+        </div>
+      );
+    }
     return (
       <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
         <Link2 className="w-4 h-4 flex-shrink-0 opacity-60" />
@@ -2952,10 +3167,20 @@ export default function OmniaGridPage() {
     chatInputHasText, isChatLoading, isDictating, isTranscribing,
     modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
+    handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
+    handleWebSearchClick, handleDeepResearchClick,
+    handleSelectProjectClick, scopedProjectName: chatScopedProject?.name ?? null, handleClearScopedProject,
+    handleCreateArtifact,
+    composerMode, setComposerMode,
   }), [
     chatInputHasText, isChatLoading, isDictating, isTranscribing,
     modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
+    handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
+    handleWebSearchClick, handleDeepResearchClick,
+    handleSelectProjectClick, chatScopedProject, handleClearScopedProject,
+    handleCreateArtifact,
+    composerMode, setComposerMode,
   ]);
 
   const handleCloseSideRail = useCallback(() => {
@@ -3020,14 +3245,50 @@ export default function OmniaGridPage() {
   }, []);
 
   const handleFocusedChatReaction = useCallback((msgId: string, kind: "like" | "dislike") => {
-    setChatReactions((prev) => ({ ...prev, [msgId]: prev[msgId] === kind ? null : kind }));
-  }, []);
+    const nextRating = chatReactions[msgId] === kind ? null : kind;
+    setChatReactions((prev) => ({ ...prev, [msgId]: nextRating }));
+    const msg: any = chatMessages.find((m) => m.id === msgId);
+    void persistMessageFeedback({
+      messageId: msgId,
+      rating: nextRating,
+      boardId: routeBoardId || null,
+      model: msg?.model || selectedModel || null,
+      prompt: msg?.content || msg?.prompt || null,
+      response: msg?.aiResponse || null,
+    });
+  }, [chatReactions, chatMessages, routeBoardId, selectedModel]);
 
   const handleFocusedChatRegenerate = useCallback((msgId: string, content: string) => {
     setChatMessages((prev) => prev.map((m) => m.id === msgId ? { ...m, aiResponse: undefined, aiImageUrl: undefined, sources: undefined } : m));
     pendingAiBrickActionRef.current = true;
     setChatInput(content);
   }, []);
+
+  // Edit a sent prompt: drop the edited turn and everything after it, rebuild
+  // the model-facing thread from the surviving history, then re-send the
+  // edited text as a fresh turn (edit-and-resend; no version tree yet).
+  const handleFocusedChatEditResend = useCallback((msgId: string, newText: string) => {
+    const next = String(newText || "").trim();
+    if (!next) return;
+    const current = chatMessagesRef.current || [];
+    const idx = current.findIndex((m) => m.id === msgId);
+    const truncated = idx >= 0 ? current.slice(0, idx) : current;
+    chatMessagesRef.current = truncated;
+    setChatMessages(truncated);
+    // Rebuild aiThread from the surviving turns so the model context matches
+    // the visible history (mirrors the import rebuild above), capped at 40.
+    const rebuilt = truncated.flatMap((p) =>
+      p.aiResponse
+        ? [
+            { role: "user" as const, content: p.content },
+            { role: "assistant" as const, content: p.aiResponse },
+          ]
+        : [{ role: "user" as const, content: p.content }],
+    );
+    aiThreadRef.current = rebuilt.length > 40 ? rebuilt.slice(rebuilt.length - 40) : rebuilt;
+    pendingAiBrickActionRef.current = true;
+    setChatInput(next);
+  }, [setChatMessages, setChatInput]);
 
   const handleFocusedChatRegenerateNonUser = useCallback((msgId: string, idx: number) => {
     const prevUserMsg = chatMessages.slice(0, idx).reverse().find((m) => m.role === "user");
@@ -3436,8 +3697,6 @@ export default function OmniaGridPage() {
       {!isEmbeddedMode && (
       <OmniaToolbar
         isMobilePhone={isMobilePhone}
-        showVaultSidebar={showVaultSidebar}
-        onVaultToggle={() => setShowVaultSidebar((v) => !v)}
         notesOpen={notesOpen}
         voiceModeEligible={voiceModeEligible}
         voiceModeOn={voiceModeOn}
@@ -3473,7 +3732,7 @@ export default function OmniaGridPage() {
         <div
           className={`h-full transition-[margin-right] duration-300 ${chatMode ? "invisible pointer-events-none" : ""}`}
           style={{
-            marginRight: isMobileGrid ? 0 : `${chatRailWidthPx + (showVaultSidebar ? vaultSidebarWidthPx : 0)}px`,
+            marginRight: isMobileGrid ? 0 : `${chatRailWidthPx}px`,
           }}
         >
           <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} hidden={GRID_DISABLED || chatMode} />
@@ -3487,56 +3746,46 @@ export default function OmniaGridPage() {
         />
       )}
 
-      {showVaultSidebar && isMobileGrid && (
+      {showVaultSidebar && (
         <div
-          className={`fixed inset-0 bg-black/20 backdrop-blur-[2px] ${notesOpen ? "z-[228]" : "z-[64]"}`}
-          onClick={() => setShowVaultSidebar(false)}
-        />
-      )}
-      <aside
-        className={`fixed bottom-0 right-0 max-w-[92vw] border-l border-white/12 dark:border-white/8 bg-white/28 dark:bg-[rgba(20,20,24,0.40)] shadow-lg backdrop-blur-[16px] backdrop-saturate-[1.15] transition-transform duration-300 ${
-          showVaultSidebar ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none"
-        } ${
-          notesOpen
-            ? isMobileGrid
-              ? "z-[231] inset-x-0 border-l-0 max-w-none"
-              : "z-[231]"
-            : chatMode && showVaultSidebar
-              ? isMobileGrid
-                ? "z-[100] inset-x-0 border-l-0 max-w-none"
-                : "z-[100]"
-              : isMobileGrid
-                ? "z-[80] inset-x-0 border-l-0 max-w-none"
-                : "z-[65]"
-        }`}
-        style={{ top: isMobileGrid ? 0 : "var(--header-height, 4.9rem)", width: isMobileGrid ? undefined : `${vaultSidebarWidthPx}px` }}
-      >
-        <div className="h-full flex flex-col">
-          <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold text-black dark:text-white">The Vault</h2>
-              <p className="text-xs opacity-70">Files, images & media</p>
+          className={`fixed inset-0 flex items-center justify-center p-4 sm:p-6 ${
+            notesOpen ? "z-[231]" : chatMode ? "z-[100]" : "z-[80]"
+          }`}
+        >
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-[3px] animate-in fade-in-0 duration-200"
+            onClick={() => setShowVaultSidebar(false)}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="The Vault"
+            className="relative w-full max-w-[1100px] h-[85vh] max-h-[85vh] rounded-2xl border border-white/12 dark:border-white/8 bg-white/85 dark:bg-[rgba(20,20,24,0.92)] shadow-2xl backdrop-blur-[16px] backdrop-saturate-[1.15] overflow-hidden flex flex-col animate-in fade-in-0 zoom-in-95 duration-200"
+          >
+            <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-black dark:text-white">The Vault</h2>
+                <p className="text-xs opacity-70">Files, images &amp; media</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowVaultSidebar(false)}
+                className="h-8 w-8 rounded-full hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
+                title="Close vault"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowVaultSidebar(false)}
-              className="h-8 w-8 rounded-full hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
-              title="Close vault sidebar"
-            >
-              <PanelRightClose className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="flex-1 min-h-0 relative">
-            {showVaultSidebar && (
+            <div className="flex-1 min-h-0 relative">
               <iframe
                 src="/vault?embedded=1"
                 title="The Vault"
                 className="absolute inset-0 w-full h-full border-0 bg-transparent"
               />
-            )}
+            </div>
           </div>
         </div>
-      </aside>
+      )}
 
       {/* Center welcome prompt (no messages yet, not in chat mode) */}
       {!chatMode && chatMessages.length === 0 && (!chatRailOpen || centerChatLeaving) && (
@@ -3651,8 +3900,12 @@ export default function OmniaGridPage() {
           chatReactions={chatReactions}
           onReaction={handleFocusedChatReaction}
           onRegenerate={handleFocusedChatRegenerate}
+          onEditResend={handleFocusedChatEditResend}
           onRegenerateNonUser={handleFocusedChatRegenerateNonUser}
           onLoadInGreetingRefresh={refreshLoadInGreetingInPlace}
+          activeArtifact={activeArtifact}
+          onActiveArtifactChange={setActiveArtifact}
+          chatKey={boardId || routeBoardId || ""}
           composerAbove={
             chatMode && isMainAgentChat ? (
               <SubAgentTasksStrip boardId={boardId} enabled={isMainAgentChat} />
@@ -3702,8 +3955,13 @@ export default function OmniaGridPage() {
               type="button"
               onClick={() => {
                 const url = prompt("Enter any URL:");
-                if (!url) return;
-                window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url } }));
+                const trimmedUrl = String(url || "").trim();
+                if (!trimmedUrl) return;
+                if (chatMode) {
+                  addLinkToChat(trimmedUrl);
+                } else {
+                  window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: trimmedUrl } }));
+                }
                 setShowAttachMenu(false);
               }}
               className="w-full flex items-center gap-3 justify-start rounded-xl px-3 py-2 bg-white/35 border border-white/30 backdrop-blur-sm hover:opacity-90"
@@ -3743,7 +4001,11 @@ export default function OmniaGridPage() {
                             type="button"
                             onClick={async () => {
                               if ((file.kind === "link" || file.kind === "youtube") && file.url) {
-                                window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: file.url } }));
+                                if (chatMode) {
+                                  addLinkToChat(file.url);
+                                } else {
+                                  window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: file.url } }));
+                                }
                                 setShowAttachMenu(false);
                                 return;
                               }
@@ -3783,7 +4045,11 @@ export default function OmniaGridPage() {
                             type="button"
                             onClick={async () => {
                               if ((file.kind === "link" || file.kind === "youtube") && file.url) {
-                                window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: file.url } }));
+                                if (chatMode) {
+                                  addLinkToChat(file.url);
+                                } else {
+                                  window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: file.url } }));
+                                }
                                 setShowAttachMenu(false);
                                 return;
                               }
@@ -3811,64 +4077,32 @@ export default function OmniaGridPage() {
               </div>
             </div>
           )}
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="*/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,.m4a,.aac,.wma"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              const files = Array.from(e.target.files || []);
-              if (!files.length) { e.target.value = ""; return; }
-              if (chatMode) {
-                for (const file of files) {
-                  const mime = file.type || "";
-                  const ext = (file.name || "").split(".").pop()?.toLowerCase() || "";
-                  const AUDIO_EXTS_LOCAL = new Set(["mp3", "wav", "m4a", "ogg", "aac", "flac", "wma"]);
-                  const VIDEO_EXTS_LOCAL = new Set(["mp4", "mov", "avi", "webm", "mkv", "wmv"]);
-                  const isAudio = mime.startsWith("audio/") || AUDIO_EXTS_LOCAL.has(ext);
-                  const isVideo = mime.startsWith("video/") || VIDEO_EXTS_LOCAL.has(ext);
-                  if (isAudio || isVideo) {
-                    addFocusedAttachment({
-                      id: makeAttId(), type: isAudio ? "audio" : "video",
-                      url: "", name: file.name, mime, size: file.size, rawFile: file,
-                    });
-                  } else if (DOCUMENT_EXTS.has(ext)) {
-                    (async () => {
-                      try {
-                        const { extractTextFromFile } = await import("@/lib/extract-text");
-                        const { API_BASE_URL } = await import("@/lib/api-config");
-                        const result = await extractTextFromFile(file, API_BASE_URL);
-                        addFocusedAttachment({
-                          id: makeAttId(), type: "document", url: "", name: file.name, mime, size: file.size,
-                          extractedText: result?.text || "",
-                        });
-                      } catch {
-                        addFocusedAttachment({ id: makeAttId(), type: "document", url: "", name: file.name, mime, size: file.size });
-                      }
-                    })();
-                  } else {
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                      const dataUrl = reader.result as string;
-                      let type = "file";
-                      if (mime.startsWith("image/")) type = "image";
-                      else if (mime === "application/pdf" || ext === "pdf") type = "pdf";
-                      addFocusedAttachment({ id: makeAttId(), type, url: dataUrl, name: file.name, mime, size: file.size });
-                    };
-                    reader.readAsDataURL(file);
-                  }
-                }
-              } else {
-                window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files } }));
-              }
-              e.target.value = "";
-              setShowAttachMenu(false);
-            }}
-          />
         </DialogContentAny>
       </DialogAny>
+
+      {/* Hidden file input — kept OUTSIDE the attach dialog so the "+" menu's
+          "Add photos & files" can trigger it directly without opening a modal. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="*/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.txt,.md,.json,.html,.csv,.rtf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.mp3,.wav,.ogg,.flac,.mp4,.mov,.avi,.webm,.m4a,.aac,.wma"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const files = Array.from(e.target.files || []);
+          if (!files.length) { e.target.value = ""; return; }
+          if (chatMode) {
+            void ingestChatFiles(files, addFocusedAttachment, {
+              userId: user?.id,
+              updateAttachment: updateFocusedAttachment,
+            });
+          } else {
+            window.dispatchEvent(new CustomEvent("omnia_attach_files", { detail: { files } }));
+          }
+          e.target.value = "";
+          setShowAttachMenu(false);
+        }}
+      />
 
       <OmniaToasts
         aiSuggestions={aiSuggestions}
@@ -3901,6 +4135,14 @@ export default function OmniaGridPage() {
       <UpgradeModal modal={upgradeModal} onDismiss={dismissUpgradeModal} />
 
       <FileDropModeDialog />
+
+      <OmniaProjectPicker
+        open={projectPickerOpen}
+        onOpenChange={setProjectPickerOpen}
+        userId={user?.id}
+        activeProjectId={chatScopedProject?.id ?? null}
+        onSelect={setChatScopedProject}
+      />
 
       {/* Notes panel — bottom drawer */}
       {!chatMode && (

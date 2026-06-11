@@ -28,6 +28,20 @@ const PRIORITY_META = {
 };
 const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
 
+// Completed tasks linger in the list crossed out for this long, THEN clear.
+const DONE_TTL_MS = 24 * 60 * 60 * 1000;
+// How often an open panel re-checks so items cross the 24h line + clear
+// even if the user never refreshes.
+const DONE_SWEEP_MS = 5 * 60 * 1000;
+
+// When a task was "finished" — completed_at is the source of truth, with
+// updated_at / created_at as fallbacks for older rows that predate it.
+function doneAtMs(todo) {
+  const raw = todo.completed_at || todo.updated_at || todo.created_at || "";
+  const t = Date.parse(raw);
+  return Number.isNaN(t) ? 0 : t;
+}
+
 // A YYYY-MM-DD date-input value → an ISO instant at end of that local day, so
 // "due Friday" means any time on Friday still counts as on-time.
 function dateInputToIso(dateStr) {
@@ -53,7 +67,6 @@ export default function LyknTodosPanel({ active = true }) {
   const { user } = useAuth();
   const [todos, setTodos] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [showDone, setShowDone] = useState(false);
   const [busyId, setBusyId] = useState(null);
 
   // Add-form state.
@@ -66,18 +79,38 @@ export default function LyknTodosPanel({ active = true }) {
   const loadTodos = useCallback(async () => {
     if (!user?.id) return;
     setLoading(true);
-    const statuses = showDone
-      ? ["open", "completed"]
-      : ["open"];
+    // Pull open tasks PLUS completed ones so finished items stay visible
+    // (crossed out) instead of vanishing the moment they're checked off.
     const { data, error } = await supabase
       .from("lykn_todos")
-      .select("id, title, notes, status, priority, due_at, due_at_text, position, created_at, completed_at")
+      .select("id, title, notes, status, priority, due_at, due_at_text, position, created_at, completed_at, updated_at")
       .eq("user_id", user.id)
-      .in("status", statuses)
+      .in("status", ["open", "completed"])
       .order("created_at", { ascending: false });
-    if (!error) setTodos(data || []);
+    if (!error) {
+      const rows = data || [];
+      const cutoff = Date.now() - DONE_TTL_MS;
+      const expired = [];
+      const live = [];
+      for (const t of rows) {
+        // A completed task that's been crossed out for >24h: clear it.
+        if (t.status === "completed" && doneAtMs(t) < cutoff) {
+          expired.push(t.id);
+          continue;
+        }
+        live.push(t);
+      }
+      setTodos(live);
+      if (expired.length) {
+        void supabase
+          .from("lykn_todos")
+          .delete()
+          .in("id", expired)
+          .eq("user_id", user.id);
+      }
+    }
     setLoading(false);
-  }, [user?.id, showDone]);
+  }, [user?.id]);
 
   useEffect(() => {
     if (active) void loadTodos();
@@ -95,6 +128,14 @@ export default function LyknTodosPanel({ active = true }) {
       )
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
+  }, [active, user?.id, loadTodos]);
+
+  // Periodic sweep so completed items cross the 24h line and clear themselves
+  // even while the panel stays open and untouched.
+  useEffect(() => {
+    if (!active || !user?.id) return undefined;
+    const id = setInterval(() => { void loadTodos(); }, DONE_SWEEP_MS);
+    return () => clearInterval(id);
   }, [active, user?.id, loadTodos]);
 
   const now = Date.now();
@@ -157,7 +198,8 @@ export default function LyknTodosPanel({ active = true }) {
       completed_at: status === "completed" ? new Date().toISOString() : null,
       updated_at: new Date().toISOString(),
     };
-    // Optimistic: drop completed/cancelled from the open view immediately.
+    // Optimistic: a checked-off task stays in place, crossed out (it only
+    // disappears 24h later via the sweep); reopening un-crosses it.
     setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, ...patch } : t)));
     const { error } = await supabase
       .from("lykn_todos")
@@ -168,12 +210,8 @@ export default function LyknTodosPanel({ active = true }) {
     if (error) {
       toast({ title: "Update failed", description: error.message, variant: "destructive" });
       void loadTodos();
-    } else if (status !== "open" && !showDone) {
-      setTodos((prev) => prev.filter((t) => t.id !== todo.id));
-    } else {
-      void loadTodos();
     }
-  }, [user?.id, loadTodos, showDone]);
+  }, [user?.id, loadTodos]);
 
   const removeTodo = useCallback(async (todo) => {
     setBusyId(todo.id);
@@ -355,10 +393,10 @@ export default function LyknTodosPanel({ active = true }) {
             ) : (
               openTodos.map(renderRow)
             )}
-            {showDone && doneTodos.length > 0 ? (
+            {doneTodos.length > 0 ? (
               <div className="mt-3 pt-2 border-t border-white/10">
                 <div className="px-3 pb-1 text-[0.6875rem] uppercase tracking-wide text-white/30">
-                  Completed
+                  Recently completed
                 </div>
                 {doneTodos.map(renderRow)}
               </div>
@@ -372,13 +410,9 @@ export default function LyknTodosPanel({ active = true }) {
         <span>
           {openTodos.length} open{openTodos.length === 1 ? " task" : " tasks"}
         </span>
-        <button
-          type="button"
-          onClick={() => setShowDone((v) => !v)}
-          className="hover:text-white/80 transition-colors"
-        >
-          {showDone ? "Hide completed" : "Show completed"}
-        </button>
+        {doneTodos.length > 0 ? (
+          <span className="text-white/30">Completed items clear after 24h</span>
+        ) : null}
       </div>
     </div>
   );

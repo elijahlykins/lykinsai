@@ -220,6 +220,15 @@ function resolveAttachmentType(attachment = {}) {
   const socialPlatform = detectSocialPlatform(url);
   if (socialPlatform) return socialPlatform;
 
+  // YouTube videos must ALWAYS embed, even when they arrive as a saved
+  // link. The "Save link" flow (and connector / AI link saves) store URLs
+  // as `type: "bookmark"` with a `siteName`/`articleText`, so this check
+  // has to win over the generic bookmark classification below — otherwise
+  // a pasted YouTube URL renders as a flat link-preview card instead of a
+  // player. Require a resolvable video id so channel/playlist/search pages
+  // (no id) still fall through to normal bookmark treatment.
+  if ((url.includes("youtube.com") || url.includes("youtu.be")) && extractYouTubeVideoId(url)) return "youtube";
+
   if (attachment.type === "bookmark" || attachment.type === "link" || attachment.siteName || attachment.articleText) return "bookmark";
   if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
 
@@ -809,6 +818,9 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
 
   const { checkVaultLimit, incrementVaultCount, refreshVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [embeddedSearch, setEmbeddedSearch] = useState("");
+  // Tracks cards the user has click-added to the chat from the embedded vault
+  // popup, so we can show an "added" checkmark and let them add several in a row.
+  const [addedCardIds, setAddedCardIds] = useState(() => new Set());
   const vaultQueryClient = useQueryClient();
   const [vaultReady, setVaultReadyRaw] = useState(() => sessionVaultReady);
   const markVaultReady = useCallback(() => {
@@ -3237,9 +3249,17 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   // screen ever moves. Grid view (CSS grid, row-major) and the wake marketing
   // preview keep their own layouts and don't use this.
   const computeCollageColumns = useCallback(() => {
-    if (typeof window === "undefined") return isEmbeddedMode ? 2 : 3;
-    if (isEmbeddedMode) return 2;
+    if (typeof window === "undefined") return isEmbeddedMode ? 3 : 3;
     const w = window.innerWidth;
+    if (isEmbeddedMode) {
+      // The embedded vault renders inside a centered modal iframe whose width
+      // can be ~1100px, so scale the column count with the available width to
+      // keep cards from blowing up huge.
+      if (w >= 1000) return 4;
+      if (w >= 720) return 3;
+      if (w >= 480) return 2;
+      return 1;
+    }
     if (w >= 1536) return 5; // 2xl
     if (w >= 1280) return 4; // xl
     if (w >= 768) return 3; // md
@@ -3279,6 +3299,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   // selection state, and render helpers it needs.
   const renderCollageCard = (card) => {
     const isSelected = selectedCardIds.has(card.id);
+    const isAdded = isEmbeddedMode && !isPickerMode && addedCardIds.has(card.id);
     return (
                   <motion.article
                     initial={
@@ -3292,7 +3313,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
                     data-vault-card-id={card.id}
                     data-card-id={card.id}
                     ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
-                    draggable={!isPickerMode}
+                    draggable={!isPickerMode && !isEmbeddedMode}
                     onDragStart={(e) => handleCardDragStart(e, card)}
                     onDrag={handleCardDrag}
                     onDragEnter={(e) => {
@@ -3342,7 +3363,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
                         ? virtualizedCardStyle
                         : undefined
                     }
-                    className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${isEmbeddedMode ? "mb-0" : vaultView === "grid" ? "" : "mb-5"} rounded-2xl relative ${
+                    className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${vaultView === "grid" ? "" : isEmbeddedMode ? "mb-3" : "mb-5"} rounded-2xl relative ${
                       card.kind === "chat-preview" ? "overflow-hidden" : vaultView === "grid" ? "overflow-hidden" : "overflow-visible"
                     } ${
                       card.kind === "attachment" || card.kind === "quick-note"
@@ -3354,6 +3375,8 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
                         : "cursor-pointer"
                     } ${dropTargetCardId === card.id && draggedCardId !== card.id ? "ring-2 ring-blue-400/40" : ""} ${
                       isSelected ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-transparent" : ""
+                    } ${
+                      isAdded ? "ring-2 ring-emerald-500 ring-offset-2 ring-offset-transparent" : ""
                     } ${
                       card.kind === "attachment" && card.type === "youtube"
                         ? getYouTubeOffsetClass(card.id)
@@ -3370,6 +3393,15 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
                         className="absolute top-2 right-2 z-[120] w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center shadow-md pointer-events-none"
                       >
                         <Check className="w-3 h-3" strokeWidth={3} />
+                      </span>
+                    )}
+                    {isAdded && !isSelected && (
+                      <span
+                        data-no-preview="true"
+                        className="absolute top-2 right-2 z-[120] inline-flex items-center gap-1 rounded-full bg-emerald-500 text-white text-[0.625rem] font-semibold pl-1 pr-2 py-0.5 shadow-md pointer-events-none"
+                      >
+                        <Check className="w-3 h-3" strokeWidth={3} />
+                        Added
                       </span>
                     )}
                     {card.isDemo && !isWakePreview && (
@@ -3929,6 +3961,44 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   // an unmounted component (React 18+ doesn't throw), which is fine —
   // the server state is the source of truth.
 
+  // Build the same payload a drag would carry so the embedded chat sidebar
+  // can add an item to the chat on a plain click (no drag required). Mirrors
+  // the attachment / quick-note branches in `handleCardDragStart`.
+  const buildEmbeddedVaultPayload = useCallback((card) => {
+    if (!card) return null;
+    if (card.kind === "attachment" && card.attachment) {
+      const att = card.attachment;
+      const videoId = card.type === "youtube" ? (att.videoId || extractYouTubeVideoId(att.url || "") || "") : "";
+      const resolvedForDrag = resolvedAttachmentUrls[card.id] || att.url || "";
+      const pdfText = (card.type === "pdf" && att.extractedText) ? String(att.extractedText) : "";
+      const dragAttachment = { ...att, url: resolvedForDrag, type: card.type, videoId, ...(pdfText ? { pdfText, extractedText: pdfText } : {}) };
+      return {
+        id: card.id,
+        noteId: card.noteId || card.id,
+        attachmentIndex: Number.isInteger(card.attachmentIndex) ? card.attachmentIndex : 0,
+        title: card.title || "",
+        content: "",
+        attachments: [dragAttachment],
+        attachment: dragAttachment,
+        tags: Array.isArray(card.tags) ? card.tags : [],
+        timestamp: Date.now(),
+      };
+    }
+    if (card.kind === "quick-note") {
+      return {
+        id: card.id,
+        noteId: card.noteId || card.id,
+        attachmentIndex: 0,
+        title: card.title || "Quick Note",
+        content: card.excerpt || "",
+        attachments: [],
+        tags: Array.isArray(card.tags) ? card.tags : [],
+        timestamp: Date.now(),
+      };
+    }
+    return null;
+  }, [resolvedAttachmentUrls]);
+
   // Open a full-size preview/view window when a card is clicked. Interactive
   // elements (buttons, links, form fields, media controls, menus) opt-out
   // either via stopPropagation or by being covered in this selector.
@@ -4000,10 +4070,34 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
 
     setOpenCardMenuId(null);
     setOpenAttachmentNotesCardId(null);
+
+    // Embedded (non-picker) = the Omnia chat "Pull from vault" sidebar. A
+    // plain click should ADD the item to the chat (same logic as drag), not
+    // open the full-size preview/view mode.
+    if (isEmbeddedMode && !isPickerMode) {
+      const payload = buildEmbeddedVaultPayload(card);
+      if (payload) {
+        try {
+          window.parent.postMessage({ type: "omnia-vault-add", data: payload }, embeddedTargetOrigin);
+        } catch {
+          /* ignore */
+        }
+        setAddedCardIds((prev) => {
+          const next = new Set(prev);
+          next.add(card.id);
+          return next;
+        });
+        return;
+      }
+    }
+
     setPreviewCard(card);
   }, [
     draggedCardId,
     isPickerMode,
+    isEmbeddedMode,
+    embeddedTargetOrigin,
+    buildEmbeddedVaultPayload,
     isSelectableCard,
     selectRangeTo,
     toggleCardSelection,
@@ -6101,13 +6195,28 @@ User: ${text}`;
         <section className="mb-6">
           {isEmbeddedMode ? (
             <div className="space-y-3">
-              <input
-                type="text"
-                value={embeddedSearch}
-                onChange={(e) => setEmbeddedSearch(e.target.value)}
-                placeholder="Search memories..."
-                className="w-full h-10 rounded-xl border border-black/8 dark:border-white/8 bg-white/55 dark:bg-white/4 px-3 text-sm outline-none"
-              />
+              <div className="relative w-full">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
+                <input
+                  type="text"
+                  value={embeddedSearch}
+                  onChange={(e) => setEmbeddedSearch(e.target.value)}
+                  placeholder="Search your vault — type an idea, topic, or keyword"
+                  className="w-full h-11 rounded-2xl glass-control pl-10 pr-12 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
+                />
+                {embeddedSearch.trim() ? (
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center">
+                    <button
+                      type="button"
+                      onClick={() => setEmbeddedSearch("")}
+                      className="w-5 h-5 flex items-center justify-center text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70"
+                      title="Clear search"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : null}
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 {(() => {
                   const current = VAULT_VIEW_OPTIONS.find((v) => v.id === vaultView) || VAULT_VIEW_OPTIONS[0];
@@ -6927,7 +7036,7 @@ User: ${text}`;
                   isWakePreview
                     ? "lykn-wake-vault-preview-grid col-start-1 col-span-3 row-start-2 grid grid-cols-3 gap-3"
                     : isEmbeddedMode
-                    ? "grid grid-cols-2 gap-3"
+                    ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"
                     : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
                 }>
                   {vaultView === "grid" && !isWakePreview && (

@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 
 const PHASES = [
-  { text: "Understanding your question…", duration: 2500 },
-  { text: "Searching for context…",       duration: 3000 },
-  { text: "Processing information…",      duration: 3500 },
-  { text: "Reasoning through details…",   duration: 4000 },
-  { text: "Thinking deeper…",             duration: 4500 },
-  { text: "Crafting response…",           duration: 5000 },
-  { text: "Almost there…",               duration: 8000 },
+  { text: "Reading what you said…",       duration: 2500 },
+  { text: "Pulling together context…",    duration: 3000 },
+  { text: "Working through it…",          duration: 3500 },
+  { text: "Connecting the pieces…",       duration: 4000 },
+  { text: "Putting it together…",         duration: 4500 },
+  { text: "Writing it up…",               duration: 5000 },
+  { text: "Polishing the details…",       duration: 8000 },
 ];
 
 /**
