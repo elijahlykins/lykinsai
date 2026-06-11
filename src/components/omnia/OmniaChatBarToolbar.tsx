@@ -53,7 +53,7 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
   const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
   const dropdownCls =
-    "glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md";
+    "rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5";
 
   return (
     <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>

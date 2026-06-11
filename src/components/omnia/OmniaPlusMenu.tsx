@@ -16,6 +16,7 @@ import {
   Paperclip,
   Plus,
   Presentation,
+  Sheet,
   Sparkles,
   Telescope,
 } from "lucide-react";
@@ -25,6 +26,7 @@ export type ArtifactKind =
   | "study"
   | "document"
   | "worksheet"
+  | "spreadsheet"
   | "chart"
   | "diagram"
   | "webapp";
@@ -46,6 +48,7 @@ const CREATE_ITEMS: Array<{ kind: ArtifactKind; label: string; icon: React.React
   { kind: "deck", label: "Pitch deck", icon: <Presentation className="w-[1.05rem] h-[1.05rem]" /> },
   { kind: "study", label: "Study guide", icon: <GraduationCap className="w-[1.05rem] h-[1.05rem]" /> },
   { kind: "document", label: "Document", icon: <FileText className="w-[1.05rem] h-[1.05rem]" /> },
+  { kind: "spreadsheet", label: "Spreadsheet", icon: <Sheet className="w-[1.05rem] h-[1.05rem]" /> },
   { kind: "chart", label: "Chart / graph", icon: <BarChart3 className="w-[1.05rem] h-[1.05rem]" /> },
   { kind: "diagram", label: "Diagram", icon: <GitBranch className="w-[1.05rem] h-[1.05rem]" /> },
   { kind: "webapp", label: "Interactive page", icon: <Layout className="w-[1.05rem] h-[1.05rem]" /> },

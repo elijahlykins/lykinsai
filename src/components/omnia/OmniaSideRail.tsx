@@ -9,6 +9,7 @@ import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } fro
 import NeuronPill from "@/components/synthesis/NeuronPill";
 import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
 import ToolCallPill from "@/components/omnia/ToolCallPill";
+import ThinkingIndicator from "@/components/omnia/ThinkingIndicator";
 import ChatArtifactCard from "@/components/omnia/ChatArtifactCard";
 import { extractChatArtifacts, sortArtifactsForDisplay } from "@/lib/ai/chatArtifacts";
 import LinkPreview from "@/components/LinkPreview";
@@ -542,9 +543,8 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
         ))}
         {isChatLoading && (
           <div className="flex flex-col items-start w-full">
-            <div className="omnia-ai-thinking-glow rounded-xl max-w-[94%] bg-black/5 dark:bg-white/8 border border-black/10 dark:border-white/12 backdrop-blur-sm text-[0.6875rem] text-black/70 dark:text-white/60 px-3 py-1.5 flex items-center gap-2" aria-live="polite">
-              <div className="brick-spinner" />
-              {thinkingStatus}
+            <div className="omnia-ai-thinking-glow rounded-xl max-w-[94%] bg-black/5 dark:bg-white/8 border border-black/10 dark:border-white/12 backdrop-blur-sm text-[0.6875rem] text-black/70 dark:text-white/60 px-3 py-1.5 flex items-center gap-2">
+              <ThinkingIndicator status={thinkingStatus} compact />
             </div>
           </div>
         )}

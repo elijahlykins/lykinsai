@@ -44,7 +44,7 @@ export type { PromptMessage, FocusedChatAttachment, CreateAction, OrchestratorRe
 
 /** "+" menu capability mode applied to the next chat send. */
 // Artifact kinds buildable from the "+" → Create submenu (claude.ai-style).
-export type ArtifactKind = "deck" | "study" | "document" | "worksheet" | "chart" | "diagram" | "webapp";
+export type ArtifactKind = "deck" | "study" | "document" | "worksheet" | "spreadsheet" | "chart" | "diagram" | "webapp";
 export type ComposerMode = "none" | "image" | "web" | "research" | `create:${ArtifactKind}`;
 
 /* ------------------------------------------------------------------ */
@@ -354,7 +354,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const pendingBrickActionDataRef = useRef<{ imageUrl?: string; videoId?: string } | null>(null);
   const youtubeTranscriptCacheRef = useRef<Record<string, { fetchedAt: number; title: string; url: string; transcript: string; segments: Array<{ startSec: number; endSec: number; text: string }>; source?: string }>>({});
   const youtubeTranscriptFailRef = useRef<Record<string, number>>({});
-  const prevMsgCountRef = useRef(0);
+  const prevLastMsgIdRef = useRef<string | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const chatUserScrolledUpRef = useRef(false);
   const chatProgrammaticScrollRef = useRef(false);
@@ -501,15 +501,23 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   // Sync ref
   useEffect(() => { chatMessagesRef.current = chatMessages; }, [chatMessages]);
 
-  // Auto-expand latest message
+  // Auto-expand the latest message — but ONLY collapse the others when the
+  // last message is genuinely NEW (a fresh user turn or a switch to a
+  // different chat). Keying on the last message *id* instead of the array
+  // length means background re-hydrations (per-board snapshot restores,
+  // attachment re-signing, thread routing) that re-set `chatMessages` to an
+  // array ending in the SAME message no longer collapse the response the user
+  // is currently reading. The open response now stays open until the user
+  // actually writes another prompt.
   useEffect(() => {
     const count = chatMessages.length;
-    if (count > prevMsgCountRef.current && count > 0) {
-      const latest = chatMessages[count - 1];
-      if (latest) setExpandedAiMsgIds(new Set([latest.id]));
+    if (count === 0) { prevLastMsgIdRef.current = null; return; }
+    const latestId = chatMessages[count - 1]?.id ?? null;
+    if (latestId && latestId !== prevLastMsgIdRef.current) {
+      setExpandedAiMsgIds(new Set([latestId]));
     }
-    prevMsgCountRef.current = count;
-  }, [chatMessages.length]);
+    prevLastMsgIdRef.current = latestId;
+  }, [chatMessages]);
 
   // Brick action events
   useEffect(() => {
@@ -1998,7 +2006,13 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   const handleChatSend = useCallback(async () => {
     const text = chatInputRef.current.trim();
-    if (!text) return;
+    // Allow sending with no text as long as something else is attached
+    // (vault drops / files / a pending brick action). Mirrors ChatGPT,
+    // where an image/file alone is a valid turn.
+    const hasAttachment =
+      focusedChatAttachments.length > 0 ||
+      Boolean(pendingBrickActionDataRef.current?.videoId);
+    if (!text && !hasAttachment) return;
 
     const sendMode = composerModeRef.current;
     const streamBoardId = String(routeBoardId || boardId || "");

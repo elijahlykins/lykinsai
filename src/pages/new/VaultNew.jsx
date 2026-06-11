@@ -1058,7 +1058,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   const chatProgrammaticScrollRef = useRef(false);
   const chatInputRef = useRef(null);
   const [expandedAiMsgIds, setExpandedAiMsgIds] = useState(new Set());
-  const prevMsgCountRef = useRef(0);
+  const prevLastMsgIdRef = useRef(null);
   const signedUrlCacheRef = useRef(new Map());
 
   const CHAT_RAIL_DEFAULT_WIDTH = 340;
@@ -1344,14 +1344,19 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     el.scrollTop = el.scrollHeight;
   }, [chatMessages, isChatLoading, showChat]);
 
+  // Only collapse prior responses when the LAST message id genuinely changes
+  // (a new user turn / switched chat) — not on every array-length change.
+  // Background re-hydrations that keep the same last message no longer close
+  // the response the user is reading. Stays open until the next real prompt.
   useEffect(() => {
     const count = chatMessages.length;
-    if (count > prevMsgCountRef.current && count > 0) {
-      const latest = chatMessages[count - 1];
-      if (latest?.id) setExpandedAiMsgIds(new Set([latest.id]));
+    if (count === 0) { prevLastMsgIdRef.current = null; return; }
+    const latestId = chatMessages[count - 1]?.id ?? null;
+    if (latestId && latestId !== prevLastMsgIdRef.current) {
+      setExpandedAiMsgIds(new Set([latestId]));
     }
-    prevMsgCountRef.current = count;
-  }, [chatMessages.length]);
+    prevLastMsgIdRef.current = latestId;
+  }, [chatMessages]);
 
   const mergeUploadedNotes = useCallback((incoming = []) => {
     if (!Array.isArray(incoming) || incoming.length === 0) return;
@@ -2686,6 +2691,96 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   // load.
   const preDecodedUrlsRef = useRef(new Set());
 
+  // ── Dimension backfill (self-heal the existing vault) ──────────────────
+  // New uploads now store intrinsic width/height (see uploadPipeline.ts), so
+  // the masonry estimate + skeleton + image all reserve the SAME aspect from
+  // first paint — zero layout shift. Items uploaded before that change have
+  // no stored dims, so they still shift their column once when the image
+  // resolves. This persister closes that gap: the first time we learn an
+  // image's real natural dimensions (from the <img> onLoad / preload probe),
+  // we write them back into the note's attachment marker. From then on the
+  // card reserves its true aspect on every load — the vault converges to a
+  // totally shift-free feed as the user browses it once.
+  const persistDimsAttemptedRef = useRef(new Set());
+  const persistDimsQueueRef = useRef([]);
+  const persistDimsDrainingRef = useRef(false);
+  const drainPersistDimsQueue = useCallback(async () => {
+    if (persistDimsDrainingRef.current) return;
+    persistDimsDrainingRef.current = true;
+    try {
+      while (persistDimsQueueRef.current.length > 0) {
+        const job = persistDimsQueueRef.current.shift();
+        if (!job?.noteId || !user?.id) continue;
+        try {
+          const { data: note } = await supabase
+            .from("notes")
+            .select("content, updated_at")
+            .eq("id", job.noteId)
+            .eq("user_id", user.id)
+            .single();
+          if (!note?.content) continue;
+          const span = findAttachmentsMarker(String(note.content));
+          if (!span) continue;
+          const attachments = span.attachments.slice();
+          const idx = job.attachmentIndex ?? 0;
+          const current = attachments[idx];
+          if (!current || typeof current !== "object") continue;
+          // Someone (a newer upload path, a concurrent backfill) may have
+          // filled dims since we queued — don't trample.
+          if (resolveAttachmentAspectRatio(current)) continue;
+          attachments[idx] = { ...current, width: job.w, height: job.h };
+          const updatedContent = withAttachmentsMarker(String(note.content), attachments);
+          // Lost-update guard: only commit if the row hasn't changed since
+          // we read it, so we never clobber a concurrent edit / description
+          // backfill writing the same row.
+          const { error } = await supabase
+            .from("notes")
+            .update({ content: updatedContent })
+            .eq("id", job.noteId)
+            .eq("user_id", user.id)
+            .eq("updated_at", note.updated_at);
+          if (error) continue;
+          // Intentionally NOT updating the in-memory notes here. Feeding the
+          // freshly-learned dims back into the live card would change its
+          // masonry height estimate and could re-bucket it into a different
+          // column WHILE the user is looking — the exact jump we're killing.
+          // The DB now has the dims; the NEXT cold load reserves the true
+          // aspect from first paint. Within this session the already-resolved
+          // image is shift-free via learnedImageDimsRef.
+          // Gentle pacing so a freshly-opened vault full of legacy images
+          // doesn't fire dozens of writes in the same tick.
+          await new Promise((r) => setTimeout(r, 400));
+        } catch {
+          // best-effort — a failed backfill just leaves the old behaviour
+          // for that one card; we'll retry next session.
+        }
+      }
+    } finally {
+      persistDimsDrainingRef.current = false;
+    }
+  }, [user?.id]);
+
+  const queuePersistAttachmentDims = useCallback(
+    (card, w, h) => {
+      if (!card?.noteId || card.kind !== "attachment") return;
+      if (!(w > 0) || !(h > 0)) return;
+      // Skip connector-synced / demo / ghost cards and anything that already
+      // carries usable dimensions.
+      if (card.ghost || card.isDemo) return;
+      if (resolveAttachmentAspectRatio(card.attachment)) return;
+      if (persistDimsAttemptedRef.current.has(card.id)) return;
+      persistDimsAttemptedRef.current.add(card.id);
+      persistDimsQueueRef.current.push({
+        noteId: card.noteId,
+        attachmentIndex: card.attachmentIndex ?? 0,
+        w: Math.round(w),
+        h: Math.round(h),
+      });
+      void drainPersistDimsQueue();
+    },
+    [drainPersistDimsQueue]
+  );
+
   const eagerResolveRunRef = useRef(false);
   useEffect(() => {
     if (isWakePreview) return;
@@ -3175,8 +3270,13 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   }, [orderByPage, orderStorageKey]);
 
   useEffect(() => {
+    // Only persist the user's real preference. Wake-preview and picker mode
+    // force "grid" (see the vaultView initializer + isPickerMode effect); if we
+    // wrote those forced values back to localStorage they'd clobber the stored
+    // preference, so the next normal vault load would wrongly default to grid.
+    if (isWakePreview || isPickerMode) return;
     try { localStorage.setItem("lykn_vault_view", vaultView); } catch {}
-  }, [vaultView]);
+  }, [vaultView, isWakePreview, isPickerMode]);
 
   const orderedVisibleCards = useMemo(() => {
     // Source-folder tiles (the Notion/Gmail/Slack/etc. summary cards) are
@@ -3277,6 +3377,26 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
 
   const useMasonryLayout = !isWakePreview && vaultView !== "grid";
 
+  // Freeze each card's masonry height estimate the first time we see it, keyed
+  // by card id. The estimate drives column assignment; if it changed after
+  // mount (e.g. a dimension backfill or a background react-query refetch fed
+  // real dims into a previously dim-less card) the greedy packer could move an
+  // already-placed card to a different column WHILE the user is looking — a
+  // visible reshuffle. Locking the estimate per id for the component's
+  // lifetime guarantees the design's invariant: nothing already on screen ever
+  // moves. New cards (uploads/pagination) compute fresh — with their real dims
+  // if present — and a remount (route change) recomputes everything against
+  // whatever dims are now persisted, so balance still improves over time.
+  const heightEstimateCacheRef = useRef(new Map());
+  const stableHeightEstimate = useCallback((card) => {
+    const cache = heightEstimateCacheRef.current;
+    const cached = cache.get(card.id);
+    if (cached !== undefined) return cached;
+    const value = estimateCardHeightUnit(card);
+    cache.set(card.id, value);
+    return value;
+  }, []);
+
   const collageColumnBuckets = useMemo(() => {
     const count = Math.max(1, collageColumns);
     const buckets = Array.from({ length: count }, () => []);
@@ -3288,10 +3408,10 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
         if (heights[i] < heights[min]) min = i;
       }
       buckets[min].push(card);
-      heights[min] += estimateCardHeightUnit(card);
+      heights[min] += stableHeightEstimate(card);
     }
     return buckets;
-  }, [collageGridCards, collageColumns, useMasonryLayout]);
+  }, [collageGridCards, collageColumns, useMasonryLayout, stableHeightEstimate]);
 
   // Single source of truth for a collage/grid card's JSX, so the masonry
   // columns and the grid/wake layouts render identical cards. Defined in
@@ -5096,6 +5216,11 @@ User: ${text}`;
             if (resolvedUrl && nw > 0 && nh > 0 && !learnedImageDimsRef.current.has(resolvedUrl)) {
               learnedImageDimsRef.current.set(resolvedUrl, { w: nw, h: nh });
             }
+            // Persist these dims back to the note so this (legacy, dim-less)
+            // image reserves its true aspect on every future load — no more
+            // column shift when it resolves. No-op for items that already
+            // have stored dims.
+            queuePersistAttachmentDims(card, nw, nh);
             // Reset the retry budget on success. Without this, a card
             // that briefly fails (expired URL → fresh URL → success)
             // permanently keeps a shrunken retry budget, so the next
@@ -5241,6 +5366,9 @@ User: ${text}`;
                   wrapper.style.aspectRatio = `${vw} / ${vh}`;
                   wrapper.style.height = "auto";
                 }
+                // Persist so this legacy video reserves its true aspect on
+                // every future load instead of falling back to 16/9.
+                queuePersistAttachmentDims(card, vw, vh);
               }
             }}
             onLoadedData={(e) => {
@@ -7337,7 +7465,7 @@ User: ${text}`;
                   <SelectTrigger className="omnia-neu-chat-toolbar-select-trigger h-8 max-w-[6.5rem] min-w-0 shrink-0 rounded-lg border-0 bg-transparent text-[0.625rem] px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 [&>span]:truncate">
                     <SelectValue placeholder="Model" />
                   </SelectTrigger>
-                  <SelectContent side="top" align="start" className="glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]">
+                  <SelectContent side="top" align="start" className="rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]">
                     <ModelSelectOptions />
                   </SelectContent>
                 </Select>
@@ -7550,7 +7678,7 @@ User: ${text}`;
           return (
             <div
               ref={cardMenuRef}
-              className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/60 dark:bg-[#171515]/60 backdrop-blur-md shadow-md p-2 flex flex-col overflow-hidden"
+              className="rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 flex flex-col overflow-hidden"
               style={{
                 position: previewRoot ? "absolute" : "fixed",
                 width: menuW,
@@ -7886,7 +8014,7 @@ User: ${text}`;
           return (
             <div
               ref={tagPickerRef}
-              className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/65 dark:bg-[#171515]/65 backdrop-blur-md shadow-md p-3 overflow-hidden"
+              className="rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 overflow-hidden"
               style={{ position: "fixed", width: menuW, left, top, zIndex: 10000 }}
               onMouseDown={(e) => e.stopPropagation()}
             >

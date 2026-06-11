@@ -38,13 +38,13 @@ export default function ModelBuilderRuleRowMenu({ onEdit, onDelete, className })
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-[200] mt-1 min-w-[7.5rem] rounded-lg border border-black/10 dark:border-white/12 bg-popover py-1 shadow-lg"
+          className="absolute right-0 top-full z-[200] mt-1 min-w-[7.5rem] rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md p-1.5 shadow-md"
         >
           {showEdit ? (
             <button
               type="button"
               role="menuitem"
-              className="w-full px-3 py-1.5 text-left text-[12px] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+              className="w-full rounded-lg px-3 py-1.5 text-left text-[12px] hover:bg-black/[0.06] dark:hover:bg-white/10"
               onClick={() => {
                 setOpen(false);
                 onEdit();
@@ -57,7 +57,7 @@ export default function ModelBuilderRuleRowMenu({ onEdit, onDelete, className })
             <button
               type="button"
               role="menuitem"
-              className="w-full px-3 py-1.5 text-left text-[12px] text-red-600 dark:text-red-400 hover:bg-red-500/10"
+              className="w-full rounded-lg px-3 py-1.5 text-left text-[12px] text-red-600 dark:text-red-400 hover:bg-red-500/10"
               onClick={() => {
                 setOpen(false);
                 onDelete();

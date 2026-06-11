@@ -314,7 +314,7 @@ export default function MobileFocusedChatGrids() {
               <div className="absolute inset-0 bg-black/30" />
               <div
                 ref={actionSheetRef}
-                className="relative w-full mx-2 mb-2 rounded-2xl bg-white dark:bg-[#2a2a2c] border border-black/10 dark:border-white/10 shadow-2xl overflow-hidden"
+                className="relative w-full mx-2 mb-2 rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md overflow-hidden"
                 style={{ marginBottom: "max(env(safe-area-inset-bottom, 0px), 8px)" }}
                 onClick={(e) => e.stopPropagation()}
               >

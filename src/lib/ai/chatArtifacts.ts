@@ -58,6 +58,7 @@ export function toArtifactEditContext(a: ChatArtifact): ArtifactEditContext {
 
 const ARTIFACT_TOOLS = new Set([
   "lykn_build_template",
+  "lykn_build_spreadsheet",
   "lykn_manage_file",
   "lykn_generate_chart",
   "lykn_generate_diagram",
@@ -283,6 +284,31 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
   switch (call.name) {
     case "lykn_build_template":
       return extractFromBuildTemplate(call.id, call.result);
+    case "lykn_build_spreadsheet": {
+      const url =
+        typeof call.result.file_url === "string"
+          ? call.result.file_url
+          : typeof call.result.download_url === "string"
+            ? call.result.download_url
+            : "";
+      if (!url) return [];
+      const title = String(call.result.title || "Spreadsheet").trim() || "Spreadsheet";
+      const format = String(call.result.format || "").toLowerCase() || "csv";
+      const filename =
+        typeof call.result.filename === "string" ? call.result.filename : undefined;
+      return [
+        {
+          id: `${call.id}:sheet`,
+          kind: "download",
+          title,
+          downloadUrl: url,
+          filename,
+          format,
+          toolName: call.name,
+          downloads: [{ format, url, filename }],
+        },
+      ];
+    }
     case "lykn_manage_file":
       return extractFromManageFile(call.id, call.result);
     case "lykn_generate_chart": {

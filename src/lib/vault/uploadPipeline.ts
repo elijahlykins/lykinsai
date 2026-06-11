@@ -261,6 +261,79 @@ function canPreview(fileType: string): boolean {
   return fileType === "image" || fileType === "video";
 }
 
+// Reads the intrinsic pixel dimensions of an image/video file so the vault
+// grid can reserve the EXACT aspect-ratio slot before the media ever loads.
+// Without stored dims the masonry estimate (assumes square), the skeleton
+// (a fixed height), and the loaded image (its true ratio) all disagree —
+// so every card shifts its column the moment its image resolves, which is
+// the visible "things load in and jump as you scroll" jank. Capturing the
+// ratio once at upload time eliminates that reflow permanently for new
+// uploads. Best-effort: decode failures just return null and the grid
+// falls back to its previous (shifting) behaviour for that one item.
+async function probeMediaDimensions(
+  file: File,
+  fileType: string,
+): Promise<{ width: number; height: number } | null> {
+  try {
+    if (fileType === "image") {
+      // createImageBitmap is the fastest path (decodes off the main thread)
+      // and works for every raster format the browser can render. SVGs and
+      // anything it can't decode fall through to the <img> path below.
+      if (typeof createImageBitmap === "function") {
+        try {
+          const bitmap = await createImageBitmap(file);
+          const dims = { width: bitmap.width, height: bitmap.height };
+          bitmap.close?.();
+          if (dims.width > 0 && dims.height > 0) return dims;
+        } catch {
+          /* fall through to <img> decode */
+        }
+      }
+      return await new Promise((resolve) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        const done = (dims: { width: number; height: number } | null) => {
+          URL.revokeObjectURL(url);
+          resolve(dims);
+        };
+        img.onload = () =>
+          done(
+            img.naturalWidth > 0 && img.naturalHeight > 0
+              ? { width: img.naturalWidth, height: img.naturalHeight }
+              : null,
+          );
+        img.onerror = () => done(null);
+        img.src = url;
+      });
+    }
+    if (fileType === "video") {
+      return await new Promise((resolve) => {
+        const url = URL.createObjectURL(file);
+        const video = document.createElement("video");
+        const done = (dims: { width: number; height: number } | null) => {
+          URL.revokeObjectURL(url);
+          resolve(dims);
+        };
+        // Some browsers won't fire loadedmetadata for a detached element
+        // unless we nudge it; muted + preload metadata is enough.
+        video.preload = "metadata";
+        video.muted = true;
+        video.onloadedmetadata = () =>
+          done(
+            video.videoWidth > 0 && video.videoHeight > 0
+              ? { width: video.videoWidth, height: video.videoHeight }
+              : null,
+          );
+        video.onerror = () => done(null);
+        video.src = url;
+      });
+    }
+  } catch {
+    /* best-effort */
+  }
+  return null;
+}
+
 async function extractPdfText(file: File): Promise<string> {
   try {
     const arrayBuffer = await file.arrayBuffer();
@@ -298,12 +371,14 @@ type CreateNoteArgs = {
   storageBucket: string;
   fileSize: number;
   mimeType: string;
+  width?: number | null;
+  height?: number | null;
 };
 
 async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
   const {
     userId, filename, folderPath, fileType, fileUrl, storagePath,
-    storageBucket, fileSize, mimeType,
+    storageBucket, fileSize, mimeType, width, height,
   } = args;
 
   const folderName = folderPath ? String(folderPath).trim() : "Uploaded Files";
@@ -321,6 +396,9 @@ async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
     storageBucket: storageBucket || undefined,
     size: fileSize,
     mimeType,
+    // Intrinsic pixel dimensions let the vault reserve the exact
+    // aspect-ratio slot before the media loads — no layout shift.
+    ...(width && height && width > 0 && height > 0 ? { width, height } : {}),
   }];
 
   // Attachment-only body: title + ATTACHMENTS_JSON carry everything the
@@ -707,6 +785,18 @@ async function processOne(args: {
       throw new DOMException("Aborted", "AbortError");
     }
 
+    // Probe intrinsic dimensions on the FINAL (post-compression) file so the
+    // stored ratio matches the bytes the grid will actually render. Best-
+    // effort and bounded — a slow/failed decode just omits dims rather than
+    // holding up the note insert.
+    let mediaDims: { width: number; height: number } | null = null;
+    if (fileType === "image" || fileType === "video") {
+      mediaDims = await Promise.race([
+        probeMediaDimensions(file, fileType),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+      ]);
+    }
+
     let createdNote: any = null;
     try {
       createdNote = await createVaultNote({
@@ -719,6 +809,8 @@ async function processOne(args: {
         storageBucket: "user-files",
         fileSize: file.size,
         mimeType: file.type,
+        width: mediaDims?.width ?? null,
+        height: mediaDims?.height ?? null,
       });
     } catch (createError) {
       // Trigger-raised errors propagate so the catch below can route them

@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import { ChevronDown, Download, ExternalLink, Loader2, Sparkles, X as XIcon } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown, Download, ExternalLink, FileDown, Loader2, Sparkles, X as XIcon } from "lucide-react";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 
 export type OmniaArtifactPanelProps = {
@@ -16,6 +16,26 @@ export const ARTIFACT_PANEL_WIDTH = "min(760px, 50vw)";
 
 const IFRAME_SANDBOX =
   "allow-scripts allow-same-origin allow-popups allow-forms allow-presentation";
+
+// Print stylesheet injected into a throwaway iframe so "Save as PDF" matches
+// the on-screen preview exactly (the browser's own engine renders it). It also
+// flattens slideshows so every slide prints (instead of just the active one)
+// and forces a light background for dark decks.
+const PRINT_CSS = `<style>@media print {
+  @page { margin: 16mm 14mm; }
+  html, body { background: #fff !important; overflow: visible !important;
+    height: auto !important; width: auto !important; }
+  .deck { position: static !important; width: auto !important; height: auto !important;
+    display: block !important; }
+  .slide { position: static !important; inset: auto !important; display: block !important;
+    opacity: 1 !important; height: auto !important; min-height: 0 !important;
+    page-break-after: always; break-after: page; padding: 0 0 12mm !important; }
+  .slide:last-child { page-break-after: auto; break-after: auto; }
+  .slide h2 { color: #111 !important; }
+  .slide .body, .slide .body strong { color: #1a1a1a !important; }
+  .slide .body { max-width: none !important; }
+  .toolbar, .progress, #prev, #next { display: none !important; }
+}</style>`;
 
 function badgeFor(artifact: ChatArtifact): string {
   if (artifact.kind === "html") return "Interactive preview";
@@ -48,6 +68,59 @@ export default function OmniaArtifactPanel({ artifact, isUpdating, fullWidth, on
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [dlMenuOpen]);
   useEffect(() => { setDlMenuOpen(false); }, [artifact?.id]);
+
+  // Browser-accurate "Save as PDF": render the artifact's own HTML in a hidden
+  // iframe and print it, so the PDF is pixel-identical to the preview the user
+  // sees (the browser engine does the layout — fonts, tables, symbols, CSS).
+  // Sandboxed allow-same-origin + allow-modals only: the parent can call
+  // print() but the artifact's scripts never execute in our origin (the print
+  // CSS handles slideshow flattening, so no script is needed).
+  const handleSavePdf = useCallback(async () => {
+    if (!artifact || artifact.kind !== "html") return;
+    let html = artifact.srcDoc || "";
+    if (!html && artifact.previewUrl) {
+      try {
+        const res = await fetch(artifact.previewUrl);
+        html = res.ok ? await res.text() : "";
+      } catch {
+        html = "";
+      }
+    }
+    if (!html) {
+      if (artifact.previewUrl) window.open(artifact.previewUrl, "_blank", "noopener");
+      return;
+    }
+    const withCss = html.includes("</head>")
+      ? html.replace("</head>", `${PRINT_CSS}</head>`)
+      : `${PRINT_CSS}${html}`;
+
+    const frame = document.createElement("iframe");
+    frame.setAttribute("aria-hidden", "true");
+    frame.setAttribute("sandbox", "allow-same-origin allow-modals");
+    frame.style.cssText =
+      "position:fixed; right:0; bottom:0; width:794px; height:1123px; border:0; opacity:0; pointer-events:none; z-index:-1;";
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      window.setTimeout(() => { try { frame.remove(); } catch { /* gone */ } }, 1500);
+    };
+    frame.onload = () => {
+      const win = frame.contentWindow;
+      if (!win) { cleanup(); return; }
+      // Let the document settle (web fonts, layout) before invoking print.
+      window.setTimeout(() => {
+        try {
+          win.focus();
+          win.addEventListener("afterprint", cleanup);
+          win.print();
+        } catch { /* ignore */ }
+        window.setTimeout(cleanup, 60000);
+      }, 350);
+    };
+    frame.srcdoc = withCss;
+    document.body.appendChild(frame);
+  }, [artifact]);
 
   return (
     <aside
@@ -83,6 +156,17 @@ export default function OmniaArtifactPanel({ artifact, isUpdating, fullWidth, on
                     <ExternalLink className="h-3.5 w-3.5" />
                     Open
                   </a>
+                ) : null}
+                {artifact.kind === "html" && (artifact.srcDoc || artifact.previewUrl) ? (
+                  <button
+                    type="button"
+                    onClick={handleSavePdf}
+                    className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
+                    title="Save as PDF — matches this preview exactly"
+                  >
+                    <FileDown className="h-3.5 w-3.5" />
+                    PDF
+                  </button>
                 ) : null}
                 {downloads.length === 1 ? (
                   <a
@@ -149,18 +233,25 @@ export default function OmniaArtifactPanel({ artifact, isUpdating, fullWidth, on
                 </div>
               ) : null}
               {artifact.kind === "html" ? (
-                artifact.srcDoc ? (
+                // Prefer the cross-origin previewUrl over an inline srcDoc.
+                // srcdoc iframes inherit the parent page's CSP, and prod ships
+                // `script-src 'self'` (vercel.json) — that blocks the deck's
+                // inline navigation <script>, leaving every slide hidden
+                // (display:none) and the viewport blank. A cross-origin frame
+                // (signed Supabase URL) carries no such policy, so the script
+                // runs and the deck renders. srcDoc stays as the offline fallback.
+                artifact.previewUrl ? (
                   <iframe
                     title={artifact.title}
-                    srcDoc={artifact.srcDoc}
+                    src={artifact.previewUrl}
                     className="h-full w-full border-0 bg-white"
                     sandbox={IFRAME_SANDBOX}
                     referrerPolicy="no-referrer"
                   />
-                ) : artifact.previewUrl ? (
+                ) : artifact.srcDoc ? (
                   <iframe
                     title={artifact.title}
-                    src={artifact.previewUrl}
+                    srcDoc={artifact.srcDoc}
                     className="h-full w-full border-0 bg-white"
                     sandbox={IFRAME_SANDBOX}
                     referrerPolicy="no-referrer"

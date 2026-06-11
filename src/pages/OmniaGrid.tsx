@@ -566,6 +566,7 @@ const CREATE_MODE_LABELS: Record<ArtifactKind, string> = {
   study: "Study guide",
   document: "Document",
   worksheet: "Worksheet",
+  spreadsheet: "Spreadsheet",
   chart: "Chart",
   diagram: "Diagram",
   webapp: "Interactive page",
@@ -583,7 +584,7 @@ function composerModeLabel(mode: ComposerMode): string {
 }
 
 const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
-  compact, onSend, chatInputHasText, isChatLoading, isDictating, isTranscribing,
+  compact, onSend, chatInputHasText, hasAttachments, isChatLoading, isDictating, isTranscribing,
   modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
   handleStopAi, handleDictateToggle,
   handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
@@ -595,6 +596,7 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   compact?: boolean;
   onSend: () => void | Promise<void>;
   chatInputHasText: boolean;
+  hasAttachments?: boolean;
   isChatLoading: boolean;
   isDictating: boolean;
   isTranscribing: boolean;
@@ -617,13 +619,13 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   composerMode: ComposerMode;
   setComposerMode: (m: ComposerMode) => void;
 }) {
-  const sendDisabled = !chatInputHasText || isChatLoading || isDictating || isTranscribing;
+  const sendDisabled = (!chatInputHasText && !hasAttachments) || isChatLoading || isDictating || isTranscribing;
   const modelTriggerCls = compact
     ? "omnia-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
     : "omnia-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
   const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
   const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
-  const dropdownCls = "glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md";
+  const dropdownCls = "rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5";
 
   return (
     <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>
@@ -2565,12 +2567,12 @@ export default function OmniaGridPage() {
 
 
   const handleCenterAskSend = useCallback(async () => {
-    if (!chatInputRef.current.trim() || isChatLoading) return;
+    if ((!chatInputRef.current.trim() && focusedChatAttachments.length === 0) || isChatLoading) return;
     setChatRailOpen(true);
     setChatRailVisible(true);
     setCenterChatLeaving(false);
     await handleChatSend();
-  }, [handleChatSend, isChatLoading]);
+  }, [handleChatSend, isChatLoading, chatInputRef, focusedChatAttachments.length]);
 
 
   const chatIsNearBottom = useCallback((threshold = 80) => {
@@ -2592,12 +2594,19 @@ export default function OmniaGridPage() {
       if (k === "ArrowUp" || k === "PageUp" || k === "Home") markScrolledUp();
     };
     const onScroll = () => {
-      if (chatProgrammaticScrollRef.current) {
-        chatProgrammaticScrollRef.current = false;
-        return;
-      }
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 4;
-      chatUserScrolledUpRef.current = !atBottom;
+      // Source of truth for "is the user reading back through the thread".
+      // Derive it from the ACTUAL distance to the bottom with a generous
+      // threshold instead of trusting the one-shot programmatic flag: a
+      // programmatic stick-to-bottom lands within the threshold (so we stay
+      // attached), while any real scroll away from the bottom — wheel, touch,
+      // keyboard, OR scrollbar drag — releases auto-scroll so the user can
+      // freely scroll up and down while the AI is still responding. The old
+      // flag-gated early-return mis-attributed user scrolls that happened to
+      // land on a streaming tick as "programmatic" and snapped them back to
+      // the bottom, making the thread impossible to scroll mid-response.
+      chatProgrammaticScrollRef.current = false;
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      chatUserScrolledUpRef.current = distance > 120;
     };
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -3164,7 +3173,8 @@ export default function OmniaGridPage() {
   }, [newMsgId, setChatMessages, aiThreadRef, routeBoardId, boardId, titleRef, user?.id]);
 
   const chatBarToolbarProps = useMemo(() => ({
-    chatInputHasText, isChatLoading, isDictating, isTranscribing,
+    chatInputHasText, hasAttachments: focusedChatAttachments.length > 0,
+    isChatLoading, isDictating, isTranscribing,
     modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
     handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
@@ -3173,7 +3183,8 @@ export default function OmniaGridPage() {
     handleCreateArtifact,
     composerMode, setComposerMode,
   }), [
-    chatInputHasText, isChatLoading, isDictating, isTranscribing,
+    chatInputHasText, focusedChatAttachments.length,
+    isChatLoading, isDictating, isTranscribing,
     modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
     handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,

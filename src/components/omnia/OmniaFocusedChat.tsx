@@ -7,11 +7,13 @@ import {
   Save, Share2, StickyNote, ThumbsDown, ThumbsUp, Trash2, X as XIcon,
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
+import lyknIconNeutral from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
 import ReactMarkdown from "react-markdown";
 import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } from "@/lib/chat/chatMarkdown";
 import NeuronPill from "@/components/synthesis/NeuronPill";
 import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
 import ToolCallPill from "@/components/omnia/ToolCallPill";
+import ThinkingIndicator from "@/components/omnia/ThinkingIndicator";
 import ChatArtifactCard from "@/components/omnia/ChatArtifactCard";
 import OmniaArtifactPanel, { ARTIFACT_PANEL_WIDTH } from "@/components/omnia/OmniaArtifactPanel";
 import { extractChatArtifacts, sortArtifactsForDisplay, type ChatArtifact } from "@/lib/ai/chatArtifacts";
@@ -22,7 +24,26 @@ import type {
   ChatNeuronAttachment,
 } from "@/lib/ai/chatSendOrchestrator";
 import type { FactNeuron } from "@/lib/ai/learnedTag";
+import { labelForModelId } from "@/lib/ai/conversationFormat";
+import { KNOWN_MODEL_IDS } from "@/lib/modelCatalog";
 import { supabase } from "@/lib/supabase";
+
+// Resolve a user-facing model name for the AI Response pill. The server
+// reports the REAL resolved backend in `served_model` — but LYKN is a
+// brand-alias that intentionally hides its routed backend (e.g.
+// gpt-4.1-nano), so anything that isn't one of the public, user-pickable
+// models collapses back to "LYKN".
+const resolveModelLabel = (modelId?: string | null) => {
+  const id = String(modelId || "").trim();
+  if (!id) return "";
+  return KNOWN_MODEL_IDS.includes(id) ? labelForModelId(id) : "LYKN";
+};
+
+// LYKN mark shown in the AI Response pill. Uses the neutral (near-white)
+// icon asset so it reads on the translucent pill background.
+const LyknWordmark = ({ className = "" }: { className?: string }) => (
+  <img src={lyknIconNeutral} alt="LYKN" className={className} />
+);
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
@@ -904,6 +925,7 @@ const MessageItem = React.memo(function MessageItem({
   onOpenArtifact,
 }: MessageItemProps) {
   const aiResponse = msg.aiResponse || "";
+  const modelLabel = resolveModelLabel((msg as any).aiModel);
   const navigate = useNavigate();
   const [isEditingPrompt, setIsEditingPrompt] = useState(false);
   const [editDraft, setEditDraft] = useState("");
@@ -1113,7 +1135,7 @@ const MessageItem = React.memo(function MessageItem({
       )}
       {msg.role === "user" && msg.aiResponse && (
         <div className="flex justify-start">
-          <div className="max-w-[80%] w-full">
+          <div className="w-full">
             {!isLoadInGreeting && (
               <button
                 type="button"
@@ -1131,7 +1153,14 @@ const MessageItem = React.memo(function MessageItem({
                   </span>
                 )}
                 {isAiExpanded && (
-                  <span className="text-sm text-black/40 dark:text-white/40 font-medium flex-1">AI Response</span>
+                  <span className="flex-1 flex items-center gap-2 min-w-0">
+                    <LyknWordmark className="h-[1.375rem] w-[1.375rem] shrink-0 drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]" />
+                    <span className="text-sm leading-none text-black/40 dark:text-white/40 font-medium">AI Response</span>
+                    {modelLabel && (
+                      <span className="text-sm leading-none font-medium text-black/35 dark:text-white/35 truncate">· {modelLabel}</span>
+                    )}
+                    <Check className="ml-auto shrink-0 w-4 h-4 text-green-500 dark:text-green-400" strokeWidth={2.5} />
+                  </span>
                 )}
               </button>
             )}
@@ -1675,7 +1704,7 @@ const MessageItem = React.memo(function MessageItem({
       )}
       {msg.role !== "user" && (
         <div className="flex justify-start">
-          <div className="max-w-[80%] w-full">
+          <div className="w-full">
             <button
               type="button"
               className="w-full flex items-center gap-2 px-4 py-2.5 rounded-2xl border border-white/50 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-sm hover:bg-white/50 dark:hover:bg-white/10 transition-all text-left"
@@ -1688,7 +1717,14 @@ const MessageItem = React.memo(function MessageItem({
                 </span>
               )}
               {isAiExpanded && (
-                <span className="text-sm text-black/40 dark:text-white/40 font-medium flex-1">AI Response</span>
+                <span className="flex-1 flex items-center gap-2 min-w-0">
+                  <LyknWordmark className="h-[1.375rem] w-[1.375rem] shrink-0 drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]" />
+                  <span className="text-sm leading-none text-black/40 dark:text-white/40 font-medium">AI Response</span>
+                  {modelLabel && (
+                    <span className="text-sm leading-none font-medium text-black/35 dark:text-white/35 truncate">· {modelLabel}</span>
+                  )}
+                  <Check className="ml-auto shrink-0 w-4 h-4 text-green-500 dark:text-green-400" strokeWidth={2.5} />
+                </span>
               )}
             </button>
             <div className={`grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${isAiExpanded ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`}>
@@ -2106,8 +2142,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
             {isChatLoading && (
               <div className="flex justify-start">
                 <div className="omnia-ai-thinking-glow rounded-2xl rounded-bl-md max-w-[80%] px-4 py-3 text-sm leading-relaxed border bg-black/5 dark:bg-white/8 border-black/10 dark:border-white/10 text-black/70 dark:text-white/60 backdrop-blur-sm flex items-center gap-3">
-                  <div className="brick-spinner" />
-                  {thinkingStatus}
+                  <ThinkingIndicator status={thinkingStatus} />
                 </div>
               </div>
             )}

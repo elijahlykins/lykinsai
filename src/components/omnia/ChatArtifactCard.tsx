@@ -175,18 +175,23 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
           />
         ) : null}
         {artifact.kind === "html" ? (
-          artifact.srcDoc ? (
+          // Prefer the cross-origin previewUrl over an inline srcDoc: srcdoc
+          // frames inherit the parent CSP (prod `script-src 'self'`), which
+          // blocks the deck's inline navigation script and leaves the viewport
+          // blank. A signed cross-origin URL has no such policy. srcDoc is the
+          // offline fallback only.
+          artifact.previewUrl ? (
             <iframe
               title={artifact.title}
-              srcDoc={artifact.srcDoc}
+              src={artifact.previewUrl}
               className="w-full h-full border-0 bg-white"
               sandbox={IFRAME_SANDBOX}
               referrerPolicy="no-referrer"
             />
-          ) : artifact.previewUrl ? (
+          ) : artifact.srcDoc ? (
             <iframe
               title={artifact.title}
-              src={artifact.previewUrl}
+              srcDoc={artifact.srcDoc}
               className="w-full h-full border-0 bg-white"
               sandbox={IFRAME_SANDBOX}
               referrerPolicy="no-referrer"

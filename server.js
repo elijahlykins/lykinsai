@@ -25,6 +25,8 @@ import {
 } from './youtubeQa.js';
 import { searchWeb, formatSearchResultsForPrompt } from './lib/exterior/webSearch.js';
 import { fetchWebPage } from './lib/exterior/webFetch.js';
+import { verifyFileToken, FILE_PROXY_ROUTE } from './lib/exterior/fileProxy.js';
+import { mimeTypeForFilename } from './lib/exterior/capabilityStorage.js';
 import { chunkTextForSynthesis } from './synthesis-service.js';
 import { contextualizeChunks } from './lib/rag/contextualize.js';
 import {
@@ -1226,6 +1228,99 @@ const requireAuthOrMcpToken = makeRequireAuthOrMcpToken({
 // per-request context builder without re-importing it. `app.get(...)` is
 // the express idiom for sharing instance-level deps.
 app.set('supabaseAdmin', supabaseAdmin);
+
+// ============================================
+// FILE DOWNLOAD PROXY — branded download links
+// ============================================
+// Serves capability artifacts (generated images, templates, exported files…)
+// through this API origin instead of handing users a raw Supabase signed URL.
+// The `:token` is an HMAC-signed handle (bucket + object path + expiry) minted
+// by lib/exterior/fileProxy.js, so the token itself is the authorization and no
+// user session is required. Mounted OUTSIDE `/api/` on purpose so links read as
+// `<host>/f/<token>` rather than exposing the storage backend.
+// App origins allowed to embed proxied HTML artifacts (deck/template previews
+// render in a cross-origin iframe on the frontend). The global security
+// middleware slaps X-Frame-Options: DENY + a `default-src 'none'` CSP on every
+// response, which would blank the preview — so the proxy route relaxes these
+// just for the file it serves.
+const FILE_PROXY_FRAME_ANCESTORS = [
+  "'self'",
+  'https://lykn.io',
+  'https://*.lykn.io',
+  'https://*.vercel.app',
+  'http://localhost:*',
+  process.env.FRONTEND_BASE_URL,
+  process.env.FRONTEND_URL,
+]
+  .filter(Boolean)
+  .filter((v, i, arr) => arr.indexOf(v) === i)
+  .join(' ');
+
+app.get(FILE_PROXY_ROUTE, async (req, res) => {
+  const claims = verifyFileToken(req.params.token);
+  if (!claims) {
+    return res.status(403).type('text/plain').send('Link expired or invalid');
+  }
+  if (!supabaseAdmin) {
+    return res.status(503).type('text/plain').send('Storage unavailable');
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin.storage
+      .from(claims.bucket)
+      .download(claims.path);
+    if (error || !data) {
+      return res.status(404).type('text/plain').send('File not found');
+    }
+
+    const buffer = Buffer.from(await data.arrayBuffer());
+    const filename = claims.filename || claims.path.split('/').pop() || 'download';
+    const contentType = data.type || mimeTypeForFilename(filename);
+    const isHtml = /^text\/html/i.test(contentType);
+
+    // Undo the global API security headers for THIS response only — they're
+    // tuned for JSON endpoints and would block the very thing we're serving:
+    //   • X-Frame-Options: DENY blocks the preview iframe outright.
+    //   • CORP: same-origin blocks <img>/<iframe> loads from the frontend.
+    //   • CSP: default-src 'none' blocks an embedded HTML doc's own assets.
+    res.removeHeader('X-Frame-Options');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    if (isHtml) {
+      // Permissive enough for AI-generated decks (inline scripts/styles, web
+      // fonts, images) while still scoping who may frame the document. The
+      // client also sandboxes this iframe, so scripts run in the API origin,
+      // never the user's lykn.io session.
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'self' data: blob: https:; " +
+          "img-src 'self' data: blob: https:; " +
+          "style-src 'unsafe-inline' 'self' https:; " +
+          "script-src 'unsafe-inline' 'self' blob: https:; " +
+          "font-src 'self' data: https:; " +
+          "media-src 'self' blob: https:; " +
+          `frame-ancestors ${FILE_PROXY_FRAME_ANCESTORS}`,
+      );
+    } else {
+      // Non-document files (images, pdf, audio, office docs) aren't subject to
+      // a page CSP; drop the inherited `default-src 'none'` so nothing trips.
+      res.removeHeader('Content-Security-Policy');
+    }
+
+    // Inline so previews (images, HTML decks) render in-browser; the download
+    // attribute on the client anchor still forces a "Save as" when clicked.
+    res.setHeader('Content-Type', contentType);
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${filename.replace(/"/g, '')}"`,
+    );
+    res.setHeader('Content-Length', String(buffer.length));
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    return res.status(200).end(buffer);
+  } catch (err) {
+    console.error('📎 File proxy error:', err?.message || err);
+    return res.status(500).type('text/plain').send('Download failed');
+  }
+});
 
 // ============================================
 // ADMIN GATE — restrict /api/admin/* to allowlisted email(s)
@@ -3141,6 +3236,16 @@ const VOICE_BRIEFING_WINDOW_DAYS = Math.max(1, Number(process.env.VOICE_BRIEFING
 // per deployment if your users aren't all addressed that way.
 const VOICE_BRIEFING_HONORIFIC = (process.env.VOICE_BRIEFING_HONORIFIC ?? 'sir').trim();
 
+// How far back an already-due reminder may be and still be worth proactively
+// surfacing. Reminders are point-in-time, so a still-pending one from days ago
+// is usually stale noise ("you have a reminder from last week") rather than a
+// useful nudge. Like the calendar window, this puts reminders on a timeline:
+// only those that came due within this grace window (or are still upcoming)
+// are surfaced; older pending reminders stay accessible via lykn_listReminders
+// but no longer lead the briefing. Set to a larger value to surface staler
+// reminders, or 0 to only ever surface reminders due today/upcoming.
+const REMINDER_OVERDUE_GRACE_DAYS = Math.max(0, Number(process.env.REMINDER_OVERDUE_GRACE_DAYS || 2));
+
 // Pull the raw facts the briefing is allowed to talk about: the active
 // project + its recent state pushes (progress / things that got done) and
 // the Vault notes created inside the lookback window (new uploads).
@@ -3191,18 +3296,24 @@ async function gatherVoiceBriefingData(authHeader, userId) {
     console.warn('⚠️ voice briefing vault load:', e?.message || e);
   }
 
-  // Pending reminders the user should hear about: anything already due
-  // (overdue) plus anything coming up in the next couple of days. Pull-based
-  // delivery — the briefing IS the surfacing mechanism.
+  // Pending reminders the user should hear about, kept on a timeline like the
+  // calendar below: anything that came due within the recent grace window
+  // (REMINDER_OVERDUE_GRACE_DAYS) plus anything coming up in the next couple of
+  // days. The lower bound is what stops stale reminders from days/weeks ago
+  // ("you have a reminder from last week") leading the briefing — they're still
+  // listable via lykn_listReminders, just no longer surfaced proactively.
+  // Pull-based delivery — the briefing IS the surfacing mechanism.
   let reminders = [];
   try {
     const now = Date.now();
+    const overdueFloorIso = new Date(now - REMINDER_OVERDUE_GRACE_DAYS * 86_400_000).toISOString();
     const upcomingCutoffIso = new Date(now + 2 * 86_400_000).toISOString();
     const { data } = await client
       .from('lykn_reminders')
       .select('title, remind_at, remind_at_text, status')
       .eq('user_id', userId)
       .eq('status', 'pending')
+      .gte('remind_at', overdueFloorIso)
       .lte('remind_at', upcomingCutoffIso)
       .order('remind_at', { ascending: true })
       .limit(6);
@@ -5128,6 +5239,7 @@ const ARTIFACT_BUILD_SPEC = {
   study:     { tool: 'lykn_build_template',  label: 'study guide',                      templateType: 'education' },
   document:  { tool: 'lykn_build_template',  label: 'document / report',                templateType: 'document' },
   worksheet: { tool: 'lykn_build_template',  label: 'worksheet',                        templateType: 'worksheet' },
+  spreadsheet: { tool: 'lykn_build_spreadsheet', label: 'spreadsheet / data table',     templateType: null },
   chart:     { tool: 'lykn_generate_chart',  label: 'chart / graph',                    templateType: null },
   diagram:   { tool: 'lykn_generate_diagram', label: 'diagram / flowchart',             templateType: null },
   webapp:    { tool: 'lykn_manage_file',     label: 'interactive page / mini-app (HTML)', templateType: null },
@@ -5578,6 +5690,8 @@ const TOOL_GUIDANCE_VISUAL = [
   '    page in content. Prefer this for interactive UIs and prototypes.',
   '  • lykn_generate_chart / lykn_generate_diagram / lykn_generate_image',
   '    — charts, diagrams, and images render inline too.',
+  '  Do NOT put emojis in any built document, deck, worksheet, or PDF',
+  '  (titles, headings, body, notes) — keep them clean and professional.',
   '  After the tool returns, give a brief summary in prose — the preview',
   '  card appears automatically; you do not need to paste download URLs.',
 ].join('\n');
@@ -5733,6 +5847,9 @@ const ARTIFACT_INTENT_NOUNS = [
   { type: 'deck',      re: /(pitch ?deck|slide ?deck|slide ?show|slides?|presentation|keynote|power ?point|ppt)/i },
   { type: 'study',     re: /(study ?guide|study ?sheet|revision ?guide|cheat ?sheet|flash ?cards?|lesson plan)/i },
   { type: 'worksheet', re: /(work ?sheet|practice ?sheet|practice problems?|problem set|exercise sheet|handout|quiz)/i },
+  // spreadsheet BEFORE chart/diagram so "spreadsheet" / "data table" don't fall
+  // through to a generic chart; a bare "table" of data is a spreadsheet.
+  { type: 'spreadsheet', re: /(spread ?sheet|excel|xlsx|csv|data ?table|table of|table)/i },
   // diagram BEFORE chart so "flowchart" / "flow chart" / "org chart" / "gantt
   // chart" classify as diagrams, not as a bare "chart".
   { type: 'diagram',   re: /(flow ?chart|flow ?diagram|mind ?map|org ?chart|sequence diagram|state diagram|gantt ?chart|gantt|diagram)/i },
@@ -13216,6 +13333,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `\n\n[BUILD_ARTIFACT — The user used the "+" → Create menu to ask you to BUILD a ${artifactBuildSpec.label} (a claude.ai-style Artifact). ` +
         `You MUST call the ${artifactBuildSpec.tool} tool on this turn to produce it` +
         (artifactBuildSpec.templateType ? ` with template_type "${artifactBuildSpec.templateType}"` : '') +
+        (artifactBuildSpec.tool === 'lykn_build_spreadsheet' ? ` with output_format "xlsx" (a real downloadable spreadsheet), passing headers + rows` : '') +
         `. Infer the topic and full contents from the user's message and any context above; make it complete, well-structured, and visually clean — don't ask a clarifying question first unless the request is truly unusable. ` +
         `After the tool returns, reply with just a 1-2 sentence summary of what you built; do NOT paste the raw HTML, markup, or chart config into the chat (the artifact renders on its own).]`;
     }

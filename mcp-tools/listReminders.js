@@ -26,9 +26,16 @@ export const listRemindersTool = {
     '',
     'Defaults to PENDING reminders, soonest-first. Each result includes id,',
     'title, body, remind_at (ISO), remind_at_text (the user\'s phrasing —',
-    'prefer reading this back), status, and `overdue` (true when remind_at is',
-    'in the past but still pending). To act on one, pass its id to',
+    'prefer reading this back), status, `overdue` (true when remind_at is',
+    'in the past but still pending), and `overdue_days` (how many whole days',
+    'past due — 0 if due today or upcoming). To act on one, pass its id to',
     'lykn_updateReminder.',
+    '',
+    'Reminders are point-in-time, so a reminder overdue by several days is',
+    'usually stale: do NOT proactively present long-overdue reminders (e.g.',
+    'overdue_days >= 2) as current or time-sensitive unless the user explicitly',
+    'asks what is overdue or about old reminders. Lead with reminders due today',
+    'or coming up.',
     '',
     'When reading results back in conversation, summarise naturally — do not',
     'recite ISO timestamps; use remind_at_text or a friendly relative phrasing.',
@@ -91,18 +98,26 @@ export const listRemindersTool = {
     }
 
     const now = Date.now();
-    const reminders = (rows || []).map((r) => ({
-      id: r.id,
-      title: r.title,
-      body: r.body,
-      remind_at: r.remind_at,
-      remind_at_text: r.remind_at_text,
-      status: r.status,
-      project_id: r.project_id,
-      overdue: r.status === 'pending' && Date.parse(r.remind_at) <= now,
-      created_at: r.created_at,
-      completed_at: r.completed_at,
-    }));
+    const reminders = (rows || []).map((r) => {
+      const remindMs = Date.parse(r.remind_at);
+      const overdue = r.status === 'pending' && remindMs <= now;
+      const overdueDays = overdue && Number.isFinite(remindMs)
+        ? Math.floor((now - remindMs) / 86_400_000)
+        : 0;
+      return {
+        id: r.id,
+        title: r.title,
+        body: r.body,
+        remind_at: r.remind_at,
+        remind_at_text: r.remind_at_text,
+        status: r.status,
+        project_id: r.project_id,
+        overdue,
+        overdue_days: overdueDays,
+        created_at: r.created_at,
+        completed_at: r.completed_at,
+      };
+    });
 
     return jsonContent({
       ok: true,

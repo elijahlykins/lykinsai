@@ -214,6 +214,7 @@ export const buildTemplateTool = {
     'The chat UI renders HTML artifacts inline and offers the PDF/PPTX/Markdown downloads — use this for study guides, docs, and pitch decks.',
     'Pass export_formats: ["html","pptx"] for presentations. Summarise in prose after; no need to paste URLs.',
     'Pass `theme` to set the accent color (name like "blue", "green", "purple", "red", "teal", "orange" or a hex like "#2563eb"). To recolor an existing artifact, rebuild it with the same sections and a new theme.',
+    'Do NOT use emojis anywhere in titles, headings, body, notes, or metadata — keep generated documents, decks, and PDFs clean and professional (any emoji is stripped from the output regardless).',
   ].join('\n'),
   inputSchema: {
     type: 'object',

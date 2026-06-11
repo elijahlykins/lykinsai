@@ -1724,6 +1724,50 @@ mark {
   100% { --omnia-border-trace: 360deg; }
 }
 
+/* ── Animated "thinking" text ───────────────────────────────────────────
+   A subtle monochrome shimmer (a slightly brighter band of the SAME text
+   color) glides across the status word so a long wait feels alive without
+   being loud. No color tint, no fade in/out — the phrase swaps in place. */
+.omnia-thinking-text {
+  display: inline-block;
+  --omnia-thinking-dim: rgba(0, 0, 0, 0.42);
+  --omnia-thinking-bright: rgba(0, 0, 0, 0.82);
+  background: linear-gradient(
+    100deg,
+    var(--omnia-thinking-dim) 0%,
+    var(--omnia-thinking-dim) 42%,
+    var(--omnia-thinking-bright) 50%,
+    var(--omnia-thinking-dim) 58%,
+    var(--omnia-thinking-dim) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: omnia-thinking-shimmer 2.4s linear infinite;
+  will-change: background-position;
+}
+
+.dark .omnia-thinking-text {
+  --omnia-thinking-dim: rgba(255, 255, 255, 0.40);
+  --omnia-thinking-bright: rgba(255, 255, 255, 0.90);
+}
+
+@keyframes omnia-thinking-shimmer {
+  0%   { background-position: 130% 0; }
+  100% { background-position: -130% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .omnia-thinking-text {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: var(--omnia-thinking-bright);
+    color: var(--omnia-thinking-bright);
+  }
+}
+
 /* ── Marquee drag-select rectangle ─────────────────────────────────── */
 .omnia-marquee-select {
   border: 1.5px solid rgba(59, 130, 246, 0.7);
