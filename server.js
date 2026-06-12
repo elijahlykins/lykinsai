@@ -1275,7 +1275,16 @@ app.get(FILE_PROXY_ROUTE, async (req, res) => {
 
     const buffer = Buffer.from(await data.arrayBuffer());
     const filename = claims.filename || claims.path.split('/').pop() || 'download';
-    const contentType = data.type || mimeTypeForFilename(filename);
+    // Trust the filename EXTENSION over Supabase's blob `.type`: storage's
+    // download() reports `text/plain` for our generated .html/.md/.csv/.json
+    // artifacts regardless of the content-type we uploaded with, which made the
+    // preview iframe show raw HTML source instead of the rendered page. The
+    // extension is authoritative for every artifact type we mint; fall back to
+    // the storage-reported type only for unknown extensions.
+    const byName = mimeTypeForFilename(filename);
+    const contentType = byName !== 'application/octet-stream'
+      ? byName
+      : (data.type || 'application/octet-stream');
     const isHtml = /^text\/html/i.test(contentType);
 
     // Undo the global API security headers for THIS response only — they're

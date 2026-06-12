@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, MoreHorizontal } from "lucide-react";
 import OmniaChatBarToolbar from "@/components/omnia/OmniaChatBarToolbar";
+import WakeModelMenuPreview from "@/components/wake/WakeModelMenuPreview";
 import { resizeOmniaChatInput } from "@/components/omnia/OmniaChatComposer";
 import { getCollapsedPreview } from "@/lib/chatChunks";
 import { LYKN_ID } from "@/lib/modelCatalog";
@@ -347,6 +348,11 @@ export default function WakeChatTourPreview({ active = true }: WakeChatTourPrevi
                 Preview limit reached
               </p>
             )}
+
+            {/* Model selector shown pulled-up, mirroring the in-app menu. */}
+            <div className="lykn-wake-chat-preview-model-menu" aria-hidden>
+              <WakeModelMenuPreview selectedModel={LYKN_ID} modelTier="free" />
+            </div>
 
             <div className="omnia-neu-chat-shell p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
               <textarea

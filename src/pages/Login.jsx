@@ -238,7 +238,9 @@ export default function Login() {
           chrome, and stays fully non-interactive. */}
       <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden>
         <div className="lkn-trio-preview w-full h-full">
-          <WakeSynthesisTourPreview active populated />
+          {/* Lite render (no bloom) keeps the canvas transparent so the
+              background stays pure black instead of a hazy grey. */}
+          <WakeSynthesisTourPreview active={false} populated />
         </div>
       </div>
 

@@ -1812,21 +1812,10 @@ mark {
   -webkit-font-smoothing: antialiased;
 }
 
-/* The "stage" is the first screenful: the hero plus the peeking app preview.
-   The demo video + dark overlay fill the whole stage so the video sits behind
-   both the hero copy and the preview card, all the way to where the user
-   scrolls. Every section below the stage sits on the black .lkn-land canvas. */
-.lkn-stage {
-  position: relative;
-}
-
-/* Lift the hero and the preview showcase above the video/overlay. */
-.lkn-stage > .lkn-hero,
-.lkn-stage > .lkn-showcase {
-  position: relative;
-  z-index: 1;
-}
-
+/* Demo video lives only inside the hero, ending at its bottom edge. The
+   app-preview card below sits on the black .lkn-land canvas (no video behind
+   it). The video + overlay are absolutely positioned within the hero, and the
+   hero content is lifted above them. */
 .lkn-bg-video {
   position: absolute;
   inset: 0;
@@ -1993,7 +1982,7 @@ mark {
 .lkn-hero {
   position: relative;
   overflow: hidden;
-  min-height: 82vh;
+  min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2078,10 +2067,13 @@ mark {
   padding: 0 clamp(1rem, 4vw, 2rem) clamp(3rem, 8vh, 5rem);
 }
 
-/* Peeking variant: the card pokes up from below the hero so only its top is
-   visible above the fold, signalling there's more to scroll to. The window is
-   intentionally taller than the visible slice and clipped by the viewport. */
+/* Peeking variant: the hero fills the full viewport, and the card is pulled up
+   so only its top sliver overlaps the bottom of the hero (sitting in front of
+   the video). The rest of the card lives below the fold on the black canvas. */
 .lkn-showcase--peek {
+  position: relative;
+  z-index: 2;
+  margin-top: -14vh;
   padding-bottom: clamp(4rem, 12vh, 7rem);
 }
 
@@ -4534,6 +4526,18 @@ mark {
 .lykn-wake-chat-preview-composer {
   flex-shrink: 0;
   width: 100%;
+  position: relative;
+}
+
+/* Model selector "pulled up" above the chat bar, anchored to the bottom-left
+   where the in-app model trigger lives. Sits over the thread like the real
+   popover would when the trigger is pressed. */
+.lykn-wake-chat-preview-model-menu {
+  position: absolute;
+  left: 0.25rem;
+  bottom: calc(100% + 0.5rem);
+  z-index: 5;
+  pointer-events: none;
 }
 
 .lykn-wake-chat-preview-remaining {

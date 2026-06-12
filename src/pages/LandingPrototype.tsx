@@ -239,7 +239,9 @@ function FeatureTrio() {
         <div className="lkn-trio-cell">
           <span className="lkn-trio-label">Synthesis Layer</span>
           <div className="lkn-trio-preview">
-            {seen ? <WakeSynthesisTourPreview active={seen} /> : null}
+            {/* Lite render (no bloom EffectComposer) so the canvas stays
+                transparent and the background reads as pure black. */}
+            {seen ? <WakeSynthesisTourPreview active={false} /> : null}
           </div>
         </div>
 
@@ -577,9 +579,9 @@ const LandingPrototype = () => {
       </header>
 
       <main>
-        {/* Stage: the video fills the whole first screen — behind the hero AND
-            behind the peeking app preview — up to where the user scrolls. */}
-        <div className="lkn-stage">
+        {/* Hero — the video fills the hero only, ending at the hero's bottom
+            edge where the app preview below pokes up. */}
+        <section className="lkn-hero" id="top">
           <video
             className="lkn-bg-video"
             src={demoVideo}
@@ -590,22 +592,18 @@ const LandingPrototype = () => {
             aria-hidden
           />
           <div className="lkn-bg-overlay" aria-hidden />
+          <div className="lkn-hero-inner">
+            <img src={lyknLogo} alt="LYKN" className="lkn-hero-logo" />
+            <p className="lkn-hero-tagline">Stop starting over with AI</p>
+            <button type="button" className="lykn-primary-btn lkn-cta" onClick={goToSignup}>
+              Get started
+              <ArrowRight className="lkn-cta-icon" strokeWidth={2.25} />
+            </button>
+          </div>
+        </section>
 
-          {/* Hero */}
-          <section className="lkn-hero" id="top">
-            <div className="lkn-hero-inner">
-              <img src={lyknLogo} alt="LYKN" className="lkn-hero-logo" />
-              <p className="lkn-hero-tagline">Stop starting over with AI</p>
-              <button type="button" className="lykn-primary-btn lkn-cta" onClick={goToSignup}>
-                Get started
-                <ArrowRight className="lkn-cta-icon" strokeWidth={2.25} />
-              </button>
-            </div>
-          </section>
-
-          {/* Full app load-in — peeks above the fold as a scroll cue */}
-          <AppLoadInShowcase />
-        </div>
+        {/* Full app load-in — sits below the hero on black, its top poking up */}
+        <AppLoadInShowcase />
 
         {/* The problem LYKN solves — problem/solution pairs */}
         <ProblemSolutions />
