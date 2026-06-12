@@ -11,7 +11,7 @@ import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
 import ToolCallPill from "@/components/omnia/ToolCallPill";
 import ThinkingIndicator from "@/components/omnia/ThinkingIndicator";
 import ChatArtifactCard from "@/components/omnia/ChatArtifactCard";
-import { extractChatArtifacts, sortArtifactsForDisplay } from "@/lib/ai/chatArtifacts";
+import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact } from "@/lib/ai/chatArtifacts";
 import LinkPreview from "@/components/LinkPreview";
 import type { ToolCallEvent } from "@/lib/ai/chatSendOrchestrator";
 import type { AppliedAttribution } from "@/lib/ai/appliedTag";
@@ -399,9 +399,25 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
               </div>
             ) : (
               <div className="max-w-[94%] rounded-2xl rounded-bl-md px-3 py-2 text-xs leading-relaxed break-words border border-transparent bg-transparent hover:bg-white/50 dark:hover:bg-white/[0.02] hover:border-blue-300/40 dark:hover:border-white/[0.03] transition-all text-black/85 dark:text-white/85">
-                <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={buildChatMarkdownComponents(msg.id)}>
-                  {normalizeChecklistSyntax(msg.content || "")}
-                </ReactMarkdown>
+                {(() => {
+                  // Render a leaked HTML document as a preview card rather than
+                  // dumping raw markup into the prose.
+                  const { html, rest } = extractLeakedHtmlDocument(msg.content || "");
+                  return (
+                    <>
+                      {rest ? (
+                        <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={buildChatMarkdownComponents(msg.id)}>
+                          {normalizeChecklistSyntax(rest)}
+                        </ReactMarkdown>
+                      ) : null}
+                      {html ? (
+                        <div className="mt-1.5">
+                          <ChatArtifactCard artifact={buildLeakedHtmlArtifact(msg.id, html)} />
+                        </div>
+                      ) : null}
+                    </>
+                  );
+                })()}
               </div>
             )}
             {msg.role === "user" && msg.aiResponse && (() => {
@@ -434,8 +450,11 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                     <img src={(msg as any).aiImageUrl} alt="Generated" className="max-w-full rounded-lg" style={{ maxHeight: "120px" }} />
                   </div>
                 ) : (() => {
-                  const chunks = splitResponseIntoChunks(msg.aiResponse || "");
-                  const isSingle = chunks.length <= 1;
+                  // Pull any leaked HTML document out of the response BEFORE
+                  // chunking so it renders as a preview card, not raw markup.
+                  const { html: leakedHtml, rest: responseRest } = extractLeakedHtmlDocument(msg.aiResponse || "");
+                  const chunks = splitResponseIntoChunks(responseRest);
+                  const isSingle = chunks.length <= 1 && !leakedHtml;
                   return (
                     <>
                       {chunks.map((chunk, ci) => {
@@ -503,6 +522,11 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                         </div>
                         );
                       })}
+                      {leakedHtml ? (
+                        <div className="mt-1.5">
+                          <ChatArtifactCard artifact={buildLeakedHtmlArtifact(msg.id, leakedHtml)} />
+                        </div>
+                      ) : null}
                     </>
                   );
                 })()}

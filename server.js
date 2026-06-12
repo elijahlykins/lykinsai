@@ -5854,7 +5854,7 @@ const ARTIFACT_INTENT_NOUNS = [
   // chart" classify as diagrams, not as a bare "chart".
   { type: 'diagram',   re: /(flow ?chart|flow ?diagram|mind ?map|org ?chart|sequence diagram|state diagram|gantt ?chart|gantt|diagram)/i },
   { type: 'chart',     re: /(bar ?chart|line ?chart|pie ?chart|column ?chart|chart|graph|histogram|scatter ?plot|plot)/i },
-  { type: 'webapp',    re: /(interactive (?:page|app|web ?page)|mini[- ]?app|web ?app|landing ?page|web ?page|html (?:page|app)|prototype|wireframe)/i },
+  { type: 'webapp',    re: /(interactive (?:page|app|web ?page)|mini[- ]?app|web ?app|web ?site|landing ?page|web ?page|html (?:page|app)|prototype|wireframe)/i },
   // "doc"/"docs" (incl. "word doc"/"google doc") are the everyday way people
   // ask for a document — without them "write me a doc" fell through to a free
   // text reply, where the model often dumped raw HTML into the chat body.
@@ -19068,9 +19068,10 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'already_subscribed' });
     }
 
-    const planId = 'studio';
-    // Default to annual (the $17/mo headline rate); honor an explicit monthly
-    // choice from the trial screen toggle.
+    // Plan + period are chosen on the trial screen (the billing-style plan
+    // picker). Default to Pro/annual (the $17/mo headline rate).
+    const requestedPlan = String(req.body?.plan || 'studio').toLowerCase();
+    const planId = PLAN_IDS.has(requestedPlan) ? requestedPlan : 'studio';
     const requestedPeriod = String(req.body?.period || 'annual').toLowerCase();
     const period = BILLING_PERIODS.has(requestedPeriod) ? requestedPeriod : 'annual';
     const priceId = STRIPE_PRICE_MAP[planId]?.[period];

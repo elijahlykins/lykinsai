@@ -407,3 +407,82 @@ export function sortArtifactsForDisplay(artifacts: ChatArtifact[]): ChatArtifact
   const rank = (a: ChatArtifact) => (a.kind === "html" ? 0 : a.kind === "image" ? 1 : 2);
   return [...artifacts].sort((a, b) => rank(a) - rank(b));
 }
+
+/** Pull a human title out of a leaked HTML document (<title> → <h1> → fallback). */
+function htmlDocTitle(html: string): string {
+  const t = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+  if (t && t[1].trim()) return t[1].replace(/\s+/g, " ").trim().slice(0, 80);
+  const h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  if (h1) {
+    const txt = h1[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+    if (txt) return txt.slice(0, 80);
+  }
+  return "Preview";
+}
+
+/**
+ * When the model dumps a full HTML document straight into its chat text —
+ * instead of routing it through the artifact builder — the chat renderer
+ * (ReactMarkdown with no rehype-raw) shows it as literal `<!DOCTYPE html>…`
+ * markup. This pulls that leaked document out so the surface can render it as a
+ * sandboxed preview card instead, leaving the surrounding prose intact.
+ *
+ * Handles three shapes:
+ *   1. a fenced ```html block wrapping a full document,
+ *   2. a bare, COMPLETE `<!doctype html>…</html>` (or `<html>…</html>`) block,
+ *   3. a still-streaming bare document (leading doctype/html, no close yet) —
+ *      returned as `rest` wrapped in a ```html fence so it renders as clean
+ *      code (no iframe flashing) until the closing tag arrives and case 2 fires.
+ *
+ * Returns `{ html, rest }`: `html` is the extracted document (null when none),
+ * `rest` is the remaining prose with the document removed.
+ */
+export function extractLeakedHtmlDocument(content: string): { html: string | null; rest: string } {
+  const raw = String(content || "");
+  if (!raw.trim() || raw.indexOf("<") === -1) return { html: null, rest: raw };
+  const lower = raw.toLowerCase();
+  // Cheap bailout: nothing that looks like an HTML document is present.
+  if (!lower.includes("<!doctype html") && !lower.includes("<html")) {
+    return { html: null, rest: raw };
+  }
+
+  // 1) Closed fenced block whose contents are a full HTML document.
+  const fenceRe = /```(?:html?|xml|markup)?[ \t]*\r?\n([\s\S]*?)```/gi;
+  let m: RegExpExecArray | null;
+  while ((m = fenceRe.exec(raw))) {
+    const inner = m[1] || "";
+    if (isHtmlString(inner)) {
+      const rest = (raw.slice(0, m.index) + raw.slice(m.index + m[0].length)).trim();
+      return { html: inner.trim(), rest };
+    }
+  }
+
+  // 2) Bare, complete document outside any fence.
+  const docMatch = /<!doctype html[\s\S]*?<\/html\s*>|<html[\s\S]*?<\/html\s*>/i.exec(raw);
+  if (docMatch && isHtmlString(docMatch[0])) {
+    const rest = (raw.slice(0, docMatch.index) + raw.slice(docMatch.index + docMatch[0].length)).trim();
+    return { html: docMatch[0].trim(), rest };
+  }
+
+  // 3) Streaming / truncated bare document with no closing tag yet. Wrap it as
+  //    fenced code so it renders cleanly instead of as raw literal markup;
+  //    once </html> streams in, case 2 takes over and shows the real preview.
+  const lead = raw.trimStart();
+  if (/^<!doctype html|^<html[\s>]/i.test(lead) && !/<\/html\s*>/i.test(lead)) {
+    return { html: null, rest: "```html\n" + lead + "\n```" };
+  }
+
+  return { html: null, rest: raw };
+}
+
+/** Build a previewable artifact from an HTML document the model leaked into chat. */
+export function buildLeakedHtmlArtifact(messageId: string, html: string): ChatArtifact {
+  return {
+    id: `${messageId}:leaked-html`,
+    kind: "html",
+    title: htmlDocTitle(html),
+    srcDoc: html,
+    format: "html",
+    toolName: "lykn_inline_html",
+  };
+}

@@ -46,5 +46,8 @@ serper_news_sample.json
 npm-audit-report.json
 gitleaks-report.json
 
-# Large demo/screen-recording assets — exceed GitHub's 100MB file limit, keep local only
-*.mov
+# Large raw screen-recordings — exceed GitHub's 100MB file limit, keep local only.
+# Web-optimized exports (e.g. lykn-demo-hero.mp4) ARE committed.
+/src/assets/0611 (1).mov
+/src/assets/0611 (2).mov
+/src/assets/LYKN demo.mov

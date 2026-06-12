@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
 import lyknIcon from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-web.png";
-import demoVideo from "@/assets/0611 (2).mov";
+import demoVideo from "@/assets/lykn-demo-hero.mp4";
 import WakePreviewFit from "@/components/wake/WakePreviewFit";
 import WakeAppShellPreview from "@/components/wake/WakeAppShellPreview";
 import WakeSynthesisTourPreview from "@/components/wake/WakeSynthesisTourPreview";

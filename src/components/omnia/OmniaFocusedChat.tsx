@@ -16,7 +16,7 @@ import ToolCallPill from "@/components/omnia/ToolCallPill";
 import ThinkingIndicator from "@/components/omnia/ThinkingIndicator";
 import ChatArtifactCard from "@/components/omnia/ChatArtifactCard";
 import OmniaArtifactPanel, { ARTIFACT_PANEL_WIDTH } from "@/components/omnia/OmniaArtifactPanel";
-import { extractChatArtifacts, sortArtifactsForDisplay, type ChatArtifact } from "@/lib/ai/chatArtifacts";
+import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact, type ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ChatNeuronCard from "@/components/omnia/ChatNeuronCard";
 import LinkPreview from "@/components/LinkPreview";
 import type {
@@ -1729,11 +1729,30 @@ const MessageItem = React.memo(function MessageItem({
             </button>
             <div className={`grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${isAiExpanded ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`}>
               <div className="overflow-hidden min-h-0">
-                <div className="px-4 py-3 text-sm leading-relaxed break-words text-black/85 dark:text-white/85">
-                  <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
-                    {normalizeChecklistSyntax(msg.content || "")}
-                  </ReactMarkdown>
-                </div>
+                {(() => {
+                  // Safety net: if the model dumped a full HTML document into
+                  // the chat text instead of routing it through the artifact
+                  // builder, render it as a preview card (sandboxed iframe /
+                  // openable in the panel) instead of leaking raw markup.
+                  const { html, rest } = extractLeakedHtmlDocument(msg.content || "");
+                  const leaked = html ? buildLeakedHtmlArtifact(msg.id, html) : null;
+                  return (
+                    <>
+                      {rest ? (
+                        <div className="px-4 py-3 text-sm leading-relaxed break-words text-black/85 dark:text-white/85">
+                          <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
+                            {normalizeChecklistSyntax(rest)}
+                          </ReactMarkdown>
+                        </div>
+                      ) : null}
+                      {leaked ? (
+                        <div className="px-4 pb-3 pt-1 flex flex-col gap-2 max-w-[min(100%,42rem)] w-full">
+                          <ChatArtifactCard artifact={leaked} onOpen={onOpenArtifact ? () => onOpenArtifact(leaked) : undefined} />
+                        </div>
+                      ) : null}
+                    </>
+                  );
+                })()}
                 {Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 px-4 pb-3">
                     {(msg as any).sources.map((src: { title: string; url: string }, i: number) => (

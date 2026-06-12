@@ -11,12 +11,25 @@ import { hasAppAccess } from "@/lib/billingAccess";
 import { toBillingCheckoutError } from "@/lib/billingCheckoutErrors";
 import { isConnectOnboardingDone } from "@/lib/prototypeHandoff";
 import { supabase } from "@/lib/supabase";
+import {
+  PLANS,
+  BILLING_PERIODS,
+  getDisplayPrice,
+  getAnnualSavings,
+} from "@/lib/pricing-config";
 
 const NEW_USER_WINDOW_MS = 10 * 60 * 1000;
-const TRIAL_PRICE_LABELS = {
-  annual: "$17/month, billed annually",
-  monthly: "$25/month",
-};
+
+// Plans the trial picker offers: the checkout-able, currently-available tiers
+// (Student, Pro). Teams/coming-soon plans are excluded.
+const TRIAL_PLANS = PLANS.filter(
+  (p) => p.checkout !== false && !p.comingSoon,
+);
+
+function formatPrice(value) {
+  if (value === 0) return "$0";
+  return `$${value % 1 === 0 ? value : value.toFixed(2)}`;
+}
 
 function isFreshlyCreatedUser(user) {
   if (!user?.created_at) return false;
@@ -51,7 +64,7 @@ async function fetchStripePublishableKey() {
 // request fires — i.e. when the user explicitly clicks "Start free trial" —
 // so we no longer spawn phantom customers for everyone who merely loads the
 // page.
-async function startTrialCheckout(mode, period) {
+async function startTrialCheckout(mode, plan, period) {
   const headers = {
     "Content-Type": "application/json",
     ...(await authHeaders()),
@@ -59,7 +72,7 @@ async function startTrialCheckout(mode, period) {
   const res = await fetch(`${API_BASE_URL}/api/billing/trial-checkout`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ mode, period }),
+    body: JSON.stringify({ mode, plan, period }),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {

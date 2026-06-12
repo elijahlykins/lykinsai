@@ -191,7 +191,11 @@ function AppShell() {
   // On mobile the account lives in the More menu (MobileTabBar), so the
   // floating top-left pill is only needed on chrome-less standalone pages.
   const showSignInPillGlobally =
-    !isLoginPage && !isEmbeddedRoute && !isMarketingLanding && chromeHidden;
+    !isLoginPage &&
+    !isStartTrialPage &&
+    !isEmbeddedRoute &&
+    !isMarketingLanding &&
+    chromeHidden;
 
   if (subscriptionGate.loading) {
     return null;
