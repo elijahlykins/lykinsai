@@ -1812,11 +1812,21 @@ mark {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Demo video lives only inside the hero, with a dark overlay so the logo,
-   tagline, and CTA stay legible. The video + overlay are absolutely
-   positioned within the hero (which is position: relative) and the hero
-   content is lifted above them. Every other section sits on the black
-   .lkn-land canvas. */
+/* The "stage" is the first screenful: the hero plus the peeking app preview.
+   The demo video + dark overlay fill the whole stage so the video sits behind
+   both the hero copy and the preview card, all the way to where the user
+   scrolls. Every section below the stage sits on the black .lkn-land canvas. */
+.lkn-stage {
+  position: relative;
+}
+
+/* Lift the hero and the preview showcase above the video/overlay. */
+.lkn-stage > .lkn-hero,
+.lkn-stage > .lkn-showcase {
+  position: relative;
+  z-index: 1;
+}
+
 .lkn-bg-video {
   position: absolute;
   inset: 0;
@@ -2081,6 +2091,18 @@ mark {
 
 .lkn-showcase-window {
   height: clamp(420px, 72vh, 720px);
+}
+
+/* On phones the preview is a scaled-down desktop shell (rendered at 1180px and
+   transform-scaled). A tall portrait frame stretches that landscape UI and
+   looks wrong, so give the window a desktop-like aspect ratio instead of a
+   fixed tall height, keeping the miniature correctly proportioned. */
+@media (max-width: 767px) {
+  .lkn-showcase-window,
+  .lkn-showcase--peek .lkn-showcase-window {
+    height: auto;
+    aspect-ratio: 16 / 10;
+  }
 }
 
 /* ── App-shell preview (collapsed sidebar rail + live chat) ── */

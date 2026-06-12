@@ -1,6 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { extractChatArtifacts } from "./chatArtifacts";
+import { extractChatArtifacts, extractLeakedHtmlDocument, buildLeakedHtmlArtifact } from "./chatArtifacts";
 import type { ToolCallEvent } from "./chatSendOrchestrator";
+
+describe("extractLeakedHtmlDocument", () => {
+  it("extracts a complete bare HTML document and keeps surrounding prose", () => {
+    const r = extractLeakedHtmlDocument("Here you go:\n<!DOCTYPE html><html><body><h1>Hi</h1></body></html>\nEnjoy!");
+    expect(r.pending).toBe(false);
+    expect(r.html).toContain("<!DOCTYPE html>");
+    expect(r.rest).toContain("Here you go:");
+    expect(r.rest).toContain("Enjoy!");
+    expect(r.rest).not.toContain("<html");
+  });
+
+  it("extracts a fenced ```html document", () => {
+    const r = extractLeakedHtmlDocument("Sure:\n```html\n<!DOCTYPE html><html><head><title>X</title></head><body>hi</body></html>\n```");
+    expect(r.html).toContain("<title>X</title>");
+    expect(r.rest).toBe("Sure:");
+  });
+
+  it("flags a still-streaming document as pending and hides the markup", () => {
+    const r = extractLeakedHtmlDocument("Building your page:\n\n<!DOCTYPE html><html><head><meta charset=\"utf-8\">");
+    expect(r.pending).toBe(true);
+    expect(r.html).toBeNull();
+    expect(r.rest).toBe("Building your page:");
+    expect(r.rest).not.toContain("<!DOCTYPE");
+  });
+
+  it("does NOT trigger on prose that merely mentions an <html> tag", () => {
+    const r = extractLeakedHtmlDocument("You can use the <html> tag to start a document.");
+    expect(r.pending).toBe(false);
+    expect(r.html).toBeNull();
+    expect(r.rest).toContain("<html>");
+  });
+
+  it("passes plain prose through untouched", () => {
+    const r = extractLeakedHtmlDocument("Here are three tips for today.");
+    expect(r).toEqual({ html: null, rest: "Here are three tips for today.", pending: false });
+  });
+
+  it("builds a previewable html artifact titled from <title>", () => {
+    const art = buildLeakedHtmlArtifact("msg1", "<!DOCTYPE html><html><head><title>My Page</title></head><body>x</body></html>");
+    expect(art.kind).toBe("html");
+    expect(art.title).toBe("My Page");
+    expect(art.srcDoc).toContain("<body>x</body>");
+  });
+});
 
 describe("extractChatArtifacts", () => {
   it("pulls HTML slideshow from build_template download_links", () => {
