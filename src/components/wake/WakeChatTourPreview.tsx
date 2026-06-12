@@ -27,6 +27,10 @@ interface PreviewMessage {
 
 interface WakeChatTourPreviewProps {
   active?: boolean;
+  /** Show the model selector "pulled up" above the chat bar. Only the
+      standalone chat feature preview opts in; the full app-shell preview
+      leaves it closed. */
+  showModelMenu?: boolean;
 }
 
 const CHAT_TIMEOUT_MS = 30_000;
@@ -50,7 +54,10 @@ function groupPreviewTurns(messages: PreviewMessage[]): PreviewTurn[] {
   return turns;
 }
 
-export default function WakeChatTourPreview({ active = true }: WakeChatTourPreviewProps) {
+export default function WakeChatTourPreview({
+  active = true,
+  showModelMenu = false,
+}: WakeChatTourPreviewProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -349,10 +356,13 @@ export default function WakeChatTourPreview({ active = true }: WakeChatTourPrevi
               </p>
             )}
 
-            {/* Model selector shown pulled-up, mirroring the in-app menu. */}
-            <div className="lykn-wake-chat-preview-model-menu" aria-hidden>
-              <WakeModelMenuPreview selectedModel={LYKN_ID} modelTier="free" />
-            </div>
+            {/* Model selector shown pulled-up, mirroring the in-app menu.
+                Only the standalone chat feature preview opts into this. */}
+            {showModelMenu && (
+              <div className="lykn-wake-chat-preview-model-menu" aria-hidden>
+                <WakeModelMenuPreview selectedModel={LYKN_ID} />
+              </div>
+            )}
 
             <div className="omnia-neu-chat-shell p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
               <textarea

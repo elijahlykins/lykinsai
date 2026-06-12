@@ -22,11 +22,14 @@ interface WakeSynthesisTourPreviewProps {
   active?: boolean;
   /** Render the "built out" graph (categories + child neurons + cross-links). */
   populated?: boolean;
+  /** Clear the 3D canvas to opaque black (landing/login previews on black). */
+  opaqueBlackBg?: boolean;
 }
 
 export default function WakeSynthesisTourPreview({
   active = true,
   populated = false,
+  opaqueBlackBg = false,
 }: WakeSynthesisTourPreviewProps) {
   const sceneRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -167,6 +170,7 @@ export default function WakeSynthesisTourPreview({
                 onBackgroundClick={handleBackgroundClick}
                 autoRotate={active && !selectedId}
                 litePreview={!active}
+                opaqueBlackBg={opaqueBlackBg}
               />
             </Suspense>
           )}

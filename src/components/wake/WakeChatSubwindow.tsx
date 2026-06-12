@@ -25,7 +25,7 @@ export default function WakeChatSubwindow({
       <div className="lykn-wake-subwindow-body">
         {showPreview ? (
           <WakePreviewFit designWidth={720}>
-            <WakeChatTourPreview active={active} />
+            <WakeChatTourPreview active={active} showModelMenu />
           </WakePreviewFit>
         ) : null}
       </div>

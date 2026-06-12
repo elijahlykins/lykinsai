@@ -239,9 +239,9 @@ function FeatureTrio() {
         <div className="lkn-trio-cell">
           <span className="lkn-trio-label">Synthesis Layer</span>
           <div className="lkn-trio-preview">
-            {/* Lite render (no bloom EffectComposer) so the canvas stays
-                transparent and the background reads as pure black. */}
-            {seen ? <WakeSynthesisTourPreview active={false} /> : null}
+            {/* Full render (with bloom glow) on an opaque black canvas so the
+                neurons glow but the background stays pure black. */}
+            {seen ? <WakeSynthesisTourPreview active={seen} opaqueBlackBg /> : null}
           </div>
         </div>
 

@@ -166,6 +166,14 @@ interface Props {
    * three live app iframes in the same tab (Chrome error code 5 OOM).
    */
   litePreview?: boolean;
+  /**
+   * Force the scene to clear to opaque pure black. Used by the landing /
+   * login synthesis previews so the Bloom pass composites the glowing
+   * neurons over solid black instead of the slightly-grey wash the
+   * post-process buffer otherwise leaves on the transparent canvas.
+   * Leave undefined in-app so the canvas stays transparent over its host.
+   */
+  opaqueBlackBg?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -968,6 +976,7 @@ function CameraController({ zoom, resetSignal, focusPos, focusDistanceOverride, 
 export default function SynthesisScene3D(props: Props) {
   const centroid = useGraphCentroid(props.nodes);
   const litePreview = props.litePreview === true;
+  const opaqueBlackBg = props.opaqueBlackBg === true;
 
   // Translate the focus node id into a world-space coord. SceneInner is
   // rendered inside a group translated by -centroid, so the world position
@@ -1106,6 +1115,11 @@ export default function SynthesisScene3D(props: Props) {
       {/* Ambient + a couple of point lights so non-emissive faces of nodes
           have some directional shading; the emissive material does the
           heavy lifting for the glow look. */}
+      {/* Opaque pure-black clear for the landing/login previews so the Bloom
+          pass composites over solid black (no grey wash / visible canvas box).
+          Omitted in-app, where the canvas stays transparent over its host. */}
+      {opaqueBlackBg && <color attach="background" args={["#000000"]} />}
+
       <ambientLight intensity={0.55} />
       <pointLight position={[400, 500, 600]} intensity={0.6} color="#ffffff" />
       <pointLight position={[-500, -300, 200]} intensity={0.35} color="#a78bfa" />

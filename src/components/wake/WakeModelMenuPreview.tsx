@@ -12,7 +12,8 @@ import { isModelAllowedForPlan } from "@/lib/modelTiers";
  * `MODEL_GROUPS` data (free-tier gated) so it reads as the genuine UI.
  */
 interface WakeModelMenuPreviewProps {
-  /** Plan tier used for the lock gating. Defaults to the preview's free tier. */
+  /** Plan tier used for the lock gating. When omitted, every model renders
+      unlocked (no lock icons) — used by the marketing chat preview. */
   modelTier?: string;
   /** Currently selected model id (shows the checkmark). */
   selectedModel?: string;
@@ -23,7 +24,7 @@ const PANEL_CLS =
   "rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5";
 
 export default function WakeModelMenuPreview({
-  modelTier = "free",
+  modelTier,
   selectedModel = LYKN_ID,
 }: WakeModelMenuPreviewProps) {
   return (
