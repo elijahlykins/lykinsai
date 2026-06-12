@@ -10,11 +10,8 @@ import { GridIcon } from "@/components/ui/GridIcon";
 import lyknIconNeutral from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
 import ReactMarkdown from "react-markdown";
 import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } from "@/lib/chat/chatMarkdown";
-import NeuronPill from "@/components/synthesis/NeuronPill";
-import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
-import ToolCallPill from "@/components/omnia/ToolCallPill";
 import ThinkingIndicator from "@/components/omnia/ThinkingIndicator";
-import ChatArtifactCard from "@/components/omnia/ChatArtifactCard";
+import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/omnia/ChatArtifactCard";
 import OmniaArtifactPanel, { ARTIFACT_PANEL_WIDTH } from "@/components/omnia/OmniaArtifactPanel";
 import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact, type ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ChatNeuronCard from "@/components/omnia/ChatNeuronCard";
@@ -1206,6 +1203,13 @@ const MessageItem = React.memo(function MessageItem({
                       body = rest;
                     }
                   }
+                  // Safety net: if the model dumped a full HTML document into
+                  // the response text instead of routing it through the artifact
+                  // builder, render it as a preview card (sandboxed iframe /
+                  // openable in the panel) rather than leaking raw markup — and
+                  // show a "building" placeholder while it's still streaming.
+                  const { html: leakedHtml, rest: bodyRest, pending: htmlPending } = extractLeakedHtmlDocument(body);
+                  const leakedArtifact = leakedHtml ? buildLeakedHtmlArtifact(msg.id, leakedHtml) : null;
                   return (
                     <div className="px-4 py-3">
                       {heading ? (
@@ -1213,11 +1217,20 @@ const MessageItem = React.memo(function MessageItem({
                           {heading}
                         </h1>
                       ) : null}
-                      {body ? (
+                      {bodyRest ? (
                         <div className="text-sm leading-relaxed break-words text-black/85 dark:text-white/85">
                           <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
-                            {normalizeChecklistSyntax(body)}
+                            {normalizeChecklistSyntax(bodyRest)}
                           </ReactMarkdown>
+                        </div>
+                      ) : null}
+                      {leakedArtifact ? (
+                        <div className="mt-2 flex flex-col gap-2 max-w-[min(100%,42rem)] w-full">
+                          <ChatArtifactCard artifact={leakedArtifact} onOpen={onOpenArtifact ? () => onOpenArtifact(leakedArtifact) : undefined} />
+                        </div>
+                      ) : htmlPending ? (
+                        <div className="mt-2 max-w-[min(100%,42rem)] w-full">
+                          <ArtifactBuildingPlaceholder />
                         </div>
                       ) : null}
                     </div>
@@ -1642,13 +1655,6 @@ const MessageItem = React.memo(function MessageItem({
                 </div>
               </div>
             </div>
-            {Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0 && (
-              <div className="px-1 flex flex-wrap gap-1.5">
-                {msg.toolCalls.map((tc) => (
-                  <ToolCallPill key={tc.id} call={tc} />
-                ))}
-              </div>
-            )}
             {(() => {
               const artifacts = sortArtifactsForDisplay(extractChatArtifacts(msg.toolCalls));
               if (!artifacts.length) return null;
@@ -1697,8 +1703,6 @@ const MessageItem = React.memo(function MessageItem({
                 ))}
               </div>
             )}
-            {msg.factNeuron && <NeuronPill fact={msg.factNeuron} className="px-1" />}
-            {(msg as any).appliedAttribution && <AppliedRulePill attribution={(msg as any).appliedAttribution} className="px-1" />}
           </div>
         </div>
       )}
@@ -1734,7 +1738,7 @@ const MessageItem = React.memo(function MessageItem({
                   // the chat text instead of routing it through the artifact
                   // builder, render it as a preview card (sandboxed iframe /
                   // openable in the panel) instead of leaking raw markup.
-                  const { html, rest } = extractLeakedHtmlDocument(msg.content || "");
+                  const { html, rest, pending } = extractLeakedHtmlDocument(msg.content || "");
                   const leaked = html ? buildLeakedHtmlArtifact(msg.id, html) : null;
                   return (
                     <>
@@ -1748,6 +1752,10 @@ const MessageItem = React.memo(function MessageItem({
                       {leaked ? (
                         <div className="px-4 pb-3 pt-1 flex flex-col gap-2 max-w-[min(100%,42rem)] w-full">
                           <ChatArtifactCard artifact={leaked} onOpen={onOpenArtifact ? () => onOpenArtifact(leaked) : undefined} />
+                        </div>
+                      ) : pending ? (
+                        <div className="px-4 pb-3 pt-1 max-w-[min(100%,42rem)] w-full">
+                          <ArtifactBuildingPlaceholder />
                         </div>
                       ) : null}
                     </>

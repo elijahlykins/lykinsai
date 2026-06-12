@@ -2375,6 +2375,19 @@ mark {
   display: none;
 }
 
+/* Keep the synthesis preview a plain black canvas here: drop the grey dot grid
+   and the bluish spotlight glow that otherwise wash over the black base. */
+.lkn-trio-preview .lykn-wake-synth-preview,
+.lkn-trio-preview .lykn-wake-synth-preview-scene,
+.lkn-trio-preview .lykn-wake-synth-preview-loading {
+  background: #000;
+}
+
+.lkn-trio-preview .lykn-wake-synth-preview-grid,
+.lkn-trio-preview .lykn-wake-synth-preview-spotlight {
+  display: none;
+}
+
 /* Middle card: custom neurons (beliefs / concepts / projects) as a stack of
    gently floating glass cards in the app's neuron-type colors. */
 .lkn-neuro {
@@ -2647,6 +2660,15 @@ mark {
 .lkn-feature-demo .lykn-wake-subwindow {
   height: 100%;
   width: 100%;
+}
+
+/* Drop the indigo halo glow around preview windows on the landing page; keep
+   the drop shadow and inset edge. The glow reads as a heavy bloom on bright /
+   high-gamut displays. */
+.lkn-land .lykn-wake-subwindow {
+  box-shadow:
+    0 28px 90px rgba(0, 0, 0, 0.62),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset;
 }
 
 @media (max-width: 860px) {

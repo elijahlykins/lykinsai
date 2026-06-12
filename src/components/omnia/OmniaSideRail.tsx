@@ -6,11 +6,8 @@ import {
 import { GridIcon } from "@/components/ui/GridIcon";
 import ReactMarkdown from "react-markdown";
 import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } from "@/lib/chat/chatMarkdown";
-import NeuronPill from "@/components/synthesis/NeuronPill";
-import AppliedRulePill from "@/components/synthesis/AppliedRulePill";
-import ToolCallPill from "@/components/omnia/ToolCallPill";
 import ThinkingIndicator from "@/components/omnia/ThinkingIndicator";
-import ChatArtifactCard from "@/components/omnia/ChatArtifactCard";
+import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/omnia/ChatArtifactCard";
 import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact } from "@/lib/ai/chatArtifacts";
 import LinkPreview from "@/components/LinkPreview";
 import type { ToolCallEvent } from "@/lib/ai/chatSendOrchestrator";
@@ -402,7 +399,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                 {(() => {
                   // Render a leaked HTML document as a preview card rather than
                   // dumping raw markup into the prose.
-                  const { html, rest } = extractLeakedHtmlDocument(msg.content || "");
+                  const { html, rest, pending } = extractLeakedHtmlDocument(msg.content || "");
                   return (
                     <>
                       {rest ? (
@@ -413,6 +410,10 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                       {html ? (
                         <div className="mt-1.5">
                           <ChatArtifactCard artifact={buildLeakedHtmlArtifact(msg.id, html)} />
+                        </div>
+                      ) : pending ? (
+                        <div className="mt-1.5">
+                          <ArtifactBuildingPlaceholder />
                         </div>
                       ) : null}
                     </>
@@ -452,9 +453,9 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                 ) : (() => {
                   // Pull any leaked HTML document out of the response BEFORE
                   // chunking so it renders as a preview card, not raw markup.
-                  const { html: leakedHtml, rest: responseRest } = extractLeakedHtmlDocument(msg.aiResponse || "");
+                  const { html: leakedHtml, rest: responseRest, pending: htmlPending } = extractLeakedHtmlDocument(msg.aiResponse || "");
                   const chunks = splitResponseIntoChunks(responseRest);
-                  const isSingle = chunks.length <= 1 && !leakedHtml;
+                  const isSingle = chunks.length <= 1 && !leakedHtml && !htmlPending;
                   return (
                     <>
                       {chunks.map((chunk, ci) => {
@@ -526,6 +527,10 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                         <div className="mt-1.5">
                           <ChatArtifactCard artifact={buildLeakedHtmlArtifact(msg.id, leakedHtml)} />
                         </div>
+                      ) : htmlPending ? (
+                        <div className="mt-1.5">
+                          <ArtifactBuildingPlaceholder />
+                        </div>
                       ) : null}
                     </>
                   );
@@ -540,13 +545,6 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                 </div>
                   </div>
                 </div>
-                {Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {msg.toolCalls.map((tc) => (
-                      <ToolCallPill key={tc.id} call={tc} size="compact" />
-                    ))}
-                  </div>
-                )}
                 {(() => {
                   const artifacts = sortArtifactsForDisplay(extractChatArtifacts(msg.toolCalls));
                   if (!artifacts.length) return null;
@@ -558,8 +556,6 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
                     </div>
                   );
                 })()}
-                {msg.factNeuron && <NeuronPill fact={msg.factNeuron} size="compact" />}
-                {msg.appliedAttribution && <AppliedRulePill attribution={msg.appliedAttribution} size="compact" />}
               </div>
               );
             })()}

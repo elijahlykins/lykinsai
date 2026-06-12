@@ -81,7 +81,21 @@ export const splitResponseIntoChunks = (text: string): string[] => {
 };
 
 export const getCollapsedPreview = (text: string) => {
-  const clean = text.replace(/[#*_`~>\[\]()!|]/g, "").replace(/\n+/g, " ").trim();
+  let clean = text;
+  // If the model leaked a raw HTML document into the reply, the collapsed pill
+  // would otherwise show "<!DOCTYPE html><html>…" tag soup. Surface a friendly
+  // label and drop the markup so the preview stays readable.
+  if (/<!doctype html|<html[\s>]/i.test(clean)) {
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(clean);
+    const before = clean.split(/<!doctype html|<html[\s>]/i)[0].trim();
+    const label = (title && title[1].trim()) || before || "Page preview";
+    return label.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().slice(0, 117);
+  }
+  clean = clean
+    .replace(/<[^>]*>/g, " ")
+    .replace(/[#*_`~>\[\]()!|]/g, "")
+    .replace(/\n+/g, " ")
+    .trim();
   return clean.length > 120 ? clean.slice(0, 117) + "..." : clean;
 };
 

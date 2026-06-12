@@ -121,6 +121,8 @@ export default function StartTrial() {
   const [clientSecret, setClientSecret] = useState(null);
   const [publishableKey, setPublishableKey] = useState(null);
   const [period, setPeriod] = useState("annual");
+  // Which plan's "Start free trial" button is mid-flight (for the spinner).
+  const [pendingPlan, setPendingPlan] = useState(null);
   const cancelHandledRef = useRef(false);
 
   const stripePromise = useMemo(
@@ -139,49 +141,57 @@ export default function StartTrial() {
 
   // Fall back to the hosted Stripe page if embedded checkout can't initialize
   // (e.g. publishable key not configured) so the signup path never hard-breaks.
-  const beginHostedCheckout = useCallback(async () => {
-    const payload = await startTrialCheckout("hosted", period);
-    if (!payload?.url) throw new Error("Missing checkout session");
-    window.location.assign(payload.url);
-  }, [period]);
+  const beginHostedCheckout = useCallback(
+    async (plan) => {
+      const payload = await startTrialCheckout("hosted", plan, period);
+      if (!payload?.url) throw new Error("Missing checkout session");
+      window.location.assign(payload.url);
+    },
+    [period],
+  );
 
-  const beginCheckout = useCallback(async () => {
-    setError(null);
-    setPhase("starting");
-    try {
-      // Don't double-charge a user who already converted in another tab.
-      const billing = await fetchBillingMe();
-      if (hasAppAccess(billing)) {
-        navigate(postTrialDestination(user), { replace: true });
-        return;
-      }
-
-      // Preferred path: on-site embedded checkout.
+  const beginCheckout = useCallback(
+    async (plan) => {
+      const planId = plan || "studio";
+      setError(null);
+      setPendingPlan(planId);
+      setPhase("starting");
       try {
-        const key = await fetchStripePublishableKey();
-        const payload = await startTrialCheckout("embedded", period);
-        if (!payload?.client_secret) throw new Error("missing client secret");
-        setPublishableKey(key);
-        setClientSecret(payload.client_secret);
-        setPhase("checkout");
-        return;
-      } catch (embeddedErr) {
-        if (embeddedErr?.code === "already_subscribed") {
+        // Don't double-charge a user who already converted in another tab.
+        const billing = await fetchBillingMe();
+        if (hasAppAccess(billing)) {
           navigate(postTrialDestination(user), { replace: true });
           return;
         }
-        // Embedded unavailable — fall back to the hosted redirect.
-        await beginHostedCheckout();
+
+        // Preferred path: on-site embedded checkout.
+        try {
+          const key = await fetchStripePublishableKey();
+          const payload = await startTrialCheckout("embedded", planId, period);
+          if (!payload?.client_secret) throw new Error("missing client secret");
+          setPublishableKey(key);
+          setClientSecret(payload.client_secret);
+          setPhase("checkout");
+          return;
+        } catch (embeddedErr) {
+          if (embeddedErr?.code === "already_subscribed") {
+            navigate(postTrialDestination(user), { replace: true });
+            return;
+          }
+          // Embedded unavailable — fall back to the hosted redirect.
+          await beginHostedCheckout(planId);
+        }
+      } catch (err) {
+        if (err?.code === "already_subscribed") {
+          navigate(postTrialDestination(user), { replace: true });
+          return;
+        }
+        setError(toBillingCheckoutError(err));
+        setPhase("error");
       }
-    } catch (err) {
-      if (err?.code === "already_subscribed") {
-        navigate(postTrialDestination(user), { replace: true });
-        return;
-      }
-      setError(toBillingCheckoutError(err));
-      setPhase("error");
-    }
-  }, [navigate, user, beginHostedCheckout, period]);
+    },
+    [navigate, user, beginHostedCheckout, period],
+  );
 
   useEffect(() => {
     if (authLoading) return;
@@ -279,7 +289,7 @@ export default function StartTrial() {
             <button
               type="button"
               className="lykn-wake-account-submit-btn lykn-wake-start-trial-retry"
-              onClick={beginCheckout}
+              onClick={() => beginCheckout(pendingPlan)}
             >
               Try again
             </button>
@@ -289,88 +299,140 @@ export default function StartTrial() {
     );
   }
 
-  // intro / starting
+  // intro / starting — a billing-style plan picker framed as a free trial.
   const starting = phase === "starting";
+  const isAnnual = period === BILLING_PERIODS.ANNUAL;
   return (
-    <div className="dark lykn-wake-stage relative w-screen min-h-screen overflow-hidden flex flex-col">
-      <div className="lykn-wake-start-trial">
-        <div className="lykn-wake-start-trial-inner">
-          <h1 className="lykn-wake-start-trial-title">Start your 7-day free trial</h1>
-          <p className="lykn-wake-start-trial-copy">
-            Full access to LYKN Pro. <strong>$0 due today</strong>, we won&apos;t
-            charge you until the trial ends, and you can cancel anytime before then.
-          </p>
+    <div className="dark lykn-wake-stage relative w-screen min-h-screen overflow-y-auto flex flex-col items-center justify-center py-12 px-4">
+      <div className="w-full max-w-3xl text-center">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-300">
+          <span aria-hidden>✦</span> 7 days free, then pick up where you left off
+        </span>
+        <h1 className="mt-4 text-3xl sm:text-4xl font-semibold tracking-tight text-white">
+          Start your 7-day free trial
+        </h1>
+        <p className="mt-3 text-base text-white/60 max-w-xl mx-auto leading-relaxed">
+          Choose your plan below. <strong className="text-white">$0 due today</strong>
+          {" "}— we won&apos;t charge you until the trial ends, and you can cancel
+          anytime before then.
+        </p>
 
-          <div
-            className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-white/12 bg-white/[0.03] p-1"
-            role="group"
-            aria-label="Billing period"
-          >
-            <button
-              type="button"
-              onClick={() => setPeriod("annual")}
-              aria-pressed={period === "annual"}
-              className={`relative rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                period === "annual"
-                  ? "bg-white/12 text-white"
-                  : "text-white/55 hover:text-white/80"
-              }`}
-            >
-              Annual
-              <span className="ml-1.5 text-xs text-emerald-400">Save 32%</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setPeriod("monthly")}
-              aria-pressed={period === "monthly"}
-              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                period === "monthly"
-                  ? "bg-white/12 text-white"
-                  : "text-white/55 hover:text-white/80"
-              }`}
-            >
-              Monthly
-            </button>
-          </div>
-
-          <ul className="mt-5 mb-6 space-y-2 text-left text-sm text-white/80">
-            <li className="flex items-start gap-2">
-              <span aria-hidden className="mt-[2px] text-emerald-400">✓</span>
-              <span>7 days free, then {TRIAL_PRICE_LABELS[period]}</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span aria-hidden className="mt-[2px] text-emerald-400">✓</span>
-              <span>Cancel anytime before it ends, you won&apos;t be charged</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span aria-hidden className="mt-[2px] text-emerald-400">✓</span>
-              <span>Unlimited neurons &amp; Vault, every model and connection</span>
-            </li>
-          </ul>
-
+        {/* Billing period toggle */}
+        <div
+          className="mt-7 inline-flex rounded-xl border border-white/12 bg-white/[0.04] p-1"
+          role="group"
+          aria-label="Billing period"
+        >
           <button
             type="button"
-            className="lykn-wake-account-submit-btn"
-            onClick={beginCheckout}
-            disabled={starting}
+            onClick={() => setPeriod(BILLING_PERIODS.MONTHLY)}
+            aria-pressed={period === BILLING_PERIODS.MONTHLY}
+            className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${
+              period === BILLING_PERIODS.MONTHLY
+                ? "bg-white/12 text-white"
+                : "text-white/55 hover:text-white/80"
+            }`}
           >
-            {starting ? "Starting…" : "Start free trial"}
+            Monthly
           </button>
-
-          <p className="mt-4 text-xs text-white/45">
-            You&apos;ll add a card to start. Payments are processed securely by
-            Stripe, LYKN never sees your card details.
-          </p>
-
           <button
             type="button"
-            className="mt-5 text-xs text-white/40 underline underline-offset-4 hover:text-white/70"
-            onClick={returnToLandingSignIn}
-            disabled={starting}
+            onClick={() => setPeriod(BILLING_PERIODS.ANNUAL)}
+            aria-pressed={period === BILLING_PERIODS.ANNUAL}
+            className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${
+              period === BILLING_PERIODS.ANNUAL
+                ? "bg-white/12 text-white"
+                : "text-white/55 hover:text-white/80"
+            }`}
           >
-            Not now
+            Annual
+            <span className="ml-1.5 text-xs text-emerald-400">Save</span>
           </button>
         </div>
+
+        {/* Plan cards */}
+        <div className="mt-8 grid gap-4 sm:grid-cols-2">
+          {TRIAL_PLANS.map((plan) => {
+            const price = getDisplayPrice(plan, period);
+            const savings = getAnnualSavings(plan);
+            const planBusy = starting && pendingPlan === plan.id;
+            return (
+              <div
+                key={plan.id}
+                className={`relative flex flex-col rounded-2xl border p-6 text-left ${
+                  plan.highlighted
+                    ? "border-white/25 bg-white/[0.06] ring-1 ring-white/10"
+                    : "border-white/10 bg-white/[0.03]"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-white">{plan.name}</h3>
+                  {plan.badge && (
+                    <span className="rounded-md bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-white/85">
+                      {plan.badge}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-white/45">
+                  {plan.tagline}
+                </p>
+
+                <div className="mt-4">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-3xl font-bold tracking-tight text-white">
+                      $0
+                    </span>
+                    <span className="text-sm text-white/50">for 7 days</span>
+                  </div>
+                  <p className="mt-1 text-xs text-white/55">
+                    then {formatPrice(price)}/mo
+                    {isAnnual ? " billed annually" : ""}
+                    {isAnnual && savings > 0 ? ` · save $${savings}/yr` : ""}
+                  </p>
+                </div>
+
+                <ul className="mt-4 mb-6 flex-1 space-y-2">
+                  {plan.features
+                    .filter((f) => f.included)
+                    .map((f) => (
+                      <li
+                        key={f.text}
+                        className="flex items-start gap-2 text-sm text-white/75"
+                      >
+                        <span aria-hidden className="mt-[2px] text-emerald-400">
+                          ✓
+                        </span>
+                        <span>{f.text}</span>
+                      </li>
+                    ))}
+                </ul>
+
+                <button
+                  type="button"
+                  className="lykn-wake-account-submit-btn w-full"
+                  onClick={() => beginCheckout(plan.id)}
+                  disabled={starting}
+                >
+                  {planBusy ? "Starting…" : "Start free trial"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        <p className="mt-6 text-xs text-white/45 max-w-xl mx-auto">
+          You&apos;ll add a card to start. Payments are processed securely by
+          Stripe, LYKN never sees your card details.
+        </p>
+
+        <button
+          type="button"
+          className="mt-5 text-xs text-white/40 underline underline-offset-4 hover:text-white/70"
+          onClick={returnToLandingSignIn}
+          disabled={starting}
+        >
+          Not now
+        </button>
       </div>
     </div>
   );

@@ -89,6 +89,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
+import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/omnia/ChatArtifactCard";
+import { extractLeakedHtmlDocument, buildLeakedHtmlArtifact } from "@/lib/ai/chatArtifacts";
 import { CONNECTORS } from "@/lib/connectors/catalog";
 // Tracks whether the vault has completed its initial image-preload gating at
 // least once during this SPA session. Persists across route remounts so
@@ -7278,8 +7280,12 @@ User: ${text}`;
                       <div className={msg.id ? `overflow-hidden transition-all duration-200 ease-in-out ${isExpanded ? "max-h-[5000px] opacity-100 mt-1" : "max-h-0 opacity-0"}` : ""}>
                         <div className="space-y-1">
                           {(() => {
-                            const chunks = splitResponseIntoChunks(msg.content || "");
-                            const isSingle = chunks.length <= 1;
+                            // Pull a leaked HTML document out before chunking so
+                            // it renders as a preview card (or a "building"
+                            // placeholder while streaming) instead of raw markup.
+                            const { html: leakedHtml, rest: responseRest, pending: htmlPending } = extractLeakedHtmlDocument(msg.content || "");
+                            const chunks = splitResponseIntoChunks(responseRest);
+                            const isSingle = chunks.length <= 1 && !leakedHtml && !htmlPending;
                             return (
                               <>
                                 {chunks.map((chunk, ci) => (
@@ -7317,6 +7323,15 @@ User: ${text}`;
                                     )}
                                   </div>
                                 ))}
+                                {leakedHtml ? (
+                                  <div className="mx-1 mt-1.5">
+                                    <ChatArtifactCard artifact={buildLeakedHtmlArtifact(msg.id, leakedHtml)} />
+                                  </div>
+                                ) : htmlPending ? (
+                                  <div className="mx-1 mt-1.5">
+                                    <ArtifactBuildingPlaceholder />
+                                  </div>
+                                ) : null}
                               </>
                             );
                           })()}

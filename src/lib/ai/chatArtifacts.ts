@@ -434,16 +434,19 @@ function htmlDocTitle(html: string): string {
  *      returned as `rest` wrapped in a ```html fence so it renders as clean
  *      code (no iframe flashing) until the closing tag arrives and case 2 fires.
  *
- * Returns `{ html, rest }`: `html` is the extracted document (null when none),
- * `rest` is the remaining prose with the document removed.
+ * Returns `{ html, rest, pending }`: `html` is the extracted document (null
+ * when none), `rest` is the remaining prose with the document removed, and
+ * `pending` is true while a document is still STREAMING in (start seen, no
+ * `</html>` yet) — surfaces should show a "building preview" placeholder for
+ * that span instead of the half-written raw markup.
  */
-export function extractLeakedHtmlDocument(content: string): { html: string | null; rest: string } {
+export function extractLeakedHtmlDocument(content: string): { html: string | null; rest: string; pending: boolean } {
   const raw = String(content || "");
-  if (!raw.trim() || raw.indexOf("<") === -1) return { html: null, rest: raw };
+  if (!raw.trim() || raw.indexOf("<") === -1) return { html: null, rest: raw, pending: false };
   const lower = raw.toLowerCase();
   // Cheap bailout: nothing that looks like an HTML document is present.
   if (!lower.includes("<!doctype html") && !lower.includes("<html")) {
-    return { html: null, rest: raw };
+    return { html: null, rest: raw, pending: false };
   }
 
   // 1) Closed fenced block whose contents are a full HTML document.
@@ -453,7 +456,7 @@ export function extractLeakedHtmlDocument(content: string): { html: string | nul
     const inner = m[1] || "";
     if (isHtmlString(inner)) {
       const rest = (raw.slice(0, m.index) + raw.slice(m.index + m[0].length)).trim();
-      return { html: inner.trim(), rest };
+      return { html: inner.trim(), rest, pending: false };
     }
   }
 
@@ -461,18 +464,32 @@ export function extractLeakedHtmlDocument(content: string): { html: string | nul
   const docMatch = /<!doctype html[\s\S]*?<\/html\s*>|<html[\s\S]*?<\/html\s*>/i.exec(raw);
   if (docMatch && isHtmlString(docMatch[0])) {
     const rest = (raw.slice(0, docMatch.index) + raw.slice(docMatch.index + docMatch[0].length)).trim();
-    return { html: docMatch[0].trim(), rest };
+    return { html: docMatch[0].trim(), rest, pending: false };
   }
 
-  // 3) Streaming / truncated bare document with no closing tag yet. Wrap it as
-  //    fenced code so it renders cleanly instead of as raw literal markup;
-  //    once </html> streams in, case 2 takes over and shows the real preview.
-  const lead = raw.trimStart();
-  if (/^<!doctype html|^<html[\s>]/i.test(lead) && !/<\/html\s*>/i.test(lead)) {
-    return { html: null, rest: "```html\n" + lead + "\n```" };
+  // 3) Still-streaming document: a document START is present (possibly after
+  //    some intro prose) but the closing </html> hasn't arrived yet. Hide the
+  //    half-written markup behind a placeholder; case 2 takes over on complete.
+  const startMatch = /<!doctype html|<html[\s>]/i.exec(raw);
+  if (startMatch && !/<\/html\s*>/i.test(raw)) {
+    const tail = raw.slice(startMatch.index, startMatch.index + 400).toLowerCase();
+    // Guard against prose that merely MENTIONS <html>: require either an
+    // explicit doctype or real document scaffolding shortly after the tag.
+    const looksLikeDoc =
+      /^<!doctype html/i.test(raw.slice(startMatch.index)) ||
+      /<head|<body|<meta|<title|<style|<script|<link|<div|<section|<main|<header/i.test(tail);
+    if (looksLikeDoc) {
+      // Drop an opening code fence that immediately precedes the doc so we
+      // don't leave a dangling ``` marker in the prose.
+      let cut = startMatch.index;
+      const fenceOpen = /```(?:html?|xml|markup)?[ \t]*\r?\n?\s*$/i.exec(raw.slice(0, cut));
+      if (fenceOpen) cut = fenceOpen.index;
+      const rest = raw.slice(0, cut).replace(/```(?:html?|xml|markup)?[ \t]*$/i, "").trim();
+      return { html: null, rest, pending: true };
+    }
   }
 
-  return { html: null, rest: raw };
+  return { html: null, rest: raw, pending: false };
 }
 
 /** Build a previewable artifact from an HTML document the model leaked into chat. */
