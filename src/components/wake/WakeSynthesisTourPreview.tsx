@@ -5,6 +5,7 @@ import { simulateLayout } from "@/pages/synthesis/layoutEngine";
 import type { SimNode } from "@/pages/synthesis/layoutTypes";
 import {
   buildTourPreviewGraph,
+  buildPopulatedTourPreviewGraph,
   nudgeTourPreviewChatsTowardCenter,
 } from "@/pages/synthesis/tourPreviewGraph";
 import {
@@ -19,10 +20,13 @@ const SynthesisScene3D = lazy(() => import("@/pages/synthesis/SynthesisScene3D")
 interface WakeSynthesisTourPreviewProps {
   /** False while the slide is pre-mounted off-screen; full scene quality when true. */
   active?: boolean;
+  /** Render the "built out" graph (categories + child neurons + cross-links). */
+  populated?: boolean;
 }
 
 export default function WakeSynthesisTourPreview({
   active = true,
+  populated = false,
 }: WakeSynthesisTourPreviewProps) {
   const sceneRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -34,7 +38,10 @@ export default function WakeSynthesisTourPreview({
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { nodes, edges } = useMemo(() => buildTourPreviewGraph(), []);
+  const { nodes, edges } = useMemo(
+    () => (populated ? buildPopulatedTourPreviewGraph() : buildTourPreviewGraph()),
+    [populated],
+  );
   const nodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   const selectedNode = selectedId ? nodeMap.get(selectedId) ?? null : null;
   const highlightSet = useMemo(() => {

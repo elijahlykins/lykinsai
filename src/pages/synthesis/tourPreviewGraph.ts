@@ -51,6 +51,92 @@ export function buildTourPreviewGraph(): { nodes: MindNode[]; edges: MindEdge[] 
   return { nodes, edges };
 }
 
+// Child neurons hung under each category so the preview reads as a brain that
+// has actually been used. Kept label-only (no real data) since this is purely
+// decorative chrome behind the login screen / marketing surfaces.
+const TOUR_CHILDREN: Record<
+  string,
+  { kind: MindNode["kind"]; labels: string[] }
+> = {
+  __cat_grids__: {
+    kind: "grid",
+    labels: ["Q3 strategy", "Trip to Japan", "Resume review", "Workout split", "Book notes"],
+  },
+  __cat_vault__: {
+    kind: "vault",
+    labels: ["resume.pdf", "lease.pdf", "research.zip", "interview.mp3", "moodboard.fig"],
+  },
+  __cat_belief__: {
+    kind: "belief",
+    labels: ["Honesty over comfort", "Ship fast, iterate", "Health first", "Think long-term"],
+  },
+  __cat_facts__: {
+    kind: "neuron",
+    labels: ["Lives in Austin", "Founder of LYKN", "Vegetarian", "Speaks Spanish"],
+  },
+  __cat_concepts__: {
+    kind: "concept",
+    labels: ["First principles", "Compounding", "Systems thinking", "Minimalism"],
+  },
+  __cat_projects__: {
+    kind: "project",
+    labels: ["Launch LYKN v1", "Write a book", "Marathon training"],
+  },
+};
+
+// A few cross-links between child neurons so the graph shows an interconnected
+// web rather than six isolated stars.
+const TOUR_CROSS_LINKS: [string, string][] = [
+  ["__cat_belief__-2", "__cat_concepts__-0"],
+  ["__cat_projects__-0", "__cat_grids__-0"],
+  ["__cat_concepts__-1", "__cat_projects__-2"],
+  ["__cat_facts__-0", "__cat_projects__-2"],
+  ["__cat_belief__-0", "__cat_facts__-1"],
+  ["__cat_vault__-0", "__cat_facts__-1"],
+  ["__cat_concepts__-2", "__cat_belief__-1"],
+];
+
+/**
+ * A "built out" version of the tour brain: the six category landmarks plus a
+ * spread of child neurons and a handful of cross-links, so the graph looks
+ * like a synthesis layer someone has actually been using.
+ */
+export function buildPopulatedTourPreviewGraph(): {
+  nodes: MindNode[];
+  edges: MindEdge[];
+} {
+  const { nodes, edges } = buildTourPreviewGraph();
+  const catById = new Map(TOUR_CATEGORIES.map((c) => [c.id, c]));
+
+  for (const [catId, spec] of Object.entries(TOUR_CHILDREN)) {
+    const cat = catById.get(catId);
+    if (!cat) continue;
+    spec.labels.forEach((label, i) => {
+      const id = `${catId}-${i}`;
+      nodes.push({
+        id,
+        label,
+        kind: spec.kind,
+        radius: 15,
+        color: cat.color,
+        glow: cat.glow,
+        parentId: catId,
+        categoryId: catId,
+      });
+      edges.push({ from: catId, to: id });
+    });
+  }
+
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  for (const [from, to] of TOUR_CROSS_LINKS) {
+    if (nodeIds.has(from) && nodeIds.has(to)) {
+      edges.push({ from, to, cross: true });
+    }
+  }
+
+  return { nodes, edges };
+}
+
 const CHATS_CATEGORY_ID = "__cat_grids__";
 
 function tourPreviewCentroid(simNodes: SimNode[]): [number, number, number] {

@@ -178,10 +178,20 @@ function AppShell() {
   const isStandalone =
     isLoginPage || isStartTrialPage || isLandingPage || isSharedGridView || isSharePage;
   const chromeHidden = isEmbeddedRoute || isStandalone;
+  // The marketing landing page has its own header with a Sign in button, so
+  // the floating top-left pill is redundant there. The legal/docs pages reached
+  // from the landing header should stay clean too.
+  const isMarketingLanding =
+    location.pathname === "/" ||
+    location.pathname === "/landing-prototype" ||
+    location.pathname === "/privacy" ||
+    location.pathname === "/terms" ||
+    location.pathname === "/cookies" ||
+    location.pathname === "/dpa";
   // On mobile the account lives in the More menu (MobileTabBar), so the
   // floating top-left pill is only needed on chrome-less standalone pages.
   const showSignInPillGlobally =
-    !isLoginPage && !isEmbeddedRoute && chromeHidden;
+    !isLoginPage && !isEmbeddedRoute && !isMarketingLanding && chromeHidden;
 
   if (subscriptionGate.loading) {
     return null;

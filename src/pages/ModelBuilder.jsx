@@ -1010,7 +1010,7 @@ export default function ModelBuilder({ wakePreview = false } = {}) {
       ) : null}
       </div>
 
-      {!user && (
+      {!user && !wakePreview && (
         <div className="shrink-0 px-4 py-2 text-center text-[11px] bg-gray-100 dark:bg-gray-900/60 border-t border-gray-300/40 dark:border-gray-600/40 text-gray-800 dark:text-gray-200">
           <Link to="/login" className="font-semibold underline">
             Sign in

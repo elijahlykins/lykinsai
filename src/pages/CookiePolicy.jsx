@@ -1,5 +1,5 @@
 // ============================================================================
-// CookiePolicy — public cookie + browser-storage policy at /cookies
+// CookiePolicy, public cookie + browser-storage policy at /cookies
 // ============================================================================
 // Required by:
 //   • EU ePrivacy Directive (the "cookie law") for any EU visitor
@@ -9,20 +9,20 @@
 // LYKN's honest position: we don't actually set traditional HTTP cookies for
 // tracking. We do use localStorage / sessionStorage / IndexedDB extensively
 // for UI state and auth, which is functionally equivalent and legally
-// equivalent under ePrivacy guidance — so it gets disclosed here in the
+// equivalent under ePrivacy guidance, so it gets disclosed here in the
 // same shape a Cookies page would normally take.
 //
 // Keep the table below in sync with what's actually written client-side:
-//   • Auth (Supabase SDK)        — sb-<project>-auth-token
-//   • UI preferences             — lykinsai_settings
-//   • Last-opened board          — omnia_board_id, omnia_title
-//   • Vault view mode            — lykn_vault_view
-//   • Canvas prefs               — lykn_wheel_zoom_mode, lykn_show_grid
-//   • Onboarding/dismissals      — lykn:lastLoadInGreetingBoardId
+//   • Auth (Supabase SDK)       , sb-<project>-auth-token
+//   • UI preferences            , lykinsai_settings
+//   • Last-opened board         , omnia_board_id, omnia_title
+//   • Vault view mode           , lykn_vault_view
+//   • Canvas prefs              , lykn_wheel_zoom_mode, lykn_show_grid
+//   • Onboarding/dismissals     , lykn:lastLoadInGreetingBoardId
 //
 // If we ever add analytics, advertising, or third-party trackers, this page
 // becomes a real consent-required surface and the lawful basis flips from
-// "strictly necessary" to "consent." That's a material change — bump the
+// "strictly necessary" to "consent." That's a material change, bump the
 // LAST_UPDATED date and notify users per Privacy Policy §Changes.
 // ============================================================================
 
@@ -118,7 +118,7 @@ export default function CookiePolicy() {
             For clarity: LYKN itself doesn't set traditional HTTP cookies
             from <code>lykn.io</code>. Some of our infrastructure providers
             (Supabase, Vercel, Render) may issue a session cookie when you
-            load the app — those are strictly necessary for routing and
+            load the app, those are strictly necessary for routing and
             load balancing and contain no personal identifiers.
           </p>
           <p className="mt-3">
@@ -204,7 +204,7 @@ export default function CookiePolicy() {
             Some browsers cache vault thumbnails and recently-viewed files
             via IndexedDB so the Vault loads instantly on second visit. Cap
             is whatever quota the browser grants (typically a few hundred
-            MB). Nothing personally identifying is stored there — just
+            MB). Nothing personally identifying is stored there, just
             blobs you uploaded yourself.
           </p>
 
@@ -214,7 +214,7 @@ export default function CookiePolicy() {
           <ul className="space-y-2 mt-2">
             <Bullet>
               No analytics cookies (no Google Analytics, no Plausible, no
-              Fathom — we use server-side logs only).
+              Fathom, we use server-side logs only).
             </Bullet>
             <Bullet>
               No advertising or remarketing cookies. We don't show ads.
@@ -233,7 +233,7 @@ export default function CookiePolicy() {
         <Section title="Lawful basis" anchor="basis">
           <p>
             Everything in the table above is processed on the basis of{" "}
-            <strong>strict necessity</strong> (GDPR Art. 6(1)(b) — performance
+            <strong>strict necessity</strong> (GDPR Art. 6(1)(b), performance
             of a contract, and the ePrivacy Directive's strictly-necessary
             exemption from consent). The app cannot function without it: you
             wouldn't stay signed in, your settings wouldn't persist, and the
@@ -242,8 +242,8 @@ export default function CookiePolicy() {
           <p className="mt-3">
             Because nothing here is for analytics, advertising, or profiling,
             no consent banner is required under EU/UK ePrivacy guidance. If
-            that ever changes — for example, if we add an opt-in analytics
-            integration — we'll add a real consent flow before the new
+            that ever changes, for example, if we add an opt-in analytics
+            integration, we'll add a real consent flow before the new
             storage is set.
           </p>
         </Section>
@@ -272,8 +272,8 @@ export default function CookiePolicy() {
             preferences reset to defaults.
           </p>
           <p className="mt-3">
-            If you want the server-side counterparts gone too — your
-            account, vault, synthesis content — delete your account from{" "}
+            If you want the server-side counterparts gone too, your
+            account, vault, synthesis content, delete your account from{" "}
             <Link
               to="/settings"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
@@ -305,16 +305,16 @@ export default function CookiePolicy() {
           </p>
           <ul className="space-y-2 mt-3">
             <Bullet>
-              <strong>Supabase</strong> — auth tokens in localStorage (see
+              <strong>Supabase</strong>, auth tokens in localStorage (see
               above).
             </Bullet>
             <Bullet>
-              <strong>Vercel</strong> — may set short-lived load-balancer
+              <strong>Vercel</strong>, may set short-lived load-balancer
               cookies for routing. No identifiers; cleared with the rest of
               site storage.
             </Bullet>
             <Bullet>
-              <strong>Stripe</strong> — only on billing pages (
+              <strong>Stripe</strong>, only on billing pages (
               <code>/billing</code>, checkout). Stripe sets its own fraud-
               prevention cookies governed by{" "}
               <a

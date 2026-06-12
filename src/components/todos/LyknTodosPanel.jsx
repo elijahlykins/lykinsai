@@ -76,9 +76,12 @@ export default function LyknTodosPanel({ active = true }) {
   const [adding, setAdding] = useState(false);
   const titleRef = useRef(null);
 
-  const loadTodos = useCallback(async () => {
+  // `silent` skips the full-list spinner so background refreshes (realtime,
+  // the periodic sweep, post-mutation reloads) update in place instead of
+  // blinking the whole list — only the first open shows the spinner.
+  const loadTodos = useCallback(async ({ silent = false } = {}) => {
     if (!user?.id) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     // Pull open tasks PLUS completed ones so finished items stay visible
     // (crossed out) instead of vanishing the moment they're checked off.
     const { data, error } = await supabase
@@ -109,7 +112,7 @@ export default function LyknTodosPanel({ active = true }) {
           .eq("user_id", user.id);
       }
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, [user?.id]);
 
   useEffect(() => {
@@ -124,7 +127,7 @@ export default function LyknTodosPanel({ active = true }) {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "lykn_todos", filter: `user_id=eq.${user.id}` },
-        () => { void loadTodos(); },
+        () => { void loadTodos({ silent: true }); },
       )
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
@@ -134,7 +137,7 @@ export default function LyknTodosPanel({ active = true }) {
   // even while the panel stays open and untouched.
   useEffect(() => {
     if (!active || !user?.id) return undefined;
-    const id = setInterval(() => { void loadTodos(); }, DONE_SWEEP_MS);
+    const id = setInterval(() => { void loadTodos({ silent: true }); }, DONE_SWEEP_MS);
     return () => clearInterval(id);
   }, [active, user?.id, loadTodos]);
 
@@ -171,25 +174,61 @@ export default function LyknTodosPanel({ active = true }) {
     const dueText = draftDue
       ? new Date(`${draftDue}T23:59:59`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
       : null;
-    const { error } = await supabase.from("lykn_todos").insert({
-      user_id: user.id,
+
+    // Optimistic row so the task lands instantly instead of popping in after a
+    // round-trip (and the realtime + manual reload double-replace that caused
+    // the visible flicker). It's reconciled with the real row — or rolled
+    // back — once the insert resolves.
+    const nowIso = new Date().toISOString();
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const optimistic = {
+      id: tempId,
       title: title.slice(0, 280),
+      notes: null,
+      status: "open",
       priority: draftPriority,
       due_at: dueIso,
       due_at_text: dueText,
-      source: "todos-ui",
-    });
-    setAdding(false);
-    if (error) {
-      toast({ title: "Couldn't add task", description: error.message, variant: "destructive" });
-      return;
-    }
+      position: null,
+      created_at: nowIso,
+      completed_at: null,
+      updated_at: nowIso,
+    };
+    setTodos((prev) => [optimistic, ...prev]);
+    // The task is already on the list, so clear the form right away.
     setDraftTitle("");
     setDraftPriority("normal");
     setDraftDue("");
     titleRef.current?.focus();
-    void loadTodos();
-  }, [draftTitle, draftPriority, draftDue, user?.id, loadTodos]);
+
+    const { data, error } = await supabase
+      .from("lykn_todos")
+      .insert({
+        user_id: user.id,
+        title: optimistic.title,
+        priority: optimistic.priority,
+        due_at: dueIso,
+        due_at_text: dueText,
+        source: "todos-ui",
+      })
+      .select("id, title, notes, status, priority, due_at, due_at_text, position, created_at, completed_at, updated_at")
+      .single();
+    setAdding(false);
+
+    if (error || !data) {
+      // Roll the optimistic row back so the list reflects reality.
+      setTodos((prev) => prev.filter((t) => t.id !== tempId));
+      toast({ title: "Couldn't add task", description: error?.message, variant: "destructive" });
+      return;
+    }
+
+    // Swap the temp row for the real one, deduping in case realtime already
+    // delivered it during the round-trip.
+    setTodos((prev) => {
+      const rest = prev.filter((t) => t.id !== tempId && t.id !== data.id);
+      return [data, ...rest];
+    });
+  }, [draftTitle, draftPriority, draftDue, user?.id]);
 
   const setStatus = useCallback(async (todo, status) => {
     setBusyId(todo.id);
@@ -209,7 +248,7 @@ export default function LyknTodosPanel({ active = true }) {
     setBusyId(null);
     if (error) {
       toast({ title: "Update failed", description: error.message, variant: "destructive" });
-      void loadTodos();
+      void loadTodos({ silent: true });
     }
   }, [user?.id, loadTodos]);
 
@@ -224,7 +263,7 @@ export default function LyknTodosPanel({ active = true }) {
     setBusyId(null);
     if (error) {
       toast({ title: "Delete failed", description: error.message, variant: "destructive" });
-      void loadTodos();
+      void loadTodos({ silent: true });
     }
   }, [user?.id, loadTodos]);
 
@@ -237,7 +276,7 @@ export default function LyknTodosPanel({ active = true }) {
       .update({ priority: next, updated_at: new Date().toISOString() })
       .eq("id", todo.id)
       .eq("user_id", user.id);
-    if (error) void loadTodos();
+    if (error) void loadTodos({ silent: true });
   }, [user?.id, loadTodos]);
 
   const renderRow = (todo) => {
@@ -326,7 +365,7 @@ export default function LyknTodosPanel({ active = true }) {
   };
 
   return (
-    <div className="flex flex-col [color-scheme:dark]">
+    <div className="flex flex-col flex-1 min-h-0 [color-scheme:dark]">
       {/* Add form */}
       <div className="flex flex-col gap-2 pb-3 border-b border-white/10">
         <div className="flex items-center gap-2">
@@ -375,7 +414,7 @@ export default function LyknTodosPanel({ active = true }) {
       </div>
 
       {/* List */}
-      <div className="overflow-y-auto -mx-2 px-2 py-1 min-h-[8rem] max-h-[55vh]">
+      <div className="overflow-y-auto -mx-2 px-2 py-1 flex-1 min-h-[8rem] max-h-[55vh]">
         {loading ? (
           <div className="flex items-center justify-center py-10 text-white/40">
             <Loader2 className="w-5 h-5 animate-spin" />

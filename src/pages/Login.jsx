@@ -5,6 +5,9 @@ import { isConnectOnboardingDone } from "@/lib/prototypeHandoff";
 import { hasAppAccess } from "@/lib/billingAccess";
 import { API_BASE_URL } from "@/lib/api-config";
 import { motion, AnimatePresence } from "framer-motion";
+import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
+import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-NEUTRAL-web.png";
+import WakeSynthesisTourPreview from "@/components/wake/WakeSynthesisTourPreview";
 
 const GoogleIcon = () => (
   <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
@@ -229,10 +232,22 @@ export default function Login() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex bg-white dark:bg-[#0d0d0d] overflow-hidden">
-      <FloatingOrb className="w-[500px] h-[500px] bg-blue-300 dark:bg-blue-600 -top-32 -left-32" />
-      <FloatingOrb className="w-[400px] h-[400px] bg-violet-300 dark:bg-violet-600 top-1/2 -right-20" delay={2} />
-      <FloatingOrb className="w-[300px] h-[300px] bg-amber-200 dark:bg-amber-600 -bottom-16 left-1/3" delay={4} />
+    <div className="fixed inset-0 z-50 flex bg-black overflow-hidden">
+      {/* Background: the synthesis layer preview floating on black. Reuses the
+          landing trio styling so it renders on pure black, strips the preview
+          chrome, and stays fully non-interactive. */}
+      <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden>
+        <div className="lkn-trio-preview w-full h-full">
+          <WakeSynthesisTourPreview active populated />
+        </div>
+      </div>
+
+      {/* Frosted glass: heavily blur the synthesis preview so only its colored
+          glow bleeds through, never the individual nodes. */}
+      <div
+        className="absolute inset-0 z-0 backdrop-blur-[28px] backdrop-saturate-150 bg-black/30"
+        aria-hidden
+      />
 
       {/* Left branding panel - hidden on mobile */}
       <div className="hidden lg:flex lg:w-[45%] relative items-center justify-center p-12">
@@ -242,14 +257,12 @@ export default function Login() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
           >
-            <h1 className="text-5xl font-bold text-gray-900 dark:text-white tracking-tight leading-tight mb-4">
-              LYKN
-            </h1>
-            <p className="text-2xl font-medium text-blue-500 dark:text-blue-400 leading-relaxed mb-6">
+            <img src={lyknLogo} alt="LYKN" className="block h-20 w-auto mb-5 -ml-2" />
+            <p className="text-3xl font-semibold leading-relaxed mb-6 text-white">
               Your AI interface.
             </p>
-            <p className="text-base text-gray-500 dark:text-gray-400 leading-relaxed">
-              LYKN is your AI-powered second brain that captures, organizes, and connects everything you need in one place. Stay on top of your thoughts, projects, and schedule with intelligent tools built to work the way you think.
+            <p className="text-base text-gray-300 leading-relaxed">
+              Start your 7-day free trial and get full access to everything LYKN has to offer. After your trial, LYKN Pro is just $17/month. No commitment, cancel anytime before your trial ends and you won't be charged a cent.
             </p>
           </motion.div>
         </div>
@@ -264,8 +277,8 @@ export default function Login() {
           className="w-full max-w-[420px] relative z-10"
         >
           {/* Mobile branding */}
-          <div className="lg:hidden mb-8 text-center">
-            <span className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">LYKN</span>
+          <div className="lg:hidden mb-8 flex justify-center">
+            <img src={lyknWordmark} alt="LYKN" className="h-9 w-auto" />
           </div>
 
           <div className="bg-white/55 dark:bg-white/5 backdrop-blur-md rounded-3xl border border-gray-200/50 dark:border-white/8 shadow-lg shadow-gray-200/20 dark:shadow-black/20 p-8 sm:p-10">
@@ -278,12 +291,19 @@ export default function Login() {
                 transition={{ duration: 0.2 }}
               >
                 <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-1">
-                  {mode === "login" ? "Welcome to the grid" : "Create your account"}
+                  {mode === "login" ? (
+                    <span className="inline-flex items-center gap-2 leading-none">
+                      Welcome to
+                      <img src={lyknWordmark} alt="LYKN" className="h-9 w-auto -ml-2.5" />
+                    </span>
+                  ) : (
+                    "Create your account"
+                  )}
                 </h2>
                 <p className="text-sm text-gray-500 dark:text-gray-400 mb-7">
                   {mode === "login"
-                    ? "Sign in to continue to LYKN"
-                    : "Get started with your second brain"}
+                    ? "Sign in to your intelligence layer"
+                    : "Build an AI that actually knows you"}
                 </p>
 
                 <button

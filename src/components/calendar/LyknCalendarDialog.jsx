@@ -644,8 +644,9 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
         )}
 
         <div
-          key={panel}
-          className="flex flex-col gap-4 animate-in fade-in-0 duration-200 ease-out"
+          className={`flex flex-col gap-4 ${
+            panel === "todos" || view === "month" ? "min-h-[30rem]" : ""
+          }`}
         >
         {panel === "todos" && (
           <>

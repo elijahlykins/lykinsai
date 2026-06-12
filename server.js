@@ -5855,7 +5855,10 @@ const ARTIFACT_INTENT_NOUNS = [
   { type: 'diagram',   re: /(flow ?chart|flow ?diagram|mind ?map|org ?chart|sequence diagram|state diagram|gantt ?chart|gantt|diagram)/i },
   { type: 'chart',     re: /(bar ?chart|line ?chart|pie ?chart|column ?chart|chart|graph|histogram|scatter ?plot|plot)/i },
   { type: 'webapp',    re: /(interactive (?:page|app|web ?page)|mini[- ]?app|web ?app|landing ?page|web ?page|html (?:page|app)|prototype|wireframe)/i },
-  { type: 'document',  re: /(document|report|essay|memo|white ?paper|one[- ]?pager|cover letter|letter|write[- ]?up)/i },
+  // "doc"/"docs" (incl. "word doc"/"google doc") are the everyday way people
+  // ask for a document — without them "write me a doc" fell through to a free
+  // text reply, where the model often dumped raw HTML into the chat body.
+  { type: 'document',  re: /(documents?|\bdocs?\b|google ?docs?|word ?docs?|report|essay|memo|white ?paper|one[- ]?pager|cover letter|letter|write[- ]?up)/i },
 ];
 const ARTIFACT_BUILD_VERB_RE = /\b(?:make|build|create|generate|design|draft|produce|prepare|compose|put together|whip up|mock up|draw up|draw|write|give|need|want|turn (?:this|that|it) into)\b(?:\s+(?:me|us))?\s+(?:a|an|the|some|my|another|one)\s+/i;
 const ARTIFACT_ANALYSIS_LEAD_RE = /^(?:can you|could you|would you|please|hey|ok|okay|so|now|then|and)?[,\s]*(?:summari[sz]e|explain|describe|analy[sz]e|review|read|improve|fix|edit|update|revise|shorten|expand|lengthen|critique|proofread|rewrite|reword)\b/i;
@@ -19066,7 +19069,10 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
     }
 
     const planId = 'studio';
-    const period = 'monthly';
+    // Default to annual (the $17/mo headline rate); honor an explicit monthly
+    // choice from the trial screen toggle.
+    const requestedPeriod = String(req.body?.period || 'annual').toLowerCase();
+    const period = BILLING_PERIODS.has(requestedPeriod) ? requestedPeriod : 'annual';
     const priceId = STRIPE_PRICE_MAP[planId]?.[period];
     if (!priceId) {
       return res.status(503).json({

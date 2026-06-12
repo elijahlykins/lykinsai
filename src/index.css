@@ -1796,6 +1796,955 @@ mark {
   min-height: 100dvh;
 }
 
+/* =========================================================
+   LANDING PAGE (traditional scroll) — replaces the wake
+   carousel. Black canvas, sticky header, hero, real-UI
+   feature previews, closing CTA. Prefixed .lkn-* so it
+   never collides with the in-app .lykn-* walkthrough rules.
+   ========================================================= */
+.lkn-land {
+  position: relative;
+  background: #000;
+  color: #ffffff;
+  width: 100%;
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Demo video lives only inside the hero, with a dark overlay so the logo,
+   tagline, and CTA stay legible. The video + overlay are absolutely
+   positioned within the hero (which is position: relative) and the hero
+   content is lifted above them. Every other section sits on the black
+   .lkn-land canvas. */
+.lkn-bg-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.lkn-bg-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.7) 100%);
+}
+
+/* Scroll reveal: fade in only (no slide/movement). */
+.lkn-reveal {
+  opacity: 0;
+  transition: opacity 850ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.lkn-reveal.is-in {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lkn-reveal {
+    opacity: 1;
+    transition: none;
+  }
+}
+
+/* ── Header ─────────────────────────────────────────────── */
+.lkn-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.lkn-header-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  height: 64px;
+  padding: 0 clamp(1rem, 4vw, 2rem);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lkn-brand {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.lkn-brand-logo {
+  height: 40px;
+  width: auto;
+  display: block;
+}
+
+.lkn-nav {
+  display: flex;
+  align-items: center;
+  gap: clamp(1rem, 2.5vw, 1.85rem);
+}
+
+.lkn-nav-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.6);
+  text-decoration: none;
+  transition: color 160ms ease;
+}
+
+.lkn-nav-link:hover {
+  color: #ffffff;
+}
+
+.lkn-nav-signin {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0.4rem 0.95rem;
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #ffffff;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.lkn-nav-signin:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Docs dropdown — links to the real legal/docs pages. */
+.lkn-docs-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.lkn-docs-dropdown {
+  position: absolute;
+  top: calc(100% + 0.6rem);
+  right: 0;
+  min-width: 12rem;
+  display: flex;
+  flex-direction: column;
+  padding: 0.35rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(16, 16, 18, 0.95);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  z-index: 50;
+  animation: lkn-fade-up 180ms ease both;
+}
+
+.lkn-docs-item {
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.72);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.lkn-docs-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #ffffff;
+}
+
+@media (max-width: 640px) {
+  .lkn-nav-link:not([href]) {
+    display: none;
+  }
+  .lkn-docs-menu {
+    display: none;
+  }
+}
+
+/* ── Hero ───────────────────────────────────────────────── */
+.lkn-hero {
+  position: relative;
+  overflow: hidden;
+  min-height: 82vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 6rem clamp(1rem, 5vw, 2rem) 1.5rem;
+}
+
+.lkn-hero-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 720px;
+}
+
+.lkn-hero-logo {
+  width: clamp(220px, 42vw, 420px);
+  height: auto;
+  animation: lkn-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Tagline beneath the LYKN logo. */
+.lkn-hero-tagline {
+  margin: clamp(-2.5rem, -4vw, -1.25rem) 0 0;
+  padding: 0;
+  font-size: clamp(1.05rem, 2.6vw, 1.6rem);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.92);
+  animation: lkn-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 160ms both;
+}
+
+/* The Get started buttons reuse the app-wide .lykn-primary-btn look
+   (dark blue fill, light blue edge + text). .lkn-cta only layers on the
+   hero entrance animation and spacing. */
+.lkn-cta {
+  margin-top: clamp(1.5rem, 3vh, 2.25rem);
+  animation: lkn-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 320ms both;
+}
+
+.lkn-cta-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+@keyframes lkn-fade-up {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Section intros ─────────────────────────────────────── */
+.lkn-product-intro {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: clamp(4rem, 10vh, 7rem) clamp(1rem, 5vw, 2rem) clamp(1.5rem, 4vh, 2.5rem);
+  text-align: center;
+}
+
+.lkn-section-headline {
+  margin: 0.5rem 0 0;
+  font-size: clamp(1.8rem, 4.5vw, 2.85rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  color: #ffffff;
+}
+
+.lkn-section-sub {
+  margin: 1rem auto 0;
+  max-width: 34rem;
+  font-size: clamp(0.98rem, 1.9vw, 1.12rem);
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* ── Full-app load-in showcase ──────────────────────────── */
+.lkn-showcase {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 clamp(1rem, 4vw, 2rem) clamp(3rem, 8vh, 5rem);
+}
+
+/* Peeking variant: the card pokes up from below the hero so only its top is
+   visible above the fold, signalling there's more to scroll to. The window is
+   intentionally taller than the visible slice and clipped by the viewport. */
+.lkn-showcase--peek {
+  padding-bottom: clamp(4rem, 12vh, 7rem);
+}
+
+.lkn-showcase--peek .lkn-showcase-window {
+  height: clamp(560px, 92vh, 900px);
+}
+
+.lkn-showcase-window {
+  height: clamp(420px, 72vh, 720px);
+}
+
+/* ── App-shell preview (collapsed sidebar rail + live chat) ── */
+.lkn-shell-preview {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  background: hsl(0 0% 12%);
+  color: #ffffff;
+}
+
+.lkn-shell-rail {
+  flex: 0 0 56px;
+  width: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 0 12px;
+  background: hsl(0 0% 16%);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.lkn-shell-rail-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 6px;
+}
+
+.lkn-shell-rail-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.lkn-shell-rail-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.lkn-shell-rail-item {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.lkn-shell-rail-item.is-active {
+  background: rgba(59, 130, 246, 0.16);
+  color: #60a5fa;
+}
+
+.lkn-shell-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.lkn-shell-rail-spacer {
+  flex: 1;
+}
+
+.lkn-shell-rail-account {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 8px;
+  width: 36px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.lkn-shell-avatar {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lkn-shell-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.lkn-showcase-noninteractive {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── The Problem (problem / solution pairs) ─────────────── */
+.lkn-problems {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: clamp(3rem, 8vh, 5.5rem) clamp(1rem, 4vw, 2rem) clamp(2rem, 5vh, 3.5rem);
+}
+
+.lkn-problems-head {
+  text-align: center;
+  margin-bottom: clamp(2rem, 5vh, 3.5rem);
+}
+
+/* Two columns — "The old way" and "The new way" — each a cascade of small
+   chat bubbles that stagger in as you scroll, with a labeled header pill. */
+.lkn-problems-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(1.5rem, 5vw, 4rem);
+  max-width: 880px;
+  margin: 0 auto;
+  align-items: start;
+}
+
+.lkn-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.lkn-col-pill {
+  align-self: center;
+  margin-bottom: 1.5rem;
+  padding: 0.5rem 1.4rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ffffff;
+}
+
+.lkn-col-pill--old {
+  background: #e5484d;
+  box-shadow: 0 8px 26px -12px rgba(229, 72, 77, 0.7);
+}
+
+.lkn-col-pill--new {
+  background: #30a46c;
+  box-shadow: 0 8px 26px -12px rgba(48, 164, 108, 0.7);
+}
+
+.lkn-col-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  width: 100%;
+}
+
+/* Small chat bubble. Old way = dark grey, new way = white. */
+.lkn-chip {
+  width: fit-content;
+  max-width: 90%;
+  padding: 0.5rem 0.85rem;
+  border-radius: 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  opacity: 0;
+  transition: opacity 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.lkn-col.is-in .lkn-chip {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lkn-chip {
+    opacity: 1;
+    transition: none;
+  }
+}
+
+.lkn-col--old .lkn-chip {
+  background: #2a2a2c;
+  color: #ffffff;
+  border-bottom-left-radius: 5px;
+}
+
+.lkn-col--new .lkn-chip {
+  background: #ffffff;
+  color: #111111;
+  border-bottom-right-radius: 5px;
+}
+
+/* Stagger the bubbles horizontally so the column cascades. */
+.lkn-chip:nth-child(odd) {
+  align-self: flex-start;
+}
+
+.lkn-chip:nth-child(even) {
+  align-self: flex-end;
+}
+
+.lkn-chip:nth-child(3n) {
+  margin-left: 8%;
+}
+
+.lkn-chip:nth-child(4n) {
+  margin-right: 6%;
+}
+
+@media (max-width: 720px) {
+  .lkn-problems-columns {
+    grid-template-columns: 1fr;
+    gap: 2.5rem;
+  }
+  .lkn-chip {
+    max-width: 88%;
+  }
+}
+
+/* ── Trio of core surface previews (raw UI segments) ────── */
+.lkn-trio {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vh, 2.5rem) clamp(1rem, 4vw, 2rem) clamp(4rem, 10vh, 6rem);
+}
+
+.lkn-trio-row {
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr 1px 1fr;
+  align-items: stretch;
+  gap: clamp(1rem, 2.5vw, 2rem);
+  height: clamp(380px, 58vh, 580px);
+}
+
+.lkn-trio-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.lkn-trio-label {
+  margin-bottom: 0.9rem;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.lkn-trio-preview {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
+  user-select: none;
+}
+
+/* Read-only screenshot behaviour: force every descendant to ignore pointer
+   input. The embedded windows set pointer-events:auto on themselves, so we
+   override with !important to make sure nothing inside is clickable. */
+.lkn-trio-preview,
+.lkn-trio-preview * {
+  pointer-events: none !important;
+}
+
+/* Force the embedded surfaces onto pure black so only their UI elements show
+   (their own dark-gray "app" backgrounds are overridden here). The vault
+   preview root is already transparent; the synthesis 3D canvas renders with
+   alpha, so the black container shows through behind the neurons. */
+.lkn-trio-preview .lykn-wake-synth-preview,
+.lkn-trio-preview .lykn-wake-synth-preview-loading,
+.lkn-trio-preview .lykn-wake-chat-preview {
+  background: #000;
+}
+
+/* Synthesis card: show only the nodes — strip the + button, title, and stats. */
+.lkn-trio-preview .lykn-wake-synth-preview-add,
+.lkn-trio-preview .lykn-wake-synth-preview-header,
+.lkn-trio-preview .lykn-wake-synth-preview-stats {
+  display: none;
+}
+
+/* Middle card: custom neurons (beliefs / concepts / projects) as a stack of
+   gently floating glass cards in the app's neuron-type colors. */
+.lkn-neuro {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(0.7rem, 1.6vh, 1rem);
+  padding: clamp(1rem, 3vw, 1.75rem);
+}
+
+.lkn-neuro-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 0.85rem 1rem 0.9rem 1.1rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.lkn-neuro-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--neuro-color, #3b82f6);
+}
+
+.lkn-neuro-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.lkn-neuro-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--neuro-color, #3b82f6);
+  box-shadow: 0 0 10px var(--neuro-color, #3b82f6);
+}
+
+.lkn-neuro-type {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.lkn-neuro-text {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.lkn-neuro-meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* Right card: build your model — if-then governance rules as floating glass
+   cards. Same language as the neuron stack, in the app's model-blue. */
+.lkn-model {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(0.7rem, 1.6vh, 1rem);
+  padding: clamp(1rem, 3vw, 1.75rem);
+}
+
+.lkn-model-card {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 0.9rem 1rem 0.95rem 1.1rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.lkn-model-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #3b82f6;
+}
+
+.lkn-model-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.lkn-model-tag {
+  flex: none;
+  min-width: 2.7rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.18rem 0.45rem;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.lkn-model-tag--if {
+  color: rgba(147, 197, 253, 0.95);
+  background: rgba(59, 130, 246, 0.16);
+  border: 1px solid rgba(59, 130, 246, 0.32);
+}
+
+.lkn-model-tag--then {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.lkn-model-text {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 500;
+}
+
+.lkn-trio-divider {
+  align-self: stretch;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(255, 255, 255, 0.12),
+    transparent
+  );
+}
+
+@media (max-width: 860px) {
+  .lkn-trio-row {
+    grid-template-columns: 1fr;
+    height: auto;
+    gap: 2.5rem;
+  }
+  .lkn-trio-divider {
+    display: none;
+  }
+  .lkn-trio-preview {
+    height: clamp(320px, 60vh, 440px);
+  }
+}
+
+/* ── Feature sections ───────────────────────────────────── */
+.lkn-feature {
+  max-width: none;
+  margin: 0 auto;
+  padding: clamp(3.5rem, 9vh, 6rem) clamp(0.75rem, 1.5vw, 1.25rem);
+}
+
+.lkn-feature-grid {
+  display: grid;
+  /* Demo column is wider than the copy so the preview cards read large. */
+  grid-template-columns: 0.85fr 1.15fr;
+  align-items: center;
+  gap: clamp(2rem, 5vw, 4rem);
+}
+
+/* On reversed rows the demo sits in column 1, so widen column 1 instead to
+   keep the preview card the larger of the two on either side. */
+.lkn-feature-grid--reversed {
+  grid-template-columns: 1.15fr 0.85fr;
+}
+
+.lkn-feature-grid--reversed .lkn-feature-copy {
+  order: 2;
+}
+
+.lkn-feature-grid--reversed .lkn-feature-demo {
+  order: 1;
+}
+
+.lkn-feature-kicker {
+  margin: 0 0 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #60a5fa;
+}
+
+.lkn-feature-title {
+  margin: 0;
+  font-size: clamp(1.7rem, 3.4vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  color: #ffffff;
+}
+
+.lkn-feature-body {
+  margin: 1rem 0 0;
+  font-size: clamp(0.98rem, 1.7vw, 1.1rem);
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.lkn-feature-list {
+  list-style: none;
+  margin: 1.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.lkn-feature-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.lkn-feature-dot {
+  flex: 0 0 auto;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-top: 0.5rem;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.7);
+}
+
+.lkn-feature-demo {
+  position: relative;
+  height: clamp(480px, 74vh, 860px);
+  min-width: 0;
+}
+
+/* Static (non-interactive) preview: behaves like a screenshot. The embedded
+   windows set pointer-events:auto on themselves, so we force every descendant
+   back to none with !important — nothing inside is clickable or typeable. */
+.lkn-feature-demo--static {
+  user-select: none;
+}
+
+.lkn-feature-demo--static,
+.lkn-feature-demo--static * {
+  pointer-events: none !important;
+}
+
+.lkn-feature-demo .lykn-wake-subwindow {
+  height: 100%;
+  width: 100%;
+}
+
+@media (max-width: 860px) {
+  .lkn-feature-grid {
+    grid-template-columns: 1fr;
+    gap: 1.75rem;
+  }
+  .lkn-feature-grid--reversed .lkn-feature-copy {
+    order: 1;
+  }
+  .lkn-feature-grid--reversed .lkn-feature-demo {
+    order: 2;
+  }
+}
+
+/* ── Closing CTA ────────────────────────────────────────── */
+.lkn-final {
+  padding: clamp(5rem, 12vh, 8rem) clamp(1rem, 5vw, 2rem);
+  text-align: center;
+}
+
+.lkn-final-inner {
+  max-width: 640px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.lkn-final-icon {
+  width: 48px;
+  height: auto;
+  margin-bottom: 1.5rem;
+  opacity: 0.9;
+}
+
+.lkn-final-headline {
+  margin: 0;
+  font-size: clamp(2rem, 5vw, 3.2rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.08;
+  color: #ffffff;
+}
+
+.lkn-final-sub {
+  margin: 1.1rem 0 0;
+  max-width: 32rem;
+  font-size: clamp(0.98rem, 1.9vw, 1.12rem);
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* ── Footer ─────────────────────────────────────────────── */
+.lkn-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: clamp(2rem, 5vh, 3rem) clamp(1rem, 5vw, 2rem);
+}
+
+.lkn-footer-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.lkn-footer-wordmark {
+  height: 40px;
+  width: auto;
+  opacity: 0.7;
+}
+
+.lkn-footer-links {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.lkn-footer-link {
+  font-size: 0.84rem;
+  color: rgba(255, 255, 255, 0.5);
+  text-decoration: none;
+  transition: color 160ms ease;
+}
+
+.lkn-footer-link:hover {
+  color: #ffffff;
+}
+
+.lkn-footer-copy {
+  margin: 0;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.4);
+}
+
 /* ── Wake intro ──────────────────────────────────────────────────
    Black stage → blue perimeter trace sweeps the edge (2.8s) while
    the large LYKN logo + "Create beyond yourself" fade in at center on

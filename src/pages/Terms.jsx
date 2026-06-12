@@ -1,5 +1,5 @@
 // ============================================================================
-// Terms — public terms of service at /terms
+// Terms, public terms of service at /terms
 // ============================================================================
 // Required by:
 //   • OpenAI ChatGPT Apps catalog submission
@@ -80,8 +80,8 @@ export default function Terms() {
             >
               Cookie Policy
             </Link>
-            , and — where you route personal data of EU/UK data subjects
-            through LYKN as a controller — our{" "}
+            , and, where you route personal data of EU/UK data subjects
+            through LYKN as a controller, our{" "}
             <Link
               to="/dpa"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
@@ -154,7 +154,7 @@ export default function Terms() {
           <p>
             You retain all rights to the content you put into LYKN. You grant
             LYKN a narrow, revocable licence to host, display, transmit, and
-            process that content as needed to operate the service for you —
+            process that content as needed to operate the service for you,
             including passing it to AI tools you have explicitly connected.
             That licence ends when you delete the content or your account.
           </p>
@@ -170,7 +170,7 @@ export default function Terms() {
             Anthropic, Google, and others to power synthesis and chat. AI
             output can be wrong, biased, or fabricated. <strong>You are
             responsible for reviewing and verifying anything an AI tool
-            generates inside or via LYKN before relying on it</strong> —
+            generates inside or via LYKN before relying on it</strong>,
             especially for medical, legal, financial, or safety-critical
             decisions.
           </p>
@@ -235,7 +235,7 @@ export default function Terms() {
         <Section title="Suspension and termination" anchor="termination">
           <p>
             We can suspend or terminate your account if you materially breach
-            these Terms — for example, uploading prohibited content, abusing
+            these Terms, for example, uploading prohibited content, abusing
             quotas, or attacking the service. Where the breach is fixable
             and not malicious, we'll usually warn you first.
           </p>
@@ -285,8 +285,8 @@ export default function Terms() {
 
         <Section title="Indemnity" anchor="indemnity">
           <p>
-            If your use of LYKN — including content you upload or actions
-            you take with connected AI tools — causes a third party to bring
+            If your use of LYKN, including content you upload or actions
+            you take with connected AI tools, causes a third party to bring
             a claim against us, you'll defend us against that claim and pay
             any settlements or judgments. We'll tell you about the claim
             promptly, let you control the defense, and cooperate reasonably.

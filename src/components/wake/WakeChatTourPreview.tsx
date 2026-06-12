@@ -82,14 +82,6 @@ export default function WakeChatTourPreview({ active = true }: WakeChatTourPrevi
     el.scrollTop = el.scrollHeight;
   }, [messages, isLoading, active, hasMessages]);
 
-  useEffect(() => {
-    if (!active) return;
-    const timer = window.setTimeout(() => {
-      inputRef.current?.focus({ preventScroll: true });
-    }, 680);
-    return () => window.clearTimeout(timer);
-  }, [active]);
-
   useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(() => {
@@ -356,7 +348,7 @@ export default function WakeChatTourPreview({ active = true }: WakeChatTourPrevi
               </p>
             )}
 
-            <div className="omnia-neu-chat-shell omnia-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
+            <div className="omnia-neu-chat-shell p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
               <textarea
                 ref={inputRef}
                 data-min-h="52"

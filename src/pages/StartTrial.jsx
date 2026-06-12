@@ -13,7 +13,10 @@ import { isConnectOnboardingDone } from "@/lib/prototypeHandoff";
 import { supabase } from "@/lib/supabase";
 
 const NEW_USER_WINDOW_MS = 10 * 60 * 1000;
-const TRIAL_PRICE_LABEL = "$25/month";
+const TRIAL_PRICE_LABELS = {
+  annual: "$17/month, billed annually",
+  monthly: "$25/month",
+};
 
 function isFreshlyCreatedUser(user) {
   if (!user?.created_at) return false;
@@ -48,7 +51,7 @@ async function fetchStripePublishableKey() {
 // request fires — i.e. when the user explicitly clicks "Start free trial" —
 // so we no longer spawn phantom customers for everyone who merely loads the
 // page.
-async function startTrialCheckout(mode) {
+async function startTrialCheckout(mode, period) {
   const headers = {
     "Content-Type": "application/json",
     ...(await authHeaders()),
@@ -56,7 +59,7 @@ async function startTrialCheckout(mode) {
   const res = await fetch(`${API_BASE_URL}/api/billing/trial-checkout`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ mode }),
+    body: JSON.stringify({ mode, period }),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -104,6 +107,7 @@ export default function StartTrial() {
   const [error, setError] = useState(null);
   const [clientSecret, setClientSecret] = useState(null);
   const [publishableKey, setPublishableKey] = useState(null);
+  const [period, setPeriod] = useState("annual");
   const cancelHandledRef = useRef(false);
 
   const stripePromise = useMemo(
@@ -123,10 +127,10 @@ export default function StartTrial() {
   // Fall back to the hosted Stripe page if embedded checkout can't initialize
   // (e.g. publishable key not configured) so the signup path never hard-breaks.
   const beginHostedCheckout = useCallback(async () => {
-    const payload = await startTrialCheckout("hosted");
+    const payload = await startTrialCheckout("hosted", period);
     if (!payload?.url) throw new Error("Missing checkout session");
     window.location.assign(payload.url);
-  }, []);
+  }, [period]);
 
   const beginCheckout = useCallback(async () => {
     setError(null);
@@ -142,7 +146,7 @@ export default function StartTrial() {
       // Preferred path: on-site embedded checkout.
       try {
         const key = await fetchStripePublishableKey();
-        const payload = await startTrialCheckout("embedded");
+        const payload = await startTrialCheckout("embedded", period);
         if (!payload?.client_secret) throw new Error("missing client secret");
         setPublishableKey(key);
         setClientSecret(payload.client_secret);
@@ -164,7 +168,7 @@ export default function StartTrial() {
       setError(toBillingCheckoutError(err));
       setPhase("error");
     }
-  }, [navigate, user, beginHostedCheckout]);
+  }, [navigate, user, beginHostedCheckout, period]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -280,18 +284,50 @@ export default function StartTrial() {
         <div className="lykn-wake-start-trial-inner">
           <h1 className="lykn-wake-start-trial-title">Start your 7-day free trial</h1>
           <p className="lykn-wake-start-trial-copy">
-            Full access to LYKN Pro. <strong>$0 due today</strong> — we won&apos;t
+            Full access to LYKN Pro. <strong>$0 due today</strong>, we won&apos;t
             charge you until the trial ends, and you can cancel anytime before then.
           </p>
+
+          <div
+            className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-white/12 bg-white/[0.03] p-1"
+            role="group"
+            aria-label="Billing period"
+          >
+            <button
+              type="button"
+              onClick={() => setPeriod("annual")}
+              aria-pressed={period === "annual"}
+              className={`relative rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                period === "annual"
+                  ? "bg-white/12 text-white"
+                  : "text-white/55 hover:text-white/80"
+              }`}
+            >
+              Annual
+              <span className="ml-1.5 text-xs text-emerald-400">Save 32%</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setPeriod("monthly")}
+              aria-pressed={period === "monthly"}
+              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                period === "monthly"
+                  ? "bg-white/12 text-white"
+                  : "text-white/55 hover:text-white/80"
+              }`}
+            >
+              Monthly
+            </button>
+          </div>
 
           <ul className="mt-5 mb-6 space-y-2 text-left text-sm text-white/80">
             <li className="flex items-start gap-2">
               <span aria-hidden className="mt-[2px] text-emerald-400">✓</span>
-              <span>7 days free, then {TRIAL_PRICE_LABEL}</span>
+              <span>7 days free, then {TRIAL_PRICE_LABELS[period]}</span>
             </li>
             <li className="flex items-start gap-2">
               <span aria-hidden className="mt-[2px] text-emerald-400">✓</span>
-              <span>Cancel anytime before it ends — you won&apos;t be charged</span>
+              <span>Cancel anytime before it ends, you won&apos;t be charged</span>
             </li>
             <li className="flex items-start gap-2">
               <span aria-hidden className="mt-[2px] text-emerald-400">✓</span>
@@ -310,7 +346,7 @@ export default function StartTrial() {
 
           <p className="mt-4 text-xs text-white/45">
             You&apos;ll add a card to start. Payments are processed securely by
-            Stripe — LYKN never sees your card details.
+            Stripe, LYKN never sees your card details.
           </p>
 
           <button

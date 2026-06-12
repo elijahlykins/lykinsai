@@ -1,953 +1,655 @@
-import { Fragment, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, ArrowUp, ChevronDown, Mic, Plus } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api-config";
-import AppSidebar from "@/components/AppSidebar";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { ArrowRight } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
-import {
-  PROTOTYPE_CHAT_LS_KEY,
-  PROTOTYPE_NEURONS_LS_KEY,
-} from "@/lib/prototypeHandoff";
-import {
-  stripModelTruncationNote,
-  stripModelTruncationNoteFromStream,
-} from "@/lib/ai/learnedTag";
-import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
-import WakeProblemsFixesSlide from "@/components/wake/WakeProblemsFixesSlide";
-import WakeCreateAccountSlide from "@/components/wake/WakeCreateAccountSlide";
-import WakeProductSlide from "@/components/wake/WakeProductSlide";
-import WakeSynthesisSubwindow from "@/components/wake/WakeSynthesisSubwindow";
-import WakeVaultSubwindow from "@/components/wake/WakeVaultSubwindow";
+import lyknIcon from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-web.png";
+import demoVideo from "@/assets/0611 (2).mov";
+import WakePreviewFit from "@/components/wake/WakePreviewFit";
+import WakeAppShellPreview from "@/components/wake/WakeAppShellPreview";
+import WakeSynthesisTourPreview from "@/components/wake/WakeSynthesisTourPreview";
 import WakeChatSubwindow from "@/components/wake/WakeChatSubwindow";
+import WakeVaultSubwindow from "@/components/wake/WakeVaultSubwindow";
 import WakeVoiceSubwindow from "@/components/wake/WakeVoiceSubwindow";
 import WakeAgentsSubwindow from "@/components/wake/WakeAgentsSubwindow";
-import WakeIntroTagline from "@/components/wake/WakeIntroTagline";
+import type { ComponentType } from "react";
 
-// Prototype "wake" landing experience.
+// Traditional, scroll-driven marketing landing page.
 //
-// Sequence:
-//   1. Black screen + blue perimeter trace sweeps the edge while the
-//      logo + "Create beyond yourself" fade in at center together.
-//   2. Left/right arrows slide between welcome, problems, synthesis, vault,
-//      chat, voice, model builder, and create account.
-//   3. Synthesis, vault, chat, voice, and model-builder slides show a product
-//      preview plus a scroll-down landing-page explainer beneath it.
-//   4. Create-account slide is the last carousel step (Google or email signup).
-//      a. Chat bar drops to the bottom (first send only)
-//      b. AI "thinking" bubble appears, then a real conversational reply
-//         streams in from /api/ai/stream-guest. The first turn (which
-//         mints the user's first neuron) is served by Gemini Flash for a
-//         meatier reply; every later turn drops to Gemini Flash-Lite to
-//         keep the preview cheap. See GUEST_MODEL_CHAIN_* in server.js.
-//      c. The AI itself decides whether the message contained a learnable
-//         fact about the user. If yes, it acknowledges it in its reply
-//         ("I just learned something about you.") and ends with a hidden
-//         <learned>phrase</learned> tag — we strip the tag from display
-//         and use the phrase to create a neuron in the synthesis layer
-//      d. If a neuron was created, a glowing "Neuron created" pill +
-//         "Click to see it" button appears below the AI message
-//      e. Clicking the button slides the synthesis sidebar in from the right
+// The previous "wake" experience was an arrow-driven carousel that landed
+// poorly with reviewers. This replaces it with a conventional landing page:
+//   1. Sticky header — icon + wordmark on the left, Product / Pricing / Docs
+//      (plus Sign in) on the right.
+//   2. Hero — black canvas, the LYKN logo, a bold one-line promise, and a
+//      single blue "Get started" button.
+//   3. A large, non-interactive "load-in" preview of the real app.
+//   4. One feature section per surface (Synthesis, Vault, Chat, Voice,
+//      Agents). Each pairs a live preview built from the ACTUAL product UI
+//      with an explainer describing what it is and the problem it solves.
+//   5. A closing call to action and a minimal footer.
 //
-// Casual messages ("hey", "what can you do?", jokes, small talk) get a
-// natural reply with NO neuron — only genuine personal info triggers one.
+// Every preview reuses the same components the real product renders, so what
+// a visitor sees on the landing page is exactly what they get after signup.
 
-const GREETING =
-  "I'm LYKN, your personal intelligence layer built by you. Let me show you around your digital brain.";
+const PROBLEM_WHY =
+  "AI was built for everyone, so it remembers no one. LYKN is the intelligence layer that stays personal, portable, and yours across every model you connect.";
 
-// After the greeting types out we don't dump every prompt at once.
-// Instead a Get Started button quietly fades in beneath the greeting,
-// and the first real question only appears once the user accepts.
-// This keeps the empty-state from feeling like an interrogation form.
-const FIRST_QUESTION = "Describe yourself in 1-3 sentences.";
+// The problems LYKN solves, paired with how it fixes each one.
+const PROBLEM_SOLUTIONS = [
+  {
+    problem: {
+      title: "Every chat starts from zero",
+      body: "New session, blank slate. The model doesn't remember who you are, what you prefer, or what you already decided.",
+    },
+    solution: {
+      title: "Active memory",
+      body: "Every chat has context. Who you are, what you prefer, and what you've decided carry forward.",
+    },
+  },
+  {
+    problem: {
+      title: "General by default",
+      body: "You get the same answers everyone else gets. Generic, one-size-fits-all responses because it treats you like every other user.",
+    },
+    solution: {
+      title: "Personal, not generic",
+      body: "AI built by you, with answers shaped to you. Build out an intelligence layer so the AI knows who you are. No response is a generic default.",
+    },
+  },
+  {
+    problem: {
+      title: "A yes man, not a real partner",
+      body: "Overly friendly, always agreeing. It sounds helpful, but rarely tells you what you need to hear.",
+    },
+    solution: {
+      title: "Real AI built by you",
+      body: "It's your AI. You decide the tone of its answers. Blunt, warm, skeptical. However you want it to talk.",
+    },
+  },
+  {
+    problem: {
+      title: "Multiple subscriptions",
+      body: "ChatGPT Plus, Claude Pro, Gemini Advanced. Pay again for every AI, with nothing portable between them.",
+    },
+    solution: {
+      title: "One payment, best models",
+      body: "One subscription. Access the best models without stacking a separate bill for every LLM.",
+    },
+  },
+  {
+    problem: {
+      title: "Makes you weaker, not sharper",
+      body: "Outsource enough thinking and your edge dulls. Most AI answers for you instead of making you smarter.",
+    },
+    solution: {
+      title: "Intelligence that compounds",
+      body: "Built to strengthen how you think. AI built to help you think through hard problems, not to think for you.",
+    },
+  },
+  {
+    problem: {
+      title: "Context trapped in silos",
+      body: "What ChatGPT learns stays in ChatGPT, and what Claude learns stays in Claude. Your subscriptions don't connect.",
+    },
+    solution: {
+      title: "Portable across every AI",
+      body: "Connect once. ChatGPT, Claude, Gemini, Grok, and the rest read the same governed context through MCP.",
+    },
+  },
+  {
+    problem: {
+      title: "Type to a chatbot, get nothing done",
+      body: "You type into a text box and copy answers back out. There's no assistant that actually hears you or acts on your behalf.",
+    },
+    solution: {
+      title: "Chat and voice agents that know you",
+      body: "Chat or talk to agents that already know your context and act on it. Your own Jarvis that listens, remembers who you are, and gets things done.",
+    },
+  },
+] as const;
 
-const FACT_KIND_ORDER = ["identity", "focus", "goal", "style"] as const;
-type FactKind = (typeof FACT_KIND_ORDER)[number];
+/**
+ * Reveals once when scrolled into view and stays revealed. We also use the
+ * "has been seen" signal to lazily mount heavy previews (the 3D synthesis
+ * scene, the embedded vault, the model builder) only when they approach the
+ * viewport, so the page stays light on first paint.
+ */
+function useReveal<T extends HTMLElement>(rootMargin = "0px 0px -12% 0px") {
+  const ref = useRef<T>(null);
+  const [seen, setSeen] = useState(false);
 
-interface FactNode {
-  id: string;
-  kind: FactKind;
-  text: string;
-  /**
-   * Brief 1-sentence "why was this neuron created" description, supplied
-   * by the model alongside the learned phrase. Surfaced in the Synthesis
-   * Layer detail panel so each neuron explains itself.
-   */
-  reason?: string;
-}
-
-const persistPrototypeNeurons = (nodes: FactNode[]) => {
-  try {
-    if (nodes.length === 0) {
-      window.localStorage.removeItem(PROTOTYPE_NEURONS_LS_KEY);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (
+      typeof window === "undefined" ||
+      typeof window.IntersectionObserver !== "function"
+    ) {
+      setSeen(true);
       return;
     }
-    window.localStorage.setItem(
-      PROTOTYPE_NEURONS_LS_KEY,
-      JSON.stringify(
-        nodes.map((n, i) => ({
-          id: n.id,
-          kind: n.kind,
-          text: n.text,
-          reason: n.reason || "",
-          ordinal: i + 1,
-          createdAt: Date.now(),
-        })),
-      ),
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            setSeen(true);
+            observer.disconnect();
+          }
+        });
+      },
+      { threshold: 0.18, rootMargin },
     );
-  } catch {
-    // localStorage can fail in private mode — non-critical.
-  }
-};
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [rootMargin]);
 
-// Persist the conversation transcript so the Synthesis Layer can render
-// the user's first chat as a "grid" — a tangible artifact alongside the
-// freshly-formed neuron — instead of showing an empty Grids category.
-const persistPrototypeChat = (
-  greeting: string,
-  firstQuestion: string,
-  messages: ChatMsg[],
-) => {
-  try {
-    const turns: { role: "user" | "ai"; content: string }[] = [];
-    turns.push({
-      role: "ai",
-      content: `${greeting}\n\n${firstQuestion}`,
-    });
-    messages.forEach((m) => {
-      turns.push({ role: "user", content: m.content });
-      if (m.aiStreamComplete && m.aiResponse) {
-        turns.push({ role: "ai", content: m.aiResponse });
-      }
-    });
-    if (turns.length <= 1) {
-      window.localStorage.removeItem(PROTOTYPE_CHAT_LS_KEY);
-      return;
-    }
-    window.localStorage.setItem(PROTOTYPE_CHAT_LS_KEY, JSON.stringify(turns));
-  } catch {
-    // localStorage can fail in private mode — non-critical.
-  }
-};
-
-interface ChatMsg {
-  id: string;
-  content: string;
-  aiResponse: string;
-  aiStreamComplete: boolean;
-  factNodeId?: string;
+  return { ref, seen };
 }
 
-const CHAT_TIMEOUT_MS = 30_000;
+// Custom neurons the user authors — beliefs, concepts, and projects that the
+// AI reads before it answers. Shown as a small stack of glass cards in the
+// app's neuron-type colors (white = belief, orange = concept, teal = project).
+const SHOWCASE_NEURONS = [
+  {
+    type: "Belief",
+    color: "#ffffff",
+    text: "I value blunt, honest feedback over reassurance.",
+    meta: "Shapes the tone of every reply",
+  },
+  {
+    type: "Concept",
+    color: "#f97316",
+    text: "First-principles thinking",
+    meta: "Break problems down to fundamentals",
+  },
+  {
+    type: "Project",
+    color: "#14b8a6",
+    text: "Launch LYKN v1",
+    meta: "In progress · 3 open threads",
+  },
+] as const;
 
-type IntroPhase =
-  | "welcome"
-  | "problems"
-  | "platform"
-  | "vault"
-  | "chat"
-  | "voice"
-  | "agents"
-  | "account";
-
-const FALLBACK_REPLY = AI_TEMPORARY_FAILURE_TEXT;
-
-// All onboarding instructions (CASE A/B, <learned> tag mechanic, anti-
-// repetition rule, examples) live SERVER-SIDE in the system prompt and
-// are activated by passing `mode: "landing-onboarding"` to
-// /api/ai/stream-guest. We deliberately do NOT wrap the user's text in
-// instructions on the client — when this content was sent as the user
-// message, the model occasionally echoed it back into the visible reply.
-// See server.js → buildLandingOnboardingSystemPrompt().
-
-interface GuestHistoryMsg {
-  role: "user" | "model";
-  content: string;
-}
-
-// During streaming, hide everything from <learned> onward so the user never
-// sees either the <learned> or trailing <reason> tag flicker into view.
-// Tolerates partial prefixes (`<l`, `<le`, `<lea`...) at the end of the
-// buffer so half-typed tags don't flash before the closing `>` arrives.
-const stripLearnedTag = (text: string): string => {
-  const idx = text.indexOf("<learned>");
-  if (idx !== -1) return text.slice(0, idx).trimEnd();
-  const partial = text.match(/<l(?:e(?:a(?:r(?:n(?:e(?:d)?)?)?)?)?)?$/);
-  if (partial && partial.index !== undefined) {
-    return text.slice(0, partial.index).trimEnd();
-  }
-  return text;
-};
-
-// Defensive cleanup for the FINAL message after the stream completes.
-// When the model does the wrong thing and starts the `<learned>` tag
-// mid-sentence (e.g. "...right now. We <learned>..."), our strip leaves
-// the user staring at a broken reply ending in a dangling word like
-// "We" or "the". Detect that, pop the dangling clause back to the last
-// real sentence boundary, and append an ellipsis so the message at
-// least reads as a deliberate trail-off rather than a bug.
-const FINAL_TERMINALS = /[.!?…]['"”’)]?\s*$/;
-const finalizeVisibleReply = (text: string): string => {
-  const trimmed = text.trim();
-  if (!trimmed) return trimmed;
-  if (FINAL_TERMINALS.test(trimmed)) return trimmed;
-  // Walk back to the last sentence-ending punctuation.
-  const lastTerminal = Math.max(
-    trimmed.lastIndexOf("."),
-    trimmed.lastIndexOf("!"),
-    trimmed.lastIndexOf("?"),
-    trimmed.lastIndexOf("…"),
+function NeuronShowcase() {
+  return (
+    <div className="lkn-neuro">
+      {SHOWCASE_NEURONS.map((n) => (
+        <div
+          key={n.type}
+          className="lkn-neuro-card"
+          style={{ "--neuro-color": n.color } as CSSProperties}
+        >
+          <div className="lkn-neuro-head">
+            <span className="lkn-neuro-dot" aria-hidden />
+            <span className="lkn-neuro-type">{n.type}</span>
+          </div>
+          <p className="lkn-neuro-text">{n.text}</p>
+          <p className="lkn-neuro-meta">{n.meta}</p>
+        </div>
+      ))}
+    </div>
   );
-  if (lastTerminal > 0 && lastTerminal >= trimmed.length - 80) {
-    // The dangling fragment was short — drop it cleanly.
-    return trimmed.slice(0, lastTerminal + 1).trimEnd();
-  }
-  // No safe boundary found — keep the text as-is but make the trail-off
-  // visible with an ellipsis instead of a naked word.
-  return trimmed + "…";
-};
+}
 
-// After the stream completes, parse out the learned phrase if present.
-const extractLearnedPhrase = (text: string): string | null => {
-  const match = text.match(/<learned>\s*([\s\S]+?)\s*<\/learned>/i);
-  if (!match) return null;
-  const phrase = match[1]
-    .trim()
-    .replace(/^["'`]|["'`]$/g, "")
-    .replace(/[.!?]$/, "")
-    .slice(0, 90);
-  if (!phrase || phrase.length > 90) return null;
-  return phrase;
-};
+// Custom models — if-then governance the user defines without retraining.
+// Shown as a small stack of "If → Then" rule cards in the app's model-blue.
+const SHOWCASE_RULES = [
+  {
+    ifText: "User asks about pricing",
+    thenText: "Check the pricing matrix in the vault before answering.",
+  },
+  {
+    ifText: "I'm drafting an email",
+    thenText: "Match my voice: direct, warm, no filler.",
+  },
+  {
+    ifText: "A claim isn't sourced",
+    thenText: "Flag it and ask before stating it as fact.",
+  },
+] as const;
 
-// Extract the model-supplied "why was this neuron created" sentence. The
-// neuron's detail panel surfaces this so each neuron explains itself.
-const extractLearnedReason = (text: string): string | null => {
-  const match = text.match(/<reason>\s*([\s\S]+?)\s*<\/reason>/i);
-  if (!match) return null;
-  const reason = match[1]
-    .trim()
-    .replace(/^["'`]|["'`]$/g, "")
-    .slice(0, 240);
-  if (!reason) return null;
-  return reason;
-};
+function ModelShowcase() {
+  return (
+    <div className="lkn-model">
+      {SHOWCASE_RULES.map((r) => (
+        <div key={r.ifText} className="lkn-model-card">
+          <div className="lkn-model-line">
+            <span className="lkn-model-tag lkn-model-tag--if">If</span>
+            <span className="lkn-model-text">{r.ifText}</span>
+          </div>
+          <div className="lkn-model-line">
+            <span className="lkn-model-tag lkn-model-tag--then">Then</span>
+            <span className="lkn-model-text">{r.thenText}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-async function streamChatResponse(
-  prompt: string,
-  history: GuestHistoryMsg[],
-  alreadyLearned: string[],
-  onChunk: (visibleText: string) => void,
-  signal?: AbortSignal,
-): Promise<string> {
-  const response = await fetch(`${API_BASE_URL}/api/ai/stream-guest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      prompt,
-      history,
-      mode: "landing-onboarding",
-      alreadyLearned,
-    }),
-    signal,
-  });
-  if (!response.ok || !response.body) throw new Error("chat: bad response");
+// Three product surfaces side by side: the Synthesis Layer nodes, your custom
+// beliefs/concepts/projects, and the if-then model you build. No window chrome
+// or borders, separated by thin dividers. Mounts lazily when in view.
+function FeatureTrio() {
+  const { ref, seen } = useReveal<HTMLDivElement>("0px 0px -8% 0px");
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let result = "";
+  return (
+    <section className="lkn-trio" aria-label="Product previews">
+      <div ref={ref} className={`lkn-trio-row lkn-reveal ${seen ? "is-in" : ""}`}>
+        <div className="lkn-trio-cell">
+          <span className="lkn-trio-label">Synthesis Layer</span>
+          <div className="lkn-trio-preview">
+            {seen ? <WakeSynthesisTourPreview active={seen} /> : null}
+          </div>
+        </div>
 
-  const consumeLine = (raw: string) => {
-    const line = raw.trim();
-    if (!line.startsWith("data: ")) return;
-    const payload = line.slice(6);
-    if (payload === "[DONE]") return;
-    try {
-      const parsed = JSON.parse(payload);
-      if (typeof parsed.t === "string") {
-        result += parsed.t;
-        // Hide the hidden <learned>/<reason> tag AND any self-emitted
-        // "_…response truncated. Ask 'continue' for the rest._" style
-        // marker from the live streaming view.
-        onChunk(stripModelTruncationNoteFromStream(stripLearnedTag(result)));
-      }
-      if (parsed.error && !result) throw new Error(AI_TEMPORARY_FAILURE_TEXT);
-    } catch {
-      // Ignore partial JSON chunks.
-    }
-  };
+        <div className="lkn-trio-divider" aria-hidden />
 
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      buffer += decoder.decode(undefined, { stream: false });
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    for (const raw of lines) consumeLine(raw);
-  }
-  // Drain any trailing data left in the buffer when the connection closes
-  // without a final newline (Gemini occasionally does this) so the last
-  // sentence of the reply doesn't silently get dropped.
-  if (buffer.trim()) {
-    for (const raw of buffer.split("\n")) consumeLine(raw);
-    buffer = "";
-  }
+        <div className="lkn-trio-cell">
+          <span className="lkn-trio-label">Beliefs · Concepts · Projects</span>
+          <div className="lkn-trio-preview">
+            {seen ? <NeuronShowcase /> : null}
+          </div>
+        </div>
 
-  return result;
+        <div className="lkn-trio-divider" aria-hidden />
+
+        <div className="lkn-trio-cell">
+          <span className="lkn-trio-label">Build your model</span>
+          <div className="lkn-trio-preview">{seen ? <ModelShowcase /> : null}</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Full-page previews of each surface paired with a plain-English explanation
+// of what you actually do there. Real product windows on the left/right,
+// copy on the other side, alternating layout down the page.
+interface PageFeatureDef {
+  id: string;
+  kicker: string;
+  title: string;
+  body: string;
+  bullets: string[];
+  Preview: ComponentType<{ active: boolean; preload?: boolean }>;
+}
+
+const PAGE_FEATURES: PageFeatureDef[] = [
+  {
+    id: "chat",
+    kicker: "Chat",
+    title: "Talk to your intelligence layer",
+    body:
+      "Every reply starts from you, your beliefs, facts, and files, instead of a default persona the model invents on the fly.",
+    bullets: [
+      "Ask anything and get answers grounded in your synthesis layer",
+      "Switch between any connected model without losing context",
+      "Attach vault files and dictate hands-free",
+      "Durable learnings become new neurons automatically",
+    ],
+    Preview: WakeChatSubwindow,
+  },
+  {
+    id: "vault",
+    kicker: "The Vault",
+    title: "Your AI Drive",
+    body:
+      "Drop in anything and LYKN turns it into structured memory you can reason over forever, not just files in a folder.",
+    bullets: [
+      "Upload PDFs, images, video, audio, links, and quick notes",
+      "LYKN extracts the meaning and links it to your neurons",
+      "Search by keyword or by idea across everything",
+      "Preview files in place without downloading",
+    ],
+    Preview: WakeVaultSubwindow,
+  },
+  {
+    id: "voice",
+    kicker: "Voice & Cloud Agents",
+    title: "Talk to LYKN like a chief of staff",
+    body:
+      "Speak naturally, get answers out loud, and hand long jobs to cloud agents that keep working after you close the app.",
+    bullets: [
+      "Real-time, interruptible voice conversation",
+      "Search the web, set reminders, and hear your daily briefing",
+      "Hand off long jobs to agents that run in the background",
+      "Results land back in chat when they finish",
+    ],
+    Preview: WakeVoiceSubwindow,
+  },
+  {
+    id: "agents",
+    kicker: "Model Builder",
+    title: "Build an army of AI agents",
+    body:
+      "Give each agent a role, a model, a voice, and the tools it can touch, then let your main agent delegate like a manager.",
+    bullets: [
+      "Design specialists with custom instructions in minutes",
+      "Pick the LLM and voice for each agent",
+      "Promote a main agent that delegates to subagents",
+      "Every agent inherits your synthesis layer",
+    ],
+    Preview: WakeAgentsSubwindow,
+  },
+];
+
+function PageFeature({ feature, index }: { feature: PageFeatureDef; index: number }) {
+  const { ref, seen } = useReveal<HTMLElement>("0px 0px -10% 0px");
+  const reversed = index % 2 === 1;
+  const { Preview } = feature;
+  // Only the voice surface stays interactive; every other feature preview is
+  // a static, look-but-don't-touch window (the interactive demo lives in the
+  // hero showcase up top).
+  const interactive = feature.id === "voice";
+
+  return (
+    <section ref={ref} className="lkn-feature" aria-label={feature.title}>
+      <div
+        className={`lkn-feature-grid ${reversed ? "lkn-feature-grid--reversed" : ""} lkn-reveal ${
+          seen ? "is-in" : ""
+        }`}
+      >
+        <div className="lkn-feature-copy">
+          <h3 className="lkn-feature-title">{feature.title}</h3>
+          <p className="lkn-feature-body">{feature.body}</p>
+          <ul className="lkn-feature-list">
+            {feature.bullets.map((b) => (
+              <li key={b}>
+                <span className="lkn-feature-dot" aria-hidden />
+                {b}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div
+          className={`lkn-feature-demo ${interactive ? "" : "lkn-feature-demo--static"}`}
+          {...(interactive ? {} : { "aria-hidden": true })}
+        >
+          {seen ? <Preview active={seen} /> : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PageFeatures() {
+  return (
+    <>
+      {PAGE_FEATURES.map((feature, i) => (
+        <PageFeature key={feature.id} feature={feature} index={i} />
+      ))}
+    </>
+  );
+}
+
+function ProblemColumn({ variant }: { variant: "old" | "new" }) {
+  const isOld = variant === "old";
+  const items = PROBLEM_SOLUTIONS.map((pair) =>
+    isOld ? pair.problem.title : pair.solution.title,
+  );
+  const { ref, seen } = useReveal<HTMLDivElement>();
+  return (
+    <div ref={ref} className={`lkn-col lkn-col--${variant} ${seen ? "is-in" : ""}`}>
+      <div className={`lkn-col-pill lkn-col-pill--${variant}`}>
+        {isOld ? "The old way" : "The new way"}
+      </div>
+      <div className="lkn-col-stream">
+        {items.map((text) => (
+          <div key={text} className="lkn-chip">
+            {text}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProblemSolutions() {
+  const { ref, seen } = useReveal<HTMLDivElement>();
+  return (
+    <section className="lkn-problems" id="problem" aria-label="The problem LYKN solves">
+      <div ref={ref} className={`lkn-problems-head lkn-reveal ${seen ? "is-in" : ""}`}>
+        <h2 className="lkn-section-headline">Modern AI wasn&apos;t built for you.</h2>
+        <p className="lkn-section-sub">{PROBLEM_WHY}</p>
+      </div>
+      <div className="lkn-problems-columns">
+        <ProblemColumn variant="old" />
+        <ProblemColumn variant="new" />
+      </div>
+    </section>
+  );
+}
+
+// The "entire load-in" showcase: a large browser window rendering the real
+// app surface, intentionally non-interactive (pointer-events disabled) so it
+// reads as a screenshot of the product booting up rather than something to
+// click. Mounted lazily once it nears the viewport.
+function AppLoadInShowcase() {
+  // This card peeks above the fold directly under the hero, so only a thin
+  // slice is visible on first paint. A scroll-reveal threshold would never
+  // trip on that sliver, so we mount immediately and just fade it up on load.
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  return (
+    <div id="product" className="lkn-showcase lkn-showcase--peek">
+      <div className={`lkn-showcase-window lkn-reveal ${shown ? "is-in" : ""}`}>
+        <div className="lykn-wake-subwindow">
+          <div className="lykn-wake-subwindow-chrome">
+            <div className="lykn-wake-subwindow-dots" aria-hidden>
+              <span />
+              <span />
+              <span />
+            </div>
+            <span className="lykn-wake-subwindow-title">LYKN</span>
+          </div>
+          <div className="lykn-wake-subwindow-body">
+            <div className="lkn-showcase-noninteractive" aria-hidden>
+              <WakePreviewFit designWidth={1180}>
+                <WakeAppShellPreview active={false} />
+              </WakePreviewFit>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const DOCS_LINKS = [
+  { label: "Privacy Policy", href: "/privacy", external: false },
+  { label: "Terms of Service", href: "/terms", external: false },
+  { label: "Cookie Policy", href: "/cookies", external: false },
+];
+
+function DocsMenu() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="lkn-docs-menu">
+      <button
+        type="button"
+        className="lkn-nav-link"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        Docs
+      </button>
+      {open ? (
+        <div className="lkn-docs-dropdown" role="menu">
+          {DOCS_LINKS.map((link) => (
+            <a
+              key={link.href}
+              href={link.href}
+              target={link.external ? "_blank" : undefined}
+              rel={link.external ? "noreferrer" : undefined}
+              className="lkn-docs-item"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+            >
+              {link.label}
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 const LandingPrototype = () => {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [introPhase, setIntroPhase] = useState<IntroPhase>(() =>
-    searchParams.get("resume") === "account" ? "account" : "welcome",
-  );
-  const [problemsFadingOut, setProblemsFadingOut] = useState(false);
-  const [questionStarted, setQuestionStarted] = useState(false);
-  // Pre-mount synthesis / vault / chat previews during the welcome slide so
-  // the first forward pass does not mount heavy children on slide change
-  // (which made the fixed nav arrows flicker in and out).
-  const [warmSlidePreviews, setWarmSlidePreviews] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
-  const [factNodes, setFactNodes] = useState<FactNode[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Returning from a canceled Stripe checkout drops the visitor on
+  // `/?resume=account`. We no longer have an inline account slide, so just
+  // clean the URL — the visitor sees the normal landing page and can sign in
+  // again from the header.
   useEffect(() => {
     if (searchParams.get("resume") !== "account") return;
     window.history.replaceState({}, "", "/");
   }, [searchParams]);
 
-  // Signed-in users have no business on the "build your intelligence
-  // layer" onboarding chat — bounce them straight into the app. Catches both
-  // the post-login `from = "/"` case and any signed-in user who lands
-  // on `/` (or `/landing-prototype`) by typing the URL or following an
-  // old marketing link.
+  // A signed-in visitor has no use for the marketing page. The route's
+  // GuestOnly wrapper already handles this, but guard here too so a stale
+  // session never flashes the landing page before bouncing.
   useEffect(() => {
-    if (!authLoading && user) {
-      if (searchParams.get("resume") === "account") return;
+    if (!authLoading && user && searchParams.get("resume") !== "account") {
       navigate("/start-trial", { replace: true });
     }
   }, [authLoading, user, navigate, searchParams]);
 
-  useEffect(() => {
-    const id = window.requestAnimationFrame(() => setWarmSlidePreviews(true));
-    return () => window.cancelAnimationFrame(id);
+  const goToSignup = useCallback(() => navigate("/login"), [navigate]);
+
+  const scrollToId = useCallback((id: string) => {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
-  const hasSentFirst = messages.length > 0;
-
-  // Focus the chat input only after the user clicks "Get started".
-  useEffect(() => {
-    if (!questionStarted) return;
-    const raf = window.requestAnimationFrame(() => inputRef.current?.focus());
-    return () => window.cancelAnimationFrame(raf);
-  }, [questionStarted]);
-
-  useEffect(() => {
-    if (!hasSentFirst) return;
-    const id = window.setTimeout(() => inputRef.current?.focus(), 60);
-    return () => window.clearTimeout(id);
-  }, [hasSentFirst]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [messages]);
-
-  // Mirror created neurons into localStorage for the landing sidebar preview.
-  useEffect(() => {
-    persistPrototypeNeurons(factNodes);
-  }, [factNodes]);
-
-  // Mirror the conversation for the landing sidebar preview.
-  useEffect(() => {
-    persistPrototypeChat(GREETING, FIRST_QUESTION, messages);
-  }, [messages]);
-
-  const sendDisabled = draft.trim().length === 0;
-
-  const handleWelcomeAdvance = () => {
-    setIntroPhase("problems");
-  };
-
-  const handleIntroBack = () => {
-    if (introPhase === "account") {
-      setIntroPhase("agents");
-      return;
-    }
-    if (introPhase === "agents") {
-      setIntroPhase("voice");
-      return;
-    }
-    if (introPhase === "voice") {
-      setIntroPhase("chat");
-      return;
-    }
-    if (introPhase === "chat") {
-      setIntroPhase("vault");
-      return;
-    }
-    if (introPhase === "vault") {
-      setIntroPhase("platform");
-      return;
-    }
-    if (introPhase === "platform") {
-      setIntroPhase("problems");
-      return;
-    }
-    setIntroPhase("welcome");
-  };
-
-  const handleProblemsAdvance = () => {
-    setIntroPhase("platform");
-  };
-
-  const handlePlatformAdvance = () => {
-    setIntroPhase("vault");
-  };
-
-  const handleVaultAdvance = () => {
-    setIntroPhase("chat");
-  };
-
-  const handleChatAdvance = () => {
-    setIntroPhase("voice");
-  };
-
-  const handleVoiceAdvance = () => {
-    setIntroPhase("agents");
-  };
-
-  const handleAgentsAdvance = () => {
-    setIntroPhase("account");
-  };
-
-  const handleIntroForward = () => {
-    if (introPhase === "welcome") {
-      handleWelcomeAdvance();
-      return;
-    }
-    if (introPhase === "problems") {
-      handleProblemsAdvance();
-      return;
-    }
-    if (introPhase === "platform") {
-      handlePlatformAdvance();
-      return;
-    }
-    if (introPhase === "vault") {
-      handleVaultAdvance();
-      return;
-    }
-    if (introPhase === "chat") {
-      handleChatAdvance();
-      return;
-    }
-    if (introPhase === "voice") {
-      handleVoiceAdvance();
-      return;
-    }
-    if (introPhase === "agents") {
-      handleAgentsAdvance();
-    }
-  };
-
-  const introSwipeRef = useRef({ x: 0, y: 0 });
-
-  const handleSend = () => {
-    const text = draft.trim();
-    if (!text) return;
-    const idx = messages.length;
-    const msgId = `msg_${Date.now()}_${idx}`;
-
-    // If the user types and sends before clicking "Get started",
-    // treat them as if they did — once a real message is in flight
-    // the intro button is meaningless and the AI block at the top
-    // should settle into its post-intro state (showing the first
-    // question) rather than still offering the button. Also flag
-    // the old intro as fading so the absolutely-positioned block
-    // at the top doesn't pop away abruptly under the message that
-    // just got submitted.
-    if (!questionStarted) {
-      setQuestionStarted(true);
-    }
-
-    // Landing onboarding chat is uncapped on the marketing page.
-
-    // Build conversational history so Gemini sees the full thread, not just
-    // the latest message in isolation. We use the visible (tag-stripped)
-    // version of prior AI replies — the model doesn't need to see its own
-    // <learned> tags echoed back.
-    const history: GuestHistoryMsg[] = [
-      {
-        role: "model",
-        content: `${GREETING}\n\n${FIRST_QUESTION}`,
-      },
-    ];
-    messages.forEach((m) => {
-      history.push({ role: "user", content: m.content });
-      if (m.aiStreamComplete && m.aiResponse) {
-        history.push({ role: "model", content: m.aiResponse });
-      }
-    });
-
-    setMessages((prev) => [
-      ...prev,
-      { id: msgId, content: text, aiResponse: "", aiStreamComplete: false },
-    ]);
-    setDraft("");
-
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(
-      () => controller.abort(),
-      CHAT_TIMEOUT_MS,
-    );
-
-    streamChatResponse(
-      text,
-      history,
-      factNodes.map((n) => n.text),
-      (partial) => {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === msgId ? { ...m, aiResponse: partial } : m,
-          ),
-        );
-      },
-      controller.signal,
-    )
-      .then((finalRaw) => {
-        window.clearTimeout(timeoutId);
-        // Strip both the hidden <learned> tag AND any self-emitted
-        // truncation / "ask continue" marker before the dangling-clause
-        // repair runs (otherwise finalizeVisibleReply would treat the
-        // truncation note's last word as the model's last sentence).
-        const stripped = stripModelTruncationNote(stripLearnedTag(finalRaw));
-        const visible = finalizeVisibleReply(stripped) || FALLBACK_REPLY;
-        const learned = extractLearnedPhrase(finalRaw);
-        const reason = extractLearnedReason(finalRaw);
-
-        // Map the new fact onto its category. We use the message index so
-        // the first thing learned is `identity`, second `focus`, etc. — but
-        // only when the AI actually decided to learn something.
-        //
-        // Dedupe defensively: if the model emits a phrase we've already
-        // turned into a neuron (case-insensitive, punctuation/whitespace
-        // normalized), skip the create. Otherwise the synthesis layer
-        // ends up with multiple "Photography content creator" nodes
-        // sitting on top of each other after a chatty conversation.
-        let newNode: FactNode | undefined;
-        if (learned) {
-          const normalize = (s: string) =>
-            s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-          const candidate = normalize(learned);
-          const isDuplicate =
-            candidate.length > 0 &&
-            factNodes.some((n) => normalize(n.text) === candidate);
-          if (!isDuplicate) {
-            const usedKinds = new Set(factNodes.map((n) => n.kind));
-            const nextKind: FactKind =
-              FACT_KIND_ORDER.find((k) => !usedKinds.has(k)) ??
-              FACT_KIND_ORDER[FACT_KIND_ORDER.length - 1];
-            newNode = {
-              id: `fact_${Date.now()}_${idx}`,
-              kind: nextKind,
-              text: learned,
-              reason: reason || undefined,
-            };
-            setFactNodes((prev) => [...prev, newNode!]);
-          }
-        }
-        // No client-side fallback neuron: if the user's first
-        // message was off-topic / not actually a self-description,
-        // we'd rather have the AI politely re-ask than mint a
-        // garbage neuron from random text. The server-side
-        // onboarding prompt handles the re-ask in CASE B.
-
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === msgId
-              ? {
-                  ...m,
-                  aiResponse: visible,
-                  aiStreamComplete: true,
-                  factNodeId: newNode?.id,
-                }
-              : m,
-          ),
-        );
-      })
-      .catch(() => {
-        window.clearTimeout(timeoutId);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === msgId
-              ? {
-                  ...m,
-                  aiResponse: m.aiResponse || FALLBACK_REPLY,
-                  aiStreamComplete: true,
-                }
-              : m,
-          ),
-        );
-      });
-  };
-
-  const showIntroSlideNav =
-    !questionStarted && !hasSentFirst && !problemsFadingOut;
-  const introBackDisabled = introPhase === "welcome";
-
-  const chatBarBlock = (
-    <div className="lykn-wake-chat-shell omnia-neu-chat-shell p-2.5 sm:p-3 w-full flex flex-col gap-1.5">
-      <textarea
-        ref={inputRef}
-        data-min-h="52"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            handleSend();
-          }
-        }}
-        placeholder="Tell me about yourself…"
-        rows={1}
-        className="w-full min-h-[3.25rem] max-h-[180px] omnia-neu-chat-field px-3 py-2 text-xs leading-4 text-white placeholder:text-white/45 outline-none resize-none scrollbar-hide"
-      />
-
-      {/* Toolbar row — visual replica of OmniaChatBarToolbar */}
-      <div className="flex items-center gap-1.5 pt-1">
-        <button
-          type="button"
-          className="omnia-neu-chat-toolbar-select-trigger inline-flex items-center justify-start gap-0 h-9 max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-white/80 shadow-none overflow-hidden"
-          title="Model"
-        >
-          <span className="truncate">LYKN</span>
-          <ChevronDown className="w-3.5 h-3.5 opacity-40 shrink-0 ml-1" />
-        </button>
-        <div className="flex-1 min-w-[4px]" aria-hidden />
-        <button
-          type="button"
-          className="h-9 w-9 omnia-neu-chat-icon-plain flex items-center justify-center text-white/85 shrink-0"
-          title="Add attachments"
-        >
-          <Plus className="w-3.5 h-3.5" />
-        </button>
-        <button
-          type="button"
-          className="h-9 w-9 omnia-neu-chat-icon-plain flex items-center justify-center text-white/80 shrink-0"
-          title="Dictate"
-        >
-          <Mic className="w-3.5 h-3.5" />
-        </button>
-        <button
-          type="button"
-          onClick={handleSend}
-          disabled={sendDisabled}
-          className={`h-9 w-9 omnia-neu-chat-send-btn flex items-center justify-center shrink-0 ${
-            sendDisabled
-              ? "opacity-40 cursor-not-allowed"
-              : "text-blue-400"
-          }`}
-          title="Send"
-        >
-          <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.25} />
-        </button>
-      </div>
-    </div>
-  );
-
   return (
-    <div className="dark lykn-wake-stage relative w-full max-w-[100dvw] min-h-screen overflow-hidden flex flex-col">
-      {introPhase === "welcome" && (
-        <div aria-hidden className="lykn-wake-screen-trace" />
-      )}
-
-
-      <div
-        className={`relative z-10 flex-1 min-h-0 w-full flex flex-col transition-all duration-500 ease-out ${
-          sidebarOpen ? "lg:pl-[12rem]" : ""
-        } ${
-          introPhase === "welcome" && !questionStarted && !hasSentFirst
-            ? "pointer-events-none"
-            : ""
-        }`}
-      >
-        {!hasSentFirst ? (
-          questionStarted ? (
-            <div className="relative flex-1 w-full flex items-center justify-center px-4 py-16 overflow-y-auto scrollbar-hide">
-              <div className="pointer-events-none absolute inset-x-0 top-0 bottom-1/2 flex items-center justify-center px-4">
-                <h1 className="lykn-wake-prompt-in w-full max-w-2xl text-center text-2xl sm:text-3xl md:text-[34px] font-semibold leading-tight text-white">
-                  {FIRST_QUESTION}
-                </h1>
-              </div>
-              <div className="lykn-wake-chat-fade-in w-full max-w-2xl pointer-events-auto">
-                {chatBarBlock}
-              </div>
-            </div>
-          ) : (
-          <div
-            className="lykn-wake-slides-viewport relative flex-1 w-full min-h-0 pointer-events-auto"
-            onTouchStart={(e) => {
-              if (!showIntroSlideNav || e.touches.length !== 1) return;
-              const t = e.touches[0];
-              introSwipeRef.current = { x: t.clientX, y: t.clientY };
-            }}
-            onTouchEnd={(e) => {
-              if (!showIntroSlideNav || e.changedTouches.length !== 1) return;
-              const t = e.changedTouches[0];
-              const dx = t.clientX - introSwipeRef.current.x;
-              const dy = t.clientY - introSwipeRef.current.y;
-              if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
-              if (dx < 0) {
-                if (introPhase !== "account") handleIntroForward();
-              } else if (!introBackDisabled) {
-                handleIntroBack();
-              }
-            }}
+    <div className="dark lkn-land">
+      <header className="lkn-header">
+        <div className="lkn-header-inner">
+          <button
+            type="button"
+            className="lkn-brand"
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            aria-label="LYKN home"
           >
-            <div
-              className={`lykn-wake-slides-track ${
-                introPhase === "account"
-                  ? "lykn-wake-slides-at-account"
-                  : introPhase === "agents"
-                  ? "lykn-wake-slides-at-agents"
-                  : introPhase === "voice"
-                  ? "lykn-wake-slides-at-voice"
-                  : introPhase === "chat"
-                  ? "lykn-wake-slides-at-chat"
-                  : introPhase === "vault"
-                  ? "lykn-wake-slides-at-vault"
-                  : introPhase === "platform"
-                    ? "lykn-wake-slides-at-platform"
-                    : introPhase === "problems"
-                      ? "lykn-wake-slides-at-problems"
-                      : ""
-              }`}
-            >
-              <div className="lykn-wake-slide">
-                <div className="lykn-wake-slide-inner">
-                  <div className="lykn-wake-logo-stack flex flex-col items-center text-center">
-                    <img
-                      src={lyknLogo}
-                      alt="LYKN"
-                      className="lykn-wake-logo-reveal"
-                    />
-                    <WakeIntroTagline className="lykn-wake-tagline-reveal" />
-                  </div>
-                </div>
-              </div>
+            <img src={lyknLogo} alt="LYKN" className="lkn-brand-logo" />
+          </button>
 
-              <WakeProblemsFixesSlide
-                active={introPhase === "problems"}
-                fadingOut={problemsFadingOut}
-              />
+          <nav className="lkn-nav" aria-label="Primary">
+            <button type="button" className="lkn-nav-link" onClick={() => scrollToId("product")}>
+              Product
+            </button>
+            <button type="button" className="lkn-nav-link" onClick={() => scrollToId("pricing")}>
+              Pricing
+            </button>
+            <DocsMenu />
+            <button type="button" className="lkn-nav-signin" onClick={goToSignup}>
+              Sign in
+            </button>
+          </nav>
+        </div>
+      </header>
 
-              <WakeProductSlide
-                active={introPhase === "platform"}
-                surface="synthesis"
-                fadingOut={problemsFadingOut}
-              >
-                <WakeSynthesisSubwindow
-                  active={introPhase === "platform"}
-                  preload={warmSlidePreviews}
-                />
-              </WakeProductSlide>
-
-              <WakeProductSlide
-                active={introPhase === "vault"}
-                surface="vault"
-                fadingOut={problemsFadingOut}
-              >
-                <WakeVaultSubwindow
-                  active={introPhase === "vault"}
-                  preload={warmSlidePreviews}
-                />
-              </WakeProductSlide>
-
-              <WakeProductSlide
-                active={introPhase === "chat"}
-                surface="chat"
-                fadingOut={problemsFadingOut}
-              >
-                <WakeChatSubwindow
-                  active={introPhase === "chat"}
-                  preload={warmSlidePreviews}
-                />
-              </WakeProductSlide>
-
-              <WakeProductSlide
-                active={introPhase === "voice"}
-                surface="voice"
-                fadingOut={problemsFadingOut}
-              >
-                <WakeVoiceSubwindow
-                  active={introPhase === "voice"}
-                  preload={warmSlidePreviews}
-                />
-              </WakeProductSlide>
-
-              <WakeProductSlide
-                active={introPhase === "agents"}
-                surface="agents"
-                fadingOut={problemsFadingOut}
-              >
-                <WakeAgentsSubwindow
-                  active={introPhase === "agents"}
-                  preload={warmSlidePreviews}
-                />
-              </WakeProductSlide>
-
-              <WakeCreateAccountSlide />
-            </div>
-          </div>
-          )
-        ) : (
-          // Active conversation — messages stack from the top, chat bar pinned bottom
-          <>
-            <div
-              ref={scrollRef}
-              className="flex-1 w-full flex justify-center overflow-y-auto scrollbar-hide"
-            >
-              <div className="w-full max-w-2xl mx-auto px-4 pt-6 pb-4 space-y-4">
-                {messages.map((msg) => (
-                  <Fragment key={msg.id}>
-                    <div className="flex justify-end">
-                      <div className="max-w-[80%] rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-white/90 border border-white/10 bg-white/5 shadow-[0_4px_14px_rgba(0,0,0,0.25)]">
-                        {msg.content}
-                      </div>
-                    </div>
-
-                    {!msg.aiResponse ? (
-                      <div className="flex justify-start">
-                        <div className="omnia-ai-thinking-glow rounded-2xl rounded-bl-md max-w-fit px-4 py-3 text-sm leading-relaxed border bg-white/8 border-white/10 text-white/60 backdrop-blur-sm flex items-center gap-3">
-                          <div className="brick-spinner" />
-                          Thinking…
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex justify-start">
-                        <div className="max-w-[80%] w-full px-4 py-3 text-sm leading-relaxed text-white/85">
-                          <p className="whitespace-pre-wrap">
-                            {msg.aiResponse}
-                            {!msg.aiStreamComplete && (
-                              <span aria-hidden className="lykn-wake-cursor">|</span>
-                            )}
-                          </p>
-                          {msg.aiStreamComplete && msg.factNodeId && (
-                            <div className="mt-3 lykn-wake-question-fade">
-                              <button
-                                type="button"
-                                onClick={() => setSidebarOpen(true)}
-                                className="lykn-wake-neuron-pill inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold tracking-wide text-blue-100 border border-blue-400/45 bg-blue-500/[0.08] hover:bg-blue-500/[0.16] hover:text-white transition-colors cursor-pointer"
-                                title="Open your sidebar"
-                              >
-                                <span
-                                  aria-hidden
-                                  className="w-1.5 h-1.5 rounded-full bg-blue-300 shadow-[0_0_8px_rgba(96,165,250,1)]"
-                                />
-                                Neuron created
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </Fragment>
-                ))}
-              </div>
-            </div>
-            {/* Chat bar fades out the moment the first neuron is created.
-                The user is now meant to graduate from typing into LYKN to
-                exploring what they've built — clicking the glowing
-                "Neuron created" pill (or the Synthesis Layer button in
-                the sidebar that mounts on the same trigger) is the only
-                forward action. We keep the bar mounted in the DOM through
-                the transition so the fade reads as a deliberate handoff
-                rather than a snap-cut. `pointer-events-none` once it's
-                gone so a stray click can't reactivate it. */}
-            <div
-              className={`w-full flex justify-center px-4 pb-6 pt-2 transition-opacity duration-700 ease-out ${
-                factNodes.length > 0
-                  ? "opacity-0 pointer-events-none"
-                  : "opacity-100"
-              }`}
-              aria-hidden={factNodes.length > 0}
-            >
-              <div className="w-full max-w-2xl">{chatBarBlock}</div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Once the AI has learned at least one thing about the user, the
-          real left sidebar mounts in. The Synthesis Layer item glows so
-          the user knows where to find the neuron they just created.
-          NOTE: AppSidebar must be rendered as a direct child of the
-          stage (no opacity-animated wrapper). A wrapper with an opacity
-          animation creates a stacking context, which trapped the
-          sidebar's fixed-position z-70/z-80 elements below the
-          screen-trace overlay (z-50, fixed) — making the synthesis
-          button visually visible but unclickable depending on the
-          mount/animation timing. */}
-      {factNodes.length > 0 && (
-        <AppSidebar
-          controlledOpen={sidebarOpen}
-          onOpenChange={setSidebarOpen}
-          highlightSynthesis
-          restrictToSynthesis
-        />
-      )}
-
-      {showIntroSlideNav && (
-        <>
-          <div className="lykn-wake-slide-nav lykn-wake-slide-nav-back">
-            <button
-              type="button"
-              onClick={handleIntroBack}
-              disabled={introBackDisabled}
-              tabIndex={introBackDisabled ? -1 : 0}
-              aria-hidden={introBackDisabled}
-              className={`lykn-wake-advance-btn ${
-                introBackDisabled ? "lykn-wake-slide-nav-btn-hidden" : ""
-              }`}
-              aria-label="Previous slide"
-              title="Back"
-            >
-              <ArrowLeft className="lykn-wake-advance-btn-icon pointer-events-none" strokeWidth={2.25} />
+      <main>
+        {/* Hero */}
+        <section className="lkn-hero" id="top">
+          <video
+            className="lkn-bg-video"
+            src={demoVideo}
+            autoPlay
+            muted
+            loop
+            playsInline
+            aria-hidden
+          />
+          <div className="lkn-bg-overlay" aria-hidden />
+          <div className="lkn-hero-inner">
+            <img src={lyknLogo} alt="LYKN" className="lkn-hero-logo" />
+            <p className="lkn-hero-tagline">Stop starting over with AI</p>
+            <button type="button" className="lykn-primary-btn lkn-cta" onClick={goToSignup}>
+              Get started
+              <ArrowRight className="lkn-cta-icon" strokeWidth={2.25} />
             </button>
           </div>
+        </section>
 
-          <div
-            className={`lykn-wake-slide-nav lykn-wake-slide-nav-forward ${
-              introPhase === "account" ? "lykn-wake-slide-nav-btn-hidden" : ""
-            }`}
-          >
-            <button
-              type="button"
-              onClick={handleIntroForward}
-              disabled={introPhase === "account"}
-              tabIndex={introPhase === "account" ? -1 : 0}
-              aria-hidden={introPhase === "account"}
-              className="lykn-wake-advance-btn"
-              aria-label="Next slide"
-              title="Next"
-            >
-              <ArrowRight className="lykn-wake-advance-btn-icon pointer-events-none" strokeWidth={2.25} />
+        {/* Full app load-in — peeks above the fold as a scroll cue */}
+        <AppLoadInShowcase />
+
+        {/* The problem LYKN solves — problem/solution pairs */}
+        <ProblemSolutions />
+
+        {/* Full app intro */}
+        <section className="lkn-product-intro">
+          <h2 className="lkn-section-headline">Your entire intelligence layer, in one place.</h2>
+          <p className="lkn-section-sub">
+            Synthesis, vault, chat, voice, and agents load into a single
+            workspace. This is the real app, exactly as it boots up.
+          </p>
+        </section>
+
+        {/* Three core surfaces side by side — raw UI segments */}
+        <FeatureTrio />
+
+        {/* Full-page previews with explanations of what you can do */}
+        <PageFeatures />
+
+        {/* Closing CTA / pricing */}
+        <section className="lkn-final" id="pricing">
+          <div className="lkn-final-inner lkn-reveal is-in">
+            <img src={lyknIcon} alt="" className="lkn-final-icon" />
+            <h2 className="lkn-final-headline">Build an AI that actually knows you.</h2>
+            <p className="lkn-final-sub">
+              Start your 7-day free trial. Full access to LYKN Pro for $17/month
+              after. Cancel anytime before it ends.
+            </p>
+            <button type="button" className="lykn-primary-btn lkn-cta" onClick={goToSignup}>
+              Get started
+              <ArrowRight className="lkn-cta-icon" strokeWidth={2.25} />
             </button>
           </div>
-        </>
-      )}
+        </section>
+      </main>
+
+      <footer className="lkn-footer">
+        <div className="lkn-footer-inner">
+          <img src={lyknLogo} alt="LYKN" className="lkn-footer-wordmark" />
+          <div className="lkn-footer-links">
+            <a href="/privacy" className="lkn-footer-link">Privacy</a>
+            <a href="/terms" className="lkn-footer-link">Terms</a>
+            <a href="/cookies" className="lkn-footer-link">Cookies</a>
+          </div>
+          <p className="lkn-footer-copy">
+            © {new Date().getFullYear()} LYKN
+          </p>
+        </div>
+      </footer>
     </div>
   );
 };

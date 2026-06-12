@@ -1,5 +1,5 @@
 // ============================================================================
-// Privacy — public privacy policy at /privacy
+// Privacy, public privacy policy at /privacy
 // ============================================================================
 // Required by:
 //   • Apple / Google app review (eventual mobile)
@@ -10,7 +10,7 @@
 // Tone: plain English, structurally faithful to the GDPR/CCPA categories
 // reviewers look for, but not so legalese it stops being read. The
 // ChatGPT Connector section near the bottom is what OpenAI specifically
-// reviews for app submissions — it must explicitly address what the
+// reviews for app submissions, it must explicitly address what the
 // connecting client sees vs. what stays inside LYKN.
 //
 // Last updated: keep the date at the top in sync with material changes
@@ -50,7 +50,7 @@ export default function Privacy() {
             Privacy Policy
           </h1>
           <p className="mt-4 text-[14px] leading-relaxed text-black/65 dark:text-white/70">
-            LYKN is a personal synthesis layer — your beliefs, rules, facts,
+            LYKN is a personal synthesis layer, your beliefs, rules, facts,
             project state, and vault, surfaced to you and to the AI tools you
             connect. This policy explains exactly what we collect, why,
             who else sees it, and how to make it disappear.
@@ -144,7 +144,7 @@ export default function Privacy() {
             tool names (so the Connections page can show you "Claude Desktop
             called <code>getBeliefs</code> 14 times today"), and OAuth client
             metadata for connected AI tools (client name, scopes, last-used
-            timestamp). No third-party analytics — we use server logs only.
+            timestamp). No third-party analytics, we use server logs only.
           </p>
 
           <h3 className="text-[15px] font-semibold tracking-tight mt-5 mb-1">
@@ -159,7 +159,7 @@ export default function Privacy() {
               against your account).
             </Bullet>
             <Bullet>
-              No payment-card numbers — Stripe holds those if billing applies
+              No payment-card numbers, Stripe holds those if billing applies
               to your plan.
             </Bullet>
           </ul>
@@ -172,7 +172,7 @@ export default function Privacy() {
           <ul className="space-y-2 mt-3">
             <Bullet>Authenticate you and serve the LYKN app.</Bullet>
             <Bullet>
-              Power the synthesis pipeline — extracting beliefs, facts, and
+              Power the synthesis pipeline, extracting beliefs, facts, and
               rules from your vault and conversations.
             </Bullet>
             <Bullet>
@@ -246,7 +246,7 @@ export default function Privacy() {
           </p>
           <p className="mt-3">
             <strong>Revocation</strong> is one click from the Connected Clients
-            list on /connections. Revocation is immediate — the next API call
+            list on /connections. Revocation is immediate, the next API call
             from the revoked tool returns 401 unauthorized within seconds.
             Refresh-token rotation with replay detection (RFC 6749 §10.4) means
             a leaked refresh token revokes the entire token family the moment
@@ -303,7 +303,7 @@ export default function Privacy() {
           <p className="mt-3">
             Server-side request logs are kept for up to 30 days for
             abuse-detection purposes and then rotated out. They contain only
-            your user ID, endpoint, and status code — never request bodies.
+            your user ID, endpoint, and status code, never request bodies.
           </p>
           <p className="mt-3">
             Backups are encrypted at rest with separate keys and retained for
@@ -349,7 +349,7 @@ export default function Privacy() {
           <p className="mt-3">
             EU/UK residents may also lodge a complaint with your local
             data-protection authority. California residents have additional
-            rights under CCPA/CPRA — same email channel.
+            rights under CCPA/CPRA, same email channel.
           </p>
         </Section>
 

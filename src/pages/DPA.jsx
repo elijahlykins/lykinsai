@@ -1,16 +1,16 @@
 // ============================================================================
-// DPA — Data Processing Agreement at /dpa
+// DPA, Data Processing Agreement at /dpa
 // ============================================================================
 // Required by:
-//   • GDPR Article 28 — written contract any time an EU/UK customer (the
+//   • GDPR Article 28, written contract any time an EU/UK customer (the
 //     "controller") routes personal data through a processor (LYKN).
-//   • UK GDPR + DPA 2018 — same requirement.
+//   • UK GDPR + DPA 2018, same requirement.
 //   • Many enterprise procurement teams gate purchase on a signed DPA even
 //     where one isn't strictly legally required.
 //
 // This is a STANDALONE addendum to the Terms of Service. It auto-applies
 // to any customer who routes personal data of EU/UK data subjects through
-// LYKN. No separate signature flow is required for self-serve plans — the
+// LYKN. No separate signature flow is required for self-serve plans, the
 // click-through on /terms incorporates this DPA by reference (see Terms
 // §Connected AI tools / your content).
 //
@@ -113,7 +113,7 @@ export default function DPA() {
             </Bullet>
             <Bullet>
               <strong>"Data Subject"</strong> means the individual to whom the
-              Personal Data relates — typically Customer's end users.
+              Personal Data relates, typically Customer's end users.
             </Bullet>
             <Bullet>
               <strong>"Applicable Data Protection Law"</strong> means the
@@ -201,7 +201,7 @@ export default function DPA() {
             <Bullet>
               Assist Customer (taking into account the nature of the
               Processing) in responding to Data Subject rights requests
-              under Articles 12–22 GDPR — primarily through the in-product
+              under Articles 12–22 GDPR, primarily through the in-product
               export and deletion features.
             </Bullet>
             <Bullet>
@@ -316,11 +316,11 @@ export default function DPA() {
           </ul>
           <p className="mt-3">
             The optional clauses and dispute-resolution choices in the SCCs
-            are completed as follows: Clause 7 (docking) — not applicable;
-            Clause 9(a) — Option 2 (general written authorisation, 30 days);
-            Clause 11(a) — optional independent dispute resolution NOT
-            selected; Clause 17 (governing law) — Republic of Ireland;
-            Clause 18 (forum) — courts of Ireland. Annex I (parties and
+            are completed as follows: Clause 7 (docking), not applicable;
+            Clause 9(a), Option 2 (general written authorisation, 30 days);
+            Clause 11(a), optional independent dispute resolution NOT
+            selected; Clause 17 (governing law), Republic of Ireland;
+            Clause 18 (forum), courts of Ireland. Annex I (parties and
             description of transfer) and Annex II (technical and
             organisational measures) are populated by §3 and §8 of this DPA.
             Annex III is the sub-processor list in §6.
@@ -353,7 +353,7 @@ export default function DPA() {
             <Bullet>
               <strong>Authentication:</strong> OAuth 2.1 with PKCE for all
               external integrations. Refresh-token rotation with replay
-              detection (RFC 6749 §10.4) — a leaked refresh token revokes
+              detection (RFC 6749 §10.4), a leaked refresh token revokes
               the entire token family on reuse.
             </Bullet>
             <Bullet>
@@ -387,7 +387,7 @@ export default function DPA() {
           <p>
             LYKN will make available to Customer, on reasonable written
             request, the information necessary to demonstrate compliance
-            with this DPA — typically through (a) the security
+            with this DPA, typically through (a) the security
             documentation summarised in §8, (b) the most recent independent
             security assessments of LYKN's sub-processors, and (c) written
             responses to Customer's questionnaire.
@@ -415,7 +415,7 @@ export default function DPA() {
             LYKN will notify Customer without undue delay, and in any event
             within <strong>72 hours</strong> of becoming aware of a Personal
             Data breach affecting Customer's Personal Data, with the
-            information then available — typically including (i) the nature
+            information then available, typically including (i) the nature
             of the breach, categories and approximate number of Data
             Subjects and records affected, (ii) the likely consequences,
             (iii) the measures taken or proposed, and (iv) a contact point
@@ -455,7 +455,7 @@ export default function DPA() {
             >
               Privacy Policy §Retention
             </Link>{" "}
-            — completed within 30 days, with backups purged within the
+           , completed within 30 days, with backups purged within the
             7-day backup cycle. LYKN may retain Personal Data only to the
             extent and for as long as required by EU / Member State law, and
             will protect any such residual data with the measures in §8.

@@ -245,9 +245,9 @@ export default function AppSidebar({
       <div className="fixed left-2.5 top-3 z-[80] flex items-center gap-0">
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => setOpen(true)}
           className="group/toggle relative rounded-full w-9 h-9 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors flex items-center justify-center"
-          title={open ? "Hide panel" : "Show panel"}
+          title="Show panel"
         >
           {open ? (
             <img src={lyknIconUrl} alt="LYKN" className="w-7 h-7 object-contain" draggable={false} />

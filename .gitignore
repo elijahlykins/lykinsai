@@ -45,3 +45,6 @@ serper_news_sample.json
 # npm audit scratch
 npm-audit-report.json
 gitleaks-report.json
+
+# Large demo/screen-recording assets — exceed GitHub's 100MB file limit, keep local only
+*.mov
