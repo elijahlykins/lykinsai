@@ -3275,8 +3275,35 @@ mark {
 }
 
 @media (max-width: 767px) {
+  /* Lower the device cluster so it sits below the hero copy instead of being
+     pulled up over it, and keep the laptop within the viewport width. */
   .lkn-showcase--peek {
-    margin-top: clamp(-44vh, -38vh, -27vh);
+    margin-top: clamp(-22vh, -15vh, -8vh);
+    padding-bottom: clamp(2.5rem, 8vh, 4rem);
+  }
+
+  .lkn-laptop {
+    max-width: 92vw;
+  }
+
+  /* The phone overlaps the laptop's bottom-left; scale it up relative to the
+     now-smaller laptop and drop it lower so it reads clearly and isn't clipped
+     off the left edge. */
+  .lkn-phone {
+    left: 1%;
+    bottom: -4%;
+    width: clamp(84px, 23%, 132px);
+  }
+}
+
+@media (max-width: 480px) {
+  .lkn-showcase--peek {
+    margin-top: clamp(-16vh, -10vh, -4vh);
+  }
+
+  .lkn-phone {
+    width: clamp(80px, 26%, 120px);
+    bottom: -6%;
   }
 }
 

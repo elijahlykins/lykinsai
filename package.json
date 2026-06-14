@@ -20,6 +20,7 @@
     "remotion:render:logo": "remotion render remotion/index.ts LyknLogoReveal out/LyknLogoReveal.mp4",
     "remotion:render:spin": "remotion render remotion/index.ts LyknIconSpin out/LyknIconSpin.mp4",
     "remotion:render:pulse": "remotion render remotion/index.ts LyknIconPulse out/LyknIconPulse.mp4",
+    "remotion:render:outline": "remotion render remotion/index.ts LyknIconOutline out/LyknIconOutline.mp4",
     "ios:sync": "cap sync ios",
     "ios:open": "cap open ios"
   },

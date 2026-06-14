@@ -3,6 +3,7 @@ import { HelloLykn } from "./HelloLykn";
 import { LyknLogoReveal } from "./LyknLogoReveal";
 import { LyknIconSpin, lyknIconSpinDefaults } from "./LyknIconSpin";
 import { LyknIconPulse, lyknIconPulseDefaults } from "./LyknIconPulse";
+import { LyknIconOutline, lyknIconOutlineDefaults } from "./LyknIconOutline";
 
 // Every composition you want to render or preview is registered here.
 // Add more <Composition> entries as we build new things.
@@ -37,6 +38,15 @@ export const RemotionRoot: React.FC = () => {
         width={1080}
         height={1080}
         defaultProps={lyknIconPulseDefaults}
+      />
+      <Composition
+        id="LyknIconOutline"
+        component={LyknIconOutline}
+        durationInFrames={110}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={lyknIconOutlineDefaults}
       />
       <Composition
         id="HelloLykn"
