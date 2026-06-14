@@ -53,3 +53,6 @@ gitleaks-report.json
 # Web-optimized exports (e.g. lykn-demo-hero.mp4) ARE committed.
 # Never commit raw recordings; only the web-optimized lykn-demo-hero.mp4 is.
 *.mov
+
+# macOS Spotlight saved-search bundles
+*.cannedSearch/
