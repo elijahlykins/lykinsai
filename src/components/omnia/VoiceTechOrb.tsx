@@ -7,6 +7,13 @@ interface VoiceTechOrbProps {
   micLevel?: number;
   /** Rendered size in CSS pixels (square). */
   size?: number;
+  /**
+   * Dot palette. "auto" (default) follows the app theme (white on dark, blue
+   * on light). Force "dark"/"light" when the orb sits on a surface whose
+   * background is fixed regardless of theme — e.g. the always-dark voice
+   * preview card on the landing page, which must always use the white dots.
+   */
+  appearance?: "auto" | "dark" | "light";
 }
 
 /** How many little "neuron" balls make up the sphere. */
@@ -25,15 +32,17 @@ interface Neuron {
 }
 
 /**
- * A cloud of tiny white "neurons" arranged on a sphere. Each ball bobs gently
+ * A cloud of tiny "neurons" arranged on a sphere. Each ball bobs gently
  * in and out, the whole sphere rotates slowly and glows. While the user talks
  * the sphere pulses and the balls drift around a little more energetically.
- * Always WHITE — only motion/brightness react to the voice state.
+ * Dots are WHITE in dark mode and BLUE in light mode (read live each frame);
+ * only motion/brightness react to the voice state.
  */
-export default function VoiceTechOrb({ state, micLevel = 0, size = 320 }: VoiceTechOrbProps) {
+export default function VoiceTechOrb({ state, micLevel = 0, size = 320, appearance = "auto" }: VoiceTechOrbProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stateRef = useRef<RealtimeVoiceState>(state);
   const micRef = useRef(0);
+  const appearanceRef = useRef(appearance);
   // Smoothed values so transitions never pop.
   const intensityRef = useRef(0.4);
   const spinRef = useRef(0.18);
@@ -42,6 +51,7 @@ export default function VoiceTechOrb({ state, micLevel = 0, size = 320 }: VoiceT
 
   useEffect(() => { stateRef.current = state; }, [state]);
   useEffect(() => { micRef.current = micLevel; }, [micLevel]);
+  useEffect(() => { appearanceRef.current = appearance; }, [appearance]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -122,8 +132,22 @@ export default function VoiceTechOrb({ state, micLevel = 0, size = 320 }: VoiceT
       const cosT = Math.cos(tilt);
       const sinT = Math.sin(tilt);
 
+      // Theme-aware, read live each frame so the orb flips instantly when the
+      // user toggles light/dark. Dark mode: WHITE dots with additive "lighter"
+      // blending (glow). Light mode: BLUE dots with "multiply" so overlapping
+      // dots accumulate into a dense, saturated cloud (additive is invisible on
+      // white, and plain source-over lets the faint back dots wash out — which
+      // made the orb read sparse in light mode).
+      const appr = appearanceRef.current;
+      const isDark = appr === "dark"
+        ? true
+        : appr === "light"
+          ? false
+          : document.documentElement.classList.contains("dark");
+      const dotRgb = isDark ? "255,255,255" : "37,99,235";
+
       ctx.clearRect(0, 0, size, size);
-      ctx.globalCompositeOperation = "lighter";
+      ctx.globalCompositeOperation = isDark ? "lighter" : "multiply";
 
       for (let k = 0; k < neurons.length; k++) {
         const n = neurons[k];
@@ -152,28 +176,35 @@ export default function VoiceTechOrb({ state, micLevel = 0, size = 320 }: VoiceT
         const px = cx + x1 * Reff;
         const py = cy - y2 * Reff;
 
-        // Depth shade: front balls bright, back balls faint.
+        // Depth shade: front balls bright, back balls faint. Light mode keeps a
+        // higher floor so back-of-sphere blue dots don't wash out to white.
         const depth = (z2 + 1) / 2; // 0 back .. 1 front
-        let a = (0.18 + depth * 0.82) * intensity;
+        const aFloor = isDark ? 0.18 : 0.34;
+        const aSpan = isDark ? 0.82 : 0.66;
+        let a = (aFloor + depth * aSpan) * intensity;
         if (a > 1) a = 1;
 
         const r = n.size * (0.5 + depth * 0.55);
 
-        ctx.fillStyle = `rgba(255,255,255,${a})`;
+        ctx.fillStyle = `rgba(${dotRgb},${a})`;
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Faint overall white glow behind the cloud.
-      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Reff * 1.15);
-      grad.addColorStop(0, `rgba(255,255,255,${0.06 * intensity})`);
-      grad.addColorStop(0.55, `rgba(255,255,255,${0.03 * intensity})`);
-      grad.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(cx, cy, Reff * 1.15, 0, Math.PI * 2);
-      ctx.fill();
+      // Faint overall glow behind the cloud. Only in dark mode — the additive
+      // white glow is what makes the orb read as luminous; on a light backdrop
+      // a glow just muddies the crisp black dots, so we skip it.
+      if (isDark) {
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Reff * 1.15);
+        grad.addColorStop(0, `rgba(255,255,255,${0.06 * intensity})`);
+        grad.addColorStop(0.55, `rgba(255,255,255,${0.03 * intensity})`);
+        grad.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(cx, cy, Reff * 1.15, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
       ctx.globalCompositeOperation = "source-over";
       raf = requestAnimationFrame(render);

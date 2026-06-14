@@ -5,12 +5,12 @@ export const BILLING_PERIODS = {
 
 // Plan IDs are used as primary keys throughout the app (DB `user_billing.plan`,
 // Stripe price map in server.js, PLAN_LIMITS below). Don't rename without a
-// migration. The user-facing paid tiers are Student ($15/mo, full Pro
-// entitlements for verified students) and Pro ($25/mo or $17/mo billed
-// annually). `free` is no longer offered at checkout but remains the implicit
-// default for accounts without a billing row. Legacy ids `studio_pro` /
-// `studio_max` may still appear on older billing rows — they resolve to the
-// same limits as `studio`.
+// migration. `free` is the default tier every account starts on — full app
+// access with capped limits, no card required (see PLAN_LIMITS.free). The paid
+// tiers are Student ($15/mo, full Pro entitlements for verified students) and
+// Pro ($25/mo or $17/mo billed annually), which lift the caps and unlock every
+// frontier model. Legacy ids `studio_pro` / `studio_max` may still appear on
+// older billing rows — they resolve to the same limits as `studio`.
 export const PLANS = [
   {
     id: "student",
@@ -96,10 +96,10 @@ export const FAQ_ITEMS = [
       "Pro unlocks unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection. It is $25/month on monthly billing or $17/month when billed annually ($204/year).",
   },
   {
-    id: "trial",
-    question: "Is there a free trial?",
+    id: "free-tier",
+    question: "Is there a free version?",
     answer:
-      "Yes. New accounts start with a 7-day Pro trial. Add a card at signup to unlock the app; you will not be charged until the trial ends, and you can cancel before then from billing settings.",
+      "Yes. Every account starts on Free — no credit card required. You get the full app with capped limits: up to 100 synthesis neurons, 50 Vault cards, LYKN's core models in chat and voice, and your app connections. Upgrade to Pro anytime for unlimited memory and every frontier model.",
   },
   {
     id: "annual-savings",

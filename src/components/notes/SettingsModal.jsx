@@ -36,7 +36,7 @@ import { useUserPlan } from '@/lib/useUserPlan';
 import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
 import { planLabel } from '@/lib/pricing-config';
 import { API_BASE_URL } from '@/lib/api-config';
-import { applyTheme } from '@/lib/theme';
+import { applyTheme, normalizeTheme, readSavedTheme } from '@/lib/theme';
 
 // ---------------------------------------------------------------------
 // MenuRow — single icon + title row in the main settings list.
@@ -136,7 +136,7 @@ export default function SettingsModal({ isOpen, onClose }) {
 
   // ---- Local visual settings (theme/model) — still localStorage ----
   const [settings, setSettings] = useState({
-    theme: 'dark',
+    theme: readSavedTheme(),
     layoutDensity: 'comfortable',
     aiPersonality: 'balanced',
     aiDetailLevel: 'medium',
@@ -172,20 +172,16 @@ export default function SettingsModal({ isOpen, onClose }) {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          const needsThemeMigration = parsed.theme && parsed.theme !== 'dark';
-          parsed.theme = 'dark';
+          parsed.theme = normalizeTheme(parsed.theme);
           parsed.aiModel = canonicalizeModelId(parsed.aiModel)
             || defaultModelForTier(modelTier);
           setSettings(parsed);
-          applyTheme('dark');
-          if (needsThemeMigration) {
-            localStorage.setItem('lykinsai_settings', JSON.stringify(parsed));
-          }
+          applyTheme(parsed.theme);
         } catch (e) {
           if (import.meta.env.DEV) console.error('Error parsing settings:', e);
         }
       } else {
-        applyTheme('dark');
+        applyTheme(readSavedTheme());
       }
     };
 
@@ -200,7 +196,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   }, [isOpen, user, modelTier]);
 
   const persistSettings = (next) => {
-    const normalized = { ...next, theme: 'dark' };
+    const normalized = { ...next, theme: normalizeTheme(next.theme) };
     localStorage.setItem('lykinsai_settings', JSON.stringify(normalized));
     const densities = { compact: '0.75', comfortable: '1', spacious: '1.25' };
     document.documentElement.style.setProperty('--layout-density', densities[normalized.layoutDensity]);
@@ -575,6 +571,30 @@ export default function SettingsModal({ isOpen, onClose }) {
       <div className="space-y-4">
         <div className="space-y-2">
           <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5">
+            <Monitor className="w-3 h-3" />
+            Theme
+          </Label>
+          <Select
+            value={settings.theme || 'dark'}
+            onValueChange={(value) => {
+              const updated = { ...settings, theme: value };
+              setSettings(updated);
+              persistSettings(updated);
+            }}
+          >
+            <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-1 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+              <SelectItem value="light">Light</SelectItem>
+              <SelectItem value="dark">Dark</SelectItem>
+              <SelectItem value="system">System</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700/60">
+          <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5 pt-2">
             <Sparkles className="w-3 h-3" />
             Default AI model
           </Label>

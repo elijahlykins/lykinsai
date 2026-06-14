@@ -53,6 +53,7 @@ import OmniaVaultOverlay from "@/components/omnia/OmniaVaultOverlay";
 import FileDropModeDialog from "@/components/omnia/FileDropModeDialog";
 import OmniaSideRail from "@/components/omnia/OmniaSideRail";
 import OmniaFocusedChat from "@/components/omnia/OmniaFocusedChat";
+import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import OmniaVoiceMode from "@/components/omnia/OmniaVoiceMode";
 import SubAgentTasksStrip from "@/components/omnia/SubAgentTasksStrip";
 import LoadInBriefingPanel from "@/components/omnia/LoadInBriefingPanel";
@@ -2565,6 +2566,123 @@ export default function OmniaGridPage() {
     } catch { /* ignore */ }
   }, [user?.id, routeBoardId, boardId, requireSignIn]);
 
+  // Save an AI-built artifact (deck / document / chart / file) from the side
+  // panel into the vault. Documents & decks save the human-friendly PDF when
+  // one exists; charts/images save the image; inline HTML (no URL) saves the
+  // markup. The bytes are copied into the user's own storage so the vault note
+  // keeps a permanent, re-signable copy instead of a 7-day proxy link.
+  const saveArtifactToVault = useCallback(async (artifact: ChatArtifact): Promise<boolean> => {
+    if (!artifact) return false;
+    if (!user?.id) { requireSignIn("save to the vault"); return false; }
+    if (!(await checkVaultLimit())) return false;
+
+    const title = (artifact.title || "Artifact").trim() || "Artifact";
+    const downloads = artifact.downloads || [];
+    const pdf = downloads.find((d) => String(d.format).toLowerCase() === "pdf");
+
+    let blob: Blob | null = null;
+    let filename = "";
+    let mimeType = "";
+
+    try {
+      if (artifact.kind !== "image" && pdf) {
+        const res = await fetch(pdf.url);
+        if (res.ok) blob = await res.blob();
+        filename = pdf.filename || `${title}.pdf`;
+        mimeType = "application/pdf";
+      }
+      if (!blob && artifact.srcDoc && !artifact.previewUrl && !artifact.downloadUrl) {
+        // Inline / leaked HTML with no persisted URL — save the markup.
+        blob = new Blob([artifact.srcDoc], { type: "text/html" });
+        filename = `${title}.html`;
+        mimeType = "text/html";
+      }
+      if (!blob) {
+        const url = artifact.previewUrl || artifact.downloadUrl || downloads[0]?.url || "";
+        if (url) {
+          const res = await fetch(url);
+          if (res.ok) blob = await res.blob();
+          const fmt = String(artifact.format || downloads[0]?.format || "").toLowerCase();
+          const ext = fmt || (blob?.type?.split("/")[1]) || "bin";
+          filename = artifact.filename || downloads[0]?.filename || `${title}.${ext}`;
+          mimeType = blob?.type || "";
+        } else if (artifact.srcDoc) {
+          blob = new Blob([artifact.srcDoc], { type: "text/html" });
+          filename = `${title}.html`;
+          mimeType = "text/html";
+        }
+      }
+    } catch { /* network/CORS — handled below */ }
+
+    if (!blob || !blob.size) {
+      toast({ title: "Couldn't save", description: "Try the Download button instead." });
+      return false;
+    }
+    if (!mimeType) mimeType = blob.type || "application/octet-stream";
+
+    // Classify the attachment so the vault renders the right card.
+    const m = mimeType.toLowerCase().split(";")[0].trim();
+    const ext = (filename.split(".").pop() || "").toLowerCase();
+    const fileType =
+      m.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)
+        ? "image"
+        : m === "application/pdf" || ext === "pdf"
+          ? "pdf"
+          : m.includes("spreadsheetml") || m === "text/csv" || ["xlsx", "csv", "xls"].includes(ext)
+            ? "spreadsheet"
+            : "file";
+
+    try {
+      const fileId = crypto.randomUUID();
+      const safeExt = ext || "bin";
+      const storagePath = `${user.id}/${fileId}/artifact.${safeExt}`;
+      const { error: uploadError } = await supabase.storage
+        .from("user-files")
+        .upload(storagePath, blob, { cacheControl: "3600", upsert: false, contentType: mimeType });
+      if (uploadError) {
+        notifyVaultCapIfApplicable(uploadError);
+        toast({ title: "Couldn't save", description: "Please try again." });
+        return false;
+      }
+      const { data: signedData } = await supabase.storage
+        .from("user-files")
+        .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+      const fileUrl = signedData?.signedUrl || "";
+
+      const attachment = [{
+        type: fileType,
+        url: fileUrl,
+        name: filename,
+        fileId,
+        storagePath,
+        storageBucket: "user-files",
+        size: blob.size,
+        mimeType,
+      }];
+      const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+      const { data: ins, error } = await supabase
+        .from("notes")
+        .insert({ user_id: user.id, title, content: noteContent, source: "ai_artifact", tags: [fileType, "generated"] })
+        .select("id")
+        .single();
+      if (error) {
+        if (notifyVaultCapIfApplicable(error)) return false;
+        toast({ title: "Couldn't save", description: "Please try again." });
+        return false;
+      }
+      if (ins?.id) {
+        afterVaultNoteSaved(user.id, ins.id, { title, content: noteContent }, {
+          excludeBoardId: routeBoardId || boardId || undefined,
+        });
+      }
+      toast({ title: "Saved to vault", description: title });
+      return true;
+    } catch {
+      toast({ title: "Couldn't save", description: "Please try again." });
+      return false;
+    }
+  }, [user?.id, routeBoardId, boardId, requireSignIn, checkVaultLimit]);
+
 
   const handleCenterAskSend = useCallback(async () => {
     if ((!chatInputRef.current.trim() && focusedChatAttachments.length === 0) || isChatLoading) return;
@@ -2593,20 +2711,34 @@ export default function OmniaGridPage() {
       const k = e.key;
       if (k === "ArrowUp" || k === "PageUp" || k === "Home") markScrolledUp();
     };
+    // Detach/re-attach must be ASYMMETRIC. Detaching is handled eagerly by
+    // the intent events above (wheel up, touch, keys) and by scrollbar drags
+    // below. Re-attaching only happens when the user deliberately scrolls
+    // DOWN and reaches the bottom. The previous handler recomputed
+    // "scrolled up = distance > 120" on EVERY scroll event, so the first few
+    // pixels of an upward scroll (still within 120px of the bottom) flipped
+    // the flag back to "attached" and the 30ms streaming tick snapped the
+    // thread to the bottom — making it impossible to scroll while the AI
+    // was typing.
+    let lastScrollTop = el.scrollTop;
     const onScroll = () => {
-      // Source of truth for "is the user reading back through the thread".
-      // Derive it from the ACTUAL distance to the bottom with a generous
-      // threshold instead of trusting the one-shot programmatic flag: a
-      // programmatic stick-to-bottom lands within the threshold (so we stay
-      // attached), while any real scroll away from the bottom — wheel, touch,
-      // keyboard, OR scrollbar drag — releases auto-scroll so the user can
-      // freely scroll up and down while the AI is still responding. The old
-      // flag-gated early-return mis-attributed user scrolls that happened to
-      // land on a streaming tick as "programmatic" and snapped them back to
-      // the bottom, making the thread impossible to scroll mid-response.
-      chatProgrammaticScrollRef.current = false;
-      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      chatUserScrolledUpRef.current = distance > 120;
+      const top = el.scrollTop;
+      const goingDown = top > lastScrollTop;
+      lastScrollTop = top;
+      const distance = el.scrollHeight - top - el.clientHeight;
+      if (chatProgrammaticScrollRef.current) {
+        chatProgrammaticScrollRef.current = false;
+        // Our stick-to-bottom always lands at the very bottom; if this scroll
+        // ended anywhere else it was actually the user (e.g. scrollbar drag
+        // racing a streaming tick), so fall through and treat it as theirs.
+        if (distance <= 4) return;
+      }
+      if (chatUserScrolledUpRef.current) {
+        if (goingDown && distance <= 60) chatUserScrolledUpRef.current = false;
+      } else if (distance > 120) {
+        // Catches scrollbar drags, which emit no wheel/touch/key events.
+        chatUserScrolledUpRef.current = true;
+      }
     };
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -3916,6 +4048,7 @@ export default function OmniaGridPage() {
           onLoadInGreetingRefresh={refreshLoadInGreetingInPlace}
           activeArtifact={activeArtifact}
           onActiveArtifactChange={setActiveArtifact}
+          onSaveArtifact={saveArtifactToVault}
           chatKey={boardId || routeBoardId || ""}
           composerAbove={
             chatMode && isMainAgentChat ? (

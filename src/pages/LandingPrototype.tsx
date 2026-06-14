@@ -1,17 +1,28 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { ArrowRight } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Check,
+  CloudUpload,
+  FileText,
+  Plus,
+  Sparkles,
+  MessagesSquare,
+  Mic,
+  Bot,
+  Archive,
+  Plug,
+  CalendarDays,
+  ShieldCheck,
+} from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
-import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
-import lyknIcon from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-web.png";
-import demoVideo from "@/assets/lykn-demo-hero.mp4";
+import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
+import lyknLogoWhite from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
 import WakePreviewFit from "@/components/wake/WakePreviewFit";
 import WakeAppShellPreview from "@/components/wake/WakeAppShellPreview";
-import WakeSynthesisTourPreview from "@/components/wake/WakeSynthesisTourPreview";
 import WakeChatSubwindow from "@/components/wake/WakeChatSubwindow";
-import WakeVaultSubwindow from "@/components/wake/WakeVaultSubwindow";
+import WakeSynthesisSubwindow from "@/components/wake/WakeSynthesisSubwindow";
 import WakeVoiceSubwindow from "@/components/wake/WakeVoiceSubwindow";
-import WakeAgentsSubwindow from "@/components/wake/WakeAgentsSubwindow";
+import WakeVoiceTourPreview from "@/components/wake/WakeVoiceTourPreview";
 import type { ComponentType } from "react";
 
 // Traditional, scroll-driven marketing landing page.
@@ -32,7 +43,7 @@ import type { ComponentType } from "react";
 // a visitor sees on the landing page is exactly what they get after signup.
 
 const PROBLEM_WHY =
-  "AI was built for everyone, so it remembers no one. LYKN is the intelligence layer that stays personal, portable, and yours across every model you connect.";
+  "AI was built for everyone, so it remembers no one. LYKN is the intelligence layer that stays personal, portable, and yours across everything you do.";
 
 // The problems LYKN solves, paired with how it fixes each one.
 const PROBLEM_SOLUTIONS = [
@@ -106,6 +117,16 @@ const PROBLEM_SOLUTIONS = [
       body: "Chat or talk to agents that already know your context and act on it. Your own Jarvis that listens, remembers who you are, and gets things done.",
     },
   },
+  {
+    problem: {
+      title: "AI talks, but never does the work",
+      body: "It can outline a plan or list the steps, but you're still the one doing every task by hand once the chat ends.",
+    },
+    solution: {
+      title: "Cloud agents that do the work",
+      body: "Hand off real jobs to cloud agents that keep running after you close the app, then deliver the finished result back to you.",
+    },
+  },
 ] as const;
 
 /**
@@ -146,242 +167,432 @@ function useReveal<T extends HTMLElement>(rootMargin = "0px 0px -12% 0px") {
   return { ref, seen };
 }
 
-// Custom neurons the user authors — beliefs, concepts, and projects that the
-// AI reads before it answers. Shown as a small stack of glass cards in the
-// app's neuron-type colors (white = belief, orange = concept, teal = project).
-const SHOWCASE_NEURONS = [
-  {
-    type: "Belief",
-    color: "#ffffff",
-    text: "I value blunt, honest feedback over reassurance.",
-    meta: "Shapes the tone of every reply",
-  },
-  {
-    type: "Concept",
-    color: "#f97316",
-    text: "First-principles thinking",
-    meta: "Break problems down to fundamentals",
-  },
-  {
-    type: "Project",
-    color: "#14b8a6",
-    text: "Launch LYKN v1",
-    meta: "In progress · 3 open threads",
-  },
-] as const;
+// ── Three animated, white mini-UI mocks for the suite cards ──────────────
+// These are purely presentational, CSS-animated loops (no data, no auth) so
+// they run for signed-out visitors and stay light on the page.
 
-function NeuronShowcase() {
+// Card 1 — Projects: a few "active" project rows whose progress bars fill and
+// whose live dots pulse, conveying work happening inside LYKN.
+const SHOWCASE_PROJECTS = [
+  { name: "Product launch", sub: "18 neurons", pct: 72, grad: "linear-gradient(135deg,#60a5fa,#2563eb)" },
+  { name: "Research vault", sub: "31 neurons", pct: 48, grad: "linear-gradient(135deg,#c084fc,#7c3aed)" },
+  { name: "Marathon training", sub: "9 neurons", pct: 90, grad: "linear-gradient(135deg,#34d399,#059669)" },
+];
+
+function ProjectsShowcase() {
   return (
-    <div className="lkn-neuro">
-      {SHOWCASE_NEURONS.map((n) => (
-        <div
-          key={n.type}
-          className="lkn-neuro-card"
-          style={{ "--neuro-color": n.color } as CSSProperties}
-        >
-          <div className="lkn-neuro-head">
-            <span className="lkn-neuro-dot" aria-hidden />
-            <span className="lkn-neuro-type">{n.type}</span>
+    <div className="lkn-mock lkn-proj">
+      <div className="lkn-mock-head">
+        <span className="lkn-mock-title">Projects</span>
+        <span className="lkn-mock-badge">3 active</span>
+      </div>
+      <div className="lkn-proj-list">
+        {SHOWCASE_PROJECTS.map((p, i) => (
+          <div
+            key={p.name}
+            className="lkn-proj-card"
+            style={{ animationDelay: `${i * 0.18}s` }}
+          >
+            <span className="lkn-proj-icon" style={{ background: p.grad }} />
+            <div className="lkn-proj-meta">
+              <div className="lkn-proj-top">
+                <span className="lkn-proj-name">{p.name}</span>
+                <span className="lkn-proj-active">
+                  <span className="lkn-proj-dot" />
+                  Active
+                </span>
+              </div>
+              <span className="lkn-proj-sub">{p.sub}</span>
+              <div className="lkn-proj-track">
+                <span
+                  className="lkn-proj-fill"
+                  style={{ ["--w" as string]: `${p.pct}%`, animationDelay: `${0.3 + i * 0.18}s` }}
+                />
+              </div>
+            </div>
           </div>
-          <p className="lkn-neuro-text">{n.text}</p>
-          <p className="lkn-neuro-meta">{n.meta}</p>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
 
-// Custom models — if-then governance the user defines without retraining.
-// Shown as a small stack of "If → Then" rule cards in the app's model-blue.
-const SHOWCASE_RULES = [
-  {
-    ifText: "User asks about pricing",
-    thenText: "Check the pricing matrix in the vault before answering.",
-  },
-  {
-    ifText: "I'm drafting an email",
-    thenText: "Match my voice: direct, warm, no filler.",
-  },
-  {
-    ifText: "A claim isn't sourced",
-    thenText: "Flag it and ask before stating it as fact.",
-  },
-] as const;
-
-function ModelShowcase() {
+// Card 2 — Vault: a file repeatedly drops into the upload zone, then lands as
+// a new row in the file list with an upload progress bar.
+function VaultUploadShowcase() {
   return (
-    <div className="lkn-model">
-      {SHOWCASE_RULES.map((r) => (
-        <div key={r.ifText} className="lkn-model-card">
-          <div className="lkn-model-line">
-            <span className="lkn-model-tag lkn-model-tag--if">If</span>
-            <span className="lkn-model-text">{r.ifText}</span>
-          </div>
-          <div className="lkn-model-line">
-            <span className="lkn-model-tag lkn-model-tag--then">Then</span>
-            <span className="lkn-model-text">{r.thenText}</span>
-          </div>
+    <div className="lkn-mock lkn-vault">
+      <div className="lkn-mock-head">
+        <span className="lkn-mock-title">Vault</span>
+        <span className="lkn-mock-badge">Uploading</span>
+      </div>
+      <div className="lkn-vault-drop">
+        <div className="lkn-vault-falling">
+          <span className="lkn-vault-falling-ico">
+            <FileText size={16} strokeWidth={2} />
+          </span>
+          <span className="lkn-vault-falling-name">research.pdf</span>
         </div>
-      ))}
-    </div>
-  );
-}
-
-// Three product surfaces side by side: the Synthesis Layer nodes, your custom
-// beliefs/concepts/projects, and the if-then model you build. No window chrome
-// or borders, separated by thin dividers. Mounts lazily when in view.
-function FeatureTrio() {
-  const { ref, seen } = useReveal<HTMLDivElement>("0px 0px -8% 0px");
-
-  return (
-    <section className="lkn-trio" aria-label="Product previews">
-      <div ref={ref} className={`lkn-trio-row lkn-reveal ${seen ? "is-in" : ""}`}>
-        <div className="lkn-trio-cell">
-          <span className="lkn-trio-label">Synthesis Layer</span>
-          <div className="lkn-trio-preview">
-            {/* Full render (with bloom glow) on an opaque black canvas so the
-                neurons glow but the background stays pure black. */}
-            {seen ? <WakeSynthesisTourPreview active={seen} opaqueBlackBg /> : null}
-          </div>
-        </div>
-
-        <div className="lkn-trio-divider" aria-hidden />
-
-        <div className="lkn-trio-cell">
-          <span className="lkn-trio-label">Beliefs · Concepts · Projects</span>
-          <div className="lkn-trio-preview">
-            {seen ? <NeuronShowcase /> : null}
-          </div>
-        </div>
-
-        <div className="lkn-trio-divider" aria-hidden />
-
-        <div className="lkn-trio-cell">
-          <span className="lkn-trio-label">Build your model</span>
-          <div className="lkn-trio-preview">{seen ? <ModelShowcase /> : null}</div>
+        <div className="lkn-vault-zone">
+          <CloudUpload size={26} strokeWidth={1.75} />
+          <span>Drop files to upload</span>
         </div>
       </div>
-    </section>
+      <div className="lkn-vault-list">
+        <div className="lkn-vault-row lkn-vault-row--new">
+          <span className="lkn-vault-row-ico lkn-vault-row-ico--red">
+            <FileText size={14} strokeWidth={2} />
+          </span>
+          <span className="lkn-vault-row-name">research.pdf</span>
+          <span className="lkn-vault-progress"><span /></span>
+        </div>
+        <div className="lkn-vault-row">
+          <span className="lkn-vault-row-ico lkn-vault-row-ico--blue">
+            <FileText size={14} strokeWidth={2} />
+          </span>
+          <span className="lkn-vault-row-name">design-notes.md</span>
+          <span className="lkn-vault-row-done">Saved</span>
+        </div>
+        <div className="lkn-vault-row">
+          <span className="lkn-vault-row-ico lkn-vault-row-ico--green">
+            <FileText size={14} strokeWidth={2} />
+          </span>
+          <span className="lkn-vault-row-name">interview.mp3</span>
+          <span className="lkn-vault-row-done">Saved</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
-// Full-page previews of each surface paired with a plain-English explanation
-// of what you actually do there. Real product windows on the left/right,
-// copy on the other side, alternating layout down the page.
-interface PageFeatureDef {
-  id: string;
-  kicker: string;
-  title: string;
-  body: string;
-  bullets: string[];
-  Preview: ComponentType<{ active: boolean; preload?: boolean }>;
+// Card 3 — Calendar + to-dos: an event chip pops onto today, a task checks
+// itself off, and a fresh task slides into the list.
+const PLAN_WEEK = ["S", "M", "T", "W", "T", "F", "S"];
+
+function PlanShowcase() {
+  const today = new Date().getDay();
+  return (
+    <div className="lkn-mock lkn-plan">
+      <div className="lkn-plan-cal">
+        <div className="lkn-mock-head">
+          <span className="lkn-mock-title">This week</span>
+          <span className="lkn-mock-badge lkn-mock-badge--soft">
+            <Plus size={11} strokeWidth={2.5} /> Event
+          </span>
+        </div>
+        <div className="lkn-plan-week">
+          {PLAN_WEEK.map((d, i) => (
+            <div
+              key={i}
+              className={`lkn-plan-day ${i === today ? "is-today" : ""}`}
+            >
+              <span className="lkn-plan-dow">{d}</span>
+              <span className="lkn-plan-num">{10 + i}</span>
+              {i === today ? <span className="lkn-plan-event" /> : null}
+              {i === today + 2 ? <span className="lkn-plan-event lkn-plan-event--alt" /> : null}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="lkn-plan-todo">
+        <div className="lkn-mock-head">
+          <span className="lkn-mock-title">To-dos</span>
+        </div>
+        <ul className="lkn-plan-list">
+          <li className="lkn-plan-task lkn-plan-task--checking">
+            <span className="lkn-plan-check"><Check size={11} strokeWidth={3} /></span>
+            <span className="lkn-plan-task-label">Draft launch post</span>
+          </li>
+          <li className="lkn-plan-task">
+            <span className="lkn-plan-check" />
+            <span className="lkn-plan-task-label">Review Q3 goals</span>
+          </li>
+          <li className="lkn-plan-task lkn-plan-task--adding">
+            <span className="lkn-plan-check" />
+            <span className="lkn-plan-task-label">Book flights for offsite</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  );
 }
 
-const PAGE_FEATURES: PageFeatureDef[] = [
+// Three-card "suite" grid: a soft-panelled, white mini-UI per card with a
+// bold lead-in + supporting line beneath it, then a strip of the tools LYKN
+// works with. Modelled on the reference layout the user shared.
+interface SuiteCardDef {
+  id: string;
+  lead: string;
+  rest: string;
+  Preview: ComponentType;
+}
+
+const SUITE_CARDS: SuiteCardDef[] = [
   {
-    id: "chat",
-    kicker: "Chat",
-    title: "Talk to your intelligence layer",
-    body:
-      "Every reply starts from you, your beliefs, facts, and files, instead of a default persona the model invents on the fly.",
-    bullets: [
-      "Ask anything and get answers grounded in your synthesis layer",
-      "Switch between any connected model without losing context",
-      "Attach vault files and dictate hands-free",
-      "Durable learnings become new neurons automatically",
-    ],
-    Preview: WakeChatSubwindow,
+    id: "projects",
+    lead: "Projects, alive.",
+    rest:
+      "Cluster your neurons into projects and watch LYKN keep them moving, not just folders that sit there.",
+    Preview: ProjectsShowcase,
   },
   {
     id: "vault",
-    kicker: "The Vault",
-    title: "Your AI Drive",
-    body:
-      "Drop in anything and LYKN turns it into structured memory you can reason over forever, not just files in a folder.",
-    bullets: [
-      "Upload PDFs, images, video, audio, links, and quick notes",
-      "LYKN extracts the meaning and links it to your neurons",
-      "Search by keyword or by idea across everything",
-      "Preview files in place without downloading",
-    ],
-    Preview: WakeVaultSubwindow,
+    lead: "Your AI Drive.",
+    rest:
+      "Drop in any file and LYKN turns it into memory you can reason over, not just something in a folder.",
+    Preview: VaultUploadShowcase,
   },
   {
-    id: "voice",
-    kicker: "Voice & Cloud Agents",
-    title: "Talk to LYKN like a chief of staff",
-    body:
-      "Speak naturally, get answers out loud, and hand long jobs to cloud agents that keep working after you close the app.",
-    bullets: [
-      "Real-time, interruptible voice conversation",
-      "Search the web, set reminders, and hear your daily briefing",
-      "Hand off long jobs to agents that run in the background",
-      "Results land back in chat when they finish",
-    ],
-    Preview: WakeVoiceSubwindow,
-  },
-  {
-    id: "agents",
-    kicker: "Model Builder",
-    title: "Build an army of AI agents",
-    body:
-      "Give each agent a role, a model, a voice, and the tools it can touch, then let your main agent delegate like a manager.",
-    bullets: [
-      "Design specialists with custom instructions in minutes",
-      "Pick the LLM and voice for each agent",
-      "Promote a main agent that delegates to subagents",
-      "Every agent inherits your synthesis layer",
-    ],
-    Preview: WakeAgentsSubwindow,
+    id: "plan",
+    lead: "Plans that stay in sync.",
+    rest:
+      "LYKN adds to your calendar and to-do list as you chat or talk, and keeps everything current, hands-free.",
+    Preview: PlanShowcase,
   },
 ];
 
-function PageFeature({ feature, index }: { feature: PageFeatureDef; index: number }) {
-  const { ref, seen } = useReveal<HTMLElement>("0px 0px -10% 0px");
-  const reversed = index % 2 === 1;
-  const { Preview } = feature;
-  // Only the voice surface stays interactive; every other feature preview is
-  // a static, look-but-don't-touch window (the interactive demo lives in the
-  // hero showcase up top).
-  const interactive = feature.id === "voice";
+// Apps LYKN works with, shown with their real logos. `iconUrl` mirrors the
+// catalog's explicit overrides (Google's S2 favicon returns the same generic
+// "G" for every google.com sub-app, so those need a real product icon);
+// everything else resolves through the same favicon fallback chain the
+// Connections grid uses.
+interface SuiteTool {
+  name: string;
+  domain: string;
+  iconUrl?: string;
+}
 
+const SUITE_TOOLS: SuiteTool[] = [
+  { name: "ChatGPT", domain: "chatgpt.com" },
+  { name: "Claude", domain: "claude.ai" },
+  { name: "Gemini", domain: "gemini.google.com" },
+  { name: "Cursor", domain: "cursor.com" },
+  { name: "Notion", domain: "notion.so" },
+  { name: "Slack", domain: "slack.com" },
+  {
+    name: "Gmail",
+    domain: "mail.google.com",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png",
+  },
+  {
+    name: "Google Calendar",
+    domain: "calendar.google.com",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png",
+  },
+  {
+    name: "Google Drive",
+    domain: "drive.google.com",
+    iconUrl: "https://www.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
+  },
+];
+
+// Logo with the same fallback chain the Connections grid uses: explicit
+// catalog icon → Google S2 favicon → DuckDuckGo → a lettered tile.
+function SuiteToolLogo({ tool }: { tool: SuiteTool }) {
+  const candidates: string[] = [];
+  if (tool.iconUrl) candidates.push(tool.iconUrl);
+  candidates.push(`https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(tool.domain)}`);
+  candidates.push(`https://icons.duckduckgo.com/ip3/${tool.domain}.ico`);
+  const [attempt, setAttempt] = useState(0);
+
+  if (attempt >= candidates.length) {
+    return (
+      <span className="lkn-suite-tool-fallback" aria-hidden>
+        {tool.name.charAt(0)}
+      </span>
+    );
+  }
   return (
-    <section ref={ref} className="lkn-feature" aria-label={feature.title}>
-      <div
-        className={`lkn-feature-grid ${reversed ? "lkn-feature-grid--reversed" : ""} lkn-reveal ${
-          seen ? "is-in" : ""
-        }`}
-      >
-        <div className="lkn-feature-copy">
-          <h3 className="lkn-feature-title">{feature.title}</h3>
-          <p className="lkn-feature-body">{feature.body}</p>
-          <ul className="lkn-feature-list">
-            {feature.bullets.map((b) => (
-              <li key={b}>
-                <span className="lkn-feature-dot" aria-hidden />
-                {b}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div
-          className={`lkn-feature-demo ${interactive ? "" : "lkn-feature-demo--static"}`}
-          {...(interactive ? {} : { "aria-hidden": true })}
-        >
-          {seen ? <Preview active={seen} /> : null}
+    <img
+      key={attempt}
+      src={candidates[attempt]}
+      alt={`${tool.name} logo`}
+      className="lkn-suite-tool-img"
+      width={22}
+      height={22}
+      loading="lazy"
+      onError={() => setAttempt((a) => a + 1)}
+    />
+  );
+}
+
+function FeatureSuite() {
+  const { ref, seen } = useReveal<HTMLElement>("0px 0px -10% 0px");
+  return (
+    <section ref={ref} id="features" className="lkn-suite" aria-label="Built around you">
+      <div className={`lkn-suite-head lkn-reveal ${seen ? "is-in" : ""}`}>
+        <h2 className="lkn-suite-headline">The only assistant you'll ever need</h2>
+        <p className="lkn-suite-sub">
+          A suite of features that keep every AI grounded in you.
+        </p>
+      </div>
+
+      <div className={`lkn-suite-grid lkn-reveal ${seen ? "is-in" : ""}`}>
+        {SUITE_CARDS.map((card) => {
+          const { Preview } = card;
+          return (
+            <article key={card.id} id={card.id} className="lkn-suite-card">
+              <div className="lkn-suite-demo" aria-hidden>
+                {seen ? <Preview /> : null}
+              </div>
+              <p className="lkn-suite-caption">
+                <span className="lkn-suite-caption-lead">{card.lead}</span>{" "}
+                {card.rest}
+              </p>
+            </article>
+          );
+        })}
+      </div>
+
+      <div className={`lkn-suite-tools lkn-reveal ${seen ? "is-in" : ""}`}>
+        <p className="lkn-suite-tools-label">Works with everything you already use</p>
+        <div className="lkn-suite-tools-row">
+          {SUITE_TOOLS.map((tool) => (
+            <span key={tool.name} className="lkn-suite-tool">
+              <span className="lkn-suite-tool-icon" aria-hidden>
+                <SuiteToolLogo tool={tool} />
+              </span>
+              {tool.name}
+            </span>
+          ))}
         </div>
       </div>
     </section>
   );
 }
 
-function PageFeatures() {
+// Closing recap: a wrap-up of everything LYKN brings together, shown as a grid
+// of feature pillars right before the final CTA. Styled for the light landing
+// theme.
+const RECAP_PILLARS: { icon: ComponentType<{ size?: number; strokeWidth?: number }>; title: string; desc: string }[] = [
+  {
+    icon: Sparkles,
+    title: "Personal intelligence",
+    desc: "Your beliefs, facts, concepts, and projects become connected neurons the AI reasons from.",
+  },
+  {
+    icon: MessagesSquare,
+    title: "Chat, every model",
+    desc: "Switch between the best models from every lab, each grounded in your context.",
+  },
+  {
+    icon: Mic,
+    title: "Voice like Jarvis",
+    desc: "Talk naturally and get answers out loud, hands-free, on any device.",
+  },
+  {
+    icon: Bot,
+    title: "Cloud agents",
+    desc: "Hand off real work that keeps running after you close the app.",
+  },
+  {
+    icon: Archive,
+    title: "Vault",
+    desc: "Your files, notes, and media, searchable and wired into everything.",
+  },
+  {
+    icon: Plug,
+    title: "Connections",
+    desc: "Plug in the apps you already use so LYKN works with your whole stack.",
+  },
+  {
+    icon: CalendarDays,
+    title: "Calendar & to-dos",
+    desc: "Plans and tasks the AI can see, add to, and act on.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Private & portable",
+    desc: "Your data stays yours, in sync across web and mobile.",
+  },
+];
+
+function LyknRecap() {
+  const { ref, seen } = useReveal<HTMLElement>("0px 0px -10% 0px");
   return (
-    <>
-      {PAGE_FEATURES.map((feature, i) => (
-        <PageFeature key={feature.id} feature={feature} index={i} />
-      ))}
-    </>
+    <section ref={ref} id="recap" className="lkn-recap" aria-label="Everything LYKN brings together">
+      <div className={`lkn-recap-head lkn-reveal ${seen ? "is-in" : ""}`}>
+        <h2 className="lkn-section-headline">Everything LYKN brings together</h2>
+        <p className="lkn-section-sub">
+          One private intelligence layer behind every conversation, task, and
+          tool, so the AI always works from who you are.
+        </p>
+      </div>
+      <div className={`lkn-recap-grid lkn-reveal ${seen ? "is-in" : ""}`}>
+        {RECAP_PILLARS.map((p) => {
+          const Icon = p.icon;
+          return (
+            <article key={p.title} className="lkn-recap-card">
+              <span className="lkn-recap-ico" aria-hidden>
+                <Icon size={20} strokeWidth={1.9} />
+              </span>
+              <h3 className="lkn-recap-card-title">{p.title}</h3>
+              <p className="lkn-recap-card-desc">{p.desc}</p>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+// Two-card showcase (chat + intelligence layer) shown side by side, each in a
+// rounded color card with a heading, one-liner, and the real product preview
+// sitting inside it.
+function IntelligenceShowcase() {
+  const { ref, seen } = useReveal<HTMLElement>("0px 0px -10% 0px");
+  return (
+    <section ref={ref} id="chat" className="lkn-duo" aria-label="Talk to your intelligence layer">
+      <h2 className={`lkn-duo-headline lkn-reveal ${seen ? "is-in" : ""}`}>
+        Talk to your intelligence layer
+      </h2>
+      <div className={`lkn-duo-grid lkn-reveal ${seen ? "is-in" : ""}`}>
+        <article className="lkn-duo-card lkn-duo-card--light">
+          <h3 className="lkn-duo-card-title">Every chat starts from you</h3>
+          <p className="lkn-duo-card-sub">
+            Every reply starts from your beliefs, facts, and files, not a default
+            persona the model invents on the fly. Switch between the best models
+            from every lab, all in one place.
+          </p>
+          <div className="lkn-duo-card-demo lkn-feature-demo--static" aria-hidden>
+            <WakeChatSubwindow active={seen} lightMode />
+          </div>
+        </article>
+        <article className="lkn-duo-card lkn-duo-card--light">
+          <h3 className="lkn-duo-card-title">Talk to LYKN like Jarvis</h3>
+          <p className="lkn-duo-card-sub">
+            Speak naturally, get answers out loud, and hand long jobs to cloud
+            agents that keep working after you close the app.
+          </p>
+          <div className="lkn-duo-card-demo">
+            <WakeVoiceSubwindow active={seen} />
+          </div>
+        </article>
+      </div>
+    </section>
+  );
+}
+
+// Centered, single-preview showcase for the intelligence (synthesis) layer:
+// headline + one-liner over a large preview tucked into a soft blue panel.
+function IntelligenceLayerShowcase() {
+  const { ref, seen } = useReveal<HTMLElement>("0px 0px -10% 0px");
+  return (
+    <section ref={ref} id="memory" className="lkn-layer" aria-label="Intelligence Layer">
+      <div className={`lkn-layer-head lkn-reveal ${seen ? "is-in" : ""}`}>
+        <h2 className="lkn-section-headline">Personal Intelligence</h2>
+        <p className="lkn-section-sub">
+          Your beliefs, facts, concepts, and projects become connected neurons
+          the AI reads and reasons from, so it works from who you are in every
+          conversation and task.
+        </p>
+      </div>
+      <div className={`lkn-layer-stage lkn-reveal ${seen ? "is-in" : ""}`}>
+        <div className="lkn-layer-demo lkn-feature-demo--static" aria-hidden>
+          <WakeSynthesisSubwindow active={seen} />
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -412,7 +623,7 @@ function ProblemSolutions() {
   return (
     <section className="lkn-problems" id="problem" aria-label="The problem LYKN solves">
       <div ref={ref} className={`lkn-problems-head lkn-reveal ${seen ? "is-in" : ""}`}>
-        <h2 className="lkn-section-headline">Modern AI wasn&apos;t built for you.</h2>
+        <h2 className="lkn-section-headline">AI was not made for you.</h2>
         <p className="lkn-section-sub">{PROBLEM_WHY}</p>
       </div>
       <div className="lkn-problems-columns">
@@ -439,17 +650,10 @@ function AppLoadInShowcase() {
 
   return (
     <div id="product" className="lkn-showcase lkn-showcase--peek">
-      <div className={`lkn-showcase-window lkn-reveal ${shown ? "is-in" : ""}`}>
-        <div className="lykn-wake-subwindow">
-          <div className="lykn-wake-subwindow-chrome">
-            <div className="lykn-wake-subwindow-dots" aria-hidden>
-              <span />
-              <span />
-              <span />
-            </div>
-            <span className="lykn-wake-subwindow-title">LYKN</span>
-          </div>
-          <div className="lykn-wake-subwindow-body">
+      <div className={`lkn-laptop lkn-reveal ${shown ? "is-in" : ""}`}>
+        <div className="lkn-laptop-screen">
+          <div className="lkn-laptop-cam" aria-hidden />
+          <div className="lkn-laptop-display">
             <div className="lkn-showcase-noninteractive" aria-hidden>
               <WakePreviewFit designWidth={1180}>
                 <WakeAppShellPreview active={false} />
@@ -457,65 +661,24 @@ function AppLoadInShowcase() {
             </div>
           </div>
         </div>
-      </div>
-    </div>
-  );
-}
-
-const DOCS_LINKS = [
-  { label: "Privacy Policy", href: "/privacy", external: false },
-  { label: "Terms of Service", href: "/terms", external: false },
-  { label: "Cookie Policy", href: "/cookies", external: false },
-];
-
-function DocsMenu() {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div ref={ref} className="lkn-docs-menu">
-      <button
-        type="button"
-        className="lkn-nav-link"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        Docs
-      </button>
-      {open ? (
-        <div className="lkn-docs-dropdown" role="menu">
-          {DOCS_LINKS.map((link) => (
-            <a
-              key={link.href}
-              href={link.href}
-              target={link.external ? "_blank" : undefined}
-              rel={link.external ? "noreferrer" : undefined}
-              className="lkn-docs-item"
-              role="menuitem"
-              onClick={() => setOpen(false)}
-            >
-              {link.label}
-            </a>
-          ))}
+        <div className="lkn-laptop-base" aria-hidden>
+          <div className="lkn-laptop-notch" />
         </div>
-      ) : null}
+
+        {/* Phone mockup overlapping the laptop, running the voice agent. */}
+        <div className="lkn-phone">
+          <div className="lkn-phone-screen">
+            <div className="lkn-phone-display">
+              <WakePreviewFit designWidth={360} always>
+                <div className="lkn-phone-canvas">
+                  <WakeVoiceTourPreview active allowAudio={false} />
+                </div>
+              </WakePreviewFit>
+            </div>
+            <div className="lkn-phone-island" aria-hidden />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -539,11 +702,22 @@ const LandingPrototype = () => {
   // session never flashes the landing page before bouncing.
   useEffect(() => {
     if (!authLoading && user && searchParams.get("resume") !== "account") {
-      navigate("/start-trial", { replace: true });
+      navigate("/app", { replace: true });
     }
   }, [authLoading, user, navigate, searchParams]);
 
   const goToSignup = useCallback(() => navigate("/login"), [navigate]);
+
+  // Header is transparent (white logo + links) while resting over the blue
+  // hero, then flips to a solid light bar once the visitor scrolls past it so
+  // the white content stays legible over the light page sections.
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 80);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   const scrollToId = useCallback((id: string) => {
     const el = document.getElementById(id);
@@ -552,7 +726,7 @@ const LandingPrototype = () => {
 
   return (
     <div className="dark lkn-land">
-      <header className="lkn-header">
+      <header className={`lkn-header ${scrolled ? "is-scrolled" : ""}`}>
         <div className="lkn-header-inner">
           <button
             type="button"
@@ -560,45 +734,64 @@ const LandingPrototype = () => {
             onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
             aria-label="LYKN home"
           >
-            <img src={lyknLogo} alt="LYKN" className="lkn-brand-logo" />
+            <img
+              src={scrolled ? lyknLogo : lyknLogoWhite}
+              alt="LYKN"
+              className="lkn-brand-logo"
+            />
           </button>
 
           <nav className="lkn-nav" aria-label="Primary">
             <button type="button" className="lkn-nav-link" onClick={() => scrollToId("product")}>
               Product
             </button>
-            <button type="button" className="lkn-nav-link" onClick={() => scrollToId("pricing")}>
+            <button type="button" className="lkn-nav-link" onClick={() => navigate("/pricing")}>
               Pricing
             </button>
-            <DocsMenu />
-            <button type="button" className="lkn-nav-signin" onClick={goToSignup}>
-              Sign in
+            <button type="button" className="lkn-nav-link" onClick={() => navigate("/mobile")}>
+              Mobile
             </button>
+            <div className="lkn-nav-auth">
+              <button type="button" className="lkn-nav-signup" onClick={goToSignup}>
+                Sign up
+              </button>
+              <button type="button" className="lkn-nav-signin" onClick={goToSignup}>
+                Sign in
+              </button>
+            </div>
           </nav>
         </div>
       </header>
 
       <main>
-        {/* Hero — the video fills the hero only, ending at the hero's bottom
-            edge where the app preview below pokes up. */}
+        {/* Hero — blue gradient backdrop; the app preview below pokes up into
+            the bottom of it. */}
         <section className="lkn-hero" id="top">
-          <video
-            className="lkn-bg-video"
-            src={demoVideo}
-            autoPlay
-            muted
-            loop
-            playsInline
-            aria-hidden
-          />
-          <div className="lkn-bg-overlay" aria-hidden />
           <div className="lkn-hero-inner">
-            <img src={lyknLogo} alt="LYKN" className="lkn-hero-logo" />
-            <p className="lkn-hero-tagline">Stop starting over with AI</p>
-            <button type="button" className="lykn-primary-btn lkn-cta" onClick={goToSignup}>
-              Get started
-              <ArrowRight className="lkn-cta-icon" strokeWidth={2.25} />
-            </button>
+            <h1 className="lkn-hero-headline">Stop starting over with AI.</h1>
+            <p className="lkn-hero-sub">
+              Persistent memory runs your projects, to-do lists, calendar, documents,
+              <br />
+              uploads, inspiration, and cloud agents in one place. Chat or talk to it
+              <br />
+              from any device, no download needed, private by design.
+            </p>
+            <div className="lkn-hero-actions">
+              <button
+                type="button"
+                className="lkn-hero-btn lkn-hero-btn--light"
+                onClick={goToSignup}
+              >
+                Sign up
+              </button>
+              <button
+                type="button"
+                className="lkn-hero-btn lkn-hero-btn--dark"
+                onClick={goToSignup}
+              >
+                Sign in
+              </button>
+            </div>
           </div>
         </section>
 
@@ -608,49 +801,47 @@ const LandingPrototype = () => {
         {/* The problem LYKN solves — problem/solution pairs */}
         <ProblemSolutions />
 
-        {/* Full app intro */}
-        <section className="lkn-product-intro">
-          <h2 className="lkn-section-headline">Your entire intelligence layer, in one place.</h2>
-          <p className="lkn-section-sub">
-            Synthesis, vault, chat, voice, and agents load into a single
-            workspace. This is the real app, exactly as it boots up.
-          </p>
-        </section>
+        {/* Chat + voice, presented as two side-by-side cards */}
+        <IntelligenceShowcase />
 
-        {/* Three core surfaces side by side — raw UI segments */}
-        <FeatureTrio />
+        {/* Intelligence layer — centered single-preview showcase */}
+        <IntelligenceLayerShowcase />
 
-        {/* Full-page previews with explanations of what you can do */}
-        <PageFeatures />
+        {/* Three-card suite: Vault, Connections, Calendar/To-dos */}
+        <FeatureSuite />
+
+        {/* Wrap-up recap of everything LYKN brings together */}
+        <LyknRecap />
 
         {/* Closing CTA / pricing */}
         <section className="lkn-final" id="pricing">
           <div className="lkn-final-inner lkn-reveal is-in">
-            <img src={lyknIcon} alt="" className="lkn-final-icon" />
-            <h2 className="lkn-final-headline">Build an AI that actually knows you.</h2>
-            <p className="lkn-final-sub">
-              Start your 7-day free trial. Full access to LYKN Pro for $17/month
-              after. Cancel anytime before it ends.
-            </p>
-            <button type="button" className="lykn-primary-btn lkn-cta" onClick={goToSignup}>
-              Get started
-              <ArrowRight className="lkn-cta-icon" strokeWidth={2.25} />
-            </button>
+            <div className="lkn-final-copy">
+              <h2 className="lkn-final-headline">
+                Personal AI built to know you.
+                <span className="lkn-final-headline-sub">
+                  Sign up and start in your browser today.
+                </span>
+              </h2>
+              <button type="button" className="lkn-final-cta" onClick={goToSignup}>
+                Get started
+              </button>
+            </div>
           </div>
         </section>
       </main>
 
       <footer className="lkn-footer">
-        <div className="lkn-footer-inner">
-          <img src={lyknLogo} alt="LYKN" className="lkn-footer-wordmark" />
-          <div className="lkn-footer-links">
-            <a href="/privacy" className="lkn-footer-link">Privacy</a>
-            <a href="/terms" className="lkn-footer-link">Terms</a>
-            <a href="/cookies" className="lkn-footer-link">Cookies</a>
-          </div>
-          <p className="lkn-footer-copy">
-            © {new Date().getFullYear()} LYKN
-          </p>
+        <div className="lkn-footer-inner lkn-footer-simple">
+          <img src={lyknLogo} alt="LYKN" className="lkn-footer-logo" />
+          <nav className="lkn-footer-nav" aria-label="Footer">
+            <button type="button" onClick={() => navigate("/pricing")}>Pricing</button>
+            <button type="button" onClick={() => navigate("/mobile")}>Mobile</button>
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
+            <a href="/cookies">Cookies</a>
+          </nav>
+          <p className="lkn-footer-copy">© {new Date().getFullYear()} LYKN</p>
         </div>
       </footer>
     </div>

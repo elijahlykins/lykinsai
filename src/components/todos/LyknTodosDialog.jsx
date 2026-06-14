@@ -17,10 +17,10 @@ import LyknTodosPanel from "@/components/todos/LyknTodosPanel";
 export default function LyknTodosDialog({ open, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100vw-1.5rem)] max-w-lg max-h-[88dvh] overflow-hidden flex flex-col sm:w-full [color-scheme:dark]">
+      <DialogContent className="w-[calc(100vw-1.5rem)] max-w-lg max-h-[88dvh] overflow-hidden flex flex-col sm:w-full">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <CheckCircle2 className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
             To-do list
           </DialogTitle>
           <DialogDescription>

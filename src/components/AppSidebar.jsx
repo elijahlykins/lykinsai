@@ -8,6 +8,7 @@ import {
   CreditCard,
   Edit2,
   Bug,
+  FolderKanban,
   LogOut,
   MessageCircle,
   PanelLeftClose,
@@ -19,7 +20,9 @@ import {
   Trash2,
 } from "lucide-react";
 import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
-import lyknWordmarkUrl from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-NEUTRAL-master.png";
+import lyknIconBlueUrl from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-BLUE-master.png";
+import lyknLogoUrl from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
+import lyknLogoBlueUrl from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
 import FeedbackModal from "@/components/FeedbackModal";
 import LyknCalendarDialog from "@/components/calendar/LyknCalendarDialog";
 import { supabase } from "@/lib/supabase";
@@ -32,6 +35,16 @@ import ChatModelFilterSelect from "@/components/chat/ChatModelFilterSelect";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import SignInPill from "@/components/SignInPill";
+
+// LYKN icon mark — blue in light mode, neutral (near-white) in dark mode.
+function LyknMark({ className = "", draggable = false }) {
+  return (
+    <>
+      <img src={lyknIconBlueUrl} alt="LYKN" className={`${className} block dark:hidden`} draggable={draggable} />
+      <img src={lyknIconUrl} alt="LYKN" className={`${className} hidden dark:block`} draggable={draggable} />
+    </>
+  );
+}
 
 export default function AppSidebar({
   controlledOpen,
@@ -242,35 +255,44 @@ export default function AppSidebar({
 
   return (
     <>
-      <div className="fixed left-2.5 top-3 z-[80] flex items-center gap-0">
+      {/* Both the full wordmark (open) and the collapsed icon toggle (closed)
+          stay mounted, stacked at the same anchor, and cross-fade. The full
+          logo fades in with a short delay so it lands as the panel finishes
+          sliding open instead of popping in over the still-opening panel
+          (the previous instant conditional swap caused that glitch). */}
+      <div className="fixed left-2.5 top-3 z-[80] grid h-9 items-center">
+        <span
+          className={`col-start-1 row-start-1 flex items-center pl-1 select-none pointer-events-none transition-opacity duration-200 ${
+            open ? "opacity-100 delay-150" : "opacity-0"
+          }`}
+          aria-hidden={!open}
+        >
+          <img
+            src={lyknLogoBlueUrl}
+            alt="LYKN"
+            className="h-9 w-auto object-contain block dark:hidden"
+            draggable={false}
+          />
+          <img
+            src={lyknLogoUrl}
+            alt="LYKN"
+            className="h-9 w-auto object-contain hidden dark:block"
+            draggable={false}
+          />
+        </span>
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="group/toggle relative rounded-full w-9 h-9 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-colors flex items-center justify-center"
-          title="Show panel"
-        >
-          {open ? (
-            <img src={lyknIconUrl} alt="LYKN" className="w-7 h-7 object-contain" draggable={false} />
-          ) : (
-            <>
-              <img
-                src={lyknIconUrl}
-                alt="LYKN"
-                className="w-7 h-7 object-contain transition-opacity duration-150 group-hover/toggle:opacity-0"
-                draggable={false}
-              />
-              <PanelLeftOpen className="absolute w-4 h-4 text-black/70 dark:text-white/70 opacity-0 transition-opacity duration-150 group-hover/toggle:opacity-100" />
-            </>
-          )}
-        </button>
-        <img
-          src={lyknWordmarkUrl}
-          alt="LYKN"
-          className={`h-5 w-auto object-contain select-none pointer-events-none -ml-1.5 transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-            open ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-2"
+          className={`group/toggle col-start-1 row-start-1 justify-self-start rounded-full w-9 h-9 hover:bg-blue-500/15 dark:hover:bg-blue-400/20 transition-opacity duration-150 flex items-center justify-center ${
+            open ? "opacity-0 pointer-events-none" : "opacity-100"
           }`}
-          draggable={false}
-        />
+          title="Show panel"
+          aria-hidden={open}
+          tabIndex={open ? -1 : 0}
+        >
+          <LyknMark className="w-7 h-7 object-contain transition-opacity duration-150 group-hover/toggle:opacity-0" />
+          <PanelLeftOpen className="absolute w-4 h-4 text-black/70 dark:text-white/70 opacity-0 transition-opacity duration-150 group-hover/toggle:opacity-100" />
+        </button>
       </div>
 
       {/* ── Collapsed icon rail (cross-fades in over the panel as it collapses) ── */}
@@ -326,6 +348,16 @@ export default function AppSidebar({
             }`}
           >
             <Brain className={`w-4 h-4 ${effectiveHighlightSynthesis ? "text-blue-400" : "text-black/60 dark:text-white/60"}`} />
+          </button>
+          <button
+            type="button"
+            onClick={() => goTo("/projects")}
+            className={`w-9 h-9 rounded-lg hover:bg-blue-500/15 transition-colors flex items-center justify-center ${
+              location.pathname === "/projects" ? "bg-blue-500/10" : ""
+            }`}
+            title="Projects"
+          >
+            <FolderKanban className="w-4 h-4 text-black/60 dark:text-white/60" />
           </button>
           {user ? (
             <button
@@ -473,6 +505,16 @@ export default function AppSidebar({
                 }`}
               />
               <span className="flex-1">Synthesis Layer</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => goTo("/projects")}
+              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
+                location.pathname === "/projects" ? "bg-blue-500/10" : ""
+              }`}
+            >
+              <FolderKanban className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              <span className="flex-1">Projects</span>
             </button>
             {user ? (
               <button

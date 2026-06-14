@@ -160,7 +160,7 @@ export default function WakeCreateAccountSlide() {
                 type="button"
                 onClick={() =>
                   signInWithOAuth("google", {
-                    redirectTo: `${window.location.origin}/start-trial`,
+                    redirectTo: `${window.location.origin}/login`,
                   })
                 }
                 className="lykn-wake-account-google-btn"

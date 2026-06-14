@@ -4,7 +4,7 @@ import App from '@/App.jsx'
 import '@/index.css'
 import 'katex/dist/katex.min.css'
 import ErrorBoundary from '@/lib/ErrorBoundary'
-import { applyTheme } from '@/lib/theme'
+import { applyTheme, readSavedTheme, initThemeWatcher } from '@/lib/theme'
 
 try {
   const saved = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
@@ -13,12 +13,10 @@ try {
   if (saved.fontSize)      document.documentElement.style.setProperty('--font-scale', fontScales[saved.fontSize] || '1');
   if (saved.layoutDensity) document.documentElement.style.setProperty('--layout-density', densities[saved.layoutDensity] || '1');
 
-  applyTheme('dark');
-
-  // Light mode is not shipped yet — migrate any saved non-dark value.
-  if (saved.theme && saved.theme !== 'dark') {
-    localStorage.setItem('lykinsai_settings', JSON.stringify({ ...saved, theme: 'dark' }));
-  }
+  // Apply the user's saved theme (light / dark / system) before first paint.
+  applyTheme(readSavedTheme());
+  // Keep following the OS while the preference is 'system'.
+  initThemeWatcher();
 } catch {}
 
 try {

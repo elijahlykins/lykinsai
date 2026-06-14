@@ -5,6 +5,12 @@ import VoiceTechOrb from "@/components/omnia/VoiceTechOrb";
 
 interface WakeVoiceTourPreviewProps {
   active?: boolean;
+  /**
+   * When false, the preview is purely the Voice Mode UI: no "Hear it" toggle
+   * and audio can never play. Used for the static phone mockup on the landing
+   * page; the standalone voice feature card keeps audio (default true).
+   */
+  allowAudio?: boolean;
 }
 
 // Same status copy the real Voice Mode overlay shows beneath the orb
@@ -130,6 +136,7 @@ const fallbackLineMs = (text: string) =>
  */
 export default function WakeVoiceTourPreview({
   active = true,
+  allowAudio = true,
 }: WakeVoiceTourPreviewProps) {
   const [audioOn, setAudioOn] = useState(false);
   const [orbState, setOrbState] = useState<RealtimeVoiceState>("listening");
@@ -272,22 +279,26 @@ export default function WakeVoiceTourPreview({
 
   return (
     <div className="relative flex h-full w-full flex-col items-center justify-center bg-background overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setAudioOn((on) => !on)}
-        aria-pressed={audioOn}
-        className="absolute top-4 right-4 z-10 inline-flex items-center gap-2 rounded-full border border-foreground/15 bg-foreground/5 px-3.5 py-2 text-xs font-medium text-foreground/80 backdrop-blur-sm transition-colors hover:bg-foreground/10"
-        title={audioOn ? "Turn sound off" : "Turn sound on"}
-      >
-        {audioOn ? (
-          <Volume2 className="h-4 w-4 text-blue-400" />
-        ) : (
-          <VolumeX className="h-4 w-4" />
-        )}
-        {audioOn ? "Sound on" : "Hear it"}
-      </button>
+      {allowAudio && (
+        <button
+          type="button"
+          onClick={() => setAudioOn((on) => !on)}
+          aria-pressed={audioOn}
+          className="absolute top-4 right-4 z-10 inline-flex items-center gap-2 rounded-full border border-foreground/15 bg-foreground/5 px-3.5 py-2 text-xs font-medium text-foreground/80 backdrop-blur-sm transition-colors hover:bg-foreground/10"
+          title={audioOn ? "Turn sound off" : "Turn sound on"}
+        >
+          {audioOn ? (
+            <Volume2 className="h-4 w-4 text-blue-400" />
+          ) : (
+            <VolumeX className="h-4 w-4" />
+          )}
+          {audioOn ? "Sound on" : "Hear it"}
+        </button>
+      )}
 
-      <VoiceTechOrb state={orbState} micLevel={micLevel} size={320} />
+      {/* The landing preview card is always dark, regardless of the visitor's
+          app theme — force the white-dot palette so it never goes blue. */}
+      <VoiceTechOrb state={orbState} micLevel={micLevel} size={320} appearance="dark" />
 
       <div className="mt-10 flex flex-col items-center gap-2 text-center max-w-xl px-6">
         {currentSection && (
@@ -306,11 +317,13 @@ export default function WakeVoiceTourPreview({
             {currentLine.text}
           </p>
         )}
-        <span className="text-foreground/40 text-xs">
-          {audioOn
-            ? "Demo conversation · scripted sample voices"
-            : "Tap “Hear it” for a sample demo conversation"}
-        </span>
+        {allowAudio && (
+          <span className="text-foreground/40 text-xs">
+            {audioOn
+              ? "Demo conversation · scripted sample voices"
+              : "Tap “Hear it” for a sample demo conversation"}
+          </span>
+        )}
       </div>
     </div>
   );

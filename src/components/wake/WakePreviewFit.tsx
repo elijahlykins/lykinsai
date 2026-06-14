@@ -37,6 +37,12 @@ interface WakePreviewFitProps {
    */
   designWidth: number;
   children: ReactNode;
+  /**
+   * Force proportional scaling on every viewport (not just phones). Used when
+   * the surface is embedded in a fixed-size frame on desktop too — e.g. the
+   * voice screen inside the hero phone mockup.
+   */
+  always?: boolean;
 }
 
 /**
@@ -49,13 +55,14 @@ interface WakePreviewFitProps {
  * On desktop (viewport wider than the phone breakpoint) it renders children
  * untouched so the existing full-size previews are unchanged.
  */
-export default function WakePreviewFit({ designWidth, children }: WakePreviewFitProps) {
+export default function WakePreviewFit({ designWidth, children, always = false }: WakePreviewFitProps) {
   const isPhone = useWakePhoneViewport();
+  const shouldFit = always || isPhone;
   const outerRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
 
   useLayoutEffect(() => {
-    if (!isPhone) return;
+    if (!shouldFit) return;
     const el = outerRef.current;
     if (!el) return;
     const measure = () => {
@@ -67,9 +74,9 @@ export default function WakePreviewFit({ designWidth, children }: WakePreviewFit
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [isPhone]);
+  }, [shouldFit]);
 
-  if (!isPhone) return <>{children}</>;
+  if (!shouldFit) return <>{children}</>;
 
   const scale = box.w > 0 ? box.w / designWidth : 0;
   // Give the scaled content enough design-space height to fill the frame after

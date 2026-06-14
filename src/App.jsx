@@ -42,7 +42,8 @@ import {
 } from "@/lib/embeddedPreview";
 import ShareReceiver from "./pages/ShareReceiver";
 import Onboarding from "./pages/Onboarding";
-import StartTrial from "./pages/StartTrial";
+import Pricing from "./pages/Pricing";
+import Mobile from "./pages/Mobile";
 import AdminUsage from "./pages/AdminUsage";
 import AdminBilling from "./pages/AdminBilling";
 import OAuthConsent from "./pages/OAuthConsent";
@@ -54,6 +55,7 @@ import CookiePolicy from "./pages/CookiePolicy";
 import DPA from "./pages/DPA";
 import { useIsMobile } from "@/hooks/useViewportTier";
 import ModelBuilder from "./pages/ModelBuilder";
+import ProjectsPage from "./pages/ProjectsPage";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
@@ -90,17 +92,16 @@ function AdminOnly({ children }) {
 }
 
 // Guest-only route wrapper. Used to gate the wake landing so signed-in
-// users never see it — they always bounce to `/start-trial` (or whatever
-// path is passed in). Returns null while auth is still resolving so we
-// don't flash the landing UI to a user who's about to be redirected.
-function GuestOnly({ children, to = "/start-trial" }) {
+// users never see it — they always bounce into the app (or whatever path is
+// passed in). Returns null while auth is still resolving so we don't flash the
+// landing UI to a user who's about to be redirected.
+function GuestOnly({ children, to = "/app" }) {
   const { user, loading } = useAuth();
   const location = useLocation();
   if (loading) return null;
   if (user) {
-    // Returning from a canceled Stripe checkout: StartTrial signs out
-    // locally and sends them to `/?resume=account`. Don't immediately
-    // bounce back into /start-trial → Stripe or they get stuck in a loop.
+    // Legacy: returning from a canceled Stripe checkout could land on
+    // `/?resume=account`. Keep honoring it so those links don't loop.
     if (new URLSearchParams(location.search).get("resume") === "account") {
       return children;
     }
@@ -158,6 +159,8 @@ function AppShell() {
   const isLandingPage =
     location.pathname === "/" ||
     location.pathname === "/landing-prototype" ||
+    location.pathname === "/pricing" ||
+    location.pathname === "/mobile" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
     location.pathname === "/cookies" ||
@@ -184,6 +187,8 @@ function AppShell() {
   const isMarketingLanding =
     location.pathname === "/" ||
     location.pathname === "/landing-prototype" ||
+    location.pathname === "/pricing" ||
+    location.pathname === "/mobile" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
     location.pathname === "/cookies" ||
@@ -220,7 +225,9 @@ function AppShell() {
         <RouteErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route path="/start-trial" element={<StartTrial />} />
+            {/* Trials were retired in favor of a free tier. Any lingering link
+                to /start-trial just drops the user into the app. */}
+            <Route path="/start-trial" element={<Navigate to="/app" replace />} />
             {/* OAuth consent screen — reached via 302 from API's /oauth/authorize.
                 Intentionally NOT wrapped in ProtectedRoute: the page handles its
                 own auth-gate inline so OAuth params survive the sign-in round-trip
@@ -232,6 +239,8 @@ function AppShell() {
             <Route path="/terms" element={<Terms />} />
             <Route path="/cookies" element={<CookiePolicy />} />
             <Route path="/dpa" element={<DPA />} />
+            <Route path="/pricing" element={<Pricing />} />
+            <Route path="/mobile" element={<Mobile />} />
             <Route path="/s/:token" element={<SharedGrid />} />
             <Route path="/" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
             <Route path="/landing-prototype" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
@@ -278,6 +287,14 @@ function AppShell() {
               element={
                 <ProtectedRoute>
                   <ModelBuilder />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects"
+              element={
+                <ProtectedRoute>
+                  <ProjectsPage />
                 </ProtectedRoute>
               }
             />

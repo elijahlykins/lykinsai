@@ -2,12 +2,9 @@ import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isConnectOnboardingDone } from "@/lib/prototypeHandoff";
-import { hasAppAccess } from "@/lib/billingAccess";
-import { API_BASE_URL } from "@/lib/api-config";
 import { motion, AnimatePresence } from "framer-motion";
-import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
-import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-NEUTRAL-web.png";
-import WakeSynthesisTourPreview from "@/components/wake/WakeSynthesisTourPreview";
+import lyknLogoWhite from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
+import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-web.png";
 
 const GoogleIcon = () => (
   <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
@@ -18,21 +15,30 @@ const GoogleIcon = () => (
   </svg>
 );
 
-const FloatingOrb = ({ className, delay = 0 }) => (
-  <motion.div
-    className={`absolute rounded-full blur-3xl opacity-30 ${className}`}
-    animate={{
-      y: [0, -20, 0],
-      x: [0, 10, 0],
-      scale: [1, 1.05, 1],
-    }}
-    transition={{
-      duration: 8,
-      repeat: Infinity,
-      ease: "easeInOut",
-      delay,
-    }}
-  />
+// The same blended blue → white vertical gradient the landing hero uses, so
+// the sign-in page reads as part of the same world.
+const HERO_GRADIENT =
+  "linear-gradient(180deg, #1d4ed8 0%, #2f6bf0 22%, #5b93f5 45%, #93bdfa 68%, #cfe0fc 86%, #f6f8fc 100%)";
+
+// Soft, slowly drifting blurred orbs that give the gradient depth and gentle
+// motion behind the glass cards. Purely decorative.
+const ORBS = [
+  { cls: "w-[28rem] h-[28rem] -top-28 -left-24 bg-white/30", dur: 15, dx: 36, dy: 26 },
+  { cls: "w-[24rem] h-[24rem] top-1/3 -right-28 bg-sky-200/40", dur: 18, dx: -30, dy: 34 },
+  { cls: "w-[22rem] h-[22rem] bottom-[-7rem] left-1/4 bg-indigo-300/30", dur: 22, dx: 26, dy: -22 },
+];
+
+const FloatingOrbs = () => (
+  <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+    {ORBS.map((o, i) => (
+      <motion.div
+        key={i}
+        className={`absolute rounded-full blur-3xl ${o.cls}`}
+        animate={{ x: [0, o.dx, 0], y: [0, o.dy, 0] }}
+        transition={{ duration: o.dur, repeat: Infinity, ease: "easeInOut" }}
+      />
+    ))}
+  </div>
 );
 
 function friendlyError(raw) {
@@ -94,54 +100,26 @@ export default function Login() {
     if (prefilledEmail) setEmail(prefilledEmail);
   }, [prefilledEmail]);
 
-  // Post-auth routing. NEW users (signup auto-confirmed OR landing
-  // here right after clicking the email-confirmation link) should hit
-  // /onboarding/connect so they actually see the AI-tool cards we
-  // built. Existing users go to `from` (default /app), preserving
-  // deep-link behavior. The "new user" signal is twofold:
-  //   1. user.created_at within the last 10 minutes — handles BOTH
-  //      email signups (auto-confirm or post-confirm sign-in) and
-  //      Google OAuth signups (where we don't run our own form code)
-  //      without needing a server migration or DB column.
-  //   2. The user manually choosing to skip / coming back to /login
-  //      after already onboarded is the existing case — created_at
-  //      is older, so they bypass onboarding.
-  // Explicit `from` (location.state?.from?.pathname set by ProtectedRoute
-  // when they tried to hit a specific deep link) ALWAYS wins. Don't
-  // hijack their intent.
+  // Post-auth routing. With the free tier there's no checkout gate — every
+  // authenticated user can use the app. NEW users (signup auto-confirmed OR
+  // landing here right after clicking the email-confirmation link) hit
+  // /onboarding/connect so they see the AI-tool cards; everyone else goes to
+  // `from` (default /app). The "new user" signal is user.created_at within the
+  // last 10 minutes, which covers both email and Google OAuth signups without a
+  // server migration. An explicit `from` (set by ProtectedRoute on a deep link)
+  // always wins so we don't hijack their intent.
   useEffect(() => {
     if (loading || !user) return;
     const hasExplicitFrom = !!location.state?.from?.pathname;
-
-    (async () => {
-      if (hasExplicitFrom) {
-        nav(from, { replace: true });
-        return;
-      }
-
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/billing/me`);
-        if (res.ok) {
-          const billing = await res.json();
-          if (!hasAppAccess(billing)) {
-            nav("/start-trial", { replace: true });
-            return;
-          }
-        }
-      } catch {
-        // Billing unreachable — new users still need trial checkout first.
-        if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
-          nav("/start-trial", { replace: true });
-          return;
-        }
-      }
-
-      if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
-        nav("/onboarding/connect", { replace: true });
-        return;
-      }
+    if (hasExplicitFrom) {
       nav(from, { replace: true });
-    })();
+      return;
+    }
+    if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
+      nav("/onboarding/connect", { replace: true });
+      return;
+    }
+    nav(from, { replace: true });
   }, [loading, nav, user, from, location.state]);
 
   const displayError = friendlyError(error || authError);
@@ -198,243 +176,216 @@ export default function Login() {
 
   if (showSuccess) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white dark:bg-[#0d0d0d]">
-        <FloatingOrb className="w-96 h-96 bg-blue-400 -top-20 -left-20" />
-        <FloatingOrb className="w-80 h-80 bg-violet-400 -bottom-10 -right-10" delay={2} />
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="relative z-10 text-center max-w-md px-8"
-        >
+      <div className="fixed inset-0 z-50 overflow-y-auto" style={{ background: HERO_GRADIENT }}>
+        <FloatingOrbs />
+        <div className="relative min-h-full flex items-center justify-center px-5 py-10">
           <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            transition={{ type: "spring", delay: 0.2 }}
-            className="w-16 h-16 mx-auto mb-6 rounded-full bg-green-100 dark:bg-green-900/40 flex items-center justify-center"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+            className="w-full max-w-[420px] rounded-[28px] border border-white/50 bg-white/70 backdrop-blur-2xl shadow-[0_30px_80px_-30px_rgba(15,23,42,0.55)] p-8 sm:p-10 text-center"
           >
-            <svg className="w-8 h-8 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
+            <motion.div
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              transition={{ type: "spring", delay: 0.15 }}
+              className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-blue-500/15 ring-1 ring-blue-300/50 flex items-center justify-center"
+            >
+              <svg className="w-8 h-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </motion.div>
+            <h2 className="text-2xl font-semibold text-[#0a0c12] mb-2">Check your email</h2>
+            <p className="text-slate-600 mb-8">
+              We sent a confirmation link to <span className="font-medium text-slate-800">{email}</span>. Click the link to activate your account.
+            </p>
+            <button
+              onClick={() => { setShowSuccess(false); setMode("login"); }}
+              className="text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors"
+            >
+              Back to login
+            </button>
           </motion.div>
-          <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">Check your email</h2>
-          <p className="text-gray-500 dark:text-gray-400 mb-8">
-            We sent a confirmation link to <span className="font-medium text-gray-700 dark:text-gray-300">{email}</span>. Click the link to activate your account.
-          </p>
-          <button
-            onClick={() => { setShowSuccess(false); setMode("login"); }}
-            className="text-sm font-medium text-gray-900 dark:text-white underline underline-offset-4 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-          >
-            Back to login
-          </button>
-        </motion.div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex bg-black overflow-hidden">
-      {/* Background: the synthesis layer preview floating on black. Reuses the
-          landing trio styling so it renders on pure black, strips the preview
-          chrome, and stays fully non-interactive. */}
-      <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden>
-        <div className="lkn-trio-preview w-full h-full">
-          {/* Full render (with bloom glow) on an opaque black canvas so the
-              neurons glow but the background stays pure black. */}
-          <WakeSynthesisTourPreview active populated opaqueBlackBg />
-        </div>
-      </div>
+    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ background: HERO_GRADIENT }}>
+      <FloatingOrbs />
 
-      {/* Frosted glass: heavily blur the synthesis preview so only its colored
-          glow bleeds through, never the individual nodes. */}
-      <div
-        className="absolute inset-0 z-0 backdrop-blur-[28px] backdrop-saturate-150 bg-black/30"
-        aria-hidden
-      />
-
-      {/* Left branding panel - hidden on mobile */}
-      <div className="hidden lg:flex lg:w-[45%] relative items-center justify-center p-12">
-        <div className="relative z-10 max-w-md">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-          >
-            <img src={lyknLogo} alt="LYKN" className="block h-20 w-auto mb-5 -ml-2" />
-            <p className="text-3xl font-semibold leading-relaxed mb-6 text-white">
-              Your AI interface.
-            </p>
-            <p className="text-base text-gray-300 leading-relaxed">
-              Start your 7-day free trial and get full access to everything LYKN has to offer. After your trial, LYKN Pro is just $17/month. No commitment, cancel anytime before your trial ends and you won't be charged a cent.
-            </p>
-          </motion.div>
-        </div>
-      </div>
-
-      {/* Right auth panel */}
-      <div className="flex-1 flex items-center justify-center p-6 sm:p-12 relative">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
+      <div className="relative min-h-full flex flex-col items-center justify-center px-5 py-12">
+        {/* White logo sits over the blue top of the gradient, mirroring the hero */}
+        <motion.img
+          src={lyknLogoWhite}
+          alt="LYKN"
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          className="w-full max-w-[420px] relative z-10"
+          transition={{ duration: 0.6 }}
+          className="h-12 w-auto mb-7 drop-shadow-[0_6px_22px_rgba(15,23,42,0.28)]"
+        />
+
+        {/* Glass auth card */}
+        <motion.div
+          initial={{ opacity: 0, y: 24 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+          className="w-full max-w-[440px] rounded-[28px] border border-white/50 bg-white/70 backdrop-blur-2xl shadow-[0_30px_80px_-30px_rgba(15,23,42,0.55)] p-7 sm:p-9"
         >
-          {/* Mobile branding */}
-          <div className="lg:hidden mb-8 flex justify-center">
-            <img src={lyknWordmark} alt="LYKN" className="h-9 w-auto" />
-          </div>
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={mode}
+              initial={{ opacity: 0, x: mode === "login" ? -10 : 10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: mode === "login" ? 10 : -10 }}
+              transition={{ duration: 0.2 }}
+            >
+              <h2 className="text-2xl font-semibold text-[#0a0c12] mb-1">
+                {mode === "login" ? (
+                  <span className="inline-flex items-center gap-2 leading-none">
+                    Welcome to
+                    <img src={lyknWordmark} alt="LYKN" className="h-9 w-auto -ml-2.5" />
+                  </span>
+                ) : (
+                  "Create your account"
+                )}
+              </h2>
+              <p className="text-sm text-slate-600 mb-7">
+                {mode === "login"
+                  ? "Sign in to your intelligence layer"
+                  : "Build an AI that actually knows you"}
+              </p>
 
-          <div className="bg-white/55 dark:bg-white/5 backdrop-blur-md rounded-3xl border border-gray-200/50 dark:border-white/8 shadow-lg shadow-gray-200/20 dark:shadow-black/20 p-8 sm:p-10">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={mode}
-                initial={{ opacity: 0, x: mode === "login" ? -10 : 10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: mode === "login" ? 10 : -10 }}
-                transition={{ duration: 0.2 }}
-              >
-                <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-1">
-                  {mode === "login" ? (
-                    <span className="inline-flex items-center gap-2 leading-none">
-                      Welcome to
-                      <img src={lyknWordmark} alt="LYKN" className="h-9 w-auto -ml-2.5" />
-                    </span>
-                  ) : (
-                    "Create your account"
-                  )}
-                </h2>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mb-7">
-                  {mode === "login"
-                    ? "Sign in to your intelligence layer"
-                    : "Build an AI that actually knows you"}
-                </p>
-
-                <button
-                  type="button"
-                  onClick={() => signInWithOAuth("google")}
-                  className="w-full flex items-center justify-center gap-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/10 hover:border-gray-300 dark:hover:border-white/20 transition-all duration-200 shadow-sm"
-                >
-                  <GoogleIcon />
-                  Continue with Google
-                </button>
-
-                <div className="relative my-6">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-gray-200 dark:border-white/10" />
-                  </div>
-                  <div className="relative flex justify-center text-xs">
-                    <span className="bg-white dark:bg-transparent px-3 text-gray-400 dark:text-gray-500 font-medium">or</span>
-                  </div>
-                </div>
-
-                <form onSubmit={handleSubmit} className="space-y-3">
-                  {mode === "signup" && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                    >
-                      <input
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        placeholder="Full name"
-                        autoComplete="name"
-                        className="w-full rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-white/5 px-4 py-3 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:border-gray-400 dark:focus:border-white/25 focus:bg-white dark:focus:bg-white/10 focus:ring-2 focus:ring-gray-100 dark:focus:ring-white/5 transition-all duration-200"
-                      />
-                    </motion.div>
-                  )}
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="Email address"
-                    autoComplete="email"
-                    className="w-full rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-white/5 px-4 py-3 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:border-gray-400 dark:focus:border-white/25 focus:bg-white dark:focus:bg-white/10 focus:ring-2 focus:ring-gray-100 dark:focus:ring-white/5 transition-all duration-200"
-                  />
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="Password"
-                    autoComplete={mode === "login" ? "current-password" : "new-password"}
-                    className="w-full rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-white/5 px-4 py-3 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 outline-none focus:border-gray-400 dark:focus:border-white/25 focus:bg-white dark:focus:bg-white/10 focus:ring-2 focus:ring-gray-100 dark:focus:ring-white/5 transition-all duration-200"
-                  />
-
-                  <AnimatePresence>
-                    {displayError && (
-                      <motion.div
-                        initial={{ opacity: 0, y: -4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -4 }}
-                        className="flex items-center gap-2 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900/50 px-3 py-2.5"
-                      >
-                        <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                        </svg>
-                        <span className="text-xs text-red-700 dark:text-red-300">{displayError}</span>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-
-                  <button
-                    type="submit"
-                    disabled={submitting}
-                    className="w-full rounded-xl bg-gray-900 dark:bg-white px-4 py-3 text-sm font-medium text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-sm shadow-gray-900/20 dark:shadow-black/20 mt-1"
-                  >
-                    {submitting ? (
-                      <span className="flex items-center justify-center gap-2">
-                        <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        {mode === "login" ? "Signing in..." : "Creating account..."}
-                      </span>
-                    ) : (
-                      mode === "login" ? "Sign in" : "Create account"
-                    )}
-                  </button>
-                </form>
-              </motion.div>
-            </AnimatePresence>
-
-            <div className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
-              {mode === "login" ? "Don't have an account?" : "Already have an account?"}{" "}
               <button
                 type="button"
-                onClick={switchMode}
-                className="font-medium text-gray-900 dark:text-white hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+                onClick={() => signInWithOAuth("google")}
+                className="w-full flex items-center justify-center gap-3 rounded-xl border border-white/70 bg-white/80 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-white hover:border-white transition-all duration-200 shadow-sm"
               >
-                {mode === "login" ? "Sign up" : "Sign in"}
+                <GoogleIcon />
+                Continue with Google
               </button>
-            </div>
+
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-slate-300/50" />
+                </div>
+                <div className="relative flex justify-center text-xs">
+                  <span className="rounded-full bg-white/70 backdrop-blur-sm px-3 py-0.5 text-slate-500 font-medium">or</span>
+                </div>
+              </div>
+
+              <form onSubmit={handleSubmit} className="space-y-3">
+                {mode === "signup" && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                  >
+                    <input
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Full name"
+                      autoComplete="name"
+                      className="w-full rounded-xl border border-white/70 bg-white/55 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:bg-white/90 focus:ring-2 focus:ring-blue-200/60 transition-all duration-200"
+                    />
+                  </motion.div>
+                )}
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Email address"
+                  autoComplete="email"
+                  className="w-full rounded-xl border border-white/70 bg-white/55 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:bg-white/90 focus:ring-2 focus:ring-blue-200/60 transition-all duration-200"
+                />
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Password"
+                  autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  className="w-full rounded-xl border border-white/70 bg-white/55 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:bg-white/90 focus:ring-2 focus:ring-blue-200/60 transition-all duration-200"
+                />
+
+                <AnimatePresence>
+                  {displayError && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      className="flex items-center gap-2 rounded-lg bg-red-50/90 border border-red-200/70 px-3 py-2.5"
+                    >
+                      <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                      </svg>
+                      <span className="text-xs text-red-700">{displayError}</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <motion.button
+                  type="submit"
+                  disabled={submitting}
+                  whileHover={{ y: -1 }}
+                  whileTap={{ scale: 0.99 }}
+                  className="w-full rounded-xl px-4 py-3 text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200 mt-1 bg-gradient-to-b from-[#6ea8ff] to-[#2563eb] shadow-[0_12px_26px_-10px_rgba(37,99,235,0.65),inset_0_1px_0_rgba(255,255,255,0.45)] hover:from-[#5b9bff] hover:to-[#1e40af]"
+                >
+                  {submitting ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      {mode === "login" ? "Signing in..." : "Creating account..."}
+                    </span>
+                  ) : (
+                    mode === "login" ? "Sign in" : "Create account"
+                  )}
+                </motion.button>
+              </form>
+            </motion.div>
+          </AnimatePresence>
+
+          <div className="mt-6 text-center text-sm text-slate-600">
+            {mode === "login" ? "Don't have an account?" : "Already have an account?"}{" "}
+            <button
+              type="button"
+              onClick={switchMode}
+              className="font-semibold text-blue-600 hover:text-blue-700 transition-colors"
+            >
+              {mode === "login" ? "Sign up" : "Sign in"}
+            </button>
           </div>
 
-          <p className="mt-6 text-center text-xs text-gray-400 dark:text-gray-500">
+          <p className="mt-6 pt-5 border-t border-slate-300/40 text-center text-[11px] leading-relaxed text-slate-500">
             By continuing, you agree to LYKN's{" "}
-            <Link
-              to="/terms"
-              className="underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-300"
-            >
+            <Link to="/terms" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
               Terms of Service
             </Link>
             ,{" "}
-            <Link
-              to="/privacy"
-              className="underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-300"
-            >
+            <Link to="/privacy" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
               Privacy Policy
             </Link>
             , and{" "}
-            <Link
-              to="/cookies"
-              className="underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-300"
-            >
+            <Link to="/cookies" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
               Cookie Policy
             </Link>
             .
           </p>
         </motion.div>
+
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.6, delay: 0.3 }}
+          className="mt-6 flex items-center gap-2 text-sm text-white/85"
+        >
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-300" />
+          Free to start · no credit card · upgrade anytime
+        </motion.p>
       </div>
     </div>
   );

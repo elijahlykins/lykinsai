@@ -28,6 +28,7 @@ import {
   Search,
   StickyNote,
   Sparkles,
+  Sun,
   Tag,
   X,
 } from "lucide-react";
@@ -3925,6 +3926,28 @@ export default function SynthesisLayer() {
   // by design), so we deliberately skip the heavy renderer there.
   const isMobile = useIsMobile();
 
+  // The synthesis layer always renders in its dark treatment (the 3D glow only
+  // reads on a dark backdrop). If the user arrives here while their app theme is
+  // light, force the whole app to dark for the duration of the visit — using
+  // the same `.dark` class on <html> that global dark mode uses, so the sidebar
+  // and every other dark: surface flip exactly as they do in real dark mode.
+  // We also briefly surface a notice that the layer is a dark-only space, then
+  // restore the user's light theme on the way out.
+  const [showLightModeNotice, setShowLightModeNotice] = useState(false);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const html = document.documentElement;
+    const appInLightMode = !html.classList.contains("dark");
+    if (!appInLightMode) return;
+    html.classList.add("dark");
+    setShowLightModeNotice(true);
+    const t = setTimeout(() => setShowLightModeNotice(false), 4500);
+    return () => {
+      clearTimeout(t);
+      html.classList.remove("dark");
+    };
+  }, []);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // (Historical note: a `showWelcome` boolean used to gate the
   // typewriter WelcomePanel. The panel was replaced by the in-chat
@@ -5460,11 +5483,11 @@ export default function SynthesisLayer() {
   return (
     <div
       ref={containerRef}
-      className="fixed inset-0 overflow-hidden select-none"
-      // Match the app's dark-mode background (--background = hsl(0 0% 12%)
-      // in src/index.css). Hardcoded so the 3D glow stays readable even
-      // when the user is in light mode — the bloom effect needs a dark
-      // backdrop to read regardless of the rest of the app's theme.
+      // The synthesis layer is always rendered in its dark treatment — the 3D
+      // glow (emissive + Bloom) only reads on a dark backdrop, so scoping the
+      // whole page to `.dark` forces every dark: utility + CSS var (labels,
+      // chrome) to its dark variant regardless of the app's global theme.
+      className="dark fixed inset-0 overflow-hidden select-none"
       style={{ backgroundColor: "hsl(0 0% 12%)" }}
     >
       {/* 3D Scene area — orbit, hover, click happen inside the Canvas. The
@@ -5479,7 +5502,7 @@ export default function SynthesisLayer() {
             read against a slight gradient. Edges fade to fully transparent so
             the page-level dark-mode background (hsl(0 0% 12%)) shows through
             and the canvas matches the rest of the app's chrome. */}
-        <div
+          <div
           className="absolute inset-0 pointer-events-none"
           style={{
             background:
@@ -5500,9 +5523,9 @@ export default function SynthesisLayer() {
         {isEmpty && (
           <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
             <div className="text-center space-y-3">
-              <Brain className="w-12 h-12 text-indigo-300 mx-auto" />
-              <p className="text-sm text-gray-300">Your Synthesis Layer is empty.</p>
-              <p className="text-xs text-gray-400">Create chats or vault notes to see them here.</p>
+              <Brain className="w-12 h-12 text-indigo-500 dark:text-indigo-300 mx-auto" />
+              <p className="text-sm text-gray-700 dark:text-gray-300">Your Synthesis Layer is empty.</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Create chats or vault notes to see them here.</p>
             </div>
           </div>
         )}
@@ -5818,11 +5841,11 @@ export default function SynthesisLayer() {
             // INTO "By Idea" or "By Project" suddenly grows the
             // row height and the bare-text mode button appears
             // to "drop into place" — which read as a layout jank.
-            className="flex items-center gap-1.5 py-1.5 text-[0.6875rem] font-medium text-white/75 hover:text-white transition-colors"
+            className="flex items-center gap-1.5 py-1.5 text-[0.6875rem] font-medium text-black/70 dark:text-white/75 hover:text-black dark:hover:text-white transition-colors"
           >
             {(() => { const m = layoutModes.find((l) => l.id === layoutMode); return m ? <m.icon size={13} /> : null; })()}
             {layoutModes.find((l) => l.id === layoutMode)?.label}
-            <ChevronDown size={11} className="text-white/45" />
+            <ChevronDown size={11} className="text-black/45 dark:text-white/45" />
           </button>
           <AnimatePresence>
             {showModeMenu && (
@@ -6047,19 +6070,46 @@ export default function SynthesisLayer() {
           : "absolute top-5 left-0 right-0 z-20 flex justify-center pointer-events-none"
       }>
         <div className="flex items-center gap-2.5">
-          <h1 className="text-sm font-semibold text-white/85 tracking-wide" style={{ textShadow: "0 0 14px rgba(99,102,241,0.4)" }}>Synthesis Layer</h1>
+          <h1 className="text-sm font-semibold text-black/85 dark:text-white/85 tracking-wide" style={{ textShadow: "0 0 14px rgba(99,102,241,0.4)" }}>Synthesis Layer</h1>
         </div>
       </div>
+
+      {/* Light-mode notice — a brief, self-dismissing card shown when the user
+          lands here with the app in light mode (the synthesis layer is a
+          dark-only space by design). */}
+      <AnimatePresence>
+        {showLightModeNotice && (
+          <motion.div
+            key="light-mode-notice"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.28, ease: "easeOut" }}
+            className="fixed top-16 left-1/2 -translate-x-1/2 z-[110] pointer-events-none"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="flex items-center gap-2.5 rounded-full bg-[rgba(23,23,23,0.92)] backdrop-blur-md border border-white/12 shadow-[0_12px_40px_rgba(0,0,0,0.45)] pl-3 pr-4 py-2">
+              <span className="flex-shrink-0 h-6 w-6 rounded-full bg-amber-400/15 border border-amber-300/30 flex items-center justify-center">
+                <Sun size={13} className="text-amber-300" />
+              </span>
+              <p className="text-[0.75rem] text-white/85 leading-snug">
+                The Synthesis Layer isn’t available in light mode.
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Stats. Right offset always leaves room for the always-visible
           recent-activity toggle button (sidebar-style chevron pinned at
           right-4, w-8). When the detail panel or recent-activity panel
           covers the right edge entirely, push further. */}
-      <div className="absolute top-6 z-20 flex items-center gap-4 text-[0.625rem] text-white/60 pointer-events-none transition-[right] duration-300"
+      <div className="absolute top-6 z-20 flex items-center gap-4 text-[0.625rem] text-black/60 dark:text-white/60 pointer-events-none transition-[right] duration-300"
         style={{ right: anyRightPanelOpen ? 396 : 56 }}
       >
         <span>{boards.length} chats</span>
-        <span className="w-px h-3 bg-white/15" />
+        <span className="w-px h-3 bg-black/15 dark:bg-white/15" />
         <span>{notes.length} notes</span>
       </div>
 
@@ -6091,8 +6141,8 @@ export default function SynthesisLayer() {
             onClick={() => setAddMenuOpen((v) => !v)}
             className={`relative w-11 h-11 rounded-full backdrop-blur border flex items-center justify-center shadow-[0_6px_20px_rgba(0,0,0,0.35)] transition-colors ${
               addMenuOpen
-                ? "bg-blue-500/25 border-blue-400/45 text-blue-100"
-                : "bg-white/10 border-white/15 text-white/85 hover:bg-white/16 hover:border-white/25"
+                ? "bg-blue-500/25 border-blue-400/45 text-blue-600 dark:text-blue-100"
+                : "bg-black/[0.06] dark:bg-white/10 border-black/10 dark:border-white/15 text-black/75 dark:text-white/85 hover:bg-black/10 dark:hover:bg-white/16 hover:border-black/20 dark:hover:border-white/25"
             }`}
             title="Add a neuron"
             aria-label="Add a neuron"
@@ -6276,7 +6326,9 @@ export default function SynthesisLayer() {
           identity tiers (Belief / Facts / Concepts). Tags collapsed
           into Vault attributes; Perspectives folded into the Belief
           cluster; AI-learned neurons absorbed into Facts. */}
-      <div className="absolute bottom-6 left-6 z-20 flex flex-wrap gap-3 text-[0.625rem] text-white/55 pointer-events-none">
+      <div className={`absolute bottom-6 z-20 flex flex-wrap gap-3 text-[0.625rem] text-black/55 dark:text-white/55 pointer-events-none ${
+        isMobile ? "left-6" : "left-[13rem]"
+      }`}>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.grids.bg, color: palette.grids.bg }} /> Chats</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.vault.bg, color: palette.vault.bg }} /> Vault</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.belief.bg, color: palette.belief.bg }} /> Beliefs</span>
@@ -6290,7 +6342,7 @@ export default function SynthesisLayer() {
           the action bar for the same bottom-center slot. */}
       {!linkingMode && !projectMode && (
         <div
-          className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-[0.6rem] text-white/40 pointer-events-none animate-pulse"
+          className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-[0.6rem] text-black/45 dark:text-white/40 pointer-events-none animate-pulse"
         >
           drag to orbit · scroll to zoom · shift+drag to pan
         </div>

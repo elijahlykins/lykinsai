@@ -423,10 +423,28 @@ export default function BillingNew() {
             Pick the plan that fits how you work
           </h2>
           <p className="text-base text-black/45 dark:text-white/60 mt-3 max-w-lg mx-auto leading-relaxed">
-            Go Pro for every model and an unlimited workspace, or get the same
-            on the Student plan for $15/mo. Cancel anytime, no hidden fees.
+            You're already on Free with the full app. Go Pro for every model and
+            an unlimited workspace, or get the same on the Student plan for
+            $15/mo. Cancel anytime, no hidden fees.
           </p>
         </div>
+
+        {/* Current-plan banner — make the free tier visible */}
+        {currentPlan === "free" && (
+          <div className="max-w-3xl mx-auto mb-6">
+            <div className="flex flex-col gap-1 rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-black/[0.02] dark:bg-white/[0.04] px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+              <p className="text-sm text-black/70 dark:text-white/75">
+                You're on the{" "}
+                <span className="font-semibold text-black/90 dark:text-white">Free</span>{" "}
+                plan — the full app with capped limits: 100 synthesis neurons, 50
+                Vault cards, and LYKN's core models.
+              </p>
+              <span className="flex-shrink-0 text-xs font-medium text-black/45 dark:text-white/55">
+                Upgrade for unlimited everything →
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Toggle + Plan Cards */}
         <div className="max-w-3xl mx-auto">

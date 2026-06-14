@@ -19,7 +19,7 @@ export default function WakeSynthesisSubwindow({
           <span />
           <span />
         </div>
-        <span className="lykn-wake-subwindow-title">Synthesis Layer</span>
+        <span className="lykn-wake-subwindow-title">Intelligence Layer</span>
       </div>
       <div className="lykn-wake-subwindow-body">
         {showPreview ? <WakeSynthesisTourPreview active={active} /> : null}

@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import lyknIconNeutral from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
+import lyknIconBlue from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-BLUE-master.png";
 import ReactMarkdown from "react-markdown";
 import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } from "@/lib/chat/chatMarkdown";
 import ThinkingIndicator from "@/components/omnia/ThinkingIndicator";
@@ -36,10 +37,13 @@ const resolveModelLabel = (modelId?: string | null) => {
   return KNOWN_MODEL_IDS.includes(id) ? labelForModelId(id) : "LYKN";
 };
 
-// LYKN mark shown in the AI Response pill. Uses the neutral (near-white)
-// icon asset so it reads on the translucent pill background.
+// LYKN mark shown in the AI Response pill. Blue in light mode; the neutral
+// (near-white) icon in dark mode so it reads on the translucent pill.
 const LyknWordmark = ({ className = "" }: { className?: string }) => (
-  <img src={lyknIconNeutral} alt="LYKN" className={className} />
+  <>
+    <img src={lyknIconBlue} alt="LYKN" className={`${className} block dark:hidden`} />
+    <img src={lyknIconNeutral} alt="LYKN" className={`${className} hidden dark:block`} />
+  </>
 );
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
@@ -387,6 +391,8 @@ export interface OmniaFocusedChatProps {
    */
   activeArtifact?: ChatArtifact | null;
   onActiveArtifactChange?: (artifact: ChatArtifact | null) => void;
+  /** Save the open artifact (deck/doc/chart/file) to the vault. */
+  onSaveArtifact?: (artifact: ChatArtifact) => Promise<boolean> | boolean | void;
   /** Identifier for the currently-shown chat — switching it closes the panel. */
   chatKey?: string;
 }
@@ -1876,6 +1882,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
   pinComposerToBottom = false,
   activeArtifact = null,
   onActiveArtifactChange,
+  onSaveArtifact,
   chatKey,
 }) {
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
@@ -2215,6 +2222,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
           isUpdating={isChatLoading}
           fullWidth={isMobilePhone}
           onClose={() => onActiveArtifactChange(null)}
+          onSaveToVault={onSaveArtifact}
         />
       ) : null}
     </>

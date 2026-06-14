@@ -31,6 +31,8 @@ interface WakeChatTourPreviewProps {
       standalone chat feature preview opts in; the full app-shell preview
       leaves it closed. */
   showModelMenu?: boolean;
+  /** Render the pulled-up model menu on a light surface (light-theme preview). */
+  lightModelMenu?: boolean;
 }
 
 const CHAT_TIMEOUT_MS = 30_000;
@@ -57,6 +59,7 @@ function groupPreviewTurns(messages: PreviewMessage[]): PreviewTurn[] {
 export default function WakeChatTourPreview({
   active = true,
   showModelMenu = false,
+  lightModelMenu = false,
 }: WakeChatTourPreviewProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -360,7 +363,7 @@ export default function WakeChatTourPreview({
                 Only the standalone chat feature preview opts into this. */}
             {showModelMenu && (
               <div className="lykn-wake-chat-preview-model-menu" aria-hidden>
-                <WakeModelMenuPreview selectedModel={LYKN_ID} />
+                <WakeModelMenuPreview selectedModel={LYKN_ID} lightMode={lightModelMenu} />
               </div>
             )}
 

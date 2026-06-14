@@ -615,6 +615,8 @@ export async function removeNeuronFromProject(
 // the user-facing meaning of the project working state.
 
 export interface ProjectStateUpdate {
+  /** Row id in `lykn_project_state` — needed to supersede on user edit. */
+  id: string;
   stateKey: string;
   value: string;
   setByClient: string | null;
@@ -638,7 +640,7 @@ export async function listProjectStateUpdates(
     // panel scroll forever.
     const { data, error } = await supabase
       .from("lykn_project_state")
-      .select("state_key, state_value, set_by_client, created_at, reason")
+      .select("id, state_key, state_value, set_by_client, created_at, reason")
       .eq("user_id", userId)
       .eq("project_id", projectId)
       .is("superseded_at", null)
@@ -646,6 +648,7 @@ export async function listProjectStateUpdates(
       .limit(limit);
     if (error) throw error;
     return (data || []).map((r) => ({
+      id: r.id as string,
       stateKey: r.state_key as string,
       value: r.state_value as string,
       setByClient: (r.set_by_client as string | null) ?? null,
@@ -656,6 +659,173 @@ export async function listProjectStateUpdates(
     // Table missing / RLS / network — return empty rather than
     // surfacing an error in the panel; "no updates yet" is the
     // correct UX for a brand-new project anyway.
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Edit — user correction of an AI-pushed state value.
+// ---------------------------------------------------------------------------
+//
+// Follows the table's supersession contract instead of mutating in
+// place: insert a fresh row at the same state_key with
+// set_by_client='user', then stamp `superseded_at` on the row being
+// edited. The audit trail keeps what the AI originally said AND the
+// user's correction — same shape as a contradictory push from another
+// client, which is exactly what a manual edit is.
+export async function editProjectStateUpdate(
+  userId: string | null | undefined,
+  projectId: string,
+  update: { id: string; stateKey: string },
+  newValue: string,
+): Promise<boolean> {
+  const value = newValue.trim().slice(0, 2000);
+  if (!userId || !projectId || !update?.id || !value) return false;
+  try {
+    const { error: insErr } = await supabase.from("lykn_project_state").insert({
+      user_id: userId,
+      project_id: projectId,
+      state_key: update.stateKey,
+      state_value: value,
+      set_by_client: "user",
+      reason: "Edited by the user on the Projects page.",
+    });
+    if (insErr) throw insErr;
+
+    const { error: supErr } = await supabase
+      .from("lykn_project_state")
+      .update({ superseded_at: new Date().toISOString() })
+      .eq("id", update.id)
+      .eq("user_id", userId);
+    if (supErr) throw supErr;
+
+    // The project was just touched by the user — float it up.
+    await supabase
+      .from("lykn_projects")
+      .update({
+        last_active_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", projectId)
+      .eq("user_id", userId);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Status + focus — activate / deactivate projects, and the AI focus pointer.
+// ---------------------------------------------------------------------------
+//
+// "Active vs archived" is the `lykn_projects.status` column: archived
+// projects stop shipping in getContextBlock but keep their history.
+// Separately, `lykn_user_synthesis_profile.active_project_id` is the ONE
+// project outside AI clients treat as the current focus. The Projects
+// page exposes both.
+
+export async function setUserProjectStatus(
+  userId: string | null | undefined,
+  projectId: string,
+  status: "active" | "archived",
+): Promise<boolean> {
+  if (!projectId) return false;
+
+  // Mirror into localStorage so the guest/fallback tier stays coherent.
+  const local = readLocal(userId);
+  const idx = local.findIndex((p) => p.id === projectId);
+  if (idx !== -1) {
+    local[idx] = { ...local[idx], status, lastActiveAt: Date.now() };
+    writeLocal(userId, local);
+  }
+
+  if (!userId) return idx !== -1;
+  try {
+    const { error } = await supabase
+      .from("lykn_projects")
+      .update({
+        status,
+        last_active_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", projectId)
+      .eq("user_id", userId);
+    if (error) throw error;
+    return true;
+  } catch {
+    return idx !== -1;
+  }
+}
+
+export async function getActiveProjectId(
+  userId: string | null | undefined,
+): Promise<string | null> {
+  if (!userId) return null;
+  try {
+    const { data, error } = await supabase
+      .from("lykn_user_synthesis_profile")
+      .select("active_project_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) throw error;
+    return (data?.active_project_id as string | null) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Point the AI focus at `projectId`, or clear it with null. */
+export async function setActiveProjectId(
+  userId: string | null | undefined,
+  projectId: string | null,
+): Promise<boolean> {
+  if (!userId) return false;
+  try {
+    const { error } = await supabase
+      .from("lykn_user_synthesis_profile")
+      .upsert(
+        {
+          user_id: userId,
+          active_project_id: projectId,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" },
+      );
+    if (error) throw error;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Push events — raw timestamps for the activity chart.
+// ---------------------------------------------------------------------------
+//
+// Unlike `listProjectStateUpdates` (latest value per key), this pulls
+// EVERY push row's created_at — superseded included — because each row
+// is one "an AI worked on this project" event. The Projects page bins
+// these into a per-week usage chart.
+export async function listProjectPushEvents(
+  userId: string | null | undefined,
+  projectId: string,
+  limit = 500,
+): Promise<number[]> {
+  if (!userId || !projectId) return [];
+  try {
+    const { data, error } = await supabase
+      .from("lykn_project_state")
+      .select("created_at")
+      .eq("user_id", userId)
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return (data || [])
+      .map((r) => (r.created_at ? new Date(r.created_at as string).getTime() : 0))
+      .filter(Boolean);
+  } catch {
     return [];
   }
 }

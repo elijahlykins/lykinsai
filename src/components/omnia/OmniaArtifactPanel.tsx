@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, Download, ExternalLink, FileDown, Loader2, Sparkles, X as XIcon } from "lucide-react";
+import { Check, ChevronDown, Download, ExternalLink, FileDown, Loader2, Bookmark, Sparkles, X as XIcon } from "lucide-react";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 
 export type OmniaArtifactPanelProps = {
@@ -9,6 +9,8 @@ export type OmniaArtifactPanelProps = {
   /** Full-viewport width on phones; a fixed right column on desktop (split view). */
   fullWidth?: boolean;
   onClose: () => void;
+  /** Save the artifact to the vault. Resolves true on success. */
+  onSaveToVault?: (artifact: ChatArtifact) => Promise<boolean> | boolean | void;
 };
 
 /** Desktop split-view width — kept in sync with the chat's right inset. */
@@ -48,8 +50,22 @@ function badgeFor(artifact: ChatArtifact): string {
  * artifact large and stays open while the user refines it in chat — each edit
  * rebuilds the artifact and updates this panel in place.
  */
-export default function OmniaArtifactPanel({ artifact, isUpdating, fullWidth, onClose }: OmniaArtifactPanelProps) {
+export default function OmniaArtifactPanel({ artifact, isUpdating, fullWidth, onClose, onSaveToVault }: OmniaArtifactPanelProps) {
   const open = !!artifact;
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  // Reset the save affordance whenever the panel switches to a different artifact.
+  useEffect(() => { setSaveState("idle"); }, [artifact?.id]);
+
+  const handleSaveToVault = useCallback(async () => {
+    if (!artifact || !onSaveToVault || saveState !== "idle") return;
+    setSaveState("saving");
+    try {
+      const ok = await onSaveToVault(artifact);
+      setSaveState(ok === false ? "idle" : "saved");
+    } catch {
+      setSaveState("idle");
+    }
+  }, [artifact, onSaveToVault, saveState]);
   const openUrl = artifact?.previewUrl || artifact?.downloadUrl;
   const downloads = artifact?.downloads && artifact.downloads.length
     ? artifact.downloads
@@ -156,6 +172,28 @@ export default function OmniaArtifactPanel({ artifact, isUpdating, fullWidth, on
                     <ExternalLink className="h-3.5 w-3.5" />
                     Open
                   </a>
+                ) : null}
+                {onSaveToVault ? (
+                  <button
+                    type="button"
+                    onClick={handleSaveToVault}
+                    disabled={saveState !== "idle"}
+                    className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-medium transition-colors ${
+                      saveState === "saved"
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                        : "border-black/10 text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
+                    }`}
+                    title="Save to your vault"
+                  >
+                    {saveState === "saving" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : saveState === "saved" ? (
+                      <Check className="h-3.5 w-3.5" />
+                    ) : (
+                      <Bookmark className="h-3.5 w-3.5" />
+                    )}
+                    {saveState === "saved" ? "Saved" : "Save"}
+                  </button>
                 ) : null}
                 {artifact.kind === "html" && (artifact.srcDoc || artifact.previewUrl) ? (
                   <button

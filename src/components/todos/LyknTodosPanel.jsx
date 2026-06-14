@@ -23,8 +23,8 @@ import { toast } from "@/components/ui/use-toast";
 
 const PRIORITY_META = {
   high: { label: "High", dot: "bg-red-500", text: "text-red-500" },
-  normal: { label: "Normal", dot: "bg-blue-400", text: "text-blue-400" },
-  low: { label: "Low", dot: "bg-white/30", text: "text-white/40" },
+  normal: { label: "Normal", dot: "bg-blue-500 dark:bg-blue-400", text: "text-blue-500 dark:text-blue-400" },
+  low: { label: "Low", dot: "bg-black/25 dark:bg-white/30", text: "text-black/40 dark:text-white/40" },
 };
 const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
 
@@ -288,34 +288,34 @@ export default function LyknTodosPanel({ active = true }) {
     return (
       <div
         key={todo.id}
-        className="group flex items-start gap-2.5 px-3 py-2.5 rounded-lg hover:bg-white/[0.03] transition-colors"
+        className="group flex items-start gap-2.5 px-3 py-2.5 rounded-lg hover:bg-black/[0.03] dark:hover:bg-white/[0.03] transition-colors"
       >
         <button
           type="button"
           disabled={isBusy}
           onClick={() => setStatus(todo, done ? "open" : "completed")}
-          className="mt-0.5 shrink-0 text-white/40 hover:text-emerald-400 transition-colors disabled:opacity-50"
+          className="mt-0.5 shrink-0 text-black/40 dark:text-white/40 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors disabled:opacity-50"
           title={done ? "Mark as not done" : "Mark done"}
         >
           {done ? (
-            <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+            <CheckCircle2 className="w-5 h-5 text-emerald-500 dark:text-emerald-400" />
           ) : (
             <Circle className="w-5 h-5" />
           )}
         </button>
 
         <div className="min-w-0 flex-1">
-          <div className={`text-[0.875rem] leading-snug break-words ${done ? "line-through text-white/35" : "text-white/90"}`}>
+          <div className={`text-[0.875rem] leading-snug break-words ${done ? "line-through text-black/35 dark:text-white/35" : "text-black/90 dark:text-white/90"}`}>
             {todo.title}
           </div>
           {todo.notes ? (
-            <div className={`text-[0.75rem] mt-0.5 break-words ${done ? "text-white/25" : "text-white/45"}`}>
+            <div className={`text-[0.75rem] mt-0.5 break-words ${done ? "text-black/30 dark:text-white/25" : "text-black/50 dark:text-white/45"}`}>
               {todo.notes}
             </div>
           ) : null}
           <div className="flex items-center gap-2 mt-1">
             {due ? (
-              <span className={`text-[0.6875rem] ${overdue ? "text-red-400 font-medium" : "text-white/40"}`}>
+              <span className={`text-[0.6875rem] ${overdue ? "text-red-500 dark:text-red-400 font-medium" : "text-black/45 dark:text-white/40"}`}>
                 {overdue ? "Overdue · " : "Due "}{due}
               </span>
             ) : null}
@@ -334,7 +334,7 @@ export default function LyknTodosPanel({ active = true }) {
               type="button"
               disabled={isBusy}
               onClick={() => cyclePriority(todo)}
-              className="p-1 rounded-md text-white/35 hover:text-white/80 hover:bg-white/10 transition-colors disabled:opacity-50"
+              className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
               title={`Priority: ${pri.label} (click to change)`}
             >
               <Flag className="w-3.5 h-3.5" />
@@ -344,7 +344,7 @@ export default function LyknTodosPanel({ active = true }) {
               type="button"
               disabled={isBusy}
               onClick={() => setStatus(todo, "open")}
-              className="p-1 rounded-md text-white/35 hover:text-white/80 hover:bg-white/10 transition-colors disabled:opacity-50"
+              className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
               title="Reopen"
             >
               <RotateCcw className="w-3.5 h-3.5" />
@@ -354,7 +354,7 @@ export default function LyknTodosPanel({ active = true }) {
             type="button"
             disabled={isBusy}
             onClick={() => removeTodo(todo)}
-            className="p-1 rounded-md text-white/35 hover:text-red-400 hover:bg-white/10 transition-colors disabled:opacity-50"
+            className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-red-500 dark:hover:text-red-400 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
             title="Delete"
           >
             {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
@@ -365,9 +365,9 @@ export default function LyknTodosPanel({ active = true }) {
   };
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 [color-scheme:dark]">
+    <div className="flex flex-col flex-1 min-h-0">
       {/* Add form */}
-      <div className="flex flex-col gap-2 pb-3 border-b border-white/10">
+      <div className="flex flex-col gap-2 pb-3 border-b border-black/10 dark:border-white/10">
         <div className="flex items-center gap-2">
           <input
             ref={titleRef}
@@ -380,7 +380,7 @@ export default function LyknTodosPanel({ active = true }) {
               }
             }}
             placeholder="Add a task…"
-            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[0.875rem] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+            className="flex-1 bg-black/[0.04] dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-[0.875rem] text-black dark:text-white placeholder:text-black/30 dark:placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
           />
           <button
             type="button"
@@ -396,7 +396,7 @@ export default function LyknTodosPanel({ active = true }) {
           <select
             value={draftPriority}
             onChange={(e) => setDraftPriority(e.target.value)}
-            className="bg-white/5 border border-white/10 rounded-md px-2 py-1 text-white/80 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+            className="bg-black/[0.04] dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md px-2 py-1 text-black/80 dark:text-white/80 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
             title="Priority"
           >
             <option value="low">Low priority</option>
@@ -407,7 +407,7 @@ export default function LyknTodosPanel({ active = true }) {
             type="date"
             value={draftDue}
             onChange={(e) => setDraftDue(e.target.value)}
-            className="bg-white/5 border border-white/10 rounded-md px-2 py-1 text-white/80 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+            className="bg-black/[0.04] dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md px-2 py-1 text-black/80 dark:text-white/80 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
             title="Optional due date"
           />
         </div>
@@ -416,25 +416,25 @@ export default function LyknTodosPanel({ active = true }) {
       {/* List */}
       <div className="overflow-y-auto -mx-2 px-2 py-1 flex-1 min-h-[8rem] max-h-[55vh]">
         {loading ? (
-          <div className="flex items-center justify-center py-10 text-white/40">
+          <div className="flex items-center justify-center py-10 text-black/40 dark:text-white/40">
             <Loader2 className="w-5 h-5 animate-spin" />
           </div>
         ) : openTodos.length === 0 && doneTodos.length === 0 ? (
-          <div className="text-center py-10 text-white/40 text-[0.8125rem]">
+          <div className="text-center py-10 text-black/40 dark:text-white/40 text-[0.8125rem]">
             Nothing on your list yet. Add a task above, or ask LYKN to.
           </div>
         ) : (
           <>
             {openTodos.length === 0 ? (
-              <div className="text-center py-6 text-white/35 text-[0.8125rem]">
+              <div className="text-center py-6 text-black/35 dark:text-white/35 text-[0.8125rem]">
                 All caught up — nothing open.
               </div>
             ) : (
               openTodos.map(renderRow)
             )}
             {doneTodos.length > 0 ? (
-              <div className="mt-3 pt-2 border-t border-white/10">
-                <div className="px-3 pb-1 text-[0.6875rem] uppercase tracking-wide text-white/30">
+              <div className="mt-3 pt-2 border-t border-black/10 dark:border-white/10">
+                <div className="px-3 pb-1 text-[0.6875rem] uppercase tracking-wide text-black/30 dark:text-white/30">
                   Recently completed
                 </div>
                 {doneTodos.map(renderRow)}
@@ -445,12 +445,12 @@ export default function LyknTodosPanel({ active = true }) {
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between pt-2 border-t border-white/10 text-[0.75rem] text-white/40">
+      <div className="flex items-center justify-between pt-2 border-t border-black/10 dark:border-white/10 text-[0.75rem] text-black/40 dark:text-white/40">
         <span>
           {openTodos.length} open{openTodos.length === 1 ? " task" : " tasks"}
         </span>
         {doneTodos.length > 0 ? (
-          <span className="text-white/30">Completed items clear after 24h</span>
+          <span className="text-black/30 dark:text-white/30">Completed items clear after 24h</span>
         ) : null}
       </div>
     </div>

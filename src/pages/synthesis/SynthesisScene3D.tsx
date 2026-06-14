@@ -174,6 +174,12 @@ interface Props {
    * Leave undefined in-app so the canvas stays transparent over its host.
    */
   opaqueBlackBg?: boolean;
+  /**
+   * Light theme active. Softens/retunes the Bloom pass and lifts ambient so
+   * the scene reads as glowing-but-futuristic over a light backdrop instead of
+   * washing the whole canvas grey (additive bloom needs a darker base to read).
+   */
+  isLight?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -219,13 +225,73 @@ interface NeuronProps {
    * the edge animation's duration in `Edge`.
    */
   isForming?: boolean;
+  /**
+   * Light theme active. Pure-white emissive cores (Beliefs) blow out into a
+   * giant white blob on a light backdrop, so in light mode we swap those to a
+   * saturated violet and scale the whole scene's emissive down so bloom adds a
+   * tight glow instead of washing the canvas.
+   */
+  isLight?: boolean;
 }
 
 const NEURON_FORMATION_DELAY_S = 0.8;
 const NEURON_FORMATION_DURATION_S = 0.6;
 
-function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, onClick, isLinkSelected = false, isForming = false }: NeuronProps) {
+/* ------------------------------------------------------------------ */
+/*  Soft radial glow sprite (light theme).                             */
+/*  Bloom is additive and only reads on a dark backdrop, so in light   */
+/*  mode each neuron carries its own camera-facing glow sprite instead */
+/*  — a white→transparent radial gradient tinted to the node color.    */
+/*  Normal-blended, so it composites as a soft colored halo on a light */
+/*  background (where additive bloom would just wash to white).        */
+/* ------------------------------------------------------------------ */
+let _glowTexture: THREE.CanvasTexture | null = null;
+function getGlowTexture(): THREE.CanvasTexture | null {
+  if (_glowTexture) return _glowTexture;
+  if (typeof document === "undefined") return null;
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.42, "rgba(255,255,255,0.75)");
+  g.addColorStop(0.72, "rgba(255,255,255,0.2)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  _glowTexture = tex;
+  return tex;
+}
+
+function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, onClick, isLinkSelected = false, isForming = false, isLight = false }: NeuronProps) {
   const groupRef = useRef<THREE.Group>(null);
+
+  // Light-theme color/emissive remap. On a light backdrop the additive bloom
+  // around bright emissive cores swells into washed-out blobs (worst on the
+  // pure-white Belief "stars"). In light mode we therefore render every neuron
+  // as a PASTEL: repaint near-white cores to a violet base first (so beliefs
+  // read as colored stars, not white), then lift each color toward white into
+  // a soft pastel and scale emissive down so bloom only adds a gentle halo.
+  // Identity in dark mode.
+  const isNearWhite = useMemo(() => {
+    const c = new THREE.Color(node.color);
+    return c.r > 0.85 && c.g > 0.85 && c.b > 0.85;
+  }, [node.color]);
+  const effectiveColor = useMemo(() => {
+    if (!isLight) return node.color;
+    // Beliefs (the pure-white "stars") become a deep blue in light mode so
+    // they read as the strongest, deepest tier against the light backdrop.
+    // Every other node keeps its vivid hue — the glow sprite below supplies
+    // the soft halo, so cores stay crisp/saturated rather than pastel.
+    return isNearWhite ? "#1d4ed8" : node.color;
+  }, [isLight, isNearWhite, node.color]);
+  // Light mode: cores are crisp lit beads (the sprite does the glowing), so we
+  // keep emissive modest — enough to keep the color vivid without bloom blowout.
+  const lightEmissiveScale = isLight ? 0.45 : 1;
   const coreMatRef = useRef<THREE.MeshStandardMaterial>(null);
   const formStartRef = useRef<number | null>(null);
   // Smoothly-tracked hover/dim multipliers. Stepping straight to the
@@ -268,6 +334,16 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
       default:         return { emissive: 1.0, pulse: false };
     }
   }, [node.kind]);
+
+  // Per-node glow strength derived from the same kind→emissive map the dark
+  // scene uses, so beliefs glow most, neurons next, vault/tag least — the
+  // hierarchy survives the switch from bloom to sprite glow. (Declared after
+  // glowConfig since it reads from it.)
+  const glowTexture = isLight ? getGlowTexture() : null;
+  // Simple, clean halo (mirrors the landing footer: a small, low-opacity glow
+  // hugging each node — not a big cloud). Tight scale + gentle opacity.
+  const glowOpacity = Math.min(0.34, 0.07 + glowConfig.emissive * 0.06);
+  const glowScale = node.radius * (node.kind === "root" || node.kind === "category" ? 3.4 : 3);
 
   // Subtle pulse on neurons + root → keeps the "thinking" feel alive. With
   // the halo gone, the pulse rides on the core's emissive intensity so bloom
@@ -312,7 +388,7 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
     // selection signal layers cleanly with hover (a selected
     // neuron the user is also hovering glows brightest).
     const linkMul = isLinkSelected ? 1.6 : 1;
-    const base = glowConfig.emissive * hoverMulRef.current * dimMulRef.current * linkMul;
+    const base = glowConfig.emissive * hoverMulRef.current * dimMulRef.current * linkMul * lightEmissiveScale;
     // Pulse stays off for the focused / hovered neuron. With the camera
     // pulled in close, the bloom halo around a pulsing emissive grows
     // and shrinks several pixels per cycle, which reads as the neuron
@@ -374,7 +450,7 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
         <mesh>
           <sphereGeometry args={[r * 1.35, 32, 32]} />
           <meshBasicMaterial
-            color={node.color}
+            color={effectiveColor}
             wireframe
             transparent
             opacity={0.45}
@@ -384,8 +460,29 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
         </mesh>
       )}
 
-      {/* Core neuron — single emissive sphere. Bloom on the Canvas turns the
-          high emissive intensity into the visible glow; no extra halo mesh. */}
+      {/* Light-theme glow — camera-facing sprite that stands in for the bloom
+          halo (which doesn't read on a light backdrop). Tinted to the node's
+          effective color; scaled + faded by the node's tier so the hierarchy
+          (beliefs brightest) carries over. Skipped while dimmed so filtered /
+          hovered-away nodes recede. */}
+      {isLight && glowTexture && !isDimmed && (
+        <sprite scale={[glowScale, glowScale, 1]} renderOrder={-1}>
+          <spriteMaterial
+            map={glowTexture}
+            color={effectiveColor}
+            transparent
+            opacity={glowOpacity}
+            depthWrite={false}
+            depthTest={false}
+            blending={THREE.NormalBlending}
+            toneMapped={false}
+          />
+        </sprite>
+      )}
+
+      {/* Core neuron — single emissive sphere. In dark mode Bloom on the
+          Canvas turns the emissive into the glow; in light mode the sprite
+          above supplies the halo and the core stays a crisp lit bead. */}
       <mesh
         onPointerOver={(e: ThreeEvent<PointerEvent>) => {
           e.stopPropagation();
@@ -406,9 +503,9 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
         <sphereGeometry args={[r, 32, 32]} />
         <meshStandardMaterial
           ref={coreMatRef}
-          color={node.color}
-          emissive={node.color}
-          emissiveIntensity={glowConfig.emissive}
+          color={effectiveColor}
+          emissive={effectiveColor}
+          emissiveIntensity={glowConfig.emissive * lightEmissiveScale}
           transparent
           // Initial opacity only — useFrame above lerps the actual value
           // toward `opacityTarget` so hover/dim transitions don't snap.
@@ -526,6 +623,13 @@ interface EdgeProps {
    * electric blue, then sits at full extent.
    */
   isForming?: boolean;
+  /**
+   * Light theme active. Swaps the wire palette to colors that read on a light
+   * backdrop (the dark-mode slate / node-color highlights wash out, and the
+   * white belief color makes highlighted edges vanish) and lifts opacity so
+   * the connections stay visible.
+   */
+  isLight?: boolean;
 }
 
 const EDGE_FORMATION_DURATION_S = 0.8;
@@ -574,7 +678,7 @@ function FormingEdge({ a, b }: { a: Scene3DNode; b: Scene3DNode }) {
   );
 }
 
-function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isUserLink = false, isTopicMode, edgeRelevance, isForming = false }: EdgeProps) {
+function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isUserLink = false, isTopicMode, edgeRelevance, isForming = false, isLight = false }: EdgeProps) {
   const points = useMemo(
     () => [
       new THREE.Vector3(a.x, a.y, a.z),
@@ -613,13 +717,22 @@ function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isUserLink 
   // primary action accent and the link-mode action bar, so the user
   // visually associates "their" threads with the linking affordance.
   const USER_LINK_COLOR = "#60a5fa";
-  const color = isHl
-    ? a.color
-    : isUserLink
-      ? USER_LINK_COLOR
-      : isProvenance
-        ? PROVENANCE_COLOR
-        : "#94a3b8";
+  const color = isLight
+    ? // Light mode: a very light blue web (mirrors the landing footer's
+      // constellation, rgba(37,99,235,0.3)) so the wires read as quiet,
+      // airy connective tissue. Highlighted/user edges get a touch more blue.
+      isUserLink
+        ? "#3b82f6"
+        : isHl
+          ? "#7c9be0"
+          : "#bcccea"
+    : isHl
+      ? a.color
+      : isUserLink
+        ? USER_LINK_COLOR
+        : isProvenance
+          ? PROVENANCE_COLOR
+          : "#94a3b8";
   const lineWidth = isHl
     ? 1.6
     : isUserLink
@@ -630,13 +743,18 @@ function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isUserLink 
           ? 0.5
           : 0.8;
 
+  // Light mode keeps the wires intentionally airy/light (footer-style), so no
+  // opacity boost — just a hair more width so the pale lines stay crisp.
+  const finalOpacity = opacity;
+  const finalLineWidth = isLight && !isDimmed ? lineWidth + 0.2 : lineWidth;
+
   return (
     <Line
       points={points}
       color={color}
-      lineWidth={lineWidth}
+      lineWidth={finalLineWidth}
       transparent
-      opacity={opacity}
+      opacity={finalOpacity}
       // Heuristic cross-edges stay dashed (they're inferred). Provenance
       // and user-authored links render solid so the eye reads them as
       // audited/deliberate, not guessed.
@@ -657,7 +775,7 @@ interface InnerProps extends Omit<Props, "zoom" | "resetSignal" | "focusNodeId" 
 }
 
 function SceneInner({
-  nodes, edges, hoveredId, selectedId, highlightSet, isTopicMode, onHoverNode, onClickNode, centroid, formingNodeId, linkSelectedIds, focusedSet,
+  nodes, edges, hoveredId, selectedId, highlightSet, isTopicMode, onHoverNode, onClickNode, centroid, formingNodeId, linkSelectedIds, focusedSet, isLight,
 }: InnerProps) {
   // Materialise the filter focus set's membership test once per
   // render rather than asking it inside every Neuron/Edge map below.
@@ -713,6 +831,7 @@ function SceneInner({
             isTopicMode={isTopicMode}
             edgeRelevance={edgeRelevance}
             isForming={isFormingEdge}
+            isLight={isLight}
           />
         );
       })}
@@ -750,6 +869,7 @@ function SceneInner({
             onClick={onClickNode}
             isForming={isForming}
             isLinkSelected={isLinkSelected}
+            isLight={isLight}
           />
         );
       })}
@@ -1120,13 +1240,14 @@ export default function SynthesisScene3D(props: Props) {
           Omitted in-app, where the canvas stays transparent over its host. */}
       {opaqueBlackBg && <color attach="background" args={["#000000"]} />}
 
-      <ambientLight intensity={0.55} />
+      <ambientLight intensity={props.isLight ? 0.85 : 0.55} />
       <pointLight position={[400, 500, 600]} intensity={0.6} color="#ffffff" />
       <pointLight position={[-500, -300, 200]} intensity={0.35} color="#a78bfa" />
 
       <SceneInner
         nodes={props.nodes}
         edges={props.edges}
+        isLight={props.isLight}
         hoveredId={props.hoveredId}
         selectedId={props.selectedId}
         highlightSet={props.highlightSet}
@@ -1163,17 +1284,30 @@ export default function SynthesisScene3D(props: Props) {
       {!litePreview && (
       <EffectComposer multisampling={0} enableNormalPass={false}>
         <Bloom
-          intensity={1.05}
-          luminanceThreshold={0.18}
+          // The landing/login previews sit on pure black, where the wide
+          // outer-mip halo reads as a grey/blue haze that washes the
+          // background off-black. There we raise the luminance threshold and
+          // tighten the radius so only the bright cores bloom and the empty
+          // space stays truly black to match the page. In-app (over the grey
+          // app surface) keeps the original softer, wider glow.
+          // Light mode: additive bloom over a light backdrop washes the whole
+          // canvas grey if left wide/strong, so we raise the luminance gate
+          // (only the brightest emissive cores bloom) and soften intensity.
+          // The colored neuron cores still carry the "glow" via their saturated
+          // emissive material; bloom just adds a tight halo around the brightest.
+          // Light mode leans on the per-node glow sprites instead of bloom, so
+          // we keep the bloom pass nearly off (tiny lift on the very brightest
+          // cores only) to avoid the grey wash additive bloom leaves on light.
+          intensity={props.isLight ? 0.25 : opaqueBlackBg ? 0.9 : 1.05}
+          luminanceThreshold={props.isLight ? 0.9 : opaqueBlackBg ? 0.32 : 0.18}
           luminanceSmoothing={0.18}
           mipmapBlur
-          // Radius tightened from 0.85 → 0.7. The mipmap-blur pass cost
+          // Radius tightened from 0.85 → 0.7 in-app. The mipmap-blur pass cost
           // scales with kernel radius; this trims the largest mip levels
           // while keeping the halo around emissive cores visually identical
           // (the visible glow is dominated by the inner mips, not the outer
-          // ones). Combined with the lower DPR above this halves the
-          // per-frame post-process budget on typical machines.
-          radius={0.7}
+          // ones). Previews go tighter still to keep the black background clean.
+          radius={opaqueBlackBg ? 0.45 : 0.7}
         />
       </EffectComposer>
       )}

@@ -18556,37 +18556,21 @@ function subscriptionPeriodStillActive(row) {
   return Number.isFinite(end) && end > Date.now();
 }
 
+// Free tier: every authenticated user may open the app, regardless of billing
+// row or plan. Paid plans (Pro) unlock higher limits and frontier models via
+// PLAN_LIMITS / effective_plan_for_user, but the app itself is no longer gated
+// behind checkout. The `row` arg is retained for call-site compatibility.
 function hasAppAccessRow(row) {
-  if (!row) return false;
-  const status = String(row.status || '').toLowerCase();
-  if (!row.stripe_subscription_id) {
-    const plan = String(row.plan || 'free').toLowerCase();
-    return plan !== 'free' && Boolean(PLAN_LIMITS[plan]);
-  }
-  if (['trialing', 'active', 'past_due'].includes(status)) return true;
-  return subscriptionPeriodStillActive(row);
+  void row;
+  return true;
 }
 
-// Server-side gate for metered/generative endpoints so a user without an
-// active subscription can't bypass the frontend route gate and burn spend by
-// calling the API directly. Returns 402 with needs_trial_checkout so the
-// client can route them to /start-trial.
+// Server-side gate for metered/generative endpoints. With the free tier, any
+// authenticated user may call these — plan-based limits (model tier, quotas)
+// are enforced separately at invoke time and via DB triggers, so there's no
+// checkout gate here. `authenticateToken`/`requireAuth` runs upstream.
 async function requireAppAccess(req, res, next) {
-  try {
-    if (isCompedProEmail(req.user?.email)) return next();
-    const row = await loadBillingRow(req.user?.id);
-    if (hasAppAccessRow(row)) return next();
-    return res.status(402).json({
-      error: 'An active subscription is required.',
-      code: 'subscription_required',
-      needs_trial_checkout: true,
-    });
-  } catch (err) {
-    console.error('❌ requireAppAccess failed:', err?.message || err);
-    // Fail open on infra errors so a transient DB hiccup doesn't lock out
-    // paying users; the frontend gate still applies.
-    return next();
-  }
+  return next();
 }
 
 /** True when we already have a Stripe customer tied to a real subscription history. */
