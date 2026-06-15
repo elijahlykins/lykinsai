@@ -53,6 +53,46 @@ const STATUS_COPY: Record<VoiceUiState, string> = {
   error: "Something went wrong",
 };
 
+// What to show under the orb WHILE a tool is running, so the user sees what the
+// agent is actually doing ("Searching your vault…") instead of a stale
+// "Listening…". Keyed by the same tool names registered on the agent; anything
+// unmapped falls back to a generic "Working on it…".
+const TOOL_STATUS_COPY: Record<string, string> = {
+  search_vault: "Searching your vault…",
+  read_document: "Reading the document…",
+  display_document: "Pulling that up…",
+  web_search: "Searching the web…",
+  web_fetch: "Reading the page…",
+  find_connections: "Finding connections…",
+  get_beliefs: "Reviewing your beliefs…",
+  get_rules: "Checking your rules…",
+  get_facts: "Recalling what it knows…",
+  propose_fact: "Making a note of that…",
+  list_projects: "Looking through your projects…",
+  get_project_state: "Checking the project…",
+  set_active_project: "Switching projects…",
+  create_project: "Starting a new project…",
+  update_project_state: "Updating the project…",
+  get_recent_activity: "Catching up on recent activity…",
+  create_reminder: "Setting a reminder…",
+  list_reminders: "Checking your reminders…",
+  update_reminder: "Updating the reminder…",
+  create_event: "Adding to your calendar…",
+  list_events: "Checking your calendar…",
+  update_event: "Updating the event…",
+  delete_event: "Removing the event…",
+  create_todo: "Adding a to-do…",
+  list_todos: "Checking your to-dos…",
+  update_todo: "Updating the to-do…",
+  delete_todo: "Removing the to-do…",
+  list_custom_models: "Looking at your models…",
+  communicate_with_model: "Consulting your model…",
+  build_with_cursor: "Kicking off the build…",
+  check_cursor_build: "Checking the build…",
+  save_to_vault: "Saving to your vault…",
+  [TUNE_VOICE_TOOL]: "Adjusting how it sounds…",
+};
+
 // Full synthesis-layer surface exposed to the voice agent. Each name must
 // match a tool registered on the ElevenLabs agent and a case the server's
 // /api/ai/realtime/tool dispatch handles.
@@ -109,6 +149,11 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
   const [uiState, setUiState] = useState<VoiceUiState>("idle");
   const [micLevel, setMicLevel] = useState(0);
   const [errorText, setErrorText] = useState("");
+  // Live "what the agent is doing right now" label, driven by tool calls.
+  // activeToolsRef counts concurrent tools so the label only clears once they
+  // ALL finish (multiple tools can run for a single turn).
+  const [toolLabel, setToolLabel] = useState("");
+  const activeToolsRef = useRef(0);
 
   // Paste-bar state: lets the user share links/images/PDFs/docs into the live
   // voice session. Each share is mirrored into the written chat and injected
@@ -142,10 +187,14 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
   // One client-tool handler shape for all four; each forwards to the same
   // server dispatch endpoint the OpenAI Realtime path uses.
   const callTool = useCallback(async (name: string, params: unknown): Promise<string> => {
-    // Self-tuning instructions are persisted in the user's LOCAL settings, so
-    // this tool is handled in the browser instead of the server dispatch.
-    if (name === TUNE_VOICE_TOOL) return applyVoiceInstructionTune(params);
+    // Surface what the agent is doing under the orb for the duration of the
+    // call, then clear it once every concurrent tool for this turn has settled.
+    activeToolsRef.current += 1;
+    setToolLabel(TOOL_STATUS_COPY[name] || "Working on it…");
     try {
+      // Self-tuning instructions are persisted in the user's LOCAL settings, so
+      // this tool is handled in the browser instead of the server dispatch.
+      if (name === TUNE_VOICE_TOOL) return await applyVoiceInstructionTune(params);
       const headers = await authHeaders();
       const res = await fetch(`${API_BASE_URL}/api/ai/realtime/tool`, {
         method: "POST",
@@ -164,6 +213,9 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
       return JSON.stringify(data);
     } catch {
       return JSON.stringify({ ok: false, error: "tool_request_failed" });
+    } finally {
+      activeToolsRef.current = Math.max(0, activeToolsRef.current - 1);
+      if (activeToolsRef.current === 0) setToolLabel("");
     }
   }, []);
 
@@ -447,7 +499,9 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
         <VoiceTechOrb state={uiState} micLevel={micLevel} size={320} />
         <div className="mt-10 flex flex-col items-center gap-2 text-center max-w-xl px-6">
           <span className="text-foreground/80 text-base font-medium">
-            {uiState === "error" ? (errorText || STATUS_COPY.error) : STATUS_COPY[uiState]}
+            {uiState === "error"
+              ? (errorText || STATUS_COPY.error)
+              : (toolLabel || STATUS_COPY[uiState])}
           </span>
           {uiState === "error" && (
             <span
