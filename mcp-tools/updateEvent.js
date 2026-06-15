@@ -35,6 +35,8 @@ export const updateEventTool = {
     '  • change place          → location',
     '  • toggle all-day        → all_day',
     '  • mark tentative/cancel → status ("tentative" | "cancelled" | "confirmed")',
+    '  • file under project    → project_id (from lykn_listProjects), or',
+    '                            clear_project: true to unassign',
     '',
     'Supply the id plus at least one field to change. Cancelling hides the event',
     'from the calendar but keeps it (use lykn_deleteEvent to remove permanently).',
@@ -93,6 +95,14 @@ export const updateEventTool = {
         type: 'string',
         enum: ['confirmed', 'tentative', 'cancelled'],
         description: '"cancelled" hides it from the calendar; "confirmed" restores it; "tentative" marks it unsure.',
+      },
+      project_id: {
+        type: 'string',
+        description: 'Assign this event to a project (UUID from lykn_listProjects). Use when the user says "tag that to my <project>" or "put it under <project>".',
+      },
+      clear_project: {
+        type: 'boolean',
+        description: 'When true, unassign the event from any project.',
       },
     },
     required: ['id'],
@@ -214,8 +224,15 @@ export const updateEventTool = {
       patch.status = args.status;
     }
 
+    // Project assignment: clear wins, else set from a passed project_id.
+    if (args?.clear_project === true) {
+      patch.project_id = null;
+    } else if (typeof args?.project_id === 'string' && args.project_id.trim()) {
+      patch.project_id = args.project_id.trim();
+    }
+
     if (Object.keys(patch).length === 0) {
-      return errorContent('Nothing to update — pass a new time (starts_at/in_minutes), end (ends_at/duration_minutes), title/description/location, all_day, or status.');
+      return errorContent('Nothing to update — pass a new time (starts_at/in_minutes), end (ends_at/duration_minutes), title/description/location, all_day, status, or project_id/clear_project.');
     }
 
     patch.updated_at = new Date().toISOString();

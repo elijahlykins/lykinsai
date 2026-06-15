@@ -12,7 +12,9 @@ import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/
 import ModelSelectOptions from "@/components/ModelSelectOptions";
 import { toast } from "@/components/ui/use-toast";
 import { useUserPlan } from "@/lib/useUserPlan";
-import { isModelAllowedForPlan, defaultModelForTier } from "@/lib/modelTiers";
+import { isModelAllowedForPlan, defaultModelForTier, canonicalizeModelId } from "@/lib/modelTiers";
+import { LYKN_ID } from "@/lib/modelCatalog";
+import { useAssistantName } from "@/hooks/useAssistantName";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { supabase } from "@/lib/supabase";
 import { useAiStore } from "@/store/aiStore";
@@ -553,14 +555,17 @@ const makeAttId = () =>
 function OmniaGridModelSelectMenuBody({
   modelTier = "basic",
   publishedCustomModels = [],
+  lyknLabel,
 }: {
   modelTier?: string;
   publishedCustomModels?: { id: string; name: string }[];
+  lyknLabel?: string;
 }) {
   return (
     <ModelSelectOptions
       modelTier={modelTier}
       publishedCustomModels={publishedCustomModels}
+      lyknLabel={lyknLabel}
     />
   );
 }
@@ -589,7 +594,7 @@ function composerModeLabel(mode: ComposerMode): string {
 
 const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   compact, onSend, chatInputHasText, hasAttachments, isChatLoading, isDictating, isTranscribing,
-  modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
+  modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu, assistantName,
   handleStopAi, handleDictateToggle,
   handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
   handleWebSearchClick, handleDeepResearchClick,
@@ -608,6 +613,7 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
   persistSelectedModel: (v: string) => void;
   modelTier?: string;
   modelSelectMenu: React.ReactNode;
+  assistantName: string;
   handleStopAi: () => void;
   handleDictateToggle: () => void;
   handlePickFiles: () => void;
@@ -635,7 +641,11 @@ const OmniaChatBarToolbar = React.memo(function OmniaChatBarToolbar({
     <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>
       <Select value={modelSelectValue} onValueChange={persistSelectedModel}>
         <SelectTrigger className={modelTriggerCls}>
-          <SelectValue placeholder="Model" />
+          {canonicalizeModelId(modelSelectValue) === LYKN_ID ? (
+            <SelectValue placeholder="Model">{assistantName}</SelectValue>
+          ) : (
+            <SelectValue placeholder="Model" />
+          )}
         </SelectTrigger>
         <SelectContent
           side="top"
@@ -870,6 +880,7 @@ export default function OmniaGridPage() {
       window.removeEventListener("lykn_active_custom_model_changed", onRefresh);
     };
   }, [refreshPublishedCustomModels]);
+  const assistantName = useAssistantName();
   const modelSelectValue = useMemo(
     () =>
       activeCustomModelId
@@ -887,9 +898,10 @@ export default function OmniaGridPage() {
       <OmniaGridModelSelectMenuBody
         modelTier={modelTier}
         publishedCustomModels={publishedCustomModels}
+        lyknLabel={assistantName}
       />
     ),
-    [modelTier, publishedCustomModels],
+    [modelTier, publishedCustomModels, assistantName],
   );
   const [liveAIMode, setLiveAIMode] = useState(() => {
     try {
@@ -3487,6 +3499,41 @@ export default function OmniaGridPage() {
       aiThreadRef.current = [...(aiThreadRef.current || []), { role: "user", content: threadNote || fallbackLabel }];
     } catch { /* ignore */ }
 
+    // Auto-save everything pasted into the voice paste bar to the vault,
+    // reusing the same side-rail "Save to Vault" helpers so pasted files and
+    // links persist permanently instead of living only inside this voice
+    // conversation. Fire-and-forget: it must not block the contextual update
+    // the agent is waiting on, and each item is best-effort on its own.
+    if (user?.id && collected.length) {
+      void (async () => {
+        for (const att of collected) {
+          const t = (att.type || "").toLowerCase();
+          try {
+            if (t === "youtube" && att.videoId) {
+              await saveYouTubeToMedia(att.videoId, att.url || "");
+            } else if (t === "link" || t === "bookmark") {
+              if (att.url) await saveLinkToMedia(att.url);
+            } else {
+              const mediaType: "image" | "video" | "audio" | "file" =
+                t === "image" ? "image" : t === "video" ? "video" : t === "audio" ? "audio" : "file";
+              // Images already carry a downscaled data URL; documents/audio/
+              // video have no URL, so fall back to the original File bytes.
+              let url = att.url || "";
+              let createdObjectUrl = false;
+              if (!url) {
+                const f = att.rawFile || (input?.files || []).find((file) => file.name === att.name);
+                if (f) { url = URL.createObjectURL(f); createdObjectUrl = true; }
+              }
+              if (url) {
+                await saveAttachmentToMedia(url, att.name, mediaType);
+                if (createdObjectUrl) URL.revokeObjectURL(url);
+              }
+            }
+          } catch { /* per-item best-effort */ }
+        }
+      })();
+    }
+
     // Context the voice agent "sees": a note + extracted/ocr/link text.
     const parts: string[] = [];
     if (noteText) parts.push(`The user pasted this into the chat: ${noteText}`);
@@ -3497,12 +3544,12 @@ export default function OmniaGridPage() {
       );
     }
     return parts.join("\n\n");
-  }, [user?.id, newMsgId, setChatMessages, aiThreadRef]);
+  }, [user?.id, newMsgId, setChatMessages, aiThreadRef, saveYouTubeToMedia, saveLinkToMedia, saveAttachmentToMedia]);
 
   const chatBarToolbarProps = useMemo(() => ({
     chatInputHasText, hasAttachments: focusedChatAttachments.length > 0,
     isChatLoading, isDictating, isTranscribing,
-    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
+    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu, assistantName,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
     handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
     handleWebSearchClick, handleDeepResearchClick,
@@ -3512,7 +3559,7 @@ export default function OmniaGridPage() {
   }), [
     chatInputHasText, focusedChatAttachments.length,
     isChatLoading, isDictating, isTranscribing,
-    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
+    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu, assistantName,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
     handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
     handleWebSearchClick, handleDeepResearchClick,

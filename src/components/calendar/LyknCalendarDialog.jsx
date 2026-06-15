@@ -18,6 +18,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  FolderClosed,
   Link2,
   Loader2,
   ListTodo,
@@ -32,6 +33,7 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
 import LyknTodosPanel from "@/components/todos/LyknTodosPanel";
+import { listUserProjects } from "@/lib/userProjects";
 
 // ────────────────────────────────────────────────────────────────────────
 // LyknCalendarDialog — the calendar pop-up.
@@ -124,6 +126,7 @@ const EMPTY_FORM = {
   endTime: "10:00",
   location: "",
   description: "",
+  projectId: "",
   readOnly: false,
   provider: null,
 };
@@ -203,6 +206,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
   const [panel, setPanel] = useState("calendar"); // "calendar" | "todos"
   const [cursor, setCursor] = useState(() => ({ year: today.getFullYear(), month: today.getMonth() }));
   const [events, setEvents] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState("month"); // 'month' | 'day' | 'form'
   const [selectedDay, setSelectedDay] = useState(null);
@@ -236,7 +240,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
     setLoading(true);
     const { data, error: err } = await supabase
       .from("lykn_events")
-      .select("id, title, description, starts_at, ends_at, all_day, location, color, status, external_provider, read_only")
+      .select("id, title, description, starts_at, ends_at, all_day, location, color, status, project_id, external_provider, read_only")
       .eq("user_id", user.id)
       .neq("status", "cancelled")
       .gte("starts_at", windowBounds.fromIso)
@@ -249,6 +253,23 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
   useEffect(() => {
     if (open) void loadEvents();
   }, [open, loadEvents]);
+
+  // Load the user's projects so events can be filed under one.
+  useEffect(() => {
+    if (!open || !user?.id) return;
+    let cancelled = false;
+    void (async () => {
+      const list = await listUserProjects(user.id);
+      if (!cancelled) setProjects(list.filter((p) => p.status === "active"));
+    })();
+    return () => { cancelled = true; };
+  }, [open, user?.id]);
+
+  const projectsById = useMemo(() => {
+    const m = new Map();
+    for (const p of projects) m.set(p.id, p.name);
+    return m;
+  }, [projects]);
 
   // Open directly to the requested panel (calendar vs to-dos).
   useEffect(() => {
@@ -551,6 +572,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
       endTime: end ? `${pad2(end.getHours())}:${pad2(end.getMinutes())}` : "",
       location: ev.location || "",
       description: ev.description || "",
+      projectId: ev.project_id || "",
       readOnly: Boolean(ev.read_only),
       provider: ev.external_provider || null,
     });
@@ -594,6 +616,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
       ends_at: endsAt ? endsAt.toISOString() : null,
       all_day: form.allDay,
       location: form.location.trim().slice(0, 300) || null,
+      project_id: form.projectId || null,
       timezone: LOCAL_TZ,
       updated_at: new Date().toISOString(),
     };
@@ -855,6 +878,12 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                               <span className="truncate">{ev.location}</span>
                             </div>
                           )}
+                          {ev.project_id && projectsById.has(ev.project_id) && (
+                            <div className="mt-0.5 flex items-center gap-1 text-xs text-blue-500 dark:text-blue-400">
+                              <FolderClosed className="w-3 h-3 flex-shrink-0" />
+                              <span className="truncate">{projectsById.get(ev.project_id)}</span>
+                            </div>
+                          )}
                           {ev.description && (
                             <div className="mt-0.5 text-xs text-black/45 dark:text-white/45 truncate">
                               {ev.description}
@@ -1082,6 +1111,27 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                   className={`${inputCls} disabled:opacity-70`}
                 />
               </div>
+
+              {(projects.length > 0 || form.projectId) && (
+                <div className="flex items-center gap-2">
+                  <FolderClosed className="w-4 h-4 text-black/40 dark:text-white/40 flex-shrink-0" />
+                  <select
+                    value={form.projectId}
+                    disabled={form.readOnly}
+                    onChange={(e) => setForm((f) => ({ ...f, projectId: e.target.value }))}
+                    className={`${inputCls} disabled:opacity-70`}
+                    title="Assign to a project"
+                  >
+                    <option value="">No project</option>
+                    {form.projectId && !projectsById.has(form.projectId) ? (
+                      <option value={form.projectId}>Current project</option>
+                    ) : null}
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <textarea
                 placeholder="Notes (optional)"

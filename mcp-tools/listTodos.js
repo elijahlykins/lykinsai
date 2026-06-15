@@ -28,9 +28,11 @@ export const listTodosTool = {
     '',
     'Defaults to OPEN to-dos, highest-priority and soonest-due first. Each',
     'result includes id, title, notes, status, priority, due_at (ISO, may be',
-    'null), due_at_text (the user\'s phrasing — prefer reading this back), and',
-    '`overdue` (true when due_at is in the past but still open). To act on one,',
-    'pass its id to lykn_updateTodo or lykn_deleteTodo.',
+    'null), due_at_text (the user\'s phrasing — prefer reading this back),',
+    '`overdue` (true when due_at is in the past but still open), and the project',
+    'it is filed under as project_id + project_name (both null when unfiled).',
+    'To act on one, pass its id to lykn_updateTodo or lykn_deleteTodo — including',
+    'updateTodo\'s project_id/clear_project to move it between projects.',
     '',
     'When reading results back in conversation, summarise naturally — do not',
     'recite ISO timestamps; use due_at_text or friendly relative phrasing.',
@@ -46,6 +48,10 @@ export const listTodosTool = {
       due_only: {
         type: 'boolean',
         description: 'When true, return only OPEN to-dos that have a due date already in the past (overdue).',
+      },
+      project_id: {
+        type: 'string',
+        description: 'Optional. When set, return only to-dos filed under this project (UUID from lykn_listProjects). Use for "what tasks are on my <project>".',
       },
       limit: {
         type: 'integer',
@@ -80,6 +86,10 @@ export const listTodosTool = {
 
     if (status !== 'all') q = q.eq('status', status);
     if (dueOnly) q = q.not('due_at', 'is', null).lte('due_at', nowIso);
+    const projectFilter = typeof args?.project_id === 'string' && args.project_id.trim()
+      ? args.project_id.trim()
+      : null;
+    if (projectFilter) q = q.eq('project_id', projectFilter);
 
     // Fetch newest-first from the DB, then sort in JS so the open view leads
     // with priority + soonest due (nulls last) while history stays recent-first.
@@ -106,6 +116,24 @@ export const listTodosTool = {
       completed_at: t.completed_at,
     }));
 
+    // Resolve project names so the model can SEE which project each task is
+    // filed under (and reason about it / move it) without a separate
+    // lykn_listProjects round-trip. Maps project_id -> name in one query.
+    const projectIds = [...new Set(todos.map((t) => t.project_id).filter(Boolean))];
+    if (projectIds.length) {
+      const { data: projRows } = await ctx.supabaseAdmin
+        .from('lykn_projects')
+        .select('id, name')
+        .eq('user_id', ctx.userId)
+        .in('id', projectIds);
+      const nameById = new Map((projRows || []).map((p) => [p.id, p.name]));
+      for (const t of todos) {
+        t.project_name = t.project_id ? (nameById.get(t.project_id) || null) : null;
+      }
+    } else {
+      for (const t of todos) t.project_name = null;
+    }
+
     if (status === 'open') {
       todos = todos.sort((a, b) => {
         // Manual position first when set.
@@ -128,7 +156,7 @@ export const listTodosTool = {
     return jsonContent({
       ok: true,
       count: todos.length,
-      filter: { status, due_only: dueOnly, limit },
+      filter: { status, due_only: dueOnly, project_id: projectFilter, limit },
       todos,
       message: todos.length
         ? null

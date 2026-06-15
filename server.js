@@ -5285,14 +5285,43 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    might not match the current focus.',
   '  • lykn_getProjectState — working memory for a project (pass project_id',
   '    to read ANY project; omit for the active focus). Cheap, idempotent.',
-  '  • lykn_getProjectNeurons — the ACTIVE project\'s clustered neurons',
-  '    (beliefs, facts, concepts, vault notes the user has grouped',
-  '    here). Returns node_ids you can hand to lykn_loadNeuron.',
+  '  • lykn_getProjectNeurons — what is INSIDE a project: the vault',
+  '    files/notes, beliefs, facts, and concepts the user has uploaded or',
+  '    grouped INTO it. Pass project_id to read ANY project (omit for the',
+  '    active focus). THIS — not lykn_searchVault — is the authoritative',
+  '    answer to "what\'s in <Project>?", "is there anything uploaded to',
+  '    <Project>?", "what files/docs are attached to this project?".',
+  '    Returns node_ids you can hand to lykn_loadNeuron.',
   '',
-  'VAULT-FOCUSED TURN — overrides all project pressure below. When the',
-  'user explicitly asks about their VAULT or what they SAVED ("what\'s in',
+  'PROJECT-SCOPED CONTENTS — the user is asking what is IN / UPLOADED TO /',
+  'ATTACHED TO a specific PROJECT ("anything uploaded into the Education',
+  'project?", "what\'s in <Project>?", "what files are on this project?",',
+  '"did I put anything in it?" where "it" is a project just discussed).',
+  'This is NOT a vault-focused turn and NOT a vault-wide search — it is',
+  'strictly scoped to that one project:',
+  '  1. Resolve the project id: lykn_resolveProject({ query: "<name>" })',
+  '     or lykn_listProjects({ query: "<name fragment>" }). Match the',
+  '     name the user said — do NOT default to the active project if they',
+  '     named a different one.',
+  '  2. lykn_getProjectNeurons({ project_id: "<that id>" }) — its members',
+  '     ARE the project\'s contents. The vault-kind members (node_id',
+  '     "vault_<uuid>") ARE the files/notes uploaded into the project from',
+  '     the user\'s vault — count and describe those as the "uploads".',
+  '     Answer from this list (use the `kind` field to group: vault',
+  '     uploads vs. clustered beliefs/facts/concepts).',
+  '  3. If the user wants to SEE one, lykn_loadNeuron(node_id) on the hit.',
+  '  • If getProjectNeurons returns nothing, the project is genuinely',
+  '    empty — say "nothing is uploaded into <Project> yet" and offer to',
+  '    add something. NEVER fall back to lykn_searchVault and present',
+  '    unrelated vault items (other decks, other docs) as if they were in',
+  '    the project — that is the exact failure this rule prevents.',
+  '',
+  'VAULT-FOCUSED TURN — overrides general project pressure below, but NOT',
+  'a PROJECT-SCOPED CONTENTS turn (above): if the user named a project or',
+  'said "in it/this project", use the project path, not this one. When the',
+  'user asks about their VAULT AS A WHOLE or what they SAVED ("what\'s in',
   'my vault", "show me my vault", "what have I saved", "do I have anything',
-  'on X", "find that thing I saved about Y", "my saved notes/links/files/articles"), this turn is about the Vault, not the active project.',
+  'on X", "find that thing I saved about Y", "my saved notes/links/files/articles") and is NOT scoping to a project, this turn is about the Vault, not the active project.',
   '  • Call lykn_searchVault({ query: <topic> }) on the user\'s topic. If',
   '    the user asked something open-ended ("what\'s in my vault?"), use',
   '    a topical query from their conversation context, or just answer',
@@ -15907,6 +15936,7 @@ const LYKN_VOICE_TOOL_DEFS = [
         location: { type: 'string', description: 'Optional place, room, or meeting link.' },
         description: { type: 'string', description: 'Optional agenda / notes.' },
         timezone: { type: 'string', description: 'Optional IANA timezone, e.g. "America/Denver".' },
+        project_id: { type: 'string', description: 'Optional project to file this event under (id from list_projects). Use when the user ties it to a project ("add it to my <project>").' },
       },
       required: ['title'],
     },
@@ -15927,6 +15957,7 @@ const LYKN_VOICE_TOOL_DEFS = [
         to: { type: 'string', description: 'Window end as ISO 8601. Pair with from.' },
         days_ahead: { type: 'integer', description: 'Look-ahead from now in days (default 14).' },
         status: { type: 'string', description: 'confirmed, tentative, cancelled, or all. Default excludes cancelled.' },
+        project_id: { type: 'string', description: 'Optional. Only return events filed under this project (id from list_projects).' },
         limit: { type: 'integer', description: 'Max to return (default 100).' },
       },
       required: [],
@@ -15938,8 +15969,9 @@ const LYKN_VOICE_TOOL_DEFS = [
     description:
       'Reschedule ("move my dentist to 4pm"), change the length, edit text/location, toggle all-day, or cancel ' +
       'an existing event. Get its id from list_events first. Pass starts_at/in_minutes to reschedule, ' +
-      'ends_at/duration_minutes for length, title/description/location to edit, or status (cancelled hides it, ' +
-      'confirmed restores). Confirm what changed. NOTE: events with read_only:true are synced from the user\'s ' +
+      'ends_at/duration_minutes for length, title/description/location to edit, status (cancelled hides it, ' +
+      'confirmed restores), or project_id to file it under a project (clear_project:true to unassign). Confirm ' +
+      'what changed. NOTE: events with read_only:true are synced from the user\'s ' +
       'Google/Apple calendar and CANNOT be changed here — tell them to edit it in that app instead of retrying.',
     parameters: {
       type: 'object',
@@ -15954,6 +15986,8 @@ const LYKN_VOICE_TOOL_DEFS = [
         description: { type: 'string', description: 'New notes/agenda.' },
         location: { type: 'string', description: 'New location/meeting link.' },
         status: { type: 'string', description: 'confirmed, tentative, or cancelled.' },
+        project_id: { type: 'string', description: 'Assign this event to a project (id from list_projects). Use for "tag that to my <project>".' },
+        clear_project: { type: 'boolean', description: 'true = unassign the event from any project.' },
       },
       required: ['id'],
     },
@@ -15995,6 +16029,7 @@ const LYKN_VOICE_TOOL_DEFS = [
         due_at: { type: 'string', description: 'Optional absolute ISO 8601 due date with timezone. Provide this OR in_minutes, or neither.' },
         in_minutes: { type: 'integer', description: 'Optional relative due, minutes from now. Provide this OR due_at, or neither.' },
         due_at_text: { type: 'string', description: "The user's own phrasing of the deadline (\"by Friday\")." },
+        project_id: { type: 'string', description: 'Optional project to file this task under (id from list_projects). Use when the user ties it to a project ("add it to my <project> list").' },
       },
       required: ['title'],
     },
@@ -16012,6 +16047,7 @@ const LYKN_VOICE_TOOL_DEFS = [
       properties: {
         status: { type: 'string', description: 'open (default), completed, cancelled, or all.' },
         due_only: { type: 'boolean', description: 'true = only open tasks that are overdue.' },
+        project_id: { type: 'string', description: 'Optional. Only return tasks filed under this project (id from list_projects).' },
         limit: { type: 'integer', description: 'Max to return (default 50).' },
       },
       required: [],
@@ -16021,9 +16057,10 @@ const LYKN_VOICE_TOOL_DEFS = [
     name: 'update_todo',
     mcp: 'lykn_updateTodo',
     description:
-      'Complete ("mark that done", "I did that"), reopen, cancel/drop, reprioritise, set/clear a due date, or ' +
-      'edit an existing to-do. Get its id from list_todos first. Set status to completed/cancelled/open, priority ' +
-      'to high/normal/low, due_at/in_minutes (+ due_at_text) to set a deadline, clear_due:true to remove it, or ' +
+      'Complete ("mark that done", "I did that"), reopen, cancel/drop, reprioritise, set/clear a due date, ' +
+      'assign it to a project, or edit an existing to-do. Get its id from list_todos first. Set status to ' +
+      'completed/cancelled/open, priority to high/normal/low, due_at/in_minutes (+ due_at_text) to set a deadline, ' +
+      'clear_due:true to remove it, project_id to file it under a project (clear_project:true to unassign), or ' +
       'title/notes to edit. Confirm what changed.',
     parameters: {
       type: 'object',
@@ -16037,6 +16074,8 @@ const LYKN_VOICE_TOOL_DEFS = [
         clear_due: { type: 'boolean', description: 'true = remove the due date entirely.' },
         title: { type: 'string', description: 'New task text.' },
         notes: { type: 'string', description: 'New detail/context.' },
+        project_id: { type: 'string', description: 'Assign this task to a project (id from list_projects). Use for "put that on my <project> list".' },
+        clear_project: { type: 'boolean', description: 'true = unassign the task from any project.' },
       },
       required: ['id'],
     },
@@ -16904,6 +16943,56 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimit
     return res.json({ conversationToken, signedUrl, sessionToken, firstMessage });
   } catch (error) {
     return res.status(500).json({ error: `ElevenLabs signed URL failed: ${error?.message || 'Unknown error'}` });
+  }
+});
+
+// List the workspace's available ElevenLabs voices for the in-app voice picker.
+// Proxied so the API key never reaches the browser. Returns a slim, UI-ready
+// shape (id, name, preview clip, a one-line descriptor) and is cached for an
+// hour since the voice roster changes rarely.
+const _elevenVoicesCache = memCache('elevenlabs-voices', { maxSize: 1, ttlMs: 60 * 60 * 1000 });
+app.get('/api/ai/elevenlabs/voices', requireAuth, requireAppAccess, async (req, res) => {
+  try {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) {
+      return res.status(503).json({ error: 'ElevenLabs voice is not configured yet.' });
+    }
+
+    const cached = _elevenVoicesCache.get('voices');
+    if (cached) return res.json({ voices: cached, defaultVoiceId: process.env.ELEVENLABS_VOICE_ID || null });
+
+    const elRes = await fetch('https://api.elevenlabs.io/v1/voices', {
+      headers: { 'xi-api-key': apiKey },
+    });
+    const data = await elRes.json().catch(() => ({}));
+    if (!elRes.ok) {
+      const msg = String(data?.detail?.message || data?.detail || elRes.statusText || 'Failed to load voices');
+      return res.status(502).json({ error: `ElevenLabs: ${msg}` });
+    }
+
+    const raw = Array.isArray(data?.voices) ? data.voices : [];
+    const voices = raw.map((v) => {
+      const labels = v?.labels && typeof v.labels === 'object' ? v.labels : {};
+      // Build a short, human descriptor from the voice's labels
+      // (e.g. "American · warm · narration") with no provider branding.
+      const descriptor = [labels.accent, labels.gender, labels.age, labels.use_case, labels.description]
+        .map((s) => (typeof s === 'string' ? s.trim() : ''))
+        .filter(Boolean)
+        .slice(0, 3)
+        .join(' · ');
+      return {
+        id: v?.voice_id || '',
+        name: v?.name || 'Voice',
+        previewUrl: v?.preview_url || '',
+        descriptor,
+        category: v?.category || '',
+      };
+    }).filter((v) => v.id);
+
+    _elevenVoicesCache.set('voices', voices);
+    return res.json({ voices, defaultVoiceId: process.env.ELEVENLABS_VOICE_ID || null });
+  } catch (error) {
+    return res.status(500).json({ error: `ElevenLabs voices failed: ${error?.message || 'Unknown error'}` });
   }
 });
 

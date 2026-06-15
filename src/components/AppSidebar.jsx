@@ -218,6 +218,18 @@ export default function AppSidebar({
     <>
       <button
         type="button"
+        onClick={() => { setUserMenuOpen(false); nav("/synthesis-layer"); }}
+        title="Synthesis Layer"
+        className={`w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors ${
+          effectiveHighlightSynthesis ? "lykn-sidebar-synthesis-glow" : ""
+        }`}
+      >
+        <Brain className={`w-3.5 h-3.5 ${effectiveHighlightSynthesis ? "text-blue-400" : "text-black/50 dark:text-white/50"}`} />
+        Synthesis Layer
+      </button>
+      <div className="my-1 border-t border-black/5 dark:border-white/5" />
+      <button
+        type="button"
         onClick={() => { setUserMenuOpen(false); goTo("/settings"); }}
         className="w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
       >
@@ -340,16 +352,6 @@ export default function AppSidebar({
           </button>
           <button
             type="button"
-            onClick={() => nav("/synthesis-layer")}
-            title="Synthesis Layer"
-            className={`w-9 h-9 rounded-lg hover:bg-blue-500/15 transition-colors flex items-center justify-center ${
-              effectiveHighlightSynthesis ? "lykn-sidebar-synthesis-glow" : ""
-            }`}
-          >
-            <Brain className={`w-4 h-4 ${effectiveHighlightSynthesis ? "text-blue-400" : "text-black/60 dark:text-white/60"}`} />
-          </button>
-          <button
-            type="button"
             onClick={() => goTo("/projects")}
             className={`w-9 h-9 rounded-lg hover:bg-blue-500/15 transition-colors flex items-center justify-center ${
               location.pathname === "/projects" ? "bg-blue-500/10" : ""
@@ -466,33 +468,6 @@ export default function AppSidebar({
           </div>
 
           <div className="flex flex-col gap-0.5 mt-1.5 pt-1.5 border-t border-black/5 dark:border-white/5">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                // Direct navigation — bypasses goTo / flushAndNavigate so
-                // there's no setTimeout, no event dispatch, nothing that
-                // could swallow the click. This is the prototype handoff's
-                // ONE escape hatch and it must just work.
-                // eslint-disable-next-line no-console
-                console.log("[AppSidebar] Synthesis Layer clicked, navigating →", "/synthesis-layer");
-                nav("/synthesis-layer");
-              }}
-              title="Synthesis Layer"
-              className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
-                effectiveHighlightSynthesis ? "lykn-sidebar-synthesis-glow" : ""
-              }`}
-            >
-              <Brain
-                className={`w-3.5 h-3.5 ${
-                  effectiveHighlightSynthesis
-                    ? "text-blue-400"
-                    : "text-black/60 dark:text-white/60"
-                }`}
-              />
-              <span className="flex-1">Synthesis Layer</span>
-            </button>
             <button
               type="button"
               onClick={() => goTo("/projects")}

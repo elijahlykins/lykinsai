@@ -36,6 +36,8 @@ export const updateTodoTool = {
     '                         plus due_at_text with the user\'s phrasing',
     '  • clear the due date → clear_due: true',
     '  • change the text    → title and/or notes',
+    '  • file under project → project_id (from lykn_listProjects), or',
+    '                         clear_project: true to unassign',
     '',
     'Supply the id plus at least one field to change. Confirm what changed in',
     'plain language afterwards.',
@@ -85,6 +87,14 @@ export const updateTodoTool = {
       notes: {
         type: 'string',
         description: 'New detail/context (<=4000 chars). Pass an empty string to clear it.',
+      },
+      project_id: {
+        type: 'string',
+        description: 'Assign this task to a project (UUID from lykn_listProjects). Use when the user says "put that on my <project> list" or "tag it to <project>".',
+      },
+      clear_project: {
+        type: 'boolean',
+        description: 'When true, unassign the task from any project.',
       },
     },
     required: ['id'],
@@ -146,13 +156,20 @@ export const updateTodoTool = {
       patch.notes = args.notes.trim().slice(0, NOTES_MAX) || null;
     }
 
+    // Project assignment: clear wins, else set from a passed project_id.
+    if (args?.clear_project === true) {
+      patch.project_id = null;
+    } else if (typeof args?.project_id === 'string' && args.project_id.trim()) {
+      patch.project_id = args.project_id.trim();
+    }
+
     if (['open', 'completed', 'cancelled'].includes(args?.status)) {
       patch.status = args.status;
       patch.completed_at = args.status === 'completed' ? new Date().toISOString() : null;
     }
 
     if (Object.keys(patch).length === 0) {
-      return errorContent('Nothing to update — pass a status, priority, due date (due_at/in_minutes/clear_due), or new title/notes.');
+      return errorContent('Nothing to update — pass a status, priority, due date (due_at/in_minutes/clear_due), project_id/clear_project, or new title/notes.');
     }
 
     patch.updated_at = new Date().toISOString();

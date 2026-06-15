@@ -2175,7 +2175,7 @@ const OmniaFocusedChat: React.FC<OmniaFocusedChatProps> = React.memo(function Om
             ) : null}
             {isChatLoading && (
               <div className="flex justify-start">
-                <div className="omnia-ai-thinking-glow rounded-2xl rounded-bl-md max-w-[80%] px-4 py-3 text-sm leading-relaxed border bg-black/5 dark:bg-white/8 border-black/10 dark:border-white/10 text-black/70 dark:text-white/60 backdrop-blur-sm flex items-center gap-3">
+                <div className="max-w-[80%] py-3 text-sm leading-relaxed text-black/70 dark:text-white/60 flex items-center gap-3">
                   <ThinkingIndicator status={thinkingStatus} />
                 </div>
               </div>

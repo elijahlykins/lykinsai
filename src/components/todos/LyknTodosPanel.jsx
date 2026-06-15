@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   Circle,
   Flag,
+  FolderClosed,
   Loader2,
   Plus,
   RotateCcw,
@@ -11,6 +12,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { toast } from "@/components/ui/use-toast";
+import { listUserProjects } from "@/lib/userProjects";
 
 // ────────────────────────────────────────────────────────────────────────
 // LyknTodosPanel — the to-do list body (add form + list + footer), with NO
@@ -68,13 +70,21 @@ export default function LyknTodosPanel({ active = true }) {
   const [todos, setTodos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const [projects, setProjects] = useState([]);
 
   // Add-form state.
   const [draftTitle, setDraftTitle] = useState("");
   const [draftPriority, setDraftPriority] = useState("normal");
   const [draftDue, setDraftDue] = useState("");
+  const [draftProjectId, setDraftProjectId] = useState("");
   const [adding, setAdding] = useState(false);
   const titleRef = useRef(null);
+
+  const projectsById = useMemo(() => {
+    const m = new Map();
+    for (const p of projects) m.set(p.id, p.name);
+    return m;
+  }, [projects]);
 
   // `silent` skips the full-list spinner so background refreshes (realtime,
   // the periodic sweep, post-mutation reloads) update in place instead of
@@ -86,7 +96,7 @@ export default function LyknTodosPanel({ active = true }) {
     // (crossed out) instead of vanishing the moment they're checked off.
     const { data, error } = await supabase
       .from("lykn_todos")
-      .select("id, title, notes, status, priority, due_at, due_at_text, position, created_at, completed_at, updated_at")
+      .select("id, title, notes, status, priority, due_at, due_at_text, position, project_id, created_at, completed_at, updated_at")
       .eq("user_id", user.id)
       .in("status", ["open", "completed"])
       .order("created_at", { ascending: false });
@@ -118,6 +128,17 @@ export default function LyknTodosPanel({ active = true }) {
   useEffect(() => {
     if (active) void loadTodos();
   }, [active, loadTodos]);
+
+  // Load the user's projects so tasks can be filed under one (add form + reassign).
+  useEffect(() => {
+    if (!active || !user?.id) return;
+    let cancelled = false;
+    void (async () => {
+      const list = await listUserProjects(user.id);
+      if (!cancelled) setProjects(list.filter((p) => p.status === "active"));
+    })();
+    return () => { cancelled = true; };
+  }, [active, user?.id]);
 
   // Realtime: reflect tasks the AI adds/completes in text/voice without a refresh.
   useEffect(() => {
@@ -181,6 +202,7 @@ export default function LyknTodosPanel({ active = true }) {
     // back — once the insert resolves.
     const nowIso = new Date().toISOString();
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const projectId = draftProjectId || null;
     const optimistic = {
       id: tempId,
       title: title.slice(0, 280),
@@ -190,6 +212,7 @@ export default function LyknTodosPanel({ active = true }) {
       due_at: dueIso,
       due_at_text: dueText,
       position: null,
+      project_id: projectId,
       created_at: nowIso,
       completed_at: null,
       updated_at: nowIso,
@@ -209,9 +232,10 @@ export default function LyknTodosPanel({ active = true }) {
         priority: optimistic.priority,
         due_at: dueIso,
         due_at_text: dueText,
+        project_id: projectId,
         source: "todos-ui",
       })
-      .select("id, title, notes, status, priority, due_at, due_at_text, position, created_at, completed_at, updated_at")
+      .select("id, title, notes, status, priority, due_at, due_at_text, position, project_id, created_at, completed_at, updated_at")
       .single();
     setAdding(false);
 
@@ -228,7 +252,21 @@ export default function LyknTodosPanel({ active = true }) {
       const rest = prev.filter((t) => t.id !== tempId && t.id !== data.id);
       return [data, ...rest];
     });
-  }, [draftTitle, draftPriority, draftDue, user?.id]);
+  }, [draftTitle, draftPriority, draftDue, draftProjectId, user?.id]);
+
+  const setProject = useCallback(async (todo, projectId) => {
+    const next = projectId || null;
+    setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, project_id: next } : t)));
+    const { error } = await supabase
+      .from("lykn_todos")
+      .update({ project_id: next, updated_at: new Date().toISOString() })
+      .eq("id", todo.id)
+      .eq("user_id", user.id);
+    if (error) {
+      toast({ title: "Couldn't change project", description: error.message, variant: "destructive" });
+      void loadTodos({ silent: true });
+    }
+  }, [user?.id, loadTodos]);
 
   const setStatus = useCallback(async (todo, status) => {
     setBusyId(todo.id);
@@ -285,6 +323,7 @@ export default function LyknTodosPanel({ active = true }) {
     const pri = PRIORITY_META[todo.priority] || PRIORITY_META.normal;
     const due = dueLabel(todo);
     const isBusy = busyId === todo.id;
+    const projectName = todo.project_id ? projectsById.get(todo.project_id) : null;
     return (
       <div
         key={todo.id}
@@ -325,10 +364,30 @@ export default function LyknTodosPanel({ active = true }) {
                 {pri.label}
               </span>
             ) : null}
+            {projectName ? (
+              <span className="inline-flex items-center gap-1 text-[0.6875rem] text-blue-500 dark:text-blue-400">
+                <FolderClosed className="w-3 h-3" />
+                {projectName}
+              </span>
+            ) : null}
           </div>
         </div>
 
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {projects.length > 0 ? (
+            <select
+              value={todo.project_id || ""}
+              disabled={isBusy}
+              onChange={(e) => setProject(todo, e.target.value)}
+              className="max-w-[7rem] truncate bg-transparent border border-black/10 dark:border-white/10 rounded-md px-1.5 py-1 text-[0.6875rem] text-black/60 dark:text-white/60 focus:outline-none focus:ring-1 focus:ring-blue-500/50 disabled:opacity-50"
+              title="Assign to a project"
+            >
+              <option value="">No project</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          ) : null}
           {!done ? (
             <button
               type="button"
@@ -410,6 +469,19 @@ export default function LyknTodosPanel({ active = true }) {
             className="bg-black/[0.04] dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md px-2 py-1 text-black/80 dark:text-white/80 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
             title="Optional due date"
           />
+          {projects.length > 0 ? (
+            <select
+              value={draftProjectId}
+              onChange={(e) => setDraftProjectId(e.target.value)}
+              className="max-w-[10rem] truncate bg-black/[0.04] dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md px-2 py-1 text-black/80 dark:text-white/80 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+              title="Assign to a project"
+            >
+              <option value="">No project</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          ) : null}
         </div>
       </div>
 

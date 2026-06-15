@@ -29,9 +29,11 @@ export const getProjectStateTool = {
   scope: 'read',
   description: [
     'Return the LYKN user\'s current project context — every state_key',
-    'and its latest value, plus the project header (name, description,',
-    'last activity). Defaults to the user\'s active project so most',
-    'callers can omit project_id entirely.',
+    'and its latest value, the project header (name, description, last',
+    'activity), PLUS the open to-dos and upcoming calendar events filed',
+    'under this project (so you can answer "what\'s on the X project" and',
+    'reason about its deadlines directly). Defaults to the user\'s active',
+    'project so most callers can omit project_id entirely.',
     '',
     'CALL THIS at the start of any conversation that touches the user\'s',
     'active work. The answer is what other AI clients already know about',
@@ -118,6 +120,50 @@ export const getProjectStateTool = {
       }
     }
 
+    // Surface the tasks and calendar events filed under this project so the
+    // model can answer "what's on the X project" and reason about deadlines
+    // without a separate listTodos/listEvents round-trip. Kept compact.
+    const nowIso = new Date().toISOString();
+    const [todosRes, eventsRes] = await Promise.all([
+      ctx.supabaseAdmin
+        .from('lykn_todos')
+        .select('id, title, status, priority, due_at, due_at_text')
+        .eq('user_id', ctx.userId)
+        .eq('project_id', projectId)
+        .eq('status', 'open')
+        .order('due_at', { ascending: true, nullsFirst: false })
+        .limit(25),
+      ctx.supabaseAdmin
+        .from('lykn_events')
+        .select('id, title, starts_at, ends_at, all_day, location, status')
+        .eq('user_id', ctx.userId)
+        .eq('project_id', projectId)
+        .neq('status', 'cancelled')
+        .gte('starts_at', nowIso)
+        .order('starts_at', { ascending: true })
+        .limit(25),
+    ]);
+
+    const now = Date.now();
+    const todos = (todosRes?.data || []).map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      priority: t.priority,
+      due_at: t.due_at,
+      due_at_text: t.due_at_text,
+      overdue: t.due_at != null && Date.parse(t.due_at) <= now,
+    }));
+    const events = (eventsRes?.data || []).map((e) => ({
+      id: e.id,
+      title: e.title,
+      starts_at: e.starts_at,
+      ends_at: e.ends_at,
+      all_day: e.all_day,
+      location: e.location,
+      status: e.status,
+    }));
+
     let history = null;
     if (includeHistory && Object.keys(state).length) {
       const keys = Object.keys(state);
@@ -155,8 +201,12 @@ export const getProjectStateTool = {
         last_active_at: project.last_active_at,
       },
       state,
+      todos,
+      events,
       ...(history ? { history } : {}),
       keys_count: Object.keys(state).length,
+      todos_count: todos.length,
+      events_count: events.length,
     });
   },
 };

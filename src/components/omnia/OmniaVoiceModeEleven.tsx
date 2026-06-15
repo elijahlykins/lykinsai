@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { API_BASE_URL } from "@/lib/api-config";
 import { VOICE_FIRST_MESSAGE_OVERRIDE } from "@/lib/voice/voiceConfig";
+import { getVoiceId } from "@/lib/ai-prefs";
 import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
 import VoiceTechOrb from "./VoiceTechOrb";
 
@@ -352,7 +353,13 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
       const agentOverride: Record<string, unknown> = {};
       if (sessionToken) agentOverride.prompt = { prompt: `LYKN_SESSION_TOKEN=${sessionToken}` };
       if (firstMessage) agentOverride.firstMessage = firstMessage;
-      const overrides = Object.keys(agentOverride).length > 0 ? { agent: agentOverride } : undefined;
+      // The user's chosen voice (Settings → Display → Voice) overrides the
+      // agent's baked-in default per session. Empty → keep the default voice.
+      const chosenVoiceId = (() => { try { return getVoiceId(); } catch { return ""; } })();
+      const overridesObj: Record<string, unknown> = {};
+      if (Object.keys(agentOverride).length > 0) overridesObj.agent = agentOverride;
+      if (chosenVoiceId) overridesObj.tts = { voiceId: chosenVoiceId };
+      const overrides = Object.keys(overridesObj).length > 0 ? overridesObj : undefined;
 
       // Prefer the WebRTC (LiveKit) transport: its jitter buffer + packet-loss
       // concealment keep playback at a steady pitch/speed, fixing the random

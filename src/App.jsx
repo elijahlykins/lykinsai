@@ -55,6 +55,7 @@ import CookiePolicy from "./pages/CookiePolicy";
 import DPA from "./pages/DPA";
 import { useIsMobile } from "@/hooks/useViewportTier";
 import ProjectsPage from "./pages/ProjectsPage";
+import ProjectDetailPage from "./pages/ProjectDetailPage";
 
 
 const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
@@ -286,6 +287,14 @@ function AppShell() {
               element={
                 <ProtectedRoute>
                   <ProjectsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/projects/:projectId"
+              element={
+                <ProtectedRoute>
+                  <ProjectDetailPage />
                 </ProtectedRoute>
               }
             />

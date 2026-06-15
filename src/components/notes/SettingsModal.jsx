@@ -32,6 +32,7 @@ import { Link, useLocation } from 'react-router-dom';
 
 import ConnectionsAppGrid from '@/components/connections/ConnectionsAppGrid';
 import ModelSelectOptions from '@/components/ModelSelectOptions';
+import VoicePicker from '@/components/notes/VoicePicker';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 import { useNavigate } from 'react-router-dom';
@@ -94,6 +95,9 @@ export default function SettingsModal({ isOpen, onClose }) {
   // | 'connections'
   const [view, setView] = useState('menu');
 
+  // ---- Display: explicit save feedback ----
+  const [displaySaveStatus, setDisplaySaveStatus] = useState('idle'); // idle | saved
+
   // ---- Import: chat-history .zip upload ----
   const [importFile, setImportFile] = useState(null);
   const [importStatus, setImportStatus] = useState('idle'); // idle | uploading | done | error
@@ -104,6 +108,13 @@ export default function SettingsModal({ isOpen, onClose }) {
   useEffect(() => {
     if (!isOpen) setView('menu');
   }, [isOpen]);
+
+  // The Display "Saved" confirmation persists for the whole visit and only
+  // resets to "Save" once the user leaves the Display view (or closes the
+  // modal, which routes back to the menu).
+  useEffect(() => {
+    if (view !== 'display') setDisplaySaveStatus('idle');
+  }, [view]);
 
   // Deep-link straight to the connect surface. The app dock's "+" and any
   // "connect an app" entry point route to /settings#connections (or
@@ -147,6 +158,8 @@ export default function SettingsModal({ isOpen, onClose }) {
     aiName: '',
     userPrompt: '',
     voicePrompt: '',
+    voiceId: '',
+    voiceName: '',
     responseLength: 'medium',
   });
 
@@ -702,7 +715,25 @@ export default function SettingsModal({ isOpen, onClose }) {
             <AudioLines className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" />
             Voice
           </p>
-          <Label className="text-xs text-gray-600 dark:text-gray-400">
+
+          <div className="space-y-2">
+            <Label className="text-xs text-gray-600 dark:text-gray-400">
+              Assistant voice
+            </Label>
+            <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
+              Pick the voice your assistant speaks with in voice conversations. Tap a voice to preview it, then select your favorite.
+            </p>
+            <VoicePicker
+              selectedVoiceId={settings.voiceId || ''}
+              onSelect={(voiceId, voiceName) => {
+                const updated = { ...settings, voiceId, voiceName: voiceName || '' };
+                setSettings(updated);
+                persistSettings(updated);
+              }}
+            />
+          </div>
+
+          <Label className="text-xs text-gray-600 dark:text-gray-400 pt-1">
             Voice instructions
           </Label>
           <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
@@ -720,6 +751,25 @@ export default function SettingsModal({ isOpen, onClose }) {
           <div className="text-right text-[10px] text-gray-400 dark:text-gray-600">
             {(settings.voicePrompt || '').length}/1500
           </div>
+        </div>
+
+        <div className="pt-4 mt-1 border-t border-gray-200 dark:border-gray-700/60">
+          <Button
+            onClick={() => {
+              persistSettings(settings);
+              setDisplaySaveStatus('saved');
+            }}
+            className="w-full bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 flex items-center justify-center gap-2"
+          >
+            {displaySaveStatus === 'saved' ? (
+              <>
+                <Check className="w-4 h-4" />
+                Saved
+              </>
+            ) : (
+              'Save'
+            )}
+          </Button>
         </div>
       </div>
     </div>

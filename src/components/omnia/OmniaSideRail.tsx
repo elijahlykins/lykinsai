@@ -563,7 +563,7 @@ const OmniaSideRail: React.FC<OmniaSideRailProps> = React.memo(function OmniaSid
         ))}
         {isChatLoading && (
           <div className="flex flex-col items-start w-full">
-            <div className="omnia-ai-thinking-glow rounded-xl max-w-[94%] bg-black/5 dark:bg-white/8 border border-black/10 dark:border-white/12 backdrop-blur-sm text-[0.6875rem] text-black/70 dark:text-white/60 px-3 py-1.5 flex items-center gap-2">
+            <div className="max-w-[94%] text-[0.6875rem] text-black/70 dark:text-white/60 py-1.5 flex items-center gap-2">
               <ThinkingIndicator status={thinkingStatus} compact />
             </div>
           </div>

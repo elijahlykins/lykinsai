@@ -6,7 +6,7 @@ import {
   SelectLabel,
   SelectSeparator,
 } from "@/components/ui/select";
-import { MODEL_GROUPS } from "@/lib/modelCatalog";
+import { MODEL_GROUPS, LYKN_ID } from "@/lib/modelCatalog";
 import { customModelSelectValue } from "@/lib/modelBuilder/customModelSelect";
 import { isModelAllowedForPlan } from "@/lib/modelTiers";
 
@@ -18,13 +18,17 @@ import { isModelAllowedForPlan } from "@/lib/modelTiers";
  * @param {string} [props.modelTier] Plan model tier from `useUserPlan()`.
  * @param {{ id: string, name: string }[]} [props.publishedCustomModels]
  *   Published Model Builder personas (shown at top of menu).
+ * @param {string} [props.lyknLabel] Overrides the label of the LYKN model
+ *   option (used so a renamed assistant shows its custom name in chat).
  */
 export default function ModelSelectOptions({
   modelTier,
   publishedCustomModels = [],
+  lyknLabel,
 }) {
   const gate = (item) => {
     const allowed = modelTier ? isModelAllowedForPlan(item.value, modelTier) : true;
+    const label = item.value === LYKN_ID && lyknLabel ? lyknLabel : item.label;
     return (
       <SelectItem
         key={item.value}
@@ -34,7 +38,7 @@ export default function ModelSelectOptions({
         className={!allowed ? "opacity-50 cursor-not-allowed" : undefined}
       >
         <span className="inline-flex items-center gap-1.5">
-          {item.label}
+          {label}
           {!allowed && (
             <Lock className="w-3 h-3 opacity-60" aria-label="Upgrade required" />
           )}

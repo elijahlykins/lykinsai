@@ -65,6 +65,10 @@ export const listEventsTool = {
         enum: ['confirmed', 'tentative', 'cancelled', 'all'],
         description: 'Filter by status. Defaults to confirmed+tentative (cancelled excluded).',
       },
+      project_id: {
+        type: 'string',
+        description: 'Optional. When set, return only events filed under this project (UUID from lykn_listProjects). Use for "what\'s on the calendar for my <project>".',
+      },
       limit: {
         type: 'integer',
         minimum: 1,
@@ -125,6 +129,11 @@ export const listEventsTool = {
     if (fromIso) q = q.gte('starts_at', fromIso);
     if (toIso) q = q.lte('starts_at', toIso);
 
+    const projectFilter = typeof args?.project_id === 'string' && args.project_id.trim()
+      ? args.project_id.trim()
+      : null;
+    if (projectFilter) q = q.eq('project_id', projectFilter);
+
     if (status === 'all') {
       // no status filter
     } else if (status === 'active') {
@@ -139,10 +148,28 @@ export const listEventsTool = {
     }
 
     const events = rows || [];
+
+    // Resolve project names so the model can see which project each event is
+    // filed under without a separate lykn_listProjects call.
+    const projectIds = [...new Set(events.map((e) => e.project_id).filter(Boolean))];
+    if (projectIds.length) {
+      const { data: projRows } = await ctx.supabaseAdmin
+        .from('lykn_projects')
+        .select('id, name')
+        .eq('user_id', ctx.userId)
+        .in('id', projectIds);
+      const nameById = new Map((projRows || []).map((p) => [p.id, p.name]));
+      for (const e of events) {
+        e.project_name = e.project_id ? (nameById.get(e.project_id) || null) : null;
+      }
+    } else {
+      for (const e of events) e.project_name = null;
+    }
+
     return jsonContent({
       ok: true,
       count: events.length,
-      window: { from: fromIso || null, to: toIso || null, status },
+      window: { from: fromIso || null, to: toIso || null, status, project_id: projectFilter },
       events,
       message: events.length ? null : 'No events in that window.',
     });
