@@ -29,8 +29,7 @@
 // ctx.userId, so it behaves identically wherever the chat agent loop runs it.
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
-import { persistCapabilityArtifact, mimeTypeForFilename } from '../lib/exterior/capabilityStorage.js';
-import { GENERATED_IMAGE_BUCKET, GENERATED_IMAGE_SIGNED_TTL_SEC } from '../lib/exterior/constants.js';
+import { resolveVaultAttachment } from '../lib/vaultAttachment.js';
 
 const TITLE_MAX = 200;
 const CONTENT_MAX = 60000;
@@ -39,134 +38,6 @@ const FOLDER_MAX = 80;
 const TAG_MAX_LEN = 32;
 const TAG_MAX_COUNT = 12;
 const FILENAME_MAX = 160;
-const ATTACHMENT_FETCH_TIMEOUT_MS = 15000;
-const MAX_FETCH_BYTES = 25 * 1024 * 1024;
-
-const EXT_BY_MIME = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-  'image/svg+xml': 'svg',
-  'application/pdf': 'pdf',
-  'audio/mpeg': 'mp3',
-  'audio/wav': 'wav',
-  'video/mp4': 'mp4',
-  'text/html': 'html',
-  'text/markdown': 'md',
-  'text/csv': 'csv',
-  'application/json': 'json',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
-};
-
-// Map a generated file (by MIME, then filename/URL extension) onto the vault's
-// attachment vocabulary. The vault's resolveAttachmentType returns any explicit
-// non-"file" type verbatim, so getting this right is what makes a chart render
-// as an image card instead of a dead link.
-function inferAttachmentKind(mimeType, filename, url) {
-  const m = String(mimeType || '').toLowerCase().split(';')[0].trim();
-  if (m.startsWith('image/')) return 'image';
-  if (m.startsWith('video/')) return 'video';
-  if (m.startsWith('audio/')) return 'audio';
-  if (m === 'application/pdf') return 'pdf';
-  if (m.includes('spreadsheetml') || m === 'text/csv' || m === 'application/vnd.ms-excel') return 'spreadsheet';
-  const src = String(filename || url || '').split('?')[0];
-  const ext = (src.split('.').pop() || '').toLowerCase();
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'heic', 'heif', 'tiff'].includes(ext)) return 'image';
-  if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'wmv'].includes(ext)) return 'video';
-  if (['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma'].includes(ext)) return 'audio';
-  if (ext === 'pdf') return 'pdf';
-  if (['xls', 'xlsx', 'csv'].includes(ext)) return 'spreadsheet';
-  return 'file';
-}
-
-function deriveFilename(filename, mimeType, url, title) {
-  const clean = String(filename || '').trim();
-  if (clean) return clean.slice(0, FILENAME_MAX);
-  try {
-    const base = (new URL(String(url)).pathname.split('/').pop() || '').trim();
-    if (base && /\.[a-z0-9]{2,5}$/i.test(base)) return decodeURIComponent(base).slice(0, FILENAME_MAX);
-  } catch { /* not a parseable URL — fall through */ }
-  const ext = EXT_BY_MIME[String(mimeType || '').toLowerCase().split(';')[0].trim()] || 'bin';
-  const base =
-    String(title || 'artifact')
-      .replace(/[^a-zA-Z0-9._-]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 80) || 'artifact';
-  return `${base}.${ext}`;
-}
-
-// Turn the file the model handed us into a durable, vault-renderable attachment.
-//   • Already in our storage (storage_path) → reference the path (the vault
-//     re-signs it forever) and mint a fresh signed URL for immediate render.
-//   • External URL (QuickChart PNG, a hosted image/file) → download the bytes
-//     into user-files so it survives past the source's expiry and renders as a
-//     real card instead of a fragile link to quickchart.io et al.
-// Returns null when nothing renderable could be built (caller falls back to a
-// visible download link so the artifact is still reachable).
-async function resolveVaultAttachment(ctx, { fileUrl, storagePath, storageBucket, filename, mimeType, title }) {
-  if (storagePath) {
-    const bucket = storageBucket || GENERATED_IMAGE_BUCKET;
-    let url = fileUrl || '';
-    try {
-      const { data } = await ctx.supabaseAdmin.storage
-        .from(bucket)
-        .createSignedUrl(storagePath, GENERATED_IMAGE_SIGNED_TTL_SEC);
-      if (data?.signedUrl) url = data.signedUrl;
-    } catch { /* keep the provided fileUrl */ }
-    const name = deriveFilename(filename, mimeType, storagePath || fileUrl, title);
-    return {
-      type: inferAttachmentKind(mimeType, name, storagePath || fileUrl),
-      url,
-      name,
-      storagePath,
-      storageBucket: bucket,
-      mimeType: mimeType || mimeTypeForFilename(name),
-    };
-  }
-
-  if (/^https?:\/\//i.test(fileUrl)) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), ATTACHMENT_FETCH_TIMEOUT_MS);
-      let res;
-      try {
-        res = await fetch(fileUrl, { signal: controller.signal });
-      } finally {
-        clearTimeout(timer);
-      }
-      if (!res.ok) return null;
-      const ct = (res.headers.get('content-type') || '').split(';')[0].trim();
-      const declaredLen = Number(res.headers.get('content-length') || 0);
-      if (declaredLen && declaredLen > MAX_FETCH_BYTES) return null;
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (!buf.length || buf.length > MAX_FETCH_BYTES) return null;
-      const resolvedMime = mimeType || ct || 'application/octet-stream';
-      const name = deriveFilename(filename, resolvedMime, fileUrl, title);
-      const stored = await persistCapabilityArtifact(ctx.supabaseAdmin, ctx.userId, {
-        buffer: buf,
-        filename: name,
-        mimeType: resolvedMime,
-        category: 'saved',
-      });
-      if (!stored.ok) return null;
-      return {
-        type: inferAttachmentKind(stored.mime_type || resolvedMime, name, fileUrl),
-        url: stored.file_url,
-        name,
-        storagePath: stored.storage_path,
-        storageBucket: GENERATED_IMAGE_BUCKET,
-        mimeType: stored.mime_type || resolvedMime,
-        size: stored.bytes,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
 
 function cleanTags(raw) {
   const out = [];

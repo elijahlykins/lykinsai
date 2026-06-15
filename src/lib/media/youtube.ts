@@ -37,4 +37,3 @@ export function getYouTubeEmbedUrl(videoId: string): string {
   const id = encodeURIComponent(String(videoId || ""));
   return `https://www.youtube-nocookie.com/embed/${id}`;
 }
-

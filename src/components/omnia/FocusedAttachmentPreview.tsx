@@ -1,6 +1,6 @@
 import React from "react";
 import { BookOpen, FileText, Link2, Music, Play, StickyNote, X } from "lucide-react";
-import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import LinkPreview from "@/components/LinkPreview";
 import type { FocusedChatAttachment } from "@/lib/ai/chatSendOrchestrator";
 

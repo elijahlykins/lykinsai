@@ -28,7 +28,6 @@ import Settings from "./pages/Settings";
 // the initial bundle too, so first-paint on every other route gets
 // faster — not just first-paint on /synthesis-layer.
 const SynthesisLayer = React.lazy(() => import("./pages/SynthesisLayer"));
-import SharedGrid from "./pages/SharedGrid";
 import AppSidebar from "./components/AppSidebar";
 import MobileTabBar from "./components/MobileTabBar";
 import MobileExperienceNotice from "./components/MobileExperienceNotice";
@@ -166,7 +165,6 @@ function AppShell() {
     location.pathname === "/cookies" ||
     location.pathname === "/dpa" ||
     location.pathname.startsWith("/apps/");
-  const isSharedGridView = location.pathname.startsWith("/s/");
   const isSharePage = location.pathname === "/share";
 
   useEffect(() => {
@@ -179,7 +177,7 @@ function AppShell() {
   }, [isEmbeddedRoute]);
 
   const isStandalone =
-    isLoginPage || isStartTrialPage || isLandingPage || isSharedGridView || isSharePage;
+    isLoginPage || isStartTrialPage || isLandingPage || isSharePage;
   const chromeHidden = isEmbeddedRoute || isStandalone;
   // The marketing landing page has its own header with a Sign in button, so
   // the floating top-left pill is redundant there. The legal/docs pages reached
@@ -241,7 +239,6 @@ function AppShell() {
             <Route path="/dpa" element={<DPA />} />
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/mobile" element={<Mobile />} />
-            <Route path="/s/:token" element={<SharedGrid />} />
             <Route path="/" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
             <Route path="/landing-prototype" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
             <Route path="/app" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />

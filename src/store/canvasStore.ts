@@ -3,7 +3,7 @@ import { immer } from "zustand/middleware/immer";
 import type { Block, BlockId, Camera, LegacyListItem, LegacyListType, TextBlock, TextFormat } from "@/canvas/types";
 import { snapToGrid } from "@/canvas/utils/snap";
 import { migrateLegacyBlocks } from "@/canvas/utils/migrateBlocks";
-import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import type { UniversalBlockConnection, UniversalBlockRuntime } from "@/canvas/blockSystem/types";
 import type { BrickTrait } from "@/canvas/blockSystem/types";
 

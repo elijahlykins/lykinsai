@@ -1,5 +1,5 @@
 import type { Editor } from "@tiptap/core";
-import { extractYouTubeVideoId, isYouTubeUrl } from "@/canvas/utils/youtube";
+import { extractYouTubeVideoId, isYouTubeUrl } from "@/lib/media/youtube";
 import { supabase } from "@/lib/supabase";
 
 const DOCUMENT_EXTS = new Set([

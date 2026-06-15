@@ -200,6 +200,7 @@ import {
   loadWritableProject,
   stampActiveProject,
   createUserAuthorizedProject,
+  resolveProjectByNameOrId,
 } from './lib/projectWriteTarget.js';
 import { runAgentLoop, makeToolSyntaxStripper, stripToolSyntaxFromText } from './chat-agent-loop.js';
 import { z, validate, validateParams, setValidationFailureHook } from './validation.js';
@@ -5588,6 +5589,14 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    findConnections({ query }) → pick top N → addProjectNeurons.',
   '  • lykn_removeProjectNeurons — drop neurons from a project\'s cluster.',
   '    The neurons themselves stay around; only the membership goes.',
+  '  • lykn_uploadToProject — when the user DRAGS/PASTES a file (image, PDF,',
+  '    doc) into the chat and says "upload this to my <project>" / "add this',
+  '    to <project>": this ONE call saves the attachment into the vault as a',
+  '    real viewable item AND clusters it into the project. Pass project_name',
+  '    (what they called it) or project_id; omit both for the active project.',
+  '    Use `attachment` (filename or index) only when several files are',
+  '    attached. Do NOT chain saveFileToVault + addProjectNeurons for dragged',
+  '    files — this tool already has the bytes and does both.',
   '',
   'PROJECT METADATA (write, reversible):',
   '  • lykn_setActiveProject — switch focus to an EXISTING main or branch.',
@@ -8227,6 +8236,7 @@ const PROJECT_WRITE_TOOLS = new Set([
   'lykn_mergeProjects',
   'lykn_addProjectNeurons',
   'lykn_removeProjectNeurons',
+  'lykn_uploadToProject',
 ]);
 
 async function runRestTool(toolName, req, res) {
@@ -15610,6 +15620,10 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "list_custom_models (see every model the user built AND each model's purpose), " +
   "communicate_with_model (hand a task or question to one of the user's OTHER models — a sub-agent, main or not — and read back the report it returns), " +
   "save_to_vault (save a note — only when the user explicitly asks), " +
+  "add_to_project (when the user shares a file in this session — drags or pastes in an image, PDF, or doc — and asks you to " +
+  "'add this to my <project>' / 'put that in the <project> project' / 'upload this to <project>'; the file is already saved in " +
+  "their vault, so just pass project_name and it gets clustered into that project — you don't need a node id, it uses the file " +
+  "they just shared), " +
   "and update_voice_instructions (CHANGE HOW YOU BEHAVE: call this whenever the user gives feedback about how you " +
   "should sound, talk, or act — 'act more like X', 'turn up the sarcasm by 15%', 'be warmer', 'talk less', 'stop " +
   "being so formal'. It rewrites their saved voice instructions so the change sticks for future conversations, not " +
@@ -16298,6 +16312,28 @@ const LYKN_VOICE_TOOL_DEFS = [
       required: ['title', 'content'],
     },
   },
+  // ── Add a shared file to a project ───────────────────────────────────
+  {
+    name: 'add_to_project',
+    // Special-cased in the dispatch below: resolves the project by name and,
+    // when no node is given, the file the user just shared into this voice
+    // session (auto-saved to the vault), then clusters it into the project.
+    description:
+      "Add a file the user JUST shared in this voice session (an image, PDF, doc they dragged or pasted in) " +
+      "to one of their projects. Call this when the user says things like \"add this to my <project>\", " +
+      '"put that image in the <project> project", or "upload this to <project>". The file is already ' +
+      "saved in their vault — you just need to tell which project. Pass project_name (what the user " +
+      "called it); omit it to use the active project. You do NOT need a node id; it defaults to the most " +
+      'recently shared file. Only call after the user asks to add/upload something to a project.',
+    parameters: {
+      type: 'object',
+      properties: {
+        project_name: { type: 'string', description: 'The project to add it to, as the user named it. Omit to use the active project.' },
+        project_id: { type: 'string', description: 'Optional explicit project id (takes priority over project_name).' },
+        node_id: { type: 'string', description: 'Optional vault node id (vault_<uuid>) of a specific item. Omit to use the most recently shared file.' },
+      },
+    },
+  },
   // ── Self-tuning: rewrite the user's own voice instructions ───────────────
   {
     name: 'update_voice_instructions',
@@ -16762,6 +16798,75 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
         query: out.query,
         result_count: results.length,
         results,
+      });
+    }
+
+    // Add the file the user just shared into this voice session to a project.
+    // Files dragged/pasted during voice are auto-saved to the vault (tagged
+    // source='lykn-voice-attachment'); this resolves the project by name and,
+    // when the model doesn't pass a node, the most-recently shared file, then
+    // clusters it into the project. Mirrors lykn_uploadToProject for chat.
+    if (name === 'add_to_project') {
+      const ctx = buildToolCtx(req);
+      const projectName = String(args.project_name || '').trim();
+      const projectId = String(args.project_id || '').trim();
+      const { project, reason } = await resolveProjectByNameOrId(ctx, { projectId, projectName });
+      if (!project) {
+        if (reason === 'project_name_not_found') {
+          return res.json({ ok: false, reason: 'project_not_found', message: `I couldn't find a project called "${projectName}". Which project should it go in?` });
+        }
+        return res.json({ ok: false, reason: 'no_active_project', message: 'No target project is set. Tell me which project to add it to.' });
+      }
+
+      // Resolve the vault item: an explicit node_id wins; otherwise the most
+      // recently shared file (the "this" the user is referring to).
+      let nodeId = String(args.node_id || '').trim();
+      let nodeLabel = '';
+      if (nodeId) {
+        if (!/^(vault_|belief_|fact_|concept_)/.test(nodeId)) nodeId = `vault_${nodeId}`;
+      } else {
+        const { data: recent } = await supabaseAdmin
+          .from('notes')
+          .select('id, title')
+          .eq('user_id', userId)
+          .eq('source', 'lykn-voice-attachment')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!recent?.id) {
+          return res.json({ ok: false, reason: 'no_recent_attachment', message: "I don't see a file you've shared in this session yet. Drag or paste it in first, then I can add it." });
+        }
+        nodeId = `vault_${recent.id}`;
+        nodeLabel = recent.title || '';
+      }
+
+      const { error: clusterErr } = await supabaseAdmin
+        .from('lykn_project_neurons')
+        .upsert(
+          {
+            user_id: userId,
+            project_id: project.id,
+            node_id: nodeId,
+            node_label: (nodeLabel || 'Shared file').slice(0, 240),
+            node_kind: 'vault',
+          },
+          { onConflict: 'user_id,project_id,node_id' },
+        );
+      if (clusterErr) {
+        return res.json({ ok: false, reason: 'clustering_failed', message: `I couldn't add it to "${project.name}" just now.` });
+      }
+      await supabaseAdmin
+        .from('lykn_projects')
+        .update({ last_active_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', project.id)
+        .eq('user_id', userId)
+        .then(() => {}, () => {});
+      invalidateProjectSectionCache(userId);
+      return res.json({
+        ok: true,
+        project: { id: project.id, name: project.name },
+        node_id: nodeId,
+        message: `Added it to "${project.name}".`,
       });
     }
 

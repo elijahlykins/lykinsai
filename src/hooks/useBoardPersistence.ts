@@ -370,13 +370,6 @@ export function useBoardPersistence(params: UseBoardPersistenceParams) {
       notesPagesRef.current = restoredPages;
       setNotesPages(restoredPages);
       setActiveNotePageId(restoredPages[0].id);
-
-      const hasBlocks = blocks && Object.keys(blocks).length > 0;
-      if (hasBlocks) {
-        setChatMode(false);
-        setChatRailOpen(true);
-        setChatRailVisible(true);
-      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [boardId, gridSize, loadBlocks]

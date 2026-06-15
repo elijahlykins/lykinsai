@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase";
-import { detectSocialPlatform, getSocialEmbedLabel } from "@/canvas/utils/socialEmbed";
+import { detectSocialPlatform, getSocialEmbedLabel } from "@/lib/media/socialEmbed";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { describeVaultItemInBackground } from "@/lib/vault/describeVaultItem";
 import {

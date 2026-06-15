@@ -7,6 +7,7 @@ export const PROJECT_WRITE_TOOL_NAMES = new Set([
   "lykn_mergeProjects",
   "lykn_addProjectNeurons",
   "lykn_removeProjectNeurons",
+  "lykn_uploadToProject",
 ]);
 
 export const PROJECTS_CHANGED_EVENT = "lykn:projects-changed";

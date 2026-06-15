@@ -35,6 +35,10 @@ import { saveFileToVaultTool } from './saveFileToVault.js';
 // can't create projects (they keep the user-only restriction). The in-product
 // assistant uses it only after the user agrees to its suggestion.
 import { createProjectTool } from './createProject.js';
+// In-app-only: acts on the CURRENT chat turn's dragged-in attachments (via
+// ctx.turnAttachments), which external MCP clients never have. Saves the file
+// to the vault and clusters it into a project in one step.
+import { uploadToProjectTool } from './uploadToProject.js';
 
 const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   ...MCP_TOOLS_BY_NAME,
@@ -45,6 +49,7 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   [communicateWithModelTool.name]: communicateWithModelTool,
   [saveFileToVaultTool.name]: saveFileToVaultTool,
   [createProjectTool.name]: createProjectTool,
+  [uploadToProjectTool.name]: uploadToProjectTool,
 });
 
 // ---------------------------------------------------------------------------
@@ -84,6 +89,10 @@ export const CHAT_TOOL_NAMES = [
   // ── Project-cluster writes (reversible) ──────────────────────────
   'lykn_addProjectNeurons',
   'lykn_removeProjectNeurons',
+  // Save a dragged-in chat file to the vault AND cluster it into a project in
+  // one step ("upload this image to my <project>"). Acts on this turn's
+  // attachments — see uploadToProject.js.
+  'lykn_uploadToProject',
   // ── Project metadata writes ──────────────────────────────────────
   'lykn_setActiveProject',
   // Create a NEW project — in-app only, and ONLY after the user agrees to the
@@ -434,7 +443,47 @@ export function buildChatToolCtx(req, extras = {}) {
     boundProjectId: extras.boundProjectId || null,
     /** Board/chat scope from req.body.projectId. */
     boardProjectId: extras.boardProjectId || null,
+    /**
+     * Binary attachments the user dragged/pasted into THIS chat turn (image /
+     * pdf / file / video / audio), as compact metadata. lykn_uploadToProject
+     * reads these to save a dragged file into the vault and cluster it into a
+     * project. Image attachments carry an `imageIndex` into `turnImageUrls`
+     * (below) so the tool can recover the base64 bytes when no durable
+     * storagePath exists yet. Empty on turns with no attachments.
+     */
+    turnAttachments: sanitizeTurnAttachments(req.body?.attachments),
+    /**
+     * The base64 / signed image URLs sent for vision this turn, in the same
+     * order the client assigned `imageIndex`. Used as the byte source of last
+     * resort for image attachments lacking a storagePath.
+     */
+    turnImageUrls: (Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : []).slice(0, 8),
   };
+}
+
+// Defensive cleaner for the client-supplied per-turn attachment metadata: we
+// only keep the small, known fields (never bytes), cap the count, and coerce
+// types so a malformed payload can't reach the tool handler.
+function sanitizeTurnAttachments(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const a of raw) {
+    if (!a || typeof a !== 'object') continue;
+    const type = String(a.type || '').toLowerCase().slice(0, 24);
+    if (!['image', 'pdf', 'file', 'video', 'audio'].includes(type)) continue;
+    const meta = {
+      type,
+      name: typeof a.name === 'string' ? a.name.slice(0, 200) : 'attachment',
+    };
+    if (typeof a.mime === 'string') meta.mime = a.mime.slice(0, 120);
+    if (typeof a.storagePath === 'string') meta.storagePath = a.storagePath.slice(0, 400);
+    if (typeof a.storageBucket === 'string') meta.storageBucket = a.storageBucket.slice(0, 120);
+    if (typeof a.url === 'string' && /^https?:\/\//i.test(a.url)) meta.url = a.url.slice(0, 2000);
+    if (Number.isInteger(a.imageIndex) && a.imageIndex >= 0 && a.imageIndex < 8) meta.imageIndex = a.imageIndex;
+    out.push(meta);
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

@@ -91,6 +91,7 @@ const TOOL_STATUS_COPY: Record<string, string> = {
   build_with_cursor: "Kicking off the build…",
   check_cursor_build: "Checking the build…",
   save_to_vault: "Saving to your vault…",
+  add_to_project: "Adding it to the project…",
   [TUNE_VOICE_TOOL]: "Adjusting how it sounds…",
 };
 
@@ -130,6 +131,9 @@ const TOOL_NAMES = [
   "build_with_cursor",
   "check_cursor_build",
   "save_to_vault",
+  // Add the file the user just shared in this session to a project ("add this
+  // to my <project>"). Dispatched server-side; see /api/ai/realtime/tool.
+  "add_to_project",
   // Handled client-side (rewrites the user's saved voice instructions); see
   // callTool's interception below — never forwarded to the server dispatch.
   TUNE_VOICE_TOOL,

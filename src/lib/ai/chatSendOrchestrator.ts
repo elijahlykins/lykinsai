@@ -1,4 +1,4 @@
-import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { persistInstructionPrompt } from "@/lib/voice/tuneInstructions";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
@@ -2536,6 +2536,35 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     attachedImageUrls.push(brickActionData.imageUrl);
   }
 
+  // Structured metadata for the binary attachments on THIS turn, so a tool
+  // (lykn_uploadToProject) can save the dragged-in file to the vault and
+  // cluster it into a project ("upload this image to my X project"). We
+  // deliberately do NOT re-serialise image data URLs here — image bytes
+  // already ship in `imageUrls`, so each image attachment carries an
+  // `imageIndex` the server uses to recover the data URL from that array
+  // when no durable `storagePath` exists yet. Non-image binaries (pdf,
+  // file, video, audio) reference their storagePath / signed url instead.
+  let _imgCursor = 0;
+  const turnAttachments = sentAttachments
+    .map((a) => {
+      const t = (a.type || "").toLowerCase();
+      const isImg = t === "image" && !!a.url;
+      const meta: Record<string, unknown> = {
+        type: t,
+        name: a.name || a.vaultTitle || "attachment",
+        ...(a.mime ? { mime: a.mime } : {}),
+        ...(a.storagePath ? { storagePath: a.storagePath } : {}),
+        ...(a.storageBucket ? { storageBucket: a.storageBucket } : {}),
+        ...(a.url && !a.url.startsWith("data:") ? { url: a.url } : {}),
+      };
+      if (isImg) meta.imageIndex = _imgCursor++;
+      const isBinary = t === "image" || t === "pdf" || t === "file" || t === "video" || t === "audio";
+      return { isBinary, meta };
+    })
+    .filter((x) => x.isBinary)
+    .map((x) => x.meta)
+    .slice(0, 8);
+
   if (signal.aborted) return;
   state.setChatStatusText("");
   state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)));
@@ -2736,6 +2765,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     ...(hasFocusedBricks ? { hasFocusedBricks: true } : {}),
     ...(mediaContext ? { mediaContext: mediaContext.slice(0, 8000) } : {}),
     ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
+    ...(turnAttachments.length ? { attachments: turnAttachments } : {}),
     ...getAiPrefs(),
   };
 

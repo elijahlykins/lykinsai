@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
-import { Canvas } from "@/canvas/Canvas";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { Block } from "@/canvas/types";
 import { ChevronDown, ChevronUp, ChevronRight, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, FolderKanban, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, ArrowUp } from "lucide-react";
@@ -25,9 +24,9 @@ import UpgradeModal from "@/components/UpgradeModal";
 import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
 import type { UniversalBlockType } from "@/canvas/blockSystem/types";
 import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
-import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import LinkPreview from "@/components/LinkPreview";
-import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
+import { detectSocialPlatform, isSocialEmbedType } from "@/lib/media/socialEmbed";
 import { promptFileDropMode } from "@/lib/fileDropModePrompt";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -43,18 +42,15 @@ import { getVaultSidebarWidth, useIsTouchOnlyDevice, getIsTouchOnlyDevice } from
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
-import NotesPanel from "@/components/notes/NotesPanel";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { fetchLoadInUpdatesMessage } from "@/lib/synthesis/loadInUpdates";
 import { useProjectFiles } from "@/hooks/useProjectFiles";
 import OmniaToolbar from "@/components/omnia/OmniaToolbar";
-import OmniaCenterWelcome from "@/components/omnia/OmniaCenterWelcome";
 import OmniaToasts from "@/components/omnia/OmniaToasts";
 import OmniaVaultOverlay from "@/components/omnia/OmniaVaultOverlay";
 import FileDropModeDialog from "@/components/omnia/FileDropModeDialog";
-import OmniaSideRail from "@/components/omnia/OmniaSideRail";
 import OmniaFocusedChat from "@/components/omnia/OmniaFocusedChat";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import OmniaVoiceMode from "@/components/omnia/OmniaVoiceMode";
@@ -63,7 +59,6 @@ import type { ChatNeuronVaultPayload } from "@/components/omnia/ChatNeuronCard";
 import SubAgentTasksStrip from "@/components/omnia/SubAgentTasksStrip";
 import LoadInBriefingPanel from "@/components/omnia/LoadInBriefingPanel";
 import MobileFocusedChatGrids from "@/components/omnia/MobileFocusedChatGrids";
-import GridShareDialog from "@/components/omnia/GridShareDialog";
 import { useBoardPersistence, makeDefaultNotesPages } from "@/hooks/useBoardPersistence";
 import { fetchMostRecentBoard } from "@/lib/board/fetchBoardsWithContext";
 import { useChatEngine, type ComposerMode, type ArtifactKind } from "@/hooks/useChatEngine";
@@ -783,7 +778,6 @@ export default function OmniaGridPage() {
   const reset = useCanvasStore((s) => s.reset);
   const gridSize = useCanvasStore((s) => s.gridSize);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
-  const [showShareDialog, setShowShareDialog] = useState(false);
   const [showVaultSidebar, setShowVaultSidebar] = useState(false);
   const [vaultDragActive, setVaultDragActive] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
@@ -2568,6 +2562,10 @@ export default function OmniaGridPage() {
           user_id: user.id,
           title: filename,
           content: noteContent,
+          // Tag voice-shared attachments so the voice "add_to_project" tool can
+          // resolve "add this to my <project>" to the file the user just shared
+          // without the model having to echo back a vault node id.
+          source: "lykn-voice-attachment",
         })
         .select("id")
         .single();
@@ -4111,32 +4109,6 @@ export default function OmniaGridPage() {
         />
       ) : null}
 
-      <GridShareDialog
-        open={showShareDialog}
-        onOpenChange={setShowShareDialog}
-        gridTitle={title}
-        boardId={boardId}
-        notesPages={notesPages}
-        onEnsureSaved={async () => {
-          const start = Date.now();
-          while (savingRef.current && Date.now() - start < 4000) {
-            await new Promise((r) => setTimeout(r, 50));
-          }
-          await saveSnapshot();
-        }}
-      />
-
-      {!isMobilePhone && (
-        <div
-          className={`h-full transition-[margin-right] duration-300 ${chatMode ? "invisible pointer-events-none" : ""}`}
-          style={{
-            marginRight: isMobileGrid ? 0 : `${chatRailWidthPx}px`,
-          }}
-        >
-          <Canvas liveAIMode={false} isAiThinking={isChatLoading} thinkingStatusText={thinkingStatus} hidden={GRID_DISABLED || chatMode} />
-        </div>
-      )}
-
       {vaultDragActive && (
         <OmniaVaultOverlay
           onDrop={handleVaultOverlayDrop}
@@ -4183,72 +4155,6 @@ export default function OmniaGridPage() {
             </div>
           </div>
         </div>
-      )}
-
-      {/* Center welcome prompt (no messages yet, not in chat mode) */}
-      {!chatMode && chatMessages.length === 0 && (!chatRailOpen || centerChatLeaving) && (
-        <OmniaCenterWelcome
-          chatInputRef={chatInputRef}
-          onChatInputChange={handleChatInputChange}
-          onPaste={handleChatPaste}
-          onResizeInput={resizeChatInput}
-          onSend={handleCenterAskSend}
-          centerChatLeaving={centerChatLeaving}
-          isDictating={isDictating}
-          isTranscribing={isTranscribing}
-          centerChatInputRef={centerChatInputRef}
-          chatBarToolbar={<OmniaChatBarToolbar onSend={handleCenterAskSend} {...chatBarToolbarProps} />}
-          typedWelcome={typedWelcome}
-        />
-      )}
-
-      {/* Mobile backdrop for side rail */}
-      {!chatMode && chatRailVisible && isMobileGrid && (
-        <div
-          className={`fixed inset-0 bg-black/20 backdrop-blur-[2px] ${notesOpen ? "z-[227]" : "z-[63]"}`}
-          onClick={handleCloseSideRail}
-        />
-      )}
-      {/* Side rail chat (canvas mode) */}
-      {!chatMode && chatRailVisible && (
-        <OmniaSideRail
-          chatMessages={chatMessages}
-          isChatLoading={isChatLoading}
-          thinkingStatus={thinkingStatus}
-          chatInputRef={chatInputRef}
-          onChatInputChange={handleChatInputChange}
-          onSend={handleChatSend}
-          chatRailWidthPx={chatRailWidthPx}
-          isMobileGrid={isMobileGrid}
-          notesOpen={notesOpen}
-          showVaultSidebar={showVaultSidebar}
-          vaultSidebarWidthPx={vaultSidebarWidthPx}
-          onClose={handleCloseSideRail}
-          onStartResize={handleStartChatResize}
-          buildChatMarkdownComponents={buildChatMarkdownComponents}
-          isDictating={isDictating}
-          isTranscribing={isTranscribing}
-          onPaste={handleChatPaste}
-          onResizeInput={resizeChatInput}
-          chatScrollRef={chatScrollRef}
-          chatPanelInputRef={chatPanelInputRef}
-          savedMediaUrls={savedMediaUrls}
-          savedYouTubeIds={savedYouTubeIds}
-          onSaveYouTube={handleSideRailSaveYouTube}
-          onSaveAttachment={handleSideRailSaveAttachment}
-          onSaveAiImage={handleSideRailSaveAiImage}
-          onSaveLink={handleSideRailSaveLink}
-          onReplay={handleSideRailReplay}
-          expandedAiMsgIds={expandedAiMsgIds}
-          toggleAiExpanded={toggleAiExpanded}
-          expandedUserPromptIds={expandedUserPromptIds}
-          toggleUserPromptExpanded={toggleUserPromptExpanded}
-          getCollapsedPreview={getCollapsedPreview}
-          copiedMsgId={copiedMsgId}
-          onCopyMessage={handleSideRailCopyMessage}
-          addChatResponseToGrid={addChatResponseToGrid}
-          chatBarToolbar={<OmniaChatBarToolbar compact onSend={handleChatSend} {...chatBarToolbarProps} />}
-        />
       )}
 
       {/* Phone-only grids drawer for focused chat. Lets users browse and
@@ -4543,101 +4449,6 @@ export default function OmniaGridPage() {
         onSelect={setChatScopedProject}
       />
 
-      {/* Notes panel — bottom drawer */}
-      {!chatMode && (
-        <NotesPanel
-          key={boardId || "__no_board"}
-          open={notesOpen}
-          onOpenChange={setNotesOpen}
-          pages={notesPages}
-          activePageId={activeNotePageId}
-          onActivePageChange={setActiveNotePageId}
-          onPagesChange={handleNotesPagesChange}
-          hasLeftRail={canvasFileBlocks.length > 0 && !isMobileGrid && !notesGridFilesHidden}
-        />
-      )}
-
-      {/* Left “Grid Files” rail when notes open — same geometry + drag as focused chat */}
-      {notesOpen && !chatMode && canvasFileBlocks.length > 0 && !isMobileGrid && !notesGridFilesHidden && (
-        <div
-          className="fixed bottom-0 z-[221] w-[13.75rem] overflow-y-auto scrollbar-hide px-3 pb-3 pt-4 space-y-2 bg-white/80 dark:bg-[#1e1e1e]/90 backdrop-blur-md border-r border-black/8 dark:border-white/8 transition-all duration-300"
-          style={{
-            top: "calc(44px + 2.75rem)",
-            left: "var(--sidebar-offset, 0px)",
-          }}
-        >
-          <div className="flex items-center justify-between px-1 mb-1">
-            <p className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 dark:text-white/40">Grid Files</p>
-            <button
-              type="button"
-              onClick={() => setNotesGridFilesHidden(true)}
-              className="h-6 w-6 rounded-full hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
-              title="Close grid files"
-            >
-              <PanelRightClose className="w-3.5 h-3.5 text-black/40 dark:text-white/40" />
-            </button>
-          </div>
-          <div className="flex flex-col gap-2">
-            {canvasFileBlocks.map((item) => (
-              <div
-                key={item.id}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.effectAllowed = "copy";
-                  e.dataTransfer.setData("application/x-grid-file", JSON.stringify(item));
-                  e.dataTransfer.setData("text/plain", item.url || "");
-                }}
-                className="relative rounded-xl overflow-hidden bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-blue-400/50 transition-all group"
-                title={`Drag to chat or notes: ${item.name}`}
-              >
-                {item.type === "youtube" && item.thumbUrl ? (
-                  <div className="aspect-video relative">
-                    <img src={item.thumbUrl} alt={item.name} className="w-full h-full object-cover" draggable={false} />
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <div className="w-7 h-5 bg-red-600 rounded flex items-center justify-center"><Play className="w-2.5 h-2.5 text-white ml-px" fill="white" /></div>
-                    </div>
-                  </div>
-                ) : item.type === "image" && item.thumbUrl ? (
-                  <div className="aspect-square">
-                    <img src={item.thumbUrl} alt={item.name} className="w-full h-full object-cover" draggable={false} />
-                  </div>
-                ) : item.type === "video" ? (
-                  <div className="aspect-video bg-black flex items-center justify-center">
-                    <Play className="w-5 h-5 text-white/60" />
-                  </div>
-                ) : item.type === "audio" ? (
-                  <div className="aspect-square flex items-center justify-center bg-white/30 dark:bg-white/10">
-                    <Music className="w-5 h-5 text-black/40 dark:text-white/40" />
-                  </div>
-                ) : item.type === "pdf" ? (
-                  <div className="aspect-square flex items-center justify-center bg-white/30 dark:bg-white/10">
-                    <FileText className="w-5 h-5 text-black/40 dark:text-white/40" />
-                  </div>
-                ) : item.type === "note" ? (
-                  <>
-                    <div className="glass-text-card relative rounded-lg p-2.5 min-h-[3rem]">
-                      {item.isAi && <div className="pointer-events-none absolute inset-0 rounded-lg" style={{ background: "rgba(0,0,0,0.035)" }} />}
-                      <p className="relative text-[0.6875rem] leading-relaxed text-black/80 dark:text-white/80 whitespace-pre-wrap break-words" style={{ display: "-webkit-box", WebkitLineClamp: 8, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.content || ""}</p>
-                    </div>
-                    <div className="px-1.5 py-1">
-                      <span className="text-[9px] text-black/50 dark:text-white/50 leading-tight line-clamp-1 break-all">{item.isAi ? "AI Response" : item.name}</span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="aspect-square flex items-center justify-center bg-white/30 dark:bg-white/10">
-                    <Link2 className="w-5 h-5 text-black/40 dark:text-white/40" />
-                  </div>
-                )}
-                {item.type !== "note" && (
-                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-1.5 pb-1 pt-3">
-                    <span className="text-[9px] text-white leading-tight line-clamp-2 break-all">{item.name}</span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

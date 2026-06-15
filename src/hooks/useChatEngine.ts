@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { Dispatch, SetStateAction } from "react";
 import ReactMarkdown from "react-markdown";
 import { useCanvasStore } from "@/store/canvasStore";
-import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
+import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { supabase } from "@/lib/supabase";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
@@ -12,7 +12,7 @@ import { getVaultSidebarWidth } from "@/hooks/useViewportTier";
 import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
 import type { UniversalBlockType } from "@/canvas/blockSystem/types";
 import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
-import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
+import { detectSocialPlatform, isSocialEmbedType } from "@/lib/media/socialEmbed";
 import {
   orchestrateChatSend,
   buildAttachmentContext,

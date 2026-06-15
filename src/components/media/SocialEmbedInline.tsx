@@ -1,11 +1,11 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, Instagram, Play, Facebook } from "lucide-react";
 import { loadAndProcessEmbed } from "@/lib/embedScripts";
-import { getSocialEmbedLabel, isVerticalSocialContent } from "@/canvas/utils/socialEmbed";
+import { getSocialEmbedLabel, isVerticalSocialContent } from "@/lib/media/socialEmbed";
 import { sanitizeEmbedHtml } from "@/lib/sanitizeEmbedHtml";
 
 /* ------------------------------------------------------------------ */
-/*  Inline embed renderer — used by both Canvas LinkBlock and Vault   */
+/*  Inline social embed renderer — used by the Vault preview surface  */
 /* ------------------------------------------------------------------ */
 
 interface SocialEmbedInlineProps {

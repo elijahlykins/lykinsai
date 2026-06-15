@@ -3,7 +3,7 @@
  * so other chat surfaces can send equivalent [WORKSPACE_CONTEXT] vault detail.
  */
 import { supabase } from "@/lib/supabase";
-import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
+import { detectSocialPlatform, isSocialEmbedType } from "@/lib/media/socialEmbed";
 import {
   parseAttachmentsFromContent,
   stripAttachmentsMarker,

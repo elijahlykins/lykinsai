@@ -64,9 +64,9 @@ import UpgradeModal from "@/components/UpgradeModal";
 import SignInActionBlocker from "@/components/SignInActionBlocker";
 import { toast } from "@/components/ui/use-toast";
 import { ToastAction } from "@/components/ui/toast";
-import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/canvas/utils/youtube";
-import { detectSocialPlatform, isSocialEmbedType, isVerticalSocialContent } from "@/canvas/utils/socialEmbed";
-import { SocialEmbedInline } from "@/canvas/blocks/SocialEmbedBlock";
+import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/lib/media/youtube";
+import { detectSocialPlatform, isSocialEmbedType, isVerticalSocialContent } from "@/lib/media/socialEmbed";
+import { SocialEmbedInline } from "@/components/media/SocialEmbedInline";
 import LoadingScreen from "@/components/LoadingScreen";
 import LinkPreview from "@/components/LinkPreview";
 import { buildWakeVaultDemoCards, WAKE_DEMO_CONNECTOR_CARD_IDS } from "@/lib/wake/wakeVaultDemoCards";
@@ -1717,16 +1717,18 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     const target = loadMoreRef.current;
     const observer = new IntersectionObserver(
       (entries) => {
-        const entry = entries[0];
-        if (entry?.isIntersecting) {
-          void loadMoreNotes();
-        }
+        setSentinelInView(!!entries[0]?.isIntersecting);
       },
       { rootMargin: "320px 0px 320px 0px" }
     );
     observer.observe(target);
-    return () => observer.disconnect();
-  }, [loadMoreNotes, loading, user?.id]);
+    return () => {
+      observer.disconnect();
+      setSentinelInView(false);
+    };
+    // `vaultView` is included so the observer re-attaches to the sentinel that
+    // the freshly-rendered view branch mounts (each view renders its own).
+  }, [loading, user?.id, vaultView]);
 
   // Optimistic "ghost" cards: in-flight uploads that already have a local
   // preview URL but don't yet have a DB note. We render them right in the
@@ -3397,7 +3399,133 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
     return orderedVisibleCards.filter((card) => !connectorIds.has(card.id));
   }, [isWakePreview, orderedVisibleCards]);
 
-  const collageGridCards = isWakePreview ? wakeCollageCards : orderedVisibleCards;
+  // ── Batched reveal (feed views) ────────────────────────────────────────
+  // Collage (masonry) and Grid are "feed" views: instead of dumping every
+  // fetched card on screen at once, they reveal in groups of REVEAL_BATCH.
+  // When the user scrolls to the bottom we show that many skeletons and gate
+  // the next group on its media actually resolving/decoding — so the user
+  // never scrolls into a wall of empty placeholders, and the page only grows
+  // once the next batch is genuinely ready. Tags/Type are grouped views and
+  // always render their full set.
+  const REVEAL_BATCH = 7;
+  const isFeedView = !isWakePreview && (vaultView === "collage" || vaultView === "grid");
+  const [revealCount, setRevealCount] = useState(REVEAL_BATCH);
+  const [sentinelInView, setSentinelInView] = useState(false);
+  const [batchPreparing, setBatchPreparing] = useState(false);
+  const batchPreparingRef = useRef(false);
+
+  const collageGridCardsAll = isWakePreview ? wakeCollageCards : orderedVisibleCards;
+  const collageGridCards = useMemo(
+    () => (isFeedView ? collageGridCardsAll.slice(0, revealCount) : collageGridCardsAll),
+    [collageGridCardsAll, isFeedView, revealCount],
+  );
+
+  const hasMoreLocalToReveal = isFeedView && revealCount < collageGridCardsAll.length;
+  const canRevealMore = isFeedView && (hasMoreLocalToReveal || hasMoreNotes);
+
+  // How many skeletons to show under the revealed cards: the size of the next
+  // group still waiting to come in.
+  const pendingRevealCount = (() => {
+    if (!isFeedView) return 0;
+    const localRemaining = collageGridCardsAll.length - revealCount;
+    if (localRemaining > 0) return Math.min(REVEAL_BATCH, localRemaining);
+    if (hasMoreNotes) return REVEAL_BATCH;
+    return 0;
+  })();
+
+  // A card is "ready" once anything it needs to paint is in hand. Notes/links
+  // render from text immediately; image/video attachments backed by storage
+  // need their signed URL resolved (the resolve path also probes/decodes the
+  // image), so we wait on `resolvedAttachmentUrls` (or a definitive failure).
+  const isCardMediaReady = useCallback(
+    (card) => {
+      if (!card || card.kind !== "attachment") return true;
+      const t = resolveAttachmentType(card.attachment || {});
+      if (t !== "image" && t !== "video") return true;
+      const target = parseStorageTarget(card.attachment || {});
+      const isStorageBacked = !!(target?.bucket && target?.path);
+      if (!isStorageBacked) return true;
+      return !!resolvedAttachmentUrls[card.id] || failedImageIds.has(card.id);
+    },
+    [resolvedAttachmentUrls, failedImageIds],
+  );
+
+  const prepareNextBatch = useCallback(() => {
+    if (!isFeedView || batchPreparingRef.current) return;
+    if (!hasMoreLocalToReveal) {
+      // Nothing left in the local cache to reveal — pull the next server page.
+      // The trigger effect re-runs once those rows land and the cache grows.
+      if (hasMoreNotes) void loadMoreNotes();
+      return;
+    }
+    const next = collageGridCardsAll.slice(revealCount, revealCount + REVEAL_BATCH);
+    for (const card of next) {
+      if (card.kind === "attachment") {
+        visibleCardIdsRef.current.add(card.id);
+        urlResolveQueueRef.current.push(card);
+      }
+    }
+    void drainUrlResolveQueue();
+    batchPreparingRef.current = true;
+    setBatchPreparing(true);
+  }, [
+    isFeedView,
+    hasMoreLocalToReveal,
+    hasMoreNotes,
+    loadMoreNotes,
+    collageGridCardsAll,
+    revealCount,
+    drainUrlResolveQueue,
+  ]);
+
+  // Kick off the next batch when the bottom sentinel scrolls into view.
+  useEffect(() => {
+    if (!sentinelInView || !isFeedView || batchPreparing || !canRevealMore) return;
+    prepareNextBatch();
+  }, [sentinelInView, isFeedView, batchPreparing, canRevealMore, prepareNextBatch]);
+
+  // Once every card in the preparing batch has its media ready, reveal them.
+  useEffect(() => {
+    if (!batchPreparing) return;
+    const next = collageGridCardsAll.slice(revealCount, revealCount + REVEAL_BATCH);
+    if (next.length === 0) {
+      batchPreparingRef.current = false;
+      setBatchPreparing(false);
+      return;
+    }
+    if (next.every((card) => isCardMediaReady(card))) {
+      batchPreparingRef.current = false;
+      setBatchPreparing(false);
+      setRevealCount((c) => c + REVEAL_BATCH);
+    }
+  }, [batchPreparing, collageGridCardsAll, revealCount, isCardMediaReady]);
+
+  // Safety valve: never trap the user behind a batch that won't resolve (a
+  // dead signed URL, a stalled network). Reveal anyway after a grace period.
+  useEffect(() => {
+    if (!batchPreparing) return;
+    const t = setTimeout(() => {
+      batchPreparingRef.current = false;
+      setBatchPreparing(false);
+      setRevealCount((c) => c + REVEAL_BATCH);
+    }, 6000);
+    return () => clearTimeout(t);
+  }, [batchPreparing]);
+
+  // Reset the reveal window whenever the feed itself changes (search, tag
+  // filter, concept results, or switching views) so a new result set starts
+  // from the first group again instead of inheriting a stale large window.
+  useEffect(() => {
+    setRevealCount(REVEAL_BATCH);
+    batchPreparingRef.current = false;
+    setBatchPreparing(false);
+  }, [embeddedSearch, selectedFilterTags, conceptResultIds, vaultView, isFeedView]);
+
+  // Non-feed views (Tags/Type) keep plain infinite scroll.
+  useEffect(() => {
+    if (isFeedView) return;
+    if (sentinelInView && hasMoreNotes && !isLoadingMoreNotes) void loadMoreNotes();
+  }, [isFeedView, sentinelInView, hasMoreNotes, isLoadingMoreNotes, loadMoreNotes]);
 
   // ── Fixed-column JS masonry (collage view) ──
   //
@@ -7250,12 +7378,20 @@ User: ${text}`;
               <div ref={loadMoreRef} className="h-6" />
               </div>
             )}
-            {isLoadingMoreNotes && (
-              <VaultLoadMoreSkeleton
-                masonry={useMasonryLayout}
-                embedded={isEmbeddedMode}
-              />
-            )}
+            {isFeedView
+              ? pendingRevealCount > 0 && (
+                  <VaultLoadMoreSkeleton
+                    masonry={useMasonryLayout}
+                    embedded={isEmbeddedMode}
+                    count={pendingRevealCount}
+                  />
+                )
+              : isLoadingMoreNotes && (
+                  <VaultLoadMoreSkeleton
+                    masonry={useMasonryLayout}
+                    embedded={isEmbeddedMode}
+                  />
+                )}
           </motion.div>
         )}
       </main>
