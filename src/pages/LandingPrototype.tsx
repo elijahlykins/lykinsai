@@ -127,6 +127,16 @@ const PROBLEM_SOLUTIONS = [
       body: "Hand off real jobs to cloud agents that keep running after you close the app, then deliver the finished result back to you.",
     },
   },
+  {
+    problem: {
+      title: "It won't manage your life",
+      body: "Chatbots don't run your projects, calendar, or documents. They answer questions, then leave the actual managing to you.",
+    },
+    solution: {
+      title: "A personal assistant that runs it all",
+      body: "LYKN manages your projects, calendar, to-dos, and documents, and acts on them for you, like having your own Jarvis.",
+    },
+  },
 ] as const;
 
 /**
@@ -421,7 +431,7 @@ function FeatureSuite() {
   return (
     <section ref={ref} id="features" className="lkn-suite" aria-label="Built around you">
       <div className={`lkn-suite-head lkn-reveal ${seen ? "is-in" : ""}`}>
-        <h2 className="lkn-suite-headline">The only assistant you'll ever need</h2>
+        <h2 className="lkn-suite-headline">Everything your assistant runs for you</h2>
         <p className="lkn-suite-sub">
           A suite of features that keep every AI grounded in you.
         </p>
@@ -768,13 +778,9 @@ const LandingPrototype = () => {
             the bottom of it. */}
         <section className="lkn-hero" id="top">
           <div className="lkn-hero-inner">
-            <h1 className="lkn-hero-headline">Stop starting over with AI.</h1>
+            <h1 className="lkn-hero-headline">The only assistant you'll ever need.</h1>
             <p className="lkn-hero-sub">
-              Persistent memory runs your projects, to-do lists, calendar, documents,
-              <br />
-              uploads, inspiration, and cloud agents in one place. Chat or talk to it
-              <br />
-              from any device, no download needed, private by design.
+              A personal assistant that actually knows you and runs your projects, to-do lists, calendar, documents, and cloud agents from one place. Chat or talk to it from any device, no download needed, private by design.
             </p>
             <div className="lkn-hero-actions">
               <button
