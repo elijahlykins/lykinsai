@@ -54,7 +54,6 @@ import Terms from "./pages/Terms";
 import CookiePolicy from "./pages/CookiePolicy";
 import DPA from "./pages/DPA";
 import { useIsMobile } from "@/hooks/useViewportTier";
-import ModelBuilder from "./pages/ModelBuilder";
 import ProjectsPage from "./pages/ProjectsPage";
 
 
@@ -279,14 +278,6 @@ function AppShell() {
                   <Suspense fallback={loadingFallback}>
                     <SynthesisLayer />
                   </Suspense>
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/builder"
-              element={
-                <ProtectedRoute>
-                  <ModelBuilder />
                 </ProtectedRoute>
               }
             />

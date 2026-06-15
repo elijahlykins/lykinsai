@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Blocks,
   Brain,
   Bug,
   CalendarDays,
@@ -169,16 +168,6 @@ export default function MobileTabBar() {
                     setCalendarOpen(true);
                   }}
                 />
-                {user ? (
-                  <MoreItem
-                    icon={Blocks}
-                    label="Model builder"
-                    onClick={() => {
-                      setMoreOpen(false);
-                      flushAndNavigate(nav, "/builder");
-                    }}
-                  />
-                ) : null}
                 <MoreItem
                   icon={SettingsIcon}
                   label="Settings"

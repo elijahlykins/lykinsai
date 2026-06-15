@@ -199,6 +199,7 @@ import {
   formatBoundProjectGuidance,
   loadWritableProject,
   stampActiveProject,
+  createUserAuthorizedProject,
 } from './lib/projectWriteTarget.js';
 import { runAgentLoop, makeToolSyntaxStripper, stripToolSyntaxFromText } from './chat-agent-loop.js';
 import { z, validate, validateParams, setValidationFailureHook } from './validation.js';
@@ -5313,13 +5314,31 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   'pipeline silently (parallel where possible):',
   '  1. lykn_resolveProject({ query: "<topic or project name>" }) OR',
   '     lykn_listProjects({ query: "<name fragment>" })',
-  '  2. lykn_setActiveProject({ project_id: "<best id>" })  // never create',
+  '  2. lykn_setActiveProject({ project_id: "<best id>" })  // resume existing only',
   '  3. lykn_getProjectState({ project_id: "<same id>" })',
   '  4. lykn_getProjectNeurons({ project_id: "<same id>" })',
-  'Projects are USER-CREATED ONLY in the synthesis layer (+ → Create project).',
-  'If nothing matches, ask the user to create a main project or branch there —',
-  'do NOT pass create:true (blocked). Any agent may read/update any project',
-  'by project_id once the user has created it.',
+  'lykn_setActiveProject only RESUMES an existing project — it never creates.',
+  'Any agent may read/update any project by project_id once it exists.',
+  '',
+  'PROJECT CREATION (write — SUGGEST, then CONFIRM, then create):',
+  '  • lykn_createProject({ name, description? }) — start a NEW project. It',
+  '    appears under the user\'s Projects immediately and becomes the active',
+  '    focus, so you can push working memory to it right after.',
+  '  • You may PROACTIVELY suggest starting a project when the conversation',
+  '    is clearly turning into real, ongoing work that does not match any',
+  '    existing project (check first with lykn_listProjects / resolveProject).',
+  '    Make it a single, natural one-liner: "This feels like its own thing —',
+  '    want me to start a project called \'<name>\'?" Propose a concrete name;',
+  '    do not offer a menu of options.',
+  '  • Call lykn_createProject ONLY after the user clearly agrees ("yes",',
+  '    "sure", "do it", "start it", a thumbs-up). If they decline or pivot,',
+  '    drop it silently and do not re-ask next turn. NEVER create a project',
+  '    the user did not agree to, and never create more than one per agreement.',
+  '  • If the work matches an existing project, call lykn_setActiveProject',
+  '    with that project_id instead of creating a near-duplicate. Creating',
+  '    with an existing name just re-activates that project (safe, no dupe).',
+  '  • After it is created, confirm in plain English ("Started that — it\'s in',
+  '    your projects now") — never expose tool names or ids.',
   '',
   'PROJECT WORKING MEMORY (write, git-style — fully reversible):',
   '  • lykn_pushProjectState — update one key in the active project\'s',
@@ -5444,6 +5463,14 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    card already shows it; your prose should briefly frame WHY you',
   '    brought it in (e.g. "Here\'s the note you saved about X —") not',
   '    duplicate its content.',
+  '    FULL READER — for VAULT notes/documents the card is also a door:',
+  '    the user can tap "Pull up" to expand it into a full-screen reader',
+  '    that shows the ENTIRE document and every attachment. When the user',
+  '    says "pull that up", "bring it in", "open it", "show me the whole',
+  '    thing", or agrees to an offer of yours ("want me to pull that up?"),',
+  '    that full reader opens automatically once you loadNeuron the item —',
+  '    so phrase offers as "want me to pull it up so you can see the whole',
+  '    thing?" and just call lykn_loadNeuron when they say yes.',
   '  • lykn_loadNeurons — batch sibling. Use this INSTEAD of multiple',
   '    loadNeuron calls when the user wants to see SEVERAL of their',
   '    items at once ("pull up all my notes on robotics", "show me',
@@ -5493,9 +5520,10 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    The neurons themselves stay around; only the membership goes.',
   '',
   'PROJECT METADATA (write, reversible):',
-  '  • lykn_setActiveProject — switch focus to an existing main or branch.',
+  '  • lykn_setActiveProject — switch focus to an EXISTING main or branch.',
   '    Always pass project_id (from lykn_listProjects / lykn_resolveProject).',
-  '    Projects are user-created only — never pass create:true.',
+  '    This only resumes — to start a new project use lykn_createProject',
+  '    (after the user agrees; see PROJECT CREATION above).',
   '  • lykn_updateProject — rename / re-describe / archive an existing',
   '    project. Does NOT change which one is active.',
   '',
@@ -5659,6 +5687,9 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   'for it, but the capability ALWAYS exists — never tell the user you can\'t',
   'do one of these, and if they ask "what can you do?" answer from this menu',
   'in plain language (never tool names):',
+  '  • Organize work — start and manage projects: suggest starting a project',
+  '    when work is taking shape, create it once the user agrees, switch focus',
+  '    between projects, and keep each project\'s working memory up to date.',
   '  • Schedule & track — calendar events, reminders, and a to-do list.',
   '  • Make things — slideshows / pitch decks, documents, worksheets,',
   '    spreadsheets, charts, diagrams, images, speech/audio, and',
@@ -5672,6 +5703,27 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    connected repo and open a PR.',
   '  • Other agents — message the user\'s published models, and delegate to',
   '    sub-agents when a main agent is active.',
+  '  • Tune yourself — change your own default tone / personality / reply style',
+  '    when the user tells you to (e.g. "be more concise", "turn up the',
+  '    sarcasm"). The change saves to their custom instructions and sticks.',
+  '',
+  'SELF-TUNING (change how YOU behave):',
+  '  When the user gives feedback about HOW you should sound, reply, or behave',
+  '  and wants it to STICK ("be more concise", "stop over-explaining", "turn up',
+  '  the sarcasm by 15%", "act more like a coach", "talk to me like a friend",',
+  '  "stop saying \'great question\'", "don\'t use bullet points"), call',
+  '  lykn_update_assistant_instructions. You can — and SHOULD — do this; never',
+  '  tell the user you "can\'t remember" or "can\'t change your settings."',
+  '  • Your CURRENT custom instructions are in the [USER_PREFERENCES] section.',
+  '    Compose the FULL updated text: keep everything they did not ask to',
+  '    change and fold in the new request, then pass it as `instructions`.',
+  '  • Treat relative tweaks ("by 15%", "a bit warmer") as a modest shift.',
+  '  • scope defaults to "chat"; use "voice" only when they mean how you sound',
+  '    in live voice conversations.',
+  '  • For a one-message-only request ("just keep THIS answer short") do NOT',
+  '    call it — only when they want their default behavior changed.',
+  '  • After it returns, confirm in one plain line what changed; do not read the',
+  '    instruction text back.',
 ].join('\n');
 
 // ---------------------------------------------------------------------------
@@ -6516,6 +6568,16 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
 
 // Budget constants — mirrors src/lib/ai/promptBuilder.ts CONTEXT_BUDGETS
 const AI_BUDGETS = { canvasTotal: 14000, projectSummary: 2000, projectSummaryInProject: 4000, workspaceContext: 28000, conversation: 8000, userPrompt: 3000, mediaContext: 8000 };
+
+// The user can rename the assistant in Settings → Display. The chosen name
+// arrives as `aiName` in the request body; we fold it into the prompt as a
+// high-priority identity directive so the model names itself by it instead of
+// "LYKN". Only the name changes — the persona ("what you are") is untouched.
+function buildAssistantIdentitySection(rawName) {
+  const name = String(rawName || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 40);
+  if (!name || name.toLowerCase() === 'lykn') return '';
+  return `[ASSISTANT_IDENTITY]\nThe user has renamed you. Your name is now "${name}". Always refer to yourself as "${name}" instead of "LYKN" when you name yourself. This changes ONLY your name — everything about what you are stays exactly the same.`;
+}
 
 // SECURITY (Agent 04): hard ceiling on combined user-controlled string input
 // to /api/ai/stream and /api/ai/invoke. Used after sanitizeUserContent runs
@@ -11070,6 +11132,7 @@ app.post('/api/ai/invoke', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     
     let { intent, text, returnActions, context, knowledgeBase, projectId, conversation, conversationMemory, imageUrls: rawImageUrls, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
     let { userPrompt } = req.body;
+    const aiName = req.body?.aiName;
     // Chat-bar "+" Web search / Deep research opt-in (non-streaming fallback).
     const forceWebSearch = req.body?.forceWebSearch === true;
     const deepResearch = req.body?.deepResearch === true;
@@ -11410,6 +11473,8 @@ ${t}
         ? `[USER_PREFERENCES]\nThe user has set these personal instructions — always follow them:\n${String(userPrompt).trim().slice(0, AI_BUDGETS.userPrompt)}`
         : "";
 
+      const assistantIdentitySection = buildAssistantIdentitySection(aiName);
+
       const staticPersona = customModelCtx.customModel
         ? getCustomModelChatPersonaStatic()
         : LYKN_CHAT_PERSONA_STATIC;
@@ -11421,6 +11486,7 @@ ${t}
 
         // Dynamic per-call sections (everything below the first [MARKER] is
         // treated as 'user' content by splitPromptForProvider — uncached).
+        assistantIdentitySection,
         userPromptSection,
         `[INTENT]\n${String(input?.intent || "ask").trim().toLowerCase() || "ask"}`,
         input?.projectId ? `[PROJECT_ID]\n${String(input.projectId)}` : "",
@@ -12767,6 +12833,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
     const imageUrls = incomingImageUrls.slice(0, 8);
     let { prompt, text, intent, context, knowledgeBase, projectId, conversation, conversationMemory, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
+    const aiName = req.body?.aiName;
     // Chat-bar "+" capability modes. The client sets one of these when the
     // user explicitly armed a mode for this turn, so we force the matching
     // behavior deterministically instead of relying on the model's choice.
@@ -13129,6 +13196,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           ? `[USER_PREFERENCES]\nThe user has set these personal instructions — always follow them:\n${String(input.userPrompt).trim().slice(0, AI_BUDGETS.userPrompt)}`
           : '';
 
+      const assistantIdentitySection = buildAssistantIdentitySection(input?.aiName);
+
       const streamStaticPersona = streamCustomModelCtx.customModel
         ? getCustomModelStreamPersonaFull(LYKN_LEARNED_TAG_INSTRUCTIONS)
         : LYKN_STREAM_PERSONA_FULL;
@@ -13139,6 +13208,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
 
         // Dynamic per-call sections (treated as 'user' content by
         // splitPromptForProvider — uncached, varies per call).
+        assistantIdentitySection,
         userPromptSection,
         focusedBricksNote,
         imageNote,
@@ -13167,6 +13237,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         conversation,
         conversationMemory,
         userPrompt,
+        aiName,
         projectId,
         intent: normalizedIntent || 'ask',
         hasFocusedBricks: Boolean(hasFocusedBricks),
@@ -14877,7 +14948,13 @@ app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res
     if (!apiKey) return res.status(500).json({ error: 'OPENAI_API_KEY not configured' });
 
     const userId = req.user?.id;
-    const isVisual = url && !url.startsWith('data:') && /image|video/i.test(fileType || '');
+    // Visual = an image/video we can hand to the vision model. We accept both
+    // hosted URLs and inline `data:image/...` URLs (voice paste hands us the
+    // data URL before the background upload lands, so excluding it would make
+    // pasted images undescribable in a live voice turn). Non-image data URLs
+    // (e.g. a base64 PDF) still fall through to the text branch.
+    const isVisual = !!url && /image|video/i.test(fileType || '')
+      && (!url.startsWith('data:') || url.startsWith('data:image'));
     const cacheInput = isVisual ? url : [text.slice(0, 6000), fileType, fileName].join('|');
     const urlHash = sha256(cacheInput);
 
@@ -15437,15 +15514,28 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "[CURRENT_PROJECT]), identifiers like rule_id=..., and tags like <applied>. These are silent guidance for you ONLY. " +
   "NEVER read them aloud, never say words like 'rule_id', 'applied', or bracketed section names, and never emit any tags. " +
   "You also have live TOOLS you can call during the conversation: search_vault (look up anything the user saved or might " +
-  "know), web_search (search the live web for current info the user does NOT already have saved — news, prices, recent " +
-  "events, anything after your training cutoff) and web_fetch (read one specific URL), " +
-  "get_project_state (read their active project status), update_project_state (record a decision/blocker/milestone), " +
+  "know — returns short snippets and the titles of matching items), read_document (read the FULL text of one saved item: " +
+  "call this whenever the user asks you to READ, open, pull up, go through, summarize, or tell them what one of their saved " +
+  "notes/docs/articles SAYS — pass the title or topic as the query; search_vault finds it, read_document gets the whole body " +
+  "so you can read it aloud or summarize it), display_document (PULL UP a saved item as a window ON THE USER'S SCREEN so they " +
+  "can LOOK at it — call this whenever the user asks to SEE / show / pull up / bring up / open / display one of their saved " +
+  "items, or says yes after you offer to pull it up; the reader window appears automatically and you just say something short " +
+  "like 'pulling it up now'. Use read_document when they want to HEAR it, display_document when they want to SEE it, or both), " +
+  "web_search (search the live web for current info the user does NOT already have " +
+  "saved — news, prices, recent events, anything after your training cutoff) and web_fetch (read one specific URL), " +
+  "list_projects (see the user's projects), get_project_state (read their active project status), set_active_project (switch focus to an EXISTING project), " +
+  "create_project (start a NEW project — see the PROJECTS rule below), update_project_state (record a decision/blocker/milestone), " +
   "create_reminder / list_reminders / update_reminder (set or manage time-anchored reminders when the user says 'remind me to…'), " +
   "create_event / list_events / update_event / delete_event (build and manage the user's LYKN calendar when they schedule something — 'put X on my calendar', 'what do I have Friday'), " +
   "create_todo / list_todos / update_todo / delete_todo (manage the user's to-do list — open tasks they want to get done, with an OPTIONAL due date; use these for 'add X to my todo list', 'what's on my list', 'mark that done'), " +
   "list_custom_models (see every model the user built AND each model's purpose), " +
   "communicate_with_model (hand a task or question to one of the user's OTHER models — a sub-agent, main or not — and read back the report it returns), " +
-  "and save_to_vault (save a note — only when the user explicitly asks). " +
+  "save_to_vault (save a note — only when the user explicitly asks), " +
+  "and update_voice_instructions (CHANGE HOW YOU BEHAVE: call this whenever the user gives feedback about how you " +
+  "should sound, talk, or act — 'act more like X', 'turn up the sarcasm by 15%', 'be warmer', 'talk less', 'stop " +
+  "being so formal'. It rewrites their saved voice instructions so the change sticks for future conversations, not " +
+  "just this one. Pass their request verbatim as the suggestion, then briefly confirm out loud what you changed — " +
+  "do NOT read the instruction text aloud, and do NOT use this for one-off task requests). " +
   "When the user asks what their models do, what one is working on, or asks you to have a model do something, " +
   "use list_custom_models to find it (and its purpose/id), then communicate_with_model to reach it and relay its report. " +
   "CRITICAL — communicate_with_model is SYNCHRONOUS: it runs that model right now and returns its full report in the SAME step. " +
@@ -15468,6 +15558,12 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "then speak the findings. When a tool is running, keep your spoken acknowledgement " +
   "brief (e.g. 'let me check'). " +
   "If you don't know something from the user's context and a tool can't help, say so honestly and briefly. " +
+  "PROJECTS — suggest, confirm, then create: when the conversation is clearly becoming real, ongoing work that does not match an " +
+  "existing project (check with list_projects first), you may SUGGEST starting one in a single natural line — e.g. 'This sounds " +
+  "like its own project. Want me to start one called <name>?' Only call create_project AFTER the user clearly says yes ('yes', " +
+  "'sure', 'start it'). Never create a project the user didn't agree to, and never create more than one per yes. If the work " +
+  "matches a project they already have, use set_active_project instead (set_active_project never creates). Once you've created or " +
+  "switched, tell them plainly it's in their projects, then keep going. " +
   "VENDOR SILENCE (absolute): you are LYKN, one product. NEVER name the third-party companies or infrastructure that power you under the hood — " +
   "not the voice/speech engine (ElevenLabs, Whisper, Deepgram), not the inference/hosting vendors (Together AI, Render, Vercel, Supabase, AWS), " +
   "not any API or SaaS we call. If the user asks what powers you, what voice you use, who built you, or what's under the hood, the answer is LYKN — " +
@@ -15500,6 +15596,52 @@ const LYKN_VOICE_TOOL_DEFS = [
     parameters: {
       type: 'object',
       properties: { query: { type: 'string', description: 'What to look for, phrased as a search query (a topic or question).' } },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_document',
+    special: 'read_document',
+    description:
+      "Read the FULL text content of one saved item in the user's vault (a note, " +
+      'document, saved article, or file) — not just a snippet. Call this WHENEVER ' +
+      'the user asks you to READ, open, pull up, go through, summarize, or tell them ' +
+      'what one of their saved items SAYS — e.g. "read me my notes on X", "what does ' +
+      'that doc say", "go through the article I saved about Y", "summarize my saved Z". ' +
+      'search_vault only returns short snippets; this returns the complete body so you ' +
+      'can read it aloud, summarize it, or answer detailed questions about it. ' +
+      'Pass the topic / title as `query` (preferred for voice). After reading, speak ' +
+      'a natural summary or the relevant parts — do not read formatting tokens or URLs aloud.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The title or topic of the saved item to read (e.g. "my pricing doc", "notes on onboarding").' },
+        node_id: { type: 'string', description: 'Optional exact id of the item if you already have it from a prior search_vault result (vault_<uuid>).' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'display_document',
+    special: 'display_document',
+    description:
+      'PULL UP a saved vault item as an embedded window ON THE USER\'S SCREEN so they ' +
+      'can actually LOOK at it (the full note body, the image, the article, the file). ' +
+      'Call this WHENEVER the user asks to SEE / show / pull up / bring up / open / ' +
+      'display / "put that on screen" / "let me look at" one of their saved items — ' +
+      'e.g. "pull up that document", "bring that note up", "show me the file", "yeah ' +
+      'open it" (after you offered). This is DIFFERENT from read_document: read_document ' +
+      'reads the text ALOUD; display_document opens a visible reader window the user ' +
+      'looks at. When the user wants to SEE it (not just hear it), use this. You may ' +
+      'call both if they want to see AND hear it. After calling, say something short ' +
+      'and natural like "Pulling it up now" — the window appears automatically; do not ' +
+      'read the body aloud unless they also asked you to.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The title or topic of the saved item to pull up (e.g. "my pricing doc", "the onboarding notes").' },
+        node_id: { type: 'string', description: 'Optional exact id of the item if you already have it from a prior search_vault result (vault_<uuid>).' },
+      },
       required: ['query'],
     },
   },
@@ -15598,18 +15740,39 @@ const LYKN_VOICE_TOOL_DEFS = [
     name: 'set_active_project',
     mcp: 'lykn_setActiveProject',
     description:
-      "Switch the user's ACTIVE project (so subsequent reads/writes target it), or create a new one. Call " +
-      'when the user says "switch to project X", "let\'s work on Y", or "start a new project for Z". Prefer ' +
-      'passing an existing project_id from list_projects; pass name + create:true to start a new one.',
+      "Switch the user's ACTIVE project to an EXISTING one (so subsequent reads/writes target it). Call when " +
+      'the user says "switch to project X" or "let\'s work on Y" and that project already exists. Pass an ' +
+      'existing project_id from list_projects (preferred), or a name to look one up. To START a brand-new ' +
+      'project, use create_project instead (after the user agrees) — this tool does not create.',
     parameters: {
       type: 'object',
       properties: {
         project_id: { type: 'string', description: 'Existing project id to resume (preferred when known).' },
-        name: { type: 'string', description: 'Project name to switch to or create.' },
-        create: { type: 'boolean', description: 'Set true to create the project if it does not exist.' },
-        description: { type: 'string', description: 'Optional short description when creating.' },
+        name: { type: 'string', description: 'Existing project name to look up and switch to.' },
+        description: { type: 'string', description: 'Optional short description to set on the project.' },
       },
       required: [],
+    },
+  },
+  {
+    name: 'create_project',
+    special: 'create_project',
+    description:
+      "Start a NEW project for the user and make it their active focus — it appears under their Projects " +
+      'right away. CONFIRM FIRST: only call this AFTER you suggested starting a project and the user clearly ' +
+      'agreed ("yes", "sure", "start it"). The flow is: (1) you notice the conversation is becoming real, ' +
+      'ongoing work and SUGGEST it out loud ("This sounds like its own project — want me to start one called ' +
+      '\'<name>\'?"); (2) the user says yes; (3) you call create_project with a short, descriptive name. Never ' +
+      'create a project the user did not agree to. If the work matches an existing project, use ' +
+      'set_active_project instead (an existing name just re-activates it, no duplicate). After creating, ' +
+      'confirm in plain speech that it is now in their projects.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Short, descriptive project name (3-8 words) drawn from what the user is working on.' },
+        description: { type: 'string', description: 'Optional one-sentence summary of the project.' },
+      },
+      required: ['name'],
     },
   },
   {
@@ -16046,6 +16209,34 @@ const LYKN_VOICE_TOOL_DEFS = [
       required: ['title', 'content'],
     },
   },
+  // ── Self-tuning: rewrite the user's own voice instructions ───────────────
+  {
+    name: 'update_voice_instructions',
+    // Handled CLIENT-SIDE (the user's voice-instruction prompt lives in their
+    // local settings, not the DB), so it never hits the server dispatch below.
+    client: true,
+    description:
+      "Update the user's OWN saved VOICE instructions — the personal directions that shape how you sound and " +
+      'behave in voice conversations — whenever the user tells you to change your behavior, tone, or ' +
+      'personality ("act more like a coach", "turn up the sarcasm by 15%", "be warmer", "talk less", "stop ' +
+      'being so formal", "match my energy more"). This REWRITES their saved voice-instruction prompt so the ' +
+      'change STICKS for future conversations, not just this one. Call it whenever the user gives feedback ' +
+      'about HOW you should talk or behave (as opposed to asking you to do a task). Pass their request ' +
+      'verbatim as `suggestion`. After it succeeds, briefly confirm out loud what you changed; do not read ' +
+      'the instruction text aloud.',
+    parameters: {
+      type: 'object',
+      properties: {
+        suggestion: {
+          type: 'string',
+          description:
+            "The user's request for how to change your voice behavior, in their own words " +
+            '(e.g. "turn up the sarcasm by 15%", "be more concise and warm", "stop saying \'great question\'").',
+        },
+      },
+      required: ['suggestion'],
+    },
+  },
 ];
 
 // Map of voice tool name → MCP tool name, for the generic dispatch path.
@@ -16262,20 +16453,118 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
     if (name === 'search_vault') {
       const query = String(args.query || '').trim();
       if (!query) return res.json({ ok: false, error: 'query is required.' });
-      // Prefer semantic synthesis retrieval (spans embedded chunks +
-      // connected sources); fall back to substring vault search.
-      const block = await fetchSynthesisRetrievalSection(authHeader, query, userId);
-      if (block && block.trim()) {
-        return res.json({ ok: true, results: block.slice(0, 6000) });
-      }
-      const fb = await runMcp('lykn_searchVault', { query, limit: 6 });
+      // Titled hits (so the model can name the matching items and offer to read
+      // one in full via read_document) PLUS semantic snippets for grounding.
+      const [fb, block] = await Promise.all([
+        runMcp('lykn_searchVault', { query, limit: 6 }),
+        fetchSynthesisRetrievalSection(authHeader, query, userId),
+      ]);
       const hits = Array.isArray(fb?.hits) ? fb.hits : [];
-      if (hits.length) {
-        const lines = hits.slice(0, 6).map((h, i) =>
-          `${i + 1}. ${h.title || '(untitled)'}: ${String(h.snippet || '').replace(/\s+/g, ' ').slice(0, 300)}`);
-        return res.json({ ok: true, results: lines.join('\n') });
+      const hasBlock = Boolean(block && block.trim());
+      if (!hits.length && !hasBlock) {
+        return res.json({ ok: true, results: 'No matching items found in the vault or synthesis layer for that query.' });
       }
-      return res.json({ ok: true, results: 'No matching items found in the vault or synthesis layer for that query.' });
+      const documents = hits.slice(0, 6).map((h) => ({
+        title: h.title || '(untitled)',
+        snippet: String(h.snippet || '').replace(/\s+/g, ' ').slice(0, 300),
+      }));
+      return res.json({
+        ok: true,
+        documents,
+        results: hasBlock
+          ? block.slice(0, 6000)
+          : documents.map((d, i) => `${i + 1}. ${d.title}: ${d.snippet}`).join('\n'),
+        hint: documents.length
+          ? 'These are snippets. To read or summarize the FULL text of one of these items, call read_document with its title as the query.'
+          : undefined,
+      });
+    }
+
+    // Read the FULL body of a saved vault item. search_vault only returns
+    // snippets; this resolves the best-matching item (by node_id if the model
+    // has one, else by re-running the vault search on `query`) and hydrates its
+    // complete content via lykn_loadNeuron so voice can read / summarize it.
+    if (name === 'read_document') {
+      const query = String(args.query || '').trim();
+      let nodeId = String(args.node_id || '').trim();
+      if (!nodeId && !query) {
+        return res.json({ ok: false, error: 'Provide the title or topic of the item to read.' });
+      }
+      if (!nodeId) {
+        const sr = await runMcp('lykn_searchVault', { query, limit: 5 });
+        const hits = Array.isArray(sr?.hits) ? sr.hits : [];
+        if (!hits.length) {
+          return res.json({ ok: true, found: false, message: `I couldn't find anything saved matching "${query}".` });
+        }
+        nodeId = String(hits[0].node_id || (hits[0].id ? `vault_${hits[0].id}` : '')).trim();
+        if (!nodeId) {
+          return res.json({ ok: true, found: false, message: `I couldn't open the saved item for "${query}".` });
+        }
+      } else if (!/^(vault_|belief_|fact_|concept_)/.test(nodeId)) {
+        nodeId = `vault_${nodeId}`;
+      }
+      const loaded = await runMcp('lykn_loadNeuron', { node_id: nodeId });
+      if (!loaded || loaded.ok === false) {
+        return res.json({ ok: true, found: false, message: 'I found a match but could not read its contents.' });
+      }
+      const note = loaded.note || {};
+      const title = note.title || String(loaded.display || '').split('\n')[0] || 'your saved item';
+      const content = String(note.content || loaded.display || '').slice(0, 8000);
+      return res.json({
+        ok: true,
+        found: true,
+        title,
+        content,
+        truncated: Boolean(note.truncated),
+        ...(content ? {} : { message: 'That item has no readable text content.' }),
+      });
+    }
+
+    // Pull a saved vault item UP ON SCREEN as an embedded reader window. Same
+    // resolution as read_document, but instead of returning text for the model
+    // to speak, it returns a `display` payload the voice client intercepts to
+    // open VaultDocumentViewer so the user can actually LOOK at the document.
+    if (name === 'display_document') {
+      const query = String(args.query || '').trim();
+      let nodeId = String(args.node_id || '').trim();
+      if (!nodeId && !query) {
+        return res.json({ ok: false, error: 'Provide the title or topic of the item to pull up.' });
+      }
+      if (!nodeId) {
+        const sr = await runMcp('lykn_searchVault', { query, limit: 5 });
+        const hits = Array.isArray(sr?.hits) ? sr.hits : [];
+        if (!hits.length) {
+          return res.json({ ok: true, found: false, message: `I couldn't find anything saved matching "${query}".` });
+        }
+        nodeId = String(hits[0].node_id || (hits[0].id ? `vault_${hits[0].id}` : '')).trim();
+        if (!nodeId) {
+          return res.json({ ok: true, found: false, message: `I couldn't open the saved item for "${query}".` });
+        }
+      } else if (!/^(vault_|belief_|fact_|concept_)/.test(nodeId)) {
+        nodeId = `vault_${nodeId}`;
+      }
+      const loaded = await runMcp('lykn_loadNeuron', { node_id: nodeId });
+      if (!loaded || loaded.ok === false || loaded.kind !== 'vault') {
+        return res.json({ ok: true, found: false, message: 'I found a match but could not pull it up.' });
+      }
+      const note = loaded.note || {};
+      const title = note.title || String(loaded.display || '').split('\n')[0] || 'your saved item';
+      // `display` is the ChatNeuronVaultPayload the viewer renders; the client
+      // intercepts it. `message` is what the model should speak.
+      return res.json({
+        ok: true,
+        found: true,
+        displayed: true,
+        title,
+        display: {
+          ok: true,
+          kind: 'vault',
+          node_id: loaded.node_id || nodeId,
+          display: loaded.display,
+          note,
+        },
+        message: `Pulling up "${title}" on screen now.`,
+      });
     }
 
     if (name === 'get_project_state') {
@@ -16283,6 +16572,30 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
       return res.json({
         ok: true,
         project_state: text && text.trim() ? text.slice(0, 6000) : 'No active project is set, or it has no recorded state yet.',
+      });
+    }
+
+    // Create a project the user just agreed to start (confirm-first lives in the
+    // tool description + voice instructions). Writes a user-authorized row that
+    // shows up under Projects and becomes the active focus.
+    if (name === 'create_project') {
+      const projectName = String(args.name || '').trim();
+      if (!projectName) return res.json({ ok: false, error: 'A project name is required.' });
+      const created = await createUserAuthorizedProject(supabaseAdmin, userId, {
+        name: projectName,
+        description: args.description,
+        client: 'lykn-synthesis',
+      });
+      if (!created.ok) {
+        return res.json({ ok: false, error: 'could_not_create', message: 'I could not start that project just now.' });
+      }
+      return res.json({
+        ok: true,
+        was_created: created.was_created,
+        project: { id: created.project.id, name: created.project.name },
+        message: created.was_created
+          ? `Started "${created.project.name}" — it's now in the user's projects and set as the active focus.`
+          : `"${created.project.name}" already existed — reactivated it and set it as the active focus.`,
       });
     }
 
@@ -16349,6 +16662,95 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
   }
 });
 
+// ── Self-tuning instructions ───────────────────────────────────────────────
+// The user can tell the assistant — in voice or chat — to adjust how it
+// behaves ("turn up the sarcasm by 15%", "be more concise", "act more like a
+// coach"). This rewrites the user's OWN saved instruction prompt (their
+// personal voice- or chat-instructions text) by surgically applying that
+// suggestion to the current text while preserving everything else. The CLIENT
+// owns persistence (the prompt lives in the user's local settings); this
+// endpoint only performs the language rewrite and returns the new text plus a
+// short summary of what changed.
+const TUNE_INSTRUCTIONS_MAX_LEN = 1500;
+app.post('/api/ai/tune-instructions', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(503).json({ ok: false, error: 'tuning_unavailable' });
+    }
+    const suggestion = String(req.body?.suggestion || '').trim().slice(0, 600);
+    if (!suggestion) {
+      return res.json({ ok: false, error: 'missing_suggestion', message: 'A suggestion is required.' });
+    }
+    const current = String(req.body?.current || '').trim().slice(0, TUNE_INSTRUCTIONS_MAX_LEN);
+    const scope = String(req.body?.scope || 'voice').trim().toLowerCase() === 'chat' ? 'chat' : 'voice';
+
+    const channel = scope === 'chat'
+      ? 'how the assistant should respond in TEXT chat (tone, format, what to always or never do)'
+      : 'how the assistant should sound and behave in live VOICE conversations (pace, warmth, formality, personality, the overall feel)';
+
+    const sys =
+      "You maintain a user's personal instruction prompt for their AI assistant. " +
+      `The instruction prompt describes ${channel}. ` +
+      'You are given the CURRENT instruction text and a SUGGESTION the user just gave for how to change the assistant\'s behavior. ' +
+      'Apply the suggestion to the current text and return the FULL updated instruction prompt. ' +
+      'Rules: keep everything in the current text that the suggestion does not touch — only adjust what the suggestion targets. ' +
+      "Write plain second-person directives addressed to the assistant ('Speak…', 'Be…', 'Use…'). " +
+      "Interpret relative tweaks ('turn up the sarcasm by 15%', 'a bit warmer', 'talk less') as a modest, sensible shift — never extreme, and fold them into prose rather than emitting literal percentages. " +
+      'If the current text is empty, write a concise new instruction that captures the suggestion. ' +
+      `Keep it tight and natural, well under ${TUNE_INSTRUCTIONS_MAX_LEN} characters. ` +
+      'Output ONLY valid JSON: {"instructions":"the full updated instruction text","summary":"one short present-tense phrase describing what changed, e.g. turned up the sarcasm"}';
+
+    const userMsg =
+      `CURRENT INSTRUCTION TEXT:\n${current || '(empty — none set yet)'}\n\nUSER SUGGESTION:\n${suggestion}`;
+
+    const ores = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4.1-mini',
+        temperature: 0.4,
+        max_tokens: 800,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: sys },
+          { role: 'user', content: userMsg },
+        ],
+      }),
+    });
+    if (!ores.ok) {
+      const t = await ores.text().catch(() => '');
+      console.warn('⚠️ tune-instructions LLM HTTP', ores.status, t.slice(0, 300));
+      return res.json({ ok: false, error: 'rewrite_failed', message: "I couldn't update the instructions just now." });
+    }
+    const odata = await ores.json().catch(() => ({}));
+    let parsed = {};
+    try { parsed = JSON.parse(odata?.choices?.[0]?.message?.content || '{}'); } catch { parsed = {}; }
+    const instructions = String(parsed?.instructions || '').trim().slice(0, TUNE_INSTRUCTIONS_MAX_LEN);
+    if (!instructions) {
+      return res.json({ ok: false, error: 'rewrite_failed', message: "I couldn't update the instructions just now." });
+    }
+    const summary = String(parsed?.summary || '').trim().slice(0, 120);
+
+    try {
+      logAiUsage({
+        userId: req.user?.id, actionType: 'tune_instructions',
+        model: 'gpt-4.1-mini', provider: 'openai',
+        inputTokens: extractOpenAIUsage(odata)?.input_tokens || estimateTokens(userMsg),
+        outputTokens: extractOpenAIUsage(odata)?.output_tokens || estimateTokens(instructions),
+        metadata: { scope },
+      });
+    } catch { /* telemetry never blocks the rewrite */ }
+
+    return res.json({ ok: true, scope, instructions, summary });
+  } catch (e) {
+    console.error('❌ /api/ai/tune-instructions:', e?.message || e);
+    return res.status(500).json({ ok: false, error: 'tune_failed' });
+  }
+});
+
 // ══════════════════════════════════════════════════════════════════════════
 // ELEVENLABS CONVERSATIONAL AI — alternative voice provider (behind a flag)
 // ══════════════════════════════════════════════════════════════════════════
@@ -16411,15 +16813,41 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimit
       return res.status(503).json({ error: 'ElevenLabs voice is not configured yet.' });
     }
 
-    const r = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
-      { headers: { 'xi-api-key': apiKey } },
-    );
-    const data = await r.json().catch(() => ({}));
-    const signedUrl = data?.signed_url || data?.signedUrl;
-    if (!r.ok || !signedUrl) {
-      const msg = String(data?.detail?.message || data?.detail || r.statusText || 'Failed to get signed URL');
-      return res.status(r.status || 500).json({ error: `ElevenLabs: ${msg}` });
+    // Prefer a WebRTC conversation token (LiveKit transport) — it carries a
+    // jitter buffer + packet-loss concealment, which fixes the intermittent
+    // pitch/speed wobble heard on the raw-PCM WebSocket transport. We still
+    // mint a signed URL in parallel as a WebSocket fallback so a WebRTC hiccup
+    // can degrade gracefully on the client.
+    const [tokenRes, signedRes] = await Promise.allSettled([
+      fetch(
+        `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}`,
+        { headers: { 'xi-api-key': apiKey } },
+      ),
+      fetch(
+        `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
+        { headers: { 'xi-api-key': apiKey } },
+      ),
+    ]);
+
+    let conversationToken = '';
+    if (tokenRes.status === 'fulfilled' && tokenRes.value.ok) {
+      const td = await tokenRes.value.json().catch(() => ({}));
+      conversationToken = td?.token || td?.conversation_token || '';
+    }
+
+    let signedUrl = '';
+    let signedErr = '';
+    if (signedRes.status === 'fulfilled') {
+      const sd = await signedRes.value.json().catch(() => ({}));
+      signedUrl = sd?.signed_url || sd?.signedUrl || '';
+      if (!signedRes.value.ok) {
+        signedErr = String(sd?.detail?.message || sd?.detail || signedRes.value.statusText || 'Failed to get signed URL');
+      }
+    }
+
+    // Need at least one usable transport credential.
+    if (!conversationToken && !signedUrl) {
+      return res.status(502).json({ error: `ElevenLabs: ${signedErr || 'Failed to start voice session'}` });
     }
 
     // Gather the opening-briefing facts once: used both to phrase the spoken
@@ -16464,7 +16892,7 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimit
     // briefing itself is in the grounding above, delivered on acceptance).
     const firstMessage = buildVoiceBriefingOffer(req.user, briefingData);
 
-    return res.json({ signedUrl, sessionToken, firstMessage });
+    return res.json({ conversationToken, signedUrl, sessionToken, firstMessage });
   } catch (error) {
     return res.status(500).json({ error: `ElevenLabs signed URL failed: ${error?.message || 'Unknown error'}` });
   }

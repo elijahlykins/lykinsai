@@ -16,6 +16,19 @@ interface OmniaVoiceModeProps {
   onUserTranscript?: (text: string) => void;
   /** Persist a finalized assistant voice reply into the chat thread. */
   onAssistantReply?: (text: string) => void;
+  /**
+   * Pull a saved vault item up on screen — fired when the agent calls the
+   * `display_document` tool. The payload is a ChatNeuronVaultPayload the host
+   * renders in the embedded document reader.
+   */
+  onDisplayDocument?: (payload: unknown) => void;
+  /**
+   * Handle a paste / file / link from the in-session paste bar: mirror it into
+   * the written chat and return a text summary to inject into the live voice
+   * session so the agent can "see" what was shared. Returns "" if nothing
+   * usable was pasted.
+   */
+  onAttach?: (input: { files?: File[]; text?: string }) => Promise<string>;
 }
 
 const STATUS_COPY: Record<RealtimeVoiceState, string> = {
@@ -36,9 +49,9 @@ export default function OmniaVoiceMode(props: OmniaVoiceModeProps) {
   return <OmniaVoiceModeOpenAI {...props} />;
 }
 
-function OmniaVoiceModeOpenAI({ open, onClose, boardId, voice, buildInstructions, onUserTranscript, onAssistantReply }: OmniaVoiceModeProps) {
+function OmniaVoiceModeOpenAI({ open, onClose, boardId, voice, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument }: OmniaVoiceModeProps) {
   const { state, micLevel, errorText, interrupt, retry } =
-    useRealtimeVoice({ active: open, boardId, voice, buildInstructions, onUserTranscript, onAssistantReply });
+    useRealtimeVoice({ active: open, boardId, voice, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument });
 
   // Esc still exits, even with no visible close button.
   useEffect(() => {

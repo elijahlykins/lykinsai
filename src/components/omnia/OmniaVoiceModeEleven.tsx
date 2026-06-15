@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { API_BASE_URL } from "@/lib/api-config";
 import { VOICE_FIRST_MESSAGE_OVERRIDE } from "@/lib/voice/voiceConfig";
+import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
 import VoiceTechOrb from "./VoiceTechOrb";
 
 type VoiceUiState = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "error";
@@ -28,6 +29,19 @@ interface OmniaVoiceModeElevenProps {
   buildInstructions?: () => string | Promise<string>;
   onUserTranscript?: (text: string) => void;
   onAssistantReply?: (text: string) => void;
+  /**
+   * Pull a saved vault item up on screen — fired when the agent calls the
+   * `display_document` tool. Payload is a ChatNeuronVaultPayload the host
+   * renders in the embedded document reader.
+   */
+  onDisplayDocument?: (payload: unknown) => void;
+  /**
+   * Handle a paste / file / link from the in-session paste bar. The host
+   * mirrors it into the written chat and returns a text summary, which we
+   * inject into the live session as a contextual update so the agent can
+   * "see" what the user shared. Returns "" when nothing usable was pasted.
+   */
+  onAttach?: (input: { files?: File[]; text?: string }) => Promise<string>;
 }
 
 const STATUS_COPY: Record<VoiceUiState, string> = {
@@ -44,6 +58,8 @@ const STATUS_COPY: Record<VoiceUiState, string> = {
 // /api/ai/realtime/tool dispatch handles.
 const TOOL_NAMES = [
   "search_vault",
+  "read_document",
+  "display_document",
   "web_search",
   "web_fetch",
   "find_connections",
@@ -54,6 +70,7 @@ const TOOL_NAMES = [
   "list_projects",
   "get_project_state",
   "set_active_project",
+  "create_project",
   "update_project_state",
   "get_recent_activity",
   "create_reminder",
@@ -72,6 +89,9 @@ const TOOL_NAMES = [
   "build_with_cursor",
   "check_cursor_build",
   "save_to_vault",
+  // Handled client-side (rewrites the user's saved voice instructions); see
+  // callTool's interception below — never forwarded to the server dispatch.
+  TUNE_VOICE_TOOL,
 ] as const;
 
 async function authHeaders(): Promise<Record<string, string>> {
@@ -85,10 +105,21 @@ async function authHeaders(): Promise<Record<string, string>> {
   return headers;
 }
 
-function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscript, onAssistantReply }: OmniaVoiceModeElevenProps) {
+function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument, onAttach }: OmniaVoiceModeElevenProps) {
   const [uiState, setUiState] = useState<VoiceUiState>("idle");
   const [micLevel, setMicLevel] = useState(0);
   const [errorText, setErrorText] = useState("");
+
+  // Paste-bar state: lets the user share links/images/PDFs/docs into the live
+  // voice session. Each share is mirrored into the written chat and injected
+  // into the conversation as a contextual update so the agent can see it.
+  const [attachBusy, setAttachBusy] = useState(false);
+  const [attachToast, setAttachToast] = useState("");
+  const [attachError, setAttachError] = useState("");
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pasteInputRef = useRef<HTMLInputElement | null>(null);
+  const attachToastTimerRef = useRef<number | null>(null);
 
   const startedRef = useRef(false);
   // Monotonic token: bumped whenever we (re)start or tear down a session, so an
@@ -99,14 +130,21 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
   const buildInstructionsRef = useRef(buildInstructions);
   const onUserTranscriptRef = useRef(onUserTranscript);
   const onAssistantReplyRef = useRef(onAssistantReply);
+  const onDisplayDocumentRef = useRef(onDisplayDocument);
+  const onAttachRef = useRef(onAttach);
   useEffect(() => { boardIdRef.current = boardId ?? null; }, [boardId]);
   useEffect(() => { buildInstructionsRef.current = buildInstructions; }, [buildInstructions]);
   useEffect(() => { onUserTranscriptRef.current = onUserTranscript; }, [onUserTranscript]);
   useEffect(() => { onAssistantReplyRef.current = onAssistantReply; }, [onAssistantReply]);
+  useEffect(() => { onDisplayDocumentRef.current = onDisplayDocument; }, [onDisplayDocument]);
+  useEffect(() => { onAttachRef.current = onAttach; }, [onAttach]);
 
   // One client-tool handler shape for all four; each forwards to the same
   // server dispatch endpoint the OpenAI Realtime path uses.
   const callTool = useCallback(async (name: string, params: unknown): Promise<string> => {
+    // Self-tuning instructions are persisted in the user's LOCAL settings, so
+    // this tool is handled in the browser instead of the server dispatch.
+    if (name === TUNE_VOICE_TOOL) return applyVoiceInstructionTune(params);
     try {
       const headers = await authHeaders();
       const res = await fetch(`${API_BASE_URL}/api/ai/realtime/tool`, {
@@ -115,6 +153,14 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
         body: JSON.stringify({ name, arguments: params ?? {}, boardId: boardIdRef.current }),
       });
       const data = await res.json().catch(() => ({ ok: false, error: "bad_tool_response" }));
+      // The agent pulled a vault item up on screen (display_document). Open the
+      // embedded reader, then strip the payload from the model-facing result so
+      // the model speaks its short confirmation instead of the raw note JSON.
+      const display = (data as { display?: unknown })?.display;
+      if (display) {
+        try { onDisplayDocumentRef.current?.(display); } catch { /* ignore */ }
+        try { delete (data as { display?: unknown }).display; } catch { /* ignore */ }
+      }
       return JSON.stringify(data);
     } catch {
       return JSON.stringify({ ok: false, error: "tool_request_failed" });
@@ -146,7 +192,8 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
     },
   });
 
-  const { startSession, endSession, status, isSpeaking, getInputVolume, getOutputVolume } = conversation;
+  const { startSession, endSession, status, isSpeaking, getInputVolume, getOutputVolume, sendContextualUpdate } =
+    conversation as typeof conversation & { sendContextualUpdate?: (text: string) => void };
 
   // Keep the latest endSession in a ref so teardown always ends the CURRENT
   // session, even if the effect cleanup captured an earlier render's closure.
@@ -202,6 +249,7 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
     try { instructions = String((await buildInstructionsRef.current?.()) || ""); } catch { instructions = ""; }
     if (cancelled()) return;
 
+    let conversationToken = "";
     let signedUrl = "";
     let sessionToken = "";
     let serverFirstMessage = "";
@@ -220,13 +268,14 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
       });
       const data = await res.json().catch(() => ({}));
       if (cancelled()) return;
-      if (!res.ok || !data?.signedUrl) {
+      if (!res.ok || (!data?.conversationToken && !data?.signedUrl)) {
         setErrorText(String(data?.error || "Couldn't start voice session."));
         setUiState("error");
         startedRef.current = false;
         return;
       }
-      signedUrl = data.signedUrl;
+      conversationToken = data.conversationToken || "";
+      signedUrl = data.signedUrl || "";
       sessionToken = data.sessionToken || "";
       serverFirstMessage = typeof data.firstMessage === "string" ? data.firstMessage : "";
     } catch {
@@ -252,14 +301,35 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
       if (sessionToken) agentOverride.prompt = { prompt: `LYKN_SESSION_TOKEN=${sessionToken}` };
       if (firstMessage) agentOverride.firstMessage = firstMessage;
       const overrides = Object.keys(agentOverride).length > 0 ? { agent: agentOverride } : undefined;
-      await startSession({
+
+      // Prefer the WebRTC (LiveKit) transport: its jitter buffer + packet-loss
+      // concealment keep playback at a steady pitch/speed, fixing the random
+      // "chipmunk" wobble the raw-PCM WebSocket transport produced under network
+      // jitter. Overrides + dynamic variables travel the same on both, so
+      // grounding / session-token injection are unaffected. We keep the signed
+      // URL as a WebSocket fallback if WebRTC can't be established.
+      const startWebRtc = () => startSession({
+        conversationToken,
+        connectionType: "webrtc",
+        overrides,
+      } as Parameters<typeof startSession>[0]);
+      const startWebSocket = () => startSession({
         signedUrl,
-        // A signed URL only supports the WebSocket transport (WebRTC requires a
-        // conversation token instead). Audio still streams directly to
-        // ElevenLabs/LiveKit — this only changes the signaling transport.
         connectionType: "websocket",
         overrides,
       } as Parameters<typeof startSession>[0]);
+
+      if (conversationToken) {
+        try {
+          await startWebRtc();
+        } catch (rtcErr) {
+          if (cancelled()) return;
+          if (!signedUrl) throw rtcErr;
+          await startWebSocket();
+        }
+      } else {
+        await startWebSocket();
+      }
       // The user left Voice Mode while we were connecting: the session is now
       // live but unwanted, so tear it right back down (otherwise it keeps
       // capturing the mic and talking with no UI to stop it).
@@ -295,31 +365,158 @@ function VoiceInner({ open, onClose, boardId, buildInstructions, onUserTranscrip
 
   const retry = useCallback(() => { startedRef.current = false; void begin(); }, [begin]);
 
+  // Cleanup the toast timer on unmount.
+  useEffect(() => () => { if (attachToastTimerRef.current != null) window.clearTimeout(attachToastTimerRef.current); }, []);
+
+  const flashToast = useCallback((msg: string) => {
+    setAttachToast(msg);
+    if (attachToastTimerRef.current != null) window.clearTimeout(attachToastTimerRef.current);
+    attachToastTimerRef.current = window.setTimeout(() => setAttachToast(""), 2600);
+  }, []);
+
+  // Core share path: hand the raw paste to the host (mirrors it into the
+  // written chat + builds a summary), then inject that summary into the live
+  // session as a contextual update so the agent can reference it. Silent and
+  // non-interrupting — the user can ask about the shared item by voice.
+  const processAttach = useCallback(async (input: { files?: File[]; text?: string }) => {
+    const files = (input.files || []).filter(Boolean);
+    const text = String(input.text || "").trim();
+    if (!files.length && !text) return;
+    setAttachError("");
+    setAttachBusy(true);
+    try {
+      const summary = await onAttachRef.current?.({ files, text });
+      if (summary) {
+        try { sendContextualUpdate?.(summary); } catch { /* not connected yet */ }
+      }
+      const label = files.length
+        ? (files.length === 1 ? "Shared with LYKN" : `Shared ${files.length} files`)
+        : "Shared with LYKN";
+      flashToast(label);
+    } catch {
+      setAttachError("Couldn't share that. Try again.");
+    } finally {
+      setAttachBusy(false);
+    }
+  }, [sendContextualUpdate, flashToast]);
+
+  const handlePasteBarPaste = useCallback((e: React.ClipboardEvent<HTMLInputElement>) => {
+    const files = e.clipboardData?.files ? Array.from(e.clipboardData.files) : [];
+    const text = e.clipboardData?.getData("text/plain") || "";
+    if (!files.length && !text.trim()) return;
+    e.preventDefault();
+    if (pasteInputRef.current) pasteInputRef.current.value = "";
+    void processAttach({ files, text });
+  }, [processAttach]);
+
+  const handlePasteBarKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const value = e.currentTarget.value;
+    if (pasteInputRef.current) pasteInputRef.current.value = "";
+    void processAttach({ text: value });
+  }, [processAttach]);
+
+  const handleFilesPicked = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = "";
+    void processAttach({ files });
+  }, [processAttach]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    const files = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
+    const text = e.dataTransfer?.getData("text/plain") || "";
+    void processAttach({ files, text });
+  }, [processAttach]);
+
   return (
-    <button
-      type="button"
-      onClick={() => { if (uiState === "speaking") { try { void endSession(); } catch { /* ignore */ } } }}
-      className="relative flex flex-col items-center justify-center outline-none"
-      aria-label="Voice orb"
+    <div
+      className="relative flex flex-col items-center justify-center w-full"
+      onDragOver={(e) => { if (onAttach) { e.preventDefault(); setDragActive(true); } }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target) setDragActive(false); }}
+      onDrop={onAttach ? handleDrop : undefined}
     >
-      <VoiceTechOrb state={uiState} micLevel={micLevel} size={320} />
-      <div className="mt-10 flex flex-col items-center gap-2 text-center max-w-xl px-6">
-        <span className="text-foreground/80 text-base font-medium">
-          {uiState === "error" ? (errorText || STATUS_COPY.error) : STATUS_COPY[uiState]}
-        </span>
-        {uiState === "error" && (
-          <span
-            role="button"
-            tabIndex={0}
-            onClick={(e) => { e.stopPropagation(); retry(); }}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); retry(); } }}
-            className="mt-1 px-4 py-1.5 rounded-full bg-foreground/10 hover:bg-foreground/15 text-foreground/80 text-sm transition-colors cursor-pointer"
-          >
-            Try again
+      <button
+        type="button"
+        onClick={() => { if (uiState === "speaking") { try { void endSession(); } catch { /* ignore */ } } }}
+        className="relative flex flex-col items-center justify-center outline-none"
+        aria-label="Voice orb"
+      >
+        <VoiceTechOrb state={uiState} micLevel={micLevel} size={320} />
+        <div className="mt-10 flex flex-col items-center gap-2 text-center max-w-xl px-6">
+          <span className="text-foreground/80 text-base font-medium">
+            {uiState === "error" ? (errorText || STATUS_COPY.error) : STATUS_COPY[uiState]}
           </span>
-        )}
-      </div>
-    </button>
+          {uiState === "error" && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => { e.stopPropagation(); retry(); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); retry(); } }}
+              className="mt-1 px-4 py-1.5 rounded-full bg-foreground/10 hover:bg-foreground/15 text-foreground/80 text-sm transition-colors cursor-pointer"
+            >
+              Try again
+            </span>
+          )}
+        </div>
+      </button>
+
+      {onAttach && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[68] w-full max-w-lg px-6 flex flex-col items-center gap-2">
+          {(attachToast || attachError) && (
+            <span
+              className={`text-xs font-medium px-3 py-1 rounded-full ${
+                attachError ? "bg-red-500/15 text-red-400" : "bg-emerald-500/15 text-emerald-400"
+              }`}
+            >
+              {attachError || attachToast}
+            </span>
+          )}
+          <div
+            className={`flex items-center gap-2 w-full rounded-2xl border bg-foreground/[0.04] backdrop-blur px-3 py-2 transition-colors ${
+              dragActive ? "border-primary/60 bg-primary/5" : "border-foreground/10"
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={attachBusy}
+              className="shrink-0 grid place-items-center w-8 h-8 rounded-full text-foreground/60 hover:text-foreground hover:bg-foreground/10 transition-colors disabled:opacity-40"
+              aria-label="Attach a file"
+              title="Attach a file"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
+            <input
+              ref={pasteInputRef}
+              type="text"
+              inputMode="url"
+              onPaste={handlePasteBarPaste}
+              onKeyDown={handlePasteBarKeyDown}
+              disabled={attachBusy}
+              placeholder={attachBusy ? "Sharing…" : "Paste a link, image, PDF, doc — or drag & drop"}
+              className="flex-1 bg-transparent text-sm text-foreground placeholder:text-foreground/40 outline-none disabled:opacity-50"
+              aria-label="Paste links or files to share with the voice agent"
+            />
+            {attachBusy && (
+              <span className="shrink-0 w-4 h-4 rounded-full border-2 border-foreground/20 border-t-foreground/70 animate-spin" />
+            )}
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.md,.rtf,.odt,audio/*,video/*"
+            className="hidden"
+            onChange={handleFilesPicked}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 

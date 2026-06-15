@@ -1,5 +1,6 @@
 import { extractYouTubeVideoId } from "@/canvas/utils/youtube";
 import { getAiPrefs } from "@/lib/ai-prefs";
+import { persistInstructionPrompt } from "@/lib/voice/tuneInstructions";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
 import {
   parseLearnedTag,
@@ -203,6 +204,13 @@ export type ChatNeuronAttachment = {
   id: string;
   payload: any;
   addedAt: number;
+  /**
+   * True only for VAULT items the user explicitly asked to SEE in full this
+   * turn ("pull that up", "bring it in", "show me the whole thing") or
+   * affirmed an assistant offer to. The chat surface opens the full embedded
+   * document reader (VaultDocumentViewer) on the card automatically when set.
+   */
+  autoOpen?: boolean;
 };
 
 // node_id prefixes lykn_loadNeuron uses to discriminate which store the
@@ -260,6 +268,45 @@ function userRequestedVaultSurface(
   const t = String(userText || "").trim();
   if (!t) return false;
   if (VAULT_SURFACE_REQUEST_RE.test(t) || VAULT_SURFACE_PLACEMENT_RE.test(t)) return true;
+  if (VAULT_AFFIRMATION_RE.test(t)) {
+    for (let i = aiThread.length - 1; i >= 0; i--) {
+      const m = aiThread[i];
+      if (m?.role !== "assistant") continue;
+      return VAULT_SURFACE_OFFER_RE.test(String(m.content || ""));
+    }
+  }
+  return false;
+}
+
+// --- Full-reader auto-open intent ------------------------------------------
+// A stronger, narrower signal than `userRequestedVaultSurface`. The card
+// renders for the broad "show/find/grab" family, but we only POP the full
+// embedded document reader open when the user clearly wants to LOOK AT the
+// whole thing — "pull that up", "bring it in", "open it", "show me", "read
+// it", "the full thing". Soft verbs like "find" / "grab" / "do you have"
+// surface the card (where one tap pulls it up) but don't hijack the screen
+// with a modal.
+const VAULT_DISPLAY_VERB_RE =
+  /\b(pull\s*(?:up|it|that|this|them|those|in)|bring\s*(?:up|in|it|that|this|them|those)|open\s*(?:it|that|this|them|those|up)|show\s*(?:me|it|that|this|them|those|the)|display|view\s*(?:it|that|this|the)|expand|read\s*(?:it|that|this|me|the)|see\s*(?:it|that|this|the\s+(?:whole|full|rest|entire)))\b/i;
+
+// "the full / whole / entire thing|document|note" — a display ask even when
+// the verb is generic.
+const VAULT_DISPLAY_NOUN_RE =
+  /\b(?:full|whole|entire|rest\s+of)\s+(?:thing|document|doc|note|file|article|text|content|version|page)\b/i;
+
+/**
+ * True when the user wants the full embedded reader popped open for a vault
+ * item this turn — a strict subset of `userRequestedVaultSurface`. Reuses the
+ * exact same affirmation→offer detection so a bare "yes" / "pull it up" after
+ * the assistant offers ("want me to pull that up?") opens the reader.
+ */
+function userRequestedVaultDisplay(
+  userText: string,
+  aiThread: Array<{ role: "user" | "assistant"; content: string }>,
+): boolean {
+  const t = String(userText || "").trim();
+  if (!t) return false;
+  if (VAULT_DISPLAY_VERB_RE.test(t) || VAULT_DISPLAY_NOUN_RE.test(t)) return true;
   if (VAULT_AFFIRMATION_RE.test(t)) {
     for (let i = aiThread.length - 1; i >= 0; i--) {
       const m = aiThread[i];
@@ -369,6 +416,11 @@ export type FocusedChatAttachment = {
   /** Client-side OCR text recovered from an image attachment (fallback so
    *  dense/small text survives even on a weak-vision model). */
   ocrText?: string;
+  /** AI vision description of an image (2-3 sentences: subject, colors, style,
+   *  any text/logos). Lets the TEXT-ONLY voice LLM "see" a pasted image — it
+   *  can't fetch the url, so without this a photo with no OCR text is invisible
+   *  to it. Populated from /api/ai/describe-image. */
+  aiDescription?: string;
   canvasBlockId?: string;
   rawFile?: File;
   /** Durable Supabase Storage location for binary attachments (image / pdf /
@@ -592,7 +644,7 @@ export interface ChatSendParams {
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-function buildAttachmentContext(sentAttachments: FocusedChatAttachment[]): string {
+export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[]): string {
   if (!sentAttachments.length) return "";
   return "\n\n[Attached content]\n" + sentAttachments.map((a) => {
     const t = (a.type || "").toLowerCase();
@@ -616,8 +668,9 @@ function buildAttachmentContext(sentAttachments: FocusedChatAttachment[]): strin
       return `${t === "video" ? "Video" : "Audio"} "${label}"${parts.length ? `\nTranscript: ${parts.join("\n")}` : " (no transcript available)"}`;
     }
     if (t === "image") {
+      const desc = a.aiDescription ? `\nWhat the image shows: ${String(a.aiDescription).slice(0, 1200)}` : "";
       const ocr = a.ocrText ? `\nText extracted from this image (OCR — may contain errors): ${String(a.ocrText).slice(0, 1500)}` : "";
-      return `Image "${label}"${safeUrl ? ` — ${safeUrl}` : ""}${ocr}`;
+      return `Image "${label}"${safeUrl ? ` — ${safeUrl}` : ""}${desc}${ocr}`;
     }
     if (t === "link") return `Link "${label}"${safeUrl ? ` — ${safeUrl}` : ""}${parts.length ? `\nContent: ${parts.join("\n")}` : ""}`;
     if (parts.length) return `${label}: ${parts.join("\n")}`;
@@ -1074,6 +1127,10 @@ async function handleStreamingResponse(
   // confirmed a surfacing offer). The model is told the same thing in the
   // prompt, but this guarantees no random saved item gets embedded.
   const allowVaultSurface = userRequestedVaultSurface(userText, p.aiThread);
+  // Whether to auto-pop the full embedded document reader for a vault item
+  // this turn (strict subset of the surface gate above). When false the card
+  // still renders; the user pulls it up with one tap.
+  const autoOpenVaultViewer = userRequestedVaultDisplay(userText, p.aiThread);
   // 90s inactivity. The server sends a `data: ` heartbeat every ~15s
   // during long thinking gaps so this should only fire on a truly
   // stuck network connection or wedged provider.
@@ -1163,7 +1220,13 @@ async function handleStreamingResponse(
                   tc.name === "lykn_loadNeuron"
                   && kindAllowed(String(tc.result.kind))
                 ) {
-                  newAttachments.push({ id: tc.id, payload: tc.result, addedAt: now });
+                  newAttachments.push({
+                    id: tc.id,
+                    payload: tc.result,
+                    addedAt: now,
+                    autoOpen:
+                      String(tc.result.kind) === "vault" && autoOpenVaultViewer,
+                  });
                 } else if (
                   tc.name === "lykn_loadNeurons"
                   && Array.isArray(tc.result.results)
@@ -1181,6 +1244,15 @@ async function handleStreamingResponse(
                         id: `${tc.id}#${i}`,
                         payload: entry,
                         addedAt: now,
+                        // Only the FIRST vault item in a batch auto-opens, so a
+                        // multi-result load doesn't stack modals on top of each
+                        // other. The rest render as cards the user can pull up.
+                        autoOpen:
+                          String(entry.kind) === "vault"
+                          && autoOpenVaultViewer
+                          && !newAttachments.some(
+                            (a) => a.payload?.kind === "vault" && a.autoOpen,
+                          ),
                       });
                     }
                   });
@@ -1249,6 +1321,23 @@ async function handleStreamingResponse(
                   userId: p.identity.userId,
                   projectId: projectIdFromToolResult(tc.name, tc.result),
                 });
+              }
+              // Self-tuning: when the assistant rewrites the user's own custom
+              // instructions (tone / behavior), persist the new text into their
+              // settings so it sticks, shows up in Settings → Display for manual
+              // editing, and rides along on future requests via getAiPrefs.
+              if (
+                tc.status === "done"
+                && tc.name === "lykn_update_assistant_instructions"
+                && tc.result
+                && typeof tc.result === "object"
+                && (tc.result as { ok?: boolean }).ok === true
+              ) {
+                const r = tc.result as { scope?: string; instructions?: string };
+                const text = typeof r.instructions === "string" ? r.instructions.trim() : "";
+                if (text) {
+                  persistInstructionPrompt(r.scope === "voice" ? "voice" : "chat", text);
+                }
               }
               continue;
             }

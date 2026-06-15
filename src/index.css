@@ -1236,6 +1236,158 @@ body.sidebar-push .app-content:has(.model-builder-page) {
   box-shadow: 0 2px 8px rgba(0,0,0,0.20);
 }
 
+/* LYKN icon-outline loading spinner: mirrors the Remotion `LyknIconOutline`
+   intro — the outline draws on, the fill fades in as the stroke fades out,
+   it holds as a solid icon, then fades out and loops. A subtle scale "pop"
+   accompanies the draw to match the spring settle. */
+.lykn-outline-spinner {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: lyknOutlinePop 3.6s ease-in-out infinite;
+}
+
+.lykn-outline-spinner path {
+  stroke-dasharray: 1;
+  animation: lyknOutlineDraw 3.6s ease-in-out infinite;
+}
+
+@keyframes lyknOutlineDraw {
+  0%   { stroke-dashoffset: 1; stroke-opacity: 1; fill-opacity: 0; }  /* empty outline */
+  40%  { stroke-dashoffset: 0; stroke-opacity: 1; fill-opacity: 0; }  /* fully traced */
+  55%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }  /* crossfade to solid fill */
+  82%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }  /* hold solid */
+  96%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 0; }  /* fade out */
+  100% { stroke-dashoffset: 1; stroke-opacity: 0; fill-opacity: 0; }  /* invisible reset -> loop */
+}
+
+@keyframes lyknOutlinePop {
+  0%   { transform: scale(0.9); }
+  40%  { transform: scale(1); }
+  82%  { transform: scale(1); }
+  100% { transform: scale(0.9); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-outline-spinner {
+    animation: none;
+    transform: none;
+  }
+  .lykn-outline-spinner path {
+    animation: none;
+    stroke-dashoffset: 0;
+    stroke-opacity: 0;
+    fill-opacity: 1;
+  }
+}
+
+/* Full-logo loading screen animation: the icon + wordmark draw on together,
+   crossfade to the solid logo, hold, then fade out and loop. Reuses the same
+   lyknOutlineDraw / lyknOutlinePop keyframes as the chat spinner. */
+.lykn-logo-loader {
+  display: inline-flex;
+  align-items: center;
+  transform-origin: center;
+  animation: lyknOutlinePop 3.6s ease-in-out infinite;
+}
+
+.lykn-logo-loader svg {
+  display: block;
+}
+
+.lykn-logo-loader path {
+  stroke-dasharray: 1;
+  animation: lyknOutlineDraw 3.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-logo-loader {
+    animation: none;
+  }
+  .lykn-logo-loader path {
+    animation: none;
+    stroke-dashoffset: 0;
+    stroke-opacity: 0;
+    fill-opacity: 1;
+  }
+}
+
+/* LyknLogoReveal-style loading screen: icon traces on + fills, then the
+   wordmark wipes open while the icon glides left to center the lockup. */
+.lykn-reveal-loader {
+  display: inline-flex;
+  align-items: center;
+}
+
+.lykn-reveal-loader__icon {
+  display: block;
+  transform-origin: center;
+  animation: lyknRevealPop 4.5s ease-in-out infinite;
+}
+
+.lykn-reveal-loader__icon path {
+  stroke-dasharray: 1;
+  animation: lyknRevealIcon 4.5s ease-in-out infinite;
+}
+
+.lykn-reveal-loader__word {
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  width: 0;
+  animation: lyknRevealWord 4.5s ease-in-out infinite;
+}
+
+.lykn-reveal-loader__word svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+@keyframes lyknRevealIcon {
+  0%   { stroke-dashoffset: 1; stroke-opacity: 1; fill-opacity: 0; }
+  30%  { stroke-dashoffset: 0; stroke-opacity: 1; fill-opacity: 0; }  /* traced */
+  42%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }  /* filled */
+  85%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }  /* hold */
+  95%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 0; }  /* fade out */
+  100% { stroke-dashoffset: 1; stroke-opacity: 0; fill-opacity: 0; }  /* reset */
+}
+
+@keyframes lyknRevealPop {
+  0%   { transform: scale(0.84); }
+  30%  { transform: scale(1); }
+  85%  { transform: scale(1); }
+  100% { transform: scale(0.84); }
+}
+
+@keyframes lyknRevealWord {
+  0%   { width: 0; margin-left: 0; opacity: 0; }
+  38%  { width: 0; margin-left: 0; opacity: 0; }
+  58%  { width: var(--word-w); margin-left: var(--word-gap); opacity: 1; }  /* wipe open */
+  85%  { width: var(--word-w); margin-left: var(--word-gap); opacity: 1; }  /* hold */
+  95%  { width: var(--word-w); margin-left: var(--word-gap); opacity: 0; }  /* fade out */
+  100% { width: 0; margin-left: 0; opacity: 0; }                            /* reset */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-reveal-loader__icon,
+  .lykn-reveal-loader__word {
+    animation: none;
+  }
+  .lykn-reveal-loader__icon {
+    transform: none;
+  }
+  .lykn-reveal-loader__icon path {
+    animation: none;
+    stroke-dashoffset: 0;
+    stroke-opacity: 0;
+    fill-opacity: 1;
+  }
+  .lykn-reveal-loader__word {
+    width: var(--word-w);
+    margin-left: var(--word-gap);
+    opacity: 1;
+  }
+}
+
 @keyframes slideInRight {
   from {
     transform: translateX(100%);

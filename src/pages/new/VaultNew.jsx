@@ -6270,10 +6270,10 @@ User: ${text}`;
             onClick={handleToggleQuickNote}
             title={showQuickNote ? "Hide quick note" : "New note"}
             aria-label={showQuickNote ? "Hide quick note" : "New note"}
-            className={`fixed bottom-6 right-6 z-[70] w-12 h-12 rounded-full border shadow-lg backdrop-blur flex items-center justify-center transition-colors touch-manipulation ${
+            className={`fixed bottom-6 right-6 z-[70] w-12 h-12 rounded-full border shadow-lg flex items-center justify-center transition touch-manipulation ${
               showQuickNote || showNewNoteChooser
                 ? "bg-blue-500/15 text-blue-600 border-blue-500/30 hover:bg-blue-500/25 dark:bg-blue-400/20 dark:text-blue-400 dark:hover:bg-blue-400/30"
-                : "border-white/[0.14] bg-white/[0.06] text-white/90 hover:bg-white/[0.12] hover:border-white/25"
+                : "border-black/[0.08] bg-[hsl(var(--sidebar-surface))] text-black/80 hover:brightness-95 dark:border-white/[0.08] dark:bg-[hsl(0_0%_16%)] dark:text-white/90 dark:hover:brightness-125"
             }`}
           >
             <Plus className="w-5 h-5" />
@@ -7693,7 +7693,7 @@ User: ${text}`;
           return (
             <div
               ref={cardMenuRef}
-              className="rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 flex flex-col overflow-hidden"
+              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] shadow-lg text-black/80 dark:text-white/90 p-1.5 flex flex-col overflow-hidden"
               style={{
                 position: previewRoot ? "absolute" : "fixed",
                 width: menuW,

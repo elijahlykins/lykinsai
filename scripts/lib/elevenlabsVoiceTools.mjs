@@ -30,6 +30,35 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
     ['query'],
   ),
   clientTool(
+    'read_document',
+    "Read the FULL text of ONE saved item in the user's vault (a note, document, saved article, or file) — not just a snippet. Use when the user asks you to READ, go through, summarize, or tell them what one of their saved items SAYS (e.g. 'read me my notes on X', 'what does that doc say', 'summarize my saved Z'). search_vault only returns short snippets; this returns the whole body so you can read it aloud or summarize it. Pass the title/topic as query. Do not read formatting tokens or URLs aloud.",
+    {
+      query: { type: 'string', description: 'The title or topic of the saved item to read (e.g. "my pricing doc", "notes on onboarding").' },
+      node_id: { type: 'string', description: 'Optional exact id from a prior search_vault result (vault_<uuid>).' },
+    },
+    ['query'],
+    20,
+  ),
+  clientTool(
+    'display_document',
+    "PULL UP a saved vault item as a window ON THE USER'S SCREEN so they can LOOK at it (the full note body, the image, the article, the file). Use whenever the user asks to SEE / show / pull up / bring up / open / display one of their saved items, or says yes after you offer to pull it up ('pull up that document', 'bring that note up', 'show me the file', 'yeah open it'). This is DIFFERENT from read_document: read_document reads the text ALOUD; display_document opens a visible reader window. After calling, say something short like 'pulling it up now' — the window appears automatically; do not read the body aloud unless they also asked.",
+    {
+      query: { type: 'string', description: 'The title or topic of the saved item to pull up (e.g. "my pricing doc", "the onboarding notes").' },
+      node_id: { type: 'string', description: 'Optional exact id from a prior search_vault result (vault_<uuid>).' },
+    },
+    ['query'],
+    20,
+  ),
+  clientTool(
+    'create_project',
+    "Start a NEW project the user just agreed to. Confirm-first: only call this after the user explicitly says yes to starting/tracking a project (you SUGGEST it, they confirm). It creates the project, names it, makes it the active focus, and it shows up under the user's Projects. To switch to an EXISTING project use set_active_project instead.",
+    {
+      name: { type: 'string', description: 'A short, clear project name.' },
+      description: { type: 'string', description: 'Optional one-line description of what the project is about.' },
+    },
+    ['name'],
+  ),
+  clientTool(
     'web_search',
     "Search the live web for CURRENT information the user does NOT already have saved — news, prices, recent events, 'what happened today', facts after your training cutoff. Use when the user asks you to look something up / search / google, or when answering needs live data. Do NOT use for the user's own saved notes (use search_vault). Summarise findings out loud and say where they came from; never invent results.",
     {

@@ -7,6 +7,7 @@ import {
   BookOpen,
   Check,
   ChevronDown,
+  Expand,
   FileText,
   FolderPlus,
   Hash,
@@ -14,6 +15,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import VaultAttachment from "@/components/synthesis/VaultAttachment";
+import VaultDocumentViewer from "@/components/omnia/VaultDocumentViewer";
 import { parseVaultContent } from "@/lib/vaultContent";
 import { flushAndNavigate } from "@/lib/chat/flushAndNavigate";
 import { supabase } from "@/lib/supabase";
@@ -133,6 +135,13 @@ export type ChatNeuronAttachment = {
   id: string;
   payload: ChatNeuronPayload;
   addedAt: number;
+  /**
+   * When true, the card opens its full embedded reader (VaultDocumentViewer)
+   * automatically on mount. Set by the orchestrator only for VAULT items the
+   * user explicitly asked to "pull up / bring in / show fully" this turn (or
+   * affirmed an assistant offer to). Belief/fact/concept cards never auto-open.
+   */
+  autoOpen?: boolean;
 };
 
 const KIND_ICON = {
@@ -595,42 +604,105 @@ export type ChatNeuronCardProps = {
 export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardProps) {
   const navigate = useNavigate();
   const payload = attachment.payload;
+  // A vault item is the one kind that gets a full embedded reader — it's the
+  // "document" the user means by "pull that up". Beliefs/facts/concepts are
+  // already shown in full on the card itself.
+  const isVault = payload?.kind === "vault";
+  const [viewerOpen, setViewerOpen] = useState(false);
+
+  // Auto-open the reader once when the orchestrator flagged this attachment
+  // (user said "bring that up" / "pull it up" or affirmed the AI's offer).
+  // Guarded by a ref so re-renders don't reopen it after the user closes it.
+  const autoOpenedRef = React.useRef(false);
+  useEffect(() => {
+    // Only auto-open for a FRESH turn. The flag persists with the message, so
+    // without the recency check a reloaded conversation would re-pop the modal.
+    const isFresh = Date.now() - (attachment.addedAt || 0) < 15_000;
+    if (attachment.autoOpen && isVault && isFresh && !autoOpenedRef.current) {
+      autoOpenedRef.current = true;
+      setViewerOpen(true);
+    }
+  }, [attachment.autoOpen, attachment.addedAt, isVault]);
+
+  // Keep this hook above the early return so the hook order stays stable
+  // regardless of payload validity (Rules of Hooks).
+  const member = useMemo(
+    () => (payload ? memberFromPayload(payload) : { nodeId: "", label: null, kind: null }),
+    [payload],
+  );
+
   if (!payload?.ok) return null;
   const kind = payload.kind;
   const Icon = (KIND_ICON as Record<string, typeof FileText>)[kind] || FileText;
   const kindLabel = KIND_LABEL[kind] || "Neuron";
   const title = titleFor(payload);
   const { href, label: openLabel } = hrefFor(payload);
-  const member = useMemo(() => memberFromPayload(payload), [payload]);
 
   return (
-    <div
-      className={`mt-2 rounded-xl border border-black/10 dark:border-white/12 bg-white/55 dark:bg-white/[0.04] backdrop-blur-sm shadow-[0_2px_10px_rgba(0,0,0,0.04)] overflow-hidden ${className}`}
-    >
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-black/5 dark:border-white/8 bg-black/[0.015] dark:bg-white/[0.02]">
-        <Icon size={12} className="text-black/55 dark:text-white/55 flex-shrink-0" />
-        <span className="text-[0.575rem] uppercase tracking-[0.16em] font-semibold text-black/50 dark:text-white/50">
-          {kindLabel}
-        </span>
-        <span className="text-[0.625rem] text-black/35 dark:text-white/35 mx-1">•</span>
-        <span className="text-[0.72rem] font-medium text-black/75 dark:text-white/85 truncate flex-1">
-          {title}
-        </span>
-        <button
-          type="button"
-          onClick={() => flushAndNavigate(navigate, href)}
-          className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.625rem] text-black/55 dark:text-white/55 hover:text-black/90 dark:hover:text-white/95 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-          title={openLabel}
-          aria-label={openLabel}
-        >
-          <ArrowUpRight size={11} />
-        </button>
+    <>
+      <div
+        className={`mt-2 rounded-xl border border-black/10 dark:border-white/12 bg-white/55 dark:bg-white/[0.04] backdrop-blur-sm shadow-[0_2px_10px_rgba(0,0,0,0.04)] overflow-hidden ${className}`}
+      >
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-black/5 dark:border-white/8 bg-black/[0.015] dark:bg-white/[0.02]">
+          <Icon size={12} className="text-black/55 dark:text-white/55 flex-shrink-0" />
+          <span className="text-[0.575rem] uppercase tracking-[0.16em] font-semibold text-black/50 dark:text-white/50">
+            {kindLabel}
+          </span>
+          <span className="text-[0.625rem] text-black/35 dark:text-white/35 mx-1">•</span>
+          <span className="text-[0.72rem] font-medium text-black/75 dark:text-white/85 truncate flex-1">
+            {title}
+          </span>
+          {/* Vault items expand into the full embedded reader; everything else
+              keeps the lightweight "jump to source" arrow. */}
+          {isVault ? (
+            <button
+              type="button"
+              onClick={() => setViewerOpen(true)}
+              className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[0.625rem] font-medium text-[#c2603f] dark:text-[#e08e6f] hover:bg-[#c2603f]/10 dark:hover:bg-[#e08e6f]/12 transition-colors"
+              title="Pull up the full document"
+              aria-label="Pull up the full document"
+            >
+              <Expand size={11} />
+              Pull up
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => flushAndNavigate(navigate, href)}
+              className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.625rem] text-black/55 dark:text-white/55 hover:text-black/90 dark:hover:text-white/95 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+              title={openLabel}
+              aria-label={openLabel}
+            >
+              <ArrowUpRight size={11} />
+            </button>
+          )}
+        </div>
+        {/* The body is a click target for vault items so the whole card reads
+            as "tap to open the full thing". */}
+        {isVault ? (
+          <button
+            type="button"
+            onClick={() => setViewerOpen(true)}
+            className="block w-full text-left px-3 py-2.5 hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
+            title="Pull up the full document"
+          >
+            {bodyFor(payload)}
+          </button>
+        ) : (
+          <div className="px-3 py-2.5">{bodyFor(payload)}</div>
+        )}
+        <div className="px-3 pb-2.5">
+          <SaveBackRow member={member} />
+        </div>
       </div>
-      <div className="px-3 py-2.5">
-        {bodyFor(payload)}
-        <SaveBackRow member={member} />
-      </div>
-    </div>
+      {isVault ? (
+        <VaultDocumentViewer
+          payload={payload as ChatNeuronVaultPayload}
+          open={viewerOpen}
+          onClose={() => setViewerOpen(false)}
+        />
+      ) : null}
+    </>
   );
 }
 

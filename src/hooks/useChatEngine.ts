@@ -15,6 +15,7 @@ import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
 import { detectSocialPlatform, isSocialEmbedType } from "@/canvas/utils/socialEmbed";
 import {
   orchestrateChatSend,
+  buildAttachmentContext,
   type PromptMessage,
   type FocusedChatAttachment,
   type CreateAction,
@@ -2068,6 +2069,32 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     threadState.setIsChatLoading(true);
     threadState.setChatStatusText("");
     threadState.setChatFlowMode("idle");
+
+    // Reconcile out-of-band React appends into this board's snapshot BEFORE we
+    // rebuild from it. Voice turns and drag-drops are pushed straight to the
+    // React message list (bypassing the snapshot the send reads from + rebuilds
+    // React from), so without this they'd be wiped from the chat window on send
+    // AND never reach the model. We derive the model thread from the messages
+    // themselves rather than aiThreadRef, which the orchestrator leaves stale
+    // after typed turns (it mutates only the snapshot's aiThread).
+    try {
+      const reconcileSnap = ensureThreadSnapshot(streamBoardId);
+      const reactMsgs = chatMessagesRef.current || [];
+      if (reactMsgs.length > reconcileSnap.chatMessages.length) {
+        const missing = reactMsgs.slice(reconcileSnap.chatMessages.length);
+        reconcileSnap.chatMessages = [...reconcileSnap.chatMessages, ...missing];
+        for (const m of missing) {
+          const atts = Array.isArray((m as PromptMessage).attachments) ? (m as PromptMessage).attachments || [] : [];
+          const attCtx = atts.length ? buildAttachmentContext(atts as FocusedChatAttachment[]) : "";
+          const userContent = `${String(m.content || "").trim()}${attCtx}`.trim();
+          if (userContent) reconcileSnap.aiThread.push({ role: "user", content: userContent });
+          if (m.aiResponse) reconcileSnap.aiThread.push({ role: "assistant", content: String(m.aiResponse) });
+        }
+        if (reconcileSnap.aiThread.length > 40) reconcileSnap.aiThread.splice(0, reconcileSnap.aiThread.length - 40);
+        reconcileSnap.updatedAt = Date.now();
+      }
+    } catch { /* reconciliation is best-effort; never block a send */ }
+
     const promptId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     // Keep the FULL prompt as the message content. The bubble UI handles
     // long-prompt collapse + "show more" affordance via expandedUserPromptIds

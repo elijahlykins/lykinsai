@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
-  Blocks,
   Brain,
   CalendarDays,
   CreditCard,
@@ -359,18 +358,6 @@ export default function AppSidebar({
           >
             <FolderKanban className="w-4 h-4 text-black/60 dark:text-white/60" />
           </button>
-          {user ? (
-            <button
-              type="button"
-              onClick={() => goTo("/builder")}
-              className={`w-9 h-9 rounded-lg hover:bg-blue-500/15 transition-colors flex items-center justify-center ${
-                location.pathname === "/builder" ? "bg-blue-500/10" : ""
-              }`}
-              title="Model builder"
-            >
-              <Blocks className="w-4 h-4 text-black/60 dark:text-white/60" />
-            </button>
-          ) : null}
         </div>
 
         <div className="flex-1" />
@@ -516,18 +503,6 @@ export default function AppSidebar({
               <FolderKanban className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
               <span className="flex-1">Projects</span>
             </button>
-            {user ? (
-              <button
-                type="button"
-                onClick={() => goTo("/builder")}
-                className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
-                  location.pathname === "/builder" ? "bg-blue-500/10" : ""
-                }`}
-              >
-                <Blocks className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
-                <span className="flex-1">Model builder</span>
-              </button>
-            ) : null}
           </div>
         </div>
 

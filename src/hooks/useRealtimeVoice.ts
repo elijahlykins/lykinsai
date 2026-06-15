@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "@/lib/api-config";
+import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
 
 export type RealtimeVoiceState =
   | "idle"
@@ -31,11 +32,17 @@ interface UseRealtimeVoiceOptions {
   onUserTranscript?: (text: string) => void;
   /** Fired with the assistant's finalized spoken reply for a turn. */
   onAssistantReply?: (text: string) => void;
+  /**
+   * Fired when the voice agent pulls a saved vault item up on screen
+   * (the `display_document` tool). The payload is a ChatNeuronVaultPayload
+   * the UI renders in the embedded document reader.
+   */
+  onDisplayDocument?: (payload: unknown) => void;
 }
 
 const OPENAI_REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
 
-export function useRealtimeVoice({ active, boardId, voice, buildInstructions, onUserTranscript, onAssistantReply }: UseRealtimeVoiceOptions) {
+export function useRealtimeVoice({ active, boardId, voice, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument }: UseRealtimeVoiceOptions) {
   const [state, setState] = useState<RealtimeVoiceState>("idle");
   const [micLevel, setMicLevel] = useState(0);
   const [muted, setMuted] = useState(false);
@@ -51,6 +58,7 @@ export function useRealtimeVoice({ active, boardId, voice, buildInstructions, on
   const voiceRef = useRef<string | undefined>(voice);
   const onUserTranscriptRef = useRef(onUserTranscript);
   const onAssistantReplyRef = useRef(onAssistantReply);
+  const onDisplayDocumentRef = useRef(onDisplayDocument);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
@@ -70,6 +78,7 @@ export function useRealtimeVoice({ active, boardId, voice, buildInstructions, on
   useEffect(() => { voiceRef.current = voice; }, [voice]);
   useEffect(() => { onUserTranscriptRef.current = onUserTranscript; }, [onUserTranscript]);
   useEffect(() => { onAssistantReplyRef.current = onAssistantReply; }, [onAssistantReply]);
+  useEffect(() => { onDisplayDocumentRef.current = onDisplayDocument; }, [onDisplayDocument]);
 
   const setVoiceState = useCallback((s: RealtimeVoiceState) => {
     stateRef.current = s;
@@ -91,16 +100,33 @@ export function useRealtimeVoice({ active, boardId, voice, buildInstructions, on
   // the data channel and let the model continue speaking with it.
   const executeToolCall = useCallback(async (callId: string, name: string, argsJson: string) => {
     let output: unknown;
-    try {
-      const headers = await authHeaders();
-      const res = await fetch(`${API_BASE_URL}/api/ai/realtime/tool`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ name, arguments: argsJson || "{}", boardId: boardIdRef.current }),
-      });
-      output = await res.json().catch(() => ({ ok: false, error: "bad_tool_response" }));
-    } catch {
-      output = { ok: false, error: "tool_request_failed" };
+    // Self-tuning instructions persist to the user's LOCAL settings, so this
+    // tool runs in the browser instead of the server dispatch endpoint.
+    if (name === TUNE_VOICE_TOOL) {
+      let params: unknown = {};
+      try { params = JSON.parse(argsJson || "{}"); } catch { params = {}; }
+      try { output = JSON.parse(await applyVoiceInstructionTune(params)); }
+      catch { output = { ok: false, error: "tune_failed" }; }
+    } else {
+      try {
+        const headers = await authHeaders();
+        const res = await fetch(`${API_BASE_URL}/api/ai/realtime/tool`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ name, arguments: argsJson || "{}", boardId: boardIdRef.current }),
+        });
+        output = await res.json().catch(() => ({ ok: false, error: "bad_tool_response" }));
+      } catch {
+        output = { ok: false, error: "tool_request_failed" };
+      }
+    }
+    // The agent pulled a vault item up on screen (display_document). Hand the
+    // payload to the UI so it opens the embedded reader, then strip it from
+    // the model-facing result so the model doesn't try to read the raw payload.
+    const display = (output as { display?: unknown })?.display;
+    if (display) {
+      try { onDisplayDocumentRef.current?.(display); } catch { /* ignore */ }
+      try { delete (output as { display?: unknown }).display; } catch { /* ignore */ }
     }
     const dc = dcRef.current;
     if (!dc || dc.readyState !== "open") return;

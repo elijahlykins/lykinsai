@@ -1,3 +1,5 @@
+import LyknOutlineSpinner from "./LyknOutlineSpinner";
+
 interface ThinkingIndicatorProps {
   /** The status text to display (already resolved by useThinkingStatus). */
   status: string;
@@ -7,9 +9,10 @@ interface ThinkingIndicatorProps {
 }
 
 /**
- * "Thinking" indicator: a 3D brick spinner alongside a status label with a
- * subtle monochrome shimmer. The phrase swaps in place as it rotates (no
- * fade/crossfade) so a long wait reads as calm, alive motion.
+ * "Thinking" indicator: the LYKN icon outline drawing on/off in a loop
+ * alongside a status label with a subtle monochrome shimmer. The phrase
+ * swaps in place as it rotates (no fade/crossfade) so a long wait reads as
+ * calm, alive motion.
  */
 export default function ThinkingIndicator({
   status,
@@ -17,12 +20,11 @@ export default function ThinkingIndicator({
   className = "",
 }: ThinkingIndicatorProps) {
   const text = status && status.trim() ? status : "Thinking…";
-  const spinnerStyle = compact ? { width: 14, height: 14 } : undefined;
   const gapClass = compact ? "gap-2" : "gap-3";
 
   return (
     <div className={`flex items-center ${gapClass} ${className}`} aria-live="polite">
-      <div className="brick-spinner" style={spinnerStyle} />
+      <LyknOutlineSpinner size={compact ? 16 : 24} />
       <span className="omnia-thinking-text">{text}</span>
     </div>
   );

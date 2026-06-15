@@ -1,4 +1,5 @@
 import React from "react";
+import LyknLogoRevealLoader from "@/components/LyknLogoRevealLoader";
 
 type LoadingScreenProps = {
   isLoading: boolean;
@@ -10,25 +11,7 @@ export default function LoadingScreen({ isLoading, children }: LoadingScreenProp
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-white dark:bg-[#0d0d0d]">
-      <span className="loading-typewriter text-lg font-medium text-black dark:text-white">
-        Getting things ready...
-      </span>
-      <style>{`
-        .loading-typewriter {
-          display: inline-block;
-          overflow: hidden;
-          white-space: nowrap;
-          border-right: 2px solid currentColor;
-          width: 0;
-          animation: typewriter 1.8s steps(23) forwards, blink 0.6s step-end infinite;
-        }
-        @keyframes typewriter {
-          to { width: 23ch; }
-        }
-        @keyframes blink {
-          50% { border-color: transparent; }
-        }
-      `}</style>
+      <LyknLogoRevealLoader size={88} className="text-[#1a4ee2] dark:text-white" />
     </div>
   );
 }

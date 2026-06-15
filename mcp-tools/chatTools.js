@@ -31,6 +31,10 @@ import { listSubModelTasksTool } from './listSubModelTasks.js';
 import { getSubModelTaskTool } from './getSubModelTask.js';
 import { communicateWithModelTool } from './communicateWithModel.js';
 import { saveFileToVaultTool } from './saveFileToVault.js';
+// In-app-only: deliberately NOT in mcp-tools/index.js so external MCP clients
+// can't create projects (they keep the user-only restriction). The in-product
+// assistant uses it only after the user agrees to its suggestion.
+import { createProjectTool } from './createProject.js';
 
 const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   ...MCP_TOOLS_BY_NAME,
@@ -40,6 +44,7 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   [getSubModelTaskTool.name]: getSubModelTaskTool,
   [communicateWithModelTool.name]: communicateWithModelTool,
   [saveFileToVaultTool.name]: saveFileToVaultTool,
+  [createProjectTool.name]: createProjectTool,
 });
 
 // ---------------------------------------------------------------------------
@@ -81,6 +86,10 @@ export const CHAT_TOOL_NAMES = [
   'lykn_removeProjectNeurons',
   // ── Project metadata writes ──────────────────────────────────────
   'lykn_setActiveProject',
+  // Create a NEW project — in-app only, and ONLY after the user agrees to the
+  // assistant's suggestion (confirm-first policy lives in the tool description
+  // + system prompt). Appears under Projects immediately.
+  'lykn_createProject',
   'lykn_updateProject',
   // ── Project hard delete (confirm-gated inside the tool) ──────────
   'lykn_deleteProject',
