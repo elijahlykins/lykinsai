@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ArrowUpRight, FileText, Loader2, X } from "lucide-react";
+import { ArrowUpRight, ChevronDown, Info, Loader2, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import VaultAttachment from "@/components/synthesis/VaultAttachment";
 import { parseVaultContent } from "@/lib/vaultContent";
@@ -24,8 +24,6 @@ import type { ChatNeuronVaultPayload } from "@/components/omnia/ChatNeuronCard";
 // bodies), so on open we re-fetch the full row straight from the `notes`
 // table by id. If that fails or the note is short, we fall back to whatever
 // content rode along on the card payload.
-
-const FOCUSABLE = "a[href], button:not([disabled])";
 
 function useEscClose(open: boolean, onClose: () => void) {
   useEffect(() => {
@@ -57,6 +55,10 @@ export function VaultDocumentViewer({ payload, open, onClose }: VaultDocumentVie
   // fetch lands (only needed when the card payload was truncated).
   const [fullContent, setFullContent] = useState<string>(String(note?.content || ""));
   const [loading, setLoading] = useState(false);
+  // Everything tied to the item (the writeup/"comments", tags, source, dates,
+  // open-in-vault) lives behind this one dropdown so the item itself reads as
+  // the screen — "just what it is" — with nothing crowding it.
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
     setFullContent(String(note?.content || ""));
@@ -109,6 +111,21 @@ export function VaultDocumentViewer({ payload, open, onClose }: VaultDocumentVie
 
   const title = String(note.title || "Untitled note").trim() || "Untitled note";
 
+  // The item itself is the screen. When the note carries attachments (an image,
+  // PDF, video, link…), those ARE the item and show plainly; the written body
+  // becomes part of the "details". A pure text note shows its body as the item.
+  const hasAttachments = parsed.attachments.length > 0;
+  const bodyMarkdown = parsed.body ? (
+    <div className="text-[0.9rem] leading-relaxed text-black/85 dark:text-white/85 break-words [&_p]:my-2 [&_h1]:text-lg [&_h1]:font-semibold [&_h1]:mt-4 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-4 [&_h3]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1 [&_a]:text-[#c2603f] [&_a]:underline [&_code]:rounded [&_code]:bg-black/[0.06] dark:[&_code]:bg-white/[0.08] [&_code]:px-1 [&_code]:py-0.5 [&_blockquote]:border-l-2 [&_blockquote]:border-black/15 dark:[&_blockquote]:border-white/20 [&_blockquote]:pl-3 [&_blockquote]:text-black/65 dark:[&_blockquote]:text-white/65">
+      <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS}>
+        {parsed.body}
+      </ReactMarkdown>
+    </div>
+  ) : null;
+  const hasTags = Array.isArray(note.tags) && note.tags.length > 0;
+  // Is there anything tucked behind the "Details" dropdown?
+  const hasDetails = !!noteId || hasTags || (hasAttachments && !!parsed.body);
+
   return createPortal(
     <div
       className="fixed inset-0 z-[300] flex items-start justify-center p-4 sm:p-6 md:p-10"
@@ -119,106 +136,88 @@ export function VaultDocumentViewer({ payload, open, onClose }: VaultDocumentVie
       {/* Scrim */}
       <button
         type="button"
-        aria-label="Close document"
+        aria-label="Close"
         onClick={onClose}
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm cursor-default"
+        className="absolute inset-0 bg-black/45 backdrop-blur-sm cursor-default"
       />
 
-      {/* Panel */}
-      <div
-        className="relative z-[1] mt-2 w-full max-w-3xl max-h-[88vh] flex flex-col rounded-2xl border border-black/10 dark:border-white/12 bg-white/95 dark:bg-[#15161a]/95 backdrop-blur-xl shadow-[0_24px_80px_rgba(0,0,0,0.35)] overflow-hidden"
-        onKeyDown={(e) => {
-          if (e.key !== "Tab") return;
-          const root = e.currentTarget;
-          const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE));
-          if (items.length === 0) return;
-          const first = items[0];
-          const last = items[items.length - 1];
-          if (e.shiftKey && document.activeElement === first) {
-            e.preventDefault();
-            last.focus();
-          } else if (!e.shiftKey && document.activeElement === last) {
-            e.preventDefault();
-            first.focus();
-          }
-        }}
-      >
-        {/* Header */}
-        <div className="flex items-center gap-2.5 px-4 sm:px-5 py-3 border-b border-black/8 dark:border-white/10 bg-black/[0.015] dark:bg-white/[0.02]">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#c2603f]/12 text-[#c2603f] dark:bg-[#e08e6f]/15 dark:text-[#e08e6f]">
-            <FileText className="h-4 w-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-[0.6rem] uppercase tracking-[0.16em] font-semibold text-black/45 dark:text-white/45">
-              From your vault
-            </p>
-            <h2 className="truncate text-[0.95rem] font-semibold text-black/85 dark:text-white/90">
-              {title}
-            </h2>
-          </div>
-          {noteId ? (
+      <div className="relative z-[1] w-full max-w-3xl max-h-[90vh] flex flex-col">
+        {/* Minimal floating controls: a single Details dropdown + a little X. */}
+        <div className="flex items-center justify-between gap-2 mb-2">
+          {hasDetails ? (
             <button
               type="button"
-              onClick={openInVault}
-              className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/12 text-[0.72rem] font-medium text-black/60 dark:text-white/65 hover:text-black/90 dark:hover:text-white/95 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+              onClick={() => setDetailsOpen((v) => !v)}
+              aria-expanded={detailsOpen}
+              className="inline-flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-full bg-white/90 dark:bg-white/10 backdrop-blur border border-black/10 dark:border-white/15 text-[0.75rem] font-medium text-black/65 dark:text-white/75 hover:bg-white dark:hover:bg-white/15 shadow-sm transition-colors"
             >
-              Open in vault
-              <ArrowUpRight size={13} />
+              <Info size={13} />
+              <span className="max-w-[14rem] truncate">{title}</span>
+              <ChevronDown size={13} className={`transition-transform ${detailsOpen ? "rotate-180" : ""}`} />
             </button>
-          ) : null}
+          ) : (
+            <span className="text-[0.78rem] font-medium text-white/80 px-1 max-w-[16rem] truncate drop-shadow">{title}</span>
+          )}
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-black/50 dark:text-white/50 hover:text-black/90 dark:hover:text-white/90 hover:bg-black/[0.05] dark:hover:bg-white/[0.08] transition-colors"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/90 dark:bg-white/10 backdrop-blur border border-black/10 dark:border-white/15 text-black/60 dark:text-white/70 hover:bg-white dark:hover:bg-white/15 shadow-sm transition-colors"
           >
             <X size={16} />
           </button>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5 space-y-5">
-          {loading ? (
-            <div className="flex items-center gap-2 text-[0.78rem] text-black/45 dark:text-white/45">
-              <Loader2 size={13} className="animate-spin" />
-              Loading the full document…
-            </div>
-          ) : null}
-
-          {parsed.body ? (
-            <div className="text-[0.9rem] leading-relaxed text-black/85 dark:text-white/85 break-words [&_p]:my-2 [&_h1]:text-lg [&_h1]:font-semibold [&_h1]:mt-4 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mt-4 [&_h3]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1 [&_a]:text-[#c2603f] [&_a]:underline [&_code]:rounded [&_code]:bg-black/[0.06] dark:[&_code]:bg-white/[0.08] [&_code]:px-1 [&_code]:py-0.5 [&_blockquote]:border-l-2 [&_blockquote]:border-black/15 dark:[&_blockquote]:border-white/20 [&_blockquote]:pl-3 [&_blockquote]:text-black/65 dark:[&_blockquote]:text-white/65">
-              <ReactMarkdown
-                remarkPlugins={CHAT_REMARK_PLUGINS}
-                rehypePlugins={CHAT_REHYPE_PLUGINS}
+        {/* Details dropdown — everything tied to the item lives here. */}
+        {detailsOpen && hasDetails ? (
+          <div className="mb-2 rounded-2xl border border-black/10 dark:border-white/12 bg-white/95 dark:bg-[#15161a]/95 backdrop-blur-xl shadow-[0_16px_50px_rgba(0,0,0,0.3)] px-4 py-3.5 max-h-[42vh] overflow-y-auto space-y-3">
+            {noteId ? (
+              <button
+                type="button"
+                onClick={openInVault}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/12 text-[0.72rem] font-medium text-black/60 dark:text-white/65 hover:text-black/90 dark:hover:text-white/95 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
               >
-                {parsed.body}
-              </ReactMarkdown>
+                Open in vault
+                <ArrowUpRight size={13} />
+              </button>
+            ) : null}
+            {hasAttachments && bodyMarkdown ? bodyMarkdown : null}
+            {hasTags ? (
+              <div className="flex flex-wrap gap-1.5">
+                {note.tags!.map((t) => (
+                  <span
+                    key={t}
+                    className="text-[0.6rem] uppercase tracking-[0.12em] text-black/45 dark:text-white/45 px-2 py-0.5 rounded bg-black/[0.04] dark:bg-white/[0.05]"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* The item — shown plainly as what it is. */}
+        <div className="flex-1 min-h-0 overflow-y-auto rounded-2xl">
+          {loading ? (
+            <div className="flex items-center gap-2 text-[0.78rem] text-white/70 px-1 pb-3">
+              <Loader2 size={13} className="animate-spin" />
+              Loading…
             </div>
-          ) : !loading && parsed.attachments.length === 0 ? (
-            <p className="text-[0.85rem] italic text-black/45 dark:text-white/45">
-              This item has no text body.
-            </p>
           ) : null}
 
-          {parsed.attachments.length > 0 ? (
+          {hasAttachments ? (
             <div className="space-y-3">
               {parsed.attachments.map((att, i) => (
-                <VaultAttachment key={i} att={att} />
+                <VaultAttachment key={i} att={att} full />
               ))}
             </div>
-          ) : null}
-
-          {Array.isArray(note.tags) && note.tags.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 pt-1">
-              {note.tags.map((t) => (
-                <span
-                  key={t}
-                  className="text-[0.6rem] uppercase tracking-[0.12em] text-black/45 dark:text-white/45 px-2 py-0.5 rounded bg-black/[0.04] dark:bg-white/[0.05]"
-                >
-                  {t}
-                </span>
-              ))}
+          ) : bodyMarkdown ? (
+            <div className="rounded-2xl border border-black/10 dark:border-white/12 bg-white/95 dark:bg-[#15161a]/95 backdrop-blur-xl shadow-[0_24px_80px_rgba(0,0,0,0.35)] px-5 sm:px-6 py-5">
+              {bodyMarkdown}
             </div>
+          ) : !loading ? (
+            <p className="text-[0.85rem] italic text-white/60 px-1">This item has no content.</p>
           ) : null}
         </div>
       </div>

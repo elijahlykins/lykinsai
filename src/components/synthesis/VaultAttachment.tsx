@@ -47,7 +47,7 @@ function linkLabel(att: VaultAttachmentData, rawUrl: string, name: string): stri
   return rawUrl;
 }
 
-export default function VaultAttachment({ att }: { att: VaultAttachmentData }) {
+export default function VaultAttachment({ att, full = false }: { att: VaultAttachmentData; full?: boolean }) {
   const type = inferAttachmentType(att);
   const rawUrl = String(att?.url || "").trim();
   const name = String(att?.name || att?.title || "").trim();
@@ -96,10 +96,10 @@ export default function VaultAttachment({ att }: { att: VaultAttachmentData }) {
         <img
           src={displayUrl}
           alt={name}
-          className="w-full max-h-[240px] object-cover"
+          className={full ? "w-full max-h-[78vh] object-contain bg-black/5 dark:bg-white/5" : "w-full max-h-[240px] object-cover"}
           loading="lazy"
         />
-        {name && (
+        {name && !full && (
           <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 px-2 py-1 truncate">
             {name}
           </p>
@@ -124,7 +124,7 @@ export default function VaultAttachment({ att }: { att: VaultAttachmentData }) {
             controls
             playsInline
             preload="metadata"
-            className="w-full max-h-[200px]"
+            className={full ? "w-full max-h-[78vh]" : "w-full max-h-[200px]"}
           />
           {name && (
             <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 px-2 py-1 truncate">

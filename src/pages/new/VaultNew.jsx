@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Info,
   Clock,
   ExternalLink,
   FileText,
@@ -948,6 +949,10 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
   const [showSignInBlocker, setShowSignInBlocker] = useState(false);
   const [walkthroughGateOpen, setWalkthroughGateOpen] = useState(false);
   const [previewCard, setPreviewCard] = useState(null);
+  // "Details" dropdown in the item preview — everything tied to the item
+  // (notes/comments, description, tags, date) is tucked behind it so the item
+  // itself reads as the screen. Reset closed whenever a different item opens.
+  const [previewDetailsOpen, setPreviewDetailsOpen] = useState(false);
   // Per-connector "folder" view. When non-null, the vault grid collapses
   // every connector-sourced card (e.g. Notion pages) into a single tile
   // and clicking that tile opens this state to the connector's id. The
@@ -4213,6 +4218,7 @@ export default function VaultNew({ wakePreview = false, onWakePreviewTabChange }
       }
     }
 
+    setPreviewDetailsOpen(false);
     setPreviewCard(card);
   }, [
     draggedCardId,
@@ -8327,75 +8333,92 @@ User: ${text}`;
             );
           }
 
+          // Everything tied to the item (its writeup/description, notes a.k.a.
+          // "comments", tags, date) lives behind one Details dropdown so the
+          // item itself shows plainly — "just what it is" — with only a little X.
+          const allComments = [...fileNotes, ...quickNoteComments];
+          const hasDetails =
+            !!previewDescription || allComments.length > 0 || cardTags.length > 0 || !!card.dateLabel;
+
           return (
             <div
-              className="fixed inset-0 z-[9999] bg-black/55 backdrop-blur-sm flex items-center justify-center p-4"
+              className="fixed inset-0 z-[9999] bg-black/55 backdrop-blur-sm flex items-start justify-center p-4 sm:p-6 md:p-10"
               onClick={() => setPreviewCard(null)}
             >
               <div
-                className="relative rounded-2xl border border-white/30 dark:border-white/10 bg-white/80 dark:bg-neutral-900/90 backdrop-blur-md shadow-2xl w-[min(1100px,96vw)] max-h-[92vh] overflow-hidden flex flex-col"
+                className="relative w-[min(1100px,96vw)] max-h-[90vh] flex flex-col"
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="flex items-center gap-3 px-4 py-3 border-b border-black/8 dark:border-white/8">
-                  <div className="min-w-0 flex-1">
-                    <h2 className="text-sm font-semibold text-black/85 dark:text-white/85 truncate">{title}</h2>
-                    {card.dateLabel && (
-                      <div className="mt-0.5 flex items-center gap-1 text-[0.6875rem] text-black/50 dark:text-white/50">
-                        <Clock className="w-3 h-3" />
-                        <span>{card.dateLabel}</span>
-                      </div>
-                    )}
-                  </div>
+                {/* Minimal floating controls: one Details dropdown + a little X. */}
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  {hasDetails ? (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewDetailsOpen((v) => !v)}
+                      aria-expanded={previewDetailsOpen}
+                      className="inline-flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-full bg-white/90 dark:bg-white/10 backdrop-blur border border-black/10 dark:border-white/15 text-[0.75rem] font-medium text-black/65 dark:text-white/75 hover:bg-white dark:hover:bg-white/15 shadow-sm transition-colors"
+                    >
+                      <Info className="w-3.5 h-3.5" />
+                      <span className="max-w-[16rem] truncate">{title}</span>
+                      <ChevronDown className={`w-3.5 h-3.5 transition-transform ${previewDetailsOpen ? "rotate-180" : ""}`} />
+                    </button>
+                  ) : (
+                    <span className="text-[0.78rem] font-medium text-white/85 px-1 max-w-[18rem] truncate drop-shadow">{title}</span>
+                  )}
                   <button
                     type="button"
                     onClick={() => setPreviewCard(null)}
-                    className="rounded-full w-8 h-8 flex items-center justify-center text-black/70 dark:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                    className="rounded-full w-9 h-9 flex items-center justify-center bg-white/90 dark:bg-white/10 backdrop-blur border border-black/10 dark:border-white/15 text-black/60 dark:text-white/70 hover:bg-white dark:hover:bg-white/15 shadow-sm transition-colors"
                     title="Close (Esc)"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
-                <div className="px-4 py-4 overflow-y-auto">
-                  {body}
-                  {previewDescription && (
-                    <div className="mt-4 rounded-xl bg-white/40 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3">
-                      <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45 mb-1">Description</div>
-                      <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{String(previewDescription)}</p>
-                    </div>
-                  )}
-                  {fileNotes.length > 0 && (
-                    <div className="mt-4 space-y-2">
-                      <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45">Notes</div>
-                      {fileNotes.map((n) => (
-                        <div key={n.id} className="rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2">
-                          <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{n.text}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {quickNoteComments.length > 0 && (
-                    <div className="mt-4 space-y-2">
-                      <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45">Notes</div>
-                      {quickNoteComments.map((n) => (
-                        <div key={n.id} className="rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2">
-                          <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{n.text}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {cardTags.length > 0 && (
-                  <div className="px-4 py-3 border-t border-black/8 dark:border-white/8 flex flex-wrap gap-1.5">
-                    {cardTags.map((t) => (
-                      <span
-                        key={t}
-                        className="inline-flex items-center rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-300 text-[0.6875rem] leading-none px-2.5 py-1 font-medium"
-                      >
-                        {t}
-                      </span>
-                    ))}
+
+                {/* Details dropdown — description, notes/comments, tags, date. */}
+                {previewDetailsOpen && hasDetails && (
+                  <div className="mb-2 rounded-2xl border border-white/30 dark:border-white/10 bg-white/90 dark:bg-neutral-900/95 backdrop-blur-md shadow-2xl px-4 py-3.5 max-h-[42vh] overflow-y-auto space-y-3">
+                    {card.dateLabel && (
+                      <div className="flex items-center gap-1 text-[0.6875rem] text-black/50 dark:text-white/50">
+                        <Clock className="w-3 h-3" />
+                        <span>{card.dateLabel}</span>
+                      </div>
+                    )}
+                    {previewDescription && (
+                      <div className="rounded-xl bg-white/40 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3">
+                        <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45 mb-1">Description</div>
+                        <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{String(previewDescription)}</p>
+                      </div>
+                    )}
+                    {allComments.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45">Notes</div>
+                        {allComments.map((n) => (
+                          <div key={n.id} className="rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2">
+                            <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{n.text}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {cardTags.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {cardTags.map((t) => (
+                          <span
+                            key={t}
+                            className="inline-flex items-center rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-300 text-[0.6875rem] leading-none px-2.5 py-1 font-medium"
+                          >
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
+
+                {/* The item itself — shown plainly as what it is. */}
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  {body}
+                </div>
               </div>
             </div>
           );
