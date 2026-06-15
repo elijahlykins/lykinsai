@@ -32,6 +32,12 @@ const apiKey = process.env.ELEVENLABS_API_KEY;
 const agentId = process.env.ELEVENLABS_AGENT_ID;
 const voiceIdEnv = (process.env.ELEVENLABS_VOICE_ID || '').trim();
 const voiceNameEnv = (process.env.ELEVENLABS_VOICE_NAME || '').trim();
+// Session length cap (seconds). ElevenLabs ends the call at this point, which
+// shows as "Paused" in the UI. Default 1800s (30 min) vs ElevenLabs' 600s.
+// Set ELEVENLABS_MAX_DURATION_SECONDS=0 to leave the agent's value unchanged.
+const maxDurationEnv = (process.env.ELEVENLABS_MAX_DURATION_SECONDS ?? '1800').trim();
+const maxDurationSeconds = Number(maxDurationEnv);
+const maxDurationMessage = process.env.ELEVENLABS_MAX_DURATION_MESSAGE || '';
 
 function die(msg) { console.error(`\n❌ ${msg}\n`); process.exit(1); }
 
@@ -95,11 +101,19 @@ const body = {
     },
   },
 };
-if (voiceId || syncTools) {
+// Apply the duration cap unless explicitly disabled (0 / blank / NaN).
+const applyMaxDuration = Number.isFinite(maxDurationSeconds) && maxDurationSeconds > 0;
+if (voiceId || syncTools || applyMaxDuration) {
   body.conversation_config = { agent: {} };
   if (voiceId) body.conversation_config.tts = { voice_id: voiceId };
   // Only set prompt.tools (PATCH deep-merge preserves prompt.custom_llm etc.).
   if (syncTools) body.conversation_config.agent.prompt = { tools: LYKN_VOICE_CLIENT_TOOLS };
+  if (applyMaxDuration) {
+    body.conversation_config.conversation = {
+      max_duration_seconds: maxDurationSeconds,
+      ...(maxDurationMessage ? { max_conversation_duration_message: maxDurationMessage } : {}),
+    };
+  }
 }
 
 console.log(`\n→ Updating agent ${agentId}…`);
@@ -128,8 +142,11 @@ const ov = agent?.platform_settings?.overrides?.conversation_config_override || 
 
 const liveTools = Array.isArray(cc?.agent?.prompt?.tools) ? cc.agent.prompt.tools : [];
 
+const liveMaxDuration = cc?.conversation?.max_duration_seconds;
+
 console.log('\n✅ Agent updated.');
 console.log(`   Voice id:            ${cc?.tts?.voice_id || '(unchanged / unknown)'}`);
+console.log(`   Max session:         ${liveMaxDuration ? `${liveMaxDuration}s (${(liveMaxDuration / 60).toFixed(0)} min)` : '(unknown)'}${applyMaxDuration ? '' : ' — left unchanged'}`);
 console.log(`   Tools on agent:      ${syncTools ? `${liveTools.length} synced` : 'left unchanged'}${syncTools && liveTools.length ? ` (${liveTools.map((t) => t.name).join(', ')})` : ''}`);
 console.log(`   first_message override: ${ov?.agent?.first_message === true ? 'ENABLED' : 'NOT enabled'}`);
 console.log(`   prompt override:        ${ov?.agent?.prompt?.prompt === true ? 'ENABLED' : 'NOT enabled'}`);

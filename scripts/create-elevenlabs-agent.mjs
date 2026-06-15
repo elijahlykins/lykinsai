@@ -38,6 +38,13 @@ const voiceId = process.env.ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB';
 // (VITE_VOICE_FIRST_MESSAGE) so it can change without re-provisioning, but we
 // keep the baked-in default in sync via VOICE_FIRST_MESSAGE here.
 const firstMessage = process.env.VOICE_FIRST_MESSAGE || "Hey, I'm here. What's on your mind?";
+// Max length of a single voice session before ElevenLabs auto-ends it (which
+// surfaces as "Paused" in the UI). ElevenLabs' own default is 600s (10 min);
+// we bump it so long working sessions don't get cut off mid-conversation.
+const maxDurationSeconds = Number(process.env.ELEVENLABS_MAX_DURATION_SECONDS || 1800);
+// Optional line the agent speaks right before the session ends on the duration
+// cap, so it doesn't just silently disconnect. Empty → say nothing.
+const maxDurationMessage = process.env.ELEVENLABS_MAX_DURATION_MESSAGE || '';
 
 function die(msg) { console.error(`\n❌ ${msg}\n`); process.exit(1); }
 
@@ -118,6 +125,11 @@ const body = {
       },
       tts: { voice_id: voiceId },
     },
+    // Lift the session length cap (default 600s) so long calls aren't cut off.
+    conversation: {
+      max_duration_seconds: maxDurationSeconds,
+      ...(maxDurationMessage ? { max_conversation_duration_message: maxDurationMessage } : {}),
+    },
   },
   // Allow the client to override the prompt + first message per conversation.
   // Without this, the LYKN_SESSION_TOKEN override is ignored and the custom
@@ -165,6 +177,7 @@ console.log('\n✅ Created ElevenLabs agent "LYKN Voice".');
 console.log(`   Agent ID: ${agentId || '(see full response below)'}`);
 console.log(`   Custom LLM: ${customLlmUrl} (model ${llmModel})`);
 console.log(`   Voice ID:   ${voiceId}`);
+console.log(`   Max session: ${maxDurationSeconds}s (${(maxDurationSeconds / 60).toFixed(0)} min)`);
 console.log('\nNext steps:');
 console.log(`   1. Add to your server env:  ELEVENLABS_AGENT_ID=${agentId || '<agent_id>'}`);
 console.log('   2. Set the client flag:     VITE_VOICE_PROVIDER=elevenlabs');

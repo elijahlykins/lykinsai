@@ -1763,6 +1763,12 @@ function logSynthesisRetrievalStats(rows, opts = {}) {
 async function expandSynthesisChunkWindows(authHeader, rows) {
   if (process.env.RAG_PARENT_WINDOW === '0') return null;
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  // No user JWT (voice custom-LLM path): expand via the service-role client.
+  // The rows we expand were already user-scoped by the caller's match RPC, and
+  // source_id values are globally-unique uuids, so this can't leak across users.
+  const hasUserAuth = authHeader && String(authHeader).startsWith('Bearer ');
+  const useAdmin = !hasUserAuth && !!supabaseAdmin;
+  if (!hasUserAuth && !useAdmin) return null;
   try {
     const TOP = Math.min(rows.length, 6); // only expand the strongest hits
     const sourceIds = new Set();
@@ -1777,18 +1783,29 @@ async function expandSynthesisChunkWindows(authHeader, rows) {
     }
     if (sourceIds.size === 0 || neededIdx.size === 0) return null;
 
-    const idList = [...sourceIds].map((s) => `"${s.replace(/"/g, '')}"`).join(',');
-    const ciList = [...neededIdx].join(',');
-    const url =
-      `${SUPABASE_URL}/rest/v1/lykn_synthesis_chunks` +
-      `?select=source_type,source_id,chunk_index,content` +
-      `&source_id=in.(${encodeURIComponent(idList)})` +
-      `&chunk_index=in.(${encodeURIComponent(ciList)})`;
-    const res = await fetch(url, {
-      headers: { Authorization: authHeader, apikey: SUPABASE_ANON_KEY },
-    });
-    if (!res.ok) return null;
-    const chunkRows = await res.json();
+    let chunkRows;
+    if (useAdmin) {
+      const { data, error } = await supabaseAdmin
+        .from('lykn_synthesis_chunks')
+        .select('source_type,source_id,chunk_index,content')
+        .in('source_id', [...sourceIds])
+        .in('chunk_index', [...neededIdx]);
+      if (error) return null;
+      chunkRows = data;
+    } else {
+      const idList = [...sourceIds].map((s) => `"${s.replace(/"/g, '')}"`).join(',');
+      const ciList = [...neededIdx].join(',');
+      const url =
+        `${SUPABASE_URL}/rest/v1/lykn_synthesis_chunks` +
+        `?select=source_type,source_id,chunk_index,content` +
+        `&source_id=in.(${encodeURIComponent(idList)})` +
+        `&chunk_index=in.(${encodeURIComponent(ciList)})`;
+      const res = await fetch(url, {
+        headers: { Authorization: authHeader, apikey: SUPABASE_ANON_KEY },
+      });
+      if (!res.ok) return null;
+      chunkRows = await res.json();
+    }
     if (!Array.isArray(chunkRows)) return null;
 
     // key: source_type|source_id -> Map(chunk_index -> content)
@@ -1818,30 +1835,54 @@ async function expandSynthesisChunkWindows(authHeader, rows) {
 }
 
 async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = null) {
-  if (!authHeader || !String(authHeader).startsWith('Bearer ')) return '';
+  // Admin path: the voice custom-LLM endpoint is hit server-to-server by
+  // ElevenLabs with NO user JWT, so it passes authHeader=null plus a resolved
+  // userId. The old code early-returned here, which is exactly why voice "could
+  // not see" saved items or past conversations — it got zero per-turn retrieval.
+  // When we have the service-role client + a userId, run the same cosine search
+  // via the admin RPC (match_lykn_synthesis_chunks_for_user, migration 092),
+  // which pins results to that user.
+  const hasUserAuth = authHeader && String(authHeader).startsWith('Bearer ');
+  const useAdmin = !hasUserAuth && !!(supabaseAdmin && userId);
+  if (!hasUserAuth && !useAdmin) return '';
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return '';
   const embedding = await openAiEmbedQueryText(queryText, { userId, actionType: 'embedding_retrieval' });
   if (!embedding) return '';
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/match_lykn_synthesis_chunks`, {
-      method: 'POST',
-      headers: {
-        Authorization: authHeader,
-        apikey: SUPABASE_ANON_KEY,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    let rows;
+    if (useAdmin) {
+      const { data, error } = await supabaseAdmin.rpc('match_lykn_synthesis_chunks_for_user', {
         query_embedding: embedding,
+        p_user_id: userId,
         match_count: SYNTHESIS_RETRIEVAL_TOP_K,
         match_threshold: SYNTHESIS_MATCH_THRESHOLD,
-      }),
-    });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.warn('⚠️ Synthesis RPC', res.status, errText.slice(0, 200));
-      return '';
+      });
+      if (error) {
+        console.warn('⚠️ Synthesis RPC (admin)', error.message);
+        return '';
+      }
+      rows = data;
+    } else {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/match_lykn_synthesis_chunks`, {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          apikey: SUPABASE_ANON_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query_embedding: embedding,
+          match_count: SYNTHESIS_RETRIEVAL_TOP_K,
+          match_threshold: SYNTHESIS_MATCH_THRESHOLD,
+        }),
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.warn('⚠️ Synthesis RPC', res.status, errText.slice(0, 200));
+        return '';
+      }
+      rows = await res.json();
     }
-    const rows = await res.json();
     if (!Array.isArray(rows) || rows.length === 0) {
       logSynthesisRetrievalStats([], { threshold: SYNTHESIS_MATCH_THRESHOLD });
       return '';
@@ -16374,6 +16415,36 @@ async function buildRealtimeSynthesisGrounding(authHeader, userId) {
     }
   } catch (e) {
     console.warn('⚠️ voice main-agent roster:', e?.message || e);
+  }
+  // Past conversations: the text chat injects [CONVERSATION_MEMORY] from the
+  // client, but voice's client grounding only carries the CURRENT session — so
+  // without this the voice agent genuinely can't see anything said in earlier
+  // sessions and tells the user it has no memory of them. Pull recent exchanges
+  // server-side via admin (no user JWT reaches the custom-LLM endpoint) so voice
+  // has the same recall the written chat does.
+  try {
+    if (supabaseAdmin) {
+      const { data: memRows } = await supabaseAdmin
+        .from('ai_conversation_memory')
+        .select('user_message, assistant_message, surface, surface_title, created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(12);
+      const exchanges = (memRows || []).slice().reverse();
+      let memText = '';
+      for (const ex of exchanges) {
+        const label = ex.surface_title ? `${ex.surface} "${ex.surface_title}"` : String(ex.surface || 'chat');
+        memText += `--- (${label}) ---\nUser: ${String(ex.user_message || '').slice(0, 600)}\nAssistant: ${String(ex.assistant_message || '').slice(0, 600)}\n\n`;
+      }
+      memText = memText.trim();
+      if (memText) {
+        sections.push(
+          `[CONVERSATION_MEMORY — past exchanges from earlier sessions/projects/vault; reference them when relevant]\n${sanitizeStaleSurfaceLanguage(memText.slice(0, 4000))}`,
+        );
+      }
+    }
+  } catch (e) {
+    console.warn('⚠️ voice conversation memory:', e?.message || e);
   }
   return sections.join('\n\n');
 }
