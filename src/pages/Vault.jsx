@@ -3542,6 +3542,27 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     prepareNextBatch();
   }, [sentinelInView, isFeedView, batchPreparing, canRevealMore, prepareNextBatch]);
 
+  // Forward-progress safety net for the reveal window. The bottom sentinel's
+  // IntersectionObserver fires reliably in the grid layout but NOT in the
+  // collage masonry (the sentinel sits after a flex container that never
+  // reports as intersecting), which left collage frozen on the first group of
+  // REVEAL_BATCH items. Independently of the sentinel: whenever there's more to
+  // reveal and the page isn't tall enough to scroll, advance directly. This
+  // re-runs on every revealCount change and loops until the content overflows
+  // the viewport, after which scroll-driven reveal takes over. The
+  // `batchPreparing` gate (and the media-ready/6s safety valve that clears it)
+  // throttles this to one batch at a time, so it can't runaway-reveal.
+  useEffect(() => {
+    if (!isFeedView || batchPreparing || !canRevealMore) return;
+    if (typeof window === "undefined") return;
+    const id = window.requestAnimationFrame(() => {
+      const doc = document.scrollingElement || document.documentElement;
+      const pageScrollable = doc && doc.scrollHeight > window.innerHeight + 200;
+      if (!pageScrollable) prepareNextBatch();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [isFeedView, batchPreparing, canRevealMore, revealCount, collageGridCardsAll.length, prepareNextBatch]);
+
   // Once every card in the preparing batch has its media ready, reveal them.
   useEffect(() => {
     if (!batchPreparing) return;
