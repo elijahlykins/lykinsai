@@ -115,7 +115,7 @@ async function resolveNodeIdToQuery(ctx, nodeId) {
   if (trimmed.startsWith('vault_')) {
     const id = trimmed.slice('vault_'.length);
     const { data } = await ctx.supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .select('title, content')
       .eq('user_id', ctx.userId)
       .eq('id', id)
@@ -232,7 +232,7 @@ async function searchVaultNotes(ctx, query, limit) {
   if (!query) return [];
   const pattern = `%${escapeLike(query)}%`;
   const { data, error } = await ctx.supabaseAdmin
-    .from('notes')
+    .from('vault_items')
     .select('id, title, content, tags, created_at, updated_at')
     .eq('user_id', ctx.userId)
     .or(`title.ilike.${pattern},content.ilike.${pattern}`)

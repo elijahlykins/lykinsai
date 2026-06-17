@@ -184,7 +184,7 @@ export const getRecentActivityTool = {
 
     if (kinds.has('vault')) {
       const { data, error } = await sb
-        .from('notes')
+        .from('vault_items')
         .select('id, title, updated_at, created_at')
         .eq('user_id', ctx.userId)
         .gte('updated_at', sinceIso)

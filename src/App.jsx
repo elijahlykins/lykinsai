@@ -17,8 +17,8 @@ import { API_BASE_URL } from '@/lib/api-config';
 import { useQuery } from '@tanstack/react-query';
 
 import Login from "./pages/Login";
-import LandingPrototype from "./pages/LandingPrototype";
-import OmniaGrid from "./pages/OmniaGrid";
+import Landing from "./pages/Landing";
+import LyknChat from "./pages/LyknChat";
 import Settings from "./pages/Settings";
 // SynthesisLayer pulls in three.js + react-three-fiber + drei + the
 // Bloom postprocessing pipeline (via its own internal lazy import of
@@ -32,8 +32,8 @@ import AppSidebar from "./components/AppSidebar";
 import MobileTabBar from "./components/MobileTabBar";
 import MobileExperienceNotice from "./components/MobileExperienceNotice";
 import VaultConnectionsShell from "./pages/VaultConnectionsShell";
-import TagManagementNew from "./pages/new/TagManagementNew";
-import BillingNew from "./pages/new/BillingNew";
+import TagManagement from "./pages/TagManagement";
+import Billing from "./pages/Billing";
 import SignInPill from "./components/SignInPill";
 import {
   isEmbeddedSurfacePath,
@@ -57,8 +57,6 @@ import ProjectsPage from "./pages/ProjectsPage";
 import ProjectDetailPage from "./pages/ProjectDetailPage";
 
 
-const legacyEnabled = String(import.meta.env.VITE_ENABLE_LEGACY_NOTES || "").toLowerCase() === "true";
-const LegacyTagManagement = React.lazy(() => import("./pages/TagManagement"));
 const loadingFallback = <LoadingScreen isLoading={true} />;
 
 function ProtectedRoute({ children }) {
@@ -239,13 +237,13 @@ function AppShell() {
             <Route path="/dpa" element={<DPA />} />
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/mobile" element={<Mobile />} />
-            <Route path="/" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
-            <Route path="/landing-prototype" element={<GuestOnly><LandingPrototype /></GuestOnly>} />
-            <Route path="/app" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
+            <Route path="/" element={<GuestOnly><Landing /></GuestOnly>} />
+            <Route path="/landing" element={<GuestOnly><Landing /></GuestOnly>} />
+            <Route path="/app" element={<ProtectedRoute><LyknChat /></ProtectedRoute>} />
             <Route path="/dashboard" element={<Navigate to="/app" replace />} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-            <Route path="/grid/:boardId" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
-            <Route path="/omnia" element={<ProtectedRoute><OmniaGrid /></ProtectedRoute>} />
+            <Route path="/chat/:chatId" element={<ProtectedRoute><LyknChat /></ProtectedRoute>} />
+            <Route path="/omnia" element={<Navigate to="/app" replace />} />
             <Route
               element={
                 <ProtectedRoute>
@@ -299,13 +297,7 @@ function AppShell() {
               path="/tag-management"
               element={
                 <ProtectedRoute>
-                  {legacyEnabled ? (
-                    <Suspense fallback={loadingFallback}>
-                      <LegacyTagManagement />
-                    </Suspense>
-                  ) : (
-                    <TagManagementNew />
-                  )}
+                  <TagManagement />
                 </ProtectedRoute>
               }
             />
@@ -315,7 +307,7 @@ function AppShell() {
               path="/billing"
               element={
                 <ProtectedRoute>
-                  <BillingNew />
+                  <Billing />
                 </ProtectedRoute>
               }
             />

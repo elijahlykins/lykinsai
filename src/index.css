@@ -397,7 +397,7 @@ body.embedded-vault-mode .app-content {
   padding-left: 0 !important;
 }
 
-body.embedded-vault-mode .omnia-grid-bg {
+body.embedded-vault-mode .lykn-chat-grid-bg {
   background: #000 !important;
 }
 
@@ -560,12 +560,12 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   }
 
   /* Omnia Grid page — transparent so the body's standard bloom background shows through */
-  .omnia-grid-bg {
+  .lykn-chat-grid-bg {
     background: transparent;
   }
 
   /* Omnia Grid — neumorphic chat composer (raised shell; input co-planar, not inset) */
-  .omnia-neu-chat-shell {
+  .lykn-chat-neu-chat-shell {
     background: linear-gradient(145deg, #f6f6f6, #f0f0f0);
     border-radius: 14px;
     border: 1px solid rgba(0, 0, 0, 0.04);
@@ -575,7 +575,7 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
       inset 0 1px 0 rgba(255, 255, 255, 0.60);
   }
 
-  .dark .omnia-neu-chat-shell {
+  .dark .lykn-chat-neu-chat-shell {
     background: linear-gradient(145deg, #343840, #282c32);
     border-color: rgba(255, 255, 255, 0.05);
     box-shadow:
@@ -585,7 +585,7 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   }
 
   /* Flush with shell: no inner box — same surface as the card */
-  .omnia-neu-chat-field {
+  .lykn-chat-neu-chat-field {
     border-radius: 0;
     background: transparent;
     color: #16161a;
@@ -593,7 +593,7 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
     box-shadow: none;
   }
 
-  .dark .omnia-neu-chat-field {
+  .dark .lykn-chat-neu-chat-field {
     background: transparent;
     color: rgba(255, 255, 255, 0.92);
     border: none;
@@ -601,7 +601,7 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   }
 
   /* Chat toolbar: icon-only controls (no raised block) */
-  .omnia-neu-chat-icon-plain {
+  .lykn-chat-neu-chat-icon-plain {
     border-radius: 10px;
     flex-shrink: 0;
     background: transparent;
@@ -613,26 +613,26 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
       color 0.18s ease;
   }
 
-  .omnia-neu-chat-icon-plain:hover:not(:disabled) {
+  .lykn-chat-neu-chat-icon-plain:hover:not(:disabled) {
     background-color: rgba(59, 130, 246, 0.1);
     box-shadow: 0 0 12px rgba(59, 130, 246, 0.14);
   }
 
-  .omnia-neu-chat-icon-plain:active:not(:disabled) {
+  .lykn-chat-neu-chat-icon-plain:active:not(:disabled) {
     background-color: rgba(59, 130, 246, 0.06);
   }
 
-  .dark .omnia-neu-chat-icon-plain:hover:not(:disabled) {
+  .dark .lykn-chat-neu-chat-icon-plain:hover:not(:disabled) {
     background-color: rgba(59, 130, 246, 0.14);
     box-shadow: 0 0 14px rgba(59, 130, 246, 0.16);
   }
 
-  .dark .omnia-neu-chat-icon-plain:active:not(:disabled) {
+  .dark .lykn-chat-neu-chat-icon-plain:active:not(:disabled) {
     background-color: rgba(59, 130, 246, 0.1);
   }
 
   /* Send only — neumorphic block */
-  .omnia-neu-chat-send-btn {
+  .lykn-chat-neu-chat-send-btn {
     border-radius: 10px;
     flex-shrink: 0;
     background: linear-gradient(145deg, #fafafa, #f0f0f2);
@@ -647,7 +647,7 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
       border-color 0.18s ease;
   }
 
-  .omnia-neu-chat-send-btn:hover:not(:disabled) {
+  .lykn-chat-neu-chat-send-btn:hover:not(:disabled) {
     background: linear-gradient(145deg, #e8f1fc, #dceaf8);
     border-color: rgba(59, 130, 246, 0.28);
     box-shadow:
@@ -656,14 +656,14 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
       0 0 14px rgba(59, 130, 246, 0.14);
   }
 
-  .omnia-neu-chat-send-btn:active:not(:disabled) {
+  .lykn-chat-neu-chat-send-btn:active:not(:disabled) {
     box-shadow:
       inset 2px 2px 5px rgba(0, 0, 0, 0.1),
       inset -1px -1px 4px rgba(255, 255, 255, 0.5),
       0 0 0 1px rgba(59, 130, 246, 0.12);
   }
 
-  .dark .omnia-neu-chat-send-btn {
+  .dark .lykn-chat-neu-chat-send-btn {
     background: linear-gradient(145deg, #383c44, #2a2e35);
     border-color: rgba(255, 255, 255, 0.06);
     box-shadow:
@@ -671,7 +671,7 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
       -2px -2px 6px rgba(255, 255, 255, 0.02);
   }
 
-  .dark .omnia-neu-chat-send-btn:hover:not(:disabled) {
+  .dark .lykn-chat-neu-chat-send-btn:hover:not(:disabled) {
     background: linear-gradient(145deg, #2e3848, #283040);
     border-color: rgba(96, 165, 250, 0.32);
     box-shadow:
@@ -680,7 +680,7 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
       0 0 16px rgba(59, 130, 246, 0.16);
   }
 
-  .dark .omnia-neu-chat-send-btn:active:not(:disabled) {
+  .dark .lykn-chat-neu-chat-send-btn:active:not(:disabled) {
     box-shadow:
       inset 2px 2px 6px rgba(0, 0, 0, 0.45),
       inset -1px -1px 4px rgba(255, 255, 255, 0.03),
@@ -688,16 +688,16 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   }
 
   /* Model dropdown — same “icon only” feel as plain buttons */
-  .omnia-neu-chat-toolbar-select-trigger {
+  .lykn-chat-neu-chat-toolbar-select-trigger {
     transition: background-color 0.18s ease, box-shadow 0.18s ease;
   }
 
-  .omnia-neu-chat-toolbar-select-trigger:hover {
+  .lykn-chat-neu-chat-toolbar-select-trigger:hover {
     background-color: rgba(59, 130, 246, 0.1);
     box-shadow: 0 0 12px rgba(59, 130, 246, 0.12);
   }
 
-  .dark .omnia-neu-chat-toolbar-select-trigger:hover {
+  .dark .lykn-chat-neu-chat-toolbar-select-trigger:hover {
     background-color: rgba(59, 130, 246, 0.12);
     box-shadow: 0 0 14px rgba(59, 130, 246, 0.14);
   }
@@ -716,7 +716,7 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   /* =========================================================
      Omnia Grid — selected block treatment (sleek "lit glass")
      ========================================================= */
-  .omnia-selected-glass {
+  .lykn-chat-selected-glass {
     box-shadow:
       0 2px 10px rgba(0,0,0,0.06),
       inset 0 0 16px rgba(110, 200, 255, 0.12),
@@ -724,7 +724,7 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
     transition: box-shadow 140ms ease, border-color 140ms ease;
   }
 
-  .dark .omnia-selected-glass {
+  .dark .lykn-chat-selected-glass {
     box-shadow:
       0 2px 10px rgba(0,0,0,0.16),
       inset 0 0 16px rgba(110, 200, 255, 0.08),
@@ -732,8 +732,8 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   }
 
   /* Hover should match selection glow (Omnia grid only) */
-  [data-omnia-canvas] .group:hover .glass-text-card,
-  [data-omnia-canvas] .group:hover .glass-block {
+  [data-lykn-chat-canvas] .group:hover .glass-text-card,
+  [data-lykn-chat-canvas] .group:hover .glass-block {
     box-shadow:
       0 2px 10px rgba(0,0,0,0.06),
       inset 0 0 16px rgba(110, 200, 255, 0.12),
@@ -741,8 +741,8 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
     transition: box-shadow 140ms ease, border-color 140ms ease;
   }
 
-  .dark [data-omnia-canvas] .group:hover .glass-text-card,
-  .dark [data-omnia-canvas] .group:hover .glass-block {
+  .dark [data-lykn-chat-canvas] .group:hover .glass-text-card,
+  .dark [data-lykn-chat-canvas] .group:hover .glass-block {
     box-shadow:
       0 2px 10px rgba(0,0,0,0.16),
       inset 0 0 16px rgba(110, 200, 255, 0.08),
@@ -751,8 +751,8 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   }
 
   /* Kill ALL transitions on blocks while dragging to prevent glitchy competing animations */
-  [data-omnia-canvas][data-dragging] [data-canvas-block],
-  [data-omnia-canvas][data-dragging] [data-canvas-block] > * {
+  [data-lykn-chat-canvas][data-dragging] [data-canvas-block],
+  [data-lykn-chat-canvas][data-dragging] [data-canvas-block] > * {
     transition: none !important;
   }
 }
@@ -1028,9 +1028,9 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
      selector above, so iOS still auto-zooms when the chat composer is
      focused on phones. Boost specificity for the chat textarea(s) to
      guarantee the 16px floor and stop the focus zoom. */
-  textarea.omnia-neu-chat-field,
-  textarea.omnia-neu-chat-field.text-xs,
-  .omnia-neu-chat-shell textarea {
+  textarea.lykn-chat-neu-chat-field,
+  textarea.lykn-chat-neu-chat-field.text-xs,
+  .lykn-chat-neu-chat-shell textarea {
     font-size: 16px !important;
     line-height: 1.35 !important;
   }
@@ -1536,14 +1536,14 @@ input[type="color"].color-circle::-moz-color-swatch {
 }
 
 /* Canvas trash control: “hungry” wobble when delete hold completes */
-@keyframes omniaTrashReadyShake {
+@keyframes lyknChatTrashReadyShake {
   0%, 100% { transform: rotate(-10deg); }
   50% { transform: rotate(10deg); }
 }
 
-.omnia-canvas-trash-ready-shake {
+.lykn-chat-canvas-trash-ready-shake {
   display: inline-flex;
-  animation: omniaTrashReadyShake 0.22s ease-in-out infinite;
+  animation: lyknChatTrashReadyShake 0.22s ease-in-out infinite;
   transform-origin: 50% 88%;
 }
 
@@ -1768,25 +1768,25 @@ mark {
 /* ==========================================================
    Chat border running light — @property must live at root scope
    ========================================================== */
-@property --omnia-border-trace {
+@property --lykn-chat-border-trace {
   syntax: '<angle>';
   initial-value: 0deg;
   inherits: false;
 }
 
-.omnia-neu-chat-shell.omnia-chat-border-run-once {
+.lykn-chat-neu-chat-shell.lykn-chat-chat-border-run-once {
   position: relative;
   overflow: visible;
 }
 
-.omnia-neu-chat-shell.omnia-chat-border-run-once::before {
+.lykn-chat-neu-chat-shell.lykn-chat-chat-border-run-once::before {
   content: "";
   position: absolute;
   inset: -2px;
   border-radius: 16px;
   padding: 2px;
   background: conic-gradient(
-    from var(--omnia-border-trace) at 50% 50%,
+    from var(--lykn-chat-border-trace) at 50% 50%,
     transparent 0deg,
     transparent 300deg,
     rgba(59, 130, 246, 0.15) 320deg,
@@ -1806,43 +1806,43 @@ mark {
   mask-composite: exclude;
   pointer-events: none;
   z-index: 1;
-  --omnia-border-trace: 0deg;
-  animation: omnia-border-trace 2.6s cubic-bezier(0.35, 0, 0.15, 1) forwards;
+  --lykn-chat-border-trace: 0deg;
+  animation: lykn-chat-border-trace 2.6s cubic-bezier(0.35, 0, 0.15, 1) forwards;
 }
 
-.omnia-neu-chat-shell.omnia-chat-border-run-once > * {
+.lykn-chat-neu-chat-shell.lykn-chat-chat-border-run-once > * {
   position: relative;
   z-index: 2;
 }
 
-@keyframes omnia-border-trace {
+@keyframes lykn-chat-border-trace {
   0% {
-    --omnia-border-trace: 0deg;
+    --lykn-chat-border-trace: 0deg;
     opacity: 1;
   }
   75% {
     opacity: 1;
   }
   100% {
-    --omnia-border-trace: 360deg;
+    --lykn-chat-border-trace: 360deg;
     opacity: 0;
   }
 }
 
 /* Looping blue border light for AI thinking indicator */
-.omnia-ai-thinking-glow {
+.lykn-chat-ai-thinking-glow {
   position: relative;
   overflow: visible;
 }
 
-.omnia-ai-thinking-glow::before {
+.lykn-chat-ai-thinking-glow::before {
   content: "";
   position: absolute;
   inset: -2px;
   border-radius: inherit;
   padding: 2px;
   background: conic-gradient(
-    from var(--omnia-border-trace) at 50% 50%,
+    from var(--lykn-chat-border-trace) at 50% 50%,
     transparent 0deg,
     transparent 300deg,
     rgba(59, 130, 246, 0.12) 320deg,
@@ -1862,73 +1862,73 @@ mark {
   mask-composite: exclude;
   pointer-events: none;
   z-index: 0;
-  --omnia-border-trace: 0deg;
-  animation: omnia-border-trace-loop 2.4s linear infinite;
+  --lykn-chat-border-trace: 0deg;
+  animation: lykn-chat-border-trace-loop 2.4s linear infinite;
 }
 
-.omnia-ai-thinking-glow > * {
+.lykn-chat-ai-thinking-glow > * {
   position: relative;
   z-index: 1;
 }
 
-@keyframes omnia-border-trace-loop {
-  0%   { --omnia-border-trace: 0deg; }
-  100% { --omnia-border-trace: 360deg; }
+@keyframes lykn-chat-border-trace-loop {
+  0%   { --lykn-chat-border-trace: 0deg; }
+  100% { --lykn-chat-border-trace: 360deg; }
 }
 
 /* ── Animated "thinking" text ───────────────────────────────────────────
    A subtle monochrome shimmer (a slightly brighter band of the SAME text
    color) glides across the status word so a long wait feels alive without
    being loud. No color tint, no fade in/out — the phrase swaps in place. */
-.omnia-thinking-text {
+.lykn-chat-thinking-text {
   display: inline-block;
-  --omnia-thinking-dim: rgba(0, 0, 0, 0.42);
-  --omnia-thinking-bright: rgba(0, 0, 0, 0.82);
+  --lykn-chat-thinking-dim: rgba(0, 0, 0, 0.42);
+  --lykn-chat-thinking-bright: rgba(0, 0, 0, 0.82);
   background: linear-gradient(
     100deg,
-    var(--omnia-thinking-dim) 0%,
-    var(--omnia-thinking-dim) 42%,
-    var(--omnia-thinking-bright) 50%,
-    var(--omnia-thinking-dim) 58%,
-    var(--omnia-thinking-dim) 100%
+    var(--lykn-chat-thinking-dim) 0%,
+    var(--lykn-chat-thinking-dim) 42%,
+    var(--lykn-chat-thinking-bright) 50%,
+    var(--lykn-chat-thinking-dim) 58%,
+    var(--lykn-chat-thinking-dim) 100%
   );
   background-size: 220% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
-  animation: omnia-thinking-shimmer 2.4s linear infinite;
+  animation: lykn-chat-thinking-shimmer 2.4s linear infinite;
   will-change: background-position;
 }
 
-.dark .omnia-thinking-text {
-  --omnia-thinking-dim: rgba(255, 255, 255, 0.40);
-  --omnia-thinking-bright: rgba(255, 255, 255, 0.90);
+.dark .lykn-chat-thinking-text {
+  --lykn-chat-thinking-dim: rgba(255, 255, 255, 0.40);
+  --lykn-chat-thinking-bright: rgba(255, 255, 255, 0.90);
 }
 
-@keyframes omnia-thinking-shimmer {
+@keyframes lykn-chat-thinking-shimmer {
   0%   { background-position: 130% 0; }
   100% { background-position: -130% 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .omnia-thinking-text {
+  .lykn-chat-thinking-text {
     animation: none;
     background: none;
-    -webkit-text-fill-color: var(--omnia-thinking-bright);
-    color: var(--omnia-thinking-bright);
+    -webkit-text-fill-color: var(--lykn-chat-thinking-bright);
+    color: var(--lykn-chat-thinking-bright);
   }
 }
 
 /* ── Marquee drag-select rectangle ─────────────────────────────────── */
-.omnia-marquee-select {
+.lykn-chat-marquee-select {
   border: 1.5px solid rgba(59, 130, 246, 0.7);
   background: rgba(59, 130, 246, 0.08);
   border-radius: 3px;
   backdrop-filter: blur(1px);
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.15);
 }
-.dark .omnia-marquee-select {
+.dark .lykn-chat-marquee-select {
   border-color: rgba(96, 165, 250, 0.65);
   background: rgba(96, 165, 250, 0.1);
   box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.18);
@@ -6536,7 +6536,7 @@ mark {
   padding: 1.25rem 1rem;
 }
 
-.lykn-wake-preview-fit .lykn-wake-chat-preview .omnia-neu-chat-field {
+.lykn-wake-preview-fit .lykn-wake-chat-preview .lykn-chat-neu-chat-field {
   font-size: 1rem;
   line-height: 1.35;
 }
@@ -7444,9 +7444,9 @@ mark {
 }
 
 /* Screen-wide one-shot border trace. Same effect as
-   `.omnia-chat-border-run-once::before` on the chat shell, just scaled to
+   `.lykn-chat-chat-border-run-once::before` on the chat shell, just scaled to
    the viewport: a bright electric-blue spot sweeps the perimeter once on
-   mount and fades out. Reuses the existing `--omnia-border-trace`
+   mount and fades out. Reuses the existing `--lykn-chat-border-trace`
    @property declaration (defined further up this file). */
 .lykn-wake-screen-trace {
   position: fixed;
@@ -7461,7 +7461,7 @@ mark {
   inset: 0;
   padding: 3px;
   background: conic-gradient(
-    from var(--omnia-border-trace) at 50% 50%,
+    from var(--lykn-chat-border-trace) at 50% 50%,
     transparent 0deg,
     transparent 300deg,
     rgba(59, 130, 246, 0.18) 320deg,
@@ -7479,8 +7479,8 @@ mark {
     linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);
   mask-composite: exclude;
-  --omnia-border-trace: 0deg;
-  animation: omnia-border-trace 2.8s cubic-bezier(0.35, 0, 0.15, 1) forwards;
+  --lykn-chat-border-trace: 0deg;
+  animation: lykn-chat-border-trace 2.8s cubic-bezier(0.35, 0, 0.15, 1) forwards;
   filter: drop-shadow(0 0 12px rgba(96, 165, 250, 0.55))
           drop-shadow(0 0 28px rgba(59, 130, 246, 0.35));
 }
@@ -7515,9 +7515,9 @@ mark {
 }
 
 /* Slate-blue override of the chat shell for the prototype only. The live
-   .dark .omnia-neu-chat-shell defaults to a near-neutral grey (#343840 →
+   .dark .lykn-chat-neu-chat-shell defaults to a near-neutral grey (#343840 →
    #282c32); on a near-black stage we want a more clearly slate-blue body. */
-.lykn-wake-chat-shell.omnia-neu-chat-shell {
+.lykn-wake-chat-shell.lykn-chat-neu-chat-shell {
   background: linear-gradient(145deg, #2e3a4e, #222b3a);
   border-color: rgba(147, 197, 253, 0.06);
   box-shadow:
@@ -7581,7 +7581,7 @@ mark {
 .lkn-chat-light .lykn-wake-chat-preview-remaining-done { color: rgba(0, 0, 0, 0.42); }
 .lkn-chat-light .lykn-wake-chat-preview-thinking { color: rgba(0, 0, 0, 0.7); }
 
-.lkn-chat-light .omnia-neu-chat-shell {
+.lkn-chat-light .lykn-chat-neu-chat-shell {
   background: linear-gradient(145deg, #f6f6f6, #f0f0f0);
   border-color: rgba(0, 0, 0, 0.05);
   box-shadow:
@@ -7589,22 +7589,22 @@ mark {
     0 2px 6px rgba(0, 0, 0, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
-.lkn-chat-light .omnia-neu-chat-shell textarea { color: #0a0c12 !important; }
-.lkn-chat-light .omnia-neu-chat-shell textarea::placeholder { color: rgba(0, 0, 0, 0.45) !important; }
-.lkn-chat-light .omnia-neu-chat-toolbar-select-trigger { color: rgba(15, 23, 42, 0.78) !important; }
-.lkn-chat-light .omnia-neu-chat-icon-plain svg { color: rgba(15, 23, 42, 0.75) !important; }
+.lkn-chat-light .lykn-chat-neu-chat-shell textarea { color: #0a0c12 !important; }
+.lkn-chat-light .lykn-chat-neu-chat-shell textarea::placeholder { color: rgba(0, 0, 0, 0.45) !important; }
+.lkn-chat-light .lykn-chat-neu-chat-toolbar-select-trigger { color: rgba(15, 23, 42, 0.78) !important; }
+.lkn-chat-light .lykn-chat-neu-chat-icon-plain svg { color: rgba(15, 23, 42, 0.75) !important; }
 
 /* Send button: the landing's `.dark` context flips it to the dark neumorphic
    variant. Restore the light-theme send button (and blue icon) to match the
    rest of the light chat surface. */
-.lkn-chat-light .omnia-neu-chat-send-btn {
+.lkn-chat-light .lykn-chat-neu-chat-send-btn {
   background: linear-gradient(145deg, #fafafa, #f0f0f2);
   border-color: rgba(255, 255, 255, 0.5);
   box-shadow:
     4px 4px 9px rgba(0, 0, 0, 0.05),
     -2px -2px 6px rgba(255, 255, 255, 0.90);
 }
-.lkn-chat-light .omnia-neu-chat-send-btn:hover:not(:disabled) {
+.lkn-chat-light .lykn-chat-neu-chat-send-btn:hover:not(:disabled) {
   background: linear-gradient(145deg, #e8f1fc, #dceaf8);
   border-color: rgba(59, 130, 246, 0.28);
   box-shadow:
@@ -7612,11 +7612,11 @@ mark {
     -2px -2px 6px rgba(255, 255, 255, 0.82),
     0 0 14px rgba(59, 130, 246, 0.14);
 }
-.lkn-chat-light .omnia-neu-chat-send-btn:not(:disabled) svg { color: #2563eb !important; }
+.lkn-chat-light .lykn-chat-neu-chat-send-btn:not(:disabled) svg { color: #2563eb !important; }
 
 /* Send button picks up the same slate-blue family so the toolbar reads
    as one surface. */
-.lykn-wake-chat-shell .omnia-neu-chat-send-btn {
+.lykn-wake-chat-shell .lykn-chat-neu-chat-send-btn {
   background: linear-gradient(145deg, #34405a, #232c40);
   border-color: rgba(147, 197, 253, 0.08);
   box-shadow:
@@ -7624,7 +7624,7 @@ mark {
     -2px -2px 6px rgba(255, 255, 255, 0.02);
 }
 
-.lykn-wake-chat-shell .omnia-neu-chat-send-btn:hover:not(:disabled) {
+.lykn-wake-chat-shell .lykn-chat-neu-chat-send-btn:hover:not(:disabled) {
   background: linear-gradient(145deg, #344a72, #283a5d);
   border-color: rgba(96, 165, 250, 0.4);
   box-shadow:
@@ -7636,7 +7636,7 @@ mark {
 /* Persistent electric-blue ring around the chat shell.
    Sits as a sibling pseudo-element so it doesn't interfere with the
    one-shot conic border trace already provided by
-   .omnia-chat-border-run-once::before. */
+   .lykn-chat-chat-border-run-once::before. */
 .lykn-wake-chat-shell {
   position: relative;
   isolation: isolate;

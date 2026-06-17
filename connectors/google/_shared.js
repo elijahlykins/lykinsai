@@ -25,6 +25,7 @@
 
 import { ConnectorAuthError } from '../../connectors-service.js';
 import { embedAndStoreChunks } from '../../synthesis-service.js';
+import { buildAttachmentColumns } from '../../lib/vault/attachmentType.js';
 
 const G_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const G_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -220,12 +221,16 @@ export async function saveGoogleNote({
     ? [title, '', attachmentsLine, '\n' + body].join('\n').trim()
     : `${title}\n\n${attachmentsLine}`;
 
+  // Dual-write the normalized attachment columns (migration 104) alongside
+  // the marker.
+  const attachmentColumns = buildAttachmentColumns(attachment);
+
   // Find an existing row for this URL. We key on a substring scan
   // because the bookmark JSON always embeds the canonical URL and
   // those URLs are stable across edits (Gmail message id, Calendar
   // event id, Drive file id, etc.).
   const { data: existingRows } = await supabaseAdmin
-    .from('notes')
+    .from('vault_items')
     .select('id, content')
     .eq('user_id', userId)
     .ilike('content', `%${url}%`)
@@ -245,7 +250,7 @@ export async function saveGoogleNote({
       mode = 'skipped';
     } else {
       const { error: updErr } = await supabaseAdmin
-        .from('notes')
+        .from('vault_items')
         .update({
           title,
           content: noteContent,
@@ -261,6 +266,7 @@ export async function saveGoogleNote({
           source,
           tags,
           updated_at: new Date().toISOString(),
+          ...attachmentColumns,
         })
         .eq('id', existing.id)
         .eq('user_id', userId);
@@ -271,7 +277,7 @@ export async function saveGoogleNote({
     }
   } else {
     const { data: inserted, error: insErr } = await supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .insert({
         user_id: userId,
         title,
@@ -279,6 +285,7 @@ export async function saveGoogleNote({
         source,
         tags,
         created_at: createdAt,
+        ...attachmentColumns,
       })
       .select('id')
       .single();
@@ -286,7 +293,7 @@ export async function saveGoogleNote({
       // Fallback: caps trigger / column error → degrade to a minimal
       // insert with no source/tags so the user at least sees the row.
       const { data: insFallback, error: err2 } = await supabaseAdmin
-        .from('notes')
+        .from('vault_items')
         .insert({ user_id: userId, title, content: noteContent })
         .select('id')
         .single();

@@ -5,7 +5,7 @@ export type MessageRating = "like" | "dislike" | null;
 export interface MessageFeedbackPayload {
   messageId: string;
   rating: MessageRating;
-  boardId?: string | null;
+  chatId?: string | null;
   model?: string | null;
   prompt?: string | null;
   response?: string | null;
@@ -26,7 +26,7 @@ export async function persistMessageFeedback(payload: MessageFeedbackPayload): P
       body: JSON.stringify({
         messageId,
         rating: payload.rating,
-        boardId: payload.boardId ?? null,
+        chatId: payload.chatId ?? null,
         model: payload.model ?? null,
         prompt: payload.prompt ?? null,
         response: payload.response ?? null,

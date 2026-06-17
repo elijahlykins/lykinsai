@@ -13,11 +13,11 @@ export type SubModelTask = {
 };
 
 type UseSubModelTasksOptions = {
-  boardId?: string | null;
+  chatId?: string | null;
   enabled?: boolean;
 };
 
-export function useSubModelTasks({ boardId = null, enabled = true }: UseSubModelTasksOptions = {}) {
+export function useSubModelTasks({ chatId = null, enabled = true }: UseSubModelTasksOptions = {}) {
   const [tasks, setTasks] = useState<SubModelTask[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
 
@@ -25,13 +25,13 @@ export function useSubModelTasks({ boardId = null, enabled = true }: UseSubModel
     let q = supabase
       .from("lykn_sub_model_tasks")
       .select(
-        "id, sub_model_name, task_instruction, status, report, error_message, created_at, completed_at, board_id",
+        "id, sub_model_name, task_instruction, status, report, error_message, created_at, completed_at, chat_id",
       )
       .eq("user_id", uid)
       .order("created_at", { ascending: false })
       .limit(24);
 
-    if (boardId) q = q.eq("board_id", boardId);
+    if (chatId) q = q.eq("chat_id", chatId);
 
     const { data, error } = await q;
     if (error) {
@@ -39,7 +39,7 @@ export function useSubModelTasks({ boardId = null, enabled = true }: UseSubModel
       return;
     }
     setTasks((data || []) as SubModelTask[]);
-  }, [boardId]);
+  }, [chatId]);
 
   useEffect(() => {
     if (!enabled) {
@@ -58,7 +58,7 @@ export function useSubModelTasks({ boardId = null, enabled = true }: UseSubModel
       await loadTasks(uid);
 
       channel = supabase
-        .channel(`sub-model-tasks:${uid}:${boardId || "all"}`)
+        .channel(`sub-model-tasks:${uid}:${chatId || "all"}`)
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "lykn_sub_model_tasks", filter: `user_id=eq.${uid}` },
@@ -73,7 +73,7 @@ export function useSubModelTasks({ boardId = null, enabled = true }: UseSubModel
       cancelled = true;
       if (channel) void supabase.removeChannel(channel);
     };
-  }, [enabled, boardId, loadTasks]);
+  }, [enabled, chatId, loadTasks]);
 
   const active = tasks.filter((t) => t.status === "pending" || t.status === "running");
   const recentCompleted = tasks.filter((t) => {

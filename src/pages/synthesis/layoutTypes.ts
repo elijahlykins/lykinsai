@@ -11,7 +11,7 @@
 export type NodeKind =
   | "root"
   | "category"
-  | "grid"
+  | "chat"
   | "vault"
   | "tag"
   | "neuron"

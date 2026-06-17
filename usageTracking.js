@@ -204,16 +204,16 @@ function estimateTokens(text) {
 
 // ─── Session Management ──────────────────────────────────────────────────────
 
-async function getOrCreateSession(userId, boardId) {
+async function getOrCreateSession(userId, chatId) {
   if (!userId) return null;
 
   const cutoff = new Date(Date.now() - SESSION_TIMEOUT_MS).toISOString();
 
   // Look for active session (same user + board, not ended, active within 30 min)
   let query = `user_id=eq.${userId}&ended_at=is.null&last_activity_at=gte.${cutoff}&order=last_activity_at.desc&limit=1`;
-  if (boardId) query += `&board_id=eq.${boardId}`;
+  if (chatId) query += `&chat_id=eq.${chatId}`;
 
-  const existing = await supabaseAdmin('GET', 'sessions', { query });
+  const existing = await supabaseAdmin('GET', 'usage_sessions', { query });
 
   if (existing && existing.length > 0) {
     return existing[0];
@@ -221,9 +221,9 @@ async function getOrCreateSession(userId, boardId) {
 
   // Create new session
   const newSession = { user_id: userId };
-  if (boardId) newSession.board_id = boardId;
+  if (chatId) newSession.chat_id = chatId;
 
-  const created = await supabaseAdmin('POST', 'sessions', { body: newSession });
+  const created = await supabaseAdmin('POST', 'usage_sessions', { body: newSession });
   return created?.[0] || null;
 }
 
@@ -231,13 +231,13 @@ async function updateSessionTotalsLegacy(sessionId, { cost, tokens, credits }) {
   if (!sessionId) return;
 
   // Pre-072 fallback: read current totals then PATCH (two round trips).
-  const rows = await supabaseAdmin('GET', 'sessions', {
+  const rows = await supabaseAdmin('GET', 'usage_sessions', {
     query: `id=eq.${sessionId}&select=total_cost,total_tokens,total_credits`,
   });
   if (!rows || !rows[0]) return;
 
   const current = rows[0];
-  await supabaseAdmin('PATCH', 'sessions', {
+  await supabaseAdmin('PATCH', 'usage_sessions', {
     query: `id=eq.${sessionId}`,
     body: {
       total_cost: parseFloat(current.total_cost || 0) + (cost || 0),
@@ -378,7 +378,7 @@ let cleanupTimer = null;
 
 async function endExpiredSessions() {
   const cutoff = new Date(Date.now() - SESSION_TIMEOUT_MS).toISOString();
-  await supabaseAdmin('PATCH', 'sessions', {
+  await supabaseAdmin('PATCH', 'usage_sessions', {
     query: `ended_at=is.null&last_activity_at=lt.${cutoff}`,
     body: { ended_at: new Date().toISOString() },
   });
@@ -438,14 +438,14 @@ async function getUserMonthlyUsage(userId) {
 }
 
 async function getUserSessions(userId, limit = 20) {
-  const sessions = await supabaseAdmin('GET', 'sessions', {
-    query: `user_id=eq.${userId}&order=started_at.desc&limit=${limit}&select=id,board_id,started_at,last_activity_at,ended_at,total_cost,total_tokens,total_credits`,
+  const sessions = await supabaseAdmin('GET', 'usage_sessions', {
+    query: `user_id=eq.${userId}&order=started_at.desc&limit=${limit}&select=id,chat_id,started_at,last_activity_at,ended_at,total_cost,total_tokens,total_credits`,
   });
   return sessions || [];
 }
 
 async function getSessionWithLogs(sessionId, userId) {
-  const sessions = await supabaseAdmin('GET', 'sessions', {
+  const sessions = await supabaseAdmin('GET', 'usage_sessions', {
     query: `id=eq.${sessionId}&user_id=eq.${userId}`,
   });
   if (!sessions || !sessions.length) return null;

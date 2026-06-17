@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   cacheBustReload,
-  clearOmniaLocalStorage,
+  clearLyknChatLocalStorage,
   isLikelyStaleBundleError,
   reportClientError,
 } from '@/lib/errorRecovery';
@@ -65,7 +65,7 @@ class ErrorBoundary extends React.Component {
     }
 
     if (this.state.recoveryAttempts < MAX_SILENT_RECOVERIES) {
-      const cleared = clearOmniaLocalStorage();
+      const cleared = clearLyknChatLocalStorage();
       if (import.meta.env.DEV) console.warn(`[ErrorBoundary] Cleared ${cleared} cached keys — attempting silent recovery`);
       this.setState((prev) => ({
         errorInfo,
@@ -138,13 +138,13 @@ class ErrorBoundary extends React.Component {
     };
 
     const handleClearAndRetry = () => {
-      clearOmniaLocalStorage();
+      clearLyknChatLocalStorage();
       try { sessionStorage.removeItem('lykn_root_boundary_stale_reload_done'); } catch { /* ignore */ }
       cacheBustReload();
     };
 
     const handleHardRefresh = () => {
-      clearOmniaLocalStorage();
+      clearLyknChatLocalStorage();
       cacheBustReload();
     };
 

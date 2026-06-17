@@ -28,7 +28,7 @@ import { supabase } from "@/lib/supabase";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import ChatThreadSidebarGroups from "@/components/chat/ChatThreadSidebarGroups";
-import { fetchBoardsWithContext, invalidateBoardListQueries } from "@/lib/board/fetchBoardsWithContext";
+import { fetchLyknChatsWithContext, invalidateLyknChatListQueries } from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { fetchPublishedCustomModels } from "@/lib/modelBuilder/customModelsClient";
 import ChatModelFilterSelect from "@/components/chat/ChatModelFilterSelect";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -66,17 +66,17 @@ export default function AppSidebar({
   // callsite replacements `goTo(...)` stay simple.)
   const goTo = (path) => {
     if (lockedDestination && path !== lockedDestination) return;
-    window.dispatchEvent(new Event("omnia_flush_save"));
+    window.dispatchEvent(new Event("lyknchat_flush_save"));
     setTimeout(() => nav(path), 80);
   };
 
   const handleNewChat = async () => {
     if (!user?.id) return;
     try {
-      const { boardId } = await createNewChat(user.id);
-      addOpenThread(boardId);
-      invalidateBoardListQueries(queryClient, user.id);
-      goTo(`/grid/${boardId}`);
+      const { chatId } = await createNewChat(user.id);
+      addOpenThread(chatId);
+      invalidateLyknChatListQueries(queryClient, user.id);
+      goTo(`/chat/${chatId}`);
     } catch {
       /* ignore */
     }
@@ -95,7 +95,7 @@ export default function AppSidebar({
   };
 
   const queryClient = useQueryClient();
-  const [menuBoardId, setMenuBoardId] = useState(null);
+  const [menuChatId, setMenuChatId] = useState(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
@@ -110,7 +110,7 @@ export default function AppSidebar({
     queryKey: ["boards", user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
-      return fetchBoardsWithContext(user.id, 50);
+      return fetchLyknChatsWithContext(user.id, 50);
     },
     enabled: !!user?.id,
   });
@@ -128,18 +128,18 @@ export default function AppSidebar({
   const normalizedQuery = searchQuery.trim();
 
   useEffect(() => {
-    const onBoardsChanged = () => invalidateBoardListQueries(queryClient, user?.id);
+    const onBoardsChanged = () => invalidateLyknChatListQueries(queryClient, user?.id);
     const onModelsChanged = () => {
       queryClient.invalidateQueries({ queryKey: ["published-custom-models", user?.id] });
     };
     const onOpenCalendar = () => { setCalendarPanel("calendar"); setCalendarOpen(true); };
     const onOpenTodos = () => { setCalendarPanel("todos"); setCalendarOpen(true); };
-    window.addEventListener("lykinsai_boards_changed", onBoardsChanged);
+    window.addEventListener("lykinsai_chats_changed", onBoardsChanged);
     window.addEventListener("lykn_custom_models_changed", onModelsChanged);
     window.addEventListener("lykn_open_calendar", onOpenCalendar);
     window.addEventListener("lykn_open_todos", onOpenTodos);
     return () => {
-      window.removeEventListener("lykinsai_boards_changed", onBoardsChanged);
+      window.removeEventListener("lykinsai_chats_changed", onBoardsChanged);
       window.removeEventListener("lykn_custom_models_changed", onModelsChanged);
       window.removeEventListener("lykn_open_calendar", onOpenCalendar);
       window.removeEventListener("lykn_open_todos", onOpenTodos);
@@ -166,15 +166,15 @@ export default function AppSidebar({
   }, [open]);
 
   useEffect(() => {
-    if (!menuBoardId) return;
+    if (!menuChatId) return;
     const onClick = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setMenuBoardId(null);
+        setMenuChatId(null);
       }
     };
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
-  }, [menuBoardId]);
+  }, [menuChatId]);
 
   useEffect(() => {
     if (!userMenuOpen) return;
@@ -187,31 +187,31 @@ export default function AppSidebar({
 
   useEffect(() => { setUserMenuOpen(false); }, [open]);
 
-  const deleteBoard = async (boardId) => {
+  const deleteBoard = async (chatId) => {
     if (!user?.id) return;
     if (!window.confirm("Delete this chat? This cannot be undone.")) return;
-    await supabase.from("omnia_board_states").delete().eq("board_id", boardId);
-    await supabase.from("omnia_boards").delete().eq("id", boardId).eq("user_id", user.id);
-    setMenuBoardId(null);
-    if (localStorage.getItem("omnia_board_id") === boardId) localStorage.removeItem("omnia_board_id");
-    window.dispatchEvent(new Event("lykinsai_boards_changed"));
-    if (location.pathname === `/grid/${boardId}`) nav("/app");
+    await supabase.from("lykn_chat_states").delete().eq("chat_id", chatId);
+    await supabase.from("lykn_chats").delete().eq("id", chatId).eq("user_id", user.id);
+    setMenuChatId(null);
+    if (localStorage.getItem("lyknchat_active_id") === chatId) localStorage.removeItem("lyknchat_active_id");
+    window.dispatchEvent(new Event("lykinsai_chats_changed"));
+    if (location.pathname === `/chat/${chatId}`) nav("/app");
   };
 
-  const renameBoard = async (boardId) => {
+  const renameBoard = async (chatId) => {
     if (!user?.id) return;
-    const board = boards.find((b) => b.id === boardId);
+    const board = boards.find((b) => b.id === chatId);
     const currentTitle = board?.title || "New Chat";
     const next = window.prompt("Rename chat", currentTitle);
     if (next === null) return;
     const name = next.trim() || "New Chat";
     await supabase
-      .from("omnia_boards")
+      .from("lykn_chats")
       .update({ title: name, updated_at: new Date().toISOString() })
-      .eq("id", boardId)
+      .eq("id", chatId)
       .eq("user_id", user.id);
-    setMenuBoardId(null);
-    window.dispatchEvent(new Event("lykinsai_boards_changed"));
+    setMenuChatId(null);
+    window.dispatchEvent(new Event("lykinsai_chats_changed"));
   };
 
   const userMenuItems = (
@@ -326,7 +326,7 @@ export default function AppSidebar({
             type="button"
             onClick={() => goTo("/app")}
             className={`w-9 h-9 rounded-lg hover:bg-blue-500/15 transition-colors flex items-center justify-center ${
-              location.pathname === "/app" || location.pathname.startsWith("/grid/") ? "bg-blue-500/10" : ""
+              location.pathname === "/app" || location.pathname.startsWith("/chat/") ? "bg-blue-500/10" : ""
             }`}
             title="Chat"
           >
@@ -441,7 +441,7 @@ export default function AppSidebar({
               type="button"
               onClick={() => goTo("/app")}
               className={`w-full text-left text-[0.6875rem] px-2.5 py-1 rounded-md hover:bg-blue-500/15 transition-colors flex items-center gap-2 ${
-                location.pathname === "/app" || location.pathname.startsWith("/grid/") ? "bg-blue-500/10" : ""
+                location.pathname === "/app" || location.pathname.startsWith("/chat/") ? "bg-blue-500/10" : ""
               }`}
             >
               <MessageCircle className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
@@ -498,12 +498,12 @@ export default function AppSidebar({
               userId={user?.id}
               modelFilter={modelFilter}
               searchQuery={normalizedQuery}
-              onOpenChat={(boardId) => {
-                addOpenThread(boardId);
-                goTo(`/grid/${boardId}`);
+              onOpenChat={(chatId) => {
+                addOpenThread(chatId);
+                goTo(`/chat/${chatId}`);
               }}
-              menuBoardId={menuBoardId}
-              onMenuBoardId={setMenuBoardId}
+              menuChatId={menuChatId}
+              onMenuChatId={setMenuChatId}
               onMenuPos={setMenuPos}
             />
           </div>
@@ -545,7 +545,7 @@ export default function AppSidebar({
 
       <LyknCalendarDialog open={calendarOpen} onOpenChange={setCalendarOpen} initialPanel={calendarPanel} />
 
-      {menuBoardId && ReactDOM.createPortal(
+      {menuChatId && ReactDOM.createPortal(
         <div
           ref={menuRef}
           className="fixed z-[9999] w-44 rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 text-[0.6875rem] text-black/85 dark:text-white/90"
@@ -554,7 +554,7 @@ export default function AppSidebar({
           <button
             type="button"
             className="w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
-            onClick={() => renameBoard(menuBoardId)}
+            onClick={() => renameBoard(menuChatId)}
           >
             <Edit2 className="w-3 h-3 text-black/50 dark:text-white/50" />
             Rename
@@ -562,7 +562,7 @@ export default function AppSidebar({
           <button
             type="button"
             className="w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-red-500/10 text-red-600 dark:text-red-400 transition-colors"
-            onClick={() => deleteBoard(menuBoardId)}
+            onClick={() => deleteBoard(menuChatId)}
           >
             <Trash2 className="w-3 h-3" />
             Delete chat

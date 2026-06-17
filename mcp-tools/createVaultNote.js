@@ -29,6 +29,7 @@
 //   ones. The activity feed already groups notes by source.
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
+import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
 
 const TITLE_MAX = 200;
 const CONTENT_MAX = 60000;           // Generous; vault notes can hold articles.
@@ -144,13 +145,30 @@ export const createVaultNoteTool = {
       tags: tags.length > 0 ? tags : null,
       folder,
       source,
+      // Plain note, no attachment -> att_type 'note' (rest null).
+      ...buildAttachmentColumns(null),
     };
 
-    const { data, error } = await ctx.supabaseAdmin
-      .from('notes')
+    const selectCols = 'id, title, content, tags, folder, created_at, updated_at';
+    let { data, error } = await ctx.supabaseAdmin
+      .from('vault_items')
       .insert(row)
-      .select('id, title, content, tags, folder, created_at, updated_at')
+      .select(selectCols)
       .single();
+
+    // att_type column ships in migration 104; retry without it on older DBs.
+    const missingColumn =
+      error &&
+      (error.code === 'PGRST204' ||
+        /could not find/i.test(error.message || '') ||
+        /does not exist/i.test(error.message || ''));
+    if (missingColumn) {
+      ({ data, error } = await ctx.supabaseAdmin
+        .from('vault_items')
+        .insert({ user_id: ctx.userId, title, content, tags: tags.length > 0 ? tags : null, folder, source })
+        .select(selectCols)
+        .single());
+    }
     if (error) {
       console.warn('[mcp:createVaultNote]', error.message);
       return errorContent(`vault note insert failed: ${error.message}`);

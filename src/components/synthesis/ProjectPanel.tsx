@@ -70,7 +70,7 @@ function kindLabel(kind: string | null): string {
   if (kind === "concept") return "Concept";
   if (kind === "vault") return "Note";
   if (kind === "perspective") return "Perspective";
-  if (kind === "grid") return "Chat";
+  if (kind === "chat") return "Chat";
   if (kind === "tag") return "Tag";
   if (kind === "neuron") return "Fact";
   return "Neuron";

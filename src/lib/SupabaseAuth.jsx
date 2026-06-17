@@ -1,6 +1,6 @@
 import { useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { clearPrototypeState } from '@/lib/prototypeHandoff';
+import { clearPrototypeState } from '@/lib/landingHandoff';
 import { AuthContext } from '@/lib/authContext';
 import {
   startVaultDescriptionBackfill,

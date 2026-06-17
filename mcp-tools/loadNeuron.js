@@ -269,7 +269,7 @@ export async function loadNeuronById(nodeIdRaw, ctx, options = {}) {
   if (nodeIdRaw.startsWith('vault_')) {
     const id = nodeIdRaw.slice('vault_'.length);
     const { data, error } = await ctx.supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .select('id, title, content, tags, folder, source, created_at, updated_at')
       .eq('user_id', ctx.userId)
       .eq('id', id)

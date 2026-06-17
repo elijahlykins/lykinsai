@@ -207,16 +207,16 @@ const PROBES = [
   },
 
   // ------------------------------------------------------------------ //
-  // 5. Negative-control probe: omnia_shared_board_record_view IS       //
+  // 5. Negative-control probe: lykn_chat_share_record_view IS       //
   //    anon-callable on purpose (the public /s/<token> share viewer    //
   //    hits it). If THIS probe ever flips to "denied", we accidentally //
   //    broke public board sharing. So we assert it returns 2xx with a  //
   //    bogus token (the function tolerates unknown tokens silently).   //
   // ------------------------------------------------------------------ //
   {
-    name: 'omnia_shared_board_record_view (anon-allowed control)',
+    name: 'lykn_chat_share_record_view (anon-allowed control)',
     kind: 'rpc',
-    target: 'omnia_shared_board_record_view',
+    target: 'lykn_chat_share_record_view',
     body: { p_token: '__probe_no_such_token__' },
     expect: 'allowed',
     why: 'Public share-link view counter. MUST stay anon-callable.',

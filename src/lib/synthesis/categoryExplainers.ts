@@ -1,7 +1,7 @@
 /** Copy for synthesis-layer category cluster nodes (Chats, Vault, …). */
 export const SYNTHESIS_CATEGORY_WHY: Record<string, string> = {
-  __cat_grids__:
-    "Chats capture conversation history and the context behind it. Every board you talk on lives here and feeds your synthesis layer as you work.",
+  __cat_chats__:
+    "Chats capture conversation history and the context behind it. Every chat you have lives here and feeds your synthesis layer as you work.",
   __cat_vault__:
     "Vault links files to the meanings LYKN extracts from them. Uploads, notes, and links become raw material your digital brain can reason over.",
   __cat_belief__:

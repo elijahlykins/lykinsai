@@ -379,7 +379,7 @@ export const AI_SURFACES = [
     id: "name_chat",
     name: "Auto-name chat",
     description:
-      "Picks a 2-5 word title for a chat from the first user message + assistant reply, then writes it through to omnia_boards.title server-side.",
+      "Picks a 2-5 word title for a chat from the first user message + assistant reply, then writes it through to lykn_chats.title server-side.",
     endpoint: "POST /api/ai/name-chat",
     file: "server.js",
     lineRange: "~10950-11073",

@@ -3,11 +3,11 @@ import type { NavigateFunction } from "react-router-dom";
 /**
  * Navigate away from the chat grid WITHOUT losing the active conversation.
  *
- * The grid chat lives in `OmniaGrid`'s React state and is only persisted via
+ * The grid chat lives in `LyknChat`'s React state and is only persisted via
  * a debounced save. Navigating straight to another route unmounts the grid
  * before that debounce fires, so the board's `updated_at` never gets bumped
  * and the conversation can come back empty (or resolve to a different board)
- * on return. Firing `omnia_flush_save` makes `useBoardPersistence` write the
+ * on return. Firing `lyknchat_flush_save` makes `useLyknChatPersistence` write the
  * local draft synchronously + kick the DB save before we leave, mirroring the
  * sidebar/mobile-tab navigation path.
  *
@@ -16,7 +16,7 @@ import type { NavigateFunction } from "react-router-dom";
  */
 export function flushAndNavigate(navigate: NavigateFunction, path: string): void {
   try {
-    window.dispatchEvent(new Event("omnia_flush_save"));
+    window.dispatchEvent(new Event("lyknchat_flush_save"));
   } catch {
     /* SSR / no window — fall through to navigate */
   }

@@ -2,6 +2,8 @@ import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { uploadFileToStorage } from "@/lib/vault/uploadFileToStorage";
+import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
+import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
 
 export const VOICE_NOTE_MIN_BYTES = 2000;
 
@@ -79,19 +81,23 @@ async function insertVoiceNoteRow(
   title: string,
   content: string,
 ): Promise<{ note: Record<string, unknown> } | { error: string }> {
+  const primaryAttachment = parseAttachmentsFromContent(content)[0] as
+    | Record<string, unknown>
+    | undefined;
   const richInsert = {
     user_id: userId,
     title,
     content,
     source: "voice_note",
     tags: ["voice"],
+    ...buildAttachmentColumns(primaryAttachment),
   };
 
   let insertedNote: Record<string, unknown> | null = null;
   let noteError: { message?: string; code?: string } | null = null;
 
   ({ data: insertedNote, error: noteError } = await supabase
-    .from("notes")
+    .from("vault_items")
     .insert(richInsert)
     .select("id, title, content, tags, created_at, updated_at")
     .single());
@@ -106,7 +112,7 @@ async function insertVoiceNoteRow(
 
   if (missingColumnError) {
     ({ data: insertedNote, error: noteError } = await supabase
-      .from("notes")
+      .from("vault_items")
       .insert({ user_id: userId, title, content })
       .select("id, title, content, created_at, updated_at")
       .single());

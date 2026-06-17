@@ -19,6 +19,7 @@
 
 import fetch from 'node-fetch';
 import { embedAndPersistFact } from './factEmbedding.js';
+import { stripAttachmentsMarker } from './lib/vault/attachmentsMarker.js';
 
 // ---------------------------------------------------------------------------
 // Provenance helpers (see migration 047)
@@ -142,7 +143,7 @@ export async function collectLearningEvidence(client, userId) {
 async function fetchRecentVaultNotes(client, userId) {
   try {
     const { data, error } = await client
-      .from('notes')
+      .from('vault_items')
       .select('id, title, content, ai_summary, ai_signals, tags, updated_at')
       .eq('user_id', userId)
       .order('updated_at', { ascending: false })
@@ -169,7 +170,7 @@ async function fetchRecentVaultNotes(client, userId) {
 async function fetchRecentGridBoards(client, userId) {
   try {
     const { data, error } = await client
-      .from('omnia_boards')
+      .from('lykn_chats')
       .select('id, title, project_id, updated_at')
       .eq('user_id', userId)
       .order('updated_at', { ascending: false })
@@ -179,22 +180,22 @@ async function fetchRecentGridBoards(client, userId) {
       return [];
     }
     if (!data?.length) return [];
-    // Fetch the most recent board_states content for each so the LLM has
-    // something concrete to read, not just titles. board_states is one row
-    // per board (post migration 016) so this is bounded.
-    const boardIds = data.map((b) => b.id);
+    // Fetch the most recent chat state for each so the LLM has something
+    // concrete to read, not just titles. lykn_chat_states is one row per chat
+    // (post migration 016) so this is bounded.
+    const chatIds = data.map((b) => b.id);
     const { data: states } = await client
-      .from('board_states')
-      .select('board_id, content, updated_at')
-      .in('board_id', boardIds);
+      .from('lykn_chat_states')
+      .select('chat_id, state, updated_at')
+      .in('chat_id', chatIds);
     const stateMap = new Map();
     for (const s of states || []) {
-      if (!s?.board_id) continue;
-      stateMap.set(String(s.board_id), s);
+      if (!s?.chat_id) continue;
+      stateMap.set(String(s.chat_id), s);
     }
     return data.map((b) => {
       const state = stateMap.get(String(b.id));
-      const text = state ? snapshotToText(state.content) : '';
+      const text = state ? snapshotToText(state.state) : '';
       return {
         id: b.id,
         title: String(b.title || '').trim().slice(0, 200),
@@ -267,10 +268,12 @@ function extractThemesFromSignals(sig) {
 function safeJson(s) { try { return JSON.parse(s); } catch { return null; } }
 
 function stripAttachmentMarker(raw) {
-  return String(raw || '').replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, '').trim();
+  // Span-aware strip (preserves connector body after the marker) instead of
+  // the old "delete to EOF" regex. See lib/vault/attachmentsMarker.js.
+  return stripAttachmentsMarker(String(raw || '')).trim();
 }
 
-/** Flatten a board_states.content snapshot into linear text for LLM consumption. */
+/** Flatten a lykn_chat_states.state snapshot into linear text for LLM consumption. */
 function snapshotToText(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return '';
   const blocks = snapshot.blocks || {};

@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { detectSocialPlatform, getSocialEmbedLabel } from "@/lib/media/socialEmbed";
+import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { describeVaultItemInBackground } from "@/lib/vault/describeVaultItem";
 import {
@@ -142,7 +143,7 @@ export async function saveFileToVault(
     // ── DB dedup: check if a vault note for this file already exists ──
     const searchTerm = storagePath || filename;
     const { data: existing } = await supabase
-      .from("notes")
+      .from("vault_items")
       .select("id")
       .eq("user_id", userId)
       .ilike("content", buildLikePattern(searchTerm))
@@ -197,12 +198,13 @@ export async function saveFileToVault(
       content: noteContent,
       source: "project_upload",
       tags,
+      ...buildAttachmentColumns(attachmentPayload[0]),
     };
 
     let noteError: any = null;
     let insertedNote: any = null;
     ({ data: insertedNote, error: noteError } = await supabase
-      .from("notes")
+      .from("vault_items")
       .insert(richInsert)
       .select("id, title, content, created_at, updated_at")
       .single());
@@ -215,7 +217,7 @@ export async function saveFileToVault(
 
     if (missingColumnError) {
       ({ data: insertedNote, error: noteError } = await supabase
-        .from("notes")
+        .from("vault_items")
         .insert({ user_id: userId, title: noteTitle, content: noteContent })
         .select("id, title, content, created_at, updated_at")
         .single());
@@ -290,7 +292,7 @@ export async function saveLinkToVault(
 
     // ── DB dedup: check if a vault note for this URL already exists ──
     const { data: existing } = await supabase
-      .from("notes")
+      .from("vault_items")
       .select("id")
       .eq("user_id", userId)
       .ilike("content", buildLikePattern(url))
@@ -425,12 +427,13 @@ export async function saveLinkToVault(
       content: noteContent,
       source: isYouTube ? "youtube_drop" : socialPlatform ? `${socialPlatform}_drop` : "link_drop",
       tags,
+      ...buildAttachmentColumns(attachmentPayload[0]),
     };
 
     let noteError: any = null;
     let insertedNote: any = null;
     ({ data: insertedNote, error: noteError } = await supabase
-      .from("notes")
+      .from("vault_items")
       .insert(richInsert)
       .select("id, title, content, created_at, updated_at")
       .single());
@@ -443,7 +446,7 @@ export async function saveLinkToVault(
 
     if (missingColumnError) {
       ({ data: insertedNote, error: noteError } = await supabase
-        .from("notes")
+        .from("vault_items")
         .insert({ user_id: userId, title: noteTitle, content: noteContent })
         .select("id, title, content, created_at, updated_at")
         .single());

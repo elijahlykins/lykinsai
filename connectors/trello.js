@@ -141,7 +141,7 @@ export const trelloAdapter = {
       },
       metadata: {
         // Per-board cursors so we don't re-import already-seen cards.
-        // Shape: { [boardId]: latestCardDateLastActivity ISO }
+        // Shape: { [chatId]: latestCardDateLastActivity ISO }
         board_cursors: {},
       },
     };

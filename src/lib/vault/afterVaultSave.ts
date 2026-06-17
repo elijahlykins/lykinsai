@@ -16,21 +16,21 @@ const ENRICH_DEBOUNCE_MS = 4000;
  * - queues semantic reindex for this note
  * - debounced server enrich (summary + signals + stronger embeddings)
  *
- * @param workspaceOpts.excludeBoardId — same board id you pass to `fetchWorkspaceSummaries` so "OTHER BOARDS"
+ * @param workspaceOpts.excludeChatId — same board id you pass to `fetchWorkspaceSummaries` so "OTHER BOARDS"
  *   stays correct; omit when unknown (e.g. background file save).
  */
 export function afterVaultNoteSaved(
   userId: string,
   noteId: string,
   opts: { title: string; content: string; extraPlain?: string; bulkImport?: boolean },
-  workspaceOpts?: { excludeBoardId?: string | null },
+  workspaceOpts?: { excludeChatId?: string | null },
 ): void {
   if (!userId || !noteId) return;
   const bulkImport = !!opts.bulkImport;
 
   if (!bulkImport) {
     invalidateWorkspaceSummaryCache(userId);
-    const ex = workspaceOpts?.excludeBoardId ?? undefined;
+    const ex = workspaceOpts?.excludeChatId ?? undefined;
     void useAiStore.getState().refreshWorkspaceSummary(userId, ex, { force: true });
     scheduleUserProfileRefresh(userId);
   }

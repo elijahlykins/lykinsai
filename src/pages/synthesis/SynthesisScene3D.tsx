@@ -43,7 +43,7 @@ export interface Scene3DNode {
   kind:
     | "root"
     | "category"
-    | "grid"
+    | "chat"
     | "vault"
     | "tag"
     | "neuron"
@@ -316,7 +316,7 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
       case "belief":   return { emissive: 3.6, pulse: true };
       case "root":     return { emissive: 2.2, pulse: true };
       case "category": return { emissive: 1.6, pulse: false };
-      case "grid":     return { emissive: 1.2, pulse: false };
+      case "chat":     return { emissive: 1.2, pulse: false };
       case "vault":    return { emissive: 1.0, pulse: false };
       case "tag":      return { emissive: 0.9, pulse: false };
       // Perspectives are first-class user-authored neurons — emit
@@ -1149,7 +1149,7 @@ export default function SynthesisScene3D(props: Props) {
   // WebGL context loss + recovery. The browser fires `webglcontextlost` when
   // the GPU resets (driver hiccup, alt-tabbing for too long with the page
   // throttled, GPU memory pressure from too many simultaneous WebGL contexts
-  // — this page also runs the OmniaGrid canvas + bloom postprocess, so we're
+  // — this page also runs the LyknChat canvas + bloom postprocess, so we're
   // not dirt-cheap). Three.js's WebGLRenderer attaches its own listener that
   // calls preventDefault and logs "Context Lost.", but on some Windows GPU
   // drivers the browser never automatically restores even when our scene is

@@ -63,20 +63,20 @@ const BOARDS_TO_SCAN = 8;
 const MESSAGES_PER_BOARD = 6;
 
 interface BoardChatRow {
-  board_id: string;
+  chat_id: string;
   state: any;
   updated_at: string;
-  omnia_boards: { title: string } | null;
+  lykn_chats: { title: string } | null;
 }
 
 async function loadFromBoardStates(
   userId: string,
-  excludeBoardId?: string | null
+  excludeChatId?: string | null
 ): Promise<MemoryEntry[]> {
   try {
     const { data, error } = await supabase
-      .from("omnia_board_states")
-      .select("board_id, state, updated_at, omnia_boards(title)")
+      .from("lykn_chat_states")
+      .select("chat_id, state, updated_at, lykn_chats(title)")
       .eq("user_id", userId)
       .order("updated_at", { ascending: false })
       .limit(BOARDS_TO_SCAN);
@@ -85,11 +85,11 @@ async function loadFromBoardStates(
 
     const entries: MemoryEntry[] = [];
     for (const row of data as BoardChatRow[]) {
-      if (excludeBoardId && row.board_id === excludeBoardId) continue;
+      if (excludeChatId && row.chat_id === excludeChatId) continue;
       const state = row.state;
       if (!state) continue;
 
-      const title = (row.omnia_boards as any)?.title || "New Chat";
+      const title = (row.lykn_chats as any)?.title || "New Chat";
       const chatMsgs: any[] = Array.isArray(state.chatMessages) ? state.chatMessages : [];
       if (!chatMsgs.length) continue;
 
@@ -108,9 +108,9 @@ async function loadFromBoardStates(
       const recent = pairs.slice(-MESSAGES_PER_BOARD);
       for (const p of recent) {
         entries.push({
-          id: `board-${row.board_id}-${entries.length}`,
-          surface: "grid",
-          surface_id: row.board_id,
+          id: `chat-${row.chat_id}-${entries.length}`,
+          surface: "chat",
+          surface_id: row.chat_id,
           surface_title: title,
           user_message: p.user,
           assistant_message: p.assistant,
@@ -149,10 +149,10 @@ async function loadFromMemoryTable(userId: string): Promise<MemoryEntry[]> {
 // ---------------------------------------------------------------------------
 async function loadAllMemory(
   userId: string,
-  excludeBoardId?: string | null
+  excludeChatId?: string | null
 ): Promise<MemoryEntry[]> {
   const [boardEntries, tableEntries] = await Promise.all([
-    loadFromBoardStates(userId, excludeBoardId),
+    loadFromBoardStates(userId, excludeChatId),
     loadFromMemoryTable(userId),
   ]);
 
@@ -217,24 +217,24 @@ function surfaceLabel(e: MemoryEntry): string {
 // ---------------------------------------------------------------------------
 // In-memory cache so we don't re-fetch on every message
 // ---------------------------------------------------------------------------
-let _cache: { userId: string; excludeBoardId: string | null; entries: MemoryEntry[]; fetchedAt: number } | null = null;
+let _cache: { userId: string; excludeChatId: string | null; entries: MemoryEntry[]; fetchedAt: number } | null = null;
 const CACHE_TTL = 60_000;
 
 export async function getMemoryForPrompt(
   userId: string,
-  excludeBoardId?: string | null
+  excludeChatId?: string | null
 ): Promise<string> {
-  const bid = excludeBoardId || null;
+  const bid = excludeChatId || null;
   if (
     _cache &&
     _cache.userId === userId &&
-    _cache.excludeBoardId === bid &&
+    _cache.excludeChatId === bid &&
     Date.now() - _cache.fetchedAt < CACHE_TTL
   ) {
     return formatMemoryForPrompt(_cache.entries);
   }
   const entries = await loadAllMemory(userId, bid);
-  _cache = { userId, excludeBoardId: bid, entries, fetchedAt: Date.now() };
+  _cache = { userId, excludeChatId: bid, entries, fetchedAt: Date.now() };
   return formatMemoryForPrompt(entries);
 }
 

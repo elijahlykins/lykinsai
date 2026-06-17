@@ -22,7 +22,7 @@ type AiState = {
 
   workspaceSummary: WorkspaceSummary | null;
   workspaceSummaryUserId: string | null;
-  workspaceSummaryExcludeBoardId: string | null;
+  workspaceSummaryExcludeChatId: string | null;
   workspaceSummaryUpdatedAt: number | null;
 
   aiSuggestions: AiSuggestion[];
@@ -31,9 +31,9 @@ type AiState = {
   isRefreshing: boolean;
   lastError: string | null;
 
-  refreshKnowledgeBase: (projectId: string, opts?: { force?: boolean; excludeBoardId?: string }) => Promise<string | null>;
+  refreshKnowledgeBase: (projectId: string, opts?: { force?: boolean; excludeChatId?: string }) => Promise<string | null>;
   getCachedKbText: () => string;
-  refreshWorkspaceSummary: (userId: string, excludeBoardId?: string, opts?: { force?: boolean }) => Promise<WorkspaceSummary | null>;
+  refreshWorkspaceSummary: (userId: string, excludeChatId?: string, opts?: { force?: boolean }) => Promise<WorkspaceSummary | null>;
   getCachedWorkspaceSummary: () => WorkspaceSummary | null;
   markProjectDirty: (projectId: string) => void;
   getAISuggestions: (projectId: string, prompt: string) => Promise<AiSuggestion[]>;
@@ -69,7 +69,7 @@ export const useAiStore = create<AiState>()(
 
     workspaceSummary: null,
     workspaceSummaryUserId: null,
-    workspaceSummaryExcludeBoardId: null,
+    workspaceSummaryExcludeChatId: null,
     workspaceSummaryUpdatedAt: null,
 
     aiSuggestions: [],
@@ -92,7 +92,7 @@ export const useAiStore = create<AiState>()(
         const kb = await getProjectKnowledgeBase(projectId);
         const kbText = projectSummaryForAI(kb, {
           maxChars: 4000,
-          excludeBoardId: opts?.excludeBoardId,
+          excludeChatId: opts?.excludeChatId,
         });
         set((s) => {
           s.projectKnowledgeBase = kb;
@@ -117,24 +117,24 @@ export const useAiStore = create<AiState>()(
       return get().projectKnowledgeBaseText || "";
     },
 
-    refreshWorkspaceSummary: async (userId, excludeBoardId, opts) => {
+    refreshWorkspaceSummary: async (userId, excludeChatId, opts) => {
       if (!userId) return null;
       const state = get();
       if (
         !opts?.force &&
         state.workspaceSummaryUserId === userId &&
-        state.workspaceSummaryExcludeBoardId === (excludeBoardId ?? null) &&
+        state.workspaceSummaryExcludeChatId === (excludeChatId ?? null) &&
         getWsFresh(state)
       ) {
         return state.workspaceSummary;
       }
       try {
         const { fetchWorkspaceSummaries } = await import("@/lib/workspaceContext");
-        const ws = await fetchWorkspaceSummaries(userId, excludeBoardId);
+        const ws = await fetchWorkspaceSummaries(userId, excludeChatId);
         set((s) => {
           s.workspaceSummary = ws;
           s.workspaceSummaryUserId = userId;
-          s.workspaceSummaryExcludeBoardId = excludeBoardId ?? null;
+          s.workspaceSummaryExcludeChatId = excludeChatId ?? null;
           s.workspaceSummaryUpdatedAt = Date.now();
         });
         return ws;

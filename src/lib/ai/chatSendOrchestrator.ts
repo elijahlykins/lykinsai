@@ -75,30 +75,30 @@ const AUTO_NAME_MAX_ATTEMPTS = 4;
  * "New Chat" placeholder in place.
  */
 export function maybeAutoNameChat(args: {
-  boardId: string | null | undefined;
+  chatId: string | null | undefined;
   userId: string | null | undefined;
   currentTitle: string | null | undefined;
   userMessage: string;
   assistantReply: string;
 }): void {
-  const namingBoardId = args.boardId ? String(args.boardId) : "";
+  const namingChatId = args.chatId ? String(args.chatId) : "";
   const currentTitle = String(args.currentTitle || "").trim();
   const titleIsDefault =
     !currentTitle || currentTitle === "New Chat" || currentTitle === "Untitled board";
   const userMessage = String(args.userMessage || "").trim();
   const assistantReply = String(args.assistantReply || "").trim();
-  const prevAttempts = namingBoardId ? autoNamedBoardsAttempts.get(namingBoardId) || 0 : 0;
+  const prevAttempts = namingChatId ? autoNamedBoardsAttempts.get(namingChatId) || 0 : 0;
   if (
     !args.userId ||
-    !namingBoardId ||
+    !namingChatId ||
     !titleIsDefault ||
     (!userMessage && !assistantReply) ||
-    autoNamedBoardsSucceeded.has(namingBoardId) ||
+    autoNamedBoardsSucceeded.has(namingChatId) ||
     prevAttempts >= AUTO_NAME_MAX_ATTEMPTS
   ) {
     return;
   }
-  autoNamedBoardsAttempts.set(namingBoardId, prevAttempts + 1);
+  autoNamedBoardsAttempts.set(namingChatId, prevAttempts + 1);
   void (async () => {
     try {
       const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
@@ -106,7 +106,7 @@ export function maybeAutoNameChat(args: {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          boardId: namingBoardId,
+          chatId: namingChatId,
           userMessage,
           assistantReply,
         }),
@@ -118,22 +118,22 @@ export function maybeAutoNameChat(args: {
       // applied:false but still includes the live title — treat that
       // as success so we stop retrying and pick up the real title.
       if (json?.reason === "already_named" && typeof json?.title === "string" && json.title.trim()) {
-        autoNamedBoardsSucceeded.add(namingBoardId);
+        autoNamedBoardsSucceeded.add(namingChatId);
         return;
       }
       const newTitle = json?.applied && typeof json.title === "string" ? json.title.trim() : "";
       if (!newTitle) return;
-      autoNamedBoardsSucceeded.add(namingBoardId);
-      // Mirror the manual-rename event contract in MobileFocusedChatGrids
-      // / AppSidebar so OmniaGrid's rename listener picks up the title
+      autoNamedBoardsSucceeded.add(namingChatId);
+      // Mirror the manual-rename event contract in MobileLyknChat
+      // / AppSidebar so LyknChat's rename listener picks up the title
       // (which also syncs `titleRef.current`, preventing the next
       // autosave from writing the stale local copy back).
       window.dispatchEvent(
-        new CustomEvent("omnia_board_renamed", {
-          detail: { boardId: namingBoardId, title: newTitle },
+        new CustomEvent("lyknchat_renamed", {
+          detail: { chatId: namingChatId, title: newTitle },
         }),
       );
-      window.dispatchEvent(new Event("lykinsai_boards_changed"));
+      window.dispatchEvent(new Event("lykinsai_chats_changed"));
     } catch {
       // Auto-naming is purely cosmetic — never let a flake bubble up.
     }
@@ -154,7 +154,7 @@ function maybeNotifyModelDowngrade(res: Response | null | undefined) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Shared types re-exported so callers don't need OmniaGrid           */
+/*  Shared types re-exported so callers don't need LyknChat           */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -508,8 +508,8 @@ export type OrchestratorResult = {
 export interface ChatSendIdentity {
   customModelId?: string | null;
   selectedModel: string;
-  boardId: string | null;
-  routeBoardId: string | undefined;
+  chatId: string | null;
+  routeChatId: string | undefined;
   projectId: string | null;
   /** LYKN project the user explicitly scoped this chat to via the "+" menu. */
   scopedProjectId?: string | null;
@@ -519,8 +519,8 @@ export interface ChatSendIdentity {
 }
 
 export interface ChatSendContext {
-  buildCanvasContext: () => string;
-  buildActionCanvasContext: (opts: {
+  buildLyknChatContext: () => string;
+  buildActionLyknChatContext: (opts: {
     blocks: Record<string, any>;
     blockOrder: string[];
     viewportCenter: { x: number; y: number };
@@ -999,7 +999,7 @@ async function handleActionPath(
     const camNow = stNow.camera || { x: 0, y: 0 };
     const vwNow = window.innerWidth || 1280;
     const vhNow = window.innerHeight || 800;
-    actionContext = p.context.buildActionCanvasContext({
+    actionContext = p.context.buildActionLyknChatContext({
       blocks: stNow.blocks as Record<string, any>,
       blockOrder: Array.isArray(stNow.blockOrder) ? stNow.blockOrder : [],
       viewportCenter: { x: (camNow.x || 0) + vwNow / 2, y: (camNow.y || 0) + vhNow / 2 },
@@ -1046,7 +1046,7 @@ async function handleActionPath(
       p.aiThread.push({ role: "assistant", content: assistantText });
       if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
       typing.maybeRunConversationSummary();
-      if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "chat", identity.routeBoardId || identity.boardId || null, p.context.titleRef.current || null, cappedText, assistantText); }
+      if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "chat", identity.routeChatId || identity.chatId || null, p.context.titleRef.current || null, cappedText, assistantText); }
       if (responseBlockId) {
         const normalized = canvas.normalizeAiTextForBlock(assistantText);
         const curBlk: any = canvas.getCanvasState().blocks?.[responseBlockId];
@@ -2232,15 +2232,15 @@ async function postProcessResponse(
   p.aiThread.push({ role: "assistant", content: finalDisplayText, model: replyModel || undefined, at: completedAt });
   if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
   typing.maybeRunConversationSummary();
-  if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "chat", identity.routeBoardId || identity.boardId || null, p.context.titleRef.current || null, cappedText, finalDisplayText); }
+  if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "chat", identity.routeChatId || identity.chatId || null, p.context.titleRef.current || null, cappedText, finalDisplayText); }
 
   // === AUTO-NAME — fire-and-forget after any user→assistant turn while
   // the chat is still using the default placeholder title.
   //
   // Generates a 2-5 word title from this exchange and writes it through
-  // to `omnia_boards.title` server-side, then surfaces the new title in
+  // to `lykn_chats.title` server-side, then surfaces the new title in
   // every mounted view (sidebar, mobile sheet, toolbar) via the existing
-  // `omnia_board_renamed` + `lykinsai_boards_changed` events.
+  // `lyknchat_renamed` + `lykinsai_chats_changed` events.
   //
   // Gates:
   //   • signed-in user (guests have no DB row)
@@ -2261,7 +2261,7 @@ async function postProcessResponse(
   // Errors are silent — a missed title just means the chat keeps the
   // "New Chat" placeholder, which is exactly what it shows today.
   maybeAutoNameChat({
-    boardId: identity.routeBoardId || identity.boardId,
+    chatId: identity.routeChatId || identity.chatId,
     userId: identity.userId,
     currentTitle: p.context.titleRef.current,
     userMessage: cappedText,
@@ -2306,7 +2306,7 @@ async function postProcessResponse(
           text: learned.text,
           kind: learned.kind,
           reason: learned.reason,
-          sourceId: identity.routeBoardId || identity.boardId || "live_chat",
+          sourceId: identity.routeChatId || identity.chatId || "live_chat",
           // Only set replacesText for the update path — the server treats
           // an undefined replacesText as the plain create-or-reinforce flow.
           replacesText: learned.mode === "update" ? learned.previousText : undefined,
@@ -2337,7 +2337,7 @@ async function postProcessResponse(
           // context.
           userMessage: cappedText,
           assistantReply: finalDisplayText,
-          sourceId: identity.routeBoardId || identity.boardId || "auto",
+          sourceId: identity.routeChatId || identity.chatId || "auto",
         });
         if (!result || (!result.isNew && !result.isUpdate)) return;
         state.setChatMessages((prev) => prev.map((m) => (m.id === promptId
@@ -2363,8 +2363,8 @@ async function postProcessResponse(
           ruleId: applied.ruleId,
           messageId: promptId,
           reason: applied.reason,
-          surface: "grid",
-          surfaceId: identity.routeBoardId || identity.boardId || undefined,
+          surface: "chat",
+          surfaceId: identity.routeChatId || identity.chatId || undefined,
         });
         if (!attribution) return;
         state.setChatMessages((prev) => prev.map((m) => (m.id === promptId
@@ -2379,7 +2379,7 @@ async function postProcessResponse(
   // Persist the finished turn promptly so switching devices (phone → laptop)
   // doesn't depend on the 30s autosave interval or a tab-background event.
   if (identity.userId) {
-    setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 300);
+    setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 300);
   }
 }
 
@@ -2451,7 +2451,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   /* Phase 2: canvas context + YouTube enrichment
    *
    * The canvas / grid surface is unplugged in the current product, so
-   * `buildCanvasContext()` short-circuits to "" and the canvas store
+   * `buildLyknChatContext()` short-circuits to "" and the canvas store
    * carries no blocks. We detect that once here and skip every
    * grid-iterating code path below — focused-block YouTube transcript
    * pickup, notes-panel injection, hasFocusedVideo / hasFocusedBricks
@@ -2460,7 +2460,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
    * pre-flight near-zero so chat feels instant. If/when the grid is
    * re-enabled, the early-return below flips off automatically.
    */
-  let canvasContext = context.buildCanvasContext();
+  let canvasContext = context.buildLyknChatContext();
   const canvasState = canvas.getCanvasState();
   const canvasHasContent = Object.keys(canvasState.blocks || {}).length > 0;
 
@@ -2681,7 +2681,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     );
 
   const [memoryText, vaultNotesForAi] = await Promise.all([
-    identity.userId ? getMemoryForPrompt(identity.userId, identity.routeBoardId || identity.boardId || null) : Promise.resolve(""),
+    identity.userId ? getMemoryForPrompt(identity.userId, identity.routeChatId || identity.chatId || null) : Promise.resolve(""),
     identity.userId && wantsVaultDetail
       ? fetchNotesForVaultAi(identity.userId)
       : Promise.resolve([] as VaultAiNoteRow[]),
@@ -2736,7 +2736,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     projectId: identity.projectId,
     ...(identity.scopedProjectId ? { scopedProjectId: identity.scopedProjectId } : {}),
     ...(identity.scopedProjectName ? { scopedProjectName: identity.scopedProjectName } : {}),
-    boardId: identity.routeBoardId || identity.boardId || undefined,
+    chatId: identity.routeChatId || identity.chatId || undefined,
     skipWebSearch: hasVideoTranscript,
     // Chat-bar "+" capability modes — the server forces the matching tool /
     // web search deterministically for this turn (see /api/ai/stream).
@@ -2779,7 +2779,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
    * but they bloated the file, ran on every chat send, and shipped a
    * confusing `wantsActionPath` API surface. If/when the canvas is
    * re-enabled, the action path lives intact in `handleActionPath()` /
-   * `buildActionCanvasContext()` and can be re-wired here behind a
+   * `buildActionLyknChatContext()` and can be re-wired here behind a
    * single feature flag — we just stop pre-classifying intents.
    */
   let responseBlockId: string | null = null;

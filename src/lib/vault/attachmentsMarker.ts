@@ -17,6 +17,7 @@
  * The on-disk format is unchanged (`[ATTACHMENTS_JSON:[{...},{...}]]`), so
  * this fix needs no migration.
  */
+import { primaryAttachmentFromColumns } from "@/lib/vault/attachmentType";
 
 const MARKER = "[ATTACHMENTS_JSON:";
 
@@ -160,6 +161,17 @@ export function parseAttachmentsFromNote(
   if (out.length === 0) {
     const content = typeof note.content === "string" ? note.content : "";
     out.push(...parseAttachmentsFromContent(content));
+  }
+
+  // Marker fallback: rows whose content no longer carries the marker (the
+  // post-transition state) reconstruct their primary attachment from the
+  // normalized columns (migration 104). While the marker is dual-written it
+  // wins; this only fires for marker-less rows.
+  if (out.length === 0) {
+    const fromCols = primaryAttachmentFromColumns(
+      note as unknown as Record<string, unknown>,
+    );
+    if (fromCols) out.push(fromCols);
   }
 
   return out.filter(Boolean);

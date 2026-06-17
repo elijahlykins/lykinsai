@@ -6,6 +6,7 @@ import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { describeVaultItemInBackground } from "@/lib/vault/describeVaultItem";
 import { preloadVideoCompressor } from "@/lib/vault/compressMedia";
 import { startVaultUploads } from "@/lib/vault/uploadPipeline";
+import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
 import { useUserPlan } from "@/lib/useUserPlan";
 
 /**
@@ -105,12 +106,13 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, t
         content: noteContent,
         source: youtube ? "youtube_drop" : "link_drop",
         tags: youtube ? ["youtube", "uploaded"] : ["link", "uploaded"],
+        ...buildAttachmentColumns(attachmentPayload[0]),
       };
 
       let noteError = null;
       let insertedNote = null;
       ({ data: insertedNote, error: noteError } = await supabase
-        .from("notes")
+        .from("vault_items")
         .insert(richInsert)
         .select("id, title, content, tags, created_at, updated_at")
         .single());
@@ -125,7 +127,7 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, t
 
       if (missingColumnError) {
         ({ data: insertedNote, error: noteError } = await supabase
-          .from("notes")
+          .from("vault_items")
           .insert({ user_id: user.id, title: noteTitle, content: noteContent })
           .select("id, title, content, created_at, updated_at")
           .single());
@@ -242,7 +244,7 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, t
       const types = event?.dataTransfer?.types;
       if (!types) return false;
       const allTypes = Array.from(types);
-      if (allTypes.includes("application/x-omnia-chat-response")) return false;
+      if (allTypes.includes("application/x-lykn-chat-chat-response")) return false;
       return (
         allTypes.includes("Files") ||
         allTypes.includes("text/uri-list") ||

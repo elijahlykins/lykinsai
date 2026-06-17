@@ -60,7 +60,7 @@ function classifyMime(mime: string, name: string): string {
 }
 
 export function useProjectFiles(
-  boardId: string | null,
+  chatId: string | null,
   userId: string | undefined,
 ) {
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -122,13 +122,13 @@ export function useProjectFiles(
   );
 
   useEffect(() => {
-    if (!boardId || !userId) return;
+    if (!chatId || !userId) return;
     let cancelled = false;
     const loadProjectForBoard = async () => {
       const { data } = await supabase
-        .from("omnia_boards")
+        .from("lykn_chats")
         .select("project_id")
-        .eq("id", boardId)
+        .eq("id", chatId)
         .eq("user_id", userId)
         .maybeSingle();
       if (cancelled) return;
@@ -141,7 +141,7 @@ export function useProjectFiles(
         return;
       }
       const { data: proj } = await supabase
-        .from("omnia_projects")
+        .from("lykn_chat_projects")
         .select("name")
         .eq("id", pid)
         .maybeSingle();
@@ -163,7 +163,7 @@ export function useProjectFiles(
     };
     loadProjectForBoard();
     return () => { cancelled = true; };
-  }, [boardId, userId]);
+  }, [chatId, userId]);
 
   useEffect(() => {
     if (!userId) return;
@@ -240,11 +240,11 @@ export function useProjectFiles(
       }
     };
 
-    window.addEventListener("omnia_canvas_file_stored", onFileStored);
-    window.addEventListener("omnia_canvas_link_stored", onLinkStored);
+    window.addEventListener("lyknchat_file_stored", onFileStored);
+    window.addEventListener("lyknchat_canvas_link_stored", onLinkStored);
     return () => {
-      window.removeEventListener("omnia_canvas_file_stored", onFileStored);
-      window.removeEventListener("omnia_canvas_link_stored", onLinkStored);
+      window.removeEventListener("lyknchat_file_stored", onFileStored);
+      window.removeEventListener("lyknchat_canvas_link_stored", onLinkStored);
     };
   }, [userId, projectId, projectName, projectFolders]);
 

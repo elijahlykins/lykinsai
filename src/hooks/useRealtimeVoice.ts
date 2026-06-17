@@ -24,7 +24,7 @@ export type RealtimeVoiceState =
 
 interface UseRealtimeVoiceOptions {
   active: boolean;
-  boardId?: string | null;
+  chatId?: string | null;
   voice?: string;
   /** Build the grounded system instructions for this session. */
   buildInstructions?: () => string | Promise<string>;
@@ -42,7 +42,7 @@ interface UseRealtimeVoiceOptions {
 
 const OPENAI_REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
 
-export function useRealtimeVoice({ active, boardId, voice, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument }: UseRealtimeVoiceOptions) {
+export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onUserTranscript, onAssistantReply, onDisplayDocument }: UseRealtimeVoiceOptions) {
   const [state, setState] = useState<RealtimeVoiceState>("idle");
   const [micLevel, setMicLevel] = useState(0);
   const [muted, setMuted] = useState(false);
@@ -54,7 +54,7 @@ export function useRealtimeVoice({ active, boardId, voice, buildInstructions, on
   const activeRef = useRef(false);
   const mutedRef = useRef(false);
   const buildInstructionsRef = useRef(buildInstructions);
-  const boardIdRef = useRef<string | null>(boardId ?? null);
+  const chatIdRef = useRef<string | null>(chatId ?? null);
   const voiceRef = useRef<string | undefined>(voice);
   const onUserTranscriptRef = useRef(onUserTranscript);
   const onAssistantReplyRef = useRef(onAssistantReply);
@@ -74,7 +74,7 @@ export function useRealtimeVoice({ active, boardId, voice, buildInstructions, on
   const toolNamesRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => { buildInstructionsRef.current = buildInstructions; }, [buildInstructions]);
-  useEffect(() => { boardIdRef.current = boardId ?? null; }, [boardId]);
+  useEffect(() => { chatIdRef.current = chatId ?? null; }, [chatId]);
   useEffect(() => { voiceRef.current = voice; }, [voice]);
   useEffect(() => { onUserTranscriptRef.current = onUserTranscript; }, [onUserTranscript]);
   useEffect(() => { onAssistantReplyRef.current = onAssistantReply; }, [onAssistantReply]);
@@ -113,7 +113,7 @@ export function useRealtimeVoice({ active, boardId, voice, buildInstructions, on
         const res = await fetch(`${API_BASE_URL}/api/ai/realtime/tool`, {
           method: "POST",
           headers,
-          body: JSON.stringify({ name, arguments: argsJson || "{}", boardId: boardIdRef.current }),
+          body: JSON.stringify({ name, arguments: argsJson || "{}", chatId: chatIdRef.current }),
         });
         output = await res.json().catch(() => ({ ok: false, error: "bad_tool_response" }));
       } catch {
@@ -297,7 +297,7 @@ export function useRealtimeVoice({ active, boardId, voice, buildInstructions, on
       const res = await fetch(`${API_BASE_URL}/api/ai/realtime/session`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ instructions, voice: voiceRef.current, boardId: boardIdRef.current }),
+        body: JSON.stringify({ instructions, voice: voiceRef.current, chatId: chatIdRef.current }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data?.value) {

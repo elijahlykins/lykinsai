@@ -47,7 +47,7 @@ export function describeVaultItemInBackground(
       if (!userId) return;
 
       const { data: note } = await supabase
-        .from("notes")
+        .from("vault_items")
         .select("title, content, updated_at")
         .eq("id", noteId)
         .eq("user_id", userId)
@@ -73,7 +73,7 @@ export function describeVaultItemInBackground(
       // read it. The user could have edited the note title/content while
       // the AI request was in flight; clobbering that would be data loss.
       const { error: updateErr } = await supabase
-        .from("notes")
+        .from("vault_items")
         .update({ content: updatedContent })
         .eq("id", noteId)
         .eq("user_id", userId)

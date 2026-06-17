@@ -328,8 +328,8 @@ export default function NotesPanel({ open, onOpenChange, pages, activePageId, on
         clientY: ce.detail.clientY,
       });
     };
-    window.addEventListener("omnia_notes_insert_vault", onVaultInsert as EventListener);
-    return () => window.removeEventListener("omnia_notes_insert_vault", onVaultInsert as EventListener);
+    window.addEventListener("lyknchat_notes_insert_vault", onVaultInsert as EventListener);
+    return () => window.removeEventListener("lyknchat_notes_insert_vault", onVaultInsert as EventListener);
   }, [open]);
 
   useEffect(() => {
@@ -413,9 +413,9 @@ export default function NotesPanel({ open, onOpenChange, pages, activePageId, on
       }, TICK_MS);
     };
 
-    window.addEventListener("omnia_notes_ai_update", onAiUpdate as EventListener);
+    window.addEventListener("lyknchat_notes_ai_update", onAiUpdate as EventListener);
     return () => {
-      window.removeEventListener("omnia_notes_ai_update", onAiUpdate as EventListener);
+      window.removeEventListener("lyknchat_notes_ai_update", onAiUpdate as EventListener);
       cancelStream();
     };
   }, []);
@@ -446,7 +446,7 @@ export default function NotesPanel({ open, onOpenChange, pages, activePageId, on
       }
       const anchor = sel.anchorNode;
       if (!anchor) return;
-      const notesRoot = (anchor instanceof Element ? anchor : anchor.parentElement)?.closest?.("[data-omnia-notes-root]") as HTMLElement | null;
+      const notesRoot = (anchor instanceof Element ? anchor : anchor.parentElement)?.closest?.("[data-lykn-chat-notes-root]") as HTMLElement | null;
       if (!notesRoot) {
         setSelToolbar((s) => (s.visible ? { ...s, visible: false, highlightSub: false, textColorSub: false } : s));
         return;
@@ -516,7 +516,7 @@ export default function NotesPanel({ open, onOpenChange, pages, activePageId, on
   const dispatchNoteSelectionAiAction = useCallback((action: string, prompt: string) => {
     const text = selToolbar.text;
     if (!text.trim()) return;
-    window.dispatchEvent(new CustomEvent("omnia_ai_brick_action", {
+    window.dispatchEvent(new CustomEvent("lyknchat_ai_brick_action", {
       detail: {
         blockId: "notes-selection",
         action,
@@ -651,7 +651,7 @@ export default function NotesPanel({ open, onOpenChange, pages, activePageId, on
 
       {/* Sliding notes panel — opens full viewport; drag handle down to resize / dismiss */}
       <div
-        data-omnia-notes-root=""
+        data-lykn-chat-notes-root=""
         className={`fixed inset-x-0 bottom-0 flex flex-col bg-white/80 dark:bg-[#1e1e1e]/90 backdrop-blur-md border-black/8 dark:border-white/8 shadow-lg ${
           isFullBleed ? "rounded-none border-t-0" : "rounded-t-2xl border-t"
         } ${open ? "z-[220]" : "z-[68]"} ${

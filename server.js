@@ -82,15 +82,6 @@ import {
   encryptToken,
 } from './connectors-service.js';
 import {
-  listCustomAgents,
-  getCustomAgent,
-  createCustomAgent,
-  updateCustomAgent,
-  deleteCustomAgent,
-  testCustomAgent,
-  CustomAgentValidationError,
-} from './custom-agents-service.js';
-import {
   listCustomConnections,
   createCustomConnection,
   updateCustomConnection,
@@ -99,13 +90,7 @@ import {
   listOAuthBackedApps,
   CustomConnectionError,
 } from './lib/customConnections/customConnections.js';
-import { registerTrainingSetRoutes } from './training-sets-routes.js';
 import { registerCustomModelRoutes } from './custom-models-routes.js';
-import { registerLoraRoutes } from './lora-routes.js';
-import {
-  registerModelBuilderWalletRoutes,
-  handleModelBuilderWalletCheckoutCompleted,
-} from './model-builder-wallet-routes.js';
 import {
   isTogetherDedicatedEndpointError,
   isTogetherInferenceModel,
@@ -2099,7 +2084,7 @@ async function persistLiveFetchedBody({ userId, noteId, content, freshBody }) {
     nextContent = `${raw.trim()}\n\n${freshBody}`.trim();
   }
   await supabaseAdmin
-    .from('notes')
+    .from('vault_items')
     .update({ content: nextContent, updated_at: new Date().toISOString() })
     .eq('id', noteId)
     .eq('user_id', userId);
@@ -2182,7 +2167,7 @@ async function fetchVaultNotesByUrls(userId, urlMatches) {
   for (const { url, label } of urlMatches) {
     try {
       const { data, error } = await supabaseAdmin
-        .from('notes')
+        .from('vault_items')
         .select('id, title, content, source, updated_at, tags, ai_summary, ai_signals')
         .eq('user_id', userId)
         .ilike('content', `%${url}%`)
@@ -3202,7 +3187,7 @@ async function fetchUserModelSection(authHeader, userId) {
 //    user's first name — that reads as scripted and chatbot-y)
 // We pull the name from `req.user.user_metadata` (already populated by the
 // Supabase /auth/v1/user lookup in `requireAuth`) and the project list
-// straight from `omnia_projects`.  The result is cached per user for 90s.
+// straight from `lykn_chat_projects`.  The result is cached per user for 90s.
 // ============================================
 function pickUserDisplayName(user) {
   const meta = (user && user.user_metadata) || {};
@@ -3333,7 +3318,7 @@ async function gatherVoiceBriefingData(authHeader, userId) {
   let recentNotes = [];
   try {
     const { data } = await client
-      .from('notes')
+      .from('vault_items')
       .select('title, ai_summary, tags, created_at')
       .eq('user_id', userId)
       .gte('created_at', cutoffIso)
@@ -3753,7 +3738,7 @@ async function fetchUserIdentitySection(authHeader, user) {
   if (client) {
     try {
       const { data, error } = await client
-        .from('omnia_projects')
+        .from('lykn_chat_projects')
         .select('name, description, updated_at')
         .eq('user_id', userId)
         .order('updated_at', { ascending: false })
@@ -6695,7 +6680,7 @@ app.post('/api/synthesis/reindex', requireAuth, synthesisLimiter, async (req, re
         return res.status(503).json({ error: 'Database not configured' });
       }
       const { data: owned, error: ownErr } = await supabaseAdmin
-        .from('notes')
+        .from('vault_items')
         .select('id')
         .eq('id', sid)
         .eq('user_id', userId)
@@ -8059,7 +8044,7 @@ app.post('/api/ai/feedback', requireAuth, async (req, res) => {
       return res.json({ ok: true, rating: null });
     }
 
-    const boardId = req.body?.boardId ? String(req.body.boardId).slice(0, 200) : null;
+    const chatId = req.body?.chatId ? String(req.body.chatId).slice(0, 200) : null;
     const model = req.body?.model ? String(req.body.model).slice(0, 120) : null;
     const prompt = req.body?.prompt ? String(req.body.prompt).slice(0, 8000) : null;
     const response = req.body?.response ? String(req.body.response).slice(0, 20000) : null;
@@ -8070,7 +8055,7 @@ app.post('/api/ai/feedback', requireAuth, async (req, res) => {
         {
           user_id: userId,
           message_id: messageId,
-          board_id: boardId,
+          chat_id: chatId,
           rating,
           model,
           prompt,
@@ -8374,118 +8359,6 @@ app.post('/api/v1/synthesis/preferences', requireAuthOrMcpToken, mcpMinuteLimite
 // neuron store. Read-only.
 app.get('/api/v1/synthesis/activity', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getRecentActivity', req, res));
 
-// ─── Custom Agents — bring-your-own outbound webhooks ─────────────────
-//
-// CRUD + reachability /test ping for user-registered agent endpoints.
-// JWT-only; the MCP token surface is for INBOUND (agent → LYKN). This
-// registry is the LYKN → agent direction and lives on the web app's
-// auth context.
-//
-// See migration 070 for the table + planned trigger vocabulary.
-// See custom-agents-service.js for dispatcher details. The real
-// dispatcher is NOT yet wired into any trigger source — only the
-// /test endpoint actually POSTs to the user's webhook today.
-
-function _customAgentErr(e) {
-  if (e instanceof CustomAgentValidationError) {
-    return { status: 400, body: { error: 'validation', message: e.message } };
-  }
-  console.error('❌ custom-agents:', e?.message || e);
-  return { status: 500, body: { error: 'internal' } };
-}
-
-app.get('/api/v1/custom-agents', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-    const agents = await listCustomAgents(supabaseAdmin, userId);
-    return res.json({ ok: true, agents });
-  } catch (e) {
-    const { status, body } = _customAgentErr(e);
-    return res.status(status).json(body);
-  }
-});
-
-app.get('/api/v1/custom-agents/:id', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-    const agent = await getCustomAgent(supabaseAdmin, userId, String(req.params.id || ''));
-    if (!agent) return res.status(404).json({ error: 'not_found' });
-    return res.json({ ok: true, agent });
-  } catch (e) {
-    const { status, body } = _customAgentErr(e);
-    return res.status(status).json(body);
-  }
-});
-
-app.post('/api/v1/custom-agents', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-    const agent = await createCustomAgent(supabaseAdmin, userId, req.body || {});
-    return res.json({ ok: true, agent });
-  } catch (e) {
-    const { status, body } = _customAgentErr(e);
-    return res.status(status).json(body);
-  }
-});
-
-app.patch('/api/v1/custom-agents/:id', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-    const agent = await updateCustomAgent(
-      supabaseAdmin,
-      userId,
-      String(req.params.id || ''),
-      req.body || {},
-    );
-    if (!agent) return res.status(404).json({ error: 'not_found' });
-    return res.json({ ok: true, agent });
-  } catch (e) {
-    const { status, body } = _customAgentErr(e);
-    return res.status(status).json(body);
-  }
-});
-
-app.delete('/api/v1/custom-agents/:id', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-    await deleteCustomAgent(supabaseAdmin, userId, String(req.params.id || ''));
-    return res.json({ ok: true });
-  } catch (e) {
-    const { status, body } = _customAgentErr(e);
-    return res.status(status).json(body);
-  }
-});
-
-// Synthetic reachability ping. POSTs a body of shape:
-//   { trigger: "test", user_id, context_block: "<placeholder>",
-//     payload: { message }, lykn: { version, agent_id } }
-// to the user's endpoint with the configured auth header. Returns
-// status + latency + body preview so the user can see exactly what
-// their agent received. Reuses the agent's stored secret — no need
-// to re-enter it for a test.
-app.post('/api/v1/custom-agents/:id/test', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-    const result = await testCustomAgent(supabaseAdmin, userId, String(req.params.id || ''));
-    return res.json({ ok: true, result });
-  } catch (e) {
-    const { status, body } = _customAgentErr(e);
-    return res.status(status).json(body);
-  }
-});
-
 // --- Custom connections (universal bring-your-own-API-key) ----------------
 // The user attaches ANY app (base URL + API key + how to send it); the LYKN
 // agent then acts on it via lykn_call_app, with the secret injected
@@ -8577,9 +8450,7 @@ app.post('/api/custom-connections/:id/test', requireAuth, async (req, res) => {
   }
 });
 
-registerTrainingSetRoutes(app, { requireAuth, supabaseAdmin });
 registerCustomModelRoutes(app, { requireAuth, supabaseAdmin });
-registerLoraRoutes(app, { requireAuth, supabaseAdmin });
 
 // --- Concepts (056-058) ---------------------------------------------------
 // First-class concept/topic layer with hybrid AI/user authorship. The
@@ -8838,7 +8709,7 @@ app.post('/api/v1/concepts/:id/link', requireAuth, async (req, res) => {
       note: 'note_id',
       fact: 'fact_id',
       belief: 'belief_id',
-      chat: 'board_id',
+      chat: 'chat_id',
     })[targetKind];
     if (!table || !column) {
       return res.status(400).json({ error: 'invalid target_kind' });
@@ -10653,7 +10524,7 @@ async function enrichVaultNoteSummary({ userId, noteId, supabaseAdmin: clientOve
 
   try {
     const { data: note, error: nErr } = await client
-      .from('notes')
+      .from('vault_items')
       .select('id, title, content, user_id, ai_summary, ai_content_hash')
       .eq('id', noteId)
       .eq('user_id', userId)
@@ -10737,7 +10608,7 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
         : {};
 
     const { error: upErr } = await client
-      .from('notes')
+      .from('vault_items')
       .update({
         ai_summary: summary || null,
         ai_signals: signals,
@@ -10794,7 +10665,7 @@ app.post('/api/vault/enrich-note', requireAuth, synthesisLimiter, async (req, re
     // the chunk corpus — improves retrieval precision because the summary
     // acts as a dense per-chunk semantic key.
     const { data: noteAfter } = await client
-      .from('notes')
+      .from('vault_items')
       .select('title, content')
       .eq('id', noteId)
       .eq('user_id', userId)
@@ -11008,9 +10879,9 @@ async function collectBackfillUserIds(singleUserId) {
       if (r && r[key]) set.add(String(r[key]));
     }
   };
-  const { data: n } = await supabaseAdmin.from('notes').select('user_id');
+  const { data: n } = await supabaseAdmin.from('vault_items').select('user_id');
   add(n, 'user_id');
-  const { data: b } = await supabaseAdmin.from('omnia_boards').select('user_id');
+  const { data: b } = await supabaseAdmin.from('lykn_chats').select('user_id');
   add(b, 'user_id');
   const { data: m } = await supabaseAdmin.from('ai_conversation_memory').select('user_id');
   add(m, 'user_id');
@@ -11056,7 +10927,7 @@ app.post('/api/synthesis/backfill', async (req, res) => {
         const page = 200;
         for (;;) {
           const { data: notes, error: nErr } = await supabaseAdmin
-            .from('notes')
+            .from('vault_items')
             .select('id, title, content')
             .eq('user_id', uid)
             .range(from, from + page - 1);
@@ -11092,7 +10963,7 @@ app.post('/api/synthesis/backfill', async (req, res) => {
 
       if (sources.includes('grid_board')) {
         const { data: boards, error: bErr } = await supabaseAdmin
-          .from('omnia_boards')
+          .from('lykn_chats')
           .select('id, title')
           .eq('user_id', uid);
         if (bErr) {
@@ -11101,9 +10972,9 @@ app.post('/api/synthesis/backfill', async (req, res) => {
           for (const br of boards || []) {
             try {
               const { data: stRows } = await supabaseAdmin
-                .from('omnia_board_states')
+                .from('lykn_chat_states')
                 .select('state')
-                .eq('board_id', br.id)
+                .eq('chat_id', br.id)
                 .order('updated_at', { ascending: false })
                 .limit(1);
               const stRow = Array.isArray(stRows) && stRows[0] ? stRows[0] : null;
@@ -12045,7 +11916,7 @@ ${t}
 
     let responseText = '';
     let usageData = { input_tokens: 0, output_tokens: 0 };
-    const boardId = req.body?.boardId || null;
+    const chatId = req.body?.chatId || null;
 
     // ── Provider fallback: retry with another provider on rate-limit / overload ──
     const _invokeModels = buildProviderModelChain(
@@ -12521,7 +12392,7 @@ ${t}
       hasImages: imageUrls.length > 0,
       intent,
     });
-    getOrCreateSession(req.user?.id, boardId).then((session) => {
+    getOrCreateSession(req.user?.id, chatId).then((session) => {
       logAiUsage({
         sessionId: session?.id,
         userId: req.user?.id,
@@ -13632,7 +13503,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     let lastClientWriteAt = Date.now();
     let stallCheck, hardKill, heartbeat;
     let streamedTextLength = 0;
-    const streamBoardId = req.body?.boardId || null;
+    const streamChatId = req.body?.chatId || null;
     const cleanup = () => { clearInterval(stallCheck); clearInterval(heartbeat); clearTimeout(hardKill); };
     const _streamTextStripper = makeToolSyntaxStripper((text) => {
       if (!res.writableEnded) {
@@ -13700,7 +13571,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           hasImages: imageUrls.length > 0,
           intent,
         });
-        getOrCreateSession(req.user?.id, streamBoardId).then((session) => {
+        getOrCreateSession(req.user?.id, streamChatId).then((session) => {
           logAiUsage({
             sessionId: session?.id,
             userId: req.user?.id,
@@ -14540,7 +14411,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
             });
             if (!streamOrchestrationCtx?.isMainAgent) return base;
             const mainModelId = streamOrchestrationCtx.mainModelId;
-            const boardId = streamBoardId;
+            const chatId = streamChatId;
             return {
               ...base,
               orchestration: {
@@ -14562,7 +14433,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
                   mainModelId,
                   subModelId,
                   subModelName,
-                  boardId,
+                  chatId,
                   taskInstruction,
                   context,
                 }),
@@ -14575,7 +14446,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               listSubModelTasks: ({ status, limit } = {}) =>
                 listSubModelTasks(supabaseAdmin, req.user?.id, {
                   mainModelId,
-                  boardId,
+                  chatId,
                   status,
                   limit,
                 }),
@@ -14679,7 +14550,7 @@ app.post('/api/ai/vault-search', requireAuth, aiLimiter, async (req, res) => {
     const data = await openaiRes.json();
     const response = data.choices?.[0]?.message?.content?.trim() || '[]';
 
-    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
       const usage = extractOpenAIUsage(data);
       logAiUsage({
         sessionId: session?.id, userId: req.user?.id, actionType: 'vault_search',
@@ -14755,7 +14626,7 @@ app.post('/api/storage/signed-url', requireAuth, async (req, res) => {
 // can reuse the exact same vision/text prompts + the shared description cache.
 // Returns the description string, or null on any failure (never throws — the
 // sweep treats null as "couldn't describe" and moves on / falls back).
-async function generateVaultItemDescription({ userId, imageUrl, textContent, fileType, fileName, boardId } = {}) {
+async function generateVaultItemDescription({ userId, imageUrl, textContent, fileType, fileName, chatId } = {}) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
   const url = String(imageUrl || '').trim();
@@ -14824,7 +14695,7 @@ async function generateVaultItemDescription({ userId, imageUrl, textContent, fil
 
     try {
       const usage = extractOpenAIUsage(data);
-      const session = await getOrCreateSession(userId, boardId);
+      const session = await getOrCreateSession(userId, chatId);
       logAiUsage({
         sessionId: session?.id, userId,
         actionType: isVisual ? 'image_analysis' : 'describe_text',
@@ -14907,7 +14778,7 @@ app.post('/api/vault/backfill-descriptions', requireAuth, describeLimiter, async
     const batchSize = Math.max(1, Math.min(12, Number(req.body?.batchSize) || 6));
 
     const { data: notes, error } = await client
-      .from('notes')
+      .from('vault_items')
       .select('id, title, content, updated_at, ai_summary')
       .eq('user_id', userId)
       .or(VAULT_BACKFILL_OR_FILTER)
@@ -14961,7 +14832,7 @@ app.post('/api/vault/backfill-descriptions', requireAuth, describeLimiter, async
             const rebuilt = `${content.slice(0, span.start)}[ATTACHMENTS_JSON:${JSON.stringify(atts)}]${content.slice(span.markerEnd)}`
               .replace(/\n{3,}/g, '\n\n');
             const { error: upErr } = await client
-              .from('notes')
+              .from('vault_items')
               .update({ content: rebuilt })
               .eq('id', note.id)
               .eq('user_id', userId)
@@ -14976,7 +14847,7 @@ app.post('/api/vault/backfill-descriptions', requireAuth, describeLimiter, async
 
         // Re-embed for retrieval with the summary prepended as a dense key.
         const { data: after } = await client
-          .from('notes')
+          .from('vault_items')
           .select('title, content')
           .eq('id', note.id)
           .eq('user_id', userId)
@@ -15002,7 +14873,7 @@ app.post('/api/vault/backfill-descriptions', requireAuth, describeLimiter, async
     let remaining = 0;
     try {
       const { count } = await client
-        .from('notes')
+        .from('vault_items')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', userId)
         .or(VAULT_BACKFILL_OR_FILTER);
@@ -15106,7 +14977,7 @@ app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res
     const data = await openaiRes.json();
     const description = data.choices?.[0]?.message?.content?.trim() || '';
 
-    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
       const usage = extractOpenAIUsage(data);
       logAiUsage({
         sessionId: session?.id, userId: req.user?.id,
@@ -15187,7 +15058,7 @@ app.post('/api/ai/transcribe', requireAuth, requireAppAccess, aiLimiter, checkAi
       : 0;
 
     const audioDurationSec = data?.duration || (segments.length > 0 ? segments[segments.length - 1]?.end || 0 : 0);
-    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
       logAiUsage({
         sessionId: session?.id, userId: req.user?.id, actionType: 'transcription',
         model: 'whisper-1', provider: 'openai',
@@ -15258,7 +15129,7 @@ app.post('/api/ai/summarize-conversation', requireAuth, aiLimiter, async (req, r
 
     if (summary) summaryCache.set(cacheKey, summary);
 
-    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
       const usage = extractOpenAIUsage(data);
       logAiUsage({
         sessionId: session?.id, userId: req.user?.id, actionType: 'summarize_conversation',
@@ -15347,10 +15218,10 @@ app.post('/api/ai/name-grid', requireAuth, aiLimiter, async (req, res) => {
 // ──────────────────────────────────────────────────
 // Auto-name chat — fire-and-forget after the first user→assistant
 // exchange. Generates a 2-5 word title from the first turn, writes it
-// straight to `omnia_boards.title` (server-owned so RLS / auth all run
+// straight to `lykn_chats.title` (server-owned so RLS / auth all run
 // on the trusted side), and returns the title for the client to surface
 // in the sidebar / toolbar via the existing `omnia_board_renamed` and
-// `lykinsai_boards_changed` events.
+// `lykinsai_chats_changed` events.
 //
 // Guards (server-side, defence-in-depth — client also gates):
 //   • only renames if the board's current title is still the default
@@ -15367,11 +15238,11 @@ app.post('/api/ai/name-chat', requireAuth, aiLimiter, async (req, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Not signed in' });
 
-    const boardId = String(req.body?.boardId || '').trim();
+    const chatId = String(req.body?.chatId || '').trim();
     const userMessage = String(req.body?.userMessage || '').trim();
     const assistantReply = String(req.body?.assistantReply || '').trim();
 
-    if (!boardId) return res.status(400).json({ error: 'boardId required' });
+    if (!chatId) return res.status(400).json({ error: 'chatId required' });
     if (userMessage.length < 4 && assistantReply.length < 20) {
       return res.json({ applied: false, reason: 'too_short' });
     }
@@ -15382,9 +15253,9 @@ app.post('/api/ai/name-chat', requireAuth, aiLimiter, async (req, res) => {
       return res.status(503).json({ error: 'Database not configured' });
     }
     const { data: board, error: boardErr } = await supabaseAdmin
-      .from('omnia_boards')
+      .from('lykn_chats')
       .select('id, title, user_id')
-      .eq('id', boardId)
+      .eq('id', chatId)
       .eq('user_id', userId)
       .maybeSingle();
     if (boardErr || !board) {
@@ -15447,9 +15318,9 @@ app.post('/api/ai/name-chat', requireAuth, aiLimiter, async (req, res) => {
     // Write through. We re-check the current title in the WHERE clause
     // so a concurrent manual rename in another tab wins the race.
     const { data: updated, error: updateErr } = await supabaseAdmin
-      .from('omnia_boards')
+      .from('lykn_chats')
       .update({ title, updated_at: new Date().toISOString() })
-      .eq('id', boardId)
+      .eq('id', chatId)
       .eq('user_id', userId)
       .in('title', ['New Chat', 'Untitled board', ''])
       .select('id, title')
@@ -15540,7 +15411,7 @@ app.post('/api/ai/tts', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLi
     }
 
     const charCount = text.length;
-    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
       logAiUsage({
         sessionId: session?.id, userId: req.user?.id, actionType: 'tts',
         model, provider: 'openai',
@@ -16546,7 +16417,7 @@ app.post('/api/ai/realtime/session', requireAuth, requireAppAccess, aiLimiter, c
       return res.status(500).json({ error: 'Realtime: no client secret returned.' });
     }
 
-    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
       logAiUsage({
         sessionId: session?.id, userId: req.user?.id, actionType: 'realtime_voice',
         model, provider: 'openai',
@@ -16826,7 +16697,7 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
         if (!/^(vault_|belief_|fact_|concept_)/.test(nodeId)) nodeId = `vault_${nodeId}`;
       } else {
         const { data: recent } = await supabaseAdmin
-          .from('notes')
+          .from('vault_items')
           .select('id, title')
           .eq('user_id', userId)
           .eq('source', 'lykn-voice-attachment')
@@ -17097,7 +16968,7 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimit
       : LYKN_REALTIME_BASE_INSTRUCTIONS
     ).slice(0, 14000);
 
-    const sessionToken = signLyknVoiceToken({ uid: req.user?.id, board: req.body?.boardId || null });
+    const sessionToken = signLyknVoiceToken({ uid: req.user?.id, board: req.body?.chatId || null });
     pruneVoiceSessions();
     // Capture the browser's IANA timezone so the custom-LLM endpoint can give
     // the voice model the user's LOCAL "now" (the custom-LLM calls come from
@@ -17105,7 +16976,7 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimit
     const sessionTz = typeof req.body?.timezone === 'string' ? req.body.timezone.trim().slice(0, 64) : '';
     voiceSessionGrounding.set(sessionToken, { instructions, tz: sessionTz, at: Date.now() });
 
-    getOrCreateSession(req.user?.id, req.body?.boardId).then((session) => {
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
       logAiUsage({
         sessionId: session?.id, userId: req.user?.id, actionType: 'elevenlabs_voice',
         model: 'elevenlabs-convai', provider: 'elevenlabs', metadata: { agent_id: agentId },
@@ -19593,10 +19464,6 @@ async function handleStripeEvent(event) {
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object;
-      if (session.mode === 'payment' && session.metadata?.purpose === 'model_builder_wallet') {
-        await handleModelBuilderWalletCheckoutCompleted(supabaseAdmin, session);
-        break;
-      }
       let subscription = null;
       if (session.mode === 'subscription' && session.subscription) {
         subscription = await stripe.subscriptions.retrieve(session.subscription);
@@ -19719,16 +19586,6 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
   }
 });
 
-registerModelBuilderWalletRoutes(app, {
-  requireAuth,
-  supabaseAdmin,
-  stripe,
-  stripeConfigured,
-  buildStripeCheckoutIdentity,
-  loadBillingRow,
-  appUrlFromReq,
-  validate,
-});
 
 function stripePublishableKey() {
   return (

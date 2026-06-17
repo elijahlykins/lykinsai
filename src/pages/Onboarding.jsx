@@ -15,7 +15,7 @@ import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
 import { toUserFacingError } from "@/lib/ai/userFacingErrors";
-import { markConnectOnboardingDone } from "@/lib/prototypeHandoff";
+import { markConnectOnboardingDone } from "@/lib/landingHandoff";
 import {
   OUTBOUND_TARGETS,
   buildCursorOauthDeeplink,

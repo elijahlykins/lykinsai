@@ -3,9 +3,9 @@
  * so other chat surfaces can send equivalent [WORKSPACE_CONTEXT] vault detail.
  */
 import { supabase } from "@/lib/supabase";
-import { detectSocialPlatform, isSocialEmbedType } from "@/lib/media/socialEmbed";
+import { resolveRenderType } from "@/lib/vault/attachmentType";
 import {
-  parseAttachmentsFromContent,
+  parseAttachmentsFromNote,
   stripAttachmentsMarker,
 } from "@/lib/vault/attachmentsMarker";
 
@@ -14,6 +14,9 @@ export const VAULT_AI_MAX_CARD_LINES = 40;
 
 // `attachments` is embedded inside `content` as [ATTACHMENTS_JSON:...]; no dedicated column.
 const NOTES_COLUMN_SETS = [
+  // Prefer the richest set; PostgREST falls back through these when a column
+  // (e.g. the Phase 4 `why`) doesn't exist yet on an older DB.
+  "id, title, content, tags, created_at, updated_at, source, why",
   "id, title, content, tags, created_at, updated_at, source",
   "id, title, content, tags, created_at, updated_at",
   "id, title, content, created_at, updated_at",
@@ -25,7 +28,7 @@ export async function fetchNotesForVaultAi(userId: string): Promise<VaultAiNoteR
   if (!userId) return [];
   for (const cols of NOTES_COLUMN_SETS) {
     const { data, error } = await supabase
-      .from("notes")
+      .from("vault_items")
       // Column sets mirror VaultNew fetch — string is not a narrow union on generated types.
       .select(cols as any)
       .eq("user_id", userId)
@@ -42,57 +45,9 @@ function stripAttachmentJsonMarker(content: string) {
   return stripAttachmentsMarker(String(content || ""));
 }
 
-function parseAttachmentsFromNote(note: VaultAiNoteRow) {
-  const normalized: unknown[] = [];
-
-  if (Array.isArray(note.attachments)) {
-    normalized.push(...note.attachments);
-  } else if (typeof note.attachments === "string") {
-    try {
-      const parsed = JSON.parse(note.attachments);
-      if (Array.isArray(parsed)) normalized.push(...parsed);
-    } catch {
-      /* content marker may still work */
-    }
-  }
-
-  if (normalized.length === 0 && note.content) {
-    normalized.push(...parseAttachmentsFromContent(String(note.content)));
-  }
-
-  return normalized.filter(Boolean);
-}
-
-function resolveAttachmentType(attachment: Record<string, unknown> = {}) {
-  const url = String(attachment.url || "");
-  const name = String(attachment.name || "");
-
-  if (isSocialEmbedType(attachment.oembedType as string | undefined)) return String(attachment.oembedType);
-  const socialPlatform = detectSocialPlatform(url);
-  if (socialPlatform) return socialPlatform;
-
-  if (attachment.type === "bookmark" || attachment.type === "link" || attachment.siteName || attachment.articleText)
-    return "bookmark";
-  if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
-
-  const explicit = attachment.type;
-  if (explicit && explicit !== "file") return explicit as string;
-  if (url.startsWith("data:image/")) return "image";
-  if (url.startsWith("data:video/")) return "video";
-  if (url.startsWith("data:audio/")) return "audio";
-
-  const extMatch = (url.split("/").pop() || name).match(/\.([^.]+)$/);
-  const ext = extMatch ? extMatch[1].toLowerCase() : "";
-
-  if (["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif", "tiff"].includes(ext)) return "image";
-  if (["mp4", "mov", "avi", "mkv", "webm", "m4v", "wmv"].includes(ext)) return "video";
-  if (["mp3", "wav", "ogg", "m4a", "aac", "flac", "wma"].includes(ext)) return "audio";
-  if (ext === "pdf") return "pdf";
-  if (["xls", "xlsx", "csv"].includes(ext) || attachment.type === "spreadsheet") return "spreadsheet";
-  if (["doc", "docx", "ppt", "pptx", "txt", "md"].includes(ext)) return "file";
-
-  return "file";
-}
+// Legacy granular render type, centralized in attachmentType.ts.
+const resolveAttachmentType = (attachment: Record<string, unknown> = {}) =>
+  resolveRenderType(attachment);
 
 function buildTextExcerpt(htmlOrText = "") {
   const noHtml = String(htmlOrText).replace(/<[^>]+>/g, " ");
@@ -231,6 +186,8 @@ type VaultAiCard = {
   dateLabel?: string;
   tags?: string[];
   excerpt?: string;
+  /** The user's "why" (Phase 4), surfaced to the AI as save intent. */
+  why?: string;
 };
 
 /** Mirrors VaultNew `vaultCards` but omits chat-preview tiles (same as Vault chat visibility). */
@@ -259,6 +216,7 @@ function buildVaultCardsForAiChat(notes: VaultAiNoteRow[]): VaultAiCard[] {
 
     const noteTags = Array.isArray(note.tags) ? (note.tags as string[]) : [];
     const noteExcerpt = excerpt || "";
+    const why = String((note as any).why || "").trim();
 
     attachments.forEach((attachment, idx) => {
       const type = resolveAttachmentType(attachment);
@@ -274,6 +232,7 @@ function buildVaultCardsForAiChat(notes: VaultAiNoteRow[]): VaultAiCard[] {
         noteExcerpt,
         dateLabel,
         tags: noteTags,
+        why,
       });
     });
 
@@ -290,6 +249,7 @@ function buildVaultCardsForAiChat(notes: VaultAiNoteRow[]): VaultAiCard[] {
           noteExcerpt,
           dateLabel,
           tags: noteTags,
+          why,
         });
       });
     }
@@ -305,6 +265,7 @@ function buildVaultCardsForAiChat(notes: VaultAiNoteRow[]): VaultAiCard[] {
         excerpt,
         dateLabel,
         tags: noteTags,
+        why,
       });
     }
   });
@@ -390,6 +351,7 @@ function formatVaultCardLineForAi(card: VaultAiCard): string {
     if ((att as any).articleText) extras.push(`${isConnectedSource ? oembedType : "Article"}: ${String((att as any).articleText).slice(0, articleBudget)}`);
     if ((att as any).siteName) extras.push(`Site: ${(att as any).siteName}`);
     if ((att as any).url) extras.push(`URL: ${(att as any).url}`);
+    if (card.why) extras.push(`Why saved: ${card.why.slice(0, 300)}`);
     const fileNotes = parseAttachmentNotes(att);
     if (fileNotes.length > 0) {
       extras.push(
@@ -400,7 +362,8 @@ function formatVaultCardLineForAi(card: VaultAiCard): string {
   }
 
   if (card.kind === "quick-note") {
-    return `[NOTE] "${card.title || "Quick Note"}"${idStr}${pullStr} — ${(card.excerpt || "").slice(0, 500)} (${date})${tagStr}`;
+    const whyStr = card.why ? ` [why: ${card.why.slice(0, 200)}]` : "";
+    return `[NOTE] "${card.title || "Quick Note"}"${idStr}${pullStr} — ${(card.excerpt || "").slice(0, 500)} (${date})${tagStr}${whyStr}`;
   }
 
   return `[ITEM] "${card.title || "Untitled"}"${idStr}${pullStr} (${date})${tagStr}`;

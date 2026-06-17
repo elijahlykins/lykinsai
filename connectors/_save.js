@@ -55,6 +55,7 @@
 // ============================================================================
 
 import { embedAndStoreChunks } from '../synthesis-service.js';
+import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
 
 /**
  * @param {object} args
@@ -105,13 +106,17 @@ export async function saveConnectorNote({
   const needle = dedupeNeedle || url;
   if (!needle) return 'skipped';
 
+  // Dual-write the normalized attachment columns (migration 104) alongside the
+  // marker. Spread last so an explicit field can't be clobbered.
+  const attachmentColumns = buildAttachmentColumns(attachment);
+
   const attachmentsLine = `[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
   const noteContent = body
     ? [title, '', attachmentsLine, '\n' + body].join('\n').trim()
     : `${title}\n\n${attachmentsLine}`;
 
   const { data: existingRows } = await supabaseAdmin
-    .from('notes')
+    .from('vault_items')
     .select('id, content')
     .eq('user_id', userId)
     .ilike('content', `%${needle}%`)
@@ -129,11 +134,12 @@ export async function saveConnectorNote({
       resultMode = 'skipped';
     } else {
       const { error: updErr } = await supabaseAdmin
-        .from('notes')
+        .from('vault_items')
         .update({
           title,
           content: noteContent,
           updated_at: new Date().toISOString(),
+          ...attachmentColumns,
         })
         .eq('id', existing.id)
         .eq('user_id', userId);
@@ -144,7 +150,7 @@ export async function saveConnectorNote({
     }
   } else {
     const { data: inserted, error: insErr } = await supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .insert({
         user_id: userId,
         title,
@@ -152,6 +158,7 @@ export async function saveConnectorNote({
         source,
         tags,
         created_at: createdAt,
+        ...attachmentColumns,
       })
       .select('id')
       .single();
@@ -159,7 +166,7 @@ export async function saveConnectorNote({
       // Fallback: caps trigger / column error → degrade to a minimal
       // insert with no source/tags so the user at least sees the row.
       const { data: insFallback, error: err2 } = await supabaseAdmin
-        .from('notes')
+        .from('vault_items')
         .insert({ user_id: userId, title, content: noteContent })
         .select('id')
         .single();

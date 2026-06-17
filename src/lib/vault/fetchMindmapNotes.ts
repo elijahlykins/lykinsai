@@ -62,7 +62,7 @@ async function attachContentBatch(
 ): Promise<void> {
   const byId = new Map(rows.map((r) => [r.id, r]));
   const { data, error } = await supabase
-    .from("notes")
+    .from("vault_items")
     .select(CONTENT_COLUMNS)
     .eq("user_id", userId)
     .in("id", noteIds);
@@ -104,7 +104,7 @@ async function fetchManualNotesRestFallback(
   cursor: NotesCursor | null,
 ): Promise<{ rows: MindmapNoteRow[]; error: unknown | null }> {
   let q = supabase
-    .from("notes")
+    .from("vault_items")
     .select("id, title, tags, ai_summary, ai_signals, source, created_at, updated_at")
     .eq("user_id", userId)
     .order("updated_at", { ascending: false })

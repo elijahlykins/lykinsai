@@ -4,7 +4,7 @@ import type { FocusedChatAttachment } from "@/lib/ai/chatSendOrchestrator";
  * Shared file → chat-attachment ingestion.
  *
  * This is the single source of truth used by BOTH the composer file picker
- * (OmniaGrid's hidden <input>) and clipboard paste (useChatEngine's
+ * (LyknChat's hidden <input>) and clipboard paste (useChatEngine's
  * handleChatPaste). Keeping it in one place means screenshots pasted with
  * Cmd+V behave identically to files chosen from disk.
  */

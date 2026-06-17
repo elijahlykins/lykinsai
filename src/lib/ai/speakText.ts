@@ -86,7 +86,7 @@ async function authHeaders(): Promise<Record<string, string>> {
 }
 
 export interface SpeakOptions {
-  boardId?: string | null;
+  chatId?: string | null;
   voice?: string;
   signal?: AbortSignal;
   onStart?: () => void;
@@ -113,7 +113,7 @@ export async function speakText(text: string, opts: SpeakOptions = {}): Promise<
       body: JSON.stringify({
         text: clean,
         voice: opts.voice || LYKN_VOICE,
-        ...(opts.boardId ? { boardId: opts.boardId } : {}),
+        ...(opts.chatId ? { chatId: opts.chatId } : {}),
       }),
       signal: opts.signal,
     });

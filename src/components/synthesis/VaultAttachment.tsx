@@ -54,7 +54,15 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
-  const storageTarget = useMemo(() => resolveStorageTarget(att), [att]);
+  // Images can load a smaller rendition (Phase 3 variants): thumb in the
+  // compact card, medium in the full view. Video keeps the original (its
+  // variant is a poster image, not a playable file).
+  const variantPrefer: "thumb" | "medium" | undefined =
+    type === "image" ? (full ? "medium" : "thumb") : undefined;
+  const storageTarget = useMemo(
+    () => resolveStorageTarget(att, variantPrefer ? { prefer: variantPrefer } : undefined),
+    [att, variantPrefer],
+  );
   const needsSigning = !!storageTarget && rawUrl.includes("supabase.co/storage/");
   const displayUrl = signedUrl || rawUrl;
 

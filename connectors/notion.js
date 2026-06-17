@@ -37,6 +37,7 @@
 
 import { ConnectorAuthError } from '../connectors-service.js';
 import { embedAndStoreChunks } from '../synthesis-service.js';
+import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
 
 const NOTION_AUTH_URL = 'https://api.notion.com/v1/oauth/authorize';
 const NOTION_TOKEN_URL = 'https://api.notion.com/v1/oauth/token';
@@ -296,13 +297,15 @@ async function savePageAsNote({ supabaseAdmin, accessToken, userId, item, worksp
     body ? '\n' + body : '',
   ].join('\n').trim();
 
+  const attachmentColumns = buildAttachmentColumns(attachment);
+
   const editedAt = item.last_edited_time ? new Date(item.last_edited_time).toISOString() : undefined;
 
   // Find an existing row for this page URL. We key on the URL substring
   // because the bookmark JSON always embeds the canonical notion.so URL,
   // and Notion page URLs are stable across edits.
   const { data: existingRows } = await supabaseAdmin
-    .from('notes')
+    .from('vault_items')
     .select('id')
     .eq('user_id', userId)
     .eq('source', 'notion_page')
@@ -315,11 +318,12 @@ async function savePageAsNote({ supabaseAdmin, accessToken, userId, item, worksp
 
   if (existing) {
     const { error: updErr } = await supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .update({
         title,
         content: noteContent,
         updated_at: new Date().toISOString(),
+        ...attachmentColumns,
       })
       .eq('id', existing.id)
       .eq('user_id', userId);
@@ -329,7 +333,7 @@ async function savePageAsNote({ supabaseAdmin, accessToken, userId, item, worksp
     }
   } else {
     const { data: inserted, error: insErr } = await supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .insert({
         user_id: userId,
         title,
@@ -337,6 +341,7 @@ async function savePageAsNote({ supabaseAdmin, accessToken, userId, item, worksp
         source: 'notion_page',
         tags: ['notion', 'page', 'link', 'uploaded'],
         created_at: editedAt,
+        ...attachmentColumns,
       })
       .select('id')
       .single();

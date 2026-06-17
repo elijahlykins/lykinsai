@@ -227,7 +227,7 @@ export const searchVaultTool = {
       // no stemming) but keeps lexical recall alive pre-migration.
       const keywordOr = buildKeywordOr(queryRaw);
       const { data: kwData, error: kwError } = await ctx.supabaseAdmin
-        .from('notes')
+        .from('vault_items')
         .select('id')
         .eq('user_id', ctx.userId)
         .or(keywordOr)
@@ -297,7 +297,7 @@ export const searchVaultTool = {
 
     // Hydrate the fused candidate notes in a single round-trip.
     const { data: noteRows, error: hydErr } = await ctx.supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .select('id, title, content, created_at, updated_at, tags, ai_summary')
       .eq('user_id', ctx.userId)
       .in('id', fused.map((f) => f.id));

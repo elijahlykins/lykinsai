@@ -30,6 +30,7 @@
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
 import { resolveVaultAttachment } from '../lib/vaultAttachment.js';
+import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
 
 const TITLE_MAX = 200;
 const CONTENT_MAX = 60000;
@@ -236,13 +237,17 @@ export const saveFileToVaultTool = {
       tags: tags.length ? tags : null,
       folder,
       source,
+      ...buildAttachmentColumns(attachment),
+      // Phase 4 "why" column (utf8). Kept alongside the comments-thread copy
+      // above for back-compat until clients read the column.
+      ...(why ? { why } : {}),
       ...(generatedFile ? { ai_signals: { generated_file: generatedFile } } : {}),
       ...(comments ? { comments } : {}),
     };
 
     const selectCols = 'id, title, content, tags, folder, created_at, updated_at';
     let { data, error } = await ctx.supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .insert(richRow)
       .select(selectCols)
       .single();
@@ -257,7 +262,7 @@ export const saveFileToVaultTool = {
         /does not exist/i.test(error.message || ''));
     if (missingColumn) {
       ({ data, error } = await ctx.supabaseAdmin
-        .from('notes')
+        .from('vault_items')
         .insert({
           user_id: ctx.userId,
           title,

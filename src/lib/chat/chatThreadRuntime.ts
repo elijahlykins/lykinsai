@@ -25,7 +25,7 @@ const MAX_OPEN_THREADS = 10;
 const RUNTIME_EVENT = "lykn_chat_thread_runtime_changed";
 
 const snapshots = new Map<string, ThreadSnapshot>();
-let activeBoardId: string | null = null;
+let activeChatId: string | null = null;
 
 function emptySnapshot(): ThreadSnapshot {
   return {
@@ -42,10 +42,10 @@ function emptySnapshot(): ThreadSnapshot {
   };
 }
 
-export function dispatchThreadRuntimeChange(boardId?: string | null) {
+export function dispatchThreadRuntimeChange(chatId?: string | null) {
   try {
     window.dispatchEvent(
-      new CustomEvent(RUNTIME_EVENT, { detail: { boardId: boardId || null } }),
+      new CustomEvent(RUNTIME_EVENT, { detail: { chatId: chatId || null } }),
     );
   } catch {
     /* SSR */
@@ -58,16 +58,16 @@ export function subscribeThreadRuntime(cb: () => void) {
   return () => window.removeEventListener(RUNTIME_EVENT, handler);
 }
 
-export function getActiveThreadBoardId() {
-  return activeBoardId;
+export function getActiveThreadChatId() {
+  return activeChatId;
 }
 
-export function setActiveThreadBoardId(boardId: string | null) {
-  activeBoardId = boardId ? String(boardId) : null;
+export function setActiveThreadChatId(chatId: string | null) {
+  activeChatId = chatId ? String(chatId) : null;
 }
 
-export function ensureThreadSnapshot(boardId: string): ThreadSnapshot {
-  const id = String(boardId);
+export function ensureThreadSnapshot(chatId: string): ThreadSnapshot {
+  const id = String(chatId);
   let snap = snapshots.get(id);
   if (!snap) {
     snap = emptySnapshot();
@@ -76,19 +76,19 @@ export function ensureThreadSnapshot(boardId: string): ThreadSnapshot {
   return snap;
 }
 
-export function getThreadSnapshot(boardId: string | null | undefined): ThreadSnapshot | null {
-  if (!boardId) return null;
-  return snapshots.get(String(boardId)) || null;
+export function getThreadSnapshot(chatId: string | null | undefined): ThreadSnapshot | null {
+  if (!chatId) return null;
+  return snapshots.get(String(chatId)) || null;
 }
 
 export function patchThreadSnapshot(
-  boardId: string,
+  chatId: string,
   patch: Partial<Omit<ThreadSnapshot, "updatedAt">> & { updatedAt?: number },
 ) {
-  const snap = ensureThreadSnapshot(boardId);
+  const snap = ensureThreadSnapshot(chatId);
   Object.assign(snap, patch, { updatedAt: patch.updatedAt ?? Date.now() });
-  snapshots.set(String(boardId), snap);
-  dispatchThreadRuntimeChange(boardId);
+  snapshots.set(String(chatId), snap);
+  dispatchThreadRuntimeChange(chatId);
 }
 
 export function shouldPreferRuntimeSnapshot(
@@ -138,27 +138,27 @@ function writeOpenThreadIds(ids: string[]) {
   dispatchThreadRuntimeChange(null);
 }
 
-export function addOpenThread(boardId: string) {
-  const id = String(boardId);
+export function addOpenThread(chatId: string) {
+  const id = String(chatId);
   if (!id) return;
   const ids = readOpenThreadIds().filter((x) => x !== id);
   ids.unshift(id);
   writeOpenThreadIds(ids);
 }
 
-export function removeOpenThread(boardId: string) {
-  const id = String(boardId);
+export function removeOpenThread(chatId: string) {
+  const id = String(chatId);
   writeOpenThreadIds(readOpenThreadIds().filter((x) => x !== id));
   snapshots.delete(id);
 }
 
-export function isThreadLoading(boardId: string) {
-  return !!getThreadSnapshot(boardId)?.isChatLoading;
+export function isThreadLoading(chatId: string) {
+  return !!getThreadSnapshot(chatId)?.isChatLoading;
 }
 
 /** Wrap orchestrator state callbacks so updates land on the stream's board. */
 export function bindThreadStateCallbacks(
-  streamBoardId: string,
+  streamChatId: string,
   react: {
     setChatStatusText: (text: string) => void;
     setChatMessages: (updater: (prev: PromptMessage[]) => PromptMessage[]) => void;
@@ -166,12 +166,12 @@ export function bindThreadStateCallbacks(
     setChatFlowMode: (v: ChatFlowMode) => void;
   },
 ) {
-  const bid = String(streamBoardId);
+  const bid = String(streamChatId);
 
   return {
     setChatStatusText: (text: string) => {
       patchThreadSnapshot(bid, { chatStatusText: text });
-      if (getActiveThreadBoardId() === bid) react.setChatStatusText(text);
+      if (getActiveThreadChatId() === bid) react.setChatStatusText(text);
     },
     setChatMessages: (updater: (prev: PromptMessage[]) => PromptMessage[]) => {
       const snap = ensureThreadSnapshot(bid);
@@ -179,30 +179,30 @@ export function bindThreadStateCallbacks(
       snap.updatedAt = Date.now();
       snapshots.set(bid, snap);
       dispatchThreadRuntimeChange(bid);
-      if (getActiveThreadBoardId() === bid) {
+      if (getActiveThreadChatId() === bid) {
         react.setChatMessages(() => snap.chatMessages);
       }
     },
     setIsChatLoading: (v: boolean) => {
       patchThreadSnapshot(bid, { isChatLoading: v });
-      if (getActiveThreadBoardId() === bid) react.setIsChatLoading(v);
+      if (getActiveThreadChatId() === bid) react.setIsChatLoading(v);
     },
     setChatFlowMode: (v: ChatFlowMode) => {
       patchThreadSnapshot(bid, { chatFlowMode: v });
-      if (getActiveThreadBoardId() === bid) react.setChatFlowMode(v);
+      if (getActiveThreadChatId() === bid) react.setChatFlowMode(v);
     },
   };
 }
 
 export function snapshotActiveThreadFromReact(
-  boardId: string,
+  chatId: string,
   data: Partial<ThreadSnapshot>,
 ) {
-  patchThreadSnapshot(boardId, data);
+  patchThreadSnapshot(chatId, data);
 }
 
 export function hydrateActiveThreadToReact(
-  boardId: string,
+  chatId: string,
   react: {
     setChatMessages: (msgs: PromptMessage[]) => void;
     setIsChatLoading: (v: boolean) => void;
@@ -220,7 +220,7 @@ export function hydrateActiveThreadToReact(
   },
   loadedMessages: PromptMessage[],
 ) {
-  const snap = getThreadSnapshot(boardId);
+  const snap = getThreadSnapshot(chatId);
   if (!snap || !shouldPreferRuntimeSnapshot(snap, loadedMessages)) return false;
 
   refs.chatMessagesRef.current = snap.chatMessages;
@@ -238,6 +238,6 @@ export function hydrateActiveThreadToReact(
   return true;
 }
 
-export function registerStreamAbortController(boardId: string, controller: AbortController | null) {
-  patchThreadSnapshot(boardId, { abortController: controller });
+export function registerStreamAbortController(chatId: string, controller: AbortController | null) {
+  patchThreadSnapshot(chatId, { abortController: controller });
 }

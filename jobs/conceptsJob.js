@@ -352,7 +352,7 @@ export async function runConceptsForUser(admin, userId, { trigger = 'cron' } = {
         chatLinks.push({
           user_id: userId,
           concept_id: attachConceptId,
-          board_id: c.source_id,
+          chat_id: c.source_id,
           weight: similarity,
           source: 'chunk_cluster',
         });
@@ -371,7 +371,7 @@ export async function runConceptsForUser(admin, userId, { trigger = 'cron' } = {
     if (chatLinks.length) {
       const { error: cErr } = await admin
         .from('concept_chats')
-        .upsert(chatLinks, { onConflict: 'user_id,concept_id,board_id', ignoreDuplicates: true });
+        .upsert(chatLinks, { onConflict: 'user_id,concept_id,chat_id', ignoreDuplicates: true });
       if (cErr) {
         counters.concepts_error_count += 1;
       } else {

@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   cacheBustReload,
-  clearOmniaLocalStorage,
+  clearLyknChatLocalStorage,
   isLikelyStaleBundleError,
   reportClientError,
 } from '@/lib/errorRecovery';
@@ -74,7 +74,7 @@ class RouteErrorBoundary extends React.Component {
       const isHookError = error?.message?.includes('#310') || error?.message?.includes('more hooks');
       // A hooks-count mismatch is the one case where stale persisted draft
       // state can wedge the render, so wipe the omnia cache on that path.
-      if (isHookError) clearOmniaLocalStorage();
+      if (isHookError) clearLyknChatLocalStorage();
       this.setState((prev) => ({
         errorInfo,
         recovering: true,
@@ -160,13 +160,13 @@ class RouteErrorBoundary extends React.Component {
     };
 
     const handleClearAndRetry = () => {
-      clearOmniaLocalStorage();
+      clearLyknChatLocalStorage();
       try { sessionStorage.removeItem('lykn_route_boundary_stale_reload_done'); } catch { /* ignore */ }
       cacheBustReload();
     };
 
     const handleGoHome = () => {
-      clearOmniaLocalStorage();
+      clearLyknChatLocalStorage();
       try {
         const u = new URL(window.location.origin + '/');
         u.searchParams.set('_r', String(Date.now()));

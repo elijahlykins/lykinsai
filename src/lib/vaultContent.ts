@@ -93,11 +93,24 @@ export function parseVaultContent(raw: string): ParsedVaultContent {
 export function resolveStorageTarget(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   att: any,
+  opts?: { prefer?: "thumb" | "medium" },
 ): { bucket: string; path: string } | null {
+  const bucket = String(att?.storageBucket || "user-files").trim() || "user-files";
+
+  // Prefer a smaller rendition when asked and available (Phase 3 variants).
+  // thumb → medium → original; medium → original.
+  const prefer = opts?.prefer;
+  if (prefer) {
+    const thumb = String(att?.variantThumbPath || "").trim();
+    const medium = String(att?.variantMediumPath || "").trim();
+    const variantPath = prefer === "thumb" ? thumb || medium : medium;
+    if (variantPath) return { bucket, path: variantPath };
+  }
+
   const explicitPath = String(att?.storagePath || "").trim();
   if (explicitPath) {
     return {
-      bucket: String(att.storageBucket || "user-files").trim() || "user-files",
+      bucket,
       path: explicitPath,
     };
   }

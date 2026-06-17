@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import { extractYouTubeVideoId, isYouTubeUrl } from "@/lib/media/youtube";
 import { supabase } from "@/lib/supabase";
+import { stripAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
 
 const DOCUMENT_EXTS = new Set([
   "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "txt", "md", "markdown", "json", "html", "htm", "csv", "rtf",
@@ -40,8 +41,8 @@ export function getNotesDropPosition(editor: Editor, e: DragEvent): number {
 export function hasNotesDropHintTypes(e: DragEvent): boolean {
   const types = new Set([...e.dataTransfer.types]);
   if (types.has("application/x-grid-file")) return true;
-  if (types.has("application/x-omnia-vault")) return true;
-  if (types.has("application/x-omnia-chat-response")) return true;
+  if (types.has("application/x-lykn-chat-vault")) return true;
+  if (types.has("application/x-lykn-chat-chat-response")) return true;
   if (types.has("text/uri-list")) return true;
   for (const t of types) {
     if (/files/i.test(t) && (e.dataTransfer.files?.length ?? 0) > 0) return true;
@@ -54,8 +55,8 @@ export function hasExternalNotesDropPayload(e: DragEvent): boolean {
   const dt = e.dataTransfer;
   const types = new Set([...dt.types]);
   if (types.has("application/x-grid-file")) return true;
-  if (types.has("application/x-omnia-vault")) return true;
-  if (types.has("application/x-omnia-chat-response")) return true;
+  if (types.has("application/x-lykn-chat-vault")) return true;
+  if (types.has("application/x-lykn-chat-chat-response")) return true;
   if (types.has("text/uri-list")) return true;
   if ((dt.files?.length ?? 0) > 0) return true;
   const plain = (dt.getData("text/plain") || "").trim();
@@ -153,7 +154,7 @@ function gridItemToNodes(item: Record<string, unknown>): Record<string, unknown>
   const url = String(item.url || "").trim();
   const name = String(item.name || "Grid item").trim();
   let content = String(item.content || "");
-  content = content.replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, "").trim();
+  content = stripAttachmentsMarker(content);
 
   if (type === "note") {
     const nodes: Record<string, unknown>[] = [
@@ -351,7 +352,7 @@ export async function insertNotesDropContent(editor: Editor, e: DragEvent): Prom
     }
   }
 
-  const vaultRaw = e.dataTransfer.getData("application/x-omnia-vault");
+  const vaultRaw = e.dataTransfer.getData("application/x-lykn-chat-vault");
   if (vaultRaw) {
     try {
       const payload = JSON.parse(vaultRaw) as Record<string, unknown>;
@@ -365,7 +366,7 @@ export async function insertNotesDropContent(editor: Editor, e: DragEvent): Prom
     }
   }
 
-  const chatRaw = e.dataTransfer.getData("application/x-omnia-chat-response");
+  const chatRaw = e.dataTransfer.getData("application/x-lykn-chat-chat-response");
   if (chatRaw) {
     const nodes = plaintextToParagraphNodes(chatRaw);
     if (nodes.length) {

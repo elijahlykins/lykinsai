@@ -110,7 +110,7 @@ function kindLabel(node: MindNode): string {
     return "Vault";
   }
   if (node.kind === "perspective") return "Perspective";
-  if (node.kind === "grid") return "Chat";
+  if (node.kind === "chat") return "Chat";
   if (node.kind === "tag") return "Tag";
   if (node.kind === "neuron") return node.meta?.kindLabel || "Fact";
   if (node.kind === "root") return "Your Mind";
@@ -159,8 +159,8 @@ function whyCreated(node: MindNode): string {
     return "An item you saved to your vault.";
   }
   if (node.kind === "perspective") return "A long-form story you authored.";
-  if (node.kind === "grid") return "A conversation board.";
-  if (node.kind === "tag") return "A tag spanning your notes and boards.";
+  if (node.kind === "chat") return "A conversation you've had.";
+  if (node.kind === "tag") return "A tag spanning your notes and chats.";
   if (node.kind === "neuron") {
     const k = node.meta?.neuronKind;
     const src = node.meta?.source;
@@ -183,7 +183,7 @@ function whenCreatedISO(node: MindNode): string | null {
   // wants to read as months old here.
   if (node.kind === "concept") return m.conceptCreatedAt || m.conceptLastTouchedAt || null;
   if (node.kind === "vault" || node.kind === "perspective") return m.createdAt || null;
-  if (node.kind === "grid") return m.createdAt || null;
+  if (node.kind === "chat") return m.createdAt || null;
   if (node.kind === "neuron") return m.factCreatedAt || m.factFirstSeenAt || null;
   return null;
 }
@@ -218,7 +218,7 @@ function formatWhen(iso: string | null): string {
  * Resolve the destination URL for a neuron that maps onto a primary
  * surface elsewhere in the app:
  *
- *   • chat (grid) neurons → /grid/<boardId>          (OmniaGrid board)
+ *   • chat (grid) neurons → /grid/<chatId>          (LyknChat board)
  *   • vault items         → /vault?note=<noteId>     (single note focus)
  *   • vault rollups       → /vault?source=<app>      (connector folder)
  *
@@ -229,14 +229,14 @@ function formatWhen(iso: string | null): string {
  * The vault deep-link query params are read by `VaultNew.jsx` on
  * mount: `?note=<id>` scrolls + briefly highlights the matching
  * card; `?source=<slug>` opens the connector folder. The synthesis
- * page's `meta.boardId` for grid neurons matches the `:boardId`
- * route param exactly so OmniaGrid can resume the conversation.
+ * page's `meta.chatId` for grid neurons matches the `:chatId`
+ * route param exactly so LyknChat can resume the conversation.
  */
 function openHrefFor(node: MindNode): { href: string; label: string } | null {
-  if (node.kind === "grid") {
-    const boardId = node.meta?.boardId;
-    if (typeof boardId === "string" && boardId) {
-      return { href: `/grid/${boardId}`, label: "Open chat" };
+  if (node.kind === "chat") {
+    const chatId = node.meta?.chatId;
+    if (typeof chatId === "string" && chatId) {
+      return { href: `/chat/${chatId}`, label: "Open chat" };
     }
     return null;
   }
@@ -312,7 +312,7 @@ async function saveEdit(node: MindNode, text: string): Promise<boolean> {
     const id = node.meta?.noteId;
     if (!id || node.meta?.isSourceRollup) return false;
     try {
-      const { error } = await supabase.from("notes").update({ title: text }).eq("id", id);
+      const { error } = await supabase.from("vault_items").update({ title: text }).eq("id", id);
       return !error;
     } catch {
       return false;
@@ -401,7 +401,7 @@ async function deleteNeuron(node: MindNode): Promise<boolean> {
     const id = node.meta?.noteId;
     if (!id) return false;
     try {
-      const { error } = await supabase.from("notes").delete().eq("id", id);
+      const { error } = await supabase.from("vault_items").delete().eq("id", id);
       return !error;
     } catch {
       return false;
@@ -586,7 +586,7 @@ export default function NeuronPanel({
     queryFn: async () => {
       if (!noteBackedId) return "";
       const { data, error } = await supabase
-        .from("notes")
+        .from("vault_items")
         .select("content")
         .eq("id", noteBackedId)
         .maybeSingle();

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Volume2, VolumeX } from "lucide-react";
 import type { RealtimeVoiceState } from "@/hooks/useRealtimeVoice";
-import VoiceTechOrb from "@/components/omnia/VoiceTechOrb";
+import VoiceTechOrb from "@/components/lyknChat/VoiceTechOrb";
 
 interface WakeVoiceTourPreviewProps {
   active?: boolean;
@@ -14,7 +14,7 @@ interface WakeVoiceTourPreviewProps {
 }
 
 // Same status copy the real Voice Mode overlay shows beneath the orb
-// (OmniaVoiceModeEleven STATUS_COPY).
+// (LyknChatVoiceModeEleven STATUS_COPY).
 const STATUS_COPY: Partial<Record<RealtimeVoiceState, string>> = {
   idle: "Paused",
   connecting: "Connecting…",

@@ -103,9 +103,9 @@ const WS_CACHE_TTL = 5 * 60_000; // 5 minutes
 
 export async function fetchWorkspaceSummaries(
   userId: string,
-  excludeBoardId?: string,
+  excludeChatId?: string,
 ): Promise<WorkspaceSummary> {
-  const cacheKey = `${userId}:${excludeBoardId ?? ""}`;
+  const cacheKey = `${userId}:${excludeChatId ?? ""}`;
   const cached = wsCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < WS_CACHE_TTL) {
     return cached.data;
@@ -113,7 +113,7 @@ export async function fetchWorkspaceSummaries(
 
   if (import.meta.env.DEV) console.log("[LYKN-WS] Fetching workspace summaries");
 
-  // NOTE: the grid / `omnia_boards` surface is intentionally not loaded here.
+  // NOTE: the grid / `lykn_chats` surface is intentionally not loaded here.
   // The grid is not part of the current product, so we never want "OTHER
   // BOARDS" appearing in the AI's workspace context — it would make the AI
   // describe / reference a surface that doesn't exist for the user.
@@ -121,7 +121,7 @@ export async function fetchWorkspaceSummaries(
 
   try {
     notesResult = await supabase
-      .from("notes")
+      .from("vault_items")
       .select("id, title, content, updated_at, ai_summary, tags")
       .eq("user_id", userId)
       .order("updated_at", { ascending: false })

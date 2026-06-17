@@ -23,14 +23,14 @@ function writeMap(map: PendingMap) {
   }
 }
 
-export function setPendingBoardThread(boardId: string, threadId: string) {
+export function setPendingBoardThread(chatId: string, threadId: string) {
   const map = readMap();
-  map[String(boardId)] = String(threadId);
+  map[String(chatId)] = String(threadId);
   writeMap(map);
 }
 
-export function consumePendingBoardThread(boardId: string): string | null {
-  const id = String(boardId);
+export function consumePendingBoardThread(chatId: string): string | null {
+  const id = String(chatId);
   const map = readMap();
   const threadId = map[id] ? String(map[id]) : null;
   if (threadId) {

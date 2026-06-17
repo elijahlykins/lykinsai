@@ -35,6 +35,7 @@
 // the existing row instead of creating a duplicate).
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
+import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
 
 const URL_MAX = 2048;
 const TITLE_MAX = 200;
@@ -260,7 +261,7 @@ export const saveLinkToVaultTool = {
     // can't end up with two copies of the same URL. Cheap (indexed ilike).
     try {
       const { data: existing, error: dupErr } = await sb
-        .from('notes')
+        .from('vault_items')
         .select('id, title, content, tags, folder, source, created_at, updated_at')
         .eq('user_id', ctx.userId)
         .ilike('content', buildLikePattern(url))
@@ -342,13 +343,36 @@ export const saveLinkToVaultTool = {
       content: noteContent,
       tags: tags.length ? tags : null,
       source: source.slice(0, 64),
+      ...buildAttachmentColumns(attachment),
     };
 
-    const { data, error } = await sb
-      .from('notes')
+    const selectCols = 'id, title, content, tags, folder, source, created_at, updated_at';
+    let { data, error } = await sb
+      .from('vault_items')
       .insert(row)
-      .select('id, title, content, tags, folder, source, created_at, updated_at')
+      .select(selectCols)
       .single();
+
+    // Normalized attachment columns ship in migration 104; retry without them
+    // on older DBs so the link still lands.
+    const missingColumn =
+      error &&
+      (error.code === 'PGRST204' ||
+        /could not find/i.test(error.message || '') ||
+        /does not exist/i.test(error.message || ''));
+    if (missingColumn) {
+      ({ data, error } = await sb
+        .from('vault_items')
+        .insert({
+          user_id: ctx.userId,
+          title: title.slice(0, TITLE_MAX),
+          content: noteContent,
+          tags: tags.length ? tags : null,
+          source: source.slice(0, 64),
+        })
+        .select(selectCols)
+        .single());
+    }
     if (error) {
       console.warn('[mcp:saveLinkToVault]', error.message);
       return errorContent(`vault link insert failed: ${error.message}`);

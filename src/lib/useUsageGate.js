@@ -9,7 +9,7 @@ import { SYNTHESIS_CAP_EVENT } from "@/lib/vault/synthesisCapError";
 import { UPLOAD_RATE_LIMIT_EVENT } from "@/lib/vault/uploadRateLimitError";
 
 // The `blocks-per-grid` cap is enforced at the canvas-store level (see
-// `src/store/canvasStore.ts`). When a user hits it the store dispatches this
+// `src/store/lyknChatStore.ts`). When a user hits it the store dispatches this
 // event and the modal picks it up here. Defined as a module-level constant so
 // both emitter and listener share the exact string.
 export const BLOCK_LIMIT_EVENT = "lykn:block-limit-reached";
@@ -32,7 +32,7 @@ export function useUsageGate() {
   const refreshVaultCount = useCallback(async () => {
     if (!user?.id) return 0;
     const { count } = await supabase
-      .from("notes")
+      .from("vault_items")
       .select("id", { count: "exact", head: true })
       .eq("user_id", user.id);
     const c = count ?? 0;
@@ -73,7 +73,7 @@ export function useUsageGate() {
   }, []);
 
   // Listen for the canvas-store block-limit event so any component mounting
-  // the hook (Canvas, OmniaGrid, etc) can surface the upgrade modal.
+  // the hook (Canvas, LyknChat, etc) can surface the upgrade modal.
   useEffect(() => {
     const handler = (e) => {
       const detail = e?.detail || {};
@@ -172,7 +172,7 @@ export function useUsageGate() {
     if (!isFinite(limit)) return true;
 
     const { count } = await supabase
-      .from("notes")
+      .from("vault_items")
       .select("id", { count: "exact", head: true })
       .eq("user_id", user.id);
     const current = count ?? 0;

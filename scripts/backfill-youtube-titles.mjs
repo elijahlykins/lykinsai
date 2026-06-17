@@ -138,7 +138,7 @@ function rebuildContent(span, videoUrl, meta) {
 async function main() {
   console.log(`[backfill-youtube-titles] mode=${COMMIT ? 'COMMIT' : 'DRY-RUN'}${userArg ? ` user=${userArg}` : ''}`);
   let q = supabase
-    .from('notes')
+    .from('vault_items')
     .select('id, user_id, title, content, updated_at')
     .eq('title', 'YouTube Video')
     .order('updated_at', { ascending: false });
@@ -175,7 +175,7 @@ async function main() {
     // candidate query above (a user editing the title in the UI between
     // our SELECT and our UPDATE shouldn't get clobbered).
     const { error: upErr } = await supabase
-      .from('notes')
+      .from('vault_items')
       .update({ title: meta.title, content: newContent })
       .eq('id', note.id)
       .eq('user_id', note.user_id)

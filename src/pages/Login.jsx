@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { isConnectOnboardingDone } from "@/lib/prototypeHandoff";
+import { isConnectOnboardingDone } from "@/lib/landingHandoff";
 import { motion, AnimatePresence } from "framer-motion";
 import lyknLogoWhite from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
 import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-web.png";
@@ -92,7 +92,7 @@ export default function Login() {
   // `/` now renders the synthetic-intelligence onboarding prototype which
   // is a guest-only experience; signed-in users should land directly in
   // their grid. `from` is still honored so deep links into a specific
-  // route (e.g. `/vault`, `/grid/<id>`) keep working through the auth gate.
+  // route (e.g. `/vault`, `/chat/<id>`) keep working through the auth gate.
   const from = location.state?.from?.pathname || "/app";
   const prefilledEmail = location.state?.email;
 

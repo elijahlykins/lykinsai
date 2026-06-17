@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase";
-import type { Block } from "@/canvas/types";
+import type { Block } from "@/lyknChat/types";
 
 type LocalFolderEntry = {
   id: string;
@@ -142,29 +142,29 @@ const loadLocalProjectFiles = (projectId: string) => {
 
 export const getProjectKnowledgeBase = async (projectId: string): Promise<ProjectKnowledgeBase> => {
   const { data: project } = await supabase
-    .from("omnia_projects")
+    .from("lykn_chat_projects")
     .select("id, name")
     .eq("id", projectId)
     .maybeSingle();
 
   const { data: boards = [] } = await supabase
-    .from("omnia_boards")
+    .from("lykn_chats")
     .select("id, title, created_at, updated_at")
     .eq("project_id", projectId)
     .order("updated_at", { ascending: false })
     .limit(50);
 
-  const boardIds = boards.map((b: any) => b.id);
+  const chatIds = boards.map((b: any) => b.id);
   let latestSnapshots: Record<string, any> = {};
-  if (boardIds.length) {
+  if (chatIds.length) {
     // Single batch query — each board has at most 1 row after migration 016.
     const { data: stateRows } = await supabase
-      .from("omnia_board_states")
-      .select("board_id, state")
-      .in("board_id", boardIds.slice(0, 20));
+      .from("lykn_chat_states")
+      .select("chat_id, state")
+      .in("chat_id", chatIds.slice(0, 20));
     for (const row of stateRows || []) {
-      if (row.board_id && row.state) {
-        latestSnapshots[row.board_id] = row.state;
+      if (row.chat_id && row.state) {
+        latestSnapshots[row.chat_id] = row.state;
       }
     }
   }
@@ -235,14 +235,14 @@ export const projectKnowledgeBaseToText = (kb: ProjectKnowledgeBase, maxChars = 
  */
 export const projectSummaryForAI = (
   kb: ProjectKnowledgeBase,
-  opts?: { maxChars?: number; excludeBoardId?: string },
+  opts?: { maxChars?: number; excludeChatId?: string },
 ): string => {
   const maxChars = opts?.maxChars ?? 2000;
   const parts: string[] = [];
   parts.push(`Project: ${kb.projectName || kb.projectId}`);
 
-  const boards = opts?.excludeBoardId
-    ? kb.boards.filter((b) => b.id !== opts.excludeBoardId)
+  const boards = opts?.excludeChatId
+    ? kb.boards.filter((b) => b.id !== opts.excludeChatId)
     : kb.boards;
 
   if (boards.length) {

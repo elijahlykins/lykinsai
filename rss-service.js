@@ -17,6 +17,7 @@
 import Parser from 'rss-parser';
 import * as cheerio from 'cheerio';
 import crypto from 'crypto';
+import { buildAttachmentColumns } from './lib/vault/attachmentType.js';
 
 // ---------------------------------------------------------------------------
 // Configurable constants
@@ -273,7 +274,7 @@ async function saveEntryAsNote({ supabaseAdmin, userId, feed, item }) {
   // saved this URL earlier via /share, drag-drop, etc. Same check shape as
   // saveLinkToVault on the client.
   const { data: existing } = await supabaseAdmin
-    .from('notes')
+    .from('vault_items')
     .select('id')
     .eq('user_id', userId)
     .ilike('content', `%${url}%`)
@@ -311,7 +312,7 @@ async function saveEntryAsNote({ supabaseAdmin, userId, feed, item }) {
   const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
 
   const { data: inserted, error } = await supabaseAdmin
-    .from('notes')
+    .from('vault_items')
     .insert({
       user_id: userId,
       title,
@@ -319,6 +320,7 @@ async function saveEntryAsNote({ supabaseAdmin, userId, feed, item }) {
       source: 'rss',
       tags: ['rss', 'link', 'uploaded'],
       created_at: pubDate ? new Date(pubDate).toISOString() : undefined,
+      ...buildAttachmentColumns(attachment),
     })
     .select('id')
     .single();
@@ -326,7 +328,7 @@ async function saveEntryAsNote({ supabaseAdmin, userId, feed, item }) {
   if (error) {
     // Fall back to a minimal insert if the schema doesn't have all columns.
     const { data: minimal, error: err2 } = await supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .insert({ user_id: userId, title, content: noteContent })
       .select('id')
       .single();

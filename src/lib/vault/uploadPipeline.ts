@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { describeVaultItemInBackground } from "@/lib/vault/describeVaultItem";
 import { uploadFileToStorage } from "@/lib/vault/uploadFileToStorage";
+import { generateMediaVariants } from "@/lib/vault/mediaVariants";
 import {
   IMAGE_COMPRESS_THRESHOLD_BYTES,
   VIDEO_COMPRESS_THRESHOLD_BYTES,
@@ -21,6 +22,7 @@ import {
 import { notifyUploadRateLimitIfApplicable } from "@/lib/vault/uploadRateLimitError";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { findAttachmentsMarker, withAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
+import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
 import { toast } from "@/components/ui/use-toast";
 import {
   registerVaultUploadCancellation,
@@ -273,7 +275,7 @@ function canPreview(fileType: string): boolean {
 async function probeMediaDimensions(
   file: File,
   fileType: string,
-): Promise<{ width: number; height: number } | null> {
+): Promise<{ width: number; height: number; durationSeconds?: number } | null> {
   try {
     if (fileType === "image") {
       // createImageBitmap is the fastest path (decodes off the main thread)
@@ -310,7 +312,9 @@ async function probeMediaDimensions(
       return await new Promise((resolve) => {
         const url = URL.createObjectURL(file);
         const video = document.createElement("video");
-        const done = (dims: { width: number; height: number } | null) => {
+        const done = (
+          dims: { width: number; height: number; durationSeconds?: number } | null,
+        ) => {
           URL.revokeObjectURL(url);
           resolve(dims);
         };
@@ -318,12 +322,15 @@ async function probeMediaDimensions(
         // unless we nudge it; muted + preload metadata is enough.
         video.preload = "metadata";
         video.muted = true;
-        video.onloadedmetadata = () =>
-          done(
-            video.videoWidth > 0 && video.videoHeight > 0
-              ? { width: video.videoWidth, height: video.videoHeight }
-              : null,
-          );
+        video.onloadedmetadata = () => {
+          if (!(video.videoWidth > 0 && video.videoHeight > 0)) return done(null);
+          const dur = Number(video.duration);
+          done({
+            width: video.videoWidth,
+            height: video.videoHeight,
+            ...(Number.isFinite(dur) && dur > 0 ? { durationSeconds: dur } : {}),
+          });
+        };
         video.onerror = () => done(null);
         video.src = url;
       });
@@ -334,14 +341,23 @@ async function probeMediaDimensions(
   return null;
 }
 
-async function extractPdfText(file: File): Promise<string> {
+// Cap how many PDF pages we pull text from. The vault item stores the FULL
+// document (and its real page count), but extracting/embedding every page of a
+// 400-page report is wasteful — the first few pages carry the gist for search.
+const PDF_TEXT_PAGE_CAP = 6;
+
+async function extractPdfText(
+  file: File,
+): Promise<{ text: string; pageCount: number | null }> {
   try {
     const arrayBuffer = await file.arrayBuffer();
     const pdfjsLib: any = await import("pdfjs-dist");
     pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const totalPages: number = pdf.numPages;
+    const lastPage = Math.min(totalPages, PDF_TEXT_PAGE_CAP);
     const pages: string[] = [];
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+    for (let pageNum = 1; pageNum <= lastPage; pageNum += 1) {
       const page = await pdf.getPage(pageNum);
       const textContent = await page.getTextContent();
       const pageText = textContent.items
@@ -351,12 +367,31 @@ async function extractPdfText(file: File): Promise<string> {
         .trim();
       if (pageText) pages.push(pageText);
     }
-    return pages.join("\n\n");
+    return { text: pages.join("\n\n"), pageCount: totalPages };
   } catch (error: any) {
     if (import.meta.env.DEV) {
       // eslint-disable-next-line no-console
       console.warn("PDF text extraction failed:", error?.message);
     }
+    return { text: "", pageCount: null };
+  }
+}
+
+// Extracts text from a Word/OpenDocument/PowerPoint file via the server's
+// generic /api/files/extract-text route (which already wires mammoth for docx).
+async function extractDocText(file: File): Promise<string> {
+  try {
+    const { API_BASE_URL } = await import("@/lib/api-config");
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${API_BASE_URL}/api/files/extract-text`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) return "";
+    const data = await res.json().catch(() => null);
+    return String(data?.text || "").trim();
+  } catch {
     return "";
   }
 }
@@ -373,12 +408,13 @@ type CreateNoteArgs = {
   mimeType: string;
   width?: number | null;
   height?: number | null;
+  durationSeconds?: number | null;
 };
 
 async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
   const {
     userId, filename, folderPath, fileType, fileUrl, storagePath,
-    storageBucket, fileSize, mimeType, width, height,
+    storageBucket, fileSize, mimeType, width, height, durationSeconds,
   } = args;
 
   const folderName = folderPath ? String(folderPath).trim() : "Uploaded Files";
@@ -399,6 +435,7 @@ async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
     // Intrinsic pixel dimensions let the vault reserve the exact
     // aspect-ratio slot before the media loads — no layout shift.
     ...(width && height && width > 0 && height > 0 ? { width, height } : {}),
+    ...(durationSeconds && durationSeconds > 0 ? { durationSeconds } : {}),
   }];
 
   // Attachment-only body: title + ATTACHMENTS_JSON carry everything the
@@ -413,10 +450,13 @@ async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
     folder: folderName,
     source: "file_upload",
     tags: [fileType, "uploaded"],
+    // Dual-write the normalized attachment columns (migration 104) alongside
+    // the marker. The missing-column fallback below covers pre-migration DBs.
+    ...buildAttachmentColumns(attachmentPayload[0]),
   } as Record<string, unknown>;
 
   let { data: insertedNote, error: noteError } = await supabase
-    .from("notes")
+    .from("vault_items")
     .insert(richInsert)
     .select("id, title, content, tags, created_at, updated_at")
     .single();
@@ -431,7 +471,7 @@ async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
 
   if (missingColumnError) {
     ({ data: insertedNote, error: noteError } = await supabase
-      .from("notes")
+      .from("vault_items")
       .insert({ user_id: userId, title: noteTitle, content: noteContent })
       .select("id, title, content, created_at, updated_at")
       .single());
@@ -460,6 +500,123 @@ async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
   return insertedNote || null;
 }
 
+// Updates `notes` columns, transparently retrying without them on a DB that
+// predates a given migration so the note still lands.
+async function updateNoteColumnsTolerant(
+  userId: string,
+  noteId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await supabase
+    .from("vault_items")
+    .update(patch)
+    .eq("id", noteId)
+    .eq("user_id", userId);
+  if (
+    error &&
+    ((error as any).code === "PGRST204" ||
+      /could not find|does not exist/i.test((error as any).message || ""))
+  ) {
+    // Columns not present yet (pre-migration) — silently skip.
+  }
+}
+
+async function generateAndStoreVariants(args: {
+  userId: string;
+  noteId: string;
+  file: File;
+  fileType: string;
+  storagePath: string;
+}): Promise<void> {
+  const { userId, noteId, file, fileType, storagePath } = args;
+  const dir = storagePath.slice(0, storagePath.lastIndexOf("/") + 1);
+  if (!dir) return;
+
+  const variants = await generateMediaVariants(file, fileType);
+  const patch: Record<string, unknown> = {};
+
+  if (variants.medium) {
+    const mediumPath = `${dir}medium.jpg`;
+    try {
+      await uploadFileToStorage({
+        file: variants.medium,
+        userId,
+        storagePath: mediumPath,
+        bucket: "user-files",
+        contentType: "image/jpeg",
+        cacheControl: "31536000",
+        upsert: true,
+      });
+      patch.variant_medium_path = mediumPath;
+    } catch { /* best-effort */ }
+  }
+
+  if (variants.thumb) {
+    const thumbPath = `${dir}thumb.jpg`;
+    try {
+      await uploadFileToStorage({
+        file: variants.thumb,
+        userId,
+        storagePath: thumbPath,
+        bucket: "user-files",
+        contentType: "image/jpeg",
+        cacheControl: "31536000",
+        upsert: true,
+      });
+      patch.variant_thumb_path = thumbPath;
+    } catch { /* best-effort */ }
+  }
+
+  if (!Object.keys(patch).length) return;
+
+  // Dual-write the variant paths into the marker too, so existing
+  // marker-based renderers (VaultAttachment, the Vault grid) can prefer the
+  // small rendition without a column-select refactor.
+  try {
+    const { data: latest } = await supabase
+      .from("vault_items")
+      .select("content, updated_at")
+      .eq("id", noteId)
+      .eq("user_id", userId)
+      .single();
+    const content: string = (latest as any)?.content || "";
+    const span = findAttachmentsMarker(content);
+    if (span && span.attachments[0] && typeof span.attachments[0] === "object") {
+      const next = span.attachments.slice() as Record<string, unknown>[];
+      const head = { ...(next[0] as Record<string, unknown>) };
+      if (patch.variant_medium_path) head.variantMediumPath = patch.variant_medium_path;
+      if (patch.variant_thumb_path) head.variantThumbPath = patch.variant_thumb_path;
+      next[0] = head;
+      const newContent = withAttachmentsMarker(content, next);
+      const updatedAt = (latest as any)?.updated_at;
+      const q = supabase
+        .from("vault_items")
+        .update({ content: newContent, ...patch })
+        .eq("id", noteId)
+        .eq("user_id", userId);
+      if (updatedAt) q.eq("updated_at", updatedAt);
+      const { error } = await q;
+      if (
+        error &&
+        ((error as any).code === "PGRST204" ||
+          /could not find|does not exist/i.test((error as any).message || ""))
+      ) {
+        // Columns missing — persist the marker (which now carries variants).
+        const q2 = supabase
+          .from("vault_items")
+          .update({ content: newContent })
+          .eq("id", noteId)
+          .eq("user_id", userId);
+        if (updatedAt) q2.eq("updated_at", updatedAt);
+        await q2;
+      }
+      return;
+    }
+  } catch { /* fall through to columns-only update */ }
+
+  await updateNoteColumnsTolerant(userId, noteId, patch);
+}
+
 function runPostProcessing(args: {
   userId: string;
   noteId: string;
@@ -467,17 +624,36 @@ function runPostProcessing(args: {
   filename: string;
   fileType: string;
   fileUrl: string | null;
+  storagePath: string | null;
   createdNote: any;
   bulkImport?: boolean;
 }): void {
-  const { userId, noteId, file, filename, fileType, fileUrl, createdNote, bulkImport } = args;
+  const { userId, noteId, file, filename, fileType, fileUrl, storagePath, createdNote, bulkImport } = args;
   (async () => {
+    // Image/video: derive medium + thumb renditions and store their paths so
+    // the grid/mobile can load a small JPEG instead of the full original.
+    if ((fileType === "image" || fileType === "video") && storagePath) {
+      try {
+        await generateAndStoreVariants({ userId, noteId, file, fileType, storagePath });
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.warn("[uploadPipeline] variant generation failed:", err);
+        }
+      }
+    }
     try {
-      let extractedPdfText = "";
+      let extractedText = "";
+      let pdfPageCount: number | null = null;
       let spreadsheetData: any = null;
 
       if (fileType === "pdf") {
-        extractedPdfText = await extractPdfText(file);
+        const pdf = await extractPdfText(file);
+        extractedText = pdf.text;
+        pdfPageCount = pdf.pageCount;
+      } else if (fileType === "doc") {
+        // Word/OpenDocument: extract via the server route (mammoth for docx).
+        extractedText = await extractDocText(file);
       } else if (fileType === "spreadsheet") {
         try {
           const { API_BASE_URL } = await import("@/lib/api-config");
@@ -491,10 +667,10 @@ function runPostProcessing(args: {
         } catch { /* best-effort */ }
       }
 
-      if (extractedPdfText || spreadsheetData) {
+      if (extractedText || spreadsheetData || pdfPageCount != null) {
         try {
           const { data: latest } = await supabase
-            .from("notes")
+            .from("vault_items")
             .select("content, updated_at")
             .eq("id", noteId)
             .eq("user_id", userId)
@@ -504,9 +680,10 @@ function runPostProcessing(args: {
           if (span && span.attachments[0] && typeof span.attachments[0] === "object") {
             const next = span.attachments.slice() as Record<string, unknown>[];
             const head = { ...(next[0] as Record<string, unknown>) };
-            if (extractedPdfText) {
-              head.extractedText = String(extractedPdfText).slice(0, 12000);
+            if (extractedText) {
+              head.extractedText = String(extractedText).slice(0, 12000);
             }
+            if (pdfPageCount != null) head.pageCount = pdfPageCount;
             if (spreadsheetData) {
               head.rows = spreadsheetData.rows;
               head.cols = spreadsheetData.cols;
@@ -515,14 +692,32 @@ function runPostProcessing(args: {
             next[0] = head;
             const newContent = withAttachmentsMarker(content, next);
             const updatedAt = (latest as any)?.updated_at;
+            // Re-derive the normalized columns from the enriched primary
+            // attachment so page_count / attachment_preview.extractedText land
+            // in columns too (dual-write). Tolerate pre-migration DBs.
+            const refreshedColumns = buildAttachmentColumns(head);
             const q = supabase
-              .from("notes")
-              .update({ content: newContent })
+              .from("vault_items")
+              .update({ content: newContent, ...refreshedColumns })
               .eq("id", noteId)
               .eq("user_id", userId);
             // Lost-update guard so a concurrent edit wins.
             if (updatedAt) q.eq("updated_at", updatedAt);
-            await q;
+            const { error: upErr } = await q;
+            if (
+              upErr &&
+              ((upErr as any).code === "PGRST204" ||
+                /could not find|does not exist/i.test((upErr as any).message || ""))
+            ) {
+              // Columns not present yet — at least persist the enriched content.
+              const q2 = supabase
+                .from("vault_items")
+                .update({ content: newContent })
+                .eq("id", noteId)
+                .eq("user_id", userId);
+              if (updatedAt) q2.eq("updated_at", updatedAt);
+              await q2;
+            }
           }
         } catch { /* ignore */ }
       }
@@ -534,7 +729,7 @@ function runPostProcessing(args: {
       if (!bulkImport) {
         describeVaultItemInBackground(noteId, {
           imageUrl: (fileType === "image" || fileType === "video") ? fileUrl || undefined : undefined,
-          textContent: extractedPdfText || ssText || undefined,
+          textContent: extractedText || ssText || undefined,
           fileType,
           fileName: filename,
         });
@@ -543,7 +738,7 @@ function runPostProcessing(args: {
       afterVaultNoteSaved(userId, noteId, {
         title: createdNote?.title || filename,
         content: createdNote?.content || "",
-        extraPlain: extractedPdfText || ssText || undefined,
+        extraPlain: extractedText || ssText || undefined,
         bulkImport,
       });
     } catch (err) {
@@ -561,7 +756,7 @@ async function resolveVaultCount(
 ): Promise<number> {
   if (typeof hint === "number" && Number.isFinite(hint)) return Math.max(0, hint);
   const { count } = await supabase
-    .from("notes")
+    .from("vault_items")
     .select("id", { count: "exact", head: true })
     .eq("user_id", userId);
   return count ?? 0;
@@ -789,7 +984,7 @@ async function processOne(args: {
     // stored ratio matches the bytes the grid will actually render. Best-
     // effort and bounded — a slow/failed decode just omits dims rather than
     // holding up the note insert.
-    let mediaDims: { width: number; height: number } | null = null;
+    let mediaDims: { width: number; height: number; durationSeconds?: number } | null = null;
     if (fileType === "image" || fileType === "video") {
       mediaDims = await Promise.race([
         probeMediaDimensions(file, fileType),
@@ -811,6 +1006,7 @@ async function processOne(args: {
         mimeType: file.type,
         width: mediaDims?.width ?? null,
         height: mediaDims?.height ?? null,
+        durationSeconds: mediaDims?.durationSeconds ?? null,
       });
     } catch (createError) {
       // Trigger-raised errors propagate so the catch below can route them
@@ -865,6 +1061,7 @@ async function processOne(args: {
       filename,
       fileType,
       fileUrl,
+      storagePath,
       createdNote,
       bulkImport: args.bulkImport,
     });

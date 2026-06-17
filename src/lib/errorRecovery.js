@@ -6,21 +6,21 @@
 
 import { API_BASE_URL } from '@/lib/api-config';
 
-const OMNIA_LS_PREFIXES = [
-  'omnia_draft_',
-  'omnia_chat_',
-  'omnia_camera_',
-  'omnia_vault_saved_',
-  'omnia_board_id',
-  'omnia_title',
+const LYKNCHAT_LS_PREFIXES = [
+  'lyknchat_draft_',
+  'lyknchat_chat_',
+  'lyknchat_camera_',
+  'lyknchat_vault_saved_',
+  'lyknchat_active_id',
+  'lyknchat_title',
 ];
 
-export function clearOmniaLocalStorage() {
+export function clearLyknChatLocalStorage() {
   try {
     const toRemove = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && OMNIA_LS_PREFIXES.some((p) => key.startsWith(p))) {
+      if (key && LYKNCHAT_LS_PREFIXES.some((p) => key.startsWith(p))) {
         toRemove.push(key);
       }
     }
@@ -86,7 +86,7 @@ export function reportClientError(error, errorInfo, source = 'route') {
         const keys = [];
         for (let i = 0; i < localStorage.length; i++) {
           const k = localStorage.key(i);
-          if (k && (k.startsWith('lykn_') || k.startsWith('omnia_') || k.startsWith('lykinsai_'))) {
+          if (k && (k.startsWith('lykn_') || k.startsWith('lyknchat_') || k.startsWith('lykinsai_'))) {
             keys.push(k);
           }
         }

@@ -145,7 +145,7 @@ export const FAQ_ITEMS = [
 // Frontend enforcement: `userCreatedNodeCount` in
 // `src/pages/SynthesisLayer.tsx` (page-level paywall takeover).
 // Server enforcement: `enforce_synthesis_neuron_cap()` triggers on
-// `omnia_boards`, `lykn_beliefs`, `lykn_user_model_facts` defined in
+// `lykn_chats`, `lykn_beliefs`, `lykn_user_model_facts` defined in
 // `supabase-migrations/066_synthesis_neuron_cap_trigger.sql`.
 export const PLAN_LIMITS = {
   free: {

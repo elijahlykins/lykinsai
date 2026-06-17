@@ -53,7 +53,7 @@ export function computeIdeaRelevance(
       else if (tags.includes(il)) score = 0.9;
       else if (summary.includes(il)) score = 0.8;
       else if (title.includes(il)) score = 0.7;
-    } else if (n.kind === "grid") {
+    } else if (n.kind === "chat") {
       const title = n.label.toLowerCase();
       if (title.includes(il) || il.includes(title.split(" ")[0])) score = 1;
     } else if (n.kind === "tag") {
@@ -208,7 +208,7 @@ export function simulateLayout(
     // "organising" tiers above raw notes/chats but below the
     // principles tier.
     project: 30,
-    grid: 0,
+    chat: 0,
     vault: -30,
     tag: -80,
     category: 0,

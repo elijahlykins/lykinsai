@@ -3,7 +3,7 @@ import { ChevronDown } from "lucide-react";
 import {
   CHAT_MODEL_FILTER_ALL,
   buildChatModelFilterOptions,
-} from "@/lib/board/chatModelKey";
+} from "@/lib/lyknChat/chatModelKey";
 
 /** Dropdown under Chats in the sidebar — All chats + each model the user has. */
 export default function ChatModelFilterSelect({

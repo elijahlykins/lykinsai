@@ -10,7 +10,7 @@
 import { DEMO_VAULT_ITEMS } from "./demoVault";
 
 // Stable ids prefixed with `demo-` so the UI can detect synthetic nodes
-// (and, e.g., avoid navigating to dead `/grid/demo-*` routes for guests).
+// (and, e.g., avoid navigating to dead `/chat/demo-*` routes for guests).
 export const DEMO_PROJECTS = [
   { id: "demo-project-morning", name: "Morning practice" },
   { id: "demo-project-moodboard", name: "Visual moodboard" },
@@ -124,7 +124,7 @@ function buildDemoSynthesisNotes() {
 export const DEMO_SYNTHESIS_NOTES = Object.freeze(buildDemoSynthesisNotes());
 
 // Lightweight detector so the SynthesisLayer can avoid navigating to dead
-// `/grid/demo-*` / `/project/demo-*` routes (the demo data never hits the
+// `/chat/demo-*` / `/project/demo-*` routes (the demo data never hits the
 // DB, so those pages would 404 or be empty).
 export function isDemoNodeId(id) {
   return typeof id === "string" && id.includes("demo-");

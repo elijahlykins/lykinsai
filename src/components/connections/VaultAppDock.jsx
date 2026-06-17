@@ -31,7 +31,7 @@ import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Sq
 //     note FAB at `bottom-6 right-6`; the dock sits centered so the
 //     two never collide.
 //   vertical — `fixed top-1/2 -translate-y-1/2` anchored just inside
-//     the chat column (`var(--sidebar-offset)`), used by OmniaGrid in
+//     the chat column (`var(--sidebar-offset)`), used by LyknChat in
 //     focused-chat mode so the launcher is always visible while the
 //     user is working in chat.
 // Per-orientation localStorage key for the user's "hide this dock"

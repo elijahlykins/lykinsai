@@ -158,7 +158,7 @@
       .map((r) => r.source_id);
     if (vaultIds.length > 0) {
       const { data: notes } = await sb
-        .from('notes')
+        .from('vault_items')
         .select('id, title, source')
         .in('id', vaultIds);
       console.group(

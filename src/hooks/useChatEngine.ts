@@ -1,17 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import ReactMarkdown from "react-markdown";
-import { useCanvasStore } from "@/store/canvasStore";
+import { useLyknChatStore } from "@/store/lyknChatStore";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { supabase } from "@/lib/supabase";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
-import { ChatCodeBlock } from "@/components/omnia/ChatCodeBlock";
-import { buildTieredCanvasContext, buildActionCanvasContext } from "@/lib/ai/buildCanvasContext";
+import { ChatCodeBlock } from "@/components/lyknChat/ChatCodeBlock";
+import { buildTieredLyknChatContext, buildActionLyknChatContext } from "@/lib/ai/buildLyknChatContext";
 import { getVaultSidebarWidth } from "@/hooks/useViewportTier";
-import { getBlockDefinition } from "@/canvas/blockSystem/definitions";
-import type { UniversalBlockType } from "@/canvas/blockSystem/types";
-import { createDatabaseBlockData } from "@/canvas/blockSystem/notionModel";
+import { getBlockDefinition } from "@/lyknChat/blockSystem/definitions";
+import type { UniversalBlockType } from "@/lyknChat/blockSystem/types";
+import { createDatabaseBlockData } from "@/lyknChat/blockSystem/notionModel";
 import { detectSocialPlatform, isSocialEmbedType } from "@/lib/media/socialEmbed";
 import {
   orchestrateChatSend,
@@ -24,7 +24,7 @@ import {
 } from "@/lib/ai/chatSendOrchestrator";
 import { type ChatArtifact, toArtifactEditContext, isEditableArtifact } from "@/lib/ai/chatArtifacts";
 import { markdownToTiptap } from "@/lib/markdownToTiptap";
-import { isDemoGridId } from "@/lib/demoGrids";
+import { isDemoLyknChatId } from "@/lib/demoLyknChats";
 import { toast } from "@/components/ui/use-toast";
 import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
 import { AI_TEMPORARY_FAILURE_TEXT, AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
@@ -32,12 +32,12 @@ import {
   addOpenThread,
   bindThreadStateCallbacks,
   ensureThreadSnapshot,
-  getActiveThreadBoardId,
+  getActiveThreadChatId,
   getThreadSnapshot,
   hydrateActiveThreadToReact,
   patchThreadSnapshot,
   registerStreamAbortController,
-  setActiveThreadBoardId,
+  setActiveThreadChatId,
   snapshotActiveThreadFromReact,
 } from "@/lib/chat/chatThreadRuntime";
 
@@ -49,7 +49,7 @@ export type ArtifactKind = "deck" | "study" | "document" | "worksheet" | "spread
 export type ComposerMode = "none" | "image" | "web" | "research" | `create:${ArtifactKind}`;
 
 /* ------------------------------------------------------------------ */
-/*  Shared utility functions (moved from OmniaGrid.tsx top-level)      */
+/*  Shared utility functions (moved from LyknChat.tsx top-level)      */
 /* ------------------------------------------------------------------ */
 
 function resizeChatInputEl(el: HTMLTextAreaElement | null) {
@@ -75,8 +75,8 @@ const flattenNodeText = (node: any): string => {
 /* ------------------------------------------------------------------ */
 
 export interface UseChatEngineDeps {
-  boardId: string | null;
-  routeBoardId: string | undefined;
+  chatId: string | null;
+  routeChatId: string | undefined;
   user: { id?: string; token?: string; email?: string; user_metadata?: any } | null;
   title: string;
   titleRef: React.MutableRefObject<string>;
@@ -93,7 +93,7 @@ export interface UseChatEngineDeps {
   chatMode: boolean;
   chatRailVisible: boolean;
 
-  /* Shared state (lifted up to avoid circular dep with useBoardPersistence) */
+  /* Shared state (lifted up to avoid circular dep with useLyknChatPersistence) */
   chatMessages: PromptMessage[];
   setChatMessages: Dispatch<SetStateAction<PromptMessage[]>>;
   chatMessagesRef: React.MutableRefObject<PromptMessage[]>;
@@ -117,7 +117,7 @@ export interface UseChatEngineDeps {
   setChatRailVisible: Dispatch<SetStateAction<boolean>>;
   setChatMode: Dispatch<SetStateAction<boolean>>;
 
-  /* Toast/overlay state setters that live in OmniaGrid */
+  /* Toast/overlay state setters that live in LyknChat */
   setConnectionCards: Dispatch<SetStateAction<Array<{ title: string; sourceType: "board" | "media"; reason: string }>>>;
   setShowConnectionCard: Dispatch<SetStateAction<boolean>>;
   setMediaSuggestions: Dispatch<SetStateAction<Array<{ title: string; reason: string; noteId: string }>>>;
@@ -217,7 +217,7 @@ export interface UseChatEngineReturn {
 }
 
 /* ------------------------------------------------------------------ */
-/*  findSmartPlacement (copied from OmniaGrid for self-containment)    */
+/*  findSmartPlacement (copied from LyknChat for self-containment)    */
 /* ------------------------------------------------------------------ */
 
 function findSmartPlacement(opts: {
@@ -278,7 +278,7 @@ function findSmartPlacement(opts: {
 
 export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const {
-    boardId, routeBoardId, user, title, titleRef, selectedModel, customModelId,
+    chatId, routeChatId, user, title, titleRef, selectedModel, customModelId,
     notesPagesRef, projectId, scopedProjectId, scopedProjectName, gridSize, viewportWidth, chatMode, chatRailVisible,
     chatMessages, setChatMessages, chatMessagesRef, aiThreadRef,
     convoSummaryRef, convoTurnsSinceSummaryRef,
@@ -325,8 +325,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   /* ---------- Refs (hook-local) ---------- */
   const voiceModeOnRef = useRef(false);
   const activeAiAbortRef = useRef<AbortController | null>(null);
-  const streamBoardIdRef = useRef<string | null>(null);
-  const prevBoardIdRef = useRef<string | null>(null);
+  const streamChatIdRef = useRef<string | null>(null);
+  const prevChatIdRef = useRef<string | null>(null);
   const isSendingRef = useRef(false);
   // Per-board concurrency tracking so chats in a thread can stream
   // independently without sharing a single send-lock or stream cursor.
@@ -344,7 +344,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const streamTypingRafRef = useRef<number | null>(null);
   const streamPromptIdRef = useRef<string | null>(null);
   const chatTypingTimerRef = useRef<number | null>(null);
-  const chatTypingPendingRef = useRef<{ promptId: string; fullText: string; resolve: () => void; boardId: string | null } | null>(null);
+  const chatTypingPendingRef = useRef<{ promptId: string; fullText: string; resolve: () => void; chatId: string | null } | null>(null);
   const aiTypingRunRef = useRef(0);
   const lastAiResponseBlockRef = useRef<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -396,9 +396,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   const patchThreadMessages = useCallback((
     updater: (prev: PromptMessage[]) => PromptMessage[],
-    targetBoardId?: string | null,
+    targetChatId?: string | null,
   ) => {
-    const bid = targetBoardId || streamBoardIdRef.current || boardId || routeBoardId;
+    const bid = targetChatId || streamChatIdRef.current || chatId || routeChatId;
     if (!bid) {
       setChatMessages(updater);
       return;
@@ -406,16 +406,16 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     const snap = ensureThreadSnapshot(String(bid));
     snap.chatMessages = updater(snap.chatMessages);
     snap.updatedAt = Date.now();
-    if (getActiveThreadBoardId() === String(bid)) {
+    if (getActiveThreadChatId() === String(bid)) {
       setChatMessages(() => snap.chatMessages);
     }
     chatMessagesRef.current = snap.chatMessages;
-  }, [boardId, routeBoardId, setChatMessages]);
+  }, [chatId, routeChatId, setChatMessages]);
 
   // Switch threads without aborting background streams
   useEffect(() => {
-    const incoming = boardId ? String(boardId) : null;
-    const outgoing = prevBoardIdRef.current;
+    const incoming = chatId ? String(chatId) : null;
+    const outgoing = prevChatIdRef.current;
 
     if (outgoing && outgoing !== incoming) {
       const outSnap = getThreadSnapshot(outgoing);
@@ -449,11 +449,11 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     }
 
     if (incoming) {
-      setActiveThreadBoardId(incoming);
+      setActiveThreadChatId(incoming);
       addOpenThread(incoming);
       const snap = getThreadSnapshot(incoming);
       activeAiAbortRef.current = snap?.abortController ?? null;
-      streamBoardIdRef.current = snap?.isChatLoading ? incoming : null;
+      streamChatIdRef.current = snap?.isChatLoading ? incoming : null;
 
       // Always sync the lightweight status flags to the board we're
       // switching to — these are per-chat and must NEVER inherit the
@@ -486,18 +486,18 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         );
       });
     } else {
-      setActiveThreadBoardId(null);
+      setActiveThreadChatId(null);
     }
 
-    prevBoardIdRef.current = incoming;
+    prevChatIdRef.current = incoming;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on board switch
-  }, [boardId]);
+  }, [chatId]);
 
   // Persist composer draft per thread when typing
   useEffect(() => {
-    if (!boardId) return;
-    patchThreadSnapshot(String(boardId), { chatInput: chatInputRef.current });
-  }, [boardId, chatInputHasText]);
+    if (!chatId) return;
+    patchThreadSnapshot(String(chatId), { chatInput: chatInputRef.current });
+  }, [chatId, chatInputHasText]);
 
   // Sync ref
   useEffect(() => { chatMessagesRef.current = chatMessages; }, [chatMessages]);
@@ -530,8 +530,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       if (!chatMode && !chatRailVisible) { setRailVisible(true); setChatRailOpen(true); }
       pendingAiBrickActionRef.current = true;
     };
-    window.addEventListener("omnia_ai_brick_action", handler);
-    return () => window.removeEventListener("omnia_ai_brick_action", handler);
+    window.addEventListener("lyknchat_ai_brick_action", handler);
+    return () => window.removeEventListener("lyknchat_ai_brick_action", handler);
   }, [chatMode, chatRailVisible, setChatInput, setChatRailOpen, setRailVisible]);
 
   // Dictation cleanup on unmount
@@ -554,8 +554,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       setChatMessages((prev) => [...prev, dropMsg]);
       if (!chatRailVisible && !chatMode) { setRailVisible(true); setChatRailOpen(true); }
     };
-    window.addEventListener("omnia_chat_drop_attachments", handler);
-    return () => window.removeEventListener("omnia_chat_drop_attachments", handler);
+    window.addEventListener("lyknchat_chat_drop_attachments", handler);
+    return () => window.removeEventListener("lyknchat_chat_drop_attachments", handler);
   }, [chatRailVisible, chatMode, setChatRailOpen, setRailVisible]);
 
   // When a canvas file finishes uploading to storage, back-fill the chat
@@ -581,8 +581,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         })
       );
     };
-    window.addEventListener("omnia_canvas_file_stored", handler);
-    return () => window.removeEventListener("omnia_canvas_file_stored", handler);
+    window.addEventListener("lyknchat_file_stored", handler);
+    return () => window.removeEventListener("lyknchat_file_stored", handler);
   }, []);
 
   // Resize chat input on mode switch
@@ -594,10 +594,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   /* ---------- Callbacks ---------- */
 
   const SUMMARIZE_EVERY_N_TURNS = 8;
-  const maybeRunConversationSummary = useCallback(async (targetBoardId?: string | null) => {
+  const maybeRunConversationSummary = useCallback(async (targetChatId?: string | null) => {
     // Operate on the stream's own board snapshot so summaries don't mix
     // conversation history across chats in a thread.
-    const bid = targetBoardId ? String(targetBoardId) : null;
+    const bid = targetChatId ? String(targetChatId) : null;
     const snap = bid ? ensureThreadSnapshot(bid) : null;
     if (snap) {
       snap.convoTurnsSinceSummary += 1;
@@ -622,7 +622,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         const { summary } = await res.json();
         if (summary) {
           if (snap) snap.convoSummary = summary;
-          if (!bid || getActiveThreadBoardId() === bid) convoSummaryRef.current = summary;
+          if (!bid || getActiveThreadChatId() === bid) convoSummaryRef.current = summary;
         }
       }
     } catch {}
@@ -711,12 +711,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     return Math.min(380, Math.floor(w * 0.30));
   }, [chatMode]);
 
-  const buildCanvasContext = useCallback(() => {
-    const st = useCanvasStore.getState();
+  const buildLyknChatContext = useCallback(() => {
+    const st = useLyknChatStore.getState();
     const cam = (st as any).camera || { x: 0, y: 0 };
     const vw = window.innerWidth || 1280;
     const vh = window.innerHeight || 800;
-    return buildTieredCanvasContext({
+    return buildTieredLyknChatContext({
       blocks: st.blocks as Record<string, any>,
       blockOrder: Array.isArray(st.blockOrder) ? st.blockOrder : [],
       focusedBrickIds: Array.isArray(st.focusedBrickIds) ? st.focusedBrickIds : [],
@@ -727,7 +727,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   }, []);
 
   const getAllYouTubeBlocks = useCallback(() => {
-    const st = useCanvasStore.getState() as any;
+    const st = useLyknChatStore.getState() as any;
     const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
     const out: Array<{ videoId: string; url: string; title: string }> = [];
     const seen = new Set<string>();
@@ -751,7 +751,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const getVisibleYouTubeBlocks = useCallback(() => {
     const all = getAllYouTubeBlocks();
     if (!all.length) return [];
-    const st = useCanvasStore.getState() as any;
+    const st = useLyknChatStore.getState() as any;
     const cam = st.camera || { x: 0, y: 0 };
     const vw = window.innerWidth || viewportWidth || 1280;
     const vh = window.innerHeight || 800;
@@ -886,7 +886,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   const attachSourcesToBlock = useCallback((responseBlockId: string, sources: { title: string; url: string }[]) => {
     if (!sources.length || !responseBlockId) return;
-    const st = useCanvasStore.getState();
+    const st = useLyknChatStore.getState();
     const g = Math.max(1, Math.floor(st.gridSize || 24));
     const rb = st.blocks[responseBlockId];
     if (!rb) return;
@@ -913,9 +913,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (actions.length > 0 && user?.id) {
       for (const action of actions) {
         try {
-          const { data: existing } = await supabase.from("notes").select("tags").eq("id", action.noteId).eq("user_id", user.id).single();
+          const { data: existing } = await supabase.from("vault_items").select("tags").eq("id", action.noteId).eq("user_id", user.id).single();
           const currentTags: string[] = Array.isArray(existing?.tags) ? existing.tags : [];
-          await supabase.from("notes").update({ tags: [...new Set([...currentTags, ...action.tags])] }).eq("id", action.noteId).eq("user_id", user.id);
+          await supabase.from("vault_items").update({ tags: [...new Set([...currentTags, ...action.tags])] }).eq("id", action.noteId).eq("user_id", user.id);
         } catch {}
       }
     }
@@ -939,12 +939,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     let cleanText = aiText;
     if (invalidIds.size > 0) { for (const badId of invalidIds) cleanText = cleanText.replace(new RegExp(`https?://(?:www\\.)?(?:youtube\\.com/watch\\?v=|youtu\\.be/|youtube\\.com/embed/|youtube\\.com/shorts/)${badId.replace(/[-]/g, '\\-')}[^\\s]*`, 'g'), ''); cleanText = cleanText.replace(/\n{3,}/g, '\n\n').trim(); }
     if (!urls.length) return { urls: [], cleanText };
-    const st = useCanvasStore.getState() as any;
+    const st = useLyknChatStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
     for (const ytEntry of urls) {
       const exists = (Array.isArray(st.blockOrder) ? st.blockOrder : []).some((bid: string) => { const blk = st.blocks?.[bid]; return blk && String(blk.videoId || blk.data?.videoId || "") === ytEntry.videoId; });
       if (exists) continue;
-      const cur = useCanvasStore.getState() as any;
+      const cur = useLyknChatStore.getState() as any;
       const pos = findSmartPlacement({ blockW: g * 12, blockH: g * 8, gridSize: g, camera: cur.camera || { x: 0, y: 0, zoom: 1 }, viewportW: window.innerWidth || 1280, viewportH: window.innerHeight || 800, railWidth: 0, existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[] });
       st.addYouTubeBlockAt({ x: pos.x, y: pos.y }, { url: ytEntry.url, videoId: ytEntry.videoId });
     }
@@ -986,7 +986,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     const cleanText = aiText.replace(/\s*\[PULL_MEDIA:[^\]]*\]/g, "").trimEnd();
 
     let pulled = 0;
-    const initial = useCanvasStore.getState() as any;
+    const initial = useLyknChatStore.getState() as any;
     const g = Math.max(1, Math.floor(initial.gridSize || 24));
     const vw = window.innerWidth || 1280;
     const vh = window.innerHeight || 800;
@@ -1005,7 +1005,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           // Defense-in-depth: even though RLS enforces the same constraint,
           // explicitly scoping the query to the current user gives a clearer
           // failure mode if RLS is ever misconfigured.
-          let q = supabase.from("notes").select("id, title, content, source").eq("id", pull.noteId);
+          let q = supabase.from("vault_items").select("id, title, content, source").eq("id", pull.noteId);
           if (userId) q = q.eq("user_id", userId);
           const { data, error } = await q.single();
           if (error || !data) continue;
@@ -1027,7 +1027,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         const att = rawAtts[pull.attIndex] as Record<string, unknown> | undefined;
         // Snapshot the current canvas state for THIS iteration so each pull's
         // smart placement sees the bricks we just added in earlier iterations.
-        const st = useCanvasStore.getState() as any;
+        const st = useLyknChatStore.getState() as any;
 
         if (!att) {
           // Vault notes whose body holds only a YouTube URL (no real
@@ -1122,11 +1122,11 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           // pos.{x,y} are WORLD coords (from findSmartPlacement); dispatch
           // them as worldX/worldY so Canvas's onLink doesn't double-transform
           // them through clientToWorld and place the brick off-screen.
-          // omnia_attach_link goes through Canvas's addUrlAsBlock which
+          // lyknchat_attach_link goes through Canvas's addUrlAsBlock which
           // itself gates on the cap; we can't observe that here, so
           // attribute to the attempt. The real cap-block is reported via
           // the lykn:block-limit window event for upgrade UX.
-          window.dispatchEvent(new CustomEvent("omnia_attach_link", { detail: { url: resolvedUrl, worldX: pos.x, worldY: pos.y } }));
+          window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: resolvedUrl, worldX: pos.x, worldY: pos.y } }));
           pulled++;
         }
       } catch {
@@ -1135,7 +1135,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     }
 
     if (pulled > 0) {
-      setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+      setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 500);
     }
     return { cleanText, pulled };
   }, [addTextBlockAt]);
@@ -1143,7 +1143,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const normalizeAiTextForBlock = useCallback((text: string) => String(text || "").replace(/\r\n?/g, "\n"), []);
 
   const calcAiBubbleSize = useCallback((text: string) => {
-    const st = useCanvasStore.getState() as any;
+    const st = useLyknChatStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
     const screenW = window.innerWidth || 1280;
     const maxWidthPx = Math.max(g * 10, Math.floor(screenW * 0.9));
@@ -1163,7 +1163,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const addChatResponseToGrid = useCallback((text: string, dropClientX?: number, dropClientY?: number) => {
     const content = String(text || "").trim();
     if (!content) return;
-    const st = useCanvasStore.getState() as any;
+    const st = useLyknChatStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
     const vw = window.innerWidth || 1280; const vh = window.innerHeight || 800;
     const size = calcAiBubbleSize(content);
@@ -1175,7 +1175,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       // / zoom − SURFACE_ORIGIN_PAD). Mirror Canvas.tsx SURFACE_ORIGIN_PAD_WORLD.
       const SURFACE_ORIGIN_PAD = 10000;
       const z = Math.max(0.1, Number(st.camera?.zoom) || 1);
-      const canvasEl = document.querySelector<HTMLElement>("[data-omnia-canvas]");
+      const canvasEl = document.querySelector<HTMLElement>("[data-lykn-chat-canvas]");
       const rect = canvasEl?.getBoundingClientRect();
       const localX = rect ? dropClientX - rect.left : dropClientX;
       const localY = rect ? dropClientY - rect.top : dropClientY;
@@ -1197,8 +1197,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       data: { aiResponseBubble: true },
     });
     if (id) {
-      requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id } })));
-      setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+      requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("lyknchat_fit_block", { detail: { id } })));
+      setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 500);
     }
   }, [addTextBlockAt, calcAiBubbleSize, getChatRailWidthPx]);
 
@@ -1212,35 +1212,35 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       const delay = nc === "\n" ? 12 : /[.,!?]/.test(nc) ? 14 : 8;
       const nextLen = Math.min(text.length, shown.length + step);
       shown = text.slice(0, nextLen);
-      const cur: any = useCanvasStore.getState().blocks?.[blockId];
+      const cur: any = useLyknChatStore.getState().blocks?.[blockId];
       if (cur?.data?.userResized) { updateBlock(blockId, { content: shown }); }
       else { const size = calcAiBubbleSize(shown); updateBlock(blockId, { content: shown, width: size.width, height: size.height }); }
       await new Promise<void>((res) => window.setTimeout(res, delay));
     }
     if (aiTypingRunRef.current === runId) {
-      const cur: any = useCanvasStore.getState().blocks?.[blockId];
+      const cur: any = useLyknChatStore.getState().blocks?.[blockId];
       if (cur?.data?.userResized) updateBlock(blockId, { content: text });
       else { const size = calcAiBubbleSize(text); updateBlock(blockId, { content: text, width: size.width, height: size.height }); }
     }
   }, [calcAiBubbleSize, normalizeAiTextForBlock, updateBlock]);
 
-  const typeResponseIntoChat = useCallback((promptId: string, fullText: string, targetBoardId?: string | null): Promise<void> => {
+  const typeResponseIntoChat = useCallback((promptId: string, fullText: string, targetChatId?: string | null): Promise<void> => {
     return new Promise((resolve) => {
       if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
       const prev = chatTypingPendingRef.current;
       if (prev) {
-        patchThreadMessages((msgs) => msgs.map((m) => (m.id === prev.promptId ? { ...m, aiResponse: prev.fullText } : m)), prev.boardId);
+        patchThreadMessages((msgs) => msgs.map((m) => (m.id === prev.promptId ? { ...m, aiResponse: prev.fullText } : m)), prev.chatId);
         prev.resolve();
         chatTypingPendingRef.current = null;
       }
       // Pin every write for this animation to the board that owns the
       // stream. Without this, switching chat tabs mid-stream reroutes the
       // typewriter into whatever board is now active (cross-chat bleed).
-      const bid = targetBoardId ?? streamBoardIdRef.current ?? boardId ?? routeBoardId ?? null;
-      const isActiveBoard = () => getActiveThreadBoardId() === String(bid);
+      const bid = targetChatId ?? streamChatIdRef.current ?? chatId ?? routeChatId ?? null;
+      const isActiveBoard = () => getActiveThreadChatId() === String(bid);
       const words = fullText.split(/(\s+)/);
       let idx = 0;
-      chatTypingPendingRef.current = { promptId, fullText, resolve, boardId: bid };
+      chatTypingPendingRef.current = { promptId, fullText, resolve, chatId: bid };
       patchThreadMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)), bid);
       chatTypingTimerRef.current = window.setInterval(() => {
         idx += 3;
@@ -1259,15 +1259,15 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         }
       }, 30);
     });
-  }, [patchThreadMessages, boardId, routeBoardId]);
+  }, [patchThreadMessages, chatId, routeChatId]);
 
   const replaySavedPromptResponse = useCallback((msg: PromptMessage) => {
     if ((msg as any).aiImageUrl) {
       const imageUrl = String((msg as any).aiImageUrl);
-      const st = useCanvasStore.getState() as any;
+      const st = useLyknChatStore.getState() as any;
       const order: string[] = Array.isArray(st.blockOrder) ? st.blockOrder : [];
       const existing = order.find((id: string) => { const blk = st.blocks?.[id]; return blk?.type === "create" && (blk as any).mode === "image" && (blk as any).data?.src === imageUrl; });
-      if (existing) { window.dispatchEvent(new CustomEvent("omnia_expand_blocks", { detail: { ids: [existing] } })); requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id: existing } }))); return; }
+      if (existing) { window.dispatchEvent(new CustomEvent("lyknchat_expand_blocks", { detail: { ids: [existing] } })); requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("lyknchat_fit_block", { detail: { id: existing } }))); return; }
       const g = Math.max(1, Math.floor(st.gridSize || 24));
       const cam = st.camera || { x: 0, y: 0 };
       const cx = cam.x + Math.floor((window.innerWidth || 1280) * 0.35);
@@ -1283,7 +1283,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const applyProjectActions = useCallback((actions: CreateAction[]) => {
     const list = Array.isArray(actions) ? actions : [];
     if (!list.length) return { created: 0, failures: [] as string[] };
-    const st = useCanvasStore.getState() as any;
+    const st = useLyknChatStore.getState() as any;
     const g = Math.max(1, Math.floor(st.gridSize || 24));
     const vw = window.innerWidth || 1280; const vh = window.innerHeight || 800;
     let created = 0; const failures: string[] = [];
@@ -1355,7 +1355,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       }
 
       // First block: anchor to the user's current viewport center
-      const cur = useCanvasStore.getState() as any;
+      const cur = useLyknChatStore.getState() as any;
       const cam = cur.camera || { x: 0, y: 0, zoom: 1 };
       const z = Math.max(0.1, cam.zoom || 1);
       const vpCenterX = (cam.x || 0) + (vw / z) / 2;
@@ -1410,7 +1410,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
               tiptapDoc = markdownToTiptap(rawContent);
             } else if (rawContent?.type === "doc") { tiptapDoc = rawContent; }
             else { tiptapDoc = markdownToTiptap(String(rawContent)); }
-            window.dispatchEvent(new CustomEvent("omnia_notes_ai_update", { detail: { action: type === "append_notes" ? "append" : "set", tiptapDoc, stream: true } }));
+            window.dispatchEvent(new CustomEvent("lyknchat_notes_ai_update", { detail: { action: type === "append_notes" ? "append" : "set", tiptapDoc, stream: true } }));
           }, 200);
           created += 1; continue;
         }
@@ -1676,10 +1676,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
                 );
                 if (!res.ok) return;
                 const meta: any = await res.json();
-                const cur: any = (useCanvasStore.getState() as any).blocks?.[bid];
+                const cur: any = (useLyknChatStore.getState() as any).blocks?.[bid];
                 if (!cur) return;
                 const curData = cur?.data && typeof cur.data === "object" ? cur.data : {};
-                useCanvasStore.getState().updateBlock(bid, {
+                useLyknChatStore.getState().updateBlock(bid, {
                   data: {
                     ...curData,
                     name: curData.name || meta.title || initialName,
@@ -1755,7 +1755,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           const moves: Array<{ blockId: string; x?: number; y?: number; dx?: number; dy?: number }> = [];
           if ((raw as any)?.blockId) moves.push({ blockId: String((raw as any).blockId), x: (raw as any)?.x, y: (raw as any)?.y, dx: (raw as any)?.dx, dy: (raw as any)?.dy });
           if (Array.isArray((raw as any)?.moves)) for (const mv of (raw as any).moves) if (mv?.blockId) moves.push({ blockId: String(mv.blockId), x: mv?.x, y: mv?.y, dx: mv?.dx, dy: mv?.dy });
-          moves.forEach((mv, i) => { setTimeout(() => { const block = (useCanvasStore.getState() as any).blocks?.[mv.blockId] as any; if (!block) return; let nx = Math.floor(block.x || 0), ny = Math.floor(block.y || 0); if (mv.x != null) nx = Math.round(Number(mv.x) / g) * g; if (mv.y != null) ny = Math.round(Number(mv.y) / g) * g; if (mv.dx != null) nx += Math.round(Number(mv.dx) / g) * g; if (mv.dy != null) ny += Math.round(Number(mv.dy) / g) * g; st.updateBlock(mv.blockId, { x: nx, y: ny }); }, i * 35); created++; });
+          moves.forEach((mv, i) => { setTimeout(() => { const block = (useLyknChatStore.getState() as any).blocks?.[mv.blockId] as any; if (!block) return; let nx = Math.floor(block.x || 0), ny = Math.floor(block.y || 0); if (mv.x != null) nx = Math.round(Number(mv.x) / g) * g; if (mv.y != null) ny = Math.round(Number(mv.y) / g) * g; if (mv.dx != null) nx += Math.round(Number(mv.dx) / g) * g; if (mv.dy != null) ny += Math.round(Number(mv.dy) / g) * g; st.updateBlock(mv.blockId, { x: nx, y: ny }); }, i * 35); created++; });
           continue;
         }
         if (type === "resize_block") {
@@ -1964,29 +1964,29 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     // brick with the rest off-screen.
     if (createdBlockIds.length === 1) {
       requestAnimationFrame(() => {
-        window.dispatchEvent(new CustomEvent("omnia_fit_block", { detail: { id: createdBlockIds[0] } }));
+        window.dispatchEvent(new CustomEvent("lyknchat_fit_block", { detail: { id: createdBlockIds[0] } }));
       });
-      setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+      setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 500);
     } else if (createdBlockIds.length > 1) {
       // Wait two frames so any pending block additions have laid out their
       // measured size before we compute the bounding box.
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          window.dispatchEvent(new CustomEvent("omnia_fit_blocks", { detail: { ids: createdBlockIds } }));
+          window.dispatchEvent(new CustomEvent("lyknchat_fit_blocks", { detail: { ids: createdBlockIds } }));
         });
       });
-      setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 500);
+      setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 500);
     }
 
-    // Demo grids never persist (see useBoardPersistence: every save path
-    // bails on isDemoGridId). If the AI just put real work onto a demo
+    // Demo grids never persist (see useLyknChatPersistence: every save path
+    // bails on isDemoLyknChatId). If the AI just put real work onto a demo
     // grid, warn the user once per session so they don't lose it on
     // refresh — past confusion came from the AI confidently creating
     // bricks here that silently vanished on next page load.
     if (createdBlockIds.length > 0) {
-      const activeBoardId = routeBoardId || boardId || "";
-      if (isDemoGridId(activeBoardId)) {
-        const flagKey = `omnia_demo_warned_${activeBoardId}`;
+      const activeChatId = routeChatId || chatId || "";
+      if (isDemoLyknChatId(activeChatId)) {
+        const flagKey = `lyknchat_demo_warned_${activeChatId}`;
         let alreadyWarned = false;
         try { alreadyWarned = sessionStorage.getItem(flagKey) === "1"; } catch { /* ignore */ }
         if (!alreadyWarned) {
@@ -2001,7 +2001,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     }
 
     return { created, failures };
-  }, [setNotesOpen, boardId, routeBoardId]);
+  }, [setNotesOpen, chatId, routeChatId]);
 
   /* ---------- handleChatSend (delegates to orchestrator) ---------- */
 
@@ -2016,11 +2016,11 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (!text && !hasAttachment) return;
 
     const sendMode = composerModeRef.current;
-    const streamBoardId = String(routeBoardId || boardId || "");
+    const streamChatId = String(routeChatId || chatId || "");
     // Per-board guard: block a second send for THIS chat only. Other
     // chats in the thread can stream at the same time.
-    if (sendingBoardsRef.current.has(streamBoardId)) return;
-    const targetSnap = streamBoardId ? getThreadSnapshot(streamBoardId) : null;
+    if (sendingBoardsRef.current.has(streamChatId)) return;
+    const targetSnap = streamChatId ? getThreadSnapshot(streamChatId) : null;
     if (targetSnap?.isChatLoading) return;
 
     chatUserScrolledUpRef.current = false;
@@ -2030,12 +2030,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (lastSendSigRef.current.text === sig && now - lastSendSigRef.current.at < 900) return;
     lastSendSigRef.current = { text: sig, at: now };
 
-    streamBoardIdRef.current = streamBoardId;
-    const priorSnap = getThreadSnapshot(streamBoardId);
+    streamChatIdRef.current = streamChatId;
+    const priorSnap = getThreadSnapshot(streamChatId);
     priorSnap?.abortController?.abort();
     const sendAbort = new AbortController();
     activeAiAbortRef.current = sendAbort;
-    registerStreamAbortController(streamBoardId, sendAbort);
+    registerStreamAbortController(streamChatId, sendAbort);
 
     // Fresh, per-send stream cursor so concurrent chats never share a
     // typing position / prompt id (which caused responses to bleed or
@@ -2047,16 +2047,16 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       streamTypingRafRef: { current: null as number | null },
       streamPromptIdRef: { current: null as string | null },
     };
-    streamRuntimeRef.current.set(streamBoardId, sendStreamRefs);
+    streamRuntimeRef.current.set(streamChatId, sendStreamRefs);
 
-    const threadState = bindThreadStateCallbacks(streamBoardId, {
+    const threadState = bindThreadStateCallbacks(streamChatId, {
       setChatStatusText,
       setChatMessages,
       setIsChatLoading,
       setChatFlowMode,
     });
     isSendingRef.current = true;
-    sendingBoardsRef.current.add(streamBoardId);
+    sendingBoardsRef.current.add(streamChatId);
     const sentAttachments = [...focusedChatAttachments];
     const brickActionData = pendingBrickActionDataRef.current;
     pendingBrickActionDataRef.current = null;
@@ -2078,7 +2078,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     // themselves rather than aiThreadRef, which the orchestrator leaves stale
     // after typed turns (it mutates only the snapshot's aiThread).
     try {
-      const reconcileSnap = ensureThreadSnapshot(streamBoardId);
+      const reconcileSnap = ensureThreadSnapshot(streamChatId);
       const reactMsgs = chatMessagesRef.current || [];
       if (reactMsgs.length > reconcileSnap.chatMessages.length) {
         const missing = reactMsgs.slice(reconcileSnap.chatMessages.length);
@@ -2107,7 +2107,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       createdAt: new Date().toISOString(),
       ...(sentAttachments.length ? { attachments: sentAttachments } : {}),
     }]);
-    const sendSnap = ensureThreadSnapshot(streamBoardId);
+    const sendSnap = ensureThreadSnapshot(streamChatId);
     chatMessagesRef.current = sendSnap.chatMessages;
 
     try {
@@ -2131,16 +2131,16 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         identity: {
           selectedModel,
           customModelId: customModelId ?? null,
-          boardId,
-          routeBoardId,
+          chatId,
+          routeChatId,
           projectId,
           scopedProjectId: scopedProjectId ?? null,
           scopedProjectName: scopedProjectName ?? null,
           userId: user?.id,
         },
         context: {
-          buildCanvasContext,
-          buildActionCanvasContext,
+          buildLyknChatContext,
+          buildActionLyknChatContext,
           getKnowledgeBaseContext,
           getCachedWorkspaceSummary,
           tiptapJsonToPlainText: (node: any) => {
@@ -2179,7 +2179,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         },
         analysis: { isVideoQuestion, looksLikeDeflectingQuestion, sanitizeAssistantResponse, buildDirectVideoAnswerFromGrounding },
         postProcessing: { extractSourceLinks, extractAiConnections, extractAndApplyTagActions, extractAndEmbedYouTubeUrls, extractAndEmbedMediaItems, extractWebLinksFromText, attachSourcesToBlock },
-        canvas: { getCanvasState: () => useCanvasStore.getState(), updateBlock, deleteBlock, normalizeAiTextForBlock, calcAiBubbleSize, applyProjectActions },
+        canvas: { getCanvasState: () => useLyknChatStore.getState(), updateBlock, deleteBlock, normalizeAiTextForBlock, calcAiBubbleSize, applyProjectActions },
         state: {
           ...threadState,
           setConnectionCards,
@@ -2190,9 +2190,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         },
         streamRefs: { ...sendStreamRefs, chatScrollRef, chatUserScrolledUpRef, chatProgrammaticScrollRef },
         typing: {
-          typeResponseIntoChat: (pid: string, full: string) => typeResponseIntoChat(pid, full, streamBoardId),
+          typeResponseIntoChat: (pid: string, full: string) => typeResponseIntoChat(pid, full, streamChatId),
           typeIntoAiResponseBlock,
-          maybeRunConversationSummary: () => maybeRunConversationSummary(streamBoardId),
+          maybeRunConversationSummary: () => maybeRunConversationSummary(streamChatId),
         },
         supabaseClient: supabase,
       });
@@ -2206,19 +2206,19 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       threadState.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: errMsg } : m)));
     } finally {
       threadState.setIsChatLoading(false);
-      patchThreadSnapshot(streamBoardId, { abortController: null, isChatLoading: false });
-      sendingBoardsRef.current.delete(streamBoardId);
-      streamRuntimeRef.current.delete(streamBoardId);
+      patchThreadSnapshot(streamChatId, { abortController: null, isChatLoading: false });
+      sendingBoardsRef.current.delete(streamChatId);
+      streamRuntimeRef.current.delete(streamChatId);
       isSendingRef.current = sendingBoardsRef.current.size > 0;
       threadState.setChatFlowMode("idle");
       window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
       if (user?.id) {
-        setTimeout(() => window.dispatchEvent(new Event("omnia_flush_save")), 300);
+        setTimeout(() => window.dispatchEvent(new Event("lyknchat_flush_save")), 300);
       }
     }
   }, [
-    focusedChatAttachments, selectedModel, customModelId, boardId, routeBoardId, projectId, scopedProjectId, scopedProjectName, user?.id, setChatInput, setComposerMode,
-    buildCanvasContext, getKnowledgeBaseContext, getCachedWorkspaceSummary,
+    focusedChatAttachments, selectedModel, customModelId, chatId, routeChatId, projectId, scopedProjectId, scopedProjectName, user?.id, setChatInput, setComposerMode,
+    buildLyknChatContext, getKnowledgeBaseContext, getCachedWorkspaceSummary,
     getAllYouTubeBlocks, buildYouTubeGrounding, isVideoQuestion, looksLikeDeflectingQuestion,
     sanitizeAssistantResponse, buildDirectVideoAnswerFromGrounding,
     extractSourceLinks, extractAiConnections, extractAndApplyTagActions,
@@ -2231,7 +2231,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const handleStopAi = useCallback(() => {
     // Stop only the chat the user is currently viewing — other chats in
     // the thread keep streaming.
-    const bid = String(getActiveThreadBoardId() || streamBoardIdRef.current || boardId || routeBoardId || "");
+    const bid = String(getActiveThreadChatId() || streamChatIdRef.current || chatId || routeChatId || "");
     const snap = bid ? getThreadSnapshot(bid) : null;
     (snap?.abortController || activeAiAbortRef.current)?.abort();
     activeAiAbortRef.current = null;
@@ -2246,8 +2246,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     }
     if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
     const pending = chatTypingPendingRef.current;
-    if (pending && (!bid || pending.boardId === bid)) {
-      patchThreadMessages((prev) => prev.map((m) => (m.id === pending.promptId ? { ...m, aiResponse: pending.fullText } : m)), pending.boardId);
+    if (pending && (!bid || pending.chatId === bid)) {
+      patchThreadMessages((prev) => prev.map((m) => (m.id === pending.promptId ? { ...m, aiResponse: pending.fullText } : m)), pending.chatId);
       pending.resolve();
       chatTypingPendingRef.current = null;
     }
@@ -2260,7 +2260,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     setIsChatLoading(false);
     setChatFlowMode("idle");
     setChatStatusText("Stopped");
-  }, [boardId, routeBoardId, patchThreadMessages]);
+  }, [chatId, routeChatId, patchThreadMessages]);
 
   const handleDictateToggle = useCallback(() => {
     if (isDictating) {
@@ -2322,17 +2322,17 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const sendVoiceTurn = useCallback(async (text: string): Promise<string> => {
     const clean = String(text || "").trim();
     if (!clean) return "";
-    const streamBoardId = String(routeBoardId || boardId || "");
+    const streamChatId = String(routeChatId || chatId || "");
     setChatInput(clean);
-    const before = getThreadSnapshot(streamBoardId)?.chatMessages?.length ?? 0;
+    const before = getThreadSnapshot(streamChatId)?.chatMessages?.length ?? 0;
     await handleChatSend();
-    const after = getThreadSnapshot(streamBoardId);
+    const after = getThreadSnapshot(streamChatId);
     const msgs = after?.chatMessages ?? [];
     // The turn we just sent is the most recent prompt; its aiResponse holds
     // the post-processed reply.
     const last = msgs.length >= before ? msgs[msgs.length - 1] : undefined;
     return String(last?.aiResponse || "").trim();
-  }, [routeBoardId, boardId, setChatInput, handleChatSend]);
+  }, [routeChatId, chatId, setChatInput, handleChatSend]);
 
   const removeFocusedAttachment = useCallback((id: string) => {
     setFocusedChatAttachments((prev) => prev.filter((a) => a.id !== id));

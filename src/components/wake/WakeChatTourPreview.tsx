@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, MoreHorizontal } from "lucide-react";
-import OmniaChatBarToolbar from "@/components/omnia/OmniaChatBarToolbar";
+import LyknChatBarToolbar from "@/components/lyknChat/LyknChatBarToolbar";
 import WakeModelMenuPreview from "@/components/wake/WakeModelMenuPreview";
-import { resizeOmniaChatInput } from "@/components/omnia/OmniaChatComposer";
+import { resizeLyknChatInput } from "@/components/lyknChat/LyknChatComposer";
 import { getCollapsedPreview } from "@/lib/chatChunks";
 import { LYKN_ID } from "@/lib/modelCatalog";
 import { AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
@@ -83,7 +83,7 @@ export default function WakeChatTourPreview({
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    resizeOmniaChatInput(el);
+    resizeLyknChatInput(el);
   }, [input]);
 
   useEffect(() => {
@@ -288,7 +288,7 @@ export default function WakeChatTourPreview({
 
                       {assistant && isStreaming && !assistant.content ? (
                         <div className="lykn-wake-chat-preview-row lykn-wake-chat-preview-row-assistant">
-                          <div className="omnia-ai-thinking-glow lykn-wake-chat-preview-thinking">
+                          <div className="lykn-chat-ai-thinking-glow lykn-wake-chat-preview-thinking">
                             <div className="brick-spinner" />
                             Thinking…
                           </div>
@@ -367,7 +367,7 @@ export default function WakeChatTourPreview({
               </div>
             )}
 
-            <div className="omnia-neu-chat-shell p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
+            <div className="lykn-chat-neu-chat-shell p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
               <textarea
                 ref={inputRef}
                 data-min-h="52"
@@ -375,7 +375,7 @@ export default function WakeChatTourPreview({
                 disabled={capReached || isLoading}
                 onChange={(e) => {
                   setInput(e.target.value);
-                  resizeOmniaChatInput(e.currentTarget);
+                  resizeLyknChatInput(e.currentTarget);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -387,10 +387,10 @@ export default function WakeChatTourPreview({
                   capReached ? "Create an account to keep chatting…" : "Ask me anything..."
                 }
                 rows={1}
-                className="w-full min-h-[3.25rem] max-h-[120px] omnia-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide disabled:opacity-50"
+                className="w-full min-h-[3.25rem] max-h-[120px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide disabled:opacity-50"
               />
 
-              <OmniaChatBarToolbar
+              <LyknChatBarToolbar
                 onSend={handleSend}
                 chatInputHasText={input.trim().length > 0 && !capReached}
                 isChatLoading={isLoading}

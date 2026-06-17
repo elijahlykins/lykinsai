@@ -18,7 +18,7 @@ import FeedbackModal from "@/components/FeedbackModal";
 import LyknCalendarDialog from "@/components/calendar/LyknCalendarDialog";
 
 const flushAndNavigate = (nav, path) => {
-  window.dispatchEvent(new Event("omnia_flush_save"));
+  window.dispatchEvent(new Event("lyknchat_flush_save"));
   setTimeout(() => nav(path), 60);
 };
 
@@ -64,7 +64,7 @@ export default function MobileTabBar() {
     location.pathname === "/app" ||
     location.pathname === "/dashboard" ||
     location.pathname === "/omnia" ||
-    location.pathname.startsWith("/grid/");
+    location.pathname.startsWith("/chat/");
   const isVaultActive = location.pathname === "/vault";
 
   React.useEffect(() => {

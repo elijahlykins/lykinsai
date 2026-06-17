@@ -3,7 +3,7 @@ import type { MindEdge, MindNode, SimNode } from "./layoutTypes";
 const palette = {
   root: { bg: "#6366f1", glow: "rgba(99,102,241,0.35)" },
   projects: { bg: "#14b8a6", glow: "rgba(20,184,166,0.32)" },
-  grids: { bg: "#3b82f6", glow: "rgba(59,130,246,0.30)" },
+  chats: { bg: "#3b82f6", glow: "rgba(59,130,246,0.30)" },
   vault: { bg: "#10b981", glow: "rgba(16,185,129,0.30)" },
   belief: { bg: "#ffffff", glow: "rgba(255,255,255,0.45)" },
   facts: { bg: "#ec4899", glow: "rgba(236,72,153,0.35)" },
@@ -11,7 +11,7 @@ const palette = {
 } as const;
 
 const TOUR_CATEGORIES = [
-  { id: "__cat_grids__", label: "Chats", color: palette.grids.bg, glow: palette.grids.glow },
+  { id: "__cat_chats__", label: "Chats", color: palette.chats.bg, glow: palette.chats.glow },
   { id: "__cat_vault__", label: "Vault", color: palette.vault.bg, glow: palette.vault.glow },
   { id: "__cat_belief__", label: "Beliefs", color: palette.belief.bg, glow: palette.belief.glow },
   { id: "__cat_facts__", label: "Facts", color: palette.facts.bg, glow: palette.facts.glow },
@@ -58,8 +58,8 @@ const TOUR_CHILDREN: Record<
   string,
   { kind: MindNode["kind"]; labels: string[] }
 > = {
-  __cat_grids__: {
-    kind: "grid",
+  __cat_chats__: {
+    kind: "chat",
     labels: ["Q3 strategy", "Trip to Japan", "Resume review", "Workout split", "Book notes"],
   },
   __cat_vault__: {
@@ -88,7 +88,7 @@ const TOUR_CHILDREN: Record<
 // web rather than six isolated stars.
 const TOUR_CROSS_LINKS: [string, string][] = [
   ["__cat_belief__-2", "__cat_concepts__-0"],
-  ["__cat_projects__-0", "__cat_grids__-0"],
+  ["__cat_projects__-0", "__cat_chats__-0"],
   ["__cat_concepts__-1", "__cat_projects__-2"],
   ["__cat_facts__-0", "__cat_projects__-2"],
   ["__cat_belief__-0", "__cat_facts__-1"],
@@ -137,7 +137,7 @@ export function buildPopulatedTourPreviewGraph(): {
   return { nodes, edges };
 }
 
-const CHATS_CATEGORY_ID = "__cat_grids__";
+const CHATS_CATEGORY_ID = "__cat_chats__";
 
 function tourPreviewCentroid(simNodes: SimNode[]): [number, number, number] {
   if (!simNodes.length) return [0, 0, 0];

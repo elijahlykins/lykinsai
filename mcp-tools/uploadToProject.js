@@ -24,6 +24,7 @@
 import { jsonContent, errorContent, requireWrite } from './index.js';
 import { resolveVaultAttachment } from '../lib/vaultAttachment.js';
 import { resolveProjectByNameOrId } from '../lib/projectWriteTarget.js';
+import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
 
 const TITLE_MAX = 200;
 const TAG_MAX_LEN = 32;
@@ -242,7 +243,7 @@ export const uploadToProjectTool = {
 
     const selectCols = 'id, title, content, tags, folder, created_at';
     let { data: note, error: noteErr } = await ctx.supabaseAdmin
-      .from('notes')
+      .from('vault_items')
       .insert({
         user_id: ctx.userId,
         title,
@@ -250,6 +251,7 @@ export const uploadToProjectTool = {
         tags: tags.length ? tags : null,
         folder,
         source,
+        ...buildAttachmentColumns(attachment),
         ai_signals: { generated_file: generatedFile },
       })
       .select(selectCols)
@@ -264,7 +266,7 @@ export const uploadToProjectTool = {
         /does not exist/i.test(noteErr.message || ''));
     if (missingColumn) {
       ({ data: note, error: noteErr } = await ctx.supabaseAdmin
-        .from('notes')
+        .from('vault_items')
         .insert({ user_id: ctx.userId, title, content, tags: tags.length ? tags : null, folder, source })
         .select(selectCols)
         .single());

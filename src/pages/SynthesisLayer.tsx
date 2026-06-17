@@ -36,6 +36,7 @@ import BeliefWindowPanel from "@/components/synthesis/BeliefWindowPanel";
 import NeuronPanel from "@/components/synthesis/NeuronPanel";
 import VaultAttachment from "@/components/synthesis/VaultAttachment";
 import { parseVaultContent } from "@/lib/vaultContent";
+import { stripAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
 import {
   fetchMindmapVaultGraphData,
   hydrateMindmapNoteContent,
@@ -64,8 +65,8 @@ const SynthesisScene3D = lazy(() => import("@/pages/synthesis/SynthesisScene3D")
 import SynthesisSceneErrorBoundary from "@/pages/synthesis/SynthesisSceneErrorBoundary";
 import { useIsMobile } from "@/hooks/useViewportTier";
 import { isDemoNodeId } from "@/lib/demoSynthesis";
-import { isDemoGridId } from "@/lib/demoGrids";
-import { fetchBoardsWithContext } from "@/lib/board/fetchBoardsWithContext";
+import { isDemoLyknChatId } from "@/lib/demoLyknChats";
+import { fetchLyknChatsWithContext } from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import {
   createUserLinks,
   listUserLinks,
@@ -88,8 +89,8 @@ const isBlockedDemoId = (id: string | null | undefined): boolean => {
   if (!id) return true;
   // The synthetic prototype "First Conversation" grid is registered as a
   // demo-grid id (see demoGrids.js), so it routes through /grid/<id>
-  // straight into OmniaGrid like any other demo board.
-  if (isDemoGridId(id)) return false;
+  // straight into LyknChat like any other demo board.
+  if (isDemoLyknChatId(id)) return false;
   return isDemoNodeId(id);
 };
 
@@ -112,7 +113,7 @@ const isProjectAddableNode = (n: MindNode): boolean =>
 
 /** Bucket a graph node into a project-picker filter chip. */
 const projectNodeBucket = (n: MindNode): Exclude<ProjectKindFilter, "all"> => {
-  if (n.kind === "grid") return "chat";
+  if (n.kind === "chat") return "chat";
   if (n.kind === "neuron" && n.meta?.source === "manual_fact") return "fact";
   if (n.kind === "neuron") return "learned";
   return n.kind as Exclude<ProjectKindFilter, "all">;
@@ -171,7 +172,7 @@ const palette = {
   // category is purpose-built for the user-clustered projects feature.)
   projects: { bg: "#14b8a6", glow: "rgba(20,184,166,0.32)" },
   project:  { bg: "#2dd4bf", glow: "rgba(45,212,191,0.30)" },
-  grids:    { bg: "#3b82f6", glow: "rgba(59,130,246,0.30)" },
+  chats:    { bg: "#3b82f6", glow: "rgba(59,130,246,0.30)" },
   vault:    { bg: "#10b981", glow: "rgba(16,185,129,0.30)" },
   // Legacy palette entries kept so any older `node.color` reads (e.g.
   // tag pills, neuron subroutines that still reference these slugs)
@@ -203,7 +204,7 @@ const palette = {
   // so the cluster reads as its own thing distinct from Beliefs
   // (indigo) which are normative, while Perspectives are narrative.
   perspectives: { bg: "#c4b5fd", glow: "rgba(196,181,253,0.35)" },
-  grid:     { bg: "#60a5fa", glow: "rgba(96,165,250,0.25)" },
+  chat:     { bg: "#60a5fa", glow: "rgba(96,165,250,0.25)" },
   note:     { bg: "#34d399", glow: "rgba(52,211,153,0.25)" },
   tag:      { bg: "#fbbf24", glow: "rgba(251,191,36,0.25)" },
   neuron:   { bg: "#f472b6", glow: "rgba(244,114,182,0.25)" },
@@ -334,12 +335,12 @@ function buildVaultGridMap(chunks: ChunkRow[]): Map<string, Set<string>> {
   const mapping = new Map<string, Set<string>>();
   vaultChunks.forEach((vc) => {
     const vkw = extractKeywords(vc.content);
-    gridKw.forEach((gkw, boardId) => {
+    gridKw.forEach((gkw, chatId) => {
       let shared = 0;
       for (const kw of vkw) { if (gkw.has(kw) && ++shared >= 3) break; }
       if (shared >= 3) {
         if (!mapping.has(vc.source_id)) mapping.set(vc.source_id, new Set());
-        mapping.get(vc.source_id)!.add(boardId);
+        mapping.get(vc.source_id)!.add(chatId);
       }
     });
   });
@@ -450,7 +451,7 @@ function buildGraph(
   const vaultNotes = notes.filter((n) => !isPerspectiveNote(n));
 
   const cats: { id: string; label: string; color: string; glow: string }[] = [];
-  if (boards.length > 0 || forceCategoryIds.has("__cat_grids__")) cats.push({ id: "__cat_grids__", label: "Chats", color: palette.grids.bg, glow: palette.grids.glow });
+  if (boards.length > 0 || forceCategoryIds.has("__cat_chats__")) cats.push({ id: "__cat_chats__", label: "Chats", color: palette.chats.bg, glow: palette.chats.glow });
   if (vaultNotes.length > 0 || connectorRollups.length > 0 || forceCategoryIds.has("__cat_vault__")) {
     cats.push({ id: "__cat_vault__", label: "Vault", color: palette.vault.bg, glow: palette.vault.glow });
   }
@@ -478,8 +479,8 @@ function buildGraph(
 
   boards.forEach((b) => {
     const nid = `grid_${b.id}`;
-    nodes.push({ id: nid, label: b.title || "New Chat", kind: "grid", radius: 20, color: palette.grid.bg, glow: palette.grid.glow, parentId: "__cat_grids__", categoryId: "__cat_grids__", meta: { boardId: b.id, createdAt: b.created_at || null } });
-    edges.push({ from: "__cat_grids__", to: nid });
+    nodes.push({ id: nid, label: b.title || "New Chat", kind: "chat", radius: 20, color: palette.chat.bg, glow: palette.chat.glow, parentId: "__cat_chats__", categoryId: "__cat_chats__", meta: { chatId: b.id, createdAt: b.created_at || null } });
+    edges.push({ from: "__cat_chats__", to: nid });
   });
 
   // Build per-note theme map for cross-linking
@@ -1095,8 +1096,8 @@ function buildGraph(
     // Synthesis-chunk–based vault→grid edges
     const linkedBoards = vaultGridMap.get(n.id);
     if (linkedBoards) {
-      linkedBoards.forEach((boardId) => {
-        const gridNodeId = `grid_${boardId}`;
+      linkedBoards.forEach((chatId) => {
+        const gridNodeId = `grid_${chatId}`;
         if (nodes.some((nd) => nd.id === gridNodeId)) addCrossEdge(noteId, gridNodeId);
       });
     }
@@ -2158,7 +2159,7 @@ const SourceRollupItemRow: React.FC<{
     queryKey: ["mindmap_vault_note_content", noteId],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from("notes")
+        .from("vault_items")
         .select("content")
         .eq("id", noteId)
         .maybeSingle();
@@ -2403,7 +2404,7 @@ function DetailPanel({
     return `${n}th`;
   };
   const isPrototypeChatGrid =
-    node.kind === "grid" && node.meta?.boardId === "__prototype_first_chat__";
+    node.kind === "chat" && node.meta?.chatId === "__prototype_first_chat__";
   const connected = useMemo(() => {
     const ids = new Set<string>();
     edges.forEach((e) => {
@@ -2419,9 +2420,9 @@ function DetailPanel({
   // detail pages (they'd 404 or show an empty grid). The Vault page is
   // always valid — guests see the preloaded demo vault there. (The old
   // "project" branch was removed alongside the Projects category.)
-  const boardId = node.meta?.boardId as string | undefined;
-  const navPath = node.kind === "grid" && boardId && !isBlockedDemoId(boardId)
-    ? `/grid/${boardId}`
+  const chatId = node.meta?.chatId as string | undefined;
+  const navPath = node.kind === "chat" && chatId && !isBlockedDemoId(chatId)
+    ? `/chat/${chatId}`
     : node.kind === "vault"
     ? "/vault"
     : node.kind === "perspective"
@@ -2451,7 +2452,7 @@ function DetailPanel({
     queryFn: async () => {
       if (!noteBackedNoteId) return "";
       const { data, error } = await supabase
-        .from("notes")
+        .from("vault_items")
         .select("content")
         .eq("id", noteBackedNoteId)
         .maybeSingle();
@@ -2477,7 +2478,7 @@ function DetailPanel({
   const contentPreview = (node.kind === "vault" || node.kind === "perspective")
     ? (vaultParsed?.body || null)
     : node.meta?.content
-      ? (node.meta.content as string).replace(/\[ATTACHMENTS_JSON:[\s\S]*?\]/, "").trim()
+      ? stripAttachmentsMarker(node.meta.content as string)
       : null;
 
   const tags: string[] = node.meta?.tags || [];
@@ -2752,13 +2753,13 @@ function DetailPanel({
             )}
 
             {(() => {
-              const linkedGrids = connected.filter((c) => c.kind === "grid");
-              if (!linkedGrids.length) return null;
+              const linkedChats = connected.filter((c) => c.kind === "chat");
+              if (!linkedChats.length) return null;
               return (
                 <div className="mb-4">
                   <p className="text-[0.6875rem] font-medium text-gray-500 dark:text-gray-400 mb-2">Found in Chats</p>
                   <div className="flex flex-col gap-1">
-                    {linkedGrids.map((g) => (
+                    {linkedChats.map((g) => (
                       <button
                         key={g.id}
                         type="button"
@@ -2829,7 +2830,7 @@ function DetailPanel({
           const kind = node.meta?.neuronKind as string || "pattern";
           const source = node.meta?.source as string || "";
           const connectedVault = connected.filter((c) => c.kind === "vault");
-          const connectedGrids = connected.filter((c) => c.kind === "grid");
+          const connectedChats = connected.filter((c) => c.kind === "chat");
           const connectedTags = connected.filter((c) => c.kind === "tag");
 
           const originDesc: Record<string, string> = {
@@ -2884,11 +2885,11 @@ function DetailPanel({
                 </div>
               )}
 
-              {connectedGrids.length > 0 && (
+              {connectedChats.length > 0 && (
                 <div className="mb-3">
                   <p className="text-[0.625rem] font-medium text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Related Chats</p>
                   <div className="flex flex-col gap-1">
-                    {connectedGrids.slice(0, 6).map((c) => (
+                    {connectedChats.slice(0, 6).map((c) => (
                       // Click selects the grid neuron in the 3D graph (camera
                       // flies to it). The Detail panel for that node carries
                       // its own "Open Grid" footer button for users who want
@@ -3437,7 +3438,7 @@ function NeuronCreationModal({
           return;
         }
         const { data: inserted, error: insErr } = await supabase
-          .from("notes")
+          .from("vault_items")
           .insert({
             user_id: authUserId,
             title: t,
@@ -3474,7 +3475,7 @@ function NeuronCreationModal({
           return;
         }
         const { data: inserted, error: insErr } = await supabase
-          .from("notes")
+          .from("vault_items")
           .insert({
             user_id: authUserId,
             title: t,
@@ -4260,7 +4261,7 @@ export default function SynthesisLayer() {
       )
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "omnia_boards", filter: `user_id=eq.${uid}` },
+        { event: "*", schema: "public", table: "lykn_chats", filter: `user_id=eq.${uid}` },
         () => {
           // Chats deleted from /app or renamed should likewise flow
           // through to the Chats cluster without a manual refresh.
@@ -4316,7 +4317,7 @@ export default function SynthesisLayer() {
       // payload on every mount. The DB column itself is still populated
       // (other surfaces — chat scoping, /api/v1/synthesis/activity —
       // continue to use it), it just doesn't ride along on this fetch.
-      return fetchBoardsWithContext(user.id, 80);
+      return fetchLyknChatsWithContext(user.id, 80);
     },
     enabled: !!user?.id,
     staleTime: 60_000,
@@ -4652,7 +4653,7 @@ export default function SynthesisLayer() {
   // we want — the shape persists, the contents come and go.
   const forceCategoryIds = useMemo(
     () => new Set<string>([
-      "__cat_grids__",
+      "__cat_chats__",
       "__cat_vault__",
       "__cat_belief__",
       "__cat_facts__",
@@ -6329,7 +6330,7 @@ export default function SynthesisLayer() {
       <div className={`absolute bottom-6 z-20 flex flex-wrap gap-3 text-[0.625rem] text-black/55 dark:text-white/55 pointer-events-none ${
         isMobile ? "left-6" : "left-[13rem]"
       }`}>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.grids.bg, color: palette.grids.bg }} /> Chats</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.chats.bg, color: palette.chats.bg }} /> Chats</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.vault.bg, color: palette.vault.bg }} /> Vault</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.belief.bg, color: palette.belief.bg }} /> Beliefs</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.facts.bg, color: palette.facts.bg }} /> Facts</span>

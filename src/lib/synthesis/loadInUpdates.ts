@@ -488,7 +488,7 @@ async function fetchConnectorActivity(): Promise<ConnectorActivity | null> {
 
     const [calendarRes, recentRes] = await Promise.allSettled([
       supabase
-        .from("notes")
+        .from("vault_items")
         .select("id, title, source, created_at, updated_at, content")
         .eq("user_id", userId)
         .eq("source", "gcal_event")
@@ -497,7 +497,7 @@ async function fetchConnectorActivity(): Promise<ConnectorActivity | null> {
         .order("created_at", { ascending: true })
         .limit(8),
       supabase
-        .from("notes")
+        .from("vault_items")
         .select("id, title, source, created_at, updated_at, content")
         .eq("user_id", userId)
         .in("source", recognisedSources)
@@ -617,7 +617,7 @@ async function fetchConnectorStatus(): Promise<ConnectorStatusMap> {
       // as "calendar is connected" even if the social_connections row
       // is missing (Google Calendar piggybacks on the SSO session).
       supabase
-        .from("notes")
+        .from("vault_items")
         .select("id")
         .eq("user_id", userId)
         .eq("source", "gcal_event")
@@ -2478,7 +2478,7 @@ function formatMessage(
   }
 
   // Header line is rendered as a standalone big heading by the chat
-  // surface (see `isLoadInGreeting` branch in OmniaFocusedChat). We
+  // surface (see `isLoadInGreeting` branch in LyknChatView). We
   // separate it from the bullets with a blank line so the markdown
   // pass treats the bullets as a clean list, and we drop the
   // "Here's where things stand:" filler — the bulleted recap reads

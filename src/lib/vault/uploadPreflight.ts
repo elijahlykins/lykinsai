@@ -6,7 +6,43 @@ export type VaultUploadFileEntry = {
   filename: string;
 };
 
-export type PreflightRejectReason = "too_large" | "vault_full" | "vault_slots" | "batch_cap";
+export type PreflightRejectReason =
+  | "unsupported_type"
+  | "too_large"
+  | "vault_full"
+  | "vault_slots"
+  | "batch_cap";
+
+// Hard-coded allow-list of vault-supported file types. The gate accepts any
+// image/video/audio by MIME prefix (the compression pipeline + renderers
+// handle the long tail) plus this explicit extension set for documents and
+// for media dropped without a reliable MIME type. Anything else (archives,
+// executables, disk images, etc.) is rejected before any compression/upload
+// work starts. Extend this list rather than loosening the gate.
+const ALLOWED_MIME_PREFIXES = ["image/", "video/", "audio/"];
+const ALLOWED_EXTENSIONS = new Set<string>([
+  // documents / text
+  "pdf", "txt", "md", "markdown", "csv", "tsv", "json", "html", "htm", "rtf",
+  "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+  // images
+  "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic", "heif", "tiff", "tif", "avif",
+  // video
+  "mp4", "mov", "webm", "m4v", "avi", "mkv", "wmv", "mpeg", "mpg", "3gp", "qt",
+  // audio
+  "mp3", "wav", "ogg", "m4a", "aac", "flac", "wma",
+]);
+
+function extOf(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  return dot >= 0 ? filename.slice(dot + 1).toLowerCase() : "";
+}
+
+/** True when the file is a vault-supported type (see allow-list above). */
+export function isSupportedVaultUpload(file: File, filename: string): boolean {
+  const mime = String(file?.type || "").toLowerCase();
+  if (ALLOWED_MIME_PREFIXES.some((p) => mime.startsWith(p))) return true;
+  return ALLOWED_EXTENSIONS.has(extOf(filename));
+}
 
 export type PreflightRejected = {
   filename: string;
@@ -52,6 +88,10 @@ export function preflightVaultUploadBatch(
   const rejected: PreflightRejected[] = [];
 
   for (const entry of files) {
+    if (!isSupportedVaultUpload(entry.file, entry.filename)) {
+      rejected.push({ filename: entry.filename, reason: "unsupported_type" });
+      continue;
+    }
     const size = entry.file.size || 0;
     if (size > VAULT_UPLOAD_LIMITS.maxFileBytes) {
       rejected.push({ filename: entry.filename, reason: "too_large" });
@@ -98,12 +138,18 @@ export function formatBytesShort(bytes: number): string {
 export function summarizePreflightRejections(rejected: PreflightRejected[]): string | null {
   if (!rejected.length) return null;
 
+  const unsupported = rejected.filter((r) => r.reason === "unsupported_type").length;
   const tooLarge = rejected.filter((r) => r.reason === "too_large").length;
   const vaultFull = rejected.filter((r) => r.reason === "vault_full").length;
   const vaultSlots = rejected.filter((r) => r.reason === "vault_slots").length;
   const batchCap = rejected.filter((r) => r.reason === "batch_cap").length;
 
   const parts: string[] = [];
+  if (unsupported > 0) {
+    parts.push(
+      `${unsupported} file${unsupported === 1 ? "" : "s"} skipped — unsupported file type`,
+    );
+  }
   if (tooLarge > 0) {
     parts.push(
       `${tooLarge} file${tooLarge === 1 ? "" : "s"} over the ${formatBytesShort(VAULT_UPLOAD_LIMITS.maxFileBytes)} limit`,

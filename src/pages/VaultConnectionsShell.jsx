@@ -1,6 +1,6 @@
 import { useLocation } from "react-router-dom";
 import { useMemo } from "react";
-import VaultNew from "./new/VaultNew";
+import Vault from "./Vault";
 import VaultAppDock from "@/components/connections/VaultAppDock";
 import { useAuth } from "@/lib/SupabaseAuth";
 
@@ -26,7 +26,7 @@ export default function VaultConnectionsShell() {
 
   return (
     <>
-      <VaultNew />
+      <Vault />
       {!isEmbedded && <VaultAppDock user={user} />}
     </>
   );

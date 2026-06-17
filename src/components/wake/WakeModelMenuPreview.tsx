@@ -22,7 +22,7 @@ interface WakeModelMenuPreviewProps {
   lightMode?: boolean;
 }
 
-// Mirrors `dropdownCls` from OmniaChatBarToolbar so the panel matches 1:1.
+// Mirrors `dropdownCls` from LyknChatBarToolbar so the panel matches 1:1.
 const PANEL_CLS =
   "rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5";
 // Light-surface variant: white panel with a subtle black hairline + soft shadow.

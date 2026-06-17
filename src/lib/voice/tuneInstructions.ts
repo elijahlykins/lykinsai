@@ -12,7 +12,7 @@
  * grounding, which reads `voicePrompt` via getAiPrefs) picks it up.
  *
  * Both voice paths (OpenAI Realtime via useRealtimeVoice, ElevenLabs via
- * OmniaVoiceModeEleven) intercept this tool name and return the JSON string
+ * LyknChatVoiceModeEleven) intercept this tool name and return the JSON string
  * produced here as the tool result the voice model speaks back from.
  */
 import { API_BASE_URL } from "@/lib/api-config";

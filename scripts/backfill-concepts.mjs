@@ -99,7 +99,7 @@ async function loadUserIds() {
   from = 0;
   while (true) {
     const { data, error } = await admin
-      .from('notes')
+      .from('vault_items')
       .select('user_id')
       .not('tags', 'is', null)
       .range(from, from + PAGE - 1);
@@ -150,7 +150,7 @@ async function backfillUser(userId) {
     const PAGE = 1000;
     while (true) {
       const { data, error } = await admin
-        .from('notes')
+        .from('vault_items')
         .select('id, tags')
         .eq('user_id', userId)
         .not('tags', 'is', null)
@@ -270,7 +270,7 @@ async function backfillUser(userId) {
     const upserts = [];
     while (true) {
       const { data, error } = await admin
-        .from('notes')
+        .from('vault_items')
         .select('id, tags, ai_signals')
         .eq('user_id', userId)
         .range(from, from + PAGE - 1);

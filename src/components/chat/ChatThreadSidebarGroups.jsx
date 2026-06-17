@@ -4,8 +4,8 @@ import { useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { isThreadLoading, subscribeThreadRuntime } from "@/lib/chat/chatThreadRuntime";
-import { fetchBoardsWithContext, mergeActiveRouteBoard } from "@/lib/board/fetchBoardsWithContext";
-import { filterBoardsByChatModel } from "@/lib/board/chatModelKey";
+import { fetchLyknChatsWithContext, mergeActiveRouteLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
+import { filterLyknChatsByChatModel } from "@/lib/lyknChat/chatModelKey";
 
 const COLLAPSED_GROUP_SIZE = 5;
 
@@ -49,7 +49,7 @@ function groupBoardsByTime(boards) {
   );
 }
 
-function ChatRow({ board, isActive, loading, onOpen, menuBoardId, onMenuBoardId, onMenuPos }) {
+function ChatRow({ board, isActive, loading, onOpen, menuChatId, onMenuChatId, onMenuPos }) {
   return (
     <div className="group relative flex items-center">
       <button
@@ -76,12 +76,12 @@ function ChatRow({ board, isActive, loading, onOpen, menuBoardId, onMenuBoardId,
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          if (menuBoardId === board.id) {
-            onMenuBoardId(null);
+          if (menuChatId === board.id) {
+            onMenuChatId(null);
           } else {
             const rect = e.currentTarget.getBoundingClientRect();
             onMenuPos({ top: rect.bottom + 4, left: rect.right });
-            onMenuBoardId(board.id);
+            onMenuChatId(board.id);
           }
         }}
         className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
@@ -97,8 +97,8 @@ export default function ChatThreadSidebarGroups({
   modelFilter,
   searchQuery,
   onOpenChat,
-  menuBoardId,
-  onMenuBoardId,
+  menuChatId,
+  onMenuChatId,
   onMenuPos,
 }) {
   const location = useLocation();
@@ -119,17 +119,17 @@ export default function ChatThreadSidebarGroups({
 
   const { data: boards = [], isLoading } = useQuery({
     queryKey: ["boards", userId],
-    queryFn: () => fetchBoardsWithContext(userId, 50),
+    queryFn: () => fetchLyknChatsWithContext(userId, 50),
     enabled: !!userId,
   });
 
   const visibleBoards = useMemo(
-    () => mergeActiveRouteBoard(boards, location.pathname),
+    () => mergeActiveRouteLyknChat(boards, location.pathname),
     [boards, location.pathname],
   );
 
   const filteredBoards = useMemo(() => {
-    let list = filterBoardsByChatModel(visibleBoards, modelFilter);
+    let list = filterLyknChatsByChatModel(visibleBoards, modelFilter);
     if (needle) {
       list = list.filter((b) =>
         String(b.title || "New Chat").toLowerCase().includes(needle),
@@ -188,11 +188,11 @@ export default function ChatThreadSidebarGroups({
               <ChatRow
                 key={board.id}
                 board={board}
-                isActive={location.pathname === `/grid/${board.id}`}
+                isActive={location.pathname === `/chat/${board.id}`}
                 loading={isThreadLoading(board.id)}
                 onOpen={onOpenChat}
-                menuBoardId={menuBoardId}
-                onMenuBoardId={onMenuBoardId}
+                menuChatId={menuChatId}
+                onMenuChatId={onMenuChatId}
                 onMenuPos={onMenuPos}
               />
             ))}

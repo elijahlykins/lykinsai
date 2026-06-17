@@ -66,7 +66,7 @@ export async function fetchVaultFileTypeCounts(userId, noteIds) {
   if (!ids.length) return empty;
 
   const { data, error } = await supabase
-    .from("notes")
+    .from("vault_items")
     .select("id, source, content")
     .eq("user_id", userId)
     .in("id", ids);

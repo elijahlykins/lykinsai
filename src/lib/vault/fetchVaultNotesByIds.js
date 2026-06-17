@@ -10,7 +10,7 @@ export async function fetchVaultNotesByIds(userId, noteIds) {
   if (!ids.length) return [];
 
   const { data, error } = await supabase
-    .from("notes")
+    .from("vault_items")
     .select("id, title, tags, source, updated_at, ai_summary, content")
     .eq("user_id", userId)
     .in("id", ids);

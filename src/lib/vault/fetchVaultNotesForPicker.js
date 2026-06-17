@@ -10,7 +10,7 @@ export async function fetchVaultNotesForPicker(userId) {
   if (!userId) return [];
 
   const { data, error } = await supabase
-    .from("notes")
+    .from("vault_items")
     .select("id, title, tags, source, updated_at")
     .eq("user_id", userId)
     .order("updated_at", { ascending: false, nullsFirst: false })

@@ -106,7 +106,7 @@ export const handleChunkDragStart = (
   const sel = window.getSelection()?.toString()?.trim();
   const text = sel || chunk;
   e.dataTransfer.effectAllowed = "copy";
-  e.dataTransfer.setData("application/x-omnia-chat-response", text);
+  e.dataTransfer.setData("application/x-lykn-chat-chat-response", text);
   e.dataTransfer.setData("text/plain", text);
   try {
     const ghost = document.createElement("div");

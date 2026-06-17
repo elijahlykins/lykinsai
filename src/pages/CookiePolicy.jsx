@@ -15,10 +15,10 @@
 // Keep the table below in sync with what's actually written client-side:
 //   • Auth (Supabase SDK)       , sb-<project>-auth-token
 //   • UI preferences            , lykinsai_settings
-//   • Last-opened board         , omnia_board_id, omnia_title
+//   • Last-opened board         , lyknchat_active_id, lyknchat_title
 //   • Vault view mode           , lykn_vault_view
 //   • Canvas prefs              , lykn_wheel_zoom_mode, lykn_show_grid
-//   • Onboarding/dismissals     , lykn:lastLoadInGreetingBoardId
+//   • Onboarding/dismissals     , lykn:lastLoadInGreetingChatId
 //
 // If we ever add analytics, advertising, or third-party trackers, this page
 // becomes a real consent-required surface and the lawful basis flips from
@@ -160,12 +160,12 @@ export default function CookiePolicy() {
                 life="Persistent until cleared"
               />
               <StorageRow
-                k="omnia_board_id"
+                k="lyknchat_active_id"
                 purpose="Last-opened board, so /grid restores where you were"
                 life="Persistent until cleared"
               />
               <StorageRow
-                k="omnia_title"
+                k="lyknchat_title"
                 purpose="Last-opened board's display title"
                 life="Persistent until cleared"
               />
@@ -185,7 +185,7 @@ export default function CookiePolicy() {
                 life="Persistent until cleared"
               />
               <StorageRow
-                k="lykn:lastLoadInGreetingBoardId"
+                k="lykn:lastLoadInGreetingChatId"
                 purpose="Tracks which board last triggered the load-in briefing so we don't re-show it"
                 life="Persistent until cleared"
               />

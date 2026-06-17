@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase";
-import { filterBoardsWithContext, type BoardListRow } from "@/lib/board/boardHasContext";
+import { filterLyknChatsWithContext, type LyknChatListRow } from "@/lib/lyknChat/lyknChatHasContext";
 import { setPendingBoardThread } from "@/lib/chat/chatThreadAssign";
 
 export type ChatThreadRow = {
@@ -10,15 +10,15 @@ export type ChatThreadRow = {
 };
 
 export type ChatThreadWithBoards = ChatThreadRow & {
-  chats: BoardListRow[];
+  chats: LyknChatListRow[];
 };
 
 export type SidebarChatEntry =
-  | { kind: "chat"; board: BoardListRow }
-  | { kind: "thread"; threadId: string; label: string; chats: BoardListRow[] };
+  | { kind: "chat"; board: LyknChatListRow }
+  | { kind: "thread"; threadId: string; label: string; chats: LyknChatListRow[] };
 
 const THREAD_BOARD_SELECT =
-  "id, title, updated_at, created_at, chat_model_key, thread_id, omnia_board_states(state)";
+  "id, title, updated_at, created_at, chat_model_key, thread_id, lykn_chat_states(state)";
 
 function isMissingThreadSchema(error: { message?: string; code?: string } | null) {
   const msg = String(error?.message || "").toLowerCase();
@@ -32,23 +32,23 @@ function isMissingThreadSchema(error: { message?: string; code?: string } | null
 
 async function insertChatBoardRow(
   userId: string,
-  boardId: string,
+  chatId: string,
   threadId: string | null,
 ): Promise<void> {
   const payload: Record<string, string> = {
-    id: boardId,
+    id: chatId,
     user_id: userId,
     title: "New Chat",
   };
   if (threadId) payload.thread_id = threadId;
 
-  const { error } = await supabase.from("omnia_boards").insert(payload);
+  const { error } = await supabase.from("lykn_chats").insert(payload);
   if (!error) return;
   if (error.code === "23505") return;
 
   if (threadId && isMissingThreadSchema(error)) {
-    const { error: retryErr } = await supabase.from("omnia_boards").insert({
-      id: boardId,
+    const { error: retryErr } = await supabase.from("lykn_chats").insert({
+      id: chatId,
       user_id: userId,
       title: "New Chat",
     });
@@ -79,7 +79,7 @@ export async function fetchChatThreadsWithBoards(userId: string): Promise<ChatTh
 
   const threadIds = threads.map((t) => t.id);
   const boardsRes = await supabase
-    .from("omnia_boards")
+    .from("lykn_chats")
     .select(THREAD_BOARD_SELECT)
     .eq("user_id", userId)
     .in("thread_id", threadIds)
@@ -90,10 +90,10 @@ export async function fetchChatThreadsWithBoards(userId: string): Promise<ChatTh
     throw boardsRes.error;
   }
 
-  const allBoards = filterBoardsWithContext((boardsRes.data || []) as BoardListRow[]);
-  const byThread = new Map<string, BoardListRow[]>();
+  const allBoards = filterLyknChatsWithContext((boardsRes.data || []) as LyknChatListRow[]);
+  const byThread = new Map<string, LyknChatListRow[]>();
   for (const b of allBoards) {
-    const tid = String((b as BoardListRow & { thread_id?: string }).thread_id || "");
+    const tid = String((b as LyknChatListRow & { thread_id?: string }).thread_id || "");
     if (!tid) continue;
     if (!byThread.has(tid)) byThread.set(tid, []);
     byThread.get(tid)!.push(b);
@@ -107,10 +107,10 @@ export async function fetchChatThreadsWithBoards(userId: string): Promise<ChatTh
     .filter((t) => t.chats.length > 0);
 }
 
-export async function fetchOrphanBoards(userId: string): Promise<BoardListRow[]> {
+export async function fetchOrphanBoards(userId: string): Promise<LyknChatListRow[]> {
   if (!userId) return [];
   const res = await supabase
-    .from("omnia_boards")
+    .from("lykn_chats")
     .select(THREAD_BOARD_SELECT)
     .eq("user_id", userId)
     .is("thread_id", null)
@@ -121,7 +121,7 @@ export async function fetchOrphanBoards(userId: string): Promise<BoardListRow[]>
     if (isMissingThreadSchema(res.error)) return [];
     throw res.error;
   }
-  return filterBoardsWithContext((res.data || []) as BoardListRow[]);
+  return filterLyknChatsWithContext((res.data || []) as LyknChatListRow[]);
 }
 
 function entryUpdatedAt(entry: SidebarChatEntry): number {
@@ -139,7 +139,7 @@ export async function fetchSidebarChatEntries(userId: string): Promise<SidebarCh
   if (!userId) return [];
 
   const res = await supabase
-    .from("omnia_boards")
+    .from("lykn_chats")
     .select(THREAD_BOARD_SELECT)
     .eq("user_id", userId)
     .order("updated_at", { ascending: false })
@@ -148,13 +148,13 @@ export async function fetchSidebarChatEntries(userId: string): Promise<SidebarCh
   if (res.error) {
     if (isMissingThreadSchema(res.error)) {
       const fallback = await supabase
-        .from("omnia_boards")
-        .select("id, title, updated_at, created_at, chat_model_key, omnia_board_states(state)")
+        .from("lykn_chats")
+        .select("id, title, updated_at, created_at, chat_model_key, lykn_chat_states(state)")
         .eq("user_id", userId)
         .order("updated_at", { ascending: false })
         .limit(120);
       if (fallback.error) throw fallback.error;
-      return filterBoardsWithContext((fallback.data || []) as BoardListRow[]).map((board) => ({
+      return filterLyknChatsWithContext((fallback.data || []) as LyknChatListRow[]).map((board) => ({
         kind: "chat" as const,
         board,
       }));
@@ -162,12 +162,12 @@ export async function fetchSidebarChatEntries(userId: string): Promise<SidebarCh
     throw res.error;
   }
 
-  const boards = filterBoardsWithContext((res.data || []) as BoardListRow[]);
-  const byThread = new Map<string, BoardListRow[]>();
-  const orphans: BoardListRow[] = [];
+  const boards = filterLyknChatsWithContext((res.data || []) as LyknChatListRow[]);
+  const byThread = new Map<string, LyknChatListRow[]>();
+  const orphans: LyknChatListRow[] = [];
 
   for (const board of boards) {
-    const tid = String((board as BoardListRow & { thread_id?: string }).thread_id || "");
+    const tid = String((board as LyknChatListRow & { thread_id?: string }).thread_id || "");
     if (!tid) {
       orphans.push(board);
       continue;
@@ -199,11 +199,11 @@ export async function fetchSidebarChatEntries(userId: string): Promise<SidebarCh
   return entries;
 }
 
-export async function getBoardThreadId(boardId: string): Promise<string | null> {
+export async function getBoardThreadId(chatId: string): Promise<string | null> {
   const { data, error } = await supabase
-    .from("omnia_boards")
+    .from("lykn_chats")
     .select("thread_id")
-    .eq("id", boardId)
+    .eq("id", chatId)
     .maybeSingle();
   if (error) {
     if (isMissingThreadSchema(error)) return null;
@@ -214,10 +214,10 @@ export async function getBoardThreadId(boardId: string): Promise<string | null> 
 
 export async function ensureBoardThread(
   userId: string,
-  boardId: string,
+  chatId: string,
   { title = "New Thread" } = {},
 ): Promise<string | null> {
-  const existing = await getBoardThreadId(boardId);
+  const existing = await getBoardThreadId(chatId);
   if (existing) return existing;
 
   const threadId = crypto.randomUUID();
@@ -232,9 +232,9 @@ export async function ensureBoardThread(
   }
 
   const { error: boardErr } = await supabase
-    .from("omnia_boards")
+    .from("lykn_chats")
     .update({ thread_id: threadId })
-    .eq("id", boardId)
+    .eq("id", chatId)
     .eq("user_id", userId);
   if (boardErr) {
     if (isMissingThreadSchema(boardErr)) return null;
@@ -244,28 +244,28 @@ export async function ensureBoardThread(
 }
 
 /** Plain new chat — no thread until the user opts in from the chat UI. */
-export async function createNewChat(userId: string): Promise<{ boardId: string }> {
-  const boardId = crypto.randomUUID();
-  await insertChatBoardRow(userId, boardId, null);
-  return { boardId };
+export async function createNewChat(userId: string): Promise<{ chatId: string }> {
+  const chatId = crypto.randomUUID();
+  await insertChatBoardRow(userId, chatId, null);
+  return { chatId };
 }
 
 /** Link the current chat to a new sibling chat (creates the thread on first use). */
 export async function beginThreadFromBoard(
   userId: string,
-  sourceBoardId: string,
+  sourceChatId: string,
   { title = "New Chat" } = {},
-): Promise<{ threadId: string; boardId: string }> {
-  const existingThreadId = await getBoardThreadId(sourceBoardId);
+): Promise<{ threadId: string; chatId: string }> {
+  const existingThreadId = await getBoardThreadId(sourceChatId);
   if (existingThreadId) {
-    const { boardId } = await createChatInThread(userId, existingThreadId);
-    return { threadId: existingThreadId, boardId };
+    const { chatId } = await createChatInThread(userId, existingThreadId);
+    return { threadId: existingThreadId, chatId };
   }
 
   const threadId = crypto.randomUUID();
-  const boardId = crypto.randomUUID();
+  const chatId = crypto.randomUUID();
   const threadName = String(title || "New Chat").trim().slice(0, 120) || "New Chat";
-  setPendingBoardThread(boardId, threadId);
+  setPendingBoardThread(chatId, threadId);
 
   const { error: threadErr } = await supabase.from("lykn_chat_threads").insert({
     id: threadId,
@@ -277,13 +277,13 @@ export async function beginThreadFromBoard(
   const linkThreadId = isMissingThreadSchema(threadErr) ? null : threadId;
 
   const { error: linkErr } = await supabase
-    .from("omnia_boards")
+    .from("lykn_chats")
     .update({ thread_id: linkThreadId })
-    .eq("id", sourceBoardId)
+    .eq("id", sourceChatId)
     .eq("user_id", userId);
   if (linkErr && !isMissingThreadSchema(linkErr)) throw linkErr;
 
-  await insertChatBoardRow(userId, boardId, linkThreadId);
+  await insertChatBoardRow(userId, chatId, linkThreadId);
 
   if (linkThreadId) {
     await supabase
@@ -293,21 +293,21 @@ export async function beginThreadFromBoard(
       .eq("user_id", userId);
   }
 
-  return { threadId: linkThreadId || threadId, boardId };
+  return { threadId: linkThreadId || threadId, chatId };
 }
 
 /** @deprecated Use createNewChat — threads are opt-in from the chat UI. */
-export async function createChatThreadWithBoard(userId: string): Promise<{ threadId: string; boardId: string }> {
-  const { boardId } = await createNewChat(userId);
-  return { threadId: "", boardId };
+export async function createChatThreadWithBoard(userId: string): Promise<{ threadId: string; chatId: string }> {
+  const { chatId } = await createNewChat(userId);
+  return { threadId: "", chatId };
 }
 
 export async function createChatInThread(
   userId: string,
   threadId: string,
-): Promise<{ boardId: string }> {
-  const boardId = crypto.randomUUID();
-  setPendingBoardThread(boardId, threadId);
+): Promise<{ chatId: string }> {
+  const chatId = crypto.randomUUID();
+  setPendingBoardThread(chatId, threadId);
 
   await supabase
     .from("lykn_chat_threads")
@@ -315,9 +315,9 @@ export async function createChatInThread(
     .eq("id", threadId)
     .eq("user_id", userId);
 
-  await insertChatBoardRow(userId, boardId, threadId);
+  await insertChatBoardRow(userId, chatId, threadId);
 
-  return { boardId };
+  return { chatId };
 }
 
 export async function updateChatThreadName(
@@ -336,13 +336,13 @@ export async function updateChatThreadName(
 
 export async function maybeSyncThreadNameFromChat(
   userId: string,
-  boardId: string,
+  chatId: string,
   chatTitle: string,
 ) {
   const title = String(chatTitle || "").trim();
   if (!title || title === "New Chat" || title === "Untitled board") return;
 
-  const threadId = await getBoardThreadId(boardId);
+  const threadId = await getBoardThreadId(chatId);
   if (!threadId) return;
 
   const { data: thread } = await supabase
@@ -359,10 +359,10 @@ export async function maybeSyncThreadNameFromChat(
   await updateChatThreadName(userId, threadId, title);
 }
 
-export async function fetchChatsInThread(userId: string, threadId: string): Promise<BoardListRow[]> {
+export async function fetchChatsInThread(userId: string, threadId: string): Promise<LyknChatListRow[]> {
   if (!userId || !threadId) return [];
   const res = await supabase
-    .from("omnia_boards")
+    .from("lykn_chats")
     .select(THREAD_BOARD_SELECT)
     .eq("user_id", userId)
     .eq("thread_id", threadId)
@@ -371,5 +371,5 @@ export async function fetchChatsInThread(userId: string, threadId: string): Prom
     if (isMissingThreadSchema(res.error)) return [];
     throw res.error;
   }
-  return filterBoardsWithContext((res.data || []) as BoardListRow[]);
+  return filterLyknChatsWithContext((res.data || []) as LyknChatListRow[]);
 }
