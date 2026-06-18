@@ -3102,12 +3102,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       });
     }
 
-    // Tag/type views explicitly slice the vault by tag or media type,
-    // so collapsing here would either fight that grouping or hide the
-    // folder tile under "Untagged". Pass through unchanged — the user
-    // can still get the folder collapse by switching back to the main
-    // collage/grid/masonry views.
-    if (vaultView === "tags" || vaultView === "type") return baseline;
+    // The Type view slices by media type, where a per-app folder tile has no
+    // natural bucket, so it passes through unchanged. The Tags view DOES
+    // collapse (below): each 3rd-party app becomes one folder tile, grouped
+    // under the union of its items' tags, matching collage/grid.
+    if (vaultView === "type") return baseline;
 
     // When the user is actively searching or running a concept query,
     // skip the collapse so individual connector items surface in the
@@ -3135,6 +3134,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
           count: 0,
           lastTouchedMs: 0,
           sampleTags: new Set(),
+          allTags: new Set(),
           sourceValues: new Set(),
           firstIndex: Infinity,
         };
@@ -3146,6 +3146,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
         bucket.lastTouchedMs = card.lastTouchedMs || 0;
       }
       (card.tags || []).slice(0, 3).forEach((t) => bucket.sampleTags.add(t));
+      // Full tag union drives the Tags view grouping so the app's folder tile
+      // shows up under every tag its underlying items carry.
+      (card.tags || []).forEach((t) => bucket.allTags.add(t));
     }
 
     if (grouped.size === 0) return baseline;
@@ -3176,6 +3179,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               ? formatDate(new Date(bucket.lastTouchedMs).toISOString())
               : "",
             tags: Array.from(bucket.sampleTags),
+            allTags: Array.from(bucket.allTags),
             lastTouchedMs: bucket.lastTouchedMs,
           });
         }
@@ -3562,6 +3566,37 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     });
     return () => window.cancelAnimationFrame(id);
   }, [isFeedView, batchPreparing, canRevealMore, revealCount, collageGridCardsAll.length, prepareNextBatch]);
+
+  // Scroll-driven reveal/pagination that works in EVERY view (collage, grid,
+  // tags, type). The bottom sentinel's IntersectionObserver fires in the grid
+  // layout but NOT in the collage masonry, and the non-feed views (tags/type)
+  // also leaned on it to fetch the next page — so anything but grid could stall
+  // once scrollable. Drive everything directly off scroll position instead:
+  // whenever the sentinel is within ~700px of the viewport, advance the reveal
+  // window (feed views) or load the next server page (non-feed views).
+  // Capture-phase listening catches scroll from a nested scroll container too;
+  // batchPreparingRef / isLoadingMoreNotes gate to one step at a time.
+  useEffect(() => {
+    if (isWakePreview) return;
+    const maybeReveal = () => {
+      const el = loadMoreRef.current;
+      if (!el) return;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      if (el.getBoundingClientRect().top > vh + 700) return;
+      if (isFeedView) {
+        if (!batchPreparingRef.current && canRevealMore) prepareNextBatch();
+      } else if (hasMoreNotes && !isLoadingMoreNotes) {
+        void loadMoreNotes();
+      }
+    };
+    maybeReveal();
+    window.addEventListener("scroll", maybeReveal, true);
+    window.addEventListener("resize", maybeReveal);
+    return () => {
+      window.removeEventListener("scroll", maybeReveal, true);
+      window.removeEventListener("resize", maybeReveal);
+    };
+  }, [isWakePreview, isFeedView, canRevealMore, prepareNextBatch, hasMoreNotes, isLoadingMoreNotes, loadMoreNotes]);
 
   // Once every card in the preparing batch has its media ready, reveal them.
   useEffect(() => {
@@ -4021,7 +4056,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     const groups = {};
     const untagged = [];
     for (const card of orderedVisibleCards) {
-      const tags = card.tags || [];
+      // Connector folder tiles group by the union of their items' tags so one
+      // app card appears under each relevant tag (and "Untagged" if none).
+      const tags = card.kind === "source-folder" ? (card.allTags || []) : (card.tags || []);
       if (tags.length === 0) {
         untagged.push(card);
       } else {
@@ -7112,12 +7149,12 @@ User: ${text}`;
                           // page (every card duplicated per tag).
                           style={virtualizedCardStyle}
                           className={`rounded-2xl relative overflow-hidden cursor-pointer ${
-                            card.kind === "attachment" || card.kind === "quick-note"
+                            card.kind === "attachment" || card.kind === "quick-note" || card.kind === "source-folder"
                               ? "bg-transparent border-0 shadow-none"
                               : "glass-control"
                           } ${isSelected ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-transparent" : ""}`}
                         >
-                          {isSelected && (
+                          {isSelected && card.kind !== "source-folder" && (
                             <span
                               data-no-preview="true"
                               className="absolute top-2 right-2 z-[120] w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center shadow-md pointer-events-none"
@@ -7130,7 +7167,9 @@ User: ${text}`;
                               Sample
                             </span>
                           )}
-                          {card.kind === "attachment" ? (
+                          {card.kind === "source-folder" ? (
+                            <SourceFolderTile card={card} heightClass="h-40" />
+                          ) : card.kind === "attachment" ? (
                             <>
                               {renderAttachmentCard(card, "h-40")}
                               {card.tags?.length > 0 && (

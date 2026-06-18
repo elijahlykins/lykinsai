@@ -961,7 +961,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent
-        className={`bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white backdrop-blur-md max-h-[90vh] overflow-y-auto ${
+        className={`bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white backdrop-blur-md max-h-[90vh] overflow-y-auto overflow-x-hidden ${
           view === 'connections' ? 'max-w-2xl' : 'max-w-md'
         }`}
       >
@@ -969,7 +969,7 @@ export default function SettingsModal({ isOpen, onClose }) {
           <DialogTitle className="text-black dark:text-white">Settings</DialogTitle>
         </DialogHeader>
 
-        <div className="py-2">
+        <div className="min-w-0 py-2">
           {renderView()}
         </div>
       </DialogContent>
