@@ -16898,10 +16898,17 @@ const VOICE_SESSION_TTL_MS = 60 * 60 * 1000; // 1h — covers a long voice call.
 // recent conversation) that only the browser had at session start. Best-effort
 // (in-memory): on a miss we fall back to userId-only synthesis grounding.
 const voiceSessionGrounding = new Map(); // token -> { instructions, at }
+// Latest screen description the desktop overlay pushed, keyed by user id. Kept
+// separate from (and in addition to) the token-keyed entry so the custom-LLM
+// can find it even when grounding falls back to the userId-only path.
+const voiceScreenByUser = new Map(); // userId -> { text, at }
 function pruneVoiceSessions() {
   const now = Date.now();
   for (const [k, v] of voiceSessionGrounding) {
     if (!v || now - v.at > VOICE_SESSION_TTL_MS) voiceSessionGrounding.delete(k);
+  }
+  for (const [k, v] of voiceScreenByUser) {
+    if (!v || now - v.at > VOICE_SESSION_TTL_MS) voiceScreenByUser.delete(k);
   }
 }
 
@@ -17041,6 +17048,13 @@ app.post('/api/ai/realtime/screen', requireAuth, aiLimiter, async (req, res) => 
       || { instructions: LYKN_REALTIME_BASE_INSTRUCTIONS, tz: '', at: Date.now() };
     cur.screen = text ? { text, at: Date.now() } : null;
     voiceSessionGrounding.set(sessionToken, cur);
+    // Also key by user id so the custom-LLM can find it on the userId path.
+    const uid = session.uid || req.user?.id || null;
+    if (uid) {
+      if (text) voiceScreenByUser.set(uid, { text, at: Date.now() });
+      else voiceScreenByUser.delete(uid);
+    }
+    console.log(`[screen-store] token=${sessionToken.slice(0, 8)}… user=${uid || 'none'} chars=${text.length}`);
     return res.json({ ok: true });
   } catch (error) {
     return res.status(500).json({ ok: false, error: error?.message || 'screen_update_failed' });
@@ -17142,10 +17156,6 @@ const elevenCustomLlmHandler = async (req, res) => {
       const stored = voiceSessionGrounding.get(sessionToken);
       grounding = stored?.instructions || '';
       sessionTz = stored?.tz || '';
-      // Freshest screen the desktop overlay pushed (best-effort, ~30s window).
-      if (stored?.screen?.text && Date.now() - (stored.screen.at || 0) < 60000) {
-        screenText = stored.screen.text;
-      }
     } else if (userId) {
       const synth = await buildRealtimeSynthesisGrounding(null, userId);
       grounding = (synth
@@ -17155,6 +17165,22 @@ const elevenCustomLlmHandler = async (req, res) => {
     } else {
       grounding = LYKN_REALTIME_BASE_INSTRUCTIONS;
     }
+
+    // Live screen the desktop overlay pushed — look up by session token first,
+    // then by user id (so it's found regardless of which grounding path ran).
+    // Best-effort with a ~60s freshness window.
+    let screenEntry = null;
+    if (sessionToken) {
+      const st = voiceSessionGrounding.get(sessionToken);
+      if (st?.screen?.text) screenEntry = st.screen;
+    }
+    if (!screenEntry && userId && voiceScreenByUser.has(userId)) {
+      screenEntry = voiceScreenByUser.get(userId);
+    }
+    if (screenEntry?.text && Date.now() - (screenEntry.at || 0) < 60000) {
+      screenText = screenEntry.text;
+    }
+    console.log(`[custom-llm] token=${!!sessionToken} entry=${sessionToken ? voiceSessionGrounding.has(sessionToken) : false} userId=${!!userId} screenChars=${screenText.length}`);
 
     // Per-turn semantic retrieval — the static grounding above only carries
     // beliefs/project/workspace. The text chat ALSO injects fresh vault +
