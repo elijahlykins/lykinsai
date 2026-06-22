@@ -150,18 +150,24 @@ export default function AppSidebar({
     if (!open) {
       document.body.classList.remove("sidebar-open");
       document.body.classList.remove("sidebar-push");
+      // Collapsed: the icon rail still occupies the left edge, so reserve
+      // its width on .app-content to keep page content from sitting under it.
+      document.body.classList.add("sidebar-collapsed");
       return () => {
         document.body.classList.remove("sidebar-open");
         document.body.classList.remove("sidebar-push");
+        document.body.classList.remove("sidebar-collapsed");
       };
     }
 
     document.body.classList.add("sidebar-open");
     document.body.classList.add("sidebar-push");
+    document.body.classList.remove("sidebar-collapsed");
 
     return () => {
       document.body.classList.remove("sidebar-open");
       document.body.classList.remove("sidebar-push");
+      document.body.classList.remove("sidebar-collapsed");
     };
   }, [open]);
 

@@ -39,6 +39,10 @@ import { createProjectTool } from './createProject.js';
 // ctx.turnAttachments), which external MCP clients never have. Saves the file
 // to the vault and clusters it into a project in one step.
 import { uploadToProjectTool } from './uploadToProject.js';
+// In-app-only: lets the chat retune its OWN default behavior (tone / style),
+// persisted client-side to the user's custom instructions. Voice parity for
+// update_voice_instructions; external MCP clients have no settings store.
+import { updateAssistantInstructionsTool } from './updateAssistantInstructions.js';
 
 const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   ...MCP_TOOLS_BY_NAME,
@@ -50,6 +54,7 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   [saveFileToVaultTool.name]: saveFileToVaultTool,
   [createProjectTool.name]: createProjectTool,
   [uploadToProjectTool.name]: uploadToProjectTool,
+  [updateAssistantInstructionsTool.name]: updateAssistantInstructionsTool,
 });
 
 // ---------------------------------------------------------------------------
@@ -153,6 +158,10 @@ export const CHAT_TOOL_NAMES = [
   'lykn_call_app',
   // ── Preference write (ASK FIRST — see tool description) ──────────
   'lykn_updateUserPreference',
+  // ── Self-tuning (change LYKN's own default tone/style; client-persisted) ──
+  // Voice parity for update_voice_instructions. The system prompt's SELF-TUNING
+  // block teaches when to call it; the chat orchestrator persists the result.
+  'lykn_update_assistant_instructions',
   // ── Capability-aware routing (read-only catalog lookup) ──────────
   // Called when the user asks LYKN to do something it can't (send email,
   // generate images, run code in their repo, etc.). Returns a small

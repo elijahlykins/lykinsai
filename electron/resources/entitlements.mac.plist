@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Electron requires these under the hardened runtime (used during
+       notarization) for its JS engine to allocate executable memory. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+
+  <!-- Microphone, for the existing voice mode (ElevenLabs / LiveKit). -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+
+  <!-- Outbound network so the renderer can reach lykn.io and model APIs. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+
+  <!-- TODO(jarvis): screen recording is granted at runtime via the system
+       Screen Recording privacy permission, not an entitlement, so nothing to
+       add here for screen capture itself. -->
+</dict>
+</plist>

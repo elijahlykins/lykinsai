@@ -5375,6 +5375,16 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  4. lykn_getProjectNeurons({ project_id: "<same id>" })',
   'lykn_setActiveProject only RESUMES an existing project — it never creates.',
   'Any agent may read/update any project by project_id once it exists.',
+  '"CURSOR" IS NOT A PROJECT — it is the cloud CODING AGENT (see CODING BUILDS).',
+  'When the user says "start a cloud agent in Cursor", "spin up a cloud agent",',
+  '"have Cursor build/fix X", "kick off a Cursor build", or anything naming',
+  '"cursor" / "cloud agent" as the thing that DOES the work, do NOT run this',
+  'AUTO-CONNECT FLOW on the word "cursor" and NEVER answer "I don\'t see a',
+  'project named cursor". That is a request to dispatch lykn_build_with_cursor',
+  'against their connected repo — if the concrete change is clear, call it;',
+  'if vague, ask what to build first. The same goes for the web and the user\'s',
+  'connected apps: treat a named tool/capability as a TOOL to use, not a',
+  'project to resolve.',
   '',
   'PROJECT CREATION (write — SUGGEST, then CONFIRM, then create):',
   '  • lykn_createProject({ name, description? }) — start a NEW project. It',
@@ -5915,6 +5925,15 @@ const TOOL_GUIDANCE_AGENTS_APPS_CODE = [
   '    Cursor cloud agent that works async and opens a PR — it does NOT',
   '    deploy. Tell the user it\'s running and that you\'ll have a PR; never',
   '    claim the change is live.',
+  '    TRIGGER PHRASES (all map HERE, not to a project): "start a cloud agent',
+  '    in Cursor", "spin up / kick off a cloud agent", "have Cursor build/fix',
+  '    X", "get Cursor to start on X", "build this with Cursor", "open a PR',
+  '    for X". "Cursor" / "cloud agent" name the BUILDER — never resolve them',
+  '    as a LYKN project, and never reply "no project named cursor".',
+  '    If the ask is vague ("start a cloud agent"), confirm the concrete change',
+  '    first, then call it. Pass `repo` only if the user names one. If the tool',
+  '    reports the Cursor account is not connected, tell the user to attach',
+  '    their Cursor API key under Connections → Cursor — do NOT retry blindly.',
   '  • lykn_check_cursor_build — poll a dispatched build\'s status / PR link.',
 ].join('\n');
 
@@ -13243,6 +13262,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       } else if (streamHasProjectWriteScope) {
         streamEnrichTierEffective = 'light';
         console.log('📌 Stream: project-scoped chat — keeping tools on (light enrichment) despite casual tier');
+      } else if (AGENTS_APPS_CODE_INTENT_RE.test(String(streamPureUserMessage || text || ''))) {
+        // Explicit code/build/app/agent asks ("start a cloud agent in cursor",
+        // "have cursor fix the login bug", "call my Notion app") are ACTION
+        // requests, not chit-chat — the classifier sometimes scores these
+        // 'none' because they're short and imperative. Voice always has its
+        // tools live for these; keep parity so build_with_cursor / call_app /
+        // delegate can actually fire instead of the model answering "I don't
+        // see a project named cursor".
+        streamEnrichTierEffective = 'light';
+        console.log('🛠 Stream: code/build/app/agent intent — keeping tools on despite casual tier');
       } else {
         useTools = false;
         console.log('💬 Stream: useTools disabled for casual turn — skipping agent loop and project-proposal guidance');
@@ -16993,6 +17022,31 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimit
   }
 });
 
+// Voice Mode (desktop overlay): push a fresh text description of the user's
+// current screen. We stash it against the live session token so the custom-LLM
+// endpoint injects it into every turn's grounding — giving voice the same
+// "sees your screen" ability the typed overlay chat has. Best-effort and
+// non-blocking; the screen is captured + described in the Electron app.
+app.post('/api/ai/realtime/screen', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const sessionToken = String(req.body?.sessionToken || '').trim();
+    const text = String(req.body?.text || '').slice(0, 4000).trim();
+    if (!sessionToken) return res.status(400).json({ ok: false, error: 'missing_token' });
+    const session = verifyLyknVoiceToken(sessionToken);
+    if (!session || (session.uid && req.user?.id && session.uid !== req.user.id)) {
+      return res.status(401).json({ ok: false, error: 'bad_token' });
+    }
+    pruneVoiceSessions();
+    const cur = voiceSessionGrounding.get(sessionToken)
+      || { instructions: LYKN_REALTIME_BASE_INSTRUCTIONS, tz: '', at: Date.now() };
+    cur.screen = text ? { text, at: Date.now() } : null;
+    voiceSessionGrounding.set(sessionToken, cur);
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error?.message || 'screen_update_failed' });
+  }
+});
+
 // List the workspace's available ElevenLabs voices for the in-app voice picker.
 // Proxied so the API key never reaches the browser. Returns a slim, UI-ready
 // shape (id, name, preview clip, a one-line descriptor) and is cached for an
@@ -17083,10 +17137,15 @@ const elevenCustomLlmHandler = async (req, res) => {
 
     let grounding = '';
     let sessionTz = '';
+    let screenText = '';
     if (sessionToken && voiceSessionGrounding.has(sessionToken)) {
       const stored = voiceSessionGrounding.get(sessionToken);
       grounding = stored?.instructions || '';
       sessionTz = stored?.tz || '';
+      // Freshest screen the desktop overlay pushed (best-effort, ~30s window).
+      if (stored?.screen?.text && Date.now() - (stored.screen.at || 0) < 60000) {
+        screenText = stored.screen.text;
+      }
     } else if (userId) {
       const synth = await buildRealtimeSynthesisGrounding(null, userId);
       grounding = (synth
@@ -17127,6 +17186,18 @@ const elevenCustomLlmHandler = async (req, res) => {
     // per-turn retrieval next, then the original turns with the token line
     // scrubbed out of any system message.
     const rebuilt = [{ role: 'system', content: grounding }];
+    // Live screen from the desktop overlay: phrased with the persona's
+    // recognized "shared image" triggers so the model treats it as seen.
+    if (screenText) {
+      rebuilt.push({
+        role: 'system',
+        content:
+          `[CURRENT_SCREEN] The user just shared a live screenshot of their current screen. ` +
+          `What the image shows: ${screenText}\n` +
+          `This is your live view of what is on the user's screen RIGHT NOW — answer questions ` +
+          `about what they're looking at directly from this, and never say you can't see their screen.`,
+      });
+    }
     rebuilt.push({ role: 'system', content: localTimeContextLine(sessionTz) });
     if (retrievalBlock && retrievalBlock.trim()) {
       rebuilt.push({

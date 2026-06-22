@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "ai.lykn.desktop",
+  "productName": "LYKN",
+  "copyright": "Copyright © LYKN",
+  "directories": {
+    "output": "release",
+    "buildResources": "electron/resources"
+  },
+  "files": [
+    "electron/**/*",
+    "package.json",
+    "!electron/resources/icon.png",
+    "!**/node_modules/**"
+  ],
+  "extraMetadata": {
+    "main": "electron/main.cjs",
+    "type": "commonjs"
+  },
+  "mac": {
+    "category": "public.app-category.productivity",
+    "icon": "electron/resources/icon.png",
+    "target": [
+      { "target": "dmg", "arch": ["arm64", "x64"] },
+      { "target": "zip", "arch": ["arm64", "x64"] }
+    ],
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "electron/resources/entitlements.mac.plist",
+    "entitlementsInherit": "electron/resources/entitlements.mac.plist",
+    "extendInfo": {
+      "NSMicrophoneUsageDescription": "LYKN uses your microphone for voice conversations.",
+      "NSCameraUsageDescription": "LYKN may use your camera for visual context.",
+      "NSScreenCaptureUsageDescription": "LYKN reads what's on your screen when you ask it to, so it can give feedback and take notes."
+    }
+  },
+  "dmg": {
+    "title": "LYKN ${version}",
+    "icon": "electron/resources/icon.png",
+    "contents": [
+      { "x": 130, "y": 220 },
+      { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+    ]
+  },
+  "publish": null
+}

@@ -20,6 +20,9 @@ dist-ssr
 # Remotion rendered output
 out
 
+# Electron desktop build output (DMG/zip/.app artifacts)
+release
+
 # Cursor IDE artifacts
 .cursor/
 

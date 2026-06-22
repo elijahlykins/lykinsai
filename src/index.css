@@ -381,6 +381,12 @@ body.sidebar-push .app-content {
   padding-left: 12rem;
 }
 
+/* Sidebar collapsed: the icon rail (w-14 = 3.5rem) stays pinned to the left
+   edge, so reserve its width to keep content from being covered by it. */
+body.sidebar-collapsed .app-content {
+  padding-left: 3.5rem;
+}
+
 /* Background gradient behind sidebar handled by body background; no margin-left
    shift on the grid container — let padding-left on .app-content push content. */
 
@@ -986,6 +992,9 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   body.sidebar-push .app-content {
     padding-left: 0;
   }
+  body.sidebar-collapsed .app-content {
+    padding-left: 0;
+  }
 
   /* iOS Safari address-bar safe area for any bottom-anchored chrome (tab bar,
      chat composer). Components opt in by adding the `pb-safe` utility. */
@@ -1169,7 +1178,8 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
 }
 
 /* Model Builder: sidebar draws over the page; don't push content on desktop/tablet */
-body.sidebar-push .app-content:has(.model-builder-page) {
+body.sidebar-push .app-content:has(.model-builder-page),
+body.sidebar-collapsed .app-content:has(.model-builder-page) {
   padding-left: 0 !important;
 }
 
