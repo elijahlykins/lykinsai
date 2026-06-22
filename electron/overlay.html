@@ -102,6 +102,78 @@
         user-select: text;
       }
       .chat.collapsed .chat-a { display: none; }
+      .chat.collapsed .suggest { display: none; }
+
+      /* Cluely-style suggestions: source links + follow-up questions. */
+      .suggest { padding: 2px 16px 14px 38px; }
+      .suggest-sec { margin-top: 10px; }
+      .suggest-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .suggest-row { display: flex; flex-wrap: wrap; gap: 6px; }
+      .suggest-col { display: flex; flex-direction: column; gap: 6px; }
+      .suggest-link, .suggest-chip {
+        -webkit-app-region: no-drag;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text);
+        font: inherit;
+        font-size: 12.5px;
+        border-radius: 9px;
+        padding: 6px 10px;
+        cursor: pointer;
+        text-align: left;
+        transition: background 0.14s ease, border-color 0.14s ease;
+      }
+      .suggest-link:hover, .suggest-chip:hover {
+        background: rgba(96, 165, 250, 0.14);
+        border-color: rgba(96, 165, 250, 0.4);
+      }
+      .suggest-link { max-width: 100%; }
+      .suggest-ico { display: inline-flex; flex: none; color: #60a5fa; }
+      .suggest-ico svg { width: 14px; height: 14px; }
+      .suggest-link-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 220px;
+      }
+      .suggest-chip { justify-content: space-between; width: 100%; }
+      .suggest-chip-ico { display: inline-flex; flex: none; color: var(--muted); }
+      .suggest-chip-ico svg { width: 13px; height: 13px; }
+      .suggest-chip:hover .suggest-chip-ico { color: #60a5fa; }
+      /* Rendered Markdown answers: drop pre-wrap so block elements control
+         spacing instead of literal newlines doubling it up. */
+      .chat-a.has-md { white-space: normal; }
+      .chat-a.has-md > :first-child { margin-top: 0; }
+      .chat-a.has-md > :last-child { margin-bottom: 0; }
+      .chat-a .md-h {
+        font-size: 14px;
+        font-weight: 700;
+        color: #f4f6fb;
+        margin: 12px 0 5px;
+      }
+      .chat-a p { margin: 0 0 8px; }
+      .chat-a ul, .chat-a ol { margin: 5px 0 9px; padding-left: 20px; }
+      .chat-a li { margin: 3px 0; }
+      .chat-a strong { font-weight: 700; color: #f4f6fb; }
+      .chat-a em { font-style: italic; }
+      .chat-a a { color: #60a5fa; text-decoration: underline; }
+      .chat-a code {
+        background: rgba(255, 255, 255, 0.09);
+        padding: 1px 5px;
+        border-radius: 5px;
+        font-size: 12.5px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
 
       /* Loading state: the LYKN icon outline drawing on a loop + a shimmer
          status label — identical to the chat page's ThinkingIndicator. */
@@ -206,15 +278,14 @@
       .menu {
         display: none;
         flex-direction: column;
-        margin: 4px 8px 8px;
-        padding: 6px;
+        margin: 2px 8px 6px;
+        padding: 4px;
         gap: 2px;
-        border-radius: 14px;
-        background: rgba(28, 31, 38, 0.62);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
-        backdrop-filter: blur(20px) saturate(160%);
-        -webkit-backdrop-filter: blur(20px) saturate(160%);
+        /* No card: blend straight into the panel's glass background so it reads
+           as a clear section, not a floating popover. */
+        background: transparent;
+        border: none;
+        box-shadow: none;
       }
       .menu.show { display: flex; }
       .menu-item {
@@ -307,15 +378,43 @@
         gap: 10px;
         padding: 6px 12px 10px 16px;
       }
-      /* LYKN mark as a glowing blue edge (outline only, transparent fill). */
+      /* LYKN mark as a glowing blue edge (outline only, transparent fill). Also
+         doubles as the "collapse" button — click it to shrink to the bubble. */
       .dot {
         width: 20px; height: 20px;
         flex: none;
         color: var(--blue);
+        cursor: pointer;
+        -webkit-app-region: no-drag;
         filter: drop-shadow(0 0 3px rgba(59, 120, 255, 0.85))
           drop-shadow(0 0 6px rgba(59, 120, 255, 0.5));
         transition: transform 0.2s ease, opacity 0.2s ease;
       }
+      .dot:hover { transform: scale(1.12); }
+
+      /* Collapsed state: the whole panel becomes a single LYKN icon bubble. */
+      #bubble {
+        display: none;
+        width: 100%;
+        height: 100%;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        background: var(--tint);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        color: var(--blue);
+        cursor: pointer;
+        filter: drop-shadow(0 0 3px rgba(59, 120, 255, 0.8))
+          drop-shadow(0 0 6px rgba(59, 120, 255, 0.45));
+        transition: transform 0.15s ease, background 0.15s ease;
+      }
+      #bubble:hover { transform: scale(1.06); background: rgba(40, 44, 54, 0.42); }
+      #bubble:active { transform: scale(0.96); }
+      #bubble svg { width: 28px; height: 28px; }
+      #bubble svg path { fill: none; stroke: currentColor; }
+      body.collapsed #wrap { display: none; }
+      body.collapsed #bubble { display: flex; }
       .dot path {
         fill: none;
         stroke: currentColor;
@@ -386,7 +485,7 @@
         50% { box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.18); }
       }
 
-      /* Matches the app's neumorphic chat send button (dark variant). */
+      /* Glass send button — translucent, blurred, no grey fill. */
       .send {
         -webkit-app-region: no-drag;
         flex: none;
@@ -396,11 +495,11 @@
         place-items: center;
         cursor: pointer;
         color: #60a5fa;
-        background: linear-gradient(145deg, #383c44, #2a2e35);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        box-shadow:
-          3px 3px 8px rgba(0, 0, 0, 0.45),
-          -2px -2px 6px rgba(255, 255, 255, 0.02);
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        backdrop-filter: blur(8px) saturate(140%);
+        -webkit-backdrop-filter: blur(8px) saturate(140%);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
         transition:
           box-shadow 0.18s ease,
           transform 0.15s ease,
@@ -408,19 +507,18 @@
           border-color 0.18s ease;
       }
       .send:hover:not(:disabled) {
-        background: linear-gradient(145deg, #2e3848, #283040);
-        border-color: rgba(96, 165, 250, 0.32);
+        background: rgba(96, 165, 250, 0.16);
+        border-color: rgba(96, 165, 250, 0.4);
         box-shadow:
-          3px 3px 8px rgba(0, 0, 0, 0.4),
-          -1px -1px 5px rgba(255, 255, 255, 0.03),
-          0 0 16px rgba(59, 130, 246, 0.16);
+          inset 0 1px 0 rgba(255, 255, 255, 0.1),
+          0 0 16px rgba(59, 130, 246, 0.18);
       }
       .send:active:not(:disabled) {
         transform: translateY(1px);
+        background: rgba(96, 165, 250, 0.22);
         box-shadow:
-          inset 2px 2px 6px rgba(0, 0, 0, 0.45),
-          inset -1px -1px 4px rgba(255, 255, 255, 0.03),
-          0 0 0 1px rgba(96, 165, 250, 0.15);
+          inset 0 0 0 1px rgba(96, 165, 250, 0.25),
+          0 0 10px rgba(59, 130, 246, 0.14);
       }
       .send:disabled:not(.busy) { opacity: 0.4; cursor: not-allowed; }
       .send svg { width: 16px; height: 16px; }
@@ -428,9 +526,152 @@
       .send.busy .ico-send { display: none; }
       .send.busy .ico-spin { display: block; }
       @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* Live-listen (meeting notes) panel. */
+      #live { display: none; flex-direction: column; padding: 6px 14px 2px; }
+      #live.show { display: flex; }
+      .live-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .live-dot {
+        flex: none;
+        width: 7px; height: 7px; border-radius: 50%;
+        background: #6b7280;
+      }
+      .live-dot.live {
+        background: #ef4444;
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.7);
+        animation: livePulse 1.4s ease-in-out infinite;
+      }
+      .live-title { flex: none; }
+      @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+      .live-tabs {
+        display: flex;
+        gap: 4px;
+        margin-left: auto;
+      }
+      .live-tab {
+        -webkit-app-region: no-drag;
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-size: 10px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 7px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .live-tab:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+      .live-tab.active { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+      .live-close {
+        -webkit-app-region: no-drag;
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 20px; height: 20px;
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .live-close:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
+      .live-close svg { width: 14px; height: 14px; }
+      .live-pane { max-height: 260px; overflow-y: auto; }
+      .notes-summary {
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--text);
+      }
+      .notes-summary:empty::after {
+        content: "Listening… notes will appear as the conversation builds.";
+        color: var(--muted);
+        font-style: italic;
+      }
+      .notes-section { margin-top: 10px; }
+      .notes-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .notes-list { list-style: none; margin: 0; padding: 0; }
+      .notes-list li {
+        position: relative;
+        padding-left: 16px;
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--text);
+        margin-bottom: 4px;
+      }
+      .notes-list li::before {
+        content: "";
+        position: absolute;
+        left: 3px; top: 8px;
+        width: 4px; height: 4px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+      .notes-list.actions li::before {
+        content: "";
+        left: 2px; top: 4px;
+        width: 9px; height: 9px;
+        border-radius: 3px;
+        background: transparent;
+        border: 1.5px solid #60a5fa;
+      }
+      .live-body {
+        max-height: 240px;
+        overflow-y: auto;
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--text);
+        word-break: break-word;
+      }
+      .live-body:empty::after {
+        content: "Capturing audio… speech will appear here.";
+        color: var(--muted);
+        font-style: italic;
+      }
+      .live-line { margin-bottom: 7px; }
+      .live-line:last-child { margin-bottom: 0; }
+      .live-speaker {
+        display: inline-block;
+        margin-right: 7px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        vertical-align: 1px;
+      }
+      .live-line.you .live-speaker { color: #60a5fa; }   /* the user */
+      .live-line.them .live-speaker { color: #34d399; }  /* video / other person */
+      .live-text { color: var(--text); }
+      /* Listen button active state (reuses .mic). */
+      .mic.listening { color: #f87171; }
+      .mic.listening svg { animation: micPulse 1.4s ease-in-out infinite; }
     </style>
   </head>
   <body>
+    <button id="bubble" title="Open LYKN" aria-label="Open LYKN">
+      <svg viewBox="0 0 204.29 204.29" fill="none" aria-hidden="true">
+        <path d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
+      </svg>
+    </button>
     <div id="wrap">
       <div class="titlebar" id="drag" title="Drag to move">
         <span class="grip"></span>
@@ -460,6 +701,35 @@
         </button>
       </div>
       <div id="thread"></div>
+      <div id="live">
+        <div class="live-head">
+          <span class="live-dot" id="live-dot"></span>
+          <span class="live-title" id="live-title">Listening…</span>
+          <div class="live-tabs">
+            <button class="live-tab active" id="tab-notes" type="button" data-pane="notes">Notes</button>
+            <button class="live-tab" id="tab-transcript" type="button" data-pane="transcript">Transcript</button>
+          </div>
+          <button class="live-close" id="live-close" type="button" title="Close" aria-label="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="live-pane" id="pane-notes">
+          <div class="notes-summary" id="notes-summary"></div>
+          <div class="notes-section" id="notes-key-wrap" hidden>
+            <div class="notes-label">Key points</div>
+            <ul class="notes-list" id="notes-key"></ul>
+          </div>
+          <div class="notes-section" id="notes-actions-wrap" hidden>
+            <div class="notes-label">Action items</div>
+            <ul class="notes-list actions" id="notes-actions"></ul>
+          </div>
+        </div>
+        <div class="live-pane" id="pane-transcript" hidden>
+          <div class="live-body" id="live-body"></div>
+        </div>
+      </div>
       <div class="drop-hint">Drop files to attach…</div>
       <div class="attachments" id="attachments"></div>
       <div class="bar">
@@ -468,6 +738,11 @@
         </svg>
         <input id="ask" type="text" placeholder="Ask LYKN about your screen…" autocomplete="off" />
         <span class="hint"><kbd>↵</kbd> ask · <kbd>esc</kbd> close</span>
+        <button class="mic" id="listen" title="Listen (live notes)" aria-label="Listen">
+          <svg class="ico-listen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+          </svg>
+        </button>
         <button class="mic" id="voice" title="Voice mode" aria-label="Voice mode">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M2 10v3" />

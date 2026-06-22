@@ -15176,6 +15176,258 @@ app.post('/api/ai/summarize-conversation', requireAuth, aiLimiter, async (req, r
 });
 
 // ──────────────────────────────────────────────────
+// Clean transcript — Wispr-Flow-style cleanup of live speech-to-text.
+// The desktop overlay's "Listen" mode transcribes meeting audio in ~6s chunks
+// with Whisper, which keeps every "um", false start, stutter and repeat. This
+// runs each raw fragment through a fast model that strips the noise and fixes
+// punctuation WITHOUT summarizing or inventing — so the live transcript reads
+// clean. Given the previous cleaned tail as context so it can merge a sentence
+// split across chunks and never repeat text.
+// ──────────────────────────────────────────────────
+app.post('/api/ai/clean-transcript', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
+
+    const raw = String(req.body?.text || '').slice(0, 4000).trim();
+    if (!raw) return res.json({ text: '' });
+    const context = String(req.body?.context || '').slice(-600).trim();
+
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4.1-nano',
+        temperature: 0,
+        max_tokens: 500,
+        prompt_cache_key: `clean-transcript:${req.user?.id || 'anon'}`,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You clean up live speech-to-text for a meeting transcript. You receive a RAW ' +
+              'fragment from automatic speech recognition, and optionally the END of the already-' +
+              'cleaned transcript for context.\n\n' +
+              'Rewrite ONLY the new RAW fragment into clean, readable text:\n' +
+              '- Remove filler words (um, uh, er, hmm, like, you know, I mean, sort of/kind of when ' +
+              'meaningless), false starts, stutters, and immediately repeated words.\n' +
+              '- Fix capitalization, punctuation, and obvious ASR mis-hearings.\n' +
+              '- PRESERVE the speaker\'s actual words and meaning. Do NOT summarize, paraphrase ' +
+              'heavily, add, translate, or invent anything.\n' +
+              '- Use the cleaned context only to avoid repeating words already shown and to continue ' +
+              'a sentence naturally. Never restate the context.\n' +
+              '- If the fragment has no meaningful content (only filler, noise, or silence), return ' +
+              'an empty string.\n\n' +
+              'Output ONLY the cleaned text, with no quotes, labels, or commentary.',
+          },
+          {
+            role: 'user',
+            content:
+              (context ? `CLEANED SO FAR (context, do not repeat):\n${context}\n\n` : '') +
+              `RAW FRAGMENT:\n${raw}`,
+          },
+        ],
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      // Fail open: return the raw text so the transcript still flows.
+      return res.json({ text: raw });
+    }
+    const data = await openaiRes.json();
+    const cleaned = String(data.choices?.[0]?.message?.content || '').trim();
+
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+      const usage = extractOpenAIUsage(data);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'clean_transcript',
+        model: 'gpt-4.1-nano', provider: 'openai',
+        inputTokens: usage.input_tokens || estimateTokens(raw),
+        outputTokens: usage.output_tokens || estimateTokens(cleaned),
+      });
+    }).catch(() => {});
+
+    return res.json({ text: cleaned });
+  } catch (error) {
+    console.error('❌ clean-transcript error:', error?.message);
+    // Fail open with whatever raw text we had.
+    return res.json({ text: String(req.body?.text || '').trim() });
+  }
+});
+
+// ──────────────────────────────────────────────────
+// Meeting notes — rolling summary + key points + action items from the desktop
+// overlay's live transcript. The transcript is speaker-labeled ("You" = the
+// user, "Them" = others). Called periodically while listening so the overlay can
+// show notes that build up live. Returns structured JSON.
+// ──────────────────────────────────────────────────
+app.post('/api/ai/meeting-notes', requireAuth, aiLimiter, async (req, res) => {
+  const empty = { summary: '', keyPoints: [], actionItems: [] };
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
+
+    // Keep the most recent window — enough for solid notes without ballooning
+    // tokens on long meetings.
+    const transcript = String(req.body?.transcript || '').slice(-16000).trim();
+    if (transcript.length < 40) return res.json(empty);
+
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        temperature: 0.2,
+        max_tokens: 600,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You produce concise running notes from a LIVE meeting/conversation transcript. ' +
+              'The transcript is labeled by speaker: "You" is the user wearing the app, "Them" is ' +
+              'the other participant(s) / a video.\n\n' +
+              'Return ONLY a JSON object with this exact shape:\n' +
+              '{"summary": string, "keyPoints": string[], "actionItems": string[]}\n\n' +
+              '- summary: 2-3 sentence plain-language overview of what the conversation is about ' +
+              'and where it stands right now.\n' +
+              '- keyPoints: the most important facts, decisions, and topics (max 6, each a short ' +
+              'phrase). Empty array if none yet.\n' +
+              '- actionItems: concrete tasks, follow-ups, or commitments. Prefix with who owns it ' +
+              'when clear (e.g. "You: send the deck", "Them: confirm budget"). Max 8. Empty array ' +
+              'if none yet.\n\n' +
+              'Be factual and specific. NEVER invent content not supported by the transcript. ' +
+              'Output only the JSON, nothing else.',
+          },
+          { role: 'user', content: transcript },
+        ],
+      }),
+    });
+
+    if (!openaiRes.ok) return res.json(empty);
+    const data = await openaiRes.json();
+    let parsed = empty;
+    try {
+      parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+    } catch (_) {
+      parsed = empty;
+    }
+    const result = {
+      summary: String(parsed.summary || '').trim(),
+      keyPoints: Array.isArray(parsed.keyPoints)
+        ? parsed.keyPoints.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 6)
+        : [],
+      actionItems: Array.isArray(parsed.actionItems)
+        ? parsed.actionItems.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8)
+        : [],
+    };
+
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+      const usage = extractOpenAIUsage(data);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'meeting_notes',
+        model: 'gpt-4o-mini', provider: 'openai',
+        inputTokens: usage.input_tokens || estimateTokens(transcript),
+        outputTokens: usage.output_tokens || 0,
+      });
+    }).catch(() => {});
+
+    return res.json(result);
+  } catch (error) {
+    console.error('❌ meeting-notes error:', error?.message);
+    return res.json(empty);
+  }
+});
+
+// ──────────────────────────────────────────────────
+// Suggestions for the desktop overlay (Cluely-style): after an answer, return
+// (1) relevant follow-up questions the user can tap, and (2) real source links
+// looked up live on the web. One cheap model call decides the follow-ups + the
+// best search query; we then run the existing web search for genuine URLs (never
+// model-hallucinated links). Best-effort — returns empty arrays on any failure.
+// ──────────────────────────────────────────────────
+app.post('/api/ai/suggest', requireAuth, aiLimiter, async (req, res) => {
+  const empty = { followups: [], links: [] };
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.json(empty);
+
+    const question = String(req.body?.question || '').slice(0, 1500).trim();
+    const answer = String(req.body?.answer || '').slice(0, 4000).trim();
+    if (!question && !answer) return res.json(empty);
+
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        temperature: 0.4,
+        max_tokens: 320,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You help a desktop AI assistant suggest next steps after it answers a user. ' +
+              'Given the user\'s question and the assistant\'s answer, return ONLY a JSON object:\n' +
+              '{"followups": string[], "searchQuery": string}\n\n' +
+              '- followups: 3 short, natural follow-up questions the user would plausibly ask next. ' +
+              'Each under ~8 words, phrased as the user (first person). No numbering.\n' +
+              '- searchQuery: a single web search query that would surface helpful sources/links ' +
+              'for this topic. Provide one ONLY when external, current, or reference info would ' +
+              'genuinely help. If the topic is purely about the user\'s own screen/personal data ' +
+              'and a web lookup would not help, return an empty string.\n\n' +
+              'Output only the JSON.',
+          },
+          { role: 'user', content: `QUESTION:\n${question}\n\nANSWER:\n${answer}` },
+        ],
+      }),
+    });
+
+    let followups = [];
+    let searchQuery = '';
+    if (openaiRes.ok) {
+      const data = await openaiRes.json();
+      try {
+        const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+        followups = Array.isArray(parsed.followups)
+          ? parsed.followups.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 3)
+          : [];
+        searchQuery = String(parsed.searchQuery || '').trim().slice(0, 200);
+      } catch (_) { /* keep defaults */ }
+
+      getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+        const usage = extractOpenAIUsage(data);
+        logAiUsage({
+          sessionId: session?.id, userId: req.user?.id, actionType: 'overlay_suggest',
+          model: 'gpt-4o-mini', provider: 'openai',
+          inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0,
+        });
+      }).catch(() => {});
+    }
+
+    // Real links via the existing web search (snippets only — fast, no deep browse).
+    let links = [];
+    if (searchQuery) {
+      try {
+        const out = await searchWeb(searchQuery, { num: 4, deepBrowse: false });
+        if (out?.ok && Array.isArray(out.results)) {
+          links = out.results
+            .filter((r) => r && r.url)
+            .map((r) => ({ title: String(r.title || r.url).slice(0, 120), url: String(r.url) }))
+            .slice(0, 4);
+        }
+      } catch (_) { /* no links */ }
+    }
+
+    return res.json({ followups, links });
+  } catch (error) {
+    console.error('❌ suggest error:', error?.message);
+    return res.json(empty);
+  }
+});
+
+// ──────────────────────────────────────────────────
 // Auto-name grid — cheapest model, fire-and-forget from client
 // ──────────────────────────────────────────────────
 app.post('/api/ai/name-grid', requireAuth, aiLimiter, async (req, res) => {

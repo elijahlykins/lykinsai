@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   resize: (height) => ipcRenderer.send("lykn:resize", height),
   // Drag the floating bar by a screen-pixel delta.
   moveBy: (dx, dy) => ipcRenderer.send("lykn:move-by", { dx, dy }),
+  // Collapse the panel to a small LYKN icon bubble (true) or expand it (false).
+  collapse: (v) => ipcRenderer.send("lykn:collapse", !!v),
   hide: () => ipcRenderer.send("lykn:hide-overlay"),
   openMain: () => ipcRenderer.send("lykn:open-main"),
   // Open a native file picker and get back ready-to-send attachment objects.
@@ -33,4 +35,15 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   ensureMic: () => ipcRenderer.invoke("lykn:ensure-mic"),
   transcribe: (audio, mimeType, prompt) =>
     ipcRenderer.invoke("lykn:transcribe", { audio, mimeType, prompt }),
+  // Wispr-Flow-style cleanup of a raw transcript chunk for live-listen mode.
+  cleanTranscript: (text, context) =>
+    ipcRenderer.invoke("lykn:clean-transcript", { text, context }),
+  // Rolling meeting notes (summary + key points + action items) from transcript.
+  meetingNotes: (transcript) =>
+    ipcRenderer.invoke("lykn:meeting-notes", { transcript }),
+  // Cluely-style follow-up questions + real source links for an answer.
+  suggest: (question, answer) =>
+    ipcRenderer.invoke("lykn:suggest", { question, answer }),
+  // Open a URL in the default browser (source links, answer links).
+  openUrl: (url) => ipcRenderer.send("lykn:open-url", url),
 });

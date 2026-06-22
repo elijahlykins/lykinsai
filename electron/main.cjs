@@ -205,6 +205,28 @@ function installPermissionHandler() {
   });
 }
 
+// Enable system ("loopback") audio capture for the overlay's live-listen mode.
+// When the overlay calls navigator.mediaDevices.getDisplayMedia({audio:true}),
+// this handler hands back a screen video source plus loopback audio, which on
+// macOS 13+ is captured via ScreenCaptureKit — no virtual audio device needed.
+// The overlay only uses the audio track (to transcribe meetings/conversations).
+function setupSystemAudioCapture() {
+  const ses = require("electron").session.defaultSession;
+  if (typeof ses.setDisplayMediaRequestHandler !== "function") return;
+  ses.setDisplayMediaRequestHandler(
+    async (_request, callback) => {
+      try {
+        const sources = await desktopCapturer.getSources({ types: ["screen"] });
+        if (!sources.length) return callback({});
+        callback({ video: sources[0], audio: "loopback" });
+      } catch {
+        callback({});
+      }
+    },
+    { useSystemPicker: false },
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Jarvis overlay — ⌘+L summons a transparent always-on-top window     */
 /*  that reads the screen behind it.                                    */
@@ -293,8 +315,46 @@ function createOverlayWindow() {
 // Grow/shrink the bar as the answer streams in. By default it stays pinned
 // bottom-center; once the user has dragged it, we keep their X and anchor the
 // bottom edge so it grows upward in place.
-function setOverlayHeight(height) {
+// Collapse the whole panel down to a small LYKN icon "bubble" (and back). The
+// bubble stays centered on where the panel was and keeps its bottom edge, so it
+// doesn't jump across the screen. While collapsed we ignore height reports.
+const OVERLAY_BUBBLE = 54;
+let overlayCollapsed = false;
+
+function setOverlayCollapsed(collapsed) {
   if (!overlayWindow) return;
+  overlayCollapsed = !!collapsed;
+  const { workArea } = screen.getPrimaryDisplay();
+  const b = overlayWindow.getBounds();
+  let w;
+  let h;
+  if (collapsed) {
+    w = OVERLAY_BUBBLE;
+    h = OVERLAY_BUBBLE;
+  } else {
+    w = OVERLAY_WIDTH;
+    h = OVERLAY_MIN_HEIGHT;
+  }
+  // Keep the horizontal center and the bottom edge fixed across the swap.
+  let x = b.x + Math.round((b.width - w) / 2);
+  let y = b.y + b.height - h;
+  x = Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - w));
+  y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
+
+  if (!collapsed) {
+    // Anchor future growth to where the panel reappears.
+    overlayUserPositioned = true;
+    overlayAnchorX = x;
+    overlayAnchorBottomY = y + h;
+  }
+
+  overlayProgrammaticMove = true;
+  overlayWindow.setBounds({ x: Math.round(x), y: Math.round(y), width: w, height: h });
+  overlayProgrammaticMove = false;
+}
+
+function setOverlayHeight(height) {
+  if (!overlayWindow || overlayCollapsed) return;
   const h = Math.max(OVERLAY_MIN_HEIGHT, Math.min(Math.round(height), 640));
   const { workArea } = screen.getPrimaryDisplay();
 
@@ -360,15 +420,30 @@ async function capturePrimaryScreen() {
 // ⌘+L: toggle the floating glass bar. Screen capture happens silently at ask
 // time (see streamScreenAnswer) so the bar always reflects the live screen and
 // the user never sees the screenshot.
-function toggleOverlay() {
+function showOverlay() {
   if (!overlayWindow) createOverlayWindow();
-  if (overlayWindow.isVisible()) {
+  // Re-assert top-of-stack status on EVERY show. The level/ordering set at
+  // creation can be lost after an app restart, a Space switch, or a full-screen
+  // transition — which is why the panel sometimes appeared *behind* other
+  // always-on-top windows (e.g. the main window) instead of coming all the way
+  // forward. Re-applying the level + moveTop() forces it to the front again.
+  overlayWindow.setAlwaysOnTop(true, "screen-saver");
+  overlayWindow.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true,
+  });
+  overlayWindow.show();
+  overlayWindow.moveTop();
+  overlayWindow.focus();
+  overlayWindow.webContents.send("lykn:overlay-shown");
+}
+
+function toggleOverlay() {
+  if (overlayWindow && overlayWindow.isVisible()) {
     hideOverlay();
     return;
   }
-  overlayWindow.show();
-  overlayWindow.focus();
-  overlayWindow.webContents.send("lykn:overlay-shown");
+  showOverlay();
 }
 
 function registerGlobalHotkey() {
@@ -418,6 +493,17 @@ async function getAuthToken() {
 // Capture the screen, send it + the user's question to LYKN's streaming chat
 // endpoint, and forward text deltas to the overlay. Runs in the main process so
 // there's no CORS and the screenshot never touches the renderer.
+// The screenshot always contains LYKN's own floating overlay (the glass chat
+// bar with the question, mic/send buttons, and any live transcript). Without
+// this note the model "reads" its own UI back to the user ("…and there's a chat
+// bar that says…"). Tell it to treat the overlay as invisible.
+const OVERLAY_IGNORE_NOTE =
+  "IMPORTANT: Ignore LYKN's own interface in the image — a translucent floating " +
+  "glass bar/panel (it may contain this same question, an input field, mic/send " +
+  "buttons, a chevron, or a live transcript). It is NOT part of the user's screen. " +
+  "Never describe, mention, quote, or refer to it; answer only about the actual " +
+  "app/website content behind it.";
+
 async function streamScreenAnswer(event, { text, history, attachments }) {
   const wc = event.sender;
   const send = (channel, payload) => {
@@ -454,9 +540,15 @@ async function streamScreenAnswer(event, { text, history, attachments }) {
 
   let prompt = dataURL
     ? "The attached image is a screenshot of the user's current screen. Use it to answer " +
-      "their question about what is on screen. Be concise and specific."
+      "their question about what is on screen. Be concise and specific. " +
+      OVERLAY_IGNORE_NOTE
     : "Use the attached image(s) and any files below to answer the user's question. " +
       "Be concise and specific.";
+  prompt +=
+    "\n\nFormat your answer in clean Markdown: use short ## headers to group " +
+    "sections when helpful, '- ' bullet points for lists, **bold** for key terms, " +
+    "and `code` for code/identifiers. Keep it scannable — don't write one long " +
+    "paragraph when bullets or headers would read better.";
   if (textAtts.length) {
     prompt +=
       "\n\nAttached files:\n" +
@@ -588,7 +680,8 @@ async function captureScreenDescription() {
       "The attached image is a screenshot of the user's current screen. In 2–4 short " +
       "sentences, concisely describe what is on screen: the app/website, the page or view, " +
       "any important visible text, and what the user appears to be doing. Do not greet, " +
-      "ask questions, or add commentary — just the description.",
+      "ask questions, or add commentary — just the description. " +
+      OVERLAY_IGNORE_NOTE,
     imageUrls: [dataURL],
     useTools: false,
   };
@@ -652,6 +745,7 @@ function registerOverlayIpc() {
     }
   });
   ipcMain.on("lykn:resize", (_e, height) => setOverlayHeight(height));
+  ipcMain.on("lykn:collapse", (_e, collapsed) => setOverlayCollapsed(!!collapsed));
   ipcMain.on("lykn:move-by", (_e, { dx, dy }) => {
     if (!overlayWindow) return;
     const b = overlayWindow.getBounds();
@@ -820,9 +914,90 @@ function registerOverlayIpc() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return { error: `Transcription failed (${res.status}).` };
-      return { text: String(data?.text || "").trim() };
+      return {
+        text: String(data?.text || "").trim(),
+        noSpeech: Number(data?.no_speech_prob) || 0,
+      };
     } catch (e) {
       return { error: `Transcription failed: ${e && e.message ? e.message : e}` };
+    }
+  });
+
+  // Wispr-Flow-style cleanup for the live-listen transcript: strip fillers,
+  // false starts, stutters and repeats from a raw Whisper chunk. Fails open
+  // (returns the raw text) so the transcript never stalls on an error.
+  ipcMain.handle("lykn:clean-transcript", async (_e, { text, context } = {}) => {
+    const raw = String(text || "").trim();
+    if (!raw) return { text: "" };
+    try {
+      const token = await getAuthToken();
+      if (!token) return { text: raw };
+      const res = await fetch(`${API_BASE}/api/ai/clean-transcript`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ text: raw, context: String(context || "") }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { text: raw };
+      return { text: String(data?.text || "").trim() };
+    } catch (_) {
+      return { text: raw };
+    }
+  });
+
+  // Open a URL in the user's default browser (overlay source links / answer
+  // links). Never navigate the overlay window itself.
+  ipcMain.on("lykn:open-url", (_e, url) => {
+    const u = String(url || "").trim();
+    if (/^https?:\/\//i.test(u)) shell.openExternal(u);
+  });
+
+  // Cluely-style suggestions after an answer: follow-up questions + real source
+  // links looked up on the web. Best-effort: returns empty on any failure.
+  ipcMain.handle("lykn:suggest", async (_e, { question, answer } = {}) => {
+    const empty = { followups: [], links: [] };
+    try {
+      const token = await getAuthToken();
+      if (!token) return empty;
+      const res = await fetch(`${API_BASE}/api/ai/suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ question: String(question || ""), answer: String(answer || "") }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) return empty;
+      return {
+        followups: Array.isArray(data.followups) ? data.followups : [],
+        links: Array.isArray(data.links) ? data.links : [],
+      };
+    } catch (_) {
+      return empty;
+    }
+  });
+
+  // Rolling meeting notes (summary + key points + action items) from the live
+  // transcript. Best-effort: returns empty notes on any failure.
+  ipcMain.handle("lykn:meeting-notes", async (_e, { transcript } = {}) => {
+    const empty = { summary: "", keyPoints: [], actionItems: [] };
+    const t = String(transcript || "").trim();
+    if (t.length < 40) return empty;
+    try {
+      const token = await getAuthToken();
+      if (!token) return empty;
+      const res = await fetch(`${API_BASE}/api/ai/meeting-notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ transcript: t }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) return empty;
+      return {
+        summary: String(data.summary || "").trim(),
+        keyPoints: Array.isArray(data.keyPoints) ? data.keyPoints : [],
+        actionItems: Array.isArray(data.actionItems) ? data.actionItems : [],
+      };
+    } catch (_) {
+      return empty;
     }
   });
 }
@@ -868,6 +1043,7 @@ app.whenReady().then(() => {
     `(KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 
   installPermissionHandler();
+  setupSystemAudioCapture();
   buildAppMenu();
   registerOverlayIpc();
   createMainWindow();

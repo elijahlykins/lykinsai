@@ -11,6 +11,9 @@ let busy = false;
 // The answer element of the turn currently streaming, so deltas land in the
 // right place even after older turns have been collapsed.
 let currentAnswerEl = null;
+// The turn's container + question text, used to attach suggestions on done.
+let currentChatEl = null;
+let currentQuestion = "";
 // Whether the current turn has started receiving answer text (vs still showing
 // the thinking/tool spinner).
 let currentHasText = false;
@@ -40,6 +43,177 @@ function thinkingHTML(status) {
   );
 }
 
+// ── Minimal, safe Markdown → HTML for answers ──────────────────────────────
+// The model replies in Markdown (## headers, **bold**, - bullets, 1. lists,
+// `code`). We escape first so model output can't inject HTML, then build a small
+// set of block/inline elements. Good enough for chat answers without a library.
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderInline(s) {
+  return s
+    .replace(/`([^`]+)`/g, (_m, c) => `<code>${c}</code>`)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+}
+
+function renderMarkdown(md) {
+  const lines = escapeHtml(md).split("\n");
+  let html = "";
+  let listType = null;
+  let para = [];
+  const closeList = () => {
+    if (listType) {
+      html += `</${listType}>`;
+      listType = null;
+    }
+  };
+  const flushPara = () => {
+    if (para.length) {
+      html += `<p>${renderInline(para.join(" "))}</p>`;
+      para = [];
+    }
+  };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) {
+      flushPara();
+      closeList();
+      continue;
+    }
+    let m = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (m) {
+      flushPara();
+      closeList();
+      html += `<div class="md-h">${renderInline(m[2])}</div>`;
+      continue;
+    }
+    m = /^\s*[-*•]\s+(.*)$/.exec(line);
+    if (m) {
+      flushPara();
+      if (listType !== "ul") {
+        closeList();
+        html += "<ul>";
+        listType = "ul";
+      }
+      html += `<li>${renderInline(m[1])}</li>`;
+      continue;
+    }
+    m = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (m) {
+      flushPara();
+      if (listType !== "ol") {
+        closeList();
+        html += "<ol>";
+        listType = "ol";
+      }
+      html += `<li>${renderInline(m[1])}</li>`;
+      continue;
+    }
+    closeList();
+    para.push(line.trim());
+  }
+  flushPara();
+  closeList();
+  return html;
+}
+
+const LINK_ICON_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />' +
+  '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>';
+
+const ARROW_ICON_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M7 7h10v10" /><path d="M7 17 17 7" /></svg>';
+
+// After an answer, fetch + render Cluely-style suggestions: real source links
+// (opened externally) and tappable follow-up questions (re-ask on click). The
+// chat element is captured so suggestions attach to the right turn even after
+// the next turn starts.
+async function requestSuggestions(chatEl, question, answer) {
+  if (!chatEl || !answer || answer.trim().length < 20) return;
+  let data;
+  try {
+    data = await window.lyknOverlay.suggest(question, answer);
+  } catch (_) {
+    return;
+  }
+  if (!data) return;
+  const links = (Array.isArray(data.links) ? data.links : []).filter((l) => l && l.url);
+  const followups = (Array.isArray(data.followups) ? data.followups : []).filter(Boolean);
+  if (!links.length && !followups.length) return;
+
+  const prev = chatEl.querySelector(".suggest");
+  if (prev) prev.remove();
+  const box = document.createElement("div");
+  box.className = "suggest";
+
+  if (links.length) {
+    const sec = document.createElement("div");
+    sec.className = "suggest-sec";
+    const lab = document.createElement("div");
+    lab.className = "suggest-label";
+    lab.textContent = "Sources";
+    const row = document.createElement("div");
+    row.className = "suggest-row";
+    for (const l of links.slice(0, 4)) {
+      const a = document.createElement("button");
+      a.className = "suggest-link";
+      a.type = "button";
+      a.title = l.url;
+      const ico = document.createElement("span");
+      ico.className = "suggest-ico";
+      ico.innerHTML = LINK_ICON_SVG;
+      const span = document.createElement("span");
+      span.className = "suggest-link-text";
+      span.textContent = l.title || l.url;
+      a.append(ico, span);
+      a.addEventListener("click", () => window.lyknOverlay.openUrl(l.url));
+      row.appendChild(a);
+    }
+    sec.append(lab, row);
+    box.appendChild(sec);
+  }
+
+  if (followups.length) {
+    const sec = document.createElement("div");
+    sec.className = "suggest-sec";
+    const lab = document.createElement("div");
+    lab.className = "suggest-label";
+    lab.textContent = "Follow-ups";
+    const col = document.createElement("div");
+    col.className = "suggest-col";
+    for (const f of followups.slice(0, 3)) {
+      const b = document.createElement("button");
+      b.className = "suggest-chip";
+      b.type = "button";
+      const span = document.createElement("span");
+      span.textContent = f;
+      const ico = document.createElement("span");
+      ico.className = "suggest-chip-ico";
+      ico.innerHTML = ARROW_ICON_SVG;
+      b.append(span, ico);
+      b.addEventListener("click", () => {
+        askEl.value = f;
+        ask();
+      });
+      col.appendChild(b);
+    }
+    sec.append(lab, col);
+    box.appendChild(sec);
+  }
+
+  chatEl.appendChild(box);
+  threadEl.scrollTop = threadEl.scrollHeight;
+  reportHeight();
+}
+
 let lastReportedHeight = -1;
 function reportHeight() {
   // Measure the EXACT content height after layout settles, and only tell main to
@@ -51,9 +225,9 @@ function reportHeight() {
     const att = document.getElementById("attachments");
     const attH = att && att.classList.contains("show") ? att.offsetHeight : 0;
     const menu = document.getElementById("menu");
-    // +12 = the floating card's top (4) + bottom (8) margins, which offsetHeight
+    // +8 = the menu section's top (2) + bottom (6) margins, which offsetHeight
     // doesn't include but the flow layout does.
-    const menuH = menu && menu.classList.contains("show") ? menu.offsetHeight + 12 : 0;
+    const menuH = menu && menu.classList.contains("show") ? menu.offsetHeight + 8 : 0;
     // Use scrollHeight for the thread: it reports the true content height even
     // when flexbox has shrunk the element to fit the (still-small) window. Cap at
     // the CSS max-height so past that it scrolls internally instead of growing.
@@ -61,7 +235,9 @@ function reportHeight() {
     const threadH = threadEl.classList.contains("show")
       ? Math.min(threadEl.scrollHeight + 1, 420)
       : 0;
-    const h = title.offsetHeight + menuH + threadH + attH + bar.offsetHeight + 2;
+    const live = document.getElementById("live");
+    const liveH = live && live.classList.contains("show") ? live.offsetHeight : 0;
+    const h = title.offsetHeight + menuH + threadH + liveH + attH + bar.offsetHeight + 2;
     if (h !== lastReportedHeight) {
       lastReportedHeight = h;
       window.lyknOverlay.resize(h);
@@ -102,6 +278,8 @@ function startTurn(question) {
   threadEl.appendChild(item);
   threadEl.classList.add("show");
   currentAnswerEl = a;
+  currentChatEl = item;
+  currentQuestion = question || "";
   currentHasText = false;
   setThinkingStatus("Thinking…");
 
@@ -127,7 +305,8 @@ function updateAnswer(text) {
   const trimmed = (text || "").replace(/\s+$/, "");
   if (!trimmed && !currentHasText) return; // keep the spinner until real text
   currentHasText = true;
-  currentAnswerEl.textContent = trimmed;
+  currentAnswerEl.classList.add("has-md");
+  currentAnswerEl.innerHTML = renderMarkdown(trimmed);
   threadEl.scrollTop = threadEl.scrollHeight;
   reportHeight();
 }
@@ -149,6 +328,13 @@ function ask() {
 // Accordion: clicking a turn's header opens it and collapses every other turn,
 // keeping only one answer visible at a time. Clicking the open one closes it.
 threadEl.addEventListener("click", (e) => {
+  // Markdown links in answers open in the default browser, never in the overlay.
+  const link = e.target.closest("a[href]");
+  if (link) {
+    e.preventDefault();
+    window.lyknOverlay.openUrl(link.getAttribute("href"));
+    return;
+  }
   const header = e.target.closest(".chat-q");
   if (!header) return;
   const item = header.closest(".chat");
@@ -172,6 +358,9 @@ window.lyknOverlay.onDone((p) => {
   if (finalText) {
     updateAnswer(finalText);
     history.push({ role: "assistant", content: finalText, at: new Date().toISOString() });
+    // Fetch follow-ups + source links for this turn (attached to its element so
+    // it lands on the right turn even if the user asks again immediately).
+    void requestSuggestions(currentChatEl, currentQuestion, finalText);
   } else if (!currentHasText && currentAnswerEl) {
     // Nothing came back — clear the spinner instead of leaving it spinning.
     currentHasText = true;
@@ -225,6 +414,60 @@ const endDrag = (e) => {
 };
 dragEl.addEventListener("pointerup", endDrag);
 dragEl.addEventListener("pointercancel", endDrag);
+
+// ── Collapse to a single LYKN icon bubble ──────────────────────────────────
+const bubbleEl = document.getElementById("bubble");
+
+function collapseOverlay() {
+  setMenuOpen(false);
+  document.body.classList.add("collapsed");
+  window.lyknOverlay.collapse(true);
+}
+
+function expandOverlay() {
+  document.body.classList.remove("collapsed");
+  window.lyknOverlay.collapse(false);
+  // Force a fresh height report now that the panel is visible again.
+  lastReportedHeight = -1;
+  reportHeight();
+  askEl.focus();
+}
+
+// Click the glowing LYKN mark in the bar to collapse everything.
+dotEl.addEventListener("click", collapseOverlay);
+
+// The bubble can be dragged to reposition, or clicked (no drag) to expand.
+let bubbleDragging = false;
+let bubbleMoved = false;
+let bubbleLastX = 0;
+let bubbleLastY = 0;
+bubbleEl.addEventListener("pointerdown", (e) => {
+  bubbleDragging = true;
+  bubbleMoved = false;
+  bubbleLastX = e.screenX;
+  bubbleLastY = e.screenY;
+  try { bubbleEl.setPointerCapture(e.pointerId); } catch (_) {}
+  e.preventDefault();
+});
+bubbleEl.addEventListener("pointermove", (e) => {
+  if (!bubbleDragging) return;
+  const dx = e.screenX - bubbleLastX;
+  const dy = e.screenY - bubbleLastY;
+  if (Math.abs(dx) + Math.abs(dy) > 2) {
+    bubbleMoved = true;
+    bubbleLastX = e.screenX;
+    bubbleLastY = e.screenY;
+    window.lyknOverlay.moveBy(dx, dy);
+  }
+});
+const endBubble = (e) => {
+  if (!bubbleDragging) return;
+  bubbleDragging = false;
+  try { bubbleEl.releasePointerCapture(e.pointerId); } catch (_) {}
+  if (!bubbleMoved) expandOverlay();
+};
+bubbleEl.addEventListener("pointerup", endBubble);
+bubbleEl.addEventListener("pointercancel", endBubble);
 
 // ── Dictation ────────────────────────────────────────────────────────────
 // Record mic audio with MediaRecorder, then hand the bytes to the main process
@@ -522,7 +765,9 @@ let lastScreenPushAt = 0;
 let screenPushInFlight = false;
 
 async function pushScreenContext(force) {
-  if (!voiceActive || !voiceSessionToken) return;
+  // Only needs the session token — we deliberately allow pushes during connect
+  // so a fresh screen is already in the server grounding by the user's 1st turn.
+  if (!voiceSessionToken) return;
   if (screenPushInFlight) return;
   const now = Date.now();
   if (!force && now - lastScreenPushAt < 4000) return;
@@ -670,6 +915,10 @@ async function startVoice() {
 
   // Keep the session token so we can push screen context to the server grounding.
   voiceSessionToken = data.sessionToken || "";
+  // Kick off the first screen push NOW (in parallel with the WebSocket connect +
+  // the agent greeting) so the description — which takes ~2-3s — is already in
+  // the server grounding by the time the user asks their first question.
+  void pushScreenContext(true);
 
   const overrides = {};
   if (data.sessionToken) overrides.agent = { prompt: { prompt: `LYKN_SESSION_TOKEN=${data.sessionToken}` } };
@@ -722,8 +971,13 @@ async function startVoice() {
       if (cancelled()) return;
       const text = String((m && m.message) || "").trim();
       if (!text) return;
-      if (m.source === "user") voiceUserMessage(text);
-      else if (m.source === "ai") voiceAiMessage(text);
+      if (m.source === "user") {
+        voiceUserMessage(text);
+        // Keep the server's screen grounding fresh for the next turn (throttled).
+        void pushScreenContext(false);
+      } else if (m.source === "ai") {
+        voiceAiMessage(text);
+      }
     },
     ...(Object.keys(overrides).length ? { overrides } : {}),
   };
@@ -809,6 +1063,304 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && (voiceActive || voiceStarting)) {
     e.preventDefault();
     void stopVoice();
+  }
+});
+
+// ── Live listen: capture system (meeting) audio → rolling transcript ────────
+// Uses getDisplayMedia with loopback audio (ScreenCaptureKit on macOS 13+, wired
+// up in main via setDisplayMediaRequestHandler). We record short back-to-back
+// clips and transcribe each with Whisper so a live transcript builds up.
+const listenEl = document.getElementById("listen");
+const liveEl = document.getElementById("live");
+const liveBodyEl = document.getElementById("live-body");
+const liveDotEl = document.getElementById("live-dot");
+const liveTitleEl = document.getElementById("live-title");
+const liveCloseEl = document.getElementById("live-close");
+const notesSummaryEl = document.getElementById("notes-summary");
+const notesKeyWrapEl = document.getElementById("notes-key-wrap");
+const notesKeyEl = document.getElementById("notes-key");
+const notesActionsWrapEl = document.getElementById("notes-actions-wrap");
+const notesActionsEl = document.getElementById("notes-actions");
+let listening = false;
+let listenDisplayStream = null; // full getDisplayMedia stream (we keep it to stop tracks)
+let listenSysStream = null; // loopback audio only = "Them" (the video/other person)
+let listenMicStream = null; // microphone = "You" (the user)
+let listenRecorders = []; // active per-source MediaRecorders
+let listenQueue = Promise.resolve();
+// Separate rolling context per speaker so cleanup never bleeds one into the other.
+const listenTails = { them: "", you: "" };
+// Full speaker-labeled transcript, fed to the meeting-notes summarizer.
+let transcriptText = "";
+let notesTimer = null;
+let notesInFlight = false;
+let lastNotesLen = 0;
+const LISTEN_CHUNK_MS = 6000;
+const NOTES_INTERVAL_MS = 25000;
+const SPEAKER_LABEL = { them: "Them", you: "You" };
+
+function setListenUi() {
+  listenEl.classList.toggle("listening", listening);
+  listenEl.title = listening ? "Stop listening" : "Listen (live notes)";
+  liveDotEl.classList.toggle("live", listening);
+  liveTitleEl.textContent = listening ? "Listening…" : "Stopped";
+  reportHeight();
+}
+
+function switchLivePane(pane) {
+  document.getElementById("tab-notes").classList.toggle("active", pane === "notes");
+  document.getElementById("tab-transcript").classList.toggle("active", pane === "transcript");
+  document.getElementById("pane-notes").hidden = pane !== "notes";
+  document.getElementById("pane-transcript").hidden = pane !== "transcript";
+  reportHeight();
+}
+
+function renderNotes(notes) {
+  if (!notes) return;
+  notesSummaryEl.textContent = String(notes.summary || "");
+  const fill = (listEl, wrapEl, items) => {
+    listEl.innerHTML = "";
+    const arr = Array.isArray(items) ? items.filter(Boolean) : [];
+    for (const it of arr) {
+      const li = document.createElement("li");
+      li.textContent = String(it);
+      listEl.appendChild(li);
+    }
+    wrapEl.hidden = arr.length === 0;
+  };
+  fill(notesKeyEl, notesKeyWrapEl, notes.keyPoints);
+  fill(notesActionsEl, notesActionsWrapEl, notes.actionItems);
+  reportHeight();
+}
+
+// Pull fresh meeting notes from the transcript (throttled; skips if nothing new
+// was said since the last pull). Best-effort — failures leave existing notes.
+async function refreshNotes() {
+  if (notesInFlight) return;
+  const txt = transcriptText.trim();
+  if (txt.length < 40 || txt.length === lastNotesLen) return;
+  notesInFlight = true;
+  lastNotesLen = txt.length;
+  try {
+    const notes = await window.lyknOverlay.meetingNotes(txt);
+    if (notes && (notes.summary || notes.keyPoints?.length || notes.actionItems?.length)) {
+      renderNotes(notes);
+    }
+  } catch (_) {}
+  notesInFlight = false;
+}
+
+// Append cleaned text under a speaker. Consecutive lines from the same speaker
+// merge into one block so the transcript reads as a conversation.
+function appendLiveText(speaker, text) {
+  const t = String(text || "").trim();
+  if (!t) return;
+  const last = liveBodyEl.lastElementChild;
+  if (last && last.dataset.speaker === speaker) {
+    const body = last.querySelector(".live-text");
+    body.textContent = `${body.textContent} ${t}`;
+  } else {
+    const line = document.createElement("div");
+    line.className = `live-line ${speaker}`;
+    line.dataset.speaker = speaker;
+    const lab = document.createElement("span");
+    lab.className = "live-speaker";
+    lab.textContent = SPEAKER_LABEL[speaker] || speaker;
+    const body = document.createElement("span");
+    body.className = "live-text";
+    body.textContent = t;
+    line.append(lab, body);
+    liveBodyEl.appendChild(line);
+  }
+  listenTails[speaker] = `${listenTails[speaker] ? `${listenTails[speaker]} ` : ""}${t}`
+    .split(/\s+/)
+    .slice(-30)
+    .join(" ");
+  transcriptText += `${SPEAKER_LABEL[speaker] || speaker}: ${t}\n`;
+  liveBodyEl.scrollTop = liveBodyEl.scrollHeight;
+  reportHeight();
+}
+
+// Transcribe one chunk for a given speaker, drop it if it's silence/noise, then
+// run a Wispr-Flow-style cleanup pass before showing it. Fails open to raw text.
+async function processListenChunk(buf, speaker) {
+  if (!listening) return;
+  let raw = "";
+  let noSpeech = 0;
+  try {
+    const r = await window.lyknOverlay.transcribe(buf, RECORD_MIME, listenTails[speaker]);
+    raw = r && r.text ? r.text.trim() : "";
+    noSpeech = r && typeof r.noSpeech === "number" ? r.noSpeech : 0;
+  } catch (_) {}
+  // High no-speech probability = silence; Whisper tends to hallucinate ("Thank
+  // you.", "Bye.") on quiet clips, so skip those outright.
+  if (!raw || noSpeech > 0.7 || !listening) return;
+  let clean = raw;
+  try {
+    const c = await window.lyknOverlay.cleanTranscript(raw, listenTails[speaker]);
+    if (c && typeof c.text === "string") clean = c.text.trim();
+  } catch (_) {}
+  if (clean) appendLiveText(speaker, clean);
+}
+
+// Record one short clip from a source stream, then loop. Each source (system
+// audio = "them", mic = "you") runs its own independent loop.
+function recordSourceChunk(stream, speaker) {
+  if (!listening || !stream) return;
+  let rec;
+  try {
+    rec = new MediaRecorder(stream, { mimeType: RECORD_MIME });
+  } catch (_) {
+    return;
+  }
+  listenRecorders.push(rec);
+  const chunks = [];
+  rec.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) chunks.push(e.data);
+  };
+  rec.onstop = async () => {
+    listenRecorders = listenRecorders.filter((r) => r !== rec);
+    // Start the next clip immediately so capture stays continuous.
+    if (listening) recordSourceChunk(stream, speaker);
+    const blob = new Blob(chunks, { type: RECORD_MIME });
+    if (blob.size < 2000) return;
+    let buf;
+    try {
+      buf = await blob.arrayBuffer();
+    } catch (_) {
+      return;
+    }
+    // Single shared queue keeps both speakers' lines in completion order.
+    listenQueue = listenQueue.then(() => processListenChunk(buf, speaker)).catch(() => {});
+  };
+  try {
+    rec.start();
+  } catch (_) {
+    return;
+  }
+  setTimeout(() => {
+    try {
+      if (rec.state !== "inactive") rec.stop();
+    } catch (_) {}
+  }, LISTEN_CHUNK_MS);
+}
+
+async function startListen() {
+  if (listening) return;
+  // 1) System (loopback) audio = the video / person on the other end ("Them").
+  let display;
+  try {
+    display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  } catch (_) {
+    startTurn("Live notes");
+    currentHasText = true;
+    currentAnswerEl.textContent =
+      "LYKN needs Screen Recording permission to capture audio. Enable it in System Settings → Privacy & Security → Screen Recording, then try again.";
+    reportHeight();
+    return;
+  }
+  const sysTracks = display.getAudioTracks();
+  if (!sysTracks.length) {
+    try { display.getTracks().forEach((t) => t.stop()); } catch (_) {}
+    startTurn("Live notes");
+    currentHasText = true;
+    currentAnswerEl.textContent =
+      "Couldn't capture system audio. This needs macOS 13 (Ventura) or newer.";
+    reportHeight();
+    return;
+  }
+  // 2) Microphone = the user ("You"). Best-effort: if mic is denied we still
+  // capture the other side. Echo cancellation keeps the speakers' audio from
+  // bleeding into the mic and being double-counted as "You".
+  let micStream = null;
+  try {
+    const ok = await window.lyknOverlay.ensureMic();
+    if (ok) {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    }
+  } catch (_) {
+    micStream = null;
+  }
+
+  listenDisplayStream = display;
+  listenSysStream = new MediaStream(sysTracks);
+  listenMicStream = micStream;
+  listenTails.them = "";
+  listenTails.you = "";
+  listenQueue = Promise.resolve();
+  transcriptText = "";
+  lastNotesLen = 0;
+  liveBodyEl.innerHTML = "";
+  notesSummaryEl.textContent = "";
+  notesKeyEl.innerHTML = "";
+  notesActionsEl.innerHTML = "";
+  notesKeyWrapEl.hidden = true;
+  notesActionsWrapEl.hidden = true;
+  listening = true;
+  liveEl.classList.add("show");
+  switchLivePane("notes");
+  setListenUi();
+  // Build notes on a steady cadence while listening, plus an earlier first pass
+  // so the user sees something well before the full interval elapses.
+  if (notesTimer) clearInterval(notesTimer);
+  notesTimer = setInterval(() => void refreshNotes(), NOTES_INTERVAL_MS);
+  setTimeout(() => {
+    if (listening) void refreshNotes();
+  }, 12000);
+  // If the OS ends the capture (or the user revokes it), stop cleanly.
+  sysTracks[0].addEventListener("ended", () => {
+    if (listening) stopListen();
+  });
+  recordSourceChunk(listenSysStream, "them");
+  if (listenMicStream) recordSourceChunk(listenMicStream, "you");
+}
+
+function stopListen() {
+  listening = false;
+  if (notesTimer) {
+    clearInterval(notesTimer);
+    notesTimer = null;
+  }
+  for (const r of listenRecorders) {
+    try {
+      if (r.state !== "inactive") r.stop();
+    } catch (_) {}
+  }
+  listenRecorders = [];
+  try {
+    listenDisplayStream && listenDisplayStream.getTracks().forEach((t) => t.stop());
+  } catch (_) {}
+  try {
+    listenMicStream && listenMicStream.getTracks().forEach((t) => t.stop());
+  } catch (_) {}
+  listenDisplayStream = null;
+  listenSysStream = null;
+  listenMicStream = null;
+  setListenUi();
+  // One last notes pass so the final words make it in. The panel stays open so
+  // the user can review the notes after the meeting ends.
+  void refreshNotes();
+}
+
+function closeLive() {
+  if (listening) stopListen();
+  liveEl.classList.remove("show");
+  reportHeight();
+}
+
+listenEl.addEventListener("click", () => {
+  if (listening) stopListen();
+  else void startListen();
+});
+liveCloseEl.addEventListener("click", closeLive);
+document.getElementById("tab-notes").addEventListener("click", () => switchLivePane("notes"));
+document.getElementById("tab-transcript").addEventListener("click", () => switchLivePane("transcript"));
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && listening) {
+    e.preventDefault();
+    stopListen();
   }
 });
 
