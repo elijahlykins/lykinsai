@@ -17180,6 +17180,10 @@ const elevenCustomLlmHandler = async (req, res) => {
     if (screenEntry?.text && Date.now() - (screenEntry.at || 0) < 60000) {
       screenText = screenEntry.text;
     }
+    customLlmStats.lastTokenFound = !!sessionToken;
+    customLlmStats.lastUserIdFound = !!userId;
+    customLlmStats.lastScreenChars = screenText.length;
+    customLlmStats.lastGroundingChars = grounding.length;
     console.log(`[custom-llm] token=${!!sessionToken} entry=${sessionToken ? voiceSessionGrounding.has(sessionToken) : false} userId=${!!userId} screenChars=${screenText.length}`);
 
     // Per-turn semantic retrieval — the static grounding above only carries
@@ -17309,7 +17313,7 @@ app.post('/api/ai/elevenlabs/llm/chat/completions/chat/completions', elevenCusto
 // Custom-LLM diagnostics, for remote debugging. Guarded by the same secret
 // ElevenLabs uses, so only callers with the shared secret can read it.
 let lastCustomLlmError = null;
-const customLlmStats = { hits: 0, authFails: 0, lastHitAt: null, lastResult: null, lastAuthFail: null, lastPath: null, lastRetrievalChars: null };
+const customLlmStats = { hits: 0, authFails: 0, lastHitAt: null, lastResult: null, lastAuthFail: null, lastPath: null, lastRetrievalChars: null, lastTokenFound: null, lastUserIdFound: null, lastScreenChars: null, lastGroundingChars: null };
 app.get('/api/ai/elevenlabs/llm/_debug', (req, res) => {
   const expected = process.env.ELEVENLABS_LLM_SECRET;
   const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
