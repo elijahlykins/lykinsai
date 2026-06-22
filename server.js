@@ -17054,6 +17054,20 @@ app.post('/api/ai/realtime/screen', requireAuth, aiLimiter, async (req, res) => 
       if (text) voiceScreenByUser.set(uid, { text, at: Date.now() });
       else voiceScreenByUser.delete(uid);
     }
+    // Persist to the DB so OTHER server instances (Render scales horizontally)
+    // can read it — the custom-LLM call from ElevenLabs usually lands on a
+    // different instance than this push. Fire-and-forget to keep this fast.
+    if (uid && supabaseAdmin) {
+      supabaseAdmin
+        .from('voice_screen_context')
+        .upsert(
+          { user_id: uid, description: text || '', updated_at: new Date().toISOString() },
+          { onConflict: 'user_id' },
+        )
+        .then(({ error }) => {
+          if (error) console.warn('⚠️ voice_screen_context upsert:', error.message);
+        });
+    }
     console.log(`[screen-store] token=${sessionToken.slice(0, 8)}… user=${uid || 'none'} chars=${text.length}`);
     return res.json({ ok: true });
   } catch (error) {
@@ -17179,6 +17193,22 @@ const elevenCustomLlmHandler = async (req, res) => {
     }
     if (screenEntry?.text && Date.now() - (screenEntry.at || 0) < 60000) {
       screenText = screenEntry.text;
+    }
+    // Cross-instance fallback: the screen was likely pushed to a different
+    // Render instance, so read the shared DB row when the in-memory miss occurs.
+    if (!screenText && userId && supabaseAdmin) {
+      try {
+        const { data: scr } = await supabaseAdmin
+          .from('voice_screen_context')
+          .select('description, updated_at')
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (scr?.description && Date.now() - new Date(scr.updated_at).getTime() < 60000) {
+          screenText = scr.description;
+        }
+      } catch (e) {
+        console.warn('⚠️ voice_screen_context read:', e?.message || e);
+      }
     }
     customLlmStats.lastTokenFound = !!sessionToken;
     customLlmStats.lastUserIdFound = !!userId;
