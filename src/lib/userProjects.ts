@@ -47,6 +47,15 @@ export interface UserProject {
   // pushing into vs. which ones are dormant. Defaults to 0 on the
   // localStorage / guest path (no server-side push log available).
   pushCount: number;
+  // Collaboration (109/110). For projects you own these default to
+  // role:'owner', isShared:false, ownerId:<you>. For a project shared WITH
+  // you, role is your membership role ('editor' | 'viewer'), isShared is true,
+  // and ownerId is the creator's user id. The Projects UI uses these to gate
+  // owner-only controls (rename / archive / delete / manage members) and to
+  // badge shared projects.
+  role: "owner" | "editor" | "viewer";
+  isShared: boolean;
+  ownerId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +90,11 @@ function readLocal(userId: string | null | undefined): UserProject[] {
         pushCount: typeof (r as UserProject).pushCount === "number"
           ? (r as UserProject).pushCount
           : 0,
+        // Collaboration fields are server-only; the local/guest tier is always
+        // your own, owned project.
+        role: (r as UserProject).role || "owner",
+        isShared: Boolean((r as UserProject).isShared),
+        ownerId: (r as UserProject).ownerId ?? null,
       }));
   } catch {
     return [];
@@ -129,12 +143,41 @@ export async function listUserProjects(userId: string | null | undefined): Promi
   try {
     const { data: projects, error: projErr } = await supabase
       .from("lykn_projects")
-      .select("id, name, description, status, created_by, created_by_client, created_at, last_active_at")
+      .select("id, name, description, status, created_by, created_by_client, created_at, last_active_at, user_id")
       .eq("user_id", userId)
       .order("last_active_at", { ascending: false });
     if (projErr) throw projErr;
 
-    const userProjects = (projects || []).filter(isUserCreatedProjectRow);
+    // Collaboration (109/110): pull the projects shared WITH this user — the
+    // accepted membership rows whose project they don't own — and fold them in
+    // alongside the owned ones. Role drives the owner-only UI gates.
+    const roleByProject = new Map<string, "owner" | "editor" | "viewer">();
+    let sharedProjects: Record<string, unknown>[] = [];
+    try {
+      const ownedIdSet = new Set((projects || []).map((p) => p.id as string));
+      const { data: memberRows } = await supabase
+        .from("lykn_project_members")
+        .select("project_id, role")
+        .eq("user_id", userId)
+        .not("accepted_at", "is", null);
+      const sharedIds: string[] = [];
+      for (const m of memberRows || []) {
+        const pid = m.project_id as string;
+        roleByProject.set(pid, (m.role as "owner" | "editor" | "viewer") || "viewer");
+        if (!ownedIdSet.has(pid)) sharedIds.push(pid);
+      }
+      if (sharedIds.length > 0) {
+        const { data: shared } = await supabase
+          .from("lykn_projects")
+          .select("id, name, description, status, created_by, created_by_client, created_at, last_active_at, user_id")
+          .in("id", sharedIds);
+        sharedProjects = shared || [];
+      }
+    } catch {
+      /* membership tables missing (109 not applied) — owned projects only */
+    }
+
+    const userProjects = [...(projects || []), ...sharedProjects].filter(isUserCreatedProjectRow);
     const ids = userProjects.map((p) => p.id as string);
     let membersByProject = new Map<string, UserProjectMember[]>();
     let pushCountByProject = new Map<string, number>();
@@ -170,10 +213,12 @@ export async function listUserProjects(userId: string | null | undefined): Promi
       // outer try/catch already handles harder failures by falling
       // back to localStorage.
       try {
+        // No user_id filter: a project's push count is the project's total
+        // (every member's pushes), and RLS already scopes the rows we can see
+        // to our own + the shared projects we belong to.
         const { data: pushRows, error: pushErr } = await supabase
           .from("lykn_project_state")
           .select("project_id")
-          .eq("user_id", userId)
           .in("project_id", ids);
         if (!pushErr) {
           for (const r of pushRows || []) {
@@ -186,17 +231,26 @@ export async function listUserProjects(userId: string | null | undefined): Promi
       }
     }
 
-    return userProjects.map((p) => ({
-      id: p.id as string,
-      name: p.name as string,
-      description: (p.description as string | null) ?? null,
-      status: (p.status as "active" | "archived") || "active",
-      createdByClient: (p.created_by_client as string | null) ?? null,
-      createdAt: p.created_at ? new Date(p.created_at as string).getTime() : Date.now(),
-      lastActiveAt: p.last_active_at ? new Date(p.last_active_at as string).getTime() : Date.now(),
-      members: membersByProject.get(p.id as string) || [],
-      pushCount: pushCountByProject.get(p.id as string) || 0,
-    }));
+    return userProjects.map((p) => {
+      const pid = p.id as string;
+      const ownerId = (p.user_id as string | null) ?? null;
+      const isShared = !!ownerId && ownerId !== userId;
+      const role = roleByProject.get(pid) || (isShared ? "viewer" : "owner");
+      return {
+        id: pid,
+        name: p.name as string,
+        description: (p.description as string | null) ?? null,
+        status: (p.status as "active" | "archived") || "active",
+        createdByClient: (p.created_by_client as string | null) ?? null,
+        createdAt: p.created_at ? new Date(p.created_at as string).getTime() : Date.now(),
+        lastActiveAt: p.last_active_at ? new Date(p.last_active_at as string).getTime() : Date.now(),
+        members: membersByProject.get(pid) || [],
+        pushCount: pushCountByProject.get(pid) || 0,
+        role,
+        isShared,
+        ownerId,
+      };
+    });
   } catch {
     return readLocal(userId);
   }
@@ -256,6 +310,9 @@ export async function createUserProject(
       lastActiveAt: Date.now(),
       members: cleanMembers,
       pushCount: 0,
+      role: "owner",
+      isShared: false,
+      ownerId: null,
     };
     writeLocal(userId, [fresh, ...existing]);
     return fresh;
@@ -399,6 +456,9 @@ export async function createUserProject(
         kind: (m.node_kind as string | null) ?? null,
       })),
       pushCount,
+      role: "owner",
+      isShared: false,
+      ownerId: userId,
     };
   } catch {
     // Fall back to local cache so the user still sees their cluster
@@ -414,6 +474,9 @@ export async function createUserProject(
       lastActiveAt: Date.now(),
       members: cleanMembers,
       pushCount: 0,
+      role: "owner",
+      isShared: false,
+      ownerId: userId,
     };
     writeLocal(userId, [fresh, ...existing]);
     return fresh;
@@ -991,6 +1054,28 @@ export async function mergeUserProjects(
   }
 
   const dryRun = opts.dryRun !== false;
+
+  // Collaboration guard (110): the merge RPC assumes single ownership, so
+  // refuse to merge a project that has collaborators until merge is redesigned
+  // for shared projects. Best-effort — if the helper is missing (109 not
+  // applied) we fall through to the original single-owner behaviour.
+  try {
+    for (const id of [sourceProjectId, targetProjectId]) {
+      const { data: shared } = await supabase.rpc("lykn_project_has_collaborators", {
+        p_project: id,
+      });
+      if (shared === true) {
+        throw new Error(
+          "This project is shared with other people. Merging shared projects isn't supported yet — remove collaborators first.",
+        );
+      }
+    }
+  } catch (e) {
+    // Re-throw our own guard message; swallow "function does not exist" so the
+    // pre-collaboration merge path keeps working.
+    if (e instanceof Error && e.message.startsWith("This project is shared")) throw e;
+  }
+
   const { data, error } = await supabase.rpc("lykn_merge_projects", {
     p_source: sourceProjectId,
     p_target: targetProjectId,

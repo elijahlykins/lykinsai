@@ -1351,14 +1351,46 @@ export function formatProjectStateForPromptInLykn(projectContext) {
  * Load one project's context (state + neurons + recent activity).
  * Used by active-project loader and by resolve/focus flows.
  */
+// Resolve the caller's access role to a project: 'owner' (they created it),
+// the membership role ('owner'|'editor'|'viewer') if it's shared with them, or
+// null if they have no access. Collaboration (109/110): the AI context loaders
+// below use this so a member who focuses a SHARED project still gets its team
+// working memory, while non-members get nothing.
+export async function resolveProjectAccessRole(client, userId, projectId) {
+  if (!client || !userId || !projectId) return null;
+  try {
+    const { data: proj } = await client
+      .from('lykn_projects')
+      .select('user_id')
+      .eq('id', projectId)
+      .maybeSingle();
+    if (proj && proj.user_id === userId) return 'owner';
+    const { data: member } = await client
+      .from('lykn_project_members')
+      .select('role')
+      .eq('project_id', projectId)
+      .eq('user_id', userId)
+      .not('accepted_at', 'is', null)
+      .maybeSingle();
+    return member?.role || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function loadProjectContextById(client, userId, projectId) {
   if (!client || !userId || !projectId) return null;
   try {
+    // Membership-aware (110): the row may be owned by someone else and shared
+    // with this user. Verify access, then read state project-wide (every
+    // member's pushes form the shared working memory).
+    const accessRole = await resolveProjectAccessRole(client, userId, projectId);
+    if (!accessRole) return null;
+
     const { data: project } = await client
       .from('lykn_projects')
       .select('id, name, description, status, created_by_client, created_by, parent_project_id, last_active_at')
       .eq('id', projectId)
-      .eq('user_id', userId)
       .maybeSingle();
     if (!project || project.status !== 'active') return null;
 
@@ -1368,7 +1400,6 @@ export async function loadProjectContextById(client, userId, projectId) {
         .from('lykn_projects')
         .select('name')
         .eq('id', project.parent_project_id)
-        .eq('user_id', userId)
         .maybeSingle();
       mainProjectName = mainRow?.name || null;
     }
@@ -1376,7 +1407,6 @@ export async function loadProjectContextById(client, userId, projectId) {
     const { data: rows } = await client
       .from('lykn_project_state')
       .select('state_key, state_value, set_by_client, created_at')
-      .eq('user_id', userId)
       .eq('project_id', projectId)
       .is('superseded_at', null)
       .order('created_at', { ascending: false })
@@ -1398,7 +1428,6 @@ export async function loadProjectContextById(client, userId, projectId) {
       const { data: activityRows } = await client
         .from('lykn_project_state')
         .select('state_key, state_value, set_by_client, created_at')
-        .eq('user_id', userId)
         .eq('project_id', projectId)
         .order('created_at', { ascending: false })
         .limit(20);

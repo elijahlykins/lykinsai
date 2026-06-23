@@ -8797,7 +8797,11 @@ User: ${text}`;
       {!isEmbeddedMode && !isWakePreview && !isMobileChat && !sidebarOpen && createPortal(
         <div
           className="fixed z-[200] flex items-end gap-2"
-          style={{ bottom: "16px", left: "16px", pointerEvents: "none" }}
+          style={{
+            bottom: "calc(1rem + var(--mobile-tabbar-clear, 0px))",
+            left: "calc(var(--sidebar-width, 0px) + 1rem)",
+            pointerEvents: "none",
+          }}
         >
           <div
             ref={vaultTrashRef}
@@ -8841,7 +8845,7 @@ User: ${text}`;
       {selectedCardIds.size > 0 && !isPickerMode && createPortal(
         <div
           className="fixed z-[210] left-1/2 -translate-x-1/2 flex items-center"
-          style={{ bottom: isMobileChat ? "80px" : "24px" }}
+          style={{ bottom: "calc(1.5rem + var(--mobile-tabbar-clear, 0px))" }}
         >
           <div className="flex items-center gap-2 rounded-full bg-black/85 dark:bg-white/10 backdrop-blur-md text-white shadow-lg ring-1 ring-white/10 px-3 py-1.5">
             <span className="text-xs font-medium px-1.5">

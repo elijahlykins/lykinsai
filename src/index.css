@@ -383,6 +383,11 @@ body.sidebar-push .app-content {
 
 /* Sidebar collapsed: the icon rail (w-14 = 3.5rem) stays pinned to the left
    edge, so reserve its width to keep content from being covered by it. */
+body.sidebar-collapsed {
+  --sidebar-offset: 3.5rem;
+  --sidebar-width: 3.5rem;
+}
+
 body.sidebar-collapsed .app-content {
   padding-left: 3.5rem;
 }

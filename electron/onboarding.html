@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Set up LYKN</title>
+    <style>
+      :root {
+        --bg: #0b0b0f;
+        --panel: rgba(255, 255, 255, 0.04);
+        --line: rgba(255, 255, 255, 0.08);
+        --text: #f4f4f6;
+        --muted: rgba(244, 244, 246, 0.55);
+        --accent: #7c8cff;
+        --ok: #3ecf8e;
+        --warn: #f0b429;
+        --err: #ff6b6b;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: radial-gradient(1200px 600px at 50% -10%, #16161f 0%, var(--bg) 60%);
+        color: var(--text);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        padding: 28px 30px 22px;
+        user-select: none;
+      }
+      .head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+      .logo {
+        width: 38px; height: 38px; border-radius: 10px; object-fit: cover;
+        box-shadow: 0 0 0 1px var(--line), 0 8px 24px rgba(0, 0, 0, 0.4);
+      }
+      h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
+      .sub { color: var(--muted); margin: 2px 0 0; font-size: 12.5px; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 16px 16px 15px;
+        margin-bottom: 12px;
+      }
+      .card h2 { font-size: 14.5px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+      .card p { color: var(--muted); margin: 0 0 12px; font-size: 12.5px; }
+      .card ol { color: var(--muted); margin: 0 0 12px; padding-left: 18px; font-size: 12.5px; }
+      .card ol li { margin: 2px 0; }
+      .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .spacer { flex: 1; }
+      .badge {
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
+        border: 1px solid var(--line);
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+      .badge.ok { color: var(--ok); border-color: rgba(62, 207, 142, 0.3); }
+      .badge.ok .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+      .badge.warn { color: var(--warn); border-color: rgba(240, 180, 41, 0.3); }
+      .badge.warn .dot { background: var(--warn); }
+      .badge.err { color: var(--err); border-color: rgba(255, 107, 107, 0.3); }
+      .badge.err .dot { background: var(--err); }
+      button {
+        font: inherit; font-weight: 600; font-size: 12.5px; color: var(--text);
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--line); border-radius: 9px;
+        padding: 7px 13px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+      }
+      button:hover { background: rgba(255, 255, 255, 0.1); }
+      button.primary {
+        background: linear-gradient(180deg, rgba(124, 140, 255, 0.95), rgba(108, 122, 235, 0.95));
+        border-color: transparent; color: #fff;
+      }
+      button.primary:hover { filter: brightness(1.07); }
+      button.ghost { background: transparent; }
+      .footer { display: flex; align-items: center; margin-top: 6px; }
+      .kbd {
+        font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: rgba(255, 255, 255, 0.08); border: 1px solid var(--line);
+        border-radius: 6px; padding: 1px 6px; color: var(--text);
+      }
+      .tag { font-weight: 600; color: var(--text); }
+    </style>
+  </head>
+  <body>
+    <div class="head">
+      <img class="logo" src="./resources/icon.png" alt="LYKN" onerror="this.style.display='none'" />
+      <div>
+        <h1>Welcome to LYKN</h1>
+        <p class="sub">Press <span class="kbd">⌘ L</span> anytime to summon LYKN over whatever you're looking at.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>1 · Screen Recording</h2>
+      <p>LYKN reads what's on your screen when you ask — for feedback, notes, and answers. macOS requires you to allow this once.</p>
+      <div class="row">
+        <span id="screen-badge" class="badge"><span class="dot"></span><span id="screen-text">Checking…</span></span>
+        <span class="spacer"></span>
+        <button id="screen-open">Open System Settings</button>
+        <button id="screen-recheck" class="ghost">Recheck</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2 · Read your browser tab <span class="badge" style="font-weight:500">optional</span></h2>
+      <p>To pull live article text and YouTube transcripts from your <span class="tag">active tab</span> (bypassing paywalls & bot blocks), enable "Allow JavaScript from Apple Events" in your browser:</p>
+      <ol>
+        <li><span class="tag">Chrome / Brave / Edge:</span> menu → More Tools → Developer → enable "Allow JavaScript from Apple Events"</li>
+        <li><span class="tag">Safari:</span> Settings → Advanced → "Show features for web developers", then Develop menu → "Allow JavaScript from Apple Events"</li>
+      </ol>
+      <div class="row">
+        <span id="ae-badge" class="badge"><span class="dot"></span><span id="ae-text">Not tested</span></span>
+        <span class="spacer"></span>
+        <button id="ae-open" class="ghost">Automation Settings</button>
+        <button id="ae-test">Test with my browser</button>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span class="spacer"></span>
+      <button id="done" class="primary">Get started</button>
+    </div>
+
+    <script>
+      const api = window.lyknOnboarding;
+      const $ = (id) => document.getElementById(id);
+
+      function setBadge(badgeEl, textEl, cls, label) {
+        badgeEl.className = "badge" + (cls ? " " + cls : "");
+        textEl.textContent = label;
+      }
+
+      async function refreshScreen() {
+        const status = await api.screenStatus();
+        if (status === "granted") setBadge($("screen-badge"), $("screen-text"), "ok", "Allowed");
+        else if (status === "denied" || status === "restricted")
+          setBadge($("screen-badge"), $("screen-text"), "err", "Not allowed");
+        else setBadge($("screen-badge"), $("screen-text"), "warn", "Needs permission");
+      }
+
+      $("screen-open").addEventListener("click", async () => {
+        // Trigger the native prompt first (registers LYKN in the list), then open settings.
+        await api.requestScreen();
+        api.openScreenSettings();
+      });
+      $("screen-recheck").addEventListener("click", refreshScreen);
+
+      $("ae-open").addEventListener("click", () => api.openAutomationSettings());
+      $("ae-test").addEventListener("click", async () => {
+        setBadge($("ae-badge"), $("ae-text"), "warn", "Testing…");
+        const r = await api.testAppleEvents();
+        if (r.state === "granted")
+          setBadge($("ae-badge"), $("ae-text"), "ok", "Working" + (r.browser ? " · " + r.browser : ""));
+        else if (r.state === "no-browser")
+          setBadge($("ae-badge"), $("ae-text"), "warn", "Open a browser tab, then retry");
+        else if (r.state === "denied")
+          setBadge($("ae-badge"), $("ae-text"), "err", "Turned off" + (r.browser ? " · " + r.browser : ""));
+        else setBadge($("ae-badge"), $("ae-text"), "err", r.message || "Couldn't verify");
+      });
+
+      $("done").addEventListener("click", () => api.finish());
+
+      refreshScreen();
+      // Keep the screen badge fresh while the user toggles the setting in System Settings.
+      setInterval(refreshScreen, 2500);
+    </script>
+  </body>
+</html>

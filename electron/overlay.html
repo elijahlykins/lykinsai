@@ -13,6 +13,8 @@
         --text: #f4f6fb;
         --muted: #aab2c2;
         --blue: #3b78ff;
+        --chat-width: 520px;
+        --bar-min-h: 48px;
       }
       * { box-sizing: border-box; }
       html, body {
@@ -24,17 +26,66 @@
         font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
         color: var(--text);
       }
-      /* One unified glass panel that fills the window. The desktop blur comes
-         from native macOS vibrancy; this just adds a faint tint + hairline edge. */
-      #wrap {
+      /* Two-column shell: an optional source/follow-up panel on the LEFT and the
+         chat column on the RIGHT. Both bottom-aligned; the chat hugs the right so
+         it never shifts when the side panel opens (window grows leftward). */
+      #shell {
+        position: relative;
         height: 100%;
+        width: 100%;
+        display: flex;
+        align-items: stretch;
+        justify-content: flex-start;
+      }
+      /* The chat column. Desktop blur comes from native macOS vibrancy; this just
+         adds a faint tint + hairline edge to read as a glass card. */
+      #wrap {
+        width: var(--chat-width);
+        flex: none;
         display: flex;
         flex-direction: column;
-        justify-content: flex-end;
         background: var(--tint);
         border: 1px solid var(--border);
         border-radius: 16px;
         overflow: hidden;
+      }
+      /* Right panel: sources / follow-ups. Absolutely positioned so toggling it
+         NEVER reflows the chat column. */
+      #side {
+        position: absolute;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        width: 300px;
+        box-sizing: border-box;
+        padding-left: 12px;
+        opacity: 0;
+        transform: translateX(6px);
+        pointer-events: none;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+      }
+      #side.show {
+        opacity: 1;
+        transform: none;
+        pointer-events: auto;
+      }
+      .side-inner {
+        box-sizing: border-box;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        background: var(--tint);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 12px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+      }
+      .side-inner::-webkit-scrollbar { width: 6px; }
+      .side-inner::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
       }
 
       /* Collapsible chat thread (only present once there's a turn). Each turn's
@@ -104,6 +155,19 @@
       .chat.collapsed .chat-a { display: none; }
       .chat.collapsed .suggest { display: none; }
 
+      /* Left panel sections. */
+      .side-sec { margin-bottom: 14px; }
+      .side-sec:last-child { margin-bottom: 0; }
+      .side-title {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .side-list { display: flex; flex-direction: column; gap: 6px; }
+
       /* Cluely-style suggestions: source links + follow-up questions. */
       .suggest { padding: 2px 16px 14px 38px; }
       .suggest-sec { margin-top: 10px; }
@@ -116,37 +180,90 @@
         margin-bottom: 6px;
       }
       .suggest-row { display: flex; flex-wrap: wrap; gap: 6px; }
-      .suggest-col { display: flex; flex-direction: column; gap: 6px; }
-      .suggest-link, .suggest-chip {
+      .suggest-col { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+
+      /* Source cards: squircle favicon tile + title/domain, stacked on the left
+         so they're easy to scan. */
+      .suggest-link {
+        -webkit-app-region: no-drag;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        width: 100%;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        font: inherit;
+        border-radius: 12px;
+        padding: 8px 11px;
+        cursor: pointer;
+        text-align: left;
+        transition: background 0.14s ease, border-color 0.14s ease, transform 0.1s ease;
+      }
+      .suggest-link:hover {
+        background: rgba(96, 165, 250, 0.12);
+        border-color: rgba(96, 165, 250, 0.38);
+      }
+      .suggest-link:active { transform: translateY(1px); }
+      .suggest-fav {
+        flex: none;
+        width: 34px;
+        height: 34px;
+        border-radius: 8px; /* square with rounded edges */
+        overflow: hidden;
+        display: grid;
+        place-items: center;
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .suggest-fav-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .suggest-fav.fallback { color: #60a5fa; }
+      .suggest-fav.fallback svg { width: 16px; height: 16px; }
+      .suggest-link-col {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        gap: 1px;
+      }
+      .suggest-link-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .suggest-link-domain {
+        font-size: 11.5px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* Follow-up chips. */
+      .suggest-chip {
         -webkit-app-region: no-drag;
         display: inline-flex;
         align-items: center;
+        justify-content: space-between;
         gap: 7px;
+        width: 100%;
         border: 1px solid rgba(255, 255, 255, 0.14);
         background: rgba(255, 255, 255, 0.05);
         color: var(--text);
         font: inherit;
         font-size: 12.5px;
         border-radius: 9px;
-        padding: 6px 10px;
+        padding: 8px 11px;
         cursor: pointer;
         text-align: left;
         transition: background 0.14s ease, border-color 0.14s ease;
       }
-      .suggest-link:hover, .suggest-chip:hover {
+      .suggest-chip:hover {
         background: rgba(96, 165, 250, 0.14);
         border-color: rgba(96, 165, 250, 0.4);
       }
-      .suggest-link { max-width: 100%; }
-      .suggest-ico { display: inline-flex; flex: none; color: #60a5fa; }
-      .suggest-ico svg { width: 14px; height: 14px; }
-      .suggest-link-text {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        max-width: 220px;
-      }
-      .suggest-chip { justify-content: space-between; width: 100%; }
       .suggest-chip-ico { display: inline-flex; flex: none; color: var(--muted); }
       .suggest-chip-ico svg { width: 13px; height: 13px; }
       .suggest-chip:hover .suggest-chip-ico { color: #60a5fa; }
@@ -242,7 +359,7 @@
         align-items: center;
         justify-content: flex-start;
         gap: 8px;
-        height: 22px;
+        height: 20px;
         padding: 0 12px;
         cursor: grab;
       }
@@ -255,39 +372,182 @@
         transition: background 0.15s ease;
       }
       .titlebar:hover .grip { background: rgba(255, 255, 255, 0.32); }
-      /* 3-dot "more" button in the title strip (not part of the drag region). */
-      .more-btn {
-        width: 22px;
-        height: 18px;
-        border-radius: 6px;
+
+      /* Composer — textarea row + bottom toolbar (matches main app layout). */
+      .composer {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px 12px 8px;
+        flex: none;
+      }
+      .composer-field-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+      }
+      /* Side-panel view picker — toolbar trigger + inline drawer (like More). */
+      .side-picker-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 30px;
+        max-width: 9rem;
+        min-width: 0;
+        flex: none;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.75);
+        background: transparent;
+        border: none;
+        border-radius: 10px;
+        padding: 0 8px 0 10px;
+        cursor: pointer;
+        transition: color 0.15s ease, background 0.15s ease;
+        -webkit-app-region: no-drag;
+      }
+      .side-picker-btn:hover,
+      .side-picker-btn.active {
+        color: #f4f6fb;
+        background: rgba(96, 165, 250, 0.14);
+      }
+      #side-picker-label {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: left;
+      }
+      .panel-drawer {
+        display: none;
+        flex-direction: column;
+        overflow-x: hidden;
+        overflow-y: auto;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        margin-top: 4px;
+        padding-top: 4px;
+        max-height: 220px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+      }
+      .panel-drawer::-webkit-scrollbar { width: 6px; }
+      .panel-drawer::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+      }
+      .composer.panel-open .panel-drawer { display: flex; }
+      .panel-menu { display: flex; flex-direction: column; gap: 2px; }
+      .panel-menu-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        width: 100%;
+        text-align: left;
+        padding: 9px 10px;
+        border-radius: 10px;
+        background: transparent;
+        border: none;
+        color: var(--text);
+        font: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.12s ease;
+      }
+      .panel-menu-item:hover { background: rgba(255, 255, 255, 0.1); }
+      .panel-menu-item.active { background: rgba(96, 165, 250, 0.12); color: #93c5fd; }
+      .panel-menu-item.empty { color: rgba(255, 255, 255, 0.42); }
+      .panel-menu-item .count {
+        font-size: 11px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.38);
+        flex: none;
+      }
+      .side-empty {
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+        padding: 20px 10px;
+      }
+      .side-text-item {
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--text);
+        padding: 8px 10px;
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .side-summary {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--text);
+        padding: 8px 10px;
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        white-space: pre-wrap;
+      }
+      .bar-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding-top: 0;
+        -webkit-app-region: no-drag;
+      }
+      .toolbar-spacer { flex: 1; min-width: 4px; }
+      .bar-btn {
+        -webkit-app-region: no-drag;
+        flex: none;
+        width: 30px;
+        height: 30px;
+        border-radius: 9px;
         display: grid;
         place-items: center;
         cursor: pointer;
-        color: rgba(255, 255, 255, 0.5);
+        color: rgba(255, 255, 255, 0.72);
         background: transparent;
-        border: none;
+        border: 1px solid transparent;
         padding: 0;
-        transition: color 0.15s ease, background 0.15s ease;
+        transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
       }
-      .more-btn:hover, .more-btn.open { color: #fff; background: rgba(255, 255, 255, 0.1); }
-      .more-btn svg { width: 16px; height: 16px; }
+      .bar-btn:hover:not(:disabled) {
+        color: #f4f6fb;
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .bar-btn svg { width: 14px; height: 14px; }
+      .bar-btn.more-btn.active { color: #60a5fa; background: rgba(96, 165, 250, 0.14); }
 
-      /* "Hamburger" panel — a detached floating glass card (kept in the layout
-         flow so the window grows to fit it; styled to read as a popover panel,
-         like the app's + menu). */
-      .menu {
+      /* Inline hamburger drawer — expands inside the composer, never leaves the bar. */
+      .more-drawer {
         display: none;
         flex-direction: column;
-        margin: 2px 8px 6px;
-        padding: 4px;
-        gap: 2px;
-        /* No card: blend straight into the panel's glass background so it reads
-           as a clear section, not a floating popover. */
-        background: transparent;
-        border: none;
-        box-shadow: none;
+        overflow-x: hidden;
+        overflow-y: auto;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        margin-top: 4px;
+        padding-top: 4px;
+        max-height: 220px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
       }
-      .menu.show { display: flex; }
+      .more-drawer::-webkit-scrollbar { width: 6px; }
+      .more-drawer::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+      }
+      .composer.more-open .more-drawer { display: flex; }
+
+      /* More-menu items inside the inline drawer. */
+      .menu {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        flex: none;
+      }
       .menu-item {
         display: flex;
         align-items: center;
@@ -306,7 +566,187 @@
       }
       .menu-item:hover { background: rgba(255, 255, 255, 0.1); }
       .menu-item svg { width: 16px; height: 16px; color: var(--muted); flex: none; }
+      /* Active states for the voice / live-notes items moved into this menu. */
+      .menu-item.voice-active { color: #60a5fa; background: rgba(96, 165, 250, 0.12); }
+      .menu-item.voice-active svg { color: #60a5fa; }
+      .menu-item.listening { color: #f87171; background: rgba(248, 113, 113, 0.12); }
+      .menu-item.listening svg { color: #f87171; }
       .menu-sep { height: 1px; margin: 4px 6px; background: rgba(255, 255, 255, 0.1); }
+
+      /* Browser control confirmation — shown after planning, before execution. */
+      .browser-act {
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        margin-top: 4px;
+        padding-top: 8px;
+      }
+      .composer.browser-act-open .browser-act { display: flex; }
+      .browser-act-head {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .browser-act-steps {
+        margin: 0;
+        padding: 0 0 0 18px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.82);
+      }
+      .browser-act-steps li { margin: 2px 0; }
+      .browser-act-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+      .browser-act-actions button {
+        -webkit-app-region: no-drag;
+        border: none;
+        border-radius: 8px;
+        padding: 6px 12px;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #browser-act-cancel {
+        color: rgba(255, 255, 255, 0.72);
+        background: rgba(255, 255, 255, 0.06);
+      }
+      #browser-act-run {
+        color: #0b0b0f;
+        background: #60a5fa;
+      }
+      #browser-act-run:disabled { opacity: 0.5; cursor: default; }
+
+      /* Past chats sub-view inside the inline drawer. */
+      .history-panel {
+        display: none;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .history-panel.show { display: flex; }
+      .history-head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 6px 6px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .history-head-label {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .history-head .spacer { flex: 1; }
+      .history-icon-btn {
+        -webkit-app-region: no-drag;
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.55);
+        cursor: pointer;
+        transition: background 0.12s ease, color 0.12s ease;
+      }
+      .history-icon-btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--text);
+      }
+      .history-icon-btn svg { width: 14px; height: 14px; }
+      .history-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 4px 2px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+      }
+      .history-list::-webkit-scrollbar { width: 6px; }
+      .history-list::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+      }
+      .history-group {
+        padding: 6px 10px 2px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .history-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        text-align: left;
+        padding: 4px 10px;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text);
+        cursor: pointer;
+        font: inherit;
+        font-size: 11px;
+        transition: background 0.12s ease;
+      }
+      .history-item:hover { background: rgba(255, 255, 255, 0.06); }
+      .history-item.active { background: rgba(255, 255, 255, 0.08); }
+      .history-item .hi-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        flex: none;
+        background: rgba(255, 255, 255, 0.28);
+      }
+      .history-item.active .hi-dot { background: rgba(255, 255, 255, 0.75); }
+      .history-item .hi-title {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 400;
+      }
+      .history-empty {
+        padding: 14px 12px;
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+      }
+      .history-signin {
+        padding: 10px 12px 14px;
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+      }
+      .history-signin button {
+        margin-top: 6px;
+        font: inherit;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--muted);
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .history-signin button:hover { color: var(--text); }
 
       /* Drag-and-drop highlight when files hover over the panel. */
       #wrap.dropping { box-shadow: inset 0 0 0 2px rgba(96, 165, 250, 0.65); }
@@ -371,18 +811,11 @@
       .chip .chip-x:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
       .chip .chip-x svg { width: 12px; height: 12px; }
 
-      /* The input row, part of the same glass panel. */
-      .bar {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 6px 12px 10px 16px;
-      }
-      /* LYKN mark as a glowing blue edge (outline only, transparent fill). Also
-         doubles as the "collapse" button — click it to shrink to the bubble. */
+      /* LYKN mark — top of the field row, aligned with the first line of text. */
       .dot {
         width: 20px; height: 20px;
         flex: none;
+        margin-top: 5px;
         color: var(--blue);
         cursor: pointer;
         -webkit-app-region: no-drag;
@@ -413,7 +846,7 @@
       #bubble:active { transform: scale(0.96); }
       #bubble svg { width: 28px; height: 28px; }
       #bubble svg path { fill: none; stroke: currentColor; }
-      body.collapsed #wrap { display: none; }
+      body.collapsed #shell { display: none; }
       body.collapsed #bubble { display: flex; }
       .dot path {
         fill: none;
@@ -422,17 +855,33 @@
       .dot.busy { animation: pulse 1s ease-in-out infinite; }
       @keyframes pulse { 0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.5; transform:scale(.86)} }
 
-      input {
+      /* The prompt field is a textarea so it grows downward as the user types,
+         like the main app's chat bar (Enter sends, Shift+Enter = newline). */
+      #ask {
         -webkit-app-region: no-drag;
         flex: 1;
         background: transparent;
         border: none;
         outline: none;
         color: var(--text);
-        font-size: 15px;
-        padding: 6px 2px;
+        font-size: 12px;
+        font-family: inherit;
+        line-height: 16px;
+        padding: 6px 2px 2px;
+        resize: none;
+        height: var(--bar-min-h);
+        min-height: var(--bar-min-h);
+        max-height: 180px;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
       }
-      input::placeholder { color: var(--muted); }
+      #ask::placeholder { color: var(--muted); }
+      #ask::-webkit-scrollbar { width: 6px; }
+      #ask::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+      }
 
       .hint {
         -webkit-app-region: no-drag;
@@ -448,23 +897,8 @@
         padding: 1px 6px;
         font-size: 11px;
       }
-      /* Plain icon mic button for dictation (mirrors the app's toolbar mic). */
-      .mic {
-        -webkit-app-region: no-drag;
-        flex: none;
-        width: 36px; height: 36px;
-        border-radius: 10px;
-        display: grid;
-        place-items: center;
-        cursor: pointer;
-        color: #aab2c2;
-        background: transparent;
-        border: 1px solid transparent;
-        transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-      }
-      .mic:hover:not(:disabled) { color: #f4f6fb; background: rgba(255, 255, 255, 0.06); }
+      /* Plain icon mic in the bottom toolbar. */
       .mic:disabled { opacity: 0.45; cursor: not-allowed; }
-      .mic svg { width: 16px; height: 16px; }
       .mic .ico-mic-spin { display: none; animation: spin 0.8s linear infinite; }
       .mic.recording {
         color: #60a5fa;
@@ -485,15 +919,8 @@
         50% { box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.18); }
       }
 
-      /* Glass send button — translucent, blurred, no grey fill. */
+      /* Compact glass send — bottom toolbar, aligned with mic/more. */
       .send {
-        -webkit-app-region: no-drag;
-        flex: none;
-        width: 36px; height: 36px;
-        border-radius: 10px;
-        display: grid;
-        place-items: center;
-        cursor: pointer;
         color: #60a5fa;
         background: rgba(255, 255, 255, 0.06);
         border: 1px solid rgba(255, 255, 255, 0.14);
@@ -521,7 +948,6 @@
           0 0 10px rgba(59, 130, 246, 0.14);
       }
       .send:disabled:not(.busy) { opacity: 0.4; cursor: not-allowed; }
-      .send svg { width: 16px; height: 16px; }
       .send .ico-spin { display: none; animation: spin 0.8s linear infinite; }
       .send.busy .ico-send { display: none; }
       .send.busy .ico-spin { display: block; }
@@ -672,33 +1098,13 @@
         <path d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
       </svg>
     </button>
-    <div id="wrap">
+    <div id="shell">
+      <aside id="side">
+        <div class="side-inner" id="side-inner"></div>
+      </aside>
+      <div id="wrap">
       <div class="titlebar" id="drag" title="Drag to move">
         <span class="grip"></span>
-        <button class="more-btn" id="more" title="More" aria-label="More">
-          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <circle cx="5" cy="12" r="1.6" />
-            <circle cx="12" cy="12" r="1.6" />
-            <circle cx="19" cy="12" r="1.6" />
-          </svg>
-        </button>
-      </div>
-      <div class="menu" id="menu">
-        <button class="menu-item" id="menu-attach" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-          </svg>
-          Add photos &amp; files
-        </button>
-        <div class="menu-sep"></div>
-        <button class="menu-item" id="menu-open" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M15 3h6v6" />
-            <path d="M10 14 21 3" />
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-          </svg>
-          Open LYKN app
-        </button>
       </div>
       <div id="thread"></div>
       <div id="live">
@@ -732,46 +1138,138 @@
       </div>
       <div class="drop-hint">Drop files to attach…</div>
       <div class="attachments" id="attachments"></div>
-      <div class="bar">
-        <svg class="dot" id="dot" viewBox="0 0 204.29 204.29" fill="none" aria-hidden="true">
-          <path d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
-        </svg>
-        <input id="ask" type="text" placeholder="Ask LYKN about your screen…" autocomplete="off" />
-        <span class="hint"><kbd>↵</kbd> ask · <kbd>esc</kbd> close</span>
-        <button class="mic" id="listen" title="Listen (live notes)" aria-label="Listen">
-          <svg class="ico-listen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+      <div class="composer" id="composer">
+        <div class="composer-field-row">
+          <svg class="dot" id="dot" viewBox="0 0 204.29 204.29" fill="none" aria-hidden="true">
+            <path d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
           </svg>
-        </button>
-        <button class="mic" id="voice" title="Voice mode" aria-label="Voice mode">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2 10v3" />
-            <path d="M6 6v11" />
-            <path d="M10 3v18" />
-            <path d="M14 8v7" />
-            <path d="M18 5v13" />
-            <path d="M22 10v3" />
-          </svg>
-        </button>
-        <button class="mic" id="mic" title="Dictate" aria-label="Dictate">
-          <svg class="ico-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-            <line x1="12" x2="12" y1="19" y2="22" />
-          </svg>
-          <svg class="ico-mic-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-          </svg>
-        </button>
-        <button class="send" id="send" title="Send" aria-label="Send">
-          <svg class="ico-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m5 12 7-7 7 7" />
-            <path d="M12 19V5" />
-          </svg>
-          <svg class="ico-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-          </svg>
-        </button>
+          <textarea id="ask" rows="1" placeholder="Ask LYKN about your screen…" autocomplete="off"></textarea>
+        </div>
+        <div class="more-drawer" id="more-drawer">
+          <div class="menu" id="menu">
+            <button class="menu-item" id="menu-new" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
+              </svg>
+              New chat
+            </button>
+            <button class="menu-item" id="menu-history" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+                <path d="M12 7v5l4 2" />
+              </svg>
+              Past chats
+            </button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" id="voice" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2 10v3" />
+                <path d="M6 6v11" />
+                <path d="M10 3v18" />
+                <path d="M14 8v7" />
+                <path d="M18 5v13" />
+                <path d="M22 10v3" />
+              </svg>
+              <span id="voice-label">Voice mode</span>
+            </button>
+            <button class="menu-item" id="listen" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+              </svg>
+              <span id="listen-label">Live meeting notes</span>
+            </button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" id="menu-attach" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              Add photos &amp; files
+            </button>
+            <button class="menu-item" id="menu-browser-act" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3v3" />
+                <path d="M12 15v6" />
+                <path d="M3 12h3" />
+                <path d="M15 12h6" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+              Control this page
+            </button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" id="menu-open" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 3h6v6" />
+                <path d="M10 14 21 3" />
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              </svg>
+              Open LYKN app
+            </button>
+          </div>
+          <div class="history-panel" id="history-panel">
+            <div class="history-head">
+              <button type="button" id="history-back" class="history-icon-btn" title="Back" aria-label="Back">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+              </button>
+              <span class="history-head-label">Chats</span>
+              <span class="spacer"></span>
+              <button type="button" id="history-new" class="history-icon-btn" title="New chat" aria-label="New chat">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                  <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
+                </svg>
+              </button>
+            </div>
+            <div class="history-list" id="history-list"></div>
+          </div>
+        </div>
+        <div class="panel-drawer" id="panel-drawer">
+          <div class="panel-menu" id="panel-menu" role="listbox"></div>
+        </div>
+        <div class="browser-act" id="browser-act" hidden>
+          <div class="browser-act-head">Browser control</div>
+          <ol class="browser-act-steps" id="browser-act-steps"></ol>
+          <div class="browser-act-actions">
+            <button type="button" id="browser-act-cancel">Cancel</button>
+            <button type="button" id="browser-act-run">Run</button>
+          </div>
+        </div>
+        <div class="bar-toolbar">
+          <button type="button" class="side-picker-btn" id="side-picker-btn" aria-haspopup="listbox" aria-expanded="false">
+            <span id="side-picker-label">None</span>
+          </button>
+          <span class="toolbar-spacer" aria-hidden="true"></span>
+          <button class="bar-btn more-btn" id="more" title="More" aria-label="More">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <circle cx="5" cy="12" r="1.6" />
+              <circle cx="12" cy="12" r="1.6" />
+              <circle cx="19" cy="12" r="1.6" />
+            </svg>
+          </button>
+          <button class="bar-btn mic" id="mic" title="Dictate" aria-label="Dictate">
+            <svg class="ico-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" x2="12" y1="19" y2="22" />
+            </svg>
+            <svg class="ico-mic-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+          </button>
+          <button class="bar-btn send" id="send" title="Send" aria-label="Send">
+            <svg class="ico-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m5 12 7-7 7 7" />
+              <path d="M12 19V5" />
+            </svg>
+            <svg class="ico-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+          </button>
+        </div>
+      </div>
       </div>
     </div>
     <script src="vendor/elevenlabs-client.iife.js"></script>

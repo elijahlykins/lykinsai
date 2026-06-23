@@ -139,6 +139,14 @@ export default function ProjectsPage() {
                         Deactivated
                       </span>
                     )}
+                    {p.isShared && (
+                      <span
+                        className="text-[0.625rem] px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                        title={`Shared with you · ${p.role} access`}
+                      >
+                        Shared
+                      </span>
+                    )}
                   </div>
                   {p.description ? (
                     <p className="text-xs text-black/45 dark:text-white/45 mt-0.5 truncate">

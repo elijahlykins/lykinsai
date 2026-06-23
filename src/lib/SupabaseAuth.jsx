@@ -6,6 +6,8 @@ import {
   startVaultDescriptionBackfill,
   resetVaultDescriptionBackfill,
 } from '@/lib/vault/backfillDescriptions';
+import { acceptProjectInvites } from '@/lib/projectMembers';
+import { PROJECTS_CHANGED_EVENT } from '@/lib/synthesis/projectLiveSync';
 
 // Lazily fill in missing vault descriptions once the user is signed in, so the
 // assistant's vault search has a description on every item to match against.
@@ -18,6 +20,23 @@ function kickoffVaultBackfill() {
       /* fire-and-forget */
     }
   }, 8000);
+}
+
+// Claim any project invites sent to this user's email (lykn_project_members,
+// 109). Runs once per fresh sign-in; if any pending invites convert to
+// membership, nudge the projects views to refetch so the shared project shows.
+function kickoffInviteAcceptance(userId) {
+  if (!userId) return;
+  setTimeout(async () => {
+    try {
+      const claimed = await acceptProjectInvites(userId);
+      if (claimed > 0 && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(PROJECTS_CHANGED_EVENT));
+      }
+    } catch {
+      /* fire-and-forget */
+    }
+  }, 2000);
 }
 
 export function SupabaseAuthProvider({ children }) {
@@ -76,7 +95,10 @@ export function SupabaseAuthProvider({ children }) {
           userRef.current = nextUser;
           setUser(nextUser);
           setLoading(false);
-          if (nextUser) kickoffVaultBackfill();
+          if (nextUser) {
+            kickoffVaultBackfill();
+            kickoffInviteAcceptance(nextUser.id);
+          }
           return;
         }
 
@@ -88,7 +110,10 @@ export function SupabaseAuthProvider({ children }) {
           const wasSignedOut = !userRef.current;
           userRef.current = session.user;
           setUser(session.user);
-          if (wasSignedOut) kickoffVaultBackfill();
+          if (wasSignedOut) {
+            kickoffVaultBackfill();
+            kickoffInviteAcceptance(session.user.id);
+          }
           return;
         }
 

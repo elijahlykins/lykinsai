@@ -64,10 +64,13 @@ export async function listProjectTodos(
 ): Promise<ProjectTodo[]> {
   if (!userId || !projectId) return [];
   try {
+    // No user_id filter: on a shared project, tasks filed by other members
+    // belong to the project, not just to us. RLS (110) scopes what we can read
+    // to our own rows + the shared projects we're a member of, so filtering by
+    // project_id alone is both correct and safe.
     const { data, error } = await supabase
       .from("lykn_todos")
       .select(TODO_COLS)
-      .eq("user_id", userId)
       .eq("project_id", projectId)
       .in("status", ["open", "completed"])
       .order("created_at", { ascending: false });
@@ -131,8 +134,7 @@ export async function setTodoStatus(
         completed_at: status === "completed" ? new Date().toISOString() : null,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", todoId)
-      .eq("user_id", userId);
+      .eq("id", todoId);
     if (error) throw error;
     return true;
   } catch {
@@ -150,8 +152,7 @@ export async function setTodoPriority(
     const { error } = await supabase
       .from("lykn_todos")
       .update({ priority, updated_at: new Date().toISOString() })
-      .eq("id", todoId)
-      .eq("user_id", userId);
+      .eq("id", todoId);
     if (error) throw error;
     return true;
   } catch {
@@ -174,8 +175,7 @@ export async function setTodoDue(
         due_at_text: dueText,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", todoId)
-      .eq("user_id", userId);
+      .eq("id", todoId);
     if (error) throw error;
     return true;
   } catch {
@@ -192,8 +192,7 @@ export async function deleteProjectTodo(
     const { error } = await supabase
       .from("lykn_todos")
       .delete()
-      .eq("id", todoId)
-      .eq("user_id", userId);
+      .eq("id", todoId);
     if (error) throw error;
     return true;
   } catch {
@@ -249,10 +248,11 @@ export async function listProjectEvents(
 ): Promise<ProjectEvent[]> {
   if (!userId || !projectId) return [];
   try {
+    // No user_id filter: shared-project events belong to the project (see
+    // listProjectTodos). RLS (110) keeps us to rows we're allowed to read.
     const { data, error } = await supabase
       .from("lykn_events")
       .select(EVENT_COLS)
-      .eq("user_id", userId)
       .eq("project_id", projectId)
       .neq("status", "cancelled")
       .order("starts_at", { ascending: true });
@@ -332,8 +332,7 @@ export async function updateProjectEvent(
     const { error } = await supabase
       .from("lykn_events")
       .update(patch)
-      .eq("id", eventId)
-      .eq("user_id", userId);
+      .eq("id", eventId);
     if (error) throw error;
     return true;
   } catch {
@@ -350,8 +349,7 @@ export async function deleteProjectEvent(
     const { error } = await supabase
       .from("lykn_events")
       .delete()
-      .eq("id", eventId)
-      .eq("user_id", userId);
+      .eq("id", eventId);
     if (error) throw error;
     return true;
   } catch {

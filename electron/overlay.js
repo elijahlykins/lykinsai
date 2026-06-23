@@ -14,12 +14,14 @@ let currentAnswerEl = null;
 // The turn's container + question text, used to attach suggestions on done.
 let currentChatEl = null;
 let currentQuestion = "";
+let currentPageSource = null;
 // Whether the current turn has started receiving answer text (vs still showing
 // the thinking/tool spinner).
 let currentHasText = false;
 // Lightweight conversation memory so follow-ups ("what about the error?") have
-// context. Capped on the main side too.
+// context. Capped on the main side too. Persisted locally as ⌘L sessions.
 const history = [];
+let currentSessionId = null;
 
 const CHEVRON_SVG =
   '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
@@ -132,102 +134,435 @@ const ARROW_ICON_SVG =
   'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M7 7h10v10" /><path d="M7 17 17 7" /></svg>';
 
-// After an answer, fetch + render Cluely-style suggestions: real source links
-// (opened externally) and tappable follow-up questions (re-ask on click). The
-// chat element is captured so suggestions attach to the right turn even after
-// the next turn starts.
-async function requestSuggestions(chatEl, question, answer) {
-  if (!chatEl || !answer || answer.trim().length < 20) return;
-  let data;
-  try {
-    data = await window.lyknOverlay.suggest(question, answer);
-  } catch (_) {
-    return;
+const sideEl = document.getElementById("side");
+const sideInnerEl = document.getElementById("side-inner");
+const sidePickerBtnEl = document.getElementById("side-picker-btn");
+const panelMenuEl = document.getElementById("panel-menu");
+const sidePickerLabelEl = document.getElementById("side-picker-label");
+
+const SIDE_VIEW_OPTIONS = [
+  { id: "", label: "None" },
+  { id: "all", label: "All" },
+  { id: "sources", label: "Sources" },
+  { id: "tasks", label: "Tasks" },
+  { id: "followups", label: "Follow-ups" },
+  { id: "notes", label: "Notes" },
+];
+
+let sideContext = null;
+let lastAnswerText = "";
+let liveNotesSnapshot = { keyPoints: [], actionItems: [], summary: "" };
+let sidePanelView = "";
+let panelPickerOpen = false;
+
+function dedupeStrings(items) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of items || []) {
+    const s = String(raw || "").trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
   }
-  if (!data) return;
-  const links = (Array.isArray(data.links) ? data.links : []).filter((l) => l && l.url);
-  const followups = (Array.isArray(data.followups) ? data.followups : []).filter(Boolean);
-  if (!links.length && !followups.length) return;
+  return out;
+}
 
-  const prev = chatEl.querySelector(".suggest");
-  if (prev) prev.remove();
-  const box = document.createElement("div");
-  box.className = "suggest";
-
-  if (links.length) {
-    const sec = document.createElement("div");
-    sec.className = "suggest-sec";
-    const lab = document.createElement("div");
-    lab.className = "suggest-label";
-    lab.textContent = "Sources";
-    const row = document.createElement("div");
-    row.className = "suggest-row";
-    for (const l of links.slice(0, 4)) {
-      const a = document.createElement("button");
-      a.className = "suggest-link";
-      a.type = "button";
-      a.title = l.url;
-      const ico = document.createElement("span");
-      ico.className = "suggest-ico";
-      ico.innerHTML = LINK_ICON_SVG;
-      const span = document.createElement("span");
-      span.className = "suggest-link-text";
-      span.textContent = l.title || l.url;
-      a.append(ico, span);
-      a.addEventListener("click", () => window.lyknOverlay.openUrl(l.url));
-      row.appendChild(a);
+function extractTasksFromAnswer(text) {
+  const lines = String(text || "").split("\n");
+  const tasks = [];
+  let inBlock = false;
+  for (const line of lines) {
+    const t = line.trim();
+    if (/^#+\s*(action|task|todo)/i.test(t) || /^action items?:/i.test(t)) {
+      inBlock = true;
+      continue;
     }
-    sec.append(lab, row);
-    box.appendChild(sec);
-  }
-
-  if (followups.length) {
-    const sec = document.createElement("div");
-    sec.className = "suggest-sec";
-    const lab = document.createElement("div");
-    lab.className = "suggest-label";
-    lab.textContent = "Follow-ups";
-    const col = document.createElement("div");
-    col.className = "suggest-col";
-    for (const f of followups.slice(0, 3)) {
-      const b = document.createElement("button");
-      b.className = "suggest-chip";
-      b.type = "button";
-      const span = document.createElement("span");
-      span.textContent = f;
-      const ico = document.createElement("span");
-      ico.className = "suggest-chip-ico";
-      ico.innerHTML = ARROW_ICON_SVG;
-      b.append(span, ico);
-      b.addEventListener("click", () => {
-        askEl.value = f;
-        ask();
-      });
-      col.appendChild(b);
+    if (inBlock && /^#+\s/.test(t) && !/^#+\s*(action|task|todo)/i.test(t)) inBlock = false;
+    const box = t.match(/^[-*]\s*\[[ xX]?\]\s*(.+)/);
+    if (box) {
+      tasks.push(box[1].trim());
+      continue;
     }
-    sec.append(lab, col);
-    box.appendChild(sec);
+    if (inBlock) {
+      const bullet = t.match(/^[-*•]\s+(.+)/);
+      if (bullet) tasks.push(bullet[1].trim());
+    }
   }
+  return tasks;
+}
 
-  chatEl.appendChild(box);
-  threadEl.scrollTop = threadEl.scrollHeight;
+function extractNotesFromAnswer(text) {
+  const lines = String(text || "").split("\n");
+  const notes = [];
+  let inBlock = false;
+  for (const line of lines) {
+    const t = line.trim();
+    if (/^#+\s*(key point|summary|note|highlight)/i.test(t) || /^key points?:/i.test(t)) {
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && /^#+\s/.test(t) && !/^#+\s*(key point|summary|note|highlight)/i.test(t)) inBlock = false;
+    const bullet = t.match(/^[-*•]\s+(?!\[[ xX]?\])(.+)/);
+    if (inBlock && bullet) notes.push(bullet[1].trim());
+  }
+  return notes;
+}
+
+function buildSideData() {
+  const tasks = dedupeStrings([
+    ...extractTasksFromAnswer(lastAnswerText),
+    ...(liveNotesSnapshot.actionItems || []),
+  ]);
+  const notes = dedupeStrings([
+    ...(liveNotesSnapshot.keyPoints || []),
+    ...extractNotesFromAnswer(lastAnswerText),
+  ]);
+  return {
+    pageSource: sideContext && sideContext.pageSource ? sideContext.pageSource : null,
+    links: (sideContext && sideContext.links) || [],
+    followups: (sideContext && sideContext.followups) || [],
+    tasks,
+    notes,
+    summary: String(liveNotesSnapshot.summary || "").trim(),
+  };
+}
+
+function sideViewCount(viewId, data) {
+  if (!data) return 0;
+  switch (viewId) {
+    case "sources":
+      return (data.pageSource && data.pageSource.url ? 1 : 0) + data.links.length;
+    case "tasks":
+      return data.tasks.length;
+    case "followups":
+      return data.followups.length;
+    case "notes":
+      return data.notes.length + (data.summary ? 1 : 0);
+    case "all":
+      return (
+        sideViewCount("sources", data) +
+        sideViewCount("tasks", data) +
+        sideViewCount("followups", data) +
+        sideViewCount("notes", data)
+      );
+    default:
+      return 0;
+  }
+}
+
+function updateSidePickerLabel() {
+  const opt = SIDE_VIEW_OPTIONS.find((o) => o.id === sidePanelView);
+  sidePickerLabelEl.textContent = opt ? opt.label : "None";
+}
+
+function setPanelPickerOpen(open) {
+  panelPickerOpen = open;
+  sidePickerBtnEl.classList.toggle("active", open);
+  sidePickerBtnEl.setAttribute("aria-expanded", open ? "true" : "false");
+  composerEl.classList.toggle("panel-open", open);
+  if (open) {
+    if (moreUserOpen) setMenuOpen(false);
+    renderPanelMenu();
+  }
   reportHeight();
 }
 
+function closeSidePickerMenu() {
+  setPanelPickerOpen(false);
+}
+
+function renderPanelMenu() {
+  const data = buildSideData();
+  panelMenuEl.innerHTML = "";
+  for (const opt of SIDE_VIEW_OPTIONS) {
+    const count = opt.id ? sideViewCount(opt.id, data) : 0;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className =
+      "panel-menu-item" +
+      (opt.id === sidePanelView ? " active" : "") +
+      (opt.id && !count ? " empty" : "");
+    btn.setAttribute("role", "option");
+    btn.innerHTML = `<span>${escapeHtml(opt.label)}</span>` +
+      (opt.id && opt.id !== "all" ? `<span class="count">${count || "—"}</span>` : "");
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setSidePanelView(opt.id);
+      setPanelPickerOpen(false);
+    });
+    panelMenuEl.appendChild(btn);
+  }
+}
+
+function syncSidePickerState() {
+  updateSidePickerLabel();
+}
+
+let sideCloseTimer = null;
+function showSide(open) {
+  if (open && !sidePanelView) return;
+  if (sideCloseTimer) {
+    clearTimeout(sideCloseTimer);
+    sideCloseTimer = null;
+  }
+  if (open) {
+    sideEl.classList.add("show");
+    reportHeight();
+  } else {
+    sideEl.classList.remove("show");
+    sideCloseTimer = setTimeout(() => {
+      sideCloseTimer = null;
+      reportHeight();
+    }, 160);
+  }
+}
+
+function clearSide() {
+  sideInnerEl.innerHTML = "";
+  sideContext = null;
+  lastAnswerText = "";
+  sidePanelView = "";
+  closeSidePickerMenu();
+  updateSidePickerLabel();
+  showSide(false);
+  syncSidePickerState();
+}
+
+function setSidePanelView(viewId) {
+  sidePanelView = viewId || "";
+  updateSidePickerLabel();
+  if (!sidePanelView) {
+    showSide(false);
+    return;
+  }
+  renderSidePanel();
+  showSide(true);
+}
+
+sidePickerBtnEl.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setPanelPickerOpen(!panelPickerOpen);
+});
+
+document.addEventListener("click", (e) => {
+  if (panelPickerOpen && !e.target.closest("#composer")) setPanelPickerOpen(false);
+});
+
+function sideTextItem(text) {
+  const el = document.createElement("div");
+  el.className = "side-text-item";
+  el.textContent = text;
+  return el;
+}
+
+function appendSourcesSection(data, target) {
+  let added = false;
+  if (data.pageSource && data.pageSource.url) {
+    const { sec, list } = sideSection("Read this page");
+    list.appendChild(sourceCard(data.pageSource));
+    target.appendChild(sec);
+    added = true;
+  }
+  if (data.links.length) {
+    const { sec, list } = sideSection("Sources");
+    for (const l of data.links.slice(0, 5)) list.appendChild(sourceCard(l));
+    target.appendChild(sec);
+    added = true;
+  }
+  return added;
+}
+
+function appendTasksSection(data, target) {
+  if (!data.tasks.length) return false;
+  const { sec, list } = sideSection("Tasks");
+  for (const t of data.tasks.slice(0, 8)) list.appendChild(sideTextItem(t));
+  target.appendChild(sec);
+  return true;
+}
+
+function appendFollowupsSection(data, target) {
+  if (!data.followups.length) return false;
+  const { sec, list } = sideSection("Follow-ups");
+  for (const f of data.followups.slice(0, 4)) {
+    list.appendChild(
+      optionButton(f, ARROW_ICON_SVG, () => {
+        askEl.value = f;
+        ask();
+      }),
+    );
+  }
+  target.appendChild(sec);
+  return true;
+}
+
+function appendNotesSection(data, target) {
+  let added = false;
+  if (data.summary) {
+    const { sec, list } = sideSection("Summary");
+    const el = document.createElement("div");
+    el.className = "side-summary";
+    el.textContent = data.summary;
+    list.appendChild(el);
+    target.appendChild(sec);
+    added = true;
+  }
+  if (data.notes.length) {
+    const { sec, list } = sideSection("Notes");
+    for (const n of data.notes.slice(0, 8)) list.appendChild(sideTextItem(n));
+    target.appendChild(sec);
+    added = true;
+  }
+  return added;
+}
+
+function renderSidePanel() {
+  const data = buildSideData();
+  sideInnerEl.innerHTML = "";
+  const views =
+    sidePanelView === "all"
+      ? ["sources", "tasks", "followups", "notes"]
+      : [sidePanelView];
+  let added = false;
+  for (const view of views) {
+    switch (view) {
+      case "sources":
+        added = appendSourcesSection(data, sideInnerEl) || added;
+        break;
+      case "tasks":
+        added = appendTasksSection(data, sideInnerEl) || added;
+        break;
+      case "followups":
+        added = appendFollowupsSection(data, sideInnerEl) || added;
+        break;
+      case "notes":
+        added = appendNotesSection(data, sideInnerEl) || added;
+        break;
+      default:
+        break;
+    }
+  }
+  if (!added) {
+    const empty = document.createElement("div");
+    empty.className = "side-empty";
+    empty.textContent = "Nothing here yet.";
+    sideInnerEl.appendChild(empty);
+  }
+  reportHeight();
+}
+
+function refreshSidePanelFromLiveNotes() {
+  syncSidePickerState();
+  if (sidePanelView) renderSidePanel();
+}
+
+// Build a labeled section with a vertical list of items.
+function sideSection(title) {
+  const sec = document.createElement("div");
+  sec.className = "side-sec";
+  const lab = document.createElement("div");
+  lab.className = "side-title";
+  lab.textContent = title;
+  const list = document.createElement("div");
+  list.className = "side-list";
+  sec.append(lab, list);
+  return { sec, list };
+}
+
+function sourceCard(link) {
+  let host = "";
+  try {
+    host = new URL(link.url).hostname.replace(/^www\./, "");
+  } catch (_) {
+    host = "";
+  }
+  const a = document.createElement("button");
+  a.className = "suggest-link";
+  a.type = "button";
+  a.title = link.url;
+
+  const fav = document.createElement("span");
+  fav.className = "suggest-fav";
+  if (host) {
+    const img = document.createElement("img");
+    img.className = "suggest-fav-img";
+    img.loading = "lazy";
+    img.src = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
+    img.addEventListener("error", () => {
+      fav.classList.add("fallback");
+      fav.innerHTML = LINK_ICON_SVG;
+    });
+    fav.appendChild(img);
+  } else {
+    fav.classList.add("fallback");
+    fav.innerHTML = LINK_ICON_SVG;
+  }
+
+  const txt = document.createElement("span");
+  txt.className = "suggest-link-col";
+  const title = document.createElement("span");
+  title.className = "suggest-link-title";
+  title.textContent = link.title || host || link.url;
+  const dom = document.createElement("span");
+  dom.className = "suggest-link-domain";
+  dom.textContent = host;
+  txt.append(title, dom);
+
+  a.append(fav, txt);
+  a.addEventListener("click", () => window.lyknOverlay.openUrl(link.url));
+  return a;
+}
+
+function optionButton(label, iconSvg, onClick) {
+  const b = document.createElement("button");
+  b.className = "suggest-chip";
+  b.type = "button";
+  const span = document.createElement("span");
+  span.textContent = label;
+  const ico = document.createElement("span");
+  ico.className = "suggest-chip-ico";
+  ico.innerHTML = iconSvg;
+  b.append(span, ico);
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+// After an answer, cache panel data; the user picks a view from the dropdown.
+async function requestSuggestions(question, answer) {
+  if (!answer || answer.trim().length < 20) return;
+  let data = null;
+  try {
+    data = await window.lyknOverlay.suggest(question, answer);
+  } catch (_) {
+    data = null;
+  }
+  const links = (data && Array.isArray(data.links) ? data.links : []).filter((l) => l && l.url);
+  const followups = (data && Array.isArray(data.followups) ? data.followups : []).filter(Boolean);
+
+  lastAnswerText = answer;
+  sideContext = {
+    pageSource: currentPageSource && currentPageSource.url ? currentPageSource : null,
+    links,
+    followups,
+  };
+
+  syncSidePickerState();
+  if (sidePanelView) renderSidePanel();
+}
+
+// Widths must match the main process constants (OVERLAY_WIDTH / SIDE_WIDTH).
+const CHAT_WIDTH = 520;
+const SIDE_WIDTH = 300;
 let lastReportedHeight = -1;
+let lastReportedWidth = -1;
 function reportHeight() {
-  // Measure the EXACT content height after layout settles, and only tell main to
+  // Measure the EXACT content size after layout settles, and only tell main to
   // resize when it actually changed — so the panel grows/shrinks only when needed
   // instead of creeping on every keystroke or delta.
   requestAnimationFrame(() => {
-    const bar = document.querySelector(".bar");
+    const bar = document.querySelector(".composer");
     const title = document.querySelector(".titlebar");
     const att = document.getElementById("attachments");
     const attH = att && att.classList.contains("show") ? att.offsetHeight : 0;
-    const menu = document.getElementById("menu");
-    // +8 = the menu section's top (2) + bottom (6) margins, which offsetHeight
-    // doesn't include but the flow layout does.
-    const menuH = menu && menu.classList.contains("show") ? menu.offsetHeight + 8 : 0;
     // Use scrollHeight for the thread: it reports the true content height even
     // when flexbox has shrunk the element to fit the (still-small) window. Cap at
     // the CSS max-height so past that it scrolls internally instead of growing.
@@ -237,10 +572,19 @@ function reportHeight() {
       : 0;
     const live = document.getElementById("live");
     const liveH = live && live.classList.contains("show") ? live.offsetHeight : 0;
-    const h = title.offsetHeight + menuH + threadH + liveH + attH + bar.offsetHeight + 2;
-    if (h !== lastReportedHeight) {
+    const chatH = title.offsetHeight + threadH + liveH + attH + bar.offsetHeight + 2;
+
+    // Side panel stretches to match chat height; it only adds width.
+    const side = document.getElementById("side");
+    const sideOpen = side && side.classList.contains("show");
+
+    const h = chatH;
+    let w = CHAT_WIDTH;
+    if (sideOpen) w += SIDE_WIDTH;
+    if (h !== lastReportedHeight || w !== lastReportedWidth) {
       lastReportedHeight = h;
-      window.lyknOverlay.resize(h);
+      lastReportedWidth = w;
+      window.lyknOverlay.resize(w, h);
     }
   });
 }
@@ -255,6 +599,9 @@ function setBusy(on) {
 // Start a new turn: collapse every prior turn, append an expanded item for this
 // question, and return its answer element to stream into.
 function startTurn(question) {
+  // A new question is pending — clear the left panel until its answer lands.
+  currentPageSource = null;
+  clearSide();
   threadEl.querySelectorAll(".chat").forEach((c) => c.classList.add("collapsed"));
 
   const item = document.createElement("div");
@@ -288,6 +635,91 @@ function startTurn(question) {
   return a;
 }
 
+function renderHistoricTurn(question, answer, collapsed) {
+  const item = document.createElement("div");
+  item.className = "chat" + (collapsed ? " collapsed" : "");
+
+  const q = document.createElement("button");
+  q.className = "chat-q";
+  q.type = "button";
+  q.innerHTML = CHEVRON_SVG;
+  const qt = document.createElement("span");
+  qt.className = "q-text";
+  qt.textContent = question;
+  q.appendChild(qt);
+
+  const a = document.createElement("div");
+  a.className = "chat-a has-md";
+  a.innerHTML = renderMarkdown(answer || "");
+
+  item.appendChild(q);
+  item.appendChild(a);
+  threadEl.appendChild(item);
+  return item;
+}
+
+async function persistCurrentSession() {
+  if (!history.length) return;
+  try {
+    const firstUser = history.find((m) => m.role === "user" && String(m.content || "").trim());
+    const res = await window.lyknOverlay.saveOverlaySession({
+      sessionId: currentSessionId,
+      messages: history,
+      title: firstUser ? String(firstUser.content).trim().slice(0, 72) : undefined,
+    });
+    if (res && res.sessionId) currentSessionId = res.sessionId;
+  } catch (_) {}
+}
+
+function rebuildThreadFromHistory(openLast) {
+  threadEl.innerHTML = "";
+  let pendingQ = null;
+  const pairs = [];
+  for (const m of history) {
+    if (m.role === "user") pendingQ = m.content;
+    else if (m.role === "assistant" && pendingQ != null) {
+      pairs.push({ q: pendingQ, a: m.content });
+      pendingQ = null;
+    }
+  }
+  pairs.forEach((p, i) => {
+    const isLast = i === pairs.length - 1;
+    renderHistoricTurn(p.q, p.a, openLast ? !isLast : true);
+  });
+  threadEl.classList.toggle("show", pairs.length > 0);
+  reportHeight();
+}
+
+async function loadOverlaySession(session) {
+  if (!session || !Array.isArray(session.messages)) return;
+  history.length = 0;
+  history.push(...session.messages);
+  currentSessionId = session.id;
+  rebuildThreadFromHistory(true);
+  clearSide();
+  setHistoryOpen(false);
+  setMenuOpen(false);
+  askEl.focus();
+}
+
+async function startNewOverlayChat() {
+  await persistCurrentSession();
+  try {
+    const res = await window.lyknOverlay.newOverlaySession();
+    currentSessionId = (res && res.sessionId) || null;
+  } catch (_) {
+    currentSessionId = null;
+  }
+  history.length = 0;
+  threadEl.innerHTML = "";
+  threadEl.classList.remove("show");
+  liveNotesSnapshot = { keyPoints: [], actionItems: [], summary: "" };
+  clearSide();
+  setHistoryOpen(false);
+  askEl.focus();
+  reportHeight();
+}
+
 // Update the shimmer status label while the spinner is showing (ignored once
 // real answer text has begun streaming in).
 function setThinkingStatus(text) {
@@ -311,10 +743,146 @@ function updateAnswer(text) {
   reportHeight();
 }
 
+const DEFAULT_ASK_PLACEHOLDER = "Ask LYKN about your screen…";
+let browserActArmed = false;
+let pendingBrowserPlan = null;
+
+const browserActEl = document.getElementById("browser-act");
+const browserActStepsEl = document.getElementById("browser-act-steps");
+const browserActRunEl = document.getElementById("browser-act-run");
+const browserActCancelEl = document.getElementById("browser-act-cancel");
+
+function formatBrowserStep(action) {
+  const label = action.label || action.selector || "element";
+  if (action.type === "click") return `Click “${label}”`;
+  if (action.type === "type") {
+    const v = String(action.value || "").slice(0, 48);
+    return `Type “${v}” into “${label}”`;
+  }
+  if (action.type === "press") return `Press ${action.key || "Enter"} in “${label}”`;
+  if (action.type === "scroll") {
+    const d = Number(action.delta) || 400;
+    return d >= 0 ? "Scroll down" : "Scroll up";
+  }
+  return label;
+}
+
+function browserActErrorMessage(plan) {
+  const code = plan && plan.error;
+  const msg = (plan && plan.message) || "";
+  if (code === "apple_events_disabled") {
+    return (
+      "Browser control needs **Allow JavaScript from Apple Events** enabled in your browser " +
+      "(Chrome: View → Developer). Then try again."
+    );
+  }
+  if (code === "no_browser") return "Open a browser tab first, then try again.";
+  if (code === "no_auth") return "Sign in to LYKN in the main app to use browser control.";
+  if (code === "no_actions") {
+    return (plan && plan.explanation) || "Could not plan any safe actions for this page.";
+  }
+  return msg || "Could not plan browser actions.";
+}
+
+function hideBrowserActPanel() {
+  pendingBrowserPlan = null;
+  if (browserActEl) browserActEl.hidden = true;
+  composerEl.classList.remove("browser-act-open");
+  reportHeight();
+}
+
+function showBrowserActPanel(plan) {
+  if (!browserActEl || !browserActStepsEl || !plan) return;
+  browserActStepsEl.innerHTML = "";
+  for (const action of plan.actions || []) {
+    const li = document.createElement("li");
+    li.textContent = formatBrowserStep(action);
+    browserActStepsEl.appendChild(li);
+  }
+  browserActEl.hidden = false;
+  composerEl.classList.add("browser-act-open");
+  reportHeight();
+}
+
+async function runBrowserAct(intent) {
+  const goal = String(intent || "").trim();
+  if (!goal || busy) return;
+  browserActArmed = false;
+  askEl.placeholder = DEFAULT_ASK_PLACEHOLDER;
+  askEl.value = "";
+  askEl.style.height = "48px";
+  setBusy(true);
+  startTurn(goal);
+  hideBrowserActPanel();
+  history.push({ role: "user", content: goal, at: new Date().toISOString() });
+  setThinkingStatus("Scanning page…");
+  try {
+    const plan = await window.lyknOverlay.browserPlan(goal);
+    if (!plan || !plan.ok) {
+      currentHasText = true;
+      updateAnswer(browserActErrorMessage(plan || {}));
+      setBusy(false);
+      askEl.focus();
+      return;
+    }
+    pendingBrowserPlan = plan;
+    currentHasText = true;
+    updateAnswer(plan.explanation || "Review the steps below, then run.");
+    showBrowserActPanel(plan);
+    setBusy(false);
+    askEl.focus();
+  } catch (_) {
+    currentHasText = true;
+    updateAnswer("Could not plan browser actions.");
+    setBusy(false);
+    askEl.focus();
+  }
+}
+
+async function executeBrowserAct() {
+  if (!pendingBrowserPlan || busy) return;
+  const { actions, appName } = pendingBrowserPlan;
+  hideBrowserActPanel();
+  setBusy(true);
+  setThinkingStatus("Running in browser…");
+  currentHasText = true;
+  updateAnswer("Running browser actions…");
+  try {
+    const result = await window.lyknOverlay.browserExecute({ actions, appName });
+    const lines = [];
+    if (Array.isArray(result.results)) {
+      for (const r of result.results) {
+        const step = r.label || r.type || "step";
+        lines.push(r.ok ? `✓ ${step}` : `✗ ${step}: ${r.error || "failed"}`);
+      }
+    }
+    const summary = result.ok
+      ? "Done — actions completed in your browser."
+      : result.message || "Some actions failed.";
+    updateAnswer([summary, ...lines].filter(Boolean).join("\n\n"));
+    history.push({
+      role: "assistant",
+      content: summary,
+      at: new Date().toISOString(),
+    });
+    void persistCurrentSession();
+  } catch (_) {
+    updateAnswer("Failed to run browser actions.");
+  }
+  setBusy(false);
+  askEl.focus();
+}
+
 function ask() {
   const q = askEl.value.trim();
+  if (browserActArmed) {
+    if (!q || busy) return;
+    void runBrowserAct(q);
+    return;
+  }
   if ((!q && attachments.length === 0) || busy) return;
   askEl.value = "";
+  askEl.style.height = "52px";
   setBusy(true);
   const sentAttachments = attachments.slice();
   const label =
@@ -358,9 +926,9 @@ window.lyknOverlay.onDone((p) => {
   if (finalText) {
     updateAnswer(finalText);
     history.push({ role: "assistant", content: finalText, at: new Date().toISOString() });
-    // Fetch follow-ups + source links for this turn (attached to its element so
-    // it lands on the right turn even if the user asks again immediately).
-    void requestSuggestions(currentChatEl, currentQuestion, finalText);
+    void persistCurrentSession();
+    // Populate the left panel with sources, follow-ups, and options.
+    void requestSuggestions(currentQuestion, finalText);
   } else if (!currentHasText && currentAnswerEl) {
     // Nothing came back — clear the spinner instead of leaving it spinning.
     currentHasText = true;
@@ -376,6 +944,11 @@ window.lyknOverlay.onError((p) => {
   streamingText = "";
   setBusy(false);
 });
+// LYKN scraped the page the user is viewing — remember it so requestSuggestions
+// can show it as a source (visible proof the scrape happened).
+window.lyknOverlay.onPageSource((p) => {
+  if (p && p.url) currentPageSource = { url: p.url, title: p.title || "" };
+});
 
 window.lyknOverlay.onShown(() => {
   setTimeout(() => askEl.focus(), 40);
@@ -388,7 +961,8 @@ let dragging = false;
 let lastX = 0;
 let lastY = 0;
 dragEl.addEventListener("pointerdown", (e) => {
-  if (e.target.closest(".more-btn")) return; // don't drag from the menu button
+  if (e.target.closest(".bar-btn")) return;
+  if (e.target.closest(".side-picker-btn")) return;
   dragging = true;
   lastX = e.screenX;
   lastY = e.screenY;
@@ -420,6 +994,7 @@ const bubbleEl = document.getElementById("bubble");
 
 function collapseOverlay() {
   setMenuOpen(false);
+  setPanelPickerOpen(false);
   document.body.classList.add("collapsed");
   window.lyknOverlay.collapse(true);
 }
@@ -427,8 +1002,9 @@ function collapseOverlay() {
 function expandOverlay() {
   document.body.classList.remove("collapsed");
   window.lyknOverlay.collapse(false);
-  // Force a fresh height report now that the panel is visible again.
+  // Force a fresh size report now that the panel is visible again.
   lastReportedHeight = -1;
+  lastReportedWidth = -1;
   reportHeight();
   askEl.focus();
 }
@@ -542,6 +1118,7 @@ async function startDictation() {
       if (text) {
         const cur = askEl.value.trim();
         askEl.value = cur ? `${cur} ${text}` : text;
+        autoGrowAsk();
       }
     } catch (_) {}
     transcribing = false;
@@ -692,24 +1269,182 @@ async function addFiles(fileList) {
   askEl.focus();
 }
 
-// ── "More" dropdown menu ───────────────────────────────────────────────────
+// ── "More" inline drawer (inside composer) ─────────────────────────────────
+const composerEl = document.getElementById("composer");
 const moreBtn = document.getElementById("more");
 const menuEl = document.getElementById("menu");
+const historyPanelEl = document.getElementById("history-panel");
+const historyListEl = document.getElementById("history-list");
+let historyOpen = false;
+let moreUserOpen = false;
 
 function setMenuOpen(open) {
-  menuEl.classList.toggle("show", open);
-  moreBtn.classList.toggle("open", open);
+  moreUserOpen = open;
+  moreBtn.classList.toggle("active", open);
+  composerEl.classList.toggle("more-open", open);
+  if (open) setPanelPickerOpen(false);
+  if (!open) {
+    historyOpen = false;
+    historyPanelEl.classList.remove("show");
+    menuEl.style.display = "";
+  }
   reportHeight();
+}
+
+function setHistoryOpen(open) {
+  historyOpen = open;
+  historyPanelEl.classList.toggle("show", open);
+  menuEl.style.display = open ? "none" : "";
+  if (open && !moreUserOpen) setMenuOpen(true);
+  reportHeight();
+}
+
+const HISTORY_TIME_GROUPS = [
+  { key: "today", label: "Today" },
+  { key: "yesterday", label: "Yesterday" },
+  { key: "last7", label: "Last 7 Days" },
+  { key: "last30", label: "Last 30 Days" },
+  { key: "older", label: "Older" },
+];
+
+function historyTime(iso) {
+  const t = new Date(iso || 0).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function historyBucketForTime(time, now) {
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const startOfTodayMs = startOfToday.getTime();
+  const dayMs = 86400000;
+  if (time >= startOfTodayMs) return "today";
+  if (time >= startOfTodayMs - dayMs) return "yesterday";
+  if (time >= startOfTodayMs - 7 * dayMs) return "last7";
+  if (time >= startOfTodayMs - 30 * dayMs) return "last30";
+  return "older";
+}
+
+function groupHistoryItems(items) {
+  const now = Date.now();
+  const buckets = new Map(HISTORY_TIME_GROUPS.map((g) => [g.key, []]));
+  for (const item of items) {
+    buckets.get(historyBucketForTime(historyTime(item.updatedAt), now)).push(item);
+  }
+  return HISTORY_TIME_GROUPS.map((g) => ({ ...g, items: buckets.get(g.key) })).filter(
+    (g) => g.items.length,
+  );
+}
+
+function historyItemButton(item, active) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "history-item" + (active ? " active" : "");
+  btn.innerHTML =
+    '<span class="hi-dot" aria-hidden="true"></span>' +
+    `<span class="hi-title">${escapeHtml(item.title || "New Chat")}</span>`;
+  return btn;
+}
+
+async function refreshHistoryList() {
+  historyListEl.innerHTML = '<div class="history-empty">Loading…</div>';
+  try {
+    const data = await window.lyknOverlay.listChats();
+    renderHistoryList(data);
+  } catch (_) {
+    historyListEl.innerHTML = '<div class="history-empty">Could not load chats.</div>';
+  }
+}
+
+function renderHistoryList(data) {
+  historyListEl.innerHTML = "";
+  const overlay = ((data && data.overlay) || []).map((item) => ({ ...item, source: "overlay" }));
+  const app = ((data && data.app) || []).map((item) => ({ ...item, source: "app" }));
+  const all = [...overlay, ...app].sort(
+    (a, b) => historyTime(b.updatedAt) - historyTime(a.updatedAt),
+  );
+
+  if (!all.length) {
+    historyListEl.innerHTML = '<div class="history-empty">No chats yet.</div>';
+    if (data && data.error === "not_signed_in") {
+      const sign = document.createElement("div");
+      sign.className = "history-signin";
+      sign.innerHTML = "Sign in to LYKN to see app chats.<br>";
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.textContent = "Open LYKN to sign in";
+      openBtn.addEventListener("click", () => {
+        setHistoryOpen(false);
+        setMenuOpen(false);
+        window.lyknOverlay.openMain();
+      });
+      sign.appendChild(openBtn);
+      historyListEl.appendChild(sign);
+    }
+    return;
+  }
+
+  for (const group of groupHistoryItems(all)) {
+    const g = document.createElement("div");
+    g.className = "history-group";
+    g.textContent = group.label;
+    historyListEl.appendChild(g);
+    for (const item of group.items) {
+      const active = item.source === "overlay" && item.id === currentSessionId;
+      const btn = historyItemButton(item, active);
+      btn.addEventListener("click", async () => {
+        if (item.source === "overlay") {
+          const session = await window.lyknOverlay.getOverlaySession(item.id);
+          if (session) await loadOverlaySession(session);
+        } else {
+          setHistoryOpen(false);
+          setMenuOpen(false);
+          window.lyknOverlay.openAppChat(item.id);
+        }
+      });
+      historyListEl.appendChild(btn);
+    }
+  }
+
+  if (data && data.error === "not_signed_in" && overlay.length) {
+    const sign = document.createElement("div");
+    sign.className = "history-signin";
+    sign.textContent = "Sign in to see app chats too.";
+    historyListEl.appendChild(sign);
+  }
 }
 
 moreBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  setMenuOpen(!menuEl.classList.contains("show"));
-});
-document.addEventListener("click", (e) => {
-  if (menuEl.classList.contains("show") && !e.target.closest("#menu") && !e.target.closest("#more")) {
+  if (moreUserOpen) {
     setMenuOpen(false);
+  } else {
+    setHistoryOpen(false);
+    setMenuOpen(true);
   }
+});
+
+document.addEventListener("click", (e) => {
+  if (!moreUserOpen) return;
+  if (e.target.closest("#composer")) return;
+  setMenuOpen(false);
+});
+
+document.getElementById("menu-new").addEventListener("click", () => {
+  void startNewOverlayChat();
+});
+
+document.getElementById("menu-history").addEventListener("click", () => {
+  setHistoryOpen(true);
+  void refreshHistoryList();
+});
+
+document.getElementById("history-back").addEventListener("click", () => {
+  setHistoryOpen(false);
+  menuEl.style.display = "";
+});
+
+document.getElementById("history-new").addEventListener("click", () => {
+  void startNewOverlayChat();
 });
 
 document.getElementById("menu-attach").addEventListener("click", async () => {
@@ -719,6 +1454,21 @@ document.getElementById("menu-attach").addEventListener("click", async () => {
     addAttachmentObjects(items);
   } catch (_) {}
 });
+
+document.getElementById("menu-browser-act").addEventListener("click", () => {
+  setMenuOpen(false);
+  const q = askEl.value.trim();
+  if (q) {
+    void runBrowserAct(q);
+    return;
+  }
+  browserActArmed = true;
+  askEl.placeholder = "Describe what to do on this page…";
+  askEl.focus();
+});
+
+browserActCancelEl.addEventListener("click", () => hideBrowserActPanel());
+browserActRunEl.addEventListener("click", () => void executeBrowserAct());
 
 document.getElementById("menu-open").addEventListener("click", () => {
   setMenuOpen(false);
@@ -807,6 +1557,8 @@ function setVoiceUi(state) {
   voiceEl.classList.toggle("voice-active", on);
   dotEl.classList.toggle("busy", on && state !== "listening");
   voiceEl.title = on ? "Stop voice mode" : "Voice mode";
+  const voiceLabel = document.getElementById("voice-label");
+  if (voiceLabel) voiceLabel.textContent = on ? "Stop voice mode" : "Voice mode";
   askEl.disabled = on;
   if (on) {
     askEl.placeholder =
@@ -836,6 +1588,7 @@ function voiceAiMessage(text) {
   if (!voiceAwaitingAnswer || !currentAnswerEl) startTurn("LYKN");
   updateAnswer(t);
   history.push({ role: "assistant", content: t, at: new Date().toISOString() });
+  void persistCurrentSession();
   voiceAwaitingAnswer = false;
 }
 
@@ -1100,7 +1853,9 @@ const SPEAKER_LABEL = { them: "Them", you: "You" };
 
 function setListenUi() {
   listenEl.classList.toggle("listening", listening);
-  listenEl.title = listening ? "Stop listening" : "Listen (live notes)";
+  listenEl.title = listening ? "Stop listening" : "Live meeting notes";
+  const listenLabel = document.getElementById("listen-label");
+  if (listenLabel) listenLabel.textContent = listening ? "Stop live notes" : "Live meeting notes";
   liveDotEl.classList.toggle("live", listening);
   liveTitleEl.textContent = listening ? "Listening…" : "Stopped";
   reportHeight();
@@ -1129,6 +1884,12 @@ function renderNotes(notes) {
   };
   fill(notesKeyEl, notesKeyWrapEl, notes.keyPoints);
   fill(notesActionsEl, notesActionsWrapEl, notes.actionItems);
+  liveNotesSnapshot = {
+    keyPoints: Array.isArray(notes.keyPoints) ? notes.keyPoints.filter(Boolean) : [],
+    actionItems: Array.isArray(notes.actionItems) ? notes.actionItems.filter(Boolean) : [],
+    summary: String(notes.summary || "").trim(),
+  };
+  refreshSidePanelFromLiveNotes();
   reportHeight();
 }
 
@@ -1399,8 +2160,19 @@ for (const target of [document, window]) {
 }
 
 sendEl.addEventListener("click", ask);
+// Grow the prompt field to fit its content (capped by CSS max-height, after
+// which it scrolls), then report the new size so the window grows with it.
+function autoGrowAsk() {
+  askEl.style.height = "auto";
+  askEl.style.height = Math.min(askEl.scrollHeight, 180) + "px";
+  reportHeight();
+}
+
+askEl.addEventListener("input", autoGrowAsk);
+
 askEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
+  if (e.key === "Enter" && !e.shiftKey) {
+    // Enter sends; Shift+Enter inserts a newline (handled by default).
     e.preventDefault();
     ask();
   } else if (e.key === "Escape") {
@@ -1409,4 +2181,12 @@ askEl.addEventListener("keydown", (e) => {
 });
 
 askEl.focus();
+syncSidePickerState();
 reportHeight();
+
+void (async () => {
+  try {
+    const res = await window.lyknOverlay.ensureOverlaySession();
+    if (res && res.sessionId) currentSessionId = res.sessionId;
+  } catch (_) {}
+})();

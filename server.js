@@ -14495,10 +14495,23 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           return sendDone();
         }
         // Empty text on hop_cap is rare but possible (model called tools
-        // but never wrote a reply). Tell the client honestly rather than
-        // silently closing — they'd see an empty bubble otherwise.
+        // but never wrote a reply). Rather than a confusing "try rephrasing",
+        // confirm what actually happened based on the tools that succeeded —
+        // e.g. saving a note to the vault should read as a clear success.
         if (agentResult.ok && !agentResult.hadText) {
-          sendChunk('I ran the tools but didn\'t produce a written reply — try rephrasing the question.');
+          const ok = (agentResult.toolCalls || []).filter((tc) => tc && !tc.isError);
+          const names = ok.map((tc) => String(tc.name || ''));
+          let msg;
+          if (names.some((n) => /vault|note/i.test(n))) {
+            msg = 'Done — I saved that to your vault.';
+          } else if (names.some((n) => /(^|_)(create|add|update|save|send|schedule|delete|set)/i.test(n))) {
+            msg = 'Done — I completed that for you.';
+          } else if (ok.length) {
+            msg = 'Done.';
+          } else {
+            msg = 'I ran the tools but didn\'t produce a written reply — try rephrasing the question.';
+          }
+          sendChunk(msg);
           return sendDone();
         }
         // Agent loop errored. If we already streamed some text, finish
@@ -15493,6 +15506,204 @@ app.post('/api/ai/name-grid', requireAuth, aiLimiter, async (req, res) => {
   } catch (error) {
     console.error('❌ name-grid error:', error?.message);
     return res.status(500).json({ error: 'Naming failed' });
+  }
+});
+
+// ──────────────────────────────────────────────────
+// Desktop overlay — list recent app chats for the ⌘L "Past chats" menu.
+// Returns lightweight rows (title + preview) from lykn_chats + snapshots.
+// ──────────────────────────────────────────────────
+const DEFAULT_CHAT_TITLES = new Set(['New Chat', 'Untitled board', '']);
+
+function desktopChatStateFromRow(row) {
+  const rel = row?.lykn_chat_states;
+  if (Array.isArray(rel)) return rel[0]?.state ?? null;
+  if (rel && typeof rel === 'object') return rel.state ?? null;
+  return null;
+}
+
+function desktopSnapshotHasContext(state) {
+  if (!state || typeof state !== 'object') return false;
+  const chatMessages = Array.isArray(state.chatMessages) ? state.chatMessages : [];
+  if (chatMessages.length) return true;
+  const aiThread = Array.isArray(state.aiThread) ? state.aiThread : [];
+  if (aiThread.length) return true;
+  const blocks = state.blocks && typeof state.blocks === 'object' ? state.blocks : {};
+  const blockOrder = Array.isArray(state.blockOrder) ? state.blockOrder : Object.keys(blocks);
+  return blockOrder.some((id) => {
+    const b = blocks[String(id)];
+    if (!b || typeof b !== 'object') return false;
+    const data = b.data && typeof b.data === 'object' ? b.data : {};
+    const content = String(data.content ?? data.body ?? b.content ?? '').trim();
+    return content.length > 0;
+  });
+}
+
+function desktopChatPreview(state) {
+  if (!state || typeof state !== 'object') return '';
+  const chatMessages = Array.isArray(state.chatMessages) ? state.chatMessages : [];
+  for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
+    const m = chatMessages[i];
+    const text = String(m?.content || m?.aiResponse || '').trim();
+    if (text) return text.slice(0, 140);
+  }
+  const aiThread = Array.isArray(state.aiThread) ? state.aiThread : [];
+  for (let i = aiThread.length - 1; i >= 0; i -= 1) {
+    const m = aiThread[i];
+    const text = String(m?.content || '').trim();
+    if (text) return text.slice(0, 140);
+  }
+  return '';
+}
+
+function desktopChatTitle(row, state) {
+  const title = String(row?.title || '').trim();
+  if (title && !DEFAULT_CHAT_TITLES.has(title)) return title;
+  const chatMessages = Array.isArray(state?.chatMessages) ? state.chatMessages : [];
+  for (const m of chatMessages) {
+    const text = String(m?.content || '').trim();
+    if (text) return text.slice(0, 72);
+  }
+  return title || 'New Chat';
+}
+
+// Plan browser-control steps for the desktop overlay: given the user's intent
+// and a list of interactable elements on the active tab, return a short action
+// sequence (click / type / press / scroll). Selectors must come from the scan.
+app.post('/api/desktop/browser-plan', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'AI not configured' });
+
+    const intent = String(req.body?.intent || '').slice(0, 500).trim();
+    const url = String(req.body?.url || '').slice(0, 500).trim();
+    const title = String(req.body?.title || '').slice(0, 200).trim();
+    const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 60) : [];
+    if (!intent) return res.status(400).json({ error: 'Missing intent' });
+    if (!items.length) return res.status(400).json({ error: 'No interactable elements' });
+
+    const catalog = items.map((el, i) => ({
+      id: String(el?.id || `el${i}`),
+      tag: String(el?.tag || ''),
+      type: String(el?.type || ''),
+      selector: String(el?.selector || '').slice(0, 300),
+      label: String(el?.label || '').slice(0, 120),
+      value: String(el?.value || '').slice(0, 80),
+      href: String(el?.href || '').slice(0, 200),
+    })).filter((el) => el.selector);
+
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        temperature: 0.2,
+        max_tokens: 700,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You plan safe browser UI automation for a desktop assistant. The user describes ' +
+              'what they want done on a web page. You receive the page URL/title and a JSON list of ' +
+              'interactable elements (each has a unique CSS selector you MUST use verbatim).\n\n' +
+              'Return ONLY JSON: {"explanation": string, "actions": Action[]}\n' +
+              'Action: {"type":"click"|"type"|"press"|"scroll","selector":string,"label":string,' +
+              '"value"?:string,"key"?:string,"delta"?:number}\n\n' +
+              'Rules:\n' +
+              '- Max 8 actions. Prefer the shortest path.\n' +
+              '- type: click buttons/links; type into inputs/textareas; press Enter to submit/search.\n' +
+              '- scroll: selector may be empty; delta positive = down (~400).\n' +
+              '- Use ONLY selectors from the provided list. Never invent selectors.\n' +
+              '- label: short human description of the element (from the list).\n' +
+              '- Do not fill password fields unless the user explicitly asked to sign in.\n' +
+              '- Do not purchase, delete accounts, or irreversible actions unless explicitly requested.\n' +
+              '- explanation: 1-2 sentences telling the user what you will do.',
+          },
+          {
+            role: 'user',
+            content:
+              `INTENT: ${intent}\n\nPAGE: ${title}\nURL: ${url}\n\nELEMENTS:\n` +
+              JSON.stringify(catalog, null, 0),
+          },
+        ],
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      const errText = await openaiRes.text().catch(() => '');
+      console.error('❌ /api/desktop/browser-plan openai:', openaiRes.status, errText.slice(0, 200));
+      return res.status(502).json({ error: 'Planning failed' });
+    }
+
+    const data = await openaiRes.json();
+    let explanation = '';
+    let actions = [];
+    try {
+      const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+      explanation = String(parsed.explanation || '').trim().slice(0, 600);
+      actions = Array.isArray(parsed.actions) ? parsed.actions : [];
+    } catch (_) { /* keep defaults */ }
+
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+      const usage = extractOpenAIUsage(data);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'browser_plan',
+        model: 'gpt-4o-mini', provider: 'openai',
+        inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0,
+      });
+    }).catch(() => {});
+
+    return res.json({ explanation, actions });
+  } catch (err) {
+    console.error('❌ /api/desktop/browser-plan:', err?.message || err);
+    return res.status(500).json({ error: 'Planning failed' });
+  }
+});
+
+app.get('/api/desktop/chats', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not signed in' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '40'), 10) || 40, 1), 80);
+    const { data, error } = await supabaseAdmin
+      .from('lykn_chats')
+      .select('id, title, updated_at, created_at, lykn_chat_states(state)')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: false })
+      .limit(limit * 2);
+
+    if (error) {
+      console.error('❌ /api/desktop/chats:', error.message);
+      return res.status(500).json({ error: 'Failed to load chats' });
+    }
+
+    const rows = [];
+    for (const row of data || []) {
+      const state = desktopChatStateFromRow(row);
+      const customTitle = String(row.title || '').trim();
+      const hasCustomTitle = customTitle && !DEFAULT_CHAT_TITLES.has(customTitle);
+      if (state == null) {
+        if (!hasCustomTitle) continue;
+      } else if (!hasCustomTitle && !desktopSnapshotHasContext(state)) {
+        continue;
+      }
+      rows.push({
+        id: row.id,
+        title: desktopChatTitle(row, state),
+        preview: desktopChatPreview(state),
+        updatedAt: row.updated_at || row.created_at || null,
+        source: 'app',
+      });
+      if (rows.length >= limit) break;
+    }
+
+    return res.json({ chats: rows });
+  } catch (err) {
+    console.error('❌ /api/desktop/chats:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to load chats' });
   }
 });
 

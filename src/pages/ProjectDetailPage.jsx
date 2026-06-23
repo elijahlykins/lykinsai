@@ -39,10 +39,18 @@ import {
   Library,
   Plus,
   Trash2,
+  UserPlus,
+  Users,
   X,
 } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
+import {
+  inviteProjectMember,
+  listProjectMembers,
+  removeProjectMember,
+  setMemberRole,
+} from "@/lib/projectMembers";
 import {
   addNeuronsToProject,
   deleteUserProject,
@@ -441,7 +449,7 @@ function DeadlinesTooltip({ active = false, payload = null, label = "" }) {
 // Tasks — the project's lykn_todos, with add (title + priority + deadline),
 // complete/reopen, priority cycle, deadline edit, and delete.
 // ---------------------------------------------------------------------------
-function TasksPanel({ userId, projectId, todos, onChanged }) {
+function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
   const [title, setTitle] = useState("");
   const [priority, setPriority] = useState("normal");
   const [due, setDue] = useState("");
@@ -534,10 +542,10 @@ function TasksPanel({ userId, projectId, todos, onChanged }) {
       >
         <button
           type="button"
-          disabled={isBusy}
+          disabled={isBusy || !canEdit}
           onClick={() => toggleDone(todo)}
-          className="shrink-0 text-black/30 dark:text-white/30 hover:text-emerald-500 transition-colors disabled:opacity-50"
-          title={done ? "Mark as not done" : "Mark done"}
+          className="shrink-0 text-black/30 dark:text-white/30 hover:text-emerald-500 transition-colors disabled:opacity-50 disabled:hover:text-black/30"
+          title={canEdit ? (done ? "Mark as not done" : "Mark done") : undefined}
         >
           {done ? (
             <CheckCircle2 className="w-[1.35rem] h-[1.35rem] text-emerald-500 dark:text-emerald-400" />
@@ -553,55 +561,69 @@ function TasksPanel({ userId, projectId, todos, onChanged }) {
             {todo.title}
           </div>
         </div>
-        <DatePickerPopover
-          value={msToDateInput(todo.dueAt)}
-          onChange={(v) => handleDueChange(todo, v)}
-          align="end"
-          trigger={
-            <button
-              type="button"
-              className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-semibold tracking-wide tabular-nums transition-colors ${
-                hasDue
-                  ? overdue
-                    ? "bg-red-500/10 text-red-600 dark:text-red-400"
-                    : "bg-amber-500/10 text-amber-600 dark:text-amber-500"
-                  : "text-black/30 dark:text-white/30 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] opacity-0 group-hover:opacity-100"
-              }`}
-              title="Set / change deadline"
-            >
-              {hasDue ? (
-                `${MONTH_ABBR[dueDate.getMonth()]} ${String(dueDate.getDate()).padStart(2, "0")}`
-              ) : (
-                <>
-                  <CalendarClock className="w-3 h-3" />
-                  Date
-                </>
-              )}
-            </button>
-          }
-        />
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-          {!done && (
+        {canEdit ? (
+          <DatePickerPopover
+            value={msToDateInput(todo.dueAt)}
+            onChange={(v) => handleDueChange(todo, v)}
+            align="end"
+            trigger={
+              <button
+                type="button"
+                className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-semibold tracking-wide tabular-nums transition-colors ${
+                  hasDue
+                    ? overdue
+                      ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                      : "bg-amber-500/10 text-amber-600 dark:text-amber-500"
+                    : "text-black/30 dark:text-white/30 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] opacity-0 group-hover:opacity-100"
+                }`}
+                title="Set / change deadline"
+              >
+                {hasDue ? (
+                  `${MONTH_ABBR[dueDate.getMonth()]} ${String(dueDate.getDate()).padStart(2, "0")}`
+                ) : (
+                  <>
+                    <CalendarClock className="w-3 h-3" />
+                    Date
+                  </>
+                )}
+              </button>
+            }
+          />
+        ) : hasDue ? (
+          <span
+            className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.625rem] font-semibold tracking-wide tabular-nums ${
+              overdue
+                ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                : "bg-amber-500/10 text-amber-600 dark:text-amber-500"
+            }`}
+          >
+            {`${MONTH_ABBR[dueDate.getMonth()]} ${String(dueDate.getDate()).padStart(2, "0")}`}
+          </span>
+        ) : null}
+        {canEdit && (
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            {!done && (
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => cyclePriority(todo)}
+                className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
+                title={`Priority: ${pri.label} (click to change)`}
+              >
+                <Flag className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               type="button"
               disabled={isBusy}
-              onClick={() => cyclePriority(todo)}
-              className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
-              title={`Priority: ${pri.label} (click to change)`}
+              onClick={() => remove(todo)}
+              className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-red-500 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
+              title="Delete"
             >
-              <Flag className="w-3.5 h-3.5" />
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
-          )}
-          <button
-            type="button"
-            disabled={isBusy}
-            onClick={() => remove(todo)}
-            className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-red-500 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
-            title="Delete"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -613,12 +635,14 @@ function TasksPanel({ userId, projectId, todos, onChanged }) {
         <span className="text-[0.6875rem] text-black/40 dark:text-white/40">
           {openTodos.length} open
         </span>
-        <div className="ml-auto">
-          <AddNewButton
-            active={showAdd}
-            onClick={() => setShowAdd((v) => !v)}
-          />
-        </div>
+        {canEdit && (
+          <div className="ml-auto">
+            <AddNewButton
+              active={showAdd}
+              onClick={() => setShowAdd((v) => !v)}
+            />
+          </div>
+        )}
       </div>
 
       {showAdd && (
@@ -719,7 +743,7 @@ const EMPTY_EVENT = {
   location: "",
 };
 
-function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, onClearFilter }) {
+function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, onClearFilter, canEdit = true }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY_EVENT);
   const [saving, setSaving] = useState(false);
@@ -756,7 +780,7 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
   // Open the form pre-filled to edit an existing event. Synced (read-only)
   // events can't be edited here.
   const openEdit = (ev) => {
-    if (ev.readOnly) return;
+    if (ev.readOnly || !canEdit) return;
     const pad = (n) => String(n).padStart(2, "0");
     const d = new Date(ev.startsAt);
     const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -860,10 +884,10 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
         key={ev.id}
         type="button"
         onClick={() => openEdit(ev)}
-        disabled={ev.readOnly}
-        title={ev.readOnly ? undefined : "Edit event"}
+        disabled={ev.readOnly || !canEdit}
+        title={ev.readOnly || !canEdit ? undefined : "Edit event"}
         className={`group w-full text-left flex items-stretch gap-3 p-2.5 rounded-2xl border border-black/[0.05] dark:border-white/[0.06] bg-black/[0.01] dark:bg-white/[0.02] hover:border-black/[0.1] dark:hover:border-white/[0.12] hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors ${
-          ev.readOnly ? "cursor-default" : "cursor-pointer"
+          ev.readOnly || !canEdit ? "cursor-default" : "cursor-pointer"
         }`}
       >
         <div
@@ -907,7 +931,7 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
             )}
           </div>
         </div>
-        {!ev.readOnly && (
+        {!ev.readOnly && canEdit && (
           <span
             role="button"
             tabIndex={-1}
@@ -943,12 +967,14 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
             <X className="w-3 h-3" />
           </button>
         )}
-        <div className="ml-auto">
-          <AddNewButton
-            active={showForm}
-            onClick={() => (showForm ? resetForm() : setShowForm(true))}
-          />
-        </div>
+        {canEdit && (
+          <div className="ml-auto">
+            <AddNewButton
+              active={showForm}
+              onClick={() => (showForm ? resetForm() : setShowForm(true))}
+            />
+          </div>
+        )}
       </div>
 
       {showForm && (
@@ -1049,6 +1075,205 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Members — the project's collaborators (lykn_project_members, 109/110).
+// Owner can invite by email, change roles (editor/viewer), and remove people.
+// Everyone else sees a read-only roster. Neuron clustering stays personal;
+// what's shared is the project's state, tasks, and calendar.
+// ---------------------------------------------------------------------------
+const ROLE_BADGE = {
+  owner: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+  editor: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  viewer: "bg-black/[0.06] dark:bg-white/[0.08] text-black/55 dark:text-white/55",
+};
+
+function initialFor(email) {
+  const s = String(email || "?").trim();
+  return (s[0] || "?").toUpperCase();
+}
+
+function MembersCard({ userId, projectId, isOwner }) {
+  const queryClient = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("editor");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const { data: members = [], isLoading } = useQuery({
+    queryKey: ["lykn_project_members", userId || "guest", projectId],
+    queryFn: () => listProjectMembers(userId, projectId),
+    enabled: !!userId && !!projectId,
+    staleTime: 30 * 1000,
+  });
+
+  const refetch = useCallback(
+    () =>
+      queryClient.invalidateQueries({
+        queryKey: ["lykn_project_members", userId || "guest", projectId],
+      }),
+    [queryClient, userId, projectId],
+  );
+
+  const handleInvite = async () => {
+    if (busy) return;
+    setError("");
+    setNotice("");
+    setBusy(true);
+    const res = await inviteProjectMember(userId, projectId, email, role);
+    setBusy(false);
+    if (!res.ok) {
+      setError(res.error || "Could not send the invite.");
+      return;
+    }
+    setEmail("");
+    setNotice("Invite added — they'll get access the next time they sign in with that email.");
+    refetch();
+  };
+
+  const handleRole = async (m, nextRole) => {
+    await setMemberRole(userId, m.id, nextRole);
+    refetch();
+  };
+
+  const handleRemove = async (m) => {
+    const who = m.email || "this collaborator";
+    if (!window.confirm(`Remove ${who} from this project?`)) return;
+    await removeProjectMember(userId, m.id);
+    refetch();
+  };
+
+  const collaborators = members.length;
+
+  return (
+    <div className={`${CARD} p-4 sm:p-5`}>
+      <div className="flex items-center gap-2 mb-3">
+        <Users className="w-4 h-4 text-black/45 dark:text-white/45" />
+        <h2 className="text-base font-semibold tracking-tight text-black/90 dark:text-white/90">
+          People
+        </h2>
+        <span className="text-[0.6875rem] text-black/40 dark:text-white/40">
+          {collaborators} {collaborators === 1 ? "person" : "people"}
+        </span>
+      </div>
+
+      {isOwner && (
+        <div className="flex flex-col gap-2 pb-3 mb-3 border-b border-black/[0.06] dark:border-white/[0.07]">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void handleInvite();
+                }
+              }}
+              placeholder="Invite by email…"
+              className="flex-1 min-w-[12rem] text-sm px-3 py-2 rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/[0.04] outline-none focus:border-blue-500/40 placeholder:text-black/35 dark:placeholder:text-white/35"
+            />
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              className="text-[0.75rem] px-2 py-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/70 dark:text-white/70 outline-none focus:border-blue-500/40 cursor-pointer"
+              title="Access level"
+            >
+              <option value="editor">Editor</option>
+              <option value="viewer">Viewer</option>
+            </select>
+            <button
+              type="button"
+              disabled={busy || !email.trim()}
+              onClick={handleInvite}
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-black text-white hover:bg-black/85 dark:bg-white dark:text-black dark:hover:bg-white/85 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              Invite
+            </button>
+          </div>
+          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+          {notice && <p className="text-xs text-emerald-600 dark:text-emerald-400">{notice}</p>}
+          <p className="text-[0.625rem] text-black/40 dark:text-white/40">
+            Editors can add and edit this project's tasks, calendar, and AI working memory. Viewers
+            can only read. Each person's private vault and beliefs stay their own.
+          </p>
+        </div>
+      )}
+
+      {isLoading ? (
+        <p className="text-xs text-black/40 dark:text-white/40">Loading people…</p>
+      ) : members.length === 0 ? (
+        <p className="text-xs text-black/40 dark:text-white/40">
+          Just you so far.{isOwner ? " Invite someone by email to collaborate." : ""}
+        </p>
+      ) : (
+        <div className="flex flex-col gap-1">
+          {members.map((m) => {
+            const pending = !m.acceptedAt;
+            const label = m.email || (m.userId ? "Member" : "Invited");
+            const canManage = isOwner && m.role !== "owner";
+            return (
+              <div
+                key={m.id}
+                className="group flex items-center gap-2.5 px-2 py-1.5 rounded-xl hover:bg-black/[0.03] dark:hover:bg-white/[0.03] transition-colors"
+              >
+                <div
+                  className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-[0.6875rem] font-semibold ${
+                    pending
+                      ? "bg-black/[0.05] dark:bg-white/[0.08] text-black/40 dark:text-white/40"
+                      : "bg-blue-500/15 text-blue-600 dark:text-blue-300"
+                  }`}
+                >
+                  {initialFor(label)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-black/85 dark:text-white/85 truncate">
+                    {label}
+                    {m.isSelf && <span className="text-black/40 dark:text-white/40"> (you)</span>}
+                  </div>
+                  {pending && (
+                    <div className="text-[0.625rem] text-amber-600 dark:text-amber-500">
+                      Invite pending
+                    </div>
+                  )}
+                </div>
+                {canManage ? (
+                  <select
+                    value={m.role}
+                    onChange={(e) => handleRole(m, e.target.value)}
+                    className="text-[0.6875rem] px-1.5 py-1 rounded-md border border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/65 dark:text-white/65 outline-none focus:border-blue-500/40 cursor-pointer"
+                    title="Change access level"
+                  >
+                    <option value="editor">Editor</option>
+                    <option value="viewer">Viewer</option>
+                  </select>
+                ) : (
+                  <span
+                    className={`text-[0.625rem] px-1.5 py-0.5 rounded-full capitalize ${ROLE_BADGE[m.role] || ROLE_BADGE.viewer}`}
+                  >
+                    {m.role}
+                  </span>
+                )}
+                {canManage && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(m)}
+                    className="shrink-0 w-6 h-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500/10 text-black/40 dark:text-white/40 hover:text-red-500 transition-all"
+                    title="Remove from project"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1174,16 +1399,18 @@ export default function ProjectDetailPage() {
   // without a manual refresh (mirrors LyknTodosPanel / LyknCalendarDialog).
   useEffect(() => {
     if (!userId) return undefined;
+    // Scope realtime to this project (not just our own rows) so a collaborator's
+    // task/event changes on a SHARED project show up live for every member.
     const channel = supabase
       .channel(`project-workspace:${userId}:${projectId}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "lykn_todos", filter: `user_id=eq.${userId}` },
+        { event: "*", schema: "public", table: "lykn_todos", filter: `project_id=eq.${projectId}` },
         () => refetchTodos(),
       )
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "lykn_events", filter: `user_id=eq.${userId}` },
+        { event: "*", schema: "public", table: "lykn_events", filter: `project_id=eq.${projectId}` },
         () => refetchEvents(),
       )
       .subscribe();
@@ -1289,6 +1516,11 @@ export default function ProjectDetailPage() {
 
   const isActive = project.status === "active";
   const isFocus = focusProjectId === project.id;
+  // Collaboration roles (109/110). Owner controls metadata + members; editors
+  // can write shared content (tasks / events / state); viewers are read-only.
+  const role = project.role || "owner";
+  const isOwner = role === "owner";
+  const canEdit = role === "owner" || role === "editor";
   const groups = splitMembers(project.members);
   const existingNodeIds = new Set(project.members.map((m) => m.nodeId));
   // Vault note ids already in the project (members are stored `vault_<id>`),
@@ -1369,6 +1601,15 @@ export default function ProjectDetailPage() {
                   AI focus
                 </span>
               )}
+              {project.isShared && (
+                <span
+                  className="inline-flex items-center gap-1 text-[0.625rem] px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                  title={`Shared with you · ${role} access`}
+                >
+                  <Users className="w-3 h-3" />
+                  Shared · {role}
+                </span>
+              )}
             </div>
             <p className="text-xs text-black/45 dark:text-white/50 mt-1">
               {project.description || "No description."}{" "}
@@ -1383,25 +1624,31 @@ export default function ProjectDetailPage() {
 
         {/* Action bar */}
         <div className="mt-4 flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => {
-              setShowNeuronPicker(false);
-              setVaultPanelOpen(true);
-            }}
-            className={actionBtn(vaultPanelOpen)}
-          >
-            <Library className="w-3 h-3" />
-            Add from vault
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowNeuronPicker((v) => !v)}
-            className={actionBtn(showNeuronPicker)}
-          >
-            <Plus className="w-3 h-3" />
-            Add neurons
-          </button>
+          {/* Neuron/vault clustering is personal (not shared in v1), so it's
+              only offered on projects you own. */}
+          {!project.isShared && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNeuronPicker(false);
+                  setVaultPanelOpen(true);
+                }}
+                className={actionBtn(vaultPanelOpen)}
+              >
+                <Library className="w-3 h-3" />
+                Add from vault
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowNeuronPicker((v) => !v)}
+                className={actionBtn(showNeuronPicker)}
+              >
+                <Plus className="w-3 h-3" />
+                Add neurons
+              </button>
+            </>
+          )}
           <div className="flex-1" />
           <button
             type="button"
@@ -1413,16 +1660,18 @@ export default function ProjectDetailPage() {
             <Crosshair className="w-3 h-3" />
             {isFocus ? "AI focus ✓" : "Set AI focus"}
           </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={handleToggleStatus}
-            title={isActive ? "Archive — hides it from AI context" : "Reactivate this project"}
-            className={actionBtn(false)}
-          >
-            {isActive ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-            {isActive ? "Deactivate" : "Activate"}
-          </button>
+          {isOwner && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={handleToggleStatus}
+              title={isActive ? "Archive — hides it from AI context" : "Reactivate this project"}
+              className={actionBtn(false)}
+            >
+              {isActive ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+              {isActive ? "Deactivate" : "Activate"}
+            </button>
+          )}
         </div>
 
         {showNeuronPicker && (
@@ -1474,6 +1723,7 @@ export default function ProjectDetailPage() {
             onChanged={refetchEvents}
             filterDay={selectedDay}
             onClearFilter={() => setSelectedDay(null)}
+            canEdit={canEdit}
           />
         </div>
 
@@ -1500,7 +1750,12 @@ export default function ProjectDetailPage() {
               </div>
             )}
           </div>
-          <TasksPanel userId={userId} projectId={projectId} todos={todos} onChanged={refetchTodos} />
+          <TasksPanel userId={userId} projectId={projectId} todos={todos} onChanged={refetchTodos} canEdit={canEdit} />
+        </div>
+
+        {/* People — collaborators on this project */}
+        <div className="mt-3">
+          <MembersCard userId={userId} projectId={projectId} isOwner={isOwner} />
         </div>
 
         {/* Knowledge / members */}
@@ -1547,16 +1802,18 @@ export default function ProjectDetailPage() {
         </div>
 
         {/* Footer */}
-        <div className="mt-5 flex justify-end">
-          <button
-            type="button"
-            onClick={handleDelete}
-            className="inline-flex items-center gap-1.5 text-[0.6875rem] px-2 py-1 rounded-md text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
-          >
-            <Trash2 className="w-3 h-3" />
-            Delete project
-          </button>
-        </div>
+        {isOwner && (
+          <div className="mt-5 flex justify-end">
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="inline-flex items-center gap-1.5 text-[0.6875rem] px-2 py-1 rounded-md text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <Trash2 className="w-3 h-3" />
+              Delete project
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Vault picker pop-up — a centered modal (like the chat page's vault)

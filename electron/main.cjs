@@ -25,6 +25,13 @@ const {
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs/promises");
+const crypto = require("node:crypto");
+const { execFile } = require("node:child_process");
+const {
+  collectBrowserInteractables,
+  executeBrowserActions,
+  sanitizePlanActions,
+} = require("./browserAct.cjs");
 
 const IMAGE_MIME_BY_EXT = {
   ".png": "image/png",
@@ -119,11 +126,14 @@ function isAuthOrigin(origin) {
 let mainWindow = null;
 /** @type {BrowserWindow | null} */
 let overlayWindow = null;
+/** @type {BrowserWindow | null} */
+let onboardingWindow = null;
 
-// Once the user drags the bar we stop auto-centering it. We anchor by its
-// BOTTOM edge so it grows upward in place as answers stream in.
+// Once the user drags the bar we stop auto-centering it. We anchor by the
+// BOTTOM-RIGHT corner so the chat column stays put as answers stream in (grows
+// up) and as the left source panel opens/closes (grows left).
 let overlayUserPositioned = false;
-let overlayAnchorX = null;
+let overlayAnchorLeft = null;
 let overlayAnchorBottomY = null;
 let overlayProgrammaticMove = false;
 
@@ -232,8 +242,10 @@ function setupSystemAudioCapture() {
 /*  that reads the screen behind it.                                    */
 /* ------------------------------------------------------------------ */
 
-const OVERLAY_WIDTH = 720;
-const OVERLAY_MIN_HEIGHT = 64;
+const OVERLAY_WIDTH = 520; // the chat column
+const OVERLAY_SIDE_WIDTH = 300; // side panels (sources right, more menu left)
+const OVERLAY_MAX_WIDTH = OVERLAY_WIDTH + OVERLAY_SIDE_WIDTH;
+const OVERLAY_MIN_HEIGHT = 82;
 const OVERLAY_BOTTOM_MARGIN = 90;
 
 function overlayPosition(height) {
@@ -288,6 +300,11 @@ function createOverlayWindow() {
   });
 
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
+  // Exclude the overlay itself from screen capture (NSWindowSharingNone on
+  // macOS). The user still sees the glass bar, but our own screenshots — and
+  // any other screen recording — won't include it, so LYKN never "sees" its own
+  // chat window when reading the screen.
+  overlayWindow.setContentProtection(true);
   // canJoinAllSpaces + fullScreenAuxiliary so the panel appears on the CURRENT
   // Space (over full-screen apps too); skipTransformProcessType stops macOS
   // from switching Spaces when it shows.
@@ -303,7 +320,7 @@ function createOverlayWindow() {
     if (overlayProgrammaticMove || !overlayWindow) return;
     const b = overlayWindow.getBounds();
     overlayUserPositioned = true;
-    overlayAnchorX = b.x;
+    overlayAnchorLeft = b.x;
     overlayAnchorBottomY = b.y + b.height;
   });
 
@@ -326,25 +343,21 @@ function setOverlayCollapsed(collapsed) {
   overlayCollapsed = !!collapsed;
   const { workArea } = screen.getPrimaryDisplay();
   const b = overlayWindow.getBounds();
-  let w;
-  let h;
-  if (collapsed) {
-    w = OVERLAY_BUBBLE;
-    h = OVERLAY_BUBBLE;
-  } else {
-    w = OVERLAY_WIDTH;
-    h = OVERLAY_MIN_HEIGHT;
-  }
-  // Keep the horizontal center and the bottom edge fixed across the swap.
-  let x = b.x + Math.round((b.width - w) / 2);
-  let y = b.y + b.height - h;
+  const w = collapsed ? OVERLAY_BUBBLE : OVERLAY_WIDTH;
+  const h = collapsed ? OVERLAY_BUBBLE : OVERLAY_MIN_HEIGHT;
+  // Keep the bottom-left corner fixed across the swap so the chat column stays
+  // put (it lives on the left; the bubble takes the chat's bottom-left spot).
+  const left = b.x;
+  const bottom = b.y + b.height;
+  let x = left;
+  let y = bottom - h;
   x = Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - w));
   y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
 
   if (!collapsed) {
     // Anchor future growth to where the panel reappears.
     overlayUserPositioned = true;
-    overlayAnchorX = x;
+    overlayAnchorLeft = x;
     overlayAnchorBottomY = y + h;
   }
 
@@ -353,26 +366,30 @@ function setOverlayCollapsed(collapsed) {
   overlayProgrammaticMove = false;
 }
 
-function setOverlayHeight(height) {
+// Size the window to the renderer-reported content. Width varies with side panels;
+// we anchor the chat column's left edge so it never shifts when panels open.
+function setOverlaySize(width, height) {
   if (!overlayWindow || overlayCollapsed) return;
-  const h = Math.max(OVERLAY_MIN_HEIGHT, Math.min(Math.round(height), 640));
+  const w = Math.max(OVERLAY_WIDTH, Math.min(Math.round(width || OVERLAY_WIDTH), OVERLAY_MAX_WIDTH));
+  const h = Math.max(OVERLAY_MIN_HEIGHT, Math.min(Math.round(height), 760));
   const { workArea } = screen.getPrimaryDisplay();
 
-  let x;
-  let y;
-  if (overlayUserPositioned && overlayAnchorX != null && overlayAnchorBottomY != null) {
-    x = overlayAnchorX;
-    y = overlayAnchorBottomY - h;
+  let chatLeft;
+  let bottom;
+  if (overlayUserPositioned && overlayAnchorLeft != null && overlayAnchorBottomY != null) {
+    chatLeft = overlayAnchorLeft;
+    bottom = overlayAnchorBottomY;
   } else {
-    const pos = overlayPosition(h);
-    x = pos.x;
-    y = pos.y;
+    chatLeft = Math.round(workArea.x + workArea.width / 2 - OVERLAY_WIDTH / 2);
+    bottom = workArea.y + workArea.height - OVERLAY_BOTTOM_MARGIN;
   }
-  // Keep it on-screen.
+  const x = chatLeft;
+  let y = bottom - h;
+  const clampedX = Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - w));
   y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
 
   overlayProgrammaticMove = true;
-  overlayWindow.setBounds({ x: Math.round(x), y: Math.round(y), width: OVERLAY_WIDTH, height: h });
+  overlayWindow.setBounds({ x: Math.round(clampedX), y: Math.round(y), width: w, height: h });
   overlayProgrammaticMove = false;
 }
 
@@ -490,6 +507,60 @@ async function getAuthToken() {
   }
 }
 
+function overlaySessionsPath() {
+  return path.join(app.getPath("userData"), "overlay-sessions.json");
+}
+
+async function readOverlaySessionsStore() {
+  try {
+    const raw = await fs.readFile(overlaySessionsPath(), "utf8");
+    const data = JSON.parse(raw);
+    return {
+      sessions: Array.isArray(data.sessions) ? data.sessions : [],
+      currentSessionId: data.currentSessionId || null,
+    };
+  } catch {
+    return { sessions: [], currentSessionId: null };
+  }
+}
+
+async function writeOverlaySessionsStore(store) {
+  await fs.writeFile(overlaySessionsPath(), JSON.stringify(store, null, 2), "utf8");
+}
+
+function overlaySessionTitle(messages) {
+  const firstUser = (messages || []).find((m) => m && m.role === "user" && String(m.content || "").trim());
+  if (firstUser) return String(firstUser.content).trim().slice(0, 72);
+  return "⌘L chat";
+}
+
+function overlaySessionPreview(messages) {
+  for (let i = (messages || []).length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    const text = String(m?.content || "").trim();
+    if (text) return text.slice(0, 140);
+  }
+  return "";
+}
+
+async function fetchAppChatsForOverlay() {
+  const token = await getAuthToken();
+  if (!token) return { chats: [], error: "not_signed_in" };
+  try {
+    const res = await fetch(`${API_BASE}/api/desktop/chats?limit=40`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { chats: [], error: body || `http_${res.status}` };
+    }
+    const data = await res.json();
+    return { chats: Array.isArray(data.chats) ? data.chats : [] };
+  } catch (e) {
+    return { chats: [], error: e && e.message ? e.message : "fetch_failed" };
+  }
+}
+
 // Capture the screen, send it + the user's question to LYKN's streaming chat
 // endpoint, and forward text deltas to the overlay. Runs in the main process so
 // there's no CORS and the screenshot never touches the renderer.
@@ -497,6 +568,370 @@ async function getAuthToken() {
 // bar with the question, mic/send buttons, and any live transcript). Without
 // this note the model "reads" its own UI back to the user ("…and there's a chat
 // bar that says…"). Tell it to treat the overlay as invisible.
+// Ask macOS (via AppleScript) for the URL of the active tab in the frontmost
+// browser. When LYKN's overlay has keyboard focus our own app is "frontmost",
+// so we fall back to the first running browser that has an open window. This
+// lets the user just ask "what's this article about?" without pasting a link.
+function runOsascript(script, timeout = 4000) {
+  return new Promise((resolve) => {
+    execFile("osascript", ["-e", script], { timeout }, (err, stdout, stderr) => {
+      if (err) {
+        const msg = String((stderr || "") + " " + (err.message || "")).trim();
+        resolve({ error: msg || String(err.code || err) });
+        return;
+      }
+      resolve({ out: String(stdout || "").trim() });
+    });
+  });
+}
+
+// Two-step so the AppleScript always compiles:
+//   1) a no-app-terms script picks the browser (frontmost, else first running),
+//   2) a literal `tell application "<name>"` reads its active tab's URL.
+// Step 2 only runs for an app we know is open, so its dictionary always exists —
+// avoiding the "variable app name + app-specific terms" compile error.
+async function getActiveBrowserTarget() {
+  if (process.platform !== "darwin") return null;
+  const pickScript = `
+tell application "System Events"
+  set frontApp to name of first application process whose frontmost is true
+  set runningApps to name of (every process whose background only is false)
+end tell
+set allBrowsers to {"Safari", "Safari Technology Preview", "Google Chrome", "Google Chrome Canary", "Brave Browser", "Microsoft Edge", "Arc", "Chromium", "Opera", "Vivaldi", "Dia", "Sidekick"}
+if frontApp is in allBrowsers then return frontApp
+repeat with b in allBrowsers
+  if (b as string) is in runningApps then return (b as string)
+end repeat
+return ""
+`;
+  const pick = await runOsascript(pickScript);
+  if (pick.error) {
+    console.log("[scrape] browser-detect error:", pick.error);
+    if (/-1743|not authoriz/i.test(pick.error)) {
+      console.log(
+        "[scrape] → Grant Automation permission: System Settings → Privacy & " +
+          "Security → Automation → enable System Events for LYKN/Electron.",
+      );
+    }
+    return null;
+  }
+  const appName = pick.out;
+  if (!appName) {
+    console.log("[scrape] no browser frontmost or running");
+    return null;
+  }
+  const tabExpr = /^Safari/.test(appName) ? "current tab" : "active tab";
+  // appName comes from the fixed allowlist above, so it's safe to interpolate.
+  const r = await runOsascript(
+    `tell application "${appName}" to get URL of ${tabExpr} of front window`,
+  );
+  if (r.error) {
+    console.log(`[scrape] url-read error (${appName}):`, r.error);
+    if (/-1743|not authoriz/i.test(r.error)) {
+      console.log(`[scrape] → Grant Automation permission for ${appName} under LYKN/Electron.`);
+    }
+    return null;
+  }
+  return /^https?:\/\//i.test(r.out) ? { appName, url: r.out } : null;
+}
+
+// Read the LIVE rendered text from the user's active browser tab via AppleScript
+// JS execution. This is the most robust "scrape" — it sees exactly what the user
+// sees, bypassing bot blocks, Cloudflare, and paywalls (it's their real session).
+// Requires the browser's "Allow JavaScript from Apple Events" setting (Chrome:
+// View → Developer; Safari: Develop menu). Returns "title\n<body text>" or null.
+async function getBrowserPageText(appName) {
+  // No double quotes or backslashes in this JS so it embeds cleanly in the
+  // AppleScript double-quoted string (AppleScript treats \n etc. as escapes).
+  const js =
+    "(function(){var e=document.querySelector('article')||document.querySelector('main')||document.body;" +
+    "var t=(document.title||'')+String.fromCharCode(10)+(e?e.innerText:'');return t.slice(0,15000);})()";
+  const isSafari = /^Safari/.test(appName);
+  const script = isSafari
+    ? `tell application "${appName}" to do JavaScript "${js}" in current tab of front window`
+    : `tell application "${appName}" to execute active tab of front window javascript "${js}"`;
+  const r = await runOsascript(script, 6000);
+  if (r.error) {
+    if (/turned off|not allowed|Allow JavaScript|Apple Events/i.test(r.error)) {
+      console.log(
+        `[scrape] live-DOM read off for ${appName} — enable "Allow JavaScript from ` +
+          `Apple Events" (Chrome: View → Developer). Falling back to HTTP fetch.`,
+      );
+    } else {
+      console.log(`[scrape] live-DOM read error (${appName}):`, r.error);
+    }
+    return null;
+  }
+  const out = (r.out || "").trim();
+  return out.length > 40 ? out : null;
+}
+
+function decodeHtmlEntities(s) {
+  if (!s) return "";
+  return String(s)
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => {
+      try {
+        return String.fromCodePoint(parseInt(n, 10));
+      } catch {
+        return "";
+      }
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => {
+      try {
+        return String.fromCodePoint(parseInt(n, 16));
+      } catch {
+        return "";
+      }
+    });
+}
+
+// Fetch a web page and extract its readable text. Best-effort HTML→text with no
+// dependencies: drop scripts/styles/nav chrome, prefer <article>/<main> content,
+// strip tags, decode entities, collapse whitespace, and cap the length.
+async function scrapePageText(url) {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 9000);
+    let res;
+    try {
+      res = await fetch(url, {
+        signal: ctrl.signal,
+        redirect: "follow",
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml",
+        },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res || !res.ok) return null;
+    const ctype = res.headers.get("content-type") || "";
+    if (!/text\/html|application\/xhtml/i.test(ctype)) return null;
+
+    let html = await res.text();
+    const titleM = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const title = titleM ? decodeHtmlEntities(titleM[1]).replace(/\s+/g, " ").trim() : "";
+
+    // Strip non-content elements before extracting text.
+    html = html
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+      .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+      .replace(/<(nav|header|footer|aside|form)[\s\S]*?<\/\1>/gi, " ");
+
+    // Prefer the main article body when the page marks one up.
+    const main =
+      html.match(/<article[^>]*>([\s\S]*?)<\/article>/i) ||
+      html.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
+    const source = main ? main[1] : html;
+
+    const text = decodeHtmlEntities(
+      source
+        .replace(/<\/(p|div|li|h[1-6]|tr|section)>/gi, "\n")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<[^>]+>/g, " "),
+    )
+      .replace(/[ \t\f\v]+/g, " ")
+      .replace(/\n\s*\n\s*\n+/g, "\n\n")
+      .replace(/^[ \t]+|[ \t]+$/gm, "")
+      .trim();
+
+    if (!text) return null;
+    return { url, title, text: text.slice(0, 12000) };
+  } catch {
+    return null;
+  }
+}
+
+// Pull the YouTube video id from a watch / youtu.be / shorts / embed URL.
+function parseYouTubeId(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") return u.pathname.slice(1).split("/")[0] || null;
+    if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+      if (u.pathname === "/watch") return u.searchParams.get("v");
+      const m = u.pathname.match(/^\/(shorts|embed|live|v)\/([^/?#]+)/);
+      if (m) return m[2];
+    }
+  } catch {
+    /* not a URL */
+  }
+  return null;
+}
+
+// Fetch the transcript from INSIDE the user's tab. YouTube now binds timedtext
+// URLs to the originating session/IP, so a server fetch returns empty — but an
+// in-page fetch uses the user's own session and works. AppleScript can't await a
+// promise, so we kick off the fetch (stashing the result on window.__lyknYT) and
+// then poll for it.
+async function getBrowserYouTubeTranscript(appName) {
+  if (!appName) return null;
+  const isSafari = /^Safari/.test(appName);
+  const wrap = (js) =>
+    isSafari
+      ? `tell application "${appName}" to do JavaScript "${js}" in current tab of front window`
+      : `tell application "${appName}" to execute active tab of front window javascript "${js}"`;
+
+  // No double quotes or backslashes in this JS (it embeds in an AppleScript
+  // double-quoted string). json3 captions parse cleanly into events[].segs[].
+  const kick =
+    "(function(){try{var r=window.ytInitialPlayerResponse;" +
+    "var tt=r&&r.captions&&r.captions.playerCaptionsTracklistRenderer&&r.captions.playerCaptionsTracklistRenderer.captionTracks;" +
+    "if(!tt||!tt.length){window.__lyknYT={status:'notracks'};return 'notracks';}" +
+    "var en=tt.filter(function(t){return /^en/i.test(t.languageCode||'')&&t.kind!=='asr';});" +
+    "var en2=tt.filter(function(t){return /^en/i.test(t.languageCode||'');});" +
+    "var pick=en[0]||en2[0]||tt[0];var u=pick.baseUrl;" +
+    "if(u.indexOf('fmt=')<0){u+=(u.indexOf('?')<0?'?':'&')+'fmt=json3';}" +
+    "window.__lyknYT={status:'loading',title:document.title};" +
+    "fetch(u).then(function(x){return x.text();}).then(function(txt){var out='';" +
+    "try{var j=JSON.parse(txt);if(j&&j.events){out=j.events.map(function(e){return (e.segs||[]).map(function(s){return s.utf8||'';}).join('');}).join(' ');}}catch(e){out=txt;}" +
+    "window.__lyknYT={status:'done',title:document.title,text:(out||'').slice(0,20000)};})" +
+    ".catch(function(e){window.__lyknYT={status:'error'};});return 'started';}" +
+    "catch(e){window.__lyknYT={status:'error'};return 'error';}})()";
+
+  const start = await runOsascript(wrap(kick), 6000);
+  if (start.error) {
+    if (/turned off|Allow JavaScript|Apple Events/i.test(start.error)) {
+      console.log(
+        `[scrape] yt: live-DOM JS off for ${appName} — enable "Allow JavaScript from Apple Events".`,
+      );
+    } else {
+      console.log("[scrape] yt kick error:", start.error);
+    }
+    return null;
+  }
+  if (/notracks|^error$/.test((start.out || "").trim())) return null;
+
+  const pollJs =
+    "(function(){try{return JSON.stringify(window.__lyknYT||null);}catch(e){return '';}})()";
+  for (let i = 0; i < 18; i++) {
+    await new Promise((r) => setTimeout(r, 350));
+    const p = await runOsascript(wrap(pollJs), 4000);
+    if (p.error || !p.out) continue;
+    let obj = null;
+    try {
+      obj = JSON.parse(p.out);
+    } catch {
+      continue;
+    }
+    if (!obj) continue;
+    if (obj.status === "done" && obj.text) {
+      const text = String(obj.text).replace(/\s+/g, " ").trim();
+      if (text) return { title: obj.title || "", text: text.slice(0, 16000) };
+      return null;
+    }
+    if (obj.status === "error" || obj.status === "notracks") return null;
+  }
+  return null;
+}
+
+// Fetch a YouTube video's caption transcript. Tries the in-page method first
+// (reliable, uses the user's session), then falls back to a server-side fetch of
+// the watch page + timedtext (works for some videos / when no browser JS access).
+async function fetchYouTubeTranscript(videoId, appName) {
+  const inPage = await getBrowserYouTubeTranscript(appName);
+  if (inPage && inPage.text) {
+    console.log("[scrape] yt transcript via live tab");
+    return inPage;
+  }
+
+  let title = "";
+  let tracks = null;
+
+  // 1) Live tab — most reliable (bypasses YouTube's bot checks).
+  if (appName && !/^Safari/.test(appName)) {
+    const js =
+      "(function(){try{var r=window.ytInitialPlayerResponse;" +
+      "var t=r&&r.captions&&r.captions.playerCaptionsTracklistRenderer&&r.captions.playerCaptionsTracklistRenderer.captionTracks;" +
+      "return JSON.stringify({title:document.title,tracks:t||[]});}catch(e){return '';}})()";
+    const r = await runOsascript(
+      `tell application "${appName}" to execute active tab of front window javascript "${js}"`,
+      6000,
+    );
+    if (!r.error && r.out) {
+      try {
+        const parsed = JSON.parse(r.out);
+        title = parsed.title || "";
+        if (Array.isArray(parsed.tracks) && parsed.tracks.length) tracks = parsed.tracks;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  // 2) Fallback: fetch the watch page HTML and regex out the caption tracks.
+  if (!tracks) {
+    try {
+      const res = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+      });
+      const html = await res.text();
+      if (!title) {
+        const tm = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        if (tm) title = decodeHtmlEntities(tm[1]).replace(/\s*-\s*YouTube\s*$/, "").trim();
+      }
+      const m = html.match(/"captionTracks":(\[.*?\])(?:,"audioTracks"|,"translationLanguages"|\})/);
+      if (m) {
+        try {
+          tracks = JSON.parse(m[1].replace(/\\u0026/g, "&"));
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!Array.isArray(tracks) || !tracks.length) return null;
+
+  // Prefer a manually-authored English track, then any English, then the first.
+  const pick =
+    tracks.find((t) => /^en/i.test(t.languageCode || "") && t.kind !== "asr") ||
+    tracks.find((t) => /^en/i.test(t.languageCode || "")) ||
+    tracks[0];
+  let baseUrl = pick && pick.baseUrl;
+  if (!baseUrl) return null;
+  baseUrl = baseUrl.replace(/\\u0026/g, "&");
+
+  try {
+    const res = await fetch(baseUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    const xml = await res.text();
+    const parts = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map((m) =>
+      decodeHtmlEntities(m[1].replace(/<[^>]+>/g, " ")),
+    );
+    const text = parts.join(" ").replace(/\s+/g, " ").trim();
+    if (!text) return null;
+    return { title, text: text.slice(0, 16000) };
+  } catch {
+    return null;
+  }
+}
+
 const OVERLAY_IGNORE_NOTE =
   "IMPORTANT: Ignore LYKN's own interface in the image — a translucent floating " +
   "glass bar/panel (it may contain this same question, an input field, mic/send " +
@@ -538,11 +973,87 @@ async function streamScreenAnswer(event, { text, history, attachments }) {
     return;
   }
 
+  // If the user is looking at a web page, pull the live URL from the frontmost
+  // browser and scrape the full article text so the model reads the real content
+  // (not just OCR of the visible viewport). Best-effort — falls back silently.
+  let pageContext = null;
+  if (imageAtts.length === 0) {
+    try {
+      const target = await getActiveBrowserTarget();
+      console.log(
+        "[scrape] active browser URL:",
+        target ? `${target.url} (${target.appName})` : "(none detected)",
+      );
+      if (target && target.url) {
+        let title = "";
+        let text = "";
+        let kind = "page";
+
+        // YouTube (or other video): the spoken content isn't in the page text,
+        // so fetch the caption transcript instead.
+        const ytId = parseYouTubeId(target.url);
+        if (ytId) {
+          send("lykn:answer-status", { status: "Reading the video transcript…" });
+          const yt = await fetchYouTubeTranscript(ytId, target.appName);
+          if (yt && yt.text) {
+            title = yt.title || "";
+            text = yt.text;
+            kind = "video";
+            console.log(`[scrape] OK (yt transcript) — "${title || ytId}" (${text.length} chars)`);
+          } else {
+            console.log("[scrape] no transcript/captions available for video", ytId);
+          }
+        }
+
+        if (text) {
+          // already have video transcript — skip the DOM/HTTP path below
+          pageContext = { url: target.url, title, text: text.slice(0, 16000), kind };
+          send("lykn:page-source", { url: target.url, title });
+        } else {
+        send("lykn:answer-status", { status: "Reading the page…" });
+        // 1) Live rendered DOM from the user's own tab (most reliable).
+        const live = await getBrowserPageText(target.appName);
+        if (live) {
+          const nl = live.indexOf("\n");
+          title = nl > 0 ? live.slice(0, nl).trim() : "";
+          text = (nl > 0 ? live.slice(nl + 1) : live)
+            .replace(/[ \t]+/g, " ")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+          console.log(`[scrape] OK (live DOM) — "${title || "(no title)"}" (${text.length} chars)`);
+        } else {
+          // 2) Fall back to a plain HTTP fetch (works for non-bot-blocked pages).
+          const page = await scrapePageText(target.url);
+          if (page && page.text) {
+            title = page.title;
+            text = page.text;
+            console.log(`[scrape] OK (http) — "${title || "(no title)"}" (${text.length} chars)`);
+          }
+        }
+          if (text) {
+            pageContext = { url: target.url, title, text: text.slice(0, 12000) };
+            send("lykn:page-source", { url: target.url, title });
+          } else {
+            console.log("[scrape] failed to extract text from", target.url);
+          }
+        }
+      }
+    } catch (e) {
+      console.log("[scrape] error:", e && e.message ? e.message : e);
+    }
+  }
+
   let prompt = dataURL
-    ? "The attached image is a screenshot of the user's current screen. Use it to answer " +
-      "their question about what is on screen. Be concise and specific. " +
+    ? "You are LYKN, a helpful assistant. The attached image is a screenshot of the " +
+      "user's current screen, provided as CONTEXT in case it's relevant. Decide based " +
+      "on the user's message: if they're asking about what's on their screen (this " +
+      "page, app, error, etc.), use the screenshot to answer specifically. If it's a " +
+      "general question or normal conversation that isn't about the screen, just answer " +
+      "it normally like a regular assistant — do NOT force the screen into your reply or " +
+      "describe what's on it. Be concise and specific. " +
       OVERLAY_IGNORE_NOTE
-    : "Use the attached image(s) and any files below to answer the user's question. " +
+    : "You are LYKN, a helpful assistant. Use the attached image(s) and any files below " +
+      "if they're relevant to the user's question; otherwise just answer normally. " +
       "Be concise and specific.";
   prompt +=
     "\n\nFormat your answer in clean Markdown: use short ## headers to group " +
@@ -555,6 +1066,27 @@ async function streamScreenAnswer(event, { text, history, attachments }) {
       textAtts
         .map((a) => `--- ${a.name || "file"} ---\n${String(a.text).slice(0, 8000)}`)
         .join("\n\n");
+  }
+  if (pageContext && pageContext.kind === "video") {
+    prompt +=
+      "\n\nFor context, the user is currently watching this video and its spoken " +
+      "transcript (from captions) is provided below. If their question is about the " +
+      "video, use this transcript as the authoritative source — summarize, answer, or " +
+      "quote from it directly without asking them to paste anything. If their question " +
+      "is NOT about the video, ignore this and answer normally.\n" +
+      `URL: ${pageContext.url}\n` +
+      (pageContext.title ? `Video title: ${pageContext.title}\n` : "") +
+      `--- VIDEO TRANSCRIPT ---\n${pageContext.text}\n--- END VIDEO TRANSCRIPT ---`;
+  } else if (pageContext) {
+    prompt +=
+      "\n\nFor context, the user currently has this web page open and its full text " +
+      "was scraped below. If their question is about this page/article, use this text " +
+      "as the primary, authoritative source (it's more complete than the screenshot) " +
+      "and answer directly without asking for a link. If their question is NOT about " +
+      "this page, ignore it and just answer normally.\n" +
+      `URL: ${pageContext.url}\n` +
+      (pageContext.title ? `Page title: ${pageContext.title}\n` : "") +
+      `--- PAGE CONTENT ---\n${pageContext.text}\n--- END PAGE CONTENT ---`;
   }
   prompt += `\n\nUser: ${String(text || "").slice(0, 4000)}`;
 
@@ -744,7 +1276,22 @@ function registerOverlayIpc() {
       mainWindow.focus();
     }
   });
-  ipcMain.on("lykn:resize", (_e, height) => setOverlayHeight(height));
+  ipcMain.on("lykn:open-app-chat", (_e, chatId) => {
+    const id = String(chatId || "").trim();
+    const url = id ? `${APP_ORIGIN}/chat/${encodeURIComponent(id)}` : APP_URL;
+    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+    else mainWindow.loadURL(url);
+    mainWindow.show();
+    mainWindow.focus();
+  });
+  ipcMain.on("lykn:resize", (_e, payload) => {
+    // Back-compat: a bare number is height-only; an object carries width too.
+    if (payload && typeof payload === "object") {
+      setOverlaySize(payload.width, payload.height);
+    } else {
+      setOverlaySize(OVERLAY_WIDTH, payload);
+    }
+  });
   ipcMain.on("lykn:collapse", (_e, collapsed) => setOverlayCollapsed(!!collapsed));
   ipcMain.on("lykn:move-by", (_e, { dx, dy }) => {
     if (!overlayWindow) return;
@@ -754,10 +1301,8 @@ function registerOverlayIpc() {
     overlayProgrammaticMove = true;
     overlayWindow.setBounds({ x: nx, y: ny, width: b.width, height: b.height });
     overlayProgrammaticMove = false;
-    // Remember the new spot (anchored by bottom edge) so streaming answers
-    // grow in place instead of snapping back to center.
     overlayUserPositioned = true;
-    overlayAnchorX = nx;
+    overlayAnchorLeft = nx;
     overlayAnchorBottomY = ny + b.height;
   });
   ipcMain.on("lykn:ask", (event, args) => {
@@ -803,6 +1348,89 @@ function registerOverlayIpc() {
     } catch {
       return [];
     }
+  });
+
+  // Past chats — merge ⌘L overlay sessions (local) with app chats (Supabase).
+  ipcMain.handle("lykn:list-chats", async () => {
+    const store = await readOverlaySessionsStore();
+    const overlay = store.sessions
+      .map((s) => ({
+        id: s.id,
+        title: s.title || overlaySessionTitle(s.messages),
+        preview: overlaySessionPreview(s.messages),
+        updatedAt: s.updatedAt || null,
+        source: "overlay",
+      }))
+      .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+    const appResult = await fetchAppChatsForOverlay();
+    return {
+      overlay,
+      app: appResult.chats || [],
+      currentSessionId: store.currentSessionId,
+      error: appResult.error || null,
+    };
+  });
+
+  ipcMain.handle("lykn:get-overlay-session", async (_e, sessionId) => {
+    const id = String(sessionId || "").trim();
+    if (!id) return null;
+    const store = await readOverlaySessionsStore();
+    const session = store.sessions.find((s) => s.id === id);
+    return session || null;
+  });
+
+  ipcMain.handle("lykn:save-overlay-session", async (_e, payload = {}) => {
+    const messages = Array.isArray(payload.messages)
+      ? payload.messages
+          .filter((m) => m && (m.role === "user" || m.role === "assistant") && String(m.content || "").trim())
+          .map((m) => ({
+            role: m.role,
+            content: String(m.content).slice(0, 12000),
+            at: m.at || new Date().toISOString(),
+          }))
+      : [];
+    if (!messages.length) return { ok: false };
+
+    const store = await readOverlaySessionsStore();
+    let sessionId = String(payload.sessionId || store.currentSessionId || "").trim();
+    if (!sessionId) sessionId = crypto.randomUUID();
+
+    const now = new Date().toISOString();
+    const title = String(payload.title || "").trim() || overlaySessionTitle(messages);
+    const existingIdx = store.sessions.findIndex((s) => s.id === sessionId);
+    const session = {
+      id: sessionId,
+      title,
+      updatedAt: now,
+      messages,
+    };
+    if (existingIdx >= 0) store.sessions[existingIdx] = session;
+    else store.sessions.unshift(session);
+
+    store.sessions.sort(
+      (a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime(),
+    );
+    store.sessions = store.sessions.slice(0, 80);
+    store.currentSessionId = sessionId;
+    await writeOverlaySessionsStore(store);
+    return { ok: true, sessionId };
+  });
+
+  ipcMain.handle("lykn:new-overlay-session", async () => {
+    const store = await readOverlaySessionsStore();
+    const sessionId = crypto.randomUUID();
+    store.currentSessionId = sessionId;
+    await writeOverlaySessionsStore(store);
+    return { sessionId };
+  });
+
+  ipcMain.handle("lykn:ensure-overlay-session", async () => {
+    const store = await readOverlaySessionsStore();
+    if (store.currentSessionId) return { sessionId: store.currentSessionId };
+    const sessionId = crypto.randomUUID();
+    store.currentSessionId = sessionId;
+    await writeOverlaySessionsStore(store);
+    return { sessionId };
   });
 
   // Voice Mode: fetch an ElevenLabs session (signed URL / conversation token)
@@ -954,6 +1582,127 @@ function registerOverlayIpc() {
 
   // Cluely-style suggestions after an answer: follow-up questions + real source
   // links looked up on the web. Best-effort: returns empty on any failure.
+  // Browser control for the ⌘L overlay — scan interactables + plan/execute via
+  // AppleScript JavaScript in the user's active browser tab.
+  ipcMain.handle("lykn:browser-capability", async () => {
+    if (process.platform !== "darwin") {
+      return { ok: false, error: "unsupported", message: "Browser control is macOS-only for now." };
+    }
+    const target = await getActiveBrowserTarget();
+    if (!target) {
+      return { ok: false, error: "no_browser", message: "Open a browser tab first." };
+    }
+    const probe = await collectBrowserInteractables(runOsascript, target.appName);
+    if (probe.error === "apple_events_disabled") {
+      return {
+        ok: false,
+        error: "apple_events_disabled",
+        browser: target.appName,
+        url: target.url,
+        message: "Enable “Allow JavaScript from Apple Events” in your browser.",
+      };
+    }
+    if (probe.error) {
+      return {
+        ok: false,
+        error: probe.error,
+        browser: target.appName,
+        url: target.url,
+        message: probe.message || "Could not read the page.",
+      };
+    }
+    return {
+      ok: true,
+      browser: target.appName,
+      url: probe.page?.url || target.url,
+      title: probe.page?.title || "",
+      elementCount: Array.isArray(probe.page?.items) ? probe.page.items.length : 0,
+    };
+  });
+
+  ipcMain.handle("lykn:browser-plan", async (_e, { intent } = {}) => {
+    const fail = (error, extra = {}) => ({ ok: false, error, ...extra });
+    if (process.platform !== "darwin") return fail("unsupported");
+    const goal = String(intent || "").trim().slice(0, 500);
+    if (!goal) return fail("no_intent");
+    const target = await getActiveBrowserTarget();
+    if (!target) return fail("no_browser", { message: "Open a browser tab first." });
+    const collected = await collectBrowserInteractables(runOsascript, target.appName);
+    if (collected.error === "apple_events_disabled") {
+      return fail("apple_events_disabled", {
+        browser: target.appName,
+        url: target.url,
+        message: "Enable “Allow JavaScript from Apple Events” in your browser.",
+      });
+    }
+    if (collected.error || !collected.page) {
+      return fail(collected.error || "scan_failed", {
+        browser: target.appName,
+        url: target.url,
+        message: collected.message || "Could not scan the page.",
+      });
+    }
+    const token = await getAuthToken();
+    if (!token) return fail("no_auth", { message: "Sign in to LYKN to use browser control." });
+    try {
+      const res = await fetch(`${API_BASE}/api/desktop/browser-plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          intent: goal,
+          url: collected.page.url || target.url,
+          title: collected.page.title || "",
+          items: (collected.page.items || []).slice(0, 60),
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) {
+        return fail("plan_failed", { message: (data && data.error) || "Could not plan actions." });
+      }
+      const selectors = new Set(
+        (collected.page.items || []).map((i) => String(i.selector || "").trim()).filter(Boolean),
+      );
+      const actions = sanitizePlanActions(data.actions, selectors);
+      if (!actions.length) {
+        return fail("no_actions", {
+          message: "No safe actions could be planned for this page.",
+          explanation: String(data.explanation || "").trim(),
+        });
+      }
+      return {
+        ok: true,
+        browser: target.appName,
+        url: collected.page.url || target.url,
+        title: collected.page.title || "",
+        explanation: String(data.explanation || "").trim(),
+        actions,
+      };
+    } catch (e) {
+      return fail("plan_failed", { message: e && e.message ? e.message : "Could not plan actions." });
+    }
+  });
+
+  ipcMain.handle("lykn:browser-execute", async (_e, { actions, appName } = {}) => {
+    if (process.platform !== "darwin") return { ok: false, error: "unsupported" };
+    const browser = String(appName || "").trim();
+    if (!browser) return { ok: false, error: "no_browser" };
+    const steps = sanitizePlanActions(actions, null);
+    if (!steps.length) return { ok: false, error: "no_actions" };
+    try {
+      const results = await executeBrowserActions(runOsascript, browser, steps);
+      const failed = results.find((r) => !r.ok);
+      return {
+        ok: !failed,
+        results,
+        message: failed
+          ? `Stopped at “${failed.label || "step"}”: ${failed.error || "failed"}`
+          : "Done.",
+      };
+    } catch (e) {
+      return { ok: false, error: "execute_failed", message: e && e.message ? e.message : "Failed." };
+    }
+  });
+
   ipcMain.handle("lykn:suggest", async (_e, { question, answer } = {}) => {
     const empty = { followups: [], links: [] };
     try {
@@ -1022,8 +1771,115 @@ function buildAppMenu() {
       ],
     },
     { role: "windowMenu" },
+    {
+      role: "help",
+      submenu: [
+        { label: "Set Up LYKN / Permissions…", click: () => createOnboardingWindow() },
+      ],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/* ------------------------------------------------------------------ */
+/*  First-run setup — guide the user through the two permissions LYKN   */
+/*  needs (Screen Recording + "Allow JavaScript from Apple Events").    */
+/* ------------------------------------------------------------------ */
+
+function onboardingMarkerPath() {
+  return path.join(app.getPath("userData"), "onboarding-complete");
+}
+
+async function onboardingComplete() {
+  try {
+    await fs.access(onboardingMarkerPath());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createOnboardingWindow() {
+  if (onboardingWindow && !onboardingWindow.isDestroyed()) {
+    onboardingWindow.show();
+    onboardingWindow.focus();
+    return;
+  }
+  onboardingWindow = new BrowserWindow({
+    width: 560,
+    height: 600,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    title: "Set up LYKN",
+    backgroundColor: "#0b0b0f",
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    webPreferences: {
+      preload: path.join(__dirname, "onboarding-preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  onboardingWindow.loadFile(path.join(__dirname, "onboarding.html"));
+  onboardingWindow.on("closed", () => {
+    onboardingWindow = null;
+  });
+}
+
+function registerOnboardingIpc() {
+  ipcMain.handle("lykn:onboarding-screen-status", () => screenCaptureStatus());
+
+  ipcMain.handle("lykn:onboarding-request-screen", async () => {
+    // Attempting a capture is what makes macOS show the Screen Recording prompt
+    // and register LYKN in the privacy list.
+    try {
+      await capturePrimaryScreen();
+    } catch {
+      /* the prompt is the point; the capture itself may fail until granted */
+    }
+    return screenCaptureStatus();
+  });
+
+  ipcMain.on("lykn:onboarding-open-screen-settings", () => {
+    shell.openExternal(
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+    );
+  });
+
+  ipcMain.on("lykn:onboarding-open-automation-settings", () => {
+    shell.openExternal(
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
+    );
+  });
+
+  ipcMain.handle("lykn:onboarding-test-apple-events", async () => {
+    if (process.platform !== "darwin") return { state: "granted", browser: null };
+    const target = await getActiveBrowserTarget();
+    if (!target) return { state: "no-browser" };
+    const text = await getBrowserPageText(target.appName);
+    if (text) return { state: "granted", browser: target.appName };
+    // We had a browser/URL but couldn't read the DOM — almost always the toggle.
+    return {
+      state: "denied",
+      browser: target.appName,
+      message: "Enable 'Allow JavaScript from Apple Events'",
+    };
+  });
+
+  ipcMain.on("lykn:onboarding-finish", async () => {
+    try {
+      await fs.writeFile(onboardingMarkerPath(), new Date().toISOString());
+    } catch {
+      /* non-fatal */
+    }
+    if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.close();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
 }
 
 app.on("second-instance", () => {
@@ -1033,6 +1889,46 @@ app.on("second-instance", () => {
     mainWindow.focus();
   }
 });
+
+// Silent background auto-update via GitHub Releases (electron-updater). Only
+// runs in the packaged app — in dev there's no update feed. Downloads new
+// versions in the background and, once ready, offers a one-click restart.
+function initAutoUpdate() {
+  if (!app.isPackaged) return;
+  let autoUpdater;
+  try {
+    ({ autoUpdater } = require("electron-updater"));
+  } catch (e) {
+    console.log("[update] electron-updater unavailable:", e && e.message);
+    return;
+  }
+  autoUpdater.autoDownloadAll = true;
+  autoUpdater.on("error", (err) => {
+    console.log("[update] error:", err && err.message ? err.message : err);
+  });
+  autoUpdater.on("update-available", (info) => {
+    console.log("[update] available:", info && info.version);
+  });
+  autoUpdater.on("update-not-available", () => {
+    console.log("[update] up to date");
+  });
+  autoUpdater.on("update-downloaded", async (info) => {
+    console.log("[update] downloaded:", info && info.version);
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      buttons: ["Restart now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Update ready",
+      message: `LYKN ${info && info.version ? info.version : ""} is ready to install.`,
+      detail: "Restart LYKN to apply the update.",
+    });
+    if (response === 0) autoUpdater.quitAndInstall();
+  });
+  // Check on launch, then every 6 hours while the app stays open.
+  autoUpdater.checkForUpdates().catch(() => {});
+  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 6 * 60 * 60 * 1000);
+}
 
 app.whenReady().then(() => {
   // Present a clean Chrome user agent. Google (and some other providers) reject
@@ -1046,9 +1942,16 @@ app.whenReady().then(() => {
   setupSystemAudioCapture();
   buildAppMenu();
   registerOverlayIpc();
+  registerOnboardingIpc();
   createMainWindow();
   createOverlayWindow();
   registerGlobalHotkey();
+  initAutoUpdate();
+
+  // Show the permissions walkthrough once, on first launch.
+  onboardingComplete().then((done) => {
+    if (!done) createOnboardingWindow();
+  });
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
