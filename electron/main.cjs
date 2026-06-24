@@ -619,23 +619,23 @@ const DEPRIORITIZED_BROWSERS = new Set(["Safari Technology Preview"]);
 
 async function listRunningBrowserApps() {
   const listLiteral = `{${BROWSER_APP_NAMES.map((n) => `"${n}"`).join(", ")}}`;
-  // Ask each browser app directly if it's running — more reliable than System
-  // Events' process list when LYKN/Electron is frontmost.
+  // Match running *process* names — never `tell application "Arc"` unless Arc is
+  // actually open. Probing every app in the allowlist triggers macOS "Where is Arc?"
+  // file-picker dialogs for browsers that aren't installed.
   const pickScript = `
+tell application "System Events"
+  set procNames to name of every process
+end tell
 set allBrowsers to ${listLiteral}
 set out to ""
 repeat with b in allBrowsers
-  try
-    tell application (b as string)
-      if running then
-        if out is "" then
-          set out to (b as string)
-        else
-          set out to out & "|" & (b as string)
-        end if
-      end if
-    end tell
-  end try
+  if procNames contains (b as string) then
+    if out is "" then
+      set out to (b as string)
+    else
+      set out to out & "|" & (b as string)
+    end if
+  end if
 end repeat
 return out
 `;
