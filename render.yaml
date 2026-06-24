@@ -66,3 +66,24 @@ services:
     schedule: "30 3 * * *"
     buildCommand: npm install
     startCommand: node jobs/runConcepts.js
+
+  # -------------------------------------------------------------------
+  # Vault upload reconciler — runs jobs/runVaultReconciler.js.
+  # -------------------------------------------------------------------
+  # Backstop for the orphaned-upload race (migrations 111/112). `--apply`
+  # backfills storage_path from the content marker, flags rows whose storage
+  # object is missing as upload_state='missing', and SAFELY reaps abandoned
+  # in-flight uploads via the upload ledger. The DESTRUCTIVE reverse-scan
+  # leaked-file sweep stays OFF here — it requires VAULT_RECONCILER_DELETE_ENABLED=1
+  # AND an explicit --delete-leaked, neither of which is set, so this run is
+  # non-destructive (mark + safe ledger reap only).
+  #
+  # Schedule: 04:00 UTC, after the synthesis/concept jobs. Runtime budget at
+  # current scale: a couple of minutes (one RPC + a table scan).
+  - type: cron
+    name: lykinsai-vault-reconciler-nightly
+    runtime: node
+    plan: starter
+    schedule: "0 4 * * *"
+    buildCommand: npm install
+    startCommand: node jobs/runVaultReconciler.js --apply

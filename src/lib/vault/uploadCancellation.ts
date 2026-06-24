@@ -46,6 +46,40 @@ export function unregisterVaultUploadCancellation(itemId: string): void {
 }
 
 /**
+ * The COMMIT POINT for an upload.
+ *
+ * Call this synchronously the instant a `vault_items` row has been
+ * successfully inserted — *before* any `await`, `return`, or fire-and-forget
+ * post-processing. It atomically decides, in a single JS turn (no `await`
+ * inside, so no `cancelVaultUpload` can interleave), whether the upload is
+ * safe to keep:
+ *
+ *   - returns `true`  → the item was still live and un-aborted. The registry
+ *                       entry is deleted, so every *later* `cancelVaultUpload`
+ *                       for this id becomes a guaranteed no-op. The file and
+ *                       row are now committed and can't be reaped out from
+ *                       under each other.
+ *   - returns `false` → the user cancelled during/just before the insert
+ *                       (the entry is gone or its signal is aborted). The
+ *                       caller must roll back the just-created row (and the
+ *                       file) so we don't leave a row pointing at a storage
+ *                       object that `cancelVaultUpload` already deleted — the
+ *                       exact race this guards against.
+ *
+ * This replaces the old "unregister in `finally`" timing, which left a window
+ * between insert-commit and unregister where a dismiss could delete the file
+ * while the row survived.
+ */
+export function commitVaultUpload(itemId: string): boolean {
+  const entry = registry.get(itemId);
+  // Gone already → a cancel fired during the insert await. Aborted → the
+  // user dismissed but our `finally` hasn't run yet. Either way: not safe.
+  if (!entry || entry.controller.signal.aborted) return false;
+  registry.delete(itemId);
+  return true;
+}
+
+/**
  * Aborts the in-flight upload for `itemId` (if any) and best-effort
  * removes the partial storage object so we don't leak bytes. Safe to
  * call for unknown ids or items that have already finished — it's a
