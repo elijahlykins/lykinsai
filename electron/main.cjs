@@ -585,26 +585,44 @@ function runOsascript(script, timeout = 4000) {
   });
 }
 
-// Two-step so the AppleScript always compiles:
-//   1) a no-app-terms script picks the browser (frontmost, else first running),
-//   2) a literal `tell application "<name>"` reads its active tab's URL.
-// Step 2 only runs for an app we know is open, so its dictionary always exists —
-// avoiding the "variable app name + app-specific terms" compile error.
-async function getActiveBrowserTarget() {
-  if (process.platform !== "darwin") return null;
+const BROWSER_APP_NAMES = [
+  "Safari",
+  "Safari Technology Preview",
+  "Google Chrome",
+  "Google Chrome Canary",
+  "Brave Browser",
+  "Microsoft Edge",
+  "Arc",
+  "Chromium",
+  "Opera",
+  "Vivaldi",
+  "Dia",
+  "Sidekick",
+];
+
+async function listRunningBrowserApps() {
+  const listLiteral = `{${BROWSER_APP_NAMES.map((n) => `"${n}"`).join(", ")}}`;
+  // Ask each browser app directly if it's running — more reliable than System
+  // Events' process list when LYKN/Electron is frontmost.
   const pickScript = `
-tell application "System Events"
-  set frontApp to name of first application process whose frontmost is true
-  set runningApps to name of (every process whose background only is false)
-end tell
-set allBrowsers to {"Safari", "Safari Technology Preview", "Google Chrome", "Google Chrome Canary", "Brave Browser", "Microsoft Edge", "Arc", "Chromium", "Opera", "Vivaldi", "Dia", "Sidekick"}
-if frontApp is in allBrowsers then return frontApp
+set allBrowsers to ${listLiteral}
+set out to ""
 repeat with b in allBrowsers
-  if (b as string) is in runningApps then return (b as string)
+  try
+    tell application (b as string)
+      if running then
+        if out is "" then
+          set out to (b as string)
+        else
+          set out to out & "|" & (b as string)
+        end if
+      end if
+    end tell
+  end try
 end repeat
-return ""
+return out
 `;
-  const pick = await runOsascript(pickScript);
+  const pick = await runOsascript(pickScript, 8000);
   if (pick.error) {
     console.log("[scrape] browser-detect error:", pick.error);
     if (/-1743|not authoriz/i.test(pick.error)) {
@@ -613,26 +631,76 @@ return ""
           "Security → Automation → enable System Events for LYKN/Electron.",
       );
     }
-    return null;
+    return [];
   }
-  const appName = pick.out;
-  if (!appName) {
+  return String(pick.out || "")
+    .split("|")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+async function readBrowserTabUrl(appName) {
+  const isSafari = /^Safari/.test(appName);
+  if (isSafari) {
+    const r = await runOsascript(
+      `tell application "${appName}" to get URL of current tab of front window`,
+    );
+    if (r.error) {
+      console.log(`[scrape] url-read error (${appName}):`, r.error);
+      if (/-1743|not authoriz/i.test(r.error)) {
+        console.log(`[scrape] → Grant Automation permission for ${appName} under LYKN/Electron.`);
+      }
+      return null;
+    }
+    return /^https?:\/\//i.test(r.out) ? r.out : null;
+  }
+
+  // Chromium browsers: front window first, then scan any open window for http(s).
+  const scripts = [
+    `tell application "${appName}" to get URL of active tab of front window`,
+    `tell application "${appName}"
+      if (count of windows) is 0 then return ""
+      repeat with w in windows
+        try
+          set u to URL of active tab of w
+          if u starts with "http" then return u
+        end try
+      end repeat
+      return ""
+    end tell`,
+  ];
+  for (const script of scripts) {
+    const r = await runOsascript(script, 6000);
+    if (r.error) {
+      console.log(`[scrape] url-read error (${appName}):`, r.error);
+      if (/-1743|not authoriz/i.test(r.error)) {
+        console.log(`[scrape] → Grant Automation permission for ${appName} under LYKN/Electron.`);
+      }
+      continue;
+    }
+    if (/^https?:\/\//i.test(r.out)) return r.out;
+  }
+  return null;
+}
+
+// Two-step so the AppleScript always compiles:
+//   1) list running browsers (frontmost browser first when applicable),
+//   2) a literal `tell application "<name>"` reads its active tab's URL.
+// When LYKN's overlay has focus, Electron is frontmost — we try every running
+// browser until one has an http(s) tab (Safari in the background no longer blocks Chrome).
+async function getActiveBrowserTarget() {
+  if (process.platform !== "darwin") return null;
+  const candidates = await listRunningBrowserApps();
+  if (!candidates.length) {
     console.log("[scrape] no browser frontmost or running");
     return null;
   }
-  const tabExpr = /^Safari/.test(appName) ? "current tab" : "active tab";
-  // appName comes from the fixed allowlist above, so it's safe to interpolate.
-  const r = await runOsascript(
-    `tell application "${appName}" to get URL of ${tabExpr} of front window`,
-  );
-  if (r.error) {
-    console.log(`[scrape] url-read error (${appName}):`, r.error);
-    if (/-1743|not authoriz/i.test(r.error)) {
-      console.log(`[scrape] → Grant Automation permission for ${appName} under LYKN/Electron.`);
-    }
-    return null;
+  for (const appName of candidates) {
+    const url = await readBrowserTabUrl(appName);
+    if (url) return { appName, url };
   }
-  return /^https?:\/\//i.test(r.out) ? { appName, url: r.out } : null;
+  console.log("[scrape] browsers running but none have an http(s) front tab:", candidates.join(", "));
+  return null;
 }
 
 // Read the LIVE rendered text from the user's active browser tab via AppleScript
@@ -1626,7 +1694,10 @@ function registerOverlayIpc() {
     const goal = String(intent || "").trim().slice(0, 500);
     if (!goal) return fail("no_intent");
     const target = await getActiveBrowserTarget();
-    if (!target) return fail("no_browser", { message: "Open a browser tab first." });
+    if (!target) return fail("no_browser", {
+      message:
+        "No browser tab found. Open an https:// page in Chrome (not chrome://newtab), then try again.",
+    });
     const collected = await collectBrowserInteractables(runOsascript, target.appName);
     if (collected.error === "apple_events_disabled") {
       return fail("apple_events_disabled", {

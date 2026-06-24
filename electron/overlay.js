@@ -776,7 +776,12 @@ function browserActErrorMessage(plan) {
       "(Chrome: View → Developer). Then try again."
     );
   }
-  if (code === "no_browser") return "Open a browser tab first, then try again.";
+  if (code === "no_browser") {
+    return (
+      plan?.message ||
+      "No browser tab found. Open an https:// page in Chrome (not a blank new-tab page), then try again."
+    );
+  }
   if (code === "no_auth") return "Sign in to LYKN in the main app to use browser control.";
   if (code === "no_actions") {
     return (plan && plan.explanation) || "Could not plan any safe actions for this page.";
