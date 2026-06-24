@@ -776,6 +776,12 @@ function browserActErrorMessage(plan) {
       "(Chrome: View → Developer). Then try again."
     );
   }
+  if (code === "new_tab") {
+    return (
+      plan?.message ||
+      "Navigate to a real website first (e.g. youtube.com) — blank new-tab pages can't be controlled."
+    );
+  }
   if (code === "no_browser") {
     return (
       plan?.message ||

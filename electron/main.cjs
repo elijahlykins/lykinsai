@@ -586,19 +586,36 @@ function runOsascript(script, timeout = 4000) {
 }
 
 const BROWSER_APP_NAMES = [
-  "Safari",
-  "Safari Technology Preview",
   "Google Chrome",
   "Google Chrome Canary",
+  "Arc",
   "Brave Browser",
   "Microsoft Edge",
-  "Arc",
   "Chromium",
   "Opera",
   "Vivaldi",
   "Dia",
   "Sidekick",
+  "Safari",
+  "Safari Technology Preview",
 ];
+
+// When several browsers are open, prefer daily drivers over Safari Technology Preview.
+const BROWSER_PICK_PRIORITY = {
+  "Google Chrome": 100,
+  "Google Chrome Canary": 98,
+  Arc: 95,
+  "Brave Browser": 90,
+  "Microsoft Edge": 88,
+  Chromium: 85,
+  Opera: 80,
+  Vivaldi: 78,
+  Dia: 75,
+  Sidekick: 73,
+  Safari: 50,
+  "Safari Technology Preview": 5,
+};
+const DEPRIORITIZED_BROWSERS = new Set(["Safari Technology Preview"]);
 
 async function listRunningBrowserApps() {
   const listLiteral = `{${BROWSER_APP_NAMES.map((n) => `"${n}"`).join(", ")}}`;
@@ -639,48 +656,114 @@ return out
     .filter(Boolean);
 }
 
-async function readBrowserTabUrl(appName) {
+async function readBrowserFrontTabUrl(appName, { anyScheme = false } = {}) {
+  const accept = (u) => {
+    const url = String(u || "").trim();
+    if (!url) return null;
+    if (anyScheme) return url;
+    return /^https?:\/\//i.test(url) ? url : null;
+  };
   const isSafari = /^Safari/.test(appName);
-  if (isSafari) {
-    const r = await runOsascript(
-      `tell application "${appName}" to get URL of current tab of front window`,
-    );
-    if (r.error) {
-      console.log(`[scrape] url-read error (${appName}):`, r.error);
-      if (/-1743|not authoriz/i.test(r.error)) {
-        console.log(`[scrape] → Grant Automation permission for ${appName} under LYKN/Electron.`);
-      }
-      return null;
+  const script = isSafari
+    ? `tell application "${appName}" to get URL of current tab of front window`
+    : `tell application "${appName}" to get URL of active tab of front window`;
+  const r = await runOsascript(script, 6000);
+  if (r.error) {
+    console.log(`[scrape] url-read error (${appName}):`, r.error);
+    if (/-1743|not authoriz/i.test(r.error)) {
+      console.log(`[scrape] → Grant Automation permission for ${appName} under LYKN/Electron.`);
     }
-    return /^https?:\/\//i.test(r.out) ? r.out : null;
+    return null;
   }
+  return accept(r.out);
+}
 
-  // Chromium browsers: front window first, then scan any open window for http(s).
-  const scripts = [
-    `tell application "${appName}" to get URL of active tab of front window`,
+async function readBrowserTabUrl(appName, { anyScheme = false } = {}) {
+  const front = await readBrowserFrontTabUrl(appName, { anyScheme });
+  if (front) return front;
+  if (/^Safari/.test(appName)) return null;
+
+  const accept = (u) => {
+    const url = String(u || "").trim();
+    if (!url) return null;
+    if (anyScheme) return url;
+    return /^https?:\/\//i.test(url) ? url : null;
+  };
+  const r = await runOsascript(
     `tell application "${appName}"
       if (count of windows) is 0 then return ""
       repeat with w in windows
         try
           set u to URL of active tab of w
-          if u starts with "http" then return u
+          if u is not "" then return u
         end try
       end repeat
       return ""
     end tell`,
-  ];
-  for (const script of scripts) {
-    const r = await runOsascript(script, 6000);
-    if (r.error) {
-      console.log(`[scrape] url-read error (${appName}):`, r.error);
-      if (/-1743|not authoriz/i.test(r.error)) {
-        console.log(`[scrape] → Grant Automation permission for ${appName} under LYKN/Electron.`);
-      }
-      continue;
-    }
-    if (/^https?:\/\//i.test(r.out)) return r.out;
+    6000,
+  );
+  if (r.error) {
+    console.log(`[scrape] url-read error (${appName}):`, r.error);
+    return null;
   }
+  const url = accept(r.out);
+  if (url) return url;
+  if (anyScheme && String(r.out || "").trim()) return String(r.out).trim();
   return null;
+}
+
+async function listBrowserHttpTargets({ frontWindowOnly = false } = {}) {
+  const candidates = await listRunningBrowserApps();
+  const out = [];
+  for (const appName of candidates) {
+    const url = frontWindowOnly
+      ? await readBrowserFrontTabUrl(appName)
+      : await readBrowserTabUrl(appName);
+    if (url) out.push({ appName, url });
+  }
+  return out;
+}
+
+function pickBestBrowserTarget(targets) {
+  if (!targets.length) return null;
+  let pool = targets;
+  const hasMainBrowser = pool.some((t) => !DEPRIORITIZED_BROWSERS.has(t.appName));
+  if (hasMainBrowser) {
+    pool = pool.filter((t) => !DEPRIORITIZED_BROWSERS.has(t.appName));
+  }
+  pool.sort(
+    (a, b) =>
+      (BROWSER_PICK_PRIORITY[b.appName] ?? 40) - (BROWSER_PICK_PRIORITY[a.appName] ?? 40),
+  );
+  return pool[0];
+}
+
+async function describeBrowserTabProblem() {
+  const candidates = await listRunningBrowserApps();
+  if (!candidates.length) {
+    return {
+      error: "no_browser",
+      message: "Open Chrome (or another browser) with a website loaded, then try again.",
+    };
+  }
+  for (const appName of candidates) {
+    const httpUrl = await readBrowserTabUrl(appName);
+    if (httpUrl) return null;
+    const raw = await readBrowserTabUrl(appName, { anyScheme: true });
+    if (raw && /^(chrome|about|edge|brave|arc):/i.test(raw)) {
+      return {
+        error: "new_tab",
+        message:
+          "This tab is a blank new-tab page — there's nothing to click or type on yet. " +
+          "Go to a real site first (e.g. youtube.com or google.com), then try again.",
+      };
+    }
+  }
+  return {
+    error: "no_browser",
+    message:
+      "No usable browser tab found. Open an https:// page (not chrome://newtab), then try again.",
+  };
 }
 
 // Two-step so the AppleScript always compiles:
@@ -695,12 +778,17 @@ async function getActiveBrowserTarget() {
     console.log("[scrape] no browser frontmost or running");
     return null;
   }
-  for (const appName of candidates) {
-    const url = await readBrowserTabUrl(appName);
-    if (url) return { appName, url };
+  // Prefer front-window tabs in Chrome/Arc/etc. over stale STP background tabs.
+  let best = pickBestBrowserTarget(await listBrowserHttpTargets({ frontWindowOnly: true }));
+  if (!best) {
+    best = pickBestBrowserTarget(await listBrowserHttpTargets({ frontWindowOnly: false }));
   }
-  console.log("[scrape] browsers running but none have an http(s) front tab:", candidates.join(", "));
-  return null;
+  if (!best) {
+    console.log("[scrape] browsers running but none have an http(s) tab:", candidates.join(", "));
+    return null;
+  }
+  console.log(`[scrape] active browser URL: ${best.url} (${best.appName})`);
+  return best;
 }
 
 // Read the LIVE rendered text from the user's active browser tab via AppleScript
@@ -1694,10 +1782,12 @@ function registerOverlayIpc() {
     const goal = String(intent || "").trim().slice(0, 500);
     if (!goal) return fail("no_intent");
     const target = await getActiveBrowserTarget();
-    if (!target) return fail("no_browser", {
-      message:
-        "No browser tab found. Open an https:// page in Chrome (not chrome://newtab), then try again.",
-    });
+    if (!target) {
+      const hint = await describeBrowserTabProblem();
+      return fail(hint?.error || "no_browser", {
+        message: hint?.message || "Open an https:// page in your browser, then try again.",
+      });
+    }
     const collected = await collectBrowserInteractables(runOsascript, target.appName);
     if (collected.error === "apple_events_disabled") {
       return fail("apple_events_disabled", {
