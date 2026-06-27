@@ -28,6 +28,13 @@
     "node_modules/ms/**",
     "node_modules/sax/**"
   ],
+  "extraResources": [
+    {
+      "from": "extensions/save-to-lykn",
+      "to": "extensions/save-to-lykn",
+      "filter": ["**/*"]
+    }
+  ],
   "extraMetadata": {
     "main": "electron/main.cjs",
     "type": "commonjs"

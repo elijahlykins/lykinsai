@@ -142,6 +142,7 @@ const sidePickerLabelEl = document.getElementById("side-picker-label");
 
 const SIDE_VIEW_OPTIONS = [
   { id: "", label: "None" },
+  { id: "watch", label: "Live feedback" },
   { id: "all", label: "All" },
   { id: "sources", label: "Sources" },
   { id: "tasks", label: "Tasks" },
@@ -154,6 +155,40 @@ let lastAnswerText = "";
 let liveNotesSnapshot = { keyPoints: [], actionItems: [], summary: "" };
 let sidePanelView = "";
 let panelPickerOpen = false;
+// Live watch feed — rendered in the side panel, not the chat thread.
+let watchFeedItems = [];
+let watchActiveRules = [];
+let watchContextSource = "vision";
+let watchExtensionConnected = false;
+let watchPageTitle = "";
+let watchPageUrl = "";
+let watchConnPollTimer = null;
+
+function startWatchConnPoll() {
+  if (watchConnPollTimer) return;
+  watchConnPollTimer = setInterval(async () => {
+    if (!liveWatchEnabled) return;
+    try {
+      const status = await window.lyknOverlay.getLiveWatch();
+      const next = !!status?.extensionConnected;
+      if (next !== watchExtensionConnected) {
+        watchExtensionConnected = next;
+        if (sidePanelView === "watch") renderWatchSidePanel();
+      }
+    } catch (_) {}
+  }, 2000);
+}
+
+function stopWatchConnPoll() {
+  if (watchConnPollTimer) clearInterval(watchConnPollTimer);
+  watchConnPollTimer = null;
+}
+let liveWatchEnabled = false;
+let lastWatchCommentaryPosted = "";
+let watchFeedActive = false;
+let watchSuggestions = { followups: [], links: [] };
+let watchSuggestTimer = null;
+let lastWatchSuggestKey = "";
 
 function dedupeStrings(items) {
   const seen = new Set();
@@ -230,6 +265,8 @@ function buildSideData() {
 function sideViewCount(viewId, data) {
   if (!data) return 0;
   switch (viewId) {
+    case "watch":
+      return watchFeedItems.filter((i) => !i.system).length;
     case "sources":
       return (data.pageSource && data.pageSource.url ? 1 : 0) + data.links.length;
     case "tasks":
@@ -240,6 +277,7 @@ function sideViewCount(viewId, data) {
       return data.notes.length + (data.summary ? 1 : 0);
     case "all":
       return (
+        sideViewCount("watch", data) +
         sideViewCount("sources", data) +
         sideViewCount("tasks", data) +
         sideViewCount("followups", data) +
@@ -275,6 +313,7 @@ function renderPanelMenu() {
   const data = buildSideData();
   panelMenuEl.innerHTML = "";
   for (const opt of SIDE_VIEW_OPTIONS) {
+    if (opt.id === "watch" && !liveWatchEnabled) continue;
     const count = opt.id ? sideViewCount(opt.id, data) : 0;
     const btn = document.createElement("button");
     btn.type = "button";
@@ -326,6 +365,22 @@ function clearSide() {
   updateSidePickerLabel();
   showSide(false);
   syncSidePickerState();
+}
+
+// Reset sources/tasks side data for a new chat turn without closing live watch.
+function resetSideForNewTurn() {
+  sideContext = null;
+  lastAnswerText = "";
+  if (liveWatchEnabled) {
+    if (!sidePanelView) setSidePanelView("watch");
+    else if (sidePanelView === "watch") renderWatchSidePanel();
+    else renderSidePanel();
+    return;
+  }
+  sidePanelView = "";
+  closeSidePickerMenu();
+  updateSidePickerLabel();
+  showSide(false);
 }
 
 function setSidePanelView(viewId) {
@@ -415,16 +470,119 @@ function appendNotesSection(data, target) {
   return added;
 }
 
+function watchSourceLabel() {
+  if (watchContextSource === "extension") return "via extension (text)";
+  if (watchContextSource === "scrape") return "via browser text";
+  return "via screen";
+}
+
+function appendWatchSuggestionsSection(target) {
+  const followups = (watchSuggestions.followups || []).filter(Boolean);
+  const links = (watchSuggestions.links || []).filter((l) => l && l.url);
+  let added = false;
+  if (followups.length) {
+    const { sec, list } = sideSection("Suggestions");
+    for (const f of followups.slice(0, 4)) {
+      list.appendChild(
+        optionButton(f, ARROW_ICON_SVG, () => {
+          askEl.value = f;
+          ask();
+        }),
+      );
+    }
+    target.appendChild(sec);
+    added = true;
+  }
+  if (links.length) {
+    const { sec, list } = sideSection("Sources");
+    for (const l of links.slice(0, 4)) list.appendChild(sourceCard(l));
+    target.appendChild(sec);
+    added = true;
+  }
+  return added;
+}
+
+function appendWatchSideSection(target) {
+  if (!watchFeedActive && !watchFeedItems.length) return false;
+  const { sec, list } = sideSection("Live feedback");
+  if (!watchExtensionConnected && watchFeedActive) {
+    const installBtn = document.createElement("button");
+    installBtn.type = "button";
+    installBtn.className = "watch-install-btn";
+    installBtn.textContent = "Add Chrome Live Feed";
+    installBtn.addEventListener("click", () => {
+      window.lyknOverlay.openExtensionInstall?.().catch(() => {});
+    });
+    list.appendChild(installBtn);
+  }
+  if (watchActiveRules.length) {
+    const rulesEl = document.createElement("div");
+    rulesEl.className = "watch-side-rules";
+    rulesEl.textContent = `Alerts: ${watchActiveRules.join(" · ")}`;
+    list.appendChild(rulesEl);
+  }
+  if (!watchFeedItems.length) {
+    list.appendChild(sideTextItem("Analyzing screen…"));
+  } else {
+    for (const item of watchFeedItems.slice(-24)) {
+      const row = document.createElement("div");
+      row.className =
+        "watch-side-item" +
+        (item.system ? " system" : "") +
+        (item.alert ? " alert" : "");
+      const body = document.createElement("div");
+      body.className = "watch-side-text";
+      body.textContent = item.text;
+      if (item.alert || item.system) {
+        const meta = document.createElement("div");
+        meta.className = "watch-side-meta";
+        meta.textContent = item.alert ? "Alert" : "Live feedback";
+        row.appendChild(meta);
+      }
+      row.appendChild(body);
+      list.appendChild(row);
+    }
+  }
+  target.appendChild(sec);
+  appendWatchSuggestionsSection(target);
+  return true;
+}
+
+function renderWatchSidePanel() {
+  sideInnerEl.innerHTML = "";
+  if (watchExtensionConnected && watchFeedActive) {
+    const banner = document.createElement("div");
+    banner.className = "watch-connected-banner";
+    banner.textContent = "Chrome Live Feed connected";
+    sideInnerEl.appendChild(banner);
+  }
+  if (!appendWatchSideSection(sideInnerEl)) {
+    const empty = document.createElement("div");
+    empty.className = "side-empty";
+    empty.textContent = "Live feedback is off.";
+    sideInnerEl.appendChild(empty);
+  }
+  sideInnerEl.scrollTop = sideInnerEl.scrollHeight;
+  reportHeight();
+}
+
 function renderSidePanel() {
+  if (sidePanelView === "watch") {
+    renderWatchSidePanel();
+    return;
+  }
   const data = buildSideData();
   sideInnerEl.innerHTML = "";
   const views =
     sidePanelView === "all"
-      ? ["sources", "tasks", "followups", "notes"]
+      ? ["watch", "sources", "tasks", "followups", "notes"]
       : [sidePanelView];
   let added = false;
   for (const view of views) {
     switch (view) {
+      case "watch":
+        added = appendWatchSideSection(sideInnerEl) || added;
+        break;
       case "sources":
         added = appendSourcesSection(data, sideInnerEl) || added;
         break;
@@ -546,14 +704,45 @@ async function requestSuggestions(question, answer) {
   };
 
   syncSidePickerState();
-  if (sidePanelView) renderSidePanel();
+  if (sidePanelView && sidePanelView !== "watch") renderSidePanel();
 }
 
-// Widths must match the main process constants (OVERLAY_WIDTH / SIDE_WIDTH).
+// Widths must match the main process constants (OVERLAY_WIDTH / side widths).
 const CHAT_WIDTH = 520;
 const SIDE_WIDTH = 300;
+const WATCH_SIDE_WIDTH = 360;
+const LIVE_WATCH_MIN_HEIGHT = 440;
+const LIVE_WATCH_THREAD_MAX = 320;
 let lastReportedHeight = -1;
 let lastReportedWidth = -1;
+
+function sidePanelWidth() {
+  const side = document.getElementById("side");
+  if (!side || !side.classList.contains("show")) return 0;
+  if (liveWatchEnabled && sidePanelView === "watch") return WATCH_SIDE_WIDTH;
+  return SIDE_WIDTH;
+}
+
+function applyLiveWatchLayout(on) {
+  const shell = document.getElementById("shell");
+  if (shell) shell.classList.toggle("live-watch-mode", !!on);
+  lastReportedHeight = -1;
+  lastReportedWidth = -1;
+  if (on) {
+    if (sidePanelView !== "watch") setSidePanelView("watch");
+    else {
+      renderWatchSidePanel();
+      showSide(true);
+    }
+    requestAnimationFrame(() => {
+      window.lyknOverlay.resize(CHAT_WIDTH + WATCH_SIDE_WIDTH, LIVE_WATCH_MIN_HEIGHT);
+      reportHeight();
+    });
+  } else {
+    reportHeight();
+  }
+}
+
 function reportHeight() {
   // Measure the EXACT content size after layout settles, and only tell main to
   // resize when it actually changed — so the panel grows/shrinks only when needed
@@ -563,24 +752,18 @@ function reportHeight() {
     const title = document.querySelector(".titlebar");
     const att = document.getElementById("attachments");
     const attH = att && att.classList.contains("show") ? att.offsetHeight : 0;
-    // Use scrollHeight for the thread: it reports the true content height even
-    // when flexbox has shrunk the element to fit the (still-small) window. Cap at
-    // the CSS max-height so past that it scrolls internally instead of growing.
-    // +1 = thread border-bottom, +2 = #wrap top/bottom borders.
+    const threadMax = liveWatchEnabled ? LIVE_WATCH_THREAD_MAX : 420;
     const threadH = threadEl.classList.contains("show")
-      ? Math.min(threadEl.scrollHeight + 1, 420)
+      ? Math.min(threadEl.scrollHeight + 1, threadMax)
       : 0;
     const live = document.getElementById("live");
     const liveH = live && live.classList.contains("show") ? live.offsetHeight : 0;
-    const chatH = title.offsetHeight + threadH + liveH + attH + bar.offsetHeight + 2;
+    let chatH = title.offsetHeight + threadH + liveH + attH + bar.offsetHeight + 2;
+    if (liveWatchEnabled) chatH = Math.max(chatH, LIVE_WATCH_MIN_HEIGHT);
 
-    // Side panel stretches to match chat height; it only adds width.
-    const side = document.getElementById("side");
-    const sideOpen = side && side.classList.contains("show");
-
+    const sideW = sidePanelWidth();
+    let w = CHAT_WIDTH + sideW;
     const h = chatH;
-    let w = CHAT_WIDTH;
-    if (sideOpen) w += SIDE_WIDTH;
     if (h !== lastReportedHeight || w !== lastReportedWidth) {
       lastReportedHeight = h;
       lastReportedWidth = w;
@@ -599,9 +782,9 @@ function setBusy(on) {
 // Start a new turn: collapse every prior turn, append an expanded item for this
 // question, and return its answer element to stream into.
 function startTurn(question) {
-  // A new question is pending — clear the left panel until its answer lands.
+  // A new question is pending — reset sources side data but keep live watch panel open.
   currentPageSource = null;
-  clearSide();
+  resetSideForNewTurn();
   threadEl.querySelectorAll(".chat").forEach((c) => c.classList.add("collapsed"));
 
   const item = document.createElement("div");
@@ -666,6 +849,7 @@ async function persistCurrentSession() {
       sessionId: currentSessionId,
       messages: history,
       title: firstUser ? String(firstUser.content).trim().slice(0, 72) : undefined,
+      pageSource: currentPageSource && currentPageSource.url ? currentPageSource : null,
     });
     if (res && res.sessionId) currentSessionId = res.sessionId;
   } catch (_) {}
@@ -746,6 +930,7 @@ function updateAnswer(text) {
 const DEFAULT_ASK_PLACEHOLDER = "Ask LYKN about your screen…";
 let browserActArmed = false;
 let pendingBrowserPlan = null;
+let executingBrowser = false;
 
 const browserActEl = document.getElementById("browser-act");
 const browserActStepsEl = document.getElementById("browser-act-steps");
@@ -759,7 +944,10 @@ function formatBrowserStep(action) {
     const v = String(action.value || "").slice(0, 48);
     return `Type “${v}” into “${label}”`;
   }
-  if (action.type === "press") return `Press ${action.key || "Enter"} in “${label}”`;
+  if (action.type === "press") {
+    const base = String(label).replace(/ — submit$/i, "");
+    return `Press Enter to submit “${base}”`;
+  }
   if (action.type === "scroll") {
     const d = Number(action.delta) || 400;
     return d >= 0 ? "Scroll down" : "Scroll up";
@@ -805,19 +993,68 @@ function hideBrowserActPanel() {
 function showBrowserActPanel(plan) {
   if (!browserActEl || !browserActStepsEl || !plan) return;
   browserActStepsEl.innerHTML = "";
-  for (const action of plan.actions || []) {
+  const actions = plan.actions || [];
+  const adaptive =
+    plan.adaptivePreview || (!actions.length && plan.intent);
+  if (adaptive) {
+    const steps = String(plan.taskPlan || "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (steps.length) {
+      for (const step of steps) {
+        const li = document.createElement("li");
+        li.textContent = step.replace(/^\d+\.\s*/, "");
+        browserActStepsEl.appendChild(li);
+      }
+    } else {
+      const li = document.createElement("li");
+      li.textContent = "Reads your screen, plans steps like chat, then executes one at a time";
+      browserActStepsEl.appendChild(li);
+    }
+  } else if (actions.length) {
+    for (const action of actions) {
+      const li = document.createElement("li");
+      li.textContent = formatBrowserStep(action);
+      browserActStepsEl.appendChild(li);
+    }
+  } else {
     const li = document.createElement("li");
-    li.textContent = formatBrowserStep(action);
+    li.textContent =
+      "Reads your screen, picks one step, clicks, waits for the page to change, then re-reads";
     browserActStepsEl.appendChild(li);
   }
   browserActEl.hidden = false;
   composerEl.classList.add("browser-act-open");
+  if (browserActRunEl) {
+    browserActRunEl.disabled = false;
+    browserActRunEl.textContent = "Run";
+  }
   reportHeight();
+}
+
+function setBrowserActRunning(running) {
+  if (!browserActEl || !browserActRunEl) return;
+  browserActEl.hidden = false;
+  composerEl.classList.add("browser-act-open");
+  browserActRunEl.disabled = !!running;
+  browserActRunEl.textContent = running ? "Running…" : "Run";
+  reportHeight();
+}
+
+// Significant / irreversible actions that warrant an explicit confirmation
+// before LYKN acts (money, deletion, sending/posting, account changes). Normal
+// tasks run proactively without a preview gate.
+function browserTaskIsSerious(goal, plan) {
+  const hay = `${String(goal || "")}\n${String(plan?.taskPlan || "")}`.toLowerCase();
+  return /\b(buy|purchase|order|checkout|check out|pay|payment|add to cart|place (an? )?order|subscribe|unsubscribe|delete|remove|erase|wipe|send (an? )?(email|message|dm|text|invite)|post|publish|tweet|submit (the |an? )?(application|form|payment|order|request)|transfer|withdraw|deposit|book (a |the )?(flight|hotel|ticket|room)|reserve|sign (a |the )?(contract|document|lease|up)|confirm (order|purchase|payment|booking)|delete (my )?account|log ?out|sign out|change (my )?(password|email|address|settings|plan)|apply for|cancel (my |the )?(order|subscription|account|booking|plan))\b/.test(
+    hay,
+  );
 }
 
 async function runBrowserAct(intent) {
   const goal = String(intent || "").trim();
-  if (!goal || busy) return;
+  if (!goal || busy || executingBrowser) return;
   browserActArmed = false;
   askEl.placeholder = DEFAULT_ASK_PLACEHOLDER;
   askEl.value = "";
@@ -828,7 +1065,7 @@ async function runBrowserAct(intent) {
   history.push({ role: "user", content: goal, at: new Date().toISOString() });
   setThinkingStatus("Scanning page…");
   try {
-    const plan = await window.lyknOverlay.browserPlan(goal);
+    const plan = await window.lyknOverlay.browserPlan(goal, history.slice(-8));
     if (!plan || !plan.ok) {
       currentHasText = true;
       updateAnswer(browserActErrorMessage(plan || {}));
@@ -836,12 +1073,30 @@ async function runBrowserAct(intent) {
       askEl.focus();
       return;
     }
-    pendingBrowserPlan = plan;
+    pendingBrowserPlan = {
+      ...plan,
+      appName: plan.appName || plan.browser || "",
+      intent: goal,
+      taskPlan: plan.taskPlan || "",
+      plannedAnswer: plan.plannedAnswer || "",
+    };
     currentHasText = true;
-    updateAnswer(plan.explanation || "Review the steps below, then run.");
-    showBrowserActPanel(plan);
-    setBusy(false);
-    askEl.focus();
+
+    // Only gate on confirmation for significant/irreversible actions. Otherwise
+    // be proactive and execute right away — no plan preview, no Run button.
+    if (browserTaskIsSerious(goal, plan)) {
+      showBrowserActPanel({ ...plan, intent: goal });
+      updateAnswer(
+        (plan.explanation || "Here's what I'll do.") +
+          (plan.taskPlan ? `\n\n**Plan:**\n${plan.taskPlan}` : "") +
+          "\n\n⚠️ This is a significant action — **click Run to confirm**, or refine your request.",
+      );
+      setBusy(false);
+      askEl.focus();
+      return;
+    }
+
+    await executeBrowserAct({ auto: true });
   } catch (_) {
     currentHasText = true;
     updateAnswer("Could not plan browser actions.");
@@ -850,35 +1105,240 @@ async function runBrowserAct(intent) {
   }
 }
 
-async function executeBrowserAct() {
-  if (!pendingBrowserPlan || busy) return;
-  const { actions, appName } = pendingBrowserPlan;
-  hideBrowserActPanel();
+async function executeBrowserAct({ auto = false } = {}) {
+  const plan = pendingBrowserPlan;
+  if (!plan || executingBrowser) return;
+  executingBrowser = true;
+  const actions = Array.isArray(plan.actions) ? plan.actions.slice() : [];
+  const appName = plan.appName || plan.browser || "";
+  const pageUrl = plan.url;
+  const intent = plan.intent || "";
+  if (!actions.length && !intent) {
+    currentHasText = true;
+    updateAnswer("No planned steps to run — try Control this page again.");
+    executingBrowser = false;
+    setBusy(false);
+    return;
+  }
+  // In auto mode we don't show the plan/Run panel — just stream progress inline.
+  if (!auto) setBrowserActRunning(true);
   setBusy(true);
-  setThinkingStatus("Running in browser…");
+  setThinkingStatus(intent ? "Working on it…" : "Running in browser…");
   currentHasText = true;
-  updateAnswer("Running browser actions…");
+  updateAnswer(intent ? "Working on it… (clicks pass through to Chrome)" : "Running browser actions…");
+  const stopProgress =
+    typeof window.lyknOverlay.onBrowserProgress === "function"
+      ? window.lyknOverlay.onBrowserProgress(({ status }) => {
+          if (!status) return;
+          setThinkingStatus(status);
+          updateAnswer(`**${status}**`);
+        })
+      : null;
   try {
-    const result = await window.lyknOverlay.browserExecute({ actions, appName });
-    const lines = [];
-    if (Array.isArray(result.results)) {
-      for (const r of result.results) {
-        const step = r.label || r.type || "step";
-        lines.push(r.ok ? `✓ ${step}` : `✗ ${step}: ${r.error || "failed"}`);
-      }
-    }
-    const summary = result.ok
-      ? "Done — actions completed in your browser."
-      : result.message || "Some actions failed.";
-    updateAnswer([summary, ...lines].filter(Boolean).join("\n\n"));
+    const result = await window.lyknOverlay.browserExecute({
+      actions,
+      appName,
+      url: pageUrl,
+      intent,
+      taskPlan: plan.taskPlan || "",
+      plannedAnswer: plan.plannedAnswer || "",
+      conversationHistory: history.slice(-8),
+      holoMessages: plan.holoMessages || null,
+    });
+    const summary = result?.ok
+      ? result?.message || result?.explanation || "Done — completed the task in your browser."
+      : result?.message ||
+        (result?.error === "no_actions"
+          ? "No actions reached the browser."
+          : result?.error === "no_browser"
+            ? "Could not find the browser to control."
+            : "Some actions failed.");
+    updateAnswer(summary);
     history.push({
       role: "assistant",
       content: summary,
       at: new Date().toISOString(),
     });
     void persistCurrentSession();
+    // Proactively save a summary of what was done to the user's vault.
+    if (result?.ok && intent) {
+      void saveBrowserTaskToVault({ intent, summary, result, pageUrl });
+    }
   } catch (_) {
     updateAnswer("Failed to run browser actions.");
+  } finally {
+    if (typeof stopProgress === "function") stopProgress();
+    executingBrowser = false;
+    pendingBrowserPlan = null;
+  }
+  hideBrowserActPanel();
+  setBusy(false);
+  askEl.focus();
+}
+
+// Save a concise record of a finished browser task to the user's vault, then
+// append a small confirmation line to the on-screen summary. Best-effort.
+async function saveBrowserTaskToVault({ intent, summary, result, pageUrl }) {
+  if (typeof window.lyknOverlay.saveVaultNote !== "function") return;
+  try {
+    const steps = Array.isArray(result?.results)
+      ? result.results
+          .filter((r) => r && (r.label || r.type))
+          .map((r) => `- ${r.ok ? "✓" : "✗"} ${String(r.label || r.type).slice(0, 120)}`)
+      : [];
+    const content = [
+      `Task: ${intent}`,
+      "",
+      summary,
+      steps.length ? `\nSteps:\n${steps.join("\n")}` : "",
+      pageUrl ? `\nPage: ${pageUrl}` : "",
+      `\nCompleted: ${new Date().toLocaleString()}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const saved = await window.lyknOverlay.saveVaultNote({
+      title: `Browser task: ${intent}`.slice(0, 120),
+      content,
+      tags: ["lykn-overlay", "browser-task"],
+    });
+    if (saved?.ok) {
+      updateAnswer(`${summary}\n\n_Saved a summary to your vault._`);
+    }
+  } catch (_) {
+    /* vault save is best-effort */
+  }
+}
+
+// Heuristic: does this message ask LYKN to save/screenshot something on screen?
+// "save the image of the dune buggy", "screenshot the chart", "save that part of
+// my screen", "can you grab a picture of this", etc. We bail only on clearly
+// informational questions ("how do I save a screenshot?") so those reach chat.
+function looksLikeSaveScreen(text) {
+  const t = String(text || "").toLowerCase().trim();
+  if (!t) return false;
+  // Informational "how/what/why…" questions — let those go to normal chat.
+  if (/^(how|what|why|where|when|who|which)\b/.test(t)) return false;
+  // Must express a capture/save action.
+  const hasAction = /\b(save|screenshot|screen ?shot|screen ?grab|capture|grab|snip|clip|take)\b/.test(t);
+  if (!hasAction) return false;
+  // Any screen/screenshot wording → definitely this flow.
+  if (/\b(screenshot|screen ?shot|screen ?grab|on(-| )?screen|my screen|the screen|this screen)\b/.test(t))
+    return true;
+  // A visual noun being saved → it's on screen ("save the image/picture/chart…").
+  if (/\b(image|picture|photo|pic|screenshot|graphic|logo|diagram|chart|icon|thumbnail|gif|meme)\b/.test(t))
+    return true;
+  // Bare "save this / that part / that region" inside the screen-centric overlay.
+  if (/\bsave (this|that)\b/.test(t)) return true;
+  if (/\b(this|that)\b[\s\S]*\b(part|region|area|section|portion)\b/.test(t)) return true;
+  return false;
+}
+
+// Capture + AI-crop + save flow, rendered as its own turn in the thread.
+async function runSaveScreen(q) {
+  setBusy(true);
+  startTurn(q || "Save my screen");
+  setThinkingStatus("Capturing your screen…");
+  history.push({ role: "user", content: q, at: new Date().toISOString() });
+  let msg;
+  try {
+    const res = await window.lyknOverlay.saveScreenRegion(q);
+    if (res && res.ok) {
+      const what = res.full ? "your full screen" : "that part of your screen";
+      const places = [];
+      if (res.savedToVault) places.push("your **Vault**");
+      if (res.fileName) places.push(`**Downloads** (\`${res.fileName}\`)`);
+      places.push("your clipboard");
+      // Join with commas + "and" before the last destination.
+      const dest =
+        places.length > 1
+          ? `${places.slice(0, -1).join(", ")} and ${places[places.length - 1]}`
+          : places[0];
+      msg = `Saved ${what} to ${dest}.`;
+    } else if (res && res.error === "no_permission") {
+      msg =
+        "LYKN needs Screen Recording permission to do that. Enable it in System Settings → Privacy & Security → Screen Recording, then try again.";
+    } else {
+      msg = `Couldn't save the screen${res && res.error ? ` (${res.error})` : ""}. Try again in a moment.`;
+    }
+  } catch (_) {
+    msg = "Couldn't save the screen. Try again in a moment.";
+  }
+  updateAnswer(msg);
+  history.push({ role: "assistant", content: msg, at: new Date().toISOString() });
+  void persistCurrentSession();
+  setBusy(false);
+  askEl.focus();
+}
+
+function looksLikeWatchRule(text) {
+  const t = String(text || "").trim();
+  return (
+    /^(tell me|let me know|notify me|alert me|warn me|ping me)\s+when\s+/i.test(t) ||
+    /^watch\s+(for|out for)\s+/i.test(t) ||
+    /^(alert|notify)\s+(me\s+)?when\s+/i.test(t) ||
+    /^let me know if\s+/i.test(t)
+  );
+}
+
+function looksLikeClearWatchRules(text) {
+  const t = String(text || "").trim().toLowerCase();
+  return (
+    /\b(clear|stop|cancel|remove|delete)\b.*\b(watch rules?|alerts?|notifications?)\b/.test(t) ||
+    /^stop watching for\b/.test(t) ||
+    /^clear watch\b/.test(t)
+  );
+}
+
+async function registerWatchRule(q) {
+  setBusy(true);
+  startTurn(q);
+  history.push({ role: "user", content: q, at: new Date().toISOString() });
+  try {
+    const res = await window.lyknOverlay.addLiveWatchRule(q);
+    if (!res?.ok) {
+      const msg =
+        res?.error === "watch_off"
+          ? "Turn on **Live screen watch** first (menu), then set alerts."
+          : "Couldn't add that watch rule — try rephrasing.";
+      updateAnswer(msg);
+      history.push({ role: "assistant", content: msg, at: new Date().toISOString() });
+      setBusy(false);
+      askEl.focus();
+      return;
+    }
+    const rule = res.rule || q;
+    if (Array.isArray(res.rules)) watchActiveRules = res.rules.slice();
+    const msg = `Got it — I'll alert you when **${rule}**.`;
+    updateAnswer(msg);
+    history.push({ role: "assistant", content: msg, at: new Date().toISOString() });
+    appendWatchCommentary(`Alert set: ${rule}`, { system: true });
+    void persistCurrentSession();
+  } catch (_) {
+    updateAnswer("Couldn't set that watch alert.");
+    history.push({
+      role: "assistant",
+      content: "Couldn't set that watch alert.",
+      at: new Date().toISOString(),
+    });
+  }
+  setBusy(false);
+  askEl.focus();
+}
+
+async function clearWatchRules(q) {
+  setBusy(true);
+  startTurn(q || "Clear watch alerts");
+  history.push({ role: "user", content: q, at: new Date().toISOString() });
+  try {
+    await window.lyknOverlay.clearLiveWatchRules();
+    watchActiveRules = [];
+    const msg = "Cleared all watch alerts.";
+    updateAnswer(msg);
+    history.push({ role: "assistant", content: msg, at: new Date().toISOString() });
+    appendWatchCommentary("All watch alerts cleared.", { system: true });
+    void persistCurrentSession();
+  } catch (_) {
+    updateAnswer("Couldn't clear watch alerts.");
   }
   setBusy(false);
   askEl.focus();
@@ -887,11 +1347,31 @@ async function executeBrowserAct() {
 function ask() {
   const q = askEl.value.trim();
   if (browserActArmed) {
-    if (!q || busy) return;
+    if (!q || busy || executingBrowser) return;
     void runBrowserAct(q);
     return;
   }
   if ((!q && attachments.length === 0) || busy) return;
+  // Live watch alerts — "tell me when an enemy is near", "watch for stock drop", etc.
+  if (q && attachments.length === 0 && looksLikeClearWatchRules(q)) {
+    askEl.value = "";
+    askEl.style.height = "52px";
+    void clearWatchRules(q);
+    return;
+  }
+  if (q && attachments.length === 0 && looksLikeWatchRule(q)) {
+    askEl.value = "";
+    askEl.style.height = "52px";
+    void registerWatchRule(q);
+    return;
+  }
+  // "Save that part of my screen" → capture + AI-crop + save, no round-trip ask.
+  if (q && attachments.length === 0 && looksLikeSaveScreen(q)) {
+    askEl.value = "";
+    askEl.style.height = "52px";
+    void runSaveScreen(q);
+    return;
+  }
   askEl.value = "";
   askEl.style.height = "52px";
   setBusy(true);
@@ -1458,13 +1938,48 @@ document.getElementById("history-new").addEventListener("click", () => {
   void startNewOverlayChat();
 });
 
-document.getElementById("menu-attach").addEventListener("click", async () => {
-  setMenuOpen(false);
+async function openFilePicker() {
   try {
     const items = await window.lyknOverlay.pickFiles();
     addAttachmentObjects(items);
   } catch (_) {}
+}
+
+// Drag-select a region of the screen and attach it as an image — lets the user
+// grab whatever is on screen without downloading a file (the panel window can't
+// receive OS drags, so this is the "drag straight from the screen" path).
+let snipping = false;
+async function snipFromScreen() {
+  if (snipping) return;
+  snipping = true;
+  try {
+    const item = await window.lyknOverlay.snipScreen();
+    if (item && item.dataUrl) addAttachmentObjects([item]);
+  } catch (_) {
+  } finally {
+    snipping = false;
+  }
+}
+
+document.getElementById("menu-attach").addEventListener("click", async () => {
+  setMenuOpen(false);
+  await openFilePicker();
 });
+
+document.getElementById("menu-snip").addEventListener("click", async () => {
+  setMenuOpen(false);
+  await snipFromScreen();
+});
+
+// Toolbar attach button — the reliable way to add files to the bar. (macOS
+// blocks OS file drops onto this non-activating panel window, so the picker is
+// the dependable path; drag-and-drop still works where the OS allows it.)
+const attachBtn = document.getElementById("attach");
+if (attachBtn) attachBtn.addEventListener("click", () => void openFilePicker());
+
+// Toolbar snip button — capture a screen region straight into the bar.
+const snipBtn = document.getElementById("snip");
+if (snipBtn) snipBtn.addEventListener("click", () => void snipFromScreen());
 
 document.getElementById("menu-browser-act").addEventListener("click", () => {
   setMenuOpen(false);
@@ -1474,18 +1989,223 @@ document.getElementById("menu-browser-act").addEventListener("click", () => {
     return;
   }
   browserActArmed = true;
-  askEl.placeholder = "Describe what to do on this page…";
+  askEl.placeholder = "Describe what to do on this page, then Send…";
   askEl.focus();
 });
 
 browserActCancelEl.addEventListener("click", () => hideBrowserActPanel());
-browserActRunEl.addEventListener("click", () => void executeBrowserAct());
+browserActRunEl.addEventListener("click", () => {
+  if (executingBrowser || busy) return;
+  void executeBrowserAct();
+});
 
 document.getElementById("menu-open").addEventListener("click", () => {
   setMenuOpen(false);
   try {
     window.lyknOverlay.openMain();
   } catch (_) {}
+});
+
+// Content protection toggle — hide the overlay from screen recordings/shares.
+// Keeps the menu open so the user sees the On/Off state flip in place.
+const stealthBtn = document.getElementById("menu-stealth");
+const stealthStateEl = document.getElementById("stealth-state");
+function renderStealthState(on) {
+  if (!stealthBtn) return;
+  stealthBtn.setAttribute("aria-pressed", on ? "true" : "false");
+  if (stealthStateEl) stealthStateEl.textContent = on ? "On" : "Off";
+}
+(async () => {
+  try {
+    renderStealthState(await window.lyknOverlay.getContentProtection());
+  } catch (_) {}
+})();
+if (stealthBtn) {
+  stealthBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const current = stealthBtn.getAttribute("aria-pressed") === "true";
+    try {
+      const next = await window.lyknOverlay.setContentProtection(!current);
+      renderStealthState(!!next);
+    } catch (_) {}
+  });
+}
+
+// Live Watch — feed lives in the side panel; chat thread stays for user prompts.
+const liveWatchBtn = document.getElementById("menu-live-watch");
+const liveWatchStateEl = document.getElementById("live-watch-state");
+
+function appendWatchCommentary(text, { system = false, alert = false } = {}) {
+  const t = String(text || "").trim();
+  if (!t) return;
+  watchFeedItems.push({ text: t, system: !!system, alert: !!alert, at: Date.now() });
+  if (watchFeedItems.length > 40) watchFeedItems = watchFeedItems.slice(-40);
+  if (liveWatchEnabled) {
+    if (sidePanelView !== "watch") setSidePanelView("watch");
+    else renderWatchSidePanel();
+    reportHeight();
+  }
+}
+
+function startWatchFeed() {
+  watchFeedActive = true;
+  lastWatchCommentaryPosted = "";
+  watchFeedItems = [];
+  watchActiveRules = [];
+  watchSuggestions = { followups: [], links: [] };
+  lastWatchSuggestKey = "";
+  watchPageTitle = "";
+  watchPageUrl = "";
+  appendWatchCommentary("Live feedback is on.", { system: true });
+  applyLiveWatchLayout(true);
+  startWatchConnPoll();
+}
+
+function stopWatchFeed() {
+  if (!watchFeedActive) return;
+  stopWatchConnPoll();
+  watchFeedActive = false;
+  appendWatchCommentary("Live feedback stopped.", { system: true });
+  lastWatchCommentaryPosted = "";
+  watchActiveRules = [];
+  watchSuggestions = { followups: [], links: [] };
+  lastWatchSuggestKey = "";
+  if (watchSuggestTimer) clearTimeout(watchSuggestTimer);
+  watchSuggestTimer = null;
+  const shell = document.getElementById("shell");
+  if (shell) shell.classList.remove("live-watch-mode");
+  if (sidePanelView === "watch") {
+    sidePanelView = "";
+    showSide(false);
+    updateSidePickerLabel();
+  }
+  lastReportedHeight = -1;
+  lastReportedWidth = -1;
+  reportHeight();
+}
+
+async function requestWatchSuggestions(status) {
+  const commentary = String(status?.commentary || status?.summary || "").trim();
+  if (commentary.length < 8) return;
+  const pageTitle = String(status?.pageTitle || watchPageTitle || "").trim();
+  const pageUrl = String(status?.pageUrl || watchPageUrl || "").trim();
+  const summary = String(status?.summary || "").trim();
+  const contextSource = status?.contextSource || watchContextSource;
+  const suggestKey = [pageUrl, pageTitle, commentary].filter(Boolean).join("|");
+  if (suggestKey === lastWatchSuggestKey) return;
+  lastWatchSuggestKey = suggestKey;
+
+  const contextLines = [];
+  if (pageTitle) contextLines.push(`Page: ${pageTitle}`);
+  if (pageUrl) contextLines.push(`URL: ${pageUrl}`);
+  if (contextSource === "vision") {
+    contextLines.push("View: screen capture (app or game — may not be a browser page)");
+  } else if (contextSource === "extension") {
+    contextLines.push("View: live browser page via Chrome Live Feed");
+  }
+  contextLines.push(`What they're doing now: ${commentary}`);
+  if (summary && summary !== commentary) {
+    contextLines.push(`Recent activity: ${summary.slice(0, 600)}`);
+  }
+
+  let data = null;
+  try {
+    data = await window.lyknOverlay.suggest(
+      "Suggest follow-ups about what the user is doing, the page they are on, and sensible next actions.",
+      contextLines.join("\n"),
+      { mode: "live_watch" },
+    );
+  } catch (_) {
+    data = null;
+  }
+  watchSuggestions = {
+    followups: (data && Array.isArray(data.followups) ? data.followups : []).filter(Boolean),
+    links: (data && Array.isArray(data.links) ? data.links : []).filter((l) => l && l.url),
+  };
+  if (sidePanelView === "watch" || sidePanelView === "all") renderSidePanel();
+}
+
+function handleLiveWatchCommentary(status) {
+  if (!status?.enabled) return;
+  if (Array.isArray(status.rules)) watchActiveRules = status.rules.slice();
+  const commentary = String(status?.commentary || status?.summary || "").trim();
+  if (!commentary || !status?.isNewCommentary) return;
+  if (commentary === lastWatchCommentaryPosted) return;
+  lastWatchCommentaryPosted = commentary;
+  const isAlert = status.commentaryKind === "alert";
+  appendWatchCommentary(commentary, { alert: isAlert });
+  if (!isAlert) {
+    if (watchSuggestTimer) clearTimeout(watchSuggestTimer);
+    watchSuggestTimer = setTimeout(() => {
+      watchSuggestTimer = null;
+      void requestWatchSuggestions(status);
+    }, 400);
+  }
+}
+
+function renderLiveWatchState(status) {
+  const on = !!(status && status.enabled);
+  const wasOn = liveWatchEnabled;
+  liveWatchEnabled = on;
+  if (status?.contextSource) watchContextSource = status.contextSource;
+  if (typeof status?.pageTitle === "string") watchPageTitle = status.pageTitle;
+  if (typeof status?.pageUrl === "string") watchPageUrl = status.pageUrl;
+  if (typeof status?.extensionConnected === "boolean") {
+    watchExtensionConnected = status.extensionConnected;
+  }
+  if (liveWatchBtn) {
+    liveWatchBtn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  if (liveWatchStateEl) liveWatchStateEl.textContent = on ? "On" : "Off";
+  if (Array.isArray(status?.rules)) watchActiveRules = status.rules.slice();
+  if (on && !wasOn) startWatchFeed();
+  if (!on && wasOn) stopWatchFeed();
+  if (on && sidePanelView === "watch") renderWatchSidePanel();
+  else if (on && wasOn) reportHeight();
+}
+
+(async () => {
+  try {
+    renderLiveWatchState(await window.lyknOverlay.getLiveWatch());
+  } catch (_) {}
+})();
+
+if (liveWatchBtn) {
+  liveWatchBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const current = liveWatchBtn.getAttribute("aria-pressed") === "true";
+    try {
+      const next = await window.lyknOverlay.setLiveWatch(!current);
+      if (next?.error === "no_permission") {
+        askEl.placeholder = "Enable Screen Recording in System Settings first";
+        setTimeout(() => {
+          if (askEl.placeholder === "Enable Screen Recording in System Settings first") {
+            askEl.placeholder = DEFAULT_PLACEHOLDER;
+          }
+        }, 4000);
+      }
+      renderLiveWatchState(next);
+    } catch (_) {}
+  });
+}
+
+window.lyknOverlay.onLiveWatchUpdate((status) => {
+  const prevRules = JSON.stringify(watchActiveRules);
+  const prevSource = watchContextSource;
+  const prevExt = watchExtensionConnected;
+  handleLiveWatchCommentary(status);
+  if (Array.isArray(status?.rules)) watchActiveRules = status.rules.slice();
+  const rulesChanged = JSON.stringify(watchActiveRules) !== prevRules;
+  const sourceChanged =
+    (status?.contextSource && status.contextSource !== prevSource) ||
+    (typeof status?.extensionConnected === "boolean" && status.extensionConnected !== prevExt);
+  // Re-render when feed/rules/source change — not on every capture tick.
+  if (status?.isNewCommentary || status?.enabled === false || rulesChanged || sourceChanged) {
+    renderLiveWatchState(status);
+  }
+  if (liveWatchEnabled && voiceActive && voiceSessionToken && status?.summary) {
+    void pushScreenContext(true);
+  }
 });
 
 // ── Voice mode (ElevenLabs realtime agent) ─────────────────────────────────
@@ -1531,7 +2251,10 @@ async function pushScreenContext(force) {
   if (!voiceSessionToken) return;
   if (screenPushInFlight) return;
   const now = Date.now();
-  if (!force && now - lastScreenPushAt < 4000) return;
+  // Live Watch already maintains a rolling summary — push more often (2s) since
+  // main reuses it instead of running a fresh vision call each time.
+  const minGap = liveWatchEnabled ? 2000 : 4000;
+  if (!force && now - lastScreenPushAt < minGap) return;
   screenPushInFlight = true;
   lastScreenPushAt = now;
   try {
@@ -2138,32 +2861,52 @@ document.addEventListener("keydown", (e) => {
 
 // NOTE: In Electron, file drop/dragover events frequently won't fire unless a
 // dragover listener is registered on `document` (a long-standing quirk). We bind
-// to both document and window, and always preventDefault so the OS doesn't just
-// open the file.
+// to document, window, and body, and always preventDefault so the OS doesn't just
+// open the file. On macOS the overlay is a non-activating `panel` window, which
+// the OS won't route external file drops to — there the in-bar attach button is
+// the reliable path. These handlers still serve platforms where drops work.
 let dragDepth = 0;
 const onDragEnter = (e) => {
   e.preventDefault();
+  e.stopPropagation();
   dragDepth += 1;
   wrapEl.classList.add("dropping");
 };
 const onDragOver = (e) => {
   e.preventDefault();
+  e.stopPropagation();
   if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
 };
 const onDragLeave = (e) => {
   e.preventDefault();
+  e.stopPropagation();
   dragDepth = Math.max(0, dragDepth - 1);
   if (dragDepth === 0) wrapEl.classList.remove("dropping");
 };
 const onDrop = (e) => {
   e.preventDefault();
+  e.stopPropagation();
   dragDepth = 0;
   wrapEl.classList.remove("dropping");
-  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
-    void addFiles(e.dataTransfer.files);
+  const dt = e.dataTransfer;
+  if (dt && dt.files && dt.files.length) {
+    void addFiles(dt.files);
+    return;
+  }
+  // Fallback: some platforms populate items but not files until accessed.
+  if (dt && dt.items && dt.items.length) {
+    const files = [];
+    for (const item of dt.items) {
+      if (item.kind === "file") {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) void addFiles(files);
   }
 };
-for (const target of [document, window]) {
+for (const target of [document, window, document.body]) {
+  if (!target) continue;
   target.addEventListener("dragenter", onDragEnter);
   target.addEventListener("dragover", onDragOver);
   target.addEventListener("dragleave", onDragLeave);

@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LYKN</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        width: 100%;
+        background: transparent;
+        overflow: hidden;
+        pointer-events: none;
+      }
+
+      /* A full-height (top-to-bottom) band hugging the left/right edge that
+         reaches inward toward center, then recedes. A full spectrum of hues —
+         blues (light→dark), pinks, plus warm orange + yellow accents — each
+         blob reaching a DIFFERENT distance inward at a different height, so the
+         inner edge is wavy/irregular, not a straight band. */
+      .burst-side {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        width: 112vw;
+        opacity: 0;
+        filter: blur(30px);
+        will-change: transform, opacity;
+        transform: translateZ(0);
+        backface-visibility: hidden;
+      }
+      .burst-side.left {
+        left: 0;
+        transform-origin: left center;
+        /* All shades of blue — pale sky at the top through cyan, cornflower,
+           electric and royal down to deep sapphire/navy — interleaved by height
+           and reach so the band stays varied and the inner edge is wavy. */
+        background:
+          /* faint diagonal soft-light highlight — the burst catches the
+             overlay's ambient light (barely-there, blurred soft). */
+          linear-gradient(122deg, rgba(0,0,0,0) 30%, rgba(216, 234, 255, 0.16) 47%, rgba(216, 234, 255, 0.09) 55%, rgba(0,0,0,0) 70%),
+          /* irregular blobs anchored just OFF the edge so color bleeds past it
+             and the shape reads asymmetrical, not a clean oval. */
+          radial-gradient(42% 24% at -4% 30%, rgba(95, 176, 255, 0.50) 0%, rgba(95, 176, 255, 0) 72%),
+          radial-gradient(30% 20% at 9% 84%, rgba(60, 126, 255, 0.46) 0%, rgba(60, 126, 255, 0) 74%),
+          /* a little orange at the far (screen) edge */
+          radial-gradient(32% 26% at 0% 42%, rgba(255, 140, 70, 0.42) 0%, rgba(255, 140, 70, 0) 70%),
+          radial-gradient(82% 34% at 0% 6%,  rgba(176, 216, 255, 0.58) 0%, rgba(176, 216, 255, 0) 84%),
+          radial-gradient(90% 34% at 0% 12%, rgba(135, 206, 255, 0.58) 0%, rgba(135, 206, 255, 0) 86%),
+          radial-gradient(96% 36% at 0% 22%, rgba(32, 176, 255, 0.56) 0%, rgba(32, 176, 255, 0) 88%),
+          radial-gradient(92% 36% at 0% 30%, rgba(100, 149, 237, 0.60) 0%, rgba(100, 149, 237, 0) 86%),
+          radial-gradient(108% 38% at 0% 40%, rgba(60, 126, 255, 0.70) 0%, rgba(60, 126, 255, 0) 88%),
+          radial-gradient(96% 36% at 0% 46%, rgba(46, 139, 255, 0.60) 0%, rgba(46, 139, 255, 0) 86%),
+          radial-gradient(90% 34% at 0% 52%, rgba(143, 179, 255, 0.54) 0%, rgba(143, 179, 255, 0) 86%),
+          radial-gradient(104% 38% at 0% 60%, rgba(46, 110, 255, 0.70) 0%, rgba(46, 110, 255, 0) 88%),
+          radial-gradient(94% 36% at 0% 66%, rgba(15, 82, 186, 0.64) 0%, rgba(15, 82, 186, 0) 88%),
+          radial-gradient(100% 38% at 0% 72%, rgba(30, 79, 224, 0.66) 0%, rgba(30, 79, 224, 0) 88%),
+          radial-gradient(98% 36% at 0% 80%, rgba(18, 60, 160, 0.64) 0%, rgba(18, 60, 160, 0) 88%),
+          radial-gradient(90% 34% at 0% 88%, rgba(20, 44, 140, 0.64) 0%, rgba(20, 44, 140, 0) 86%),
+          radial-gradient(94% 36% at 0% 96%, rgba(95, 176, 255, 0.52) 0%, rgba(95, 176, 255, 0) 86%),
+          radial-gradient(86% 32% at 0% 36%, rgba(75, 121, 200, 0.52) 0%, rgba(75, 121, 200, 0) 84%),
+          /* broad tall fills that thicken the band's overall coverage */
+          radial-gradient(116% 62% at 0% 34%, rgba(46, 110, 255, 0.46) 0%, rgba(46, 110, 255, 0) 86%),
+          radial-gradient(108% 60% at 0% 72%, rgba(30, 79, 224, 0.44) 0%, rgba(30, 79, 224, 0) 86%),
+          /* broad blue wash so the whole band stays blue */
+          radial-gradient(125% 135% at 0% 50%, rgba(46, 110, 255, 0.40) 0%, rgba(46, 110, 255, 0) 84%);
+      }
+      .burst-side.right {
+        right: 0;
+        transform-origin: right center;
+        /* Same blue spectrum, shades + heights reshuffled so sides don't match. */
+        background:
+          /* faint diagonal soft-light highlight (mirrored angle). */
+          linear-gradient(238deg, rgba(0,0,0,0) 30%, rgba(216, 234, 255, 0.16) 47%, rgba(216, 234, 255, 0.09) 55%, rgba(0,0,0,0) 70%),
+          /* irregular blobs bleeding past the edge, at different heights than
+             the left so the two sides aren't symmetrical. */
+          radial-gradient(42% 24% at 104% 38%, rgba(95, 176, 255, 0.50) 0%, rgba(95, 176, 255, 0) 72%),
+          radial-gradient(30% 20% at 91% 14%, rgba(60, 126, 255, 0.46) 0%, rgba(60, 126, 255, 0) 74%),
+          /* a little orange at the far (screen) edge */
+          radial-gradient(32% 26% at 100% 58%, rgba(255, 140, 70, 0.42) 0%, rgba(255, 140, 70, 0) 70%),
+          radial-gradient(82% 34% at 100% 6%,  rgba(143, 179, 255, 0.58) 0%, rgba(143, 179, 255, 0) 84%),
+          radial-gradient(90% 34% at 100% 12%, rgba(95, 176, 255, 0.56) 0%, rgba(95, 176, 255, 0) 86%),
+          radial-gradient(96% 36% at 100% 22%, rgba(100, 149, 237, 0.60) 0%, rgba(100, 149, 237, 0) 88%),
+          radial-gradient(92% 36% at 100% 30%, rgba(32, 176, 255, 0.56) 0%, rgba(32, 176, 255, 0) 86%),
+          radial-gradient(108% 38% at 100% 40%, rgba(46, 110, 255, 0.70) 0%, rgba(46, 110, 255, 0) 88%),
+          radial-gradient(96% 36% at 100% 46%, rgba(60, 126, 255, 0.62) 0%, rgba(60, 126, 255, 0) 86%),
+          radial-gradient(90% 34% at 100% 52%, rgba(135, 206, 255, 0.54) 0%, rgba(135, 206, 255, 0) 86%),
+          radial-gradient(104% 38% at 100% 60%, rgba(30, 79, 224, 0.70) 0%, rgba(30, 79, 224, 0) 88%),
+          radial-gradient(94% 36% at 100% 66%, rgba(18, 60, 160, 0.64) 0%, rgba(18, 60, 160, 0) 88%),
+          radial-gradient(100% 38% at 100% 72%, rgba(15, 82, 186, 0.66) 0%, rgba(15, 82, 186, 0) 88%),
+          radial-gradient(98% 36% at 100% 80%, rgba(46, 139, 255, 0.58) 0%, rgba(46, 139, 255, 0) 88%),
+          radial-gradient(90% 34% at 100% 88%, rgba(20, 44, 140, 0.64) 0%, rgba(20, 44, 140, 0) 86%),
+          radial-gradient(94% 36% at 100% 96%, rgba(176, 216, 255, 0.52) 0%, rgba(176, 216, 255, 0) 86%),
+          radial-gradient(86% 32% at 100% 36%, rgba(75, 121, 200, 0.52) 0%, rgba(75, 121, 200, 0) 84%),
+          /* broad tall fills that thicken the band's overall coverage */
+          radial-gradient(116% 62% at 100% 40%, rgba(46, 110, 255, 0.46) 0%, rgba(46, 110, 255, 0) 86%),
+          radial-gradient(108% 60% at 100% 76%, rgba(30, 79, 224, 0.44) 0%, rgba(30, 79, 224, 0) 86%),
+          /* broad blue wash so the whole band stays blue */
+          radial-gradient(125% 135% at 100% 50%, rgba(46, 110, 255, 0.40) 0%, rgba(46, 110, 255, 0) 84%);
+      }
+      .burst-side.play {
+        animation: lykn-burst 1.2s linear forwards;
+      }
+      /* Sweeps inward at a steady pace (scaleX grows monotonically so there's no
+         pause), with a subtle squash/skew ripple; plain linear fade out. */
+      @keyframes lykn-burst {
+        0%   { opacity: 0; transform: scaleX(0.16) scaleY(1.00) skewY(0deg); }
+        14%  { opacity: 1; }
+        32%  { transform: scaleX(0.46) scaleY(1.05) skewY(-1.4deg); }
+        52%  { transform: scaleX(0.70) scaleY(0.96) skewY(1.4deg); }
+        72%  { transform: scaleX(0.90) scaleY(1.04) skewY(-0.9deg); }
+        100% { opacity: 0; transform: scaleX(1.06) scaleY(1.00) skewY(0deg); }
+      }
+
+      /* ── Grain / atmosphere ──────────────────────────────────────────────
+         A granular, film-grain noise layer over the color (the burst bands are
+         blurred, so grain lives on its own un-blurred layer above them, blended
+         with screen/overlay). Masked to the sides where the color is and faded
+         through the center so it reads as soft atmosphere, not a flat pattern. */
+      #grain {
+        position: fixed;
+        inset: 0;
+        opacity: 0;
+        pointer-events: none;
+        mix-blend-mode: overlay;
+        /* GPU promotion + only opacity animates, so the grain composites cheaply
+           (animating background-position repainted the whole layer every frame). */
+        will-change: opacity;
+        transform: translateZ(0);
+        /* Two noise tiles — coarse macro grain + finer speckle — high contrast
+           for a tactile texture. Rasterized once, then just faded. */
+        background-image:
+          url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='220'%20height='220'%3E%3Cfilter%20id='n'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.5'%20numOctaves='3'%20stitchTiles='stitch'/%3E%3C/filter%3E%3Crect%20width='100%25'%20height='100%25'%20filter='url(%23n)'/%3E%3C/svg%3E"),
+          url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='130'%20height='130'%3E%3Cfilter%20id='n'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='1.1'%20numOctaves='2'%20stitchTiles='stitch'/%3E%3C/filter%3E%3Crect%20width='100%25'%20height='100%25'%20filter='url(%23n)'/%3E%3C/svg%3E");
+        background-size: 240px 240px, 110px 110px;
+        /* Spread across most of the band (slim clear strip in the dead center);
+           softened top/bottom so it never reads as a hard rectangle. */
+        -webkit-mask:
+          linear-gradient(to right, #000 0%, rgba(0,0,0,0) 48%, rgba(0,0,0,0) 52%, #000 100%),
+          linear-gradient(to bottom, rgba(0,0,0,0) 0%, #000 9%, #000 91%, rgba(0,0,0,0) 100%);
+        -webkit-mask-composite: source-in;
+        mask:
+          linear-gradient(to right, #000 0%, rgba(0,0,0,0) 48%, rgba(0,0,0,0) 52%, #000 100%),
+          linear-gradient(to bottom, rgba(0,0,0,0) 0%, #000 9%, #000 91%, rgba(0,0,0,0) 100%);
+        mask-composite: intersect;
+      }
+      #grain.play {
+        animation: lykn-grain 1.2s linear forwards;
+      }
+      @keyframes lykn-grain {
+        0%   { opacity: 0; }
+        16%  { opacity: 0.92; }
+        72%  { opacity: 0.8; }
+        100% { opacity: 0; }
+      }
+
+      /* ── "LYKN is on" glass ──────────────────────────────────────────────
+         On summon the whole screen flashes blue, then the fill dissolves to
+         fully transparent — leaving only a persistent blue outline glowing
+         around the edge so the user always knows the overlay is live.
+
+         #glass = the persistent blue EDGE OUTLINE (no fill); stays while on. */
+      #glass {
+        position: fixed;
+        inset: 0;
+        opacity: 0;
+        background: transparent;
+        pointer-events: none;
+        transition: opacity 320ms cubic-bezier(0.4, 0, 0.2, 1);
+        /* Soft inward glow behind the outline. */
+        box-shadow: inset 0 0 60px rgba(46, 87, 255, 0.06);
+      }
+      #glass.active { opacity: 1; }
+      /* A thin border that cycles through the burst's blue hues all the way
+         around the screen edge (conic gradient masked to just the frame). */
+      #glass::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        padding: 2px; /* border thickness */
+        background: conic-gradient(
+          from 0deg at 50% 50%,
+          rgba(135, 206, 255, 0.55),
+          rgba(32, 176, 255, 0.55),
+          rgba(60, 126, 255, 0.60),
+          rgba(46, 110, 255, 0.62),
+          rgba(30, 79, 224, 0.60),
+          rgba(15, 82, 186, 0.58),
+          rgba(39, 71, 216, 0.60),
+          rgba(143, 179, 255, 0.55),
+          rgba(135, 206, 255, 0.55)
+        );
+        -webkit-mask:
+          linear-gradient(#fff 0 0) content-box,
+          linear-gradient(#fff 0 0);
+        -webkit-mask-composite: xor;
+        mask:
+          linear-gradient(#fff 0 0) content-box,
+          linear-gradient(#fff 0 0);
+        mask-composite: exclude;
+        filter: drop-shadow(0 0 5px rgba(60, 126, 255, 0.45));
+      }
+
+      /* #glassFill = the transient blue WASH that flashes over the whole screen
+         on summon, then fades out to nothing (leaving just the outline). */
+      #glassFill {
+        position: fixed;
+        inset: 0;
+        opacity: 0;
+        background:
+          radial-gradient(120% 90% at 14% 10%, rgba(120, 110, 255, 0.16) 0%, rgba(120, 110, 255, 0) 50%),
+          radial-gradient(130% 110% at 86% 94%, rgba(46, 100, 255, 0.34) 0%, rgba(46, 100, 255, 0) 58%),
+          radial-gradient(120% 120% at 60% 30%, rgba(60, 130, 255, 0.24) 0%, rgba(60, 130, 255, 0) 60%),
+          radial-gradient(140% 140% at 50% 50%, rgba(46, 87, 255, 0.18) 0%, rgba(46, 87, 255, 0) 70%);
+      }
+      #glassFill.play {
+        animation: lykn-glass-fill 1.3s cubic-bezier(0.33, 0, 0.2, 1) forwards;
+      }
+      @keyframes lykn-glass-fill {
+        0%   { opacity: 0; }
+        16%  { opacity: 1; }
+        100% { opacity: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="burst-side left" id="burstLeft"></div>
+    <div class="burst-side right" id="burstRight"></div>
+    <div id="grain"></div>
+    <div id="glassFill"></div>
+    <div id="glass"></div>
+    <script>
+      const glass = document.getElementById("glass");
+      const glassFill = document.getElementById("glassFill");
+      const grain = document.getElementById("grain");
+      const burstSides = [
+        document.getElementById("burstLeft"),
+        document.getElementById("burstRight"),
+      ];
+
+      // Summon: fire the one-shot side bursts + grain, flash the blue fill
+      // (which then dissolves), and light the persistent edge outline.
+      window.__lyknBurst = function () {
+        glass.classList.add("active");
+        glassFill.classList.remove("play");
+        grain.classList.remove("play");
+        burstSides.forEach((s) => s.classList.remove("play"));
+        // Force reflow so all animations restart from frame 0 each time.
+        void burstSides[0].offsetWidth;
+        glassFill.classList.add("play");
+        grain.classList.add("play");
+        burstSides.forEach((s) => s.classList.add("play"));
+      };
+
+      // Dismiss: drop the edge outline + fill + grain (caller hides after).
+      window.__lyknBurstOff = function () {
+        glass.classList.remove("active");
+        glassFill.classList.remove("play");
+        grain.classList.remove("play");
+        burstSides.forEach((s) => s.classList.remove("play"));
+      };
+    </script>
+  </body>
+</html>

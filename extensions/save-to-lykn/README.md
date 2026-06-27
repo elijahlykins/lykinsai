@@ -76,11 +76,25 @@ on the user's existing browser session at `lykn.io`. That means:
 | File | Purpose |
 |------|---------|
 | `manifest.json` | MV3 manifest (permissions, icons, action, options page) |
-| `background.js` | Service worker: context menus + toolbar handler + base URL resolution |
-| `popup.html` / `popup.js` | Toolbar popup UI |
+| `content.js` | Streams live DOM text to the desktop bridge |
+| `background.js` | Service worker: context menus, save handler, desktop page bridge |
 | `options.html` / `options.js` | Settings page (base URL config) |
 | `icons/icon.svg` | Source SVG icon |
 | `icons/generate-icons.html` | One‑off helper to rasterise the SVG into PNGs |
+
+## Live page bridge (desktop app)
+
+When the LYKN desktop app is running, the extension can stream visible page text to
+`http://127.0.0.1:38471` so **Live Screen Watch** uses cheap text-only AI instead of
+screenshot vision.
+
+1. Run the LYKN desktop app (`npm run dev:overlay` or the installed app).
+2. Open extension **Settings** → ensure **Enable live page sync** is on.
+3. Click **Test connection** — should show “Connected to LYKN desktop ✓”.
+4. Enable **Live screen watch** in the overlay (⌘L menu).
+
+The side panel shows `via extension (text)` when connected. Without the extension,
+Live Watch falls back to AppleScript DOM scrape or screen vision (more expensive).
 
 ## Future enhancements
 

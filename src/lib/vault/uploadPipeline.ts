@@ -25,10 +25,12 @@ import { findAttachmentsMarker, withAttachmentsMarker } from "@/lib/vault/attach
 import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
 import { toast } from "@/components/ui/use-toast";
 import {
+  commitVaultUpload,
   registerVaultUploadCancellation,
   setVaultUploadStoragePath,
   unregisterVaultUploadCancellation,
 } from "@/lib/vault/uploadCancellation";
+import { beginUploadLedger, clearUploadLedger } from "@/lib/vault/uploadLedger";
 
 type PlanId = keyof typeof UPLOAD_RATE_LIMITS;
 
@@ -198,6 +200,15 @@ type StartFileUploadsInput = {
    * (rather than waiting for the whole batch).
    */
   onFileComplete?: (note: { id: string; [key: string]: unknown }) => void;
+  /**
+   * Fires when a just-uploaded image/video's medium/thumb variants are
+   * generated and stored. Lets the grid swap a freshly-uploaded video's
+   * black box for its real poster frame without waiting for a reload.
+   */
+  onVariantsReady?: (
+    noteId: string,
+    variants: { variantThumbPath?: string; variantMediumPath?: string },
+  ) => void;
 };
 
 const UPLOAD_PARALLELISM = 4;
@@ -527,10 +538,10 @@ async function generateAndStoreVariants(args: {
   file: File;
   fileType: string;
   storagePath: string;
-}): Promise<void> {
+}): Promise<{ variantThumbPath?: string; variantMediumPath?: string }> {
   const { userId, noteId, file, fileType, storagePath } = args;
   const dir = storagePath.slice(0, storagePath.lastIndexOf("/") + 1);
-  if (!dir) return;
+  if (!dir) return {};
 
   const variants = await generateMediaVariants(file, fileType);
   const patch: Record<string, unknown> = {};
@@ -567,7 +578,12 @@ async function generateAndStoreVariants(args: {
     } catch { /* best-effort */ }
   }
 
-  if (!Object.keys(patch).length) return;
+  if (!Object.keys(patch).length) return {};
+
+  const result = {
+    variantThumbPath: patch.variant_thumb_path as string | undefined,
+    variantMediumPath: patch.variant_medium_path as string | undefined,
+  };
 
   // Dual-write the variant paths into the marker too, so existing
   // marker-based renderers (VaultAttachment, the Vault grid) can prefer the
@@ -610,11 +626,12 @@ async function generateAndStoreVariants(args: {
         if (updatedAt) q2.eq("updated_at", updatedAt);
         await q2;
       }
-      return;
+      return result;
     }
   } catch { /* fall through to columns-only update */ }
 
   await updateNoteColumnsTolerant(userId, noteId, patch);
+  return result;
 }
 
 function runPostProcessing(args: {
@@ -627,6 +644,10 @@ function runPostProcessing(args: {
   storagePath: string | null;
   createdNote: any;
   bulkImport?: boolean;
+  onVariantsReady?: (
+    noteId: string,
+    variants: { variantThumbPath?: string; variantMediumPath?: string },
+  ) => void;
 }): void {
   const { userId, noteId, file, filename, fileType, fileUrl, storagePath, createdNote, bulkImport } = args;
   (async () => {
@@ -634,7 +655,16 @@ function runPostProcessing(args: {
     // the grid/mobile can load a small JPEG instead of the full original.
     if ((fileType === "image" || fileType === "video") && storagePath) {
       try {
-        await generateAndStoreVariants({ userId, noteId, file, fileType, storagePath });
+        const variants = await generateAndStoreVariants({ userId, noteId, file, fileType, storagePath });
+        // Tell the grid the poster/variant paths are ready so a just-uploaded
+        // video can swap its black box for the real frame without a reload.
+        if (variants && (variants.variantThumbPath || variants.variantMediumPath)) {
+          try {
+            args.onVariantsReady?.(noteId, variants);
+          } catch {
+            /* non-fatal */
+          }
+        }
       } catch (err) {
         if (import.meta.env.DEV) {
           // eslint-disable-next-line no-console
@@ -773,6 +803,150 @@ function takeVaultSlot(state: VaultSlotState | null | undefined): boolean {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Video poster fallback
+//
+// When a video's full upload fails — most commonly because the original bytes
+// exceed the Supabase project-wide file-size limit (the TUS "create upload"
+// POST is rejected before any chunk flows), or because the .mov holds a codec
+// we couldn't transcode — we don't want the user to lose the drop entirely.
+// Instead we capture a single poster frame, encode it as a small JPEG (well
+// under the 6 MiB TUS threshold, so it goes via the reliable single-shot path),
+// and save THAT thumbnail to the vault as an image. The user keeps a visual
+// record of the clip even though the playable video didn't make it.
+//
+// Best-effort: if we can't decode a frame (e.g. an HEVC .mov on a browser that
+// can't render it), we return null and the caller surfaces the original error.
+// ---------------------------------------------------------------------------
+async function saveVideoPosterFallback(args: {
+  userId: string;
+  itemId: string;
+  file: File;
+  filename: string;
+  folderPath: string | null;
+  onFileComplete?: (note: { id: string; [key: string]: unknown }) => void;
+  onNoteCreated?: () => void;
+}): Promise<{ id: string } | null> {
+  const store = useVaultUploadStore.getState();
+
+  // Capture a poster frame. `medium` (≤1280px) is the nicer preview; fall back
+  // to the tiny `thumb` if the medium encode didn't materialize.
+  let poster: Blob | null = null;
+  let posterWidth: number | null = null;
+  let posterHeight: number | null = null;
+  try {
+    const variants = await generateMediaVariants(args.file, "video");
+    poster = variants.medium || variants.thumb;
+    posterWidth = variants.width;
+    posterHeight = variants.height;
+  } catch {
+    return null;
+  }
+  if (!poster) return null;
+
+  const fileId = crypto.randomUUID();
+  const posterPath = `${args.userId}/${fileId}/poster.jpg`;
+  setVaultUploadStoragePath(args.itemId, posterPath, "user-files");
+  void beginUploadLedger(args.userId, posterPath, "user-files");
+
+  let uploadResult;
+  try {
+    uploadResult = await uploadFileToStorage({
+      file: poster,
+      userId: args.userId,
+      storagePath: posterPath,
+      bucket: "user-files",
+      contentType: "image/jpeg",
+      cacheControl: "31536000",
+      upsert: true,
+    });
+  } catch {
+    void clearUploadLedger(posterPath);
+    return null;
+  }
+
+  const fileUrl = uploadResult.signedUrl || uploadResult.publicUrl || null;
+  if (!fileUrl) {
+    void supabase.storage.from("user-files").remove([posterPath]).catch(() => {});
+    void clearUploadLedger(posterPath);
+    return null;
+  }
+
+  // Keep the visual association with the original clip in the title, but save
+  // it as an image so the vault renders the JPEG (not a broken <video>).
+  const baseName = args.filename.replace(/\.[^/.]+$/, "") || args.filename;
+  const posterName = `${baseName} (video preview).jpg`;
+
+  let createdNote: any = null;
+  try {
+    createdNote = await createVaultNote({
+      userId: args.userId,
+      filename: posterName,
+      folderPath: args.folderPath,
+      fileType: "image",
+      fileUrl,
+      storagePath: posterPath,
+      storageBucket: "user-files",
+      fileSize: poster.size,
+      mimeType: "image/jpeg",
+      width: posterWidth,
+      height: posterHeight,
+    });
+  } catch {
+    // Cap / rate-limit / RLS — clean up the orphaned poster and bail; the
+    // caller's catch will surface the appropriate user-facing error.
+    void supabase.storage.from("user-files").remove([posterPath]).catch(() => {});
+    void clearUploadLedger(posterPath);
+    return null;
+  }
+
+  if (!createdNote?.id) {
+    void supabase.storage.from("user-files").remove([posterPath]).catch(() => {});
+    void clearUploadLedger(posterPath);
+    return null;
+  }
+
+  // Same commit point as the main path: take the item out of the
+  // cancellation registry the instant the poster row lands, and roll back
+  // both if the user cancelled during the insert.
+  if (!commitVaultUpload(args.itemId)) {
+    try {
+      await supabase
+        .from("vault_items")
+        .delete()
+        .eq("id", createdNote.id)
+        .eq("user_id", args.userId);
+    } catch {
+      /* best-effort — reconciler will catch any remnant */
+    }
+    void supabase.storage.from("user-files").remove([posterPath]).catch(() => {});
+    void clearUploadLedger(posterPath);
+    return null;
+  }
+
+  // Committed: clear the in-flight ledger row for the poster.
+  void clearUploadLedger(posterPath);
+
+  recordUpload();
+  args.onNoteCreated?.();
+
+  store.update(args.itemId, {
+    progress: 100,
+    status: "completed",
+    noteId: createdNote.id,
+  });
+
+  if (args.onFileComplete) {
+    try {
+      args.onFileComplete(createdNote as { id: string });
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  return createdNote;
+}
+
 async function processOne(args: {
   userId: string;
   itemId: string;
@@ -784,6 +958,10 @@ async function processOne(args: {
   vaultSlots?: VaultSlotState | null;
   onFileComplete?: (note: { id: string; [key: string]: unknown }) => void;
   onNoteCreated?: () => void;
+  onVariantsReady?: (
+    noteId: string,
+    variants: { variantThumbPath?: string; variantMediumPath?: string },
+  ) => void;
 }): Promise<{ id: string } | null> {
   const { userId } = args;
   let { file, filename } = args;
@@ -798,6 +976,13 @@ async function processOne(args: {
   //     can trigger us from outside the pipeline).
   const abortCtrl = new AbortController();
   registerVaultUploadCancellation(args.itemId, abortCtrl);
+
+  // Upload-ledger bookkeeping (migration 112). `ledgerStoragePath` is set once
+  // we record an in-flight upload; `ledgerCommitted` flips at the commit point.
+  // The finally clears any still-pending ledger row so a failed/aborted upload
+  // never leaves a stale 'uploading' marker for the reconciler to chase.
+  let ledgerStoragePath: string | null = null;
+  let ledgerCommitted = false;
 
   // ── Vault headroom (before HEIF decode / compression) ───────────
   if (!takeVaultSlot(args.vaultSlots)) {
@@ -934,6 +1119,12 @@ async function processOne(args: {
     // partial object instead of leaking bytes.
     setVaultUploadStoragePath(args.itemId, storagePath, "user-files");
 
+    // Record the in-flight upload BEFORE pushing bytes, so a crash/tab-close
+    // between here and the row insert leaves a reapable trail. Best-effort and
+    // fire-and-forget — it must not delay the upload or break it pre-migration.
+    ledgerStoragePath = storagePath;
+    void beginUploadLedger(userId, storagePath, "user-files");
+
     let lastRenderedPct = 50;
     let uploadResult;
     try {
@@ -1029,6 +1220,33 @@ async function processOne(args: {
       return null;
     }
 
+    // ── Commit point ──────────────────────────────────────────────────
+    // The file and the row both exist now. Atomically (synchronously, no
+    // await in between) take the item out of the cancellation registry so
+    // any *later* dismiss/clearAll is a guaranteed no-op and can't delete
+    // the file out from under this committed row. If this returns false the
+    // user cancelled during/just before the insert, so we roll back BOTH —
+    // row first (worst case is a leaked file the reconciler reaps; the
+    // reverse would recreate the dangling-row bug we're fixing).
+    if (!commitVaultUpload(args.itemId)) {
+      try {
+        await supabase
+          .from("vault_items")
+          .delete()
+          .eq("id", createdNote.id)
+          .eq("user_id", userId);
+      } catch {
+        /* best-effort — reconciler will catch any remnant */
+      }
+      void supabase.storage.from("user-files").remove([storagePath]).catch(() => {});
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    // Committed: clear the in-flight ledger row so the reconciler never reaps
+    // this now-durable upload.
+    ledgerCommitted = true;
+    void clearUploadLedger(storagePath);
+
     // Record after the insert succeeds (the DB trigger is authoritative,
     // but we want our rolling window to reflect reality).
     recordUpload();
@@ -1064,6 +1282,7 @@ async function processOne(args: {
       storagePath,
       createdNote,
       bulkImport: args.bulkImport,
+      onVariantsReady: args.onVariantsReady,
     });
 
     return createdNote;
@@ -1102,10 +1321,50 @@ async function processOne(args: {
     // helpers can dispatch the events `useUsageGate` listens to (which
     // open the upgrade modal), instead of showing a generic toast.
     let didNotifyExternally = false;
-    if (notifyVaultCapIfApplicable(error)) {
+    const isCapError = notifyVaultCapIfApplicable(error);
+    const isRateLimitError = !isCapError && notifyUploadRateLimitIfApplicable(error);
+
+    // ── Video poster fallback ─────────────────────────────────────────
+    // The full video couldn't be uploaded (commonly: the original bytes
+    // exceed the storage project's file-size limit, so the TUS "create
+    // upload" POST is rejected). Rather than lose the drop entirely, save a
+    // poster-frame thumbnail so the user keeps a visual record. We skip this
+    // for cap / rate-limit failures — those would just reject the poster too
+    // and the upgrade modal is the right surface for them.
+    if (!isCapError && !isRateLimitError && fileType === "video") {
+      try {
+        const poster = await saveVideoPosterFallback({
+          userId,
+          itemId: args.itemId,
+          file,
+          filename,
+          folderPath: args.folderPath,
+          onFileComplete: args.onFileComplete,
+          onNoteCreated: args.onNoteCreated,
+        });
+        if (poster?.id) {
+          try {
+            toast({
+              title: "Saved a video preview",
+              description: `${args.filename ? `${args.filename}: ` : ""}couldn't upload the full video, so we saved a thumbnail instead.`,
+            });
+          } catch {
+            /* toast unavailable */
+          }
+          return poster;
+        }
+      } catch (fallbackErr) {
+        if (import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.warn("[uploadPipeline] video poster fallback failed:", fallbackErr);
+        }
+      }
+    }
+
+    if (isCapError) {
       friendly = "Vault is full — upgrade your plan to keep uploading.";
       didNotifyExternally = true;
-    } else if (notifyUploadRateLimitIfApplicable(error)) {
+    } else if (isRateLimitError) {
       friendly = "Upload paused — you're uploading too fast. Try again in a moment.";
       didNotifyExternally = true;
     } else if (lower.includes("exceeded the maximum allowed size") || lower.includes("payload too large") || lower.includes("413")) {
@@ -1114,6 +1373,11 @@ async function processOne(args: {
       friendly = "This file type is blocked by the storage bucket settings.";
     } else if (lower.includes("bucket not found")) {
       friendly = "Storage bucket 'user-files' is missing. Create it in Supabase Storage.";
+    } else if (lower.includes("creating upload") || (lower.includes("tus") && lower.includes("unexpected response"))) {
+      // The TUS create POST was rejected before any bytes flowed — almost
+      // always the storage project's max-file-size limit. Point the user at
+      // the actionable cause instead of echoing the raw tus error.
+      friendly = "Video too large to upload — it exceeds your storage size limit.";
     } else if (rawMsg) {
       friendly = `Upload failed: ${String(rawMsg).slice(0, 160)}`;
     }
@@ -1146,6 +1410,13 @@ async function processOne(args: {
     // the upload finishes naturally (most of the time) — or if it
     // errored for any non-cancellation reason.
     unregisterVaultUploadCancellation(args.itemId);
+    // If we recorded an in-flight ledger row but never reached the commit
+    // point (error / abort / fallback path), clear the bookkeeping now. Any
+    // actual orphaned bytes were already removed by the failing branch (or, on
+    // a hard crash where this never runs, get reaped by the reconciler).
+    if (ledgerStoragePath && !ledgerCommitted) {
+      void clearUploadLedger(ledgerStoragePath);
+    }
   }
 }
 
@@ -1293,6 +1564,7 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
           vaultSlots,
           onFileComplete: input.onFileComplete,
           onNoteCreated: input.onNoteCreated,
+          onVariantsReady: input.onVariantsReady,
         });
         if (created?.id) createdNotes.push(created);
       } finally {

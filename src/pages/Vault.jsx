@@ -1024,6 +1024,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   const lastSelectedCardIdRef = useRef(null);
   const draggedCardMetricsRef = useRef(null);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
+  // Signed URLs for video poster frames (the generated thumb/medium JPEG).
+  // Used as the <video poster> so grid cards show a real frame instead of a
+  // black box while the video itself only preloads metadata.
+  const [resolvedVideoPosterUrls, setResolvedVideoPosterUrls] = useState({});
   const [failedImageIds, setFailedImageIds] = useState(new Set());
   const imageRetryCountsRef = useRef(new Map());
   // projects fetched via React Query above
@@ -1491,6 +1495,59 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       return deduped;
     });
   }, []);
+
+  // Called when a freshly-uploaded image/video's medium/thumb variants finish
+  // generating. For videos this is what lets the grid card swap its black
+  // <video> box for the real poster frame without waiting for a reload.
+  const handleVariantsReady = useCallback(async (noteId, variants) => {
+    if (!noteId || !variants) return;
+    const posterPath = String(
+      variants.variantThumbPath || variants.variantMediumPath || "",
+    ).trim();
+
+    // Persist the variant paths onto the in-memory note marker so they
+    // survive re-derivation / pagination (mirrors the DB row the pipeline
+    // just wrote).
+    setNotes((prev) =>
+      prev.map((n) => {
+        if (String(n?.id) !== String(noteId)) return n;
+        const content = String(n.content || "");
+        const span = findAttachmentsMarker(content);
+        const head = span?.attachments?.[0];
+        if (!span || !head || typeof head !== "object") return n;
+        const next = span.attachments.slice();
+        next[0] = {
+          ...head,
+          ...(variants.variantThumbPath ? { variantThumbPath: variants.variantThumbPath } : {}),
+          ...(variants.variantMediumPath ? { variantMediumPath: variants.variantMediumPath } : {}),
+        };
+        return { ...n, content: withAttachmentJsonMarker(content, next) };
+      }),
+    );
+
+    if (!posterPath) return;
+    // Uploaded files always produce a single attachment at index 0.
+    const cardId = `${noteId}-att-0`;
+    try {
+      const cacheKey = `user-files:${posterPath}`;
+      let signed = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
+      if (!signed) {
+        const { data } = await supabase.storage
+          .from("user-files")
+          .createSignedUrl(posterPath, SIGNED_URL_TTL_SECONDS);
+        if (data?.signedUrl) {
+          signed = data.signedUrl;
+          writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, signed);
+        }
+      }
+      if (signed) {
+        setResolvedVideoPosterUrls((prev) => ({ ...prev, [cardId]: signed }));
+      }
+    } catch {
+      /* best-effort — poster will resolve on next view/reload */
+    }
+  }, []);
+
   const [selectedModel, setSelectedModel] = useState(() => {
     try {
       const saved = localStorage.getItem("lykinsai_settings");
@@ -2631,11 +2688,72 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     if (!card || card.kind !== "attachment") return;
     // Grid cards prefer the small thumb variant for images (big bandwidth win);
     // video keeps the original (its variant is a poster, not a playable file).
-    const isImage = resolveAttachmentType(card.attachment || {}) === "image";
+    const cardType = resolveAttachmentType(card.attachment || {});
+    const isImage = cardType === "image";
     // Existing images without variants: backfill them in the background on
     // first view so future loads use the small rendition.
     if (isImage && user?.id && card.noteId) {
       lazyBackfillCardVariants({ userId: user.id, noteId: card.noteId, attachment: card.attachment || {} });
+    }
+
+    // Video poster: sign the generated thumb/medium JPEG (if any) so the grid
+    // <video> can show a real frame instead of a black box. Best-effort and
+    // independent of the playable-original resolution below.
+    if (cardType === "video") {
+      const posterTarget = parseStorageTarget(card.attachment || {}, "thumb");
+      const originalTarget = parseStorageTarget(card.attachment || {});
+      // parseStorageTarget falls back to the original when no variant exists;
+      // only treat it as a poster when it's actually a distinct variant path.
+      const hasPosterVariant =
+        posterTarget?.path &&
+        posterTarget?.bucket &&
+        posterTarget.path !== originalTarget?.path;
+      if (hasPosterVariant) {
+        const posterKey = `${posterTarget.bucket}:${posterTarget.path}`;
+        const cachedPoster = readCachedSignedUrl(signedUrlCacheRef.current, posterKey);
+        if (cachedPoster) {
+          setResolvedVideoPosterUrls((prev) => (prev[card.id] ? prev : { ...prev, [card.id]: cachedPoster }));
+        } else {
+          supabase.storage
+            .from(posterTarget.bucket)
+            .createSignedUrl(posterTarget.path, SIGNED_URL_TTL_SECONDS)
+            .then(({ data }) => {
+              if (data?.signedUrl) {
+                writeCachedSignedUrl(signedUrlCacheRef.current, posterKey, data.signedUrl);
+                setResolvedVideoPosterUrls((prev) => (prev[card.id] ? prev : { ...prev, [card.id]: data.signedUrl }));
+              }
+            })
+            .catch(() => {});
+        }
+      } else if (user?.id && card.noteId) {
+        // Legacy video with no poster yet: generate one on first view, store
+        // it, and show it live so the card stops being a black box.
+        lazyBackfillCardVariants({
+          userId: user.id,
+          noteId: card.noteId,
+          attachment: card.attachment || {},
+          onPosterReady: ({ bucket, variantThumbPath, variantMediumPath }) => {
+            const path = String(variantThumbPath || variantMediumPath || "").trim();
+            if (!path) return;
+            const posterKey = `${bucket}:${path}`;
+            const cached = readCachedSignedUrl(signedUrlCacheRef.current, posterKey);
+            if (cached) {
+              setResolvedVideoPosterUrls((prev) => (prev[card.id] ? prev : { ...prev, [card.id]: cached }));
+              return;
+            }
+            supabase.storage
+              .from(bucket)
+              .createSignedUrl(path, SIGNED_URL_TTL_SECONDS)
+              .then(({ data }) => {
+                if (data?.signedUrl) {
+                  writeCachedSignedUrl(signedUrlCacheRef.current, posterKey, data.signedUrl);
+                  setResolvedVideoPosterUrls((prev) => (prev[card.id] ? prev : { ...prev, [card.id]: data.signedUrl }));
+                }
+              })
+              .catch(() => {});
+          },
+        });
+      }
     }
     const target = parseStorageTarget(card.attachment || {}, isImage ? "thumb" : null);
     if (!target?.path || !target?.bucket) {
@@ -5629,8 +5747,15 @@ User: ${text}`;
         null;
       const hasReservedVideoAspect = !!(reservedVW && reservedVH && reservedVW > 0 && reservedVH > 0);
       const videoAspect = hasReservedVideoAspect ? `${reservedVW} / ${reservedVH}` : "16 / 9";
+      const videoPosterUrl = resolvedVideoPosterUrls[card.id] || undefined;
+      const videoHasFailed = failedImageIds.has(card.id);
 
-      if (videoIsStorageBacked && !resolvedAttachmentUrls[card.id]) {
+      // Don't skeleton-spin a card we've already given up on — fall through to
+      // the failed state below. Without the `!videoHasFailed` guard a video
+      // whose object is missing (re-sign returns 400, or the object 404s) sat
+      // in this <Loader2> skeleton forever; the image branch has had a failed
+      // state for ages, this mirrors it.
+      if (videoIsStorageBacked && !resolvedAttachmentUrls[card.id] && !videoHasFailed) {
         return (
           <div
             className="w-full rounded-2xl bg-black/10 animate-pulse flex items-center justify-center"
@@ -5641,7 +5766,42 @@ User: ${text}`;
         );
       }
 
-      const skipVideoFade = isVaultFirstPaintRef.current || wakeDemoCard;
+      // Failed state — mirrors the image branch (same visual + "Try again"
+      // reset handler). Reserves the same aspect ratio so the tile doesn't jump
+      // when it flips between skeleton / failed / loaded.
+      if (videoHasFailed) {
+        return (
+          <div
+            className="w-full rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3"
+            style={{ aspectRatio: videoAspect }}
+          >
+            <FileText className="w-8 h-8 text-black/20 dark:text-white/20" />
+            <span className="text-xs text-black/40 dark:text-white/40 text-center truncate max-w-full">{title}</span>
+            {videoIsStorageBacked && (
+              <button
+                type="button"
+                className="text-[0.625rem] font-medium text-blue-500 hover:text-blue-600 transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  imageRetryCountsRef.current.delete(card.id);
+                  setFailedImageIds((prev) => { const next = new Set(prev); next.delete(card.id); return next; });
+                  signedUrlCacheRef.current.delete(`${videoStorageTarget?.bucket || "user-files"}:${videoStorageTarget?.path || ""}`);
+                  setResolvedAttachmentUrls((prev) => { const next = { ...prev }; delete next[card.id]; return next; });
+                  visibleCardIdsRef.current.delete(card.id);
+                  urlResolveQueueRef.current.push(card);
+                  drainUrlResolveQueue();
+                }}
+              >
+                Try again
+              </button>
+            )}
+          </div>
+        );
+      }
+
+      // When we have a poster frame, paint immediately — the poster image is
+      // already a real frame, so there's no black flash to hide behind a fade.
+      const skipVideoFade = isVaultFirstPaintRef.current || wakeDemoCard || !!videoPosterUrl;
 
       return (
         <div
@@ -5656,6 +5816,7 @@ User: ${text}`;
             controls={!isPickerMode}
             playsInline
             preload="metadata"
+            poster={videoPosterUrl}
             draggable={false}
             muted={isPickerMode}
             onLoadedMetadata={(e) => {
@@ -5680,12 +5841,77 @@ User: ${text}`;
               }
             }}
             onLoadedData={(e) => {
+              // Reset the retry budget on success (parity with the image
+              // branch) so a clip that briefly failed then recovered keeps a
+              // full budget for any future failure.
+              imageRetryCountsRef.current.delete(card.id);
               e.currentTarget.style.opacity = "1";
               const wrapper = e.currentTarget.parentElement;
               if (wrapper) { wrapper.style.minHeight = "0"; wrapper.style.background = "transparent"; }
             }}
+            // A URL that resolves but then fails to LOAD (object deleted /
+            // undecodable) used to leave an invisible opacity-0 box. Mirror the
+            // image branch: re-sign + retry a couple of times, then flip the
+            // card into the failed state so it shows the "Try again" tile.
+            onError={() => {
+              const retryCount = imageRetryCountsRef.current.get(card.id) || 0;
+              if (retryCount < 2 && videoStorageTarget?.bucket && videoStorageTarget?.path) {
+                imageRetryCountsRef.current.set(card.id, retryCount + 1);
+                const cacheKey = `${videoStorageTarget.bucket}:${videoStorageTarget.path}`;
+                signedUrlCacheRef.current.delete(cacheKey);
+                const delay = (retryCount + 1) * 800;
+                setTimeout(async () => {
+                  if (!isMountedRef.current) return;
+                  try {
+                    const { data } = await supabase.storage
+                      .from(videoStorageTarget.bucket)
+                      .createSignedUrl(videoStorageTarget.path, SIGNED_URL_TTL_SECONDS);
+                    if (data?.signedUrl) {
+                      writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, data.signedUrl);
+                      if (!isMountedRef.current) return;
+                      setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: data.signedUrl }));
+                      return;
+                    }
+                  } catch { /* fall through to server fallback */ }
+                  try {
+                    const { API_BASE_URL } = await import("@/lib/api-config");
+                    const session = (await supabase.auth.getSession())?.data?.session;
+                    const token = session?.access_token;
+                    if (token) {
+                      const resp = await fetch(`${API_BASE_URL}/api/storage/signed-url`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                        body: JSON.stringify({ storagePath: videoStorageTarget.path, bucket: videoStorageTarget.bucket }),
+                      });
+                      if (resp.ok) {
+                        const { signedUrl } = await resp.json();
+                        if (signedUrl) {
+                          writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, signedUrl);
+                          if (!isMountedRef.current) return;
+                          setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: signedUrl }));
+                          return;
+                        }
+                      }
+                    }
+                  } catch { /* exhausted */ }
+                  if (!isMountedRef.current) return;
+                  setFailedImageIds((prev) => new Set(prev).add(card.id));
+                }, delay);
+              } else {
+                setFailedImageIds((prev) => new Set(prev).add(card.id));
+              }
+            }}
           >
-            <source src={resolvedUrl} type={videoMime} />
+            <source
+              src={resolvedUrl}
+              type={videoMime}
+              onError={() => {
+                // A failing <source> only bubbles to <video> error when ALL
+                // sources fail; with a single source this is the reliable
+                // signal, so flip straight to the failed state.
+                setFailedImageIds((prev) => new Set(prev).add(card.id));
+              }}
+            />
           </video>
         </div>
       );
@@ -6588,6 +6814,7 @@ User: ${text}`;
         onFileComplete={(note) => {
           if (note?.id) mergeUploadedNotes([note]);
         }}
+        onVariantsReady={handleVariantsReady}
         onUploadComplete={(payload) => {
           const createdNotes = Array.isArray(payload?.createdNotes) ? payload.createdNotes : [];
           if (createdNotes.length > 0) {

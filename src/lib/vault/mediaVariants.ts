@@ -99,6 +99,39 @@ async function decodeImageBitmap(file: Blob): Promise<ImageBitmap | null> {
   }
 }
 
+/**
+ * Average luminance of a frame, sampled at low res. Used to reject all-black
+ * poster frames (fade-ins, leader frames) so we can retry at a later
+ * timestamp. Returns a high number (treated as "not black") on any failure so
+ * a sampling error never blocks an otherwise-fine frame.
+ */
+function frameLuminance(source: CanvasImageSource): number {
+  try {
+    const w = 32;
+    const h = 32;
+    const canvas = makeCanvas(w, h);
+    if (!canvas) return 255;
+    const ctx = (canvas as HTMLCanvasElement).getContext("2d", { alpha: false }) as
+      | CanvasRenderingContext2D
+      | OffscreenCanvasRenderingContext2D
+      | null;
+    if (!ctx) return 255;
+    ctx.drawImage(source, 0, 0, w, h);
+    const { data } = ctx.getImageData(0, 0, w, h);
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+    return sum / (data.length / 4);
+  } catch {
+    return 255;
+  }
+}
+
+// A frame this dark (0–255 luma) is treated as a black/leader frame and we
+// retry at a later timestamp before settling for it.
+const BLACK_FRAME_LUMA_THRESHOLD = 12;
+
 async function captureVideoFrame(
   file: Blob,
 ): Promise<{ bitmap: ImageBitmap | null; width: number; height: number } | null> {
@@ -107,6 +140,9 @@ async function captureVideoFrame(
     const url = URL.createObjectURL(file);
     const video = document.createElement("video");
     let settled = false;
+    let targets: number[] = [];
+    let attempt = 0;
+
     const cleanup = () => {
       URL.revokeObjectURL(url);
       video.removeAttribute("src");
@@ -122,38 +158,103 @@ async function captureVideoFrame(
       cleanup();
       resolve(null);
     };
-    const grab = async () => {
+    const succeed = (bitmap: ImageBitmap | null, width: number, height: number) => {
       if (settled) return;
       settled = true;
-      const width = video.videoWidth;
-      const height = video.videoHeight;
-      let bitmap: ImageBitmap | null = null;
-      try {
-        if (typeof createImageBitmap === "function" && width > 0 && height > 0) {
-          bitmap = await createImageBitmap(video);
-        }
-      } catch {
-        bitmap = null;
-      }
       cleanup();
       resolve({ bitmap, width, height });
     };
-    video.preload = "metadata";
-    video.muted = true;
-    (video as HTMLVideoElement).playsInline = true;
-    video.onloadedmetadata = () => {
-      // Seek a touch past the start to skip black intro frames.
-      const target = Math.min(1, (video.duration || 0) * 0.1);
+
+    // Captures the frame at the current position. If it's essentially black
+    // and we have more candidate timestamps, advance and try again; otherwise
+    // settle for whatever we got (a dim frame beats no thumbnail).
+    const grab = async () => {
+      if (settled) return;
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+      if (!(width > 0 && height > 0) || typeof createImageBitmap !== "function") {
+        succeed(null, width, height);
+        return;
+      }
+      let bitmap: ImageBitmap | null = null;
       try {
-        video.currentTime = Number.isFinite(target) && target > 0 ? target : 0;
+        bitmap = await createImageBitmap(video);
       } catch {
-        grab();
+        bitmap = null;
+      }
+      if (!bitmap) {
+        succeed(null, width, height);
+        return;
+      }
+      attempt += 1;
+      const isBlack = frameLuminance(bitmap) < BLACK_FRAME_LUMA_THRESHOLD;
+      if (isBlack && attempt < targets.length) {
+        bitmap.close?.();
+        seekTo(targets[attempt]);
+        return;
+      }
+      succeed(bitmap, width, height);
+    };
+
+    // Wait for the seeked frame to actually be presented before reading it —
+    // `seeked` alone can fire before the decoded frame is paintable, which is
+    // the classic "black thumbnail" cause. `requestVideoFrameCallback` is the
+    // reliable signal; fall back to a short timer where it's unavailable.
+    const seekTo = (time: number) => {
+      const onSeeked = () => {
+        const rvfc = (video as any).requestVideoFrameCallback;
+        if (typeof rvfc === "function") {
+          let done = false;
+          const fire = () => {
+            if (done) return;
+            done = true;
+            void grab();
+          };
+          try {
+            rvfc.call(video, () => fire());
+          } catch {
+            fire();
+            return;
+          }
+          // Safety net: some browsers won't fire rVFC for a paused element.
+          setTimeout(fire, 200);
+        } else {
+          setTimeout(() => void grab(), 80);
+        }
+      };
+      video.addEventListener("seeked", onSeeked, { once: true });
+      try {
+        video.currentTime = time;
+      } catch {
+        video.removeEventListener("seeked", onSeeked);
+        void grab();
       }
     };
-    video.onseeked = () => void grab();
+
+    // `auto` (not `metadata`) so the browser actually buffers frame data —
+    // seeking a metadata-only element commonly returns an undecoded black
+    // frame.
+    video.preload = "auto";
+    video.muted = true;
+    (video as HTMLVideoElement).playsInline = true;
+    // `loadeddata` guarantees the first frame is decoded; `loadedmetadata`
+    // only guarantees dimensions/duration.
+    video.onloadeddata = () => {
+      const dur = Number(video.duration);
+      const base = Number.isFinite(dur) && dur > 0 ? dur : 0;
+      if (base > 0) {
+        // Try a few representative offsets, in order, until one isn't black.
+        const cap = (t: number) => Math.max(0, Math.min(t, base - 0.05));
+        targets = [cap(base * 0.1), cap(base * 0.25), cap(base * 0.5), 0];
+      } else {
+        targets = [0];
+      }
+      seekTo(targets[0]);
+    };
     video.onerror = fail;
-    // Safety timeout so a stuck decode doesn't hang the pipeline.
-    setTimeout(fail, 8000);
+    // Safety timeout so a stuck decode doesn't hang the pipeline. Bumped to
+    // 10s to accommodate the extra buffering from preload="auto".
+    setTimeout(fail, 10000);
     video.src = url;
   });
 }

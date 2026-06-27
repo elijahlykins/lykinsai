@@ -101,7 +101,18 @@
     </div>
 
     <div class="card">
-      <h2>2 · Read your browser tab <span class="badge" style="font-weight:500">optional</span></h2>
+      <h2>2 · Accessibility <span class="badge" style="font-weight:500">browser control</span></h2>
+      <p>Required to click buttons on web pages (Control this page). In dev, enable <span class="tag">Electron</span> — in the installed app, enable <span class="tag">LYKN</span>.</p>
+      <div class="row">
+        <span id="ax-badge" class="badge"><span class="dot"></span><span id="ax-text">Checking…</span></span>
+        <span class="spacer"></span>
+        <button id="ax-open">Open System Settings</button>
+        <button id="ax-recheck" class="ghost">Recheck</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3 · Read your browser tab <span class="badge" style="font-weight:500">optional</span></h2>
       <p>To pull live article text and YouTube transcripts from your <span class="tag">active tab</span> (bypassing paywalls & bot blocks), enable "Allow JavaScript from Apple Events" in your browser:</p>
       <ol>
         <li><span class="tag">Chrome / Brave / Edge:</span> menu → More Tools → Developer → enable "Allow JavaScript from Apple Events"</li>
@@ -137,6 +148,18 @@
         else setBadge($("screen-badge"), $("screen-text"), "warn", "Needs permission");
       }
 
+      async function refreshAccessibility() {
+        const status = await api.accessibilityStatus();
+        if (status === "granted") setBadge($("ax-badge"), $("ax-text"), "ok", "Allowed");
+        else setBadge($("ax-badge"), $("ax-text"), "warn", "Needs permission");
+      }
+
+      $("ax-open").addEventListener("click", () => {
+        api.requestAccessibility();
+        api.openAccessibilitySettings();
+      });
+      $("ax-recheck").addEventListener("click", refreshAccessibility);
+
       $("screen-open").addEventListener("click", async () => {
         // Trigger the native prompt first (registers LYKN in the list), then open settings.
         await api.requestScreen();
@@ -160,8 +183,10 @@
       $("done").addEventListener("click", () => api.finish());
 
       refreshScreen();
+      refreshAccessibility();
       // Keep the screen badge fresh while the user toggles the setting in System Settings.
       setInterval(refreshScreen, 2500);
+      setInterval(refreshAccessibility, 2500);
     </script>
   </body>
 </html>

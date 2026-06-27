@@ -9,6 +9,10 @@ import { LyknChatStatus } from "./LyknChatStatus";
 import { LyknVoiceAgent } from "./LyknVoiceAgent";
 import { LyknProjects } from "./LyknProjects";
 import { LyknSynthesis } from "./LyknSynthesis";
+import { LyknCommandL } from "./LyknCommandL";
+import { ActivationGradient, activationGradientDefaults } from "./ActivationGradient";
+import { AuroraGlass, auroraGlassDefaults } from "./AuroraGlass";
+import { ParticleBurst, particleBurstDefaults } from "./ParticleBurst";
 
 // Every composition you want to render or preview is registered here.
 // Add more <Composition> entries as we build new things.
@@ -93,6 +97,41 @@ export const RemotionRoot: React.FC = () => {
         fps={30}
         width={1920}
         height={1080}
+      />
+      <Composition
+        id="LyknCommandL"
+        component={LyknCommandL}
+        durationInFrames={560}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="ActivationGradient"
+        component={ActivationGradient}
+        durationInFrames={180}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={activationGradientDefaults}
+      />
+      <Composition
+        id="AuroraGlass"
+        component={AuroraGlass}
+        durationInFrames={240}
+        fps={30}
+        width={1080}
+        height={1350}
+        defaultProps={auroraGlassDefaults}
+      />
+      <Composition
+        id="ParticleBurst"
+        component={ParticleBurst}
+        durationInFrames={210}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={particleBurstDefaults}
       />
       <Composition
         id="HelloLykn"

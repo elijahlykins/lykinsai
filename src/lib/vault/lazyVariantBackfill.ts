@@ -28,25 +28,49 @@ interface BackfillArgs {
     storageBucket?: unknown;
     variantThumbPath?: unknown;
     variantMediumPath?: unknown;
+    size?: unknown;
+    byteSize?: unknown;
     [key: string]: unknown;
   } | null | undefined;
+  /**
+   * Called once the poster/variant paths are stored, so the caller can show
+   * the thumbnail immediately (used for video cards, which otherwise render a
+   * black box). Receives the storage paths that were written.
+   */
+  onPosterReady?: (info: {
+    bucket: string;
+    variantThumbPath?: string;
+    variantMediumPath?: string;
+  }) => void;
 }
+
+// Cap how large an existing video we'll re-download just to grab a poster
+// frame, so scrolling a vault full of big clips doesn't spew bandwidth.
+// Compressed vault videos are typically well under this.
+const MAX_VIDEO_BACKFILL_BYTES = 120 * 1024 * 1024;
 
 /** Best-effort, fire-and-forget. Never throws. */
 export function lazyBackfillCardVariants(args: BackfillArgs): void {
   void run(args).catch(() => {});
 }
 
-async function run({ userId, noteId, attachment }: BackfillArgs): Promise<void> {
+async function run({ userId, noteId, attachment, onPosterReady }: BackfillArgs): Promise<void> {
   if (!userId || !noteId || !attachment) return;
-  // Only images for now (cheap, synchronous decode). Video posters are heavier
-  // and handled at upload time.
-  if (String(attachment.type || "").toLowerCase() !== "image") return;
+  const type = String(attachment.type || "").toLowerCase();
+  // Images (cheap decode) and videos (poster frame). Both skip if a variant
+  // already exists.
+  if (type !== "image" && type !== "video") return;
   if (attachment.variantThumbPath || attachment.variantMediumPath) return;
 
   const storagePath = String(attachment.storagePath || "").trim();
   if (!storagePath || !storagePath.includes("/")) return;
   const bucket = String(attachment.storageBucket || "user-files").trim() || "user-files";
+
+  // Don't re-download huge originals just for a poster frame.
+  if (type === "video") {
+    const bytes = Number(attachment.size ?? attachment.byteSize ?? 0);
+    if (Number.isFinite(bytes) && bytes > MAX_VIDEO_BACKFILL_BYTES) return;
+  }
 
   const guardKey = `${bucket}:${storagePath}`;
   if (attempted.has(guardKey)) return;
@@ -64,10 +88,10 @@ async function run({ userId, noteId, attachment }: BackfillArgs): Promise<void> 
     return;
   }
 
-  const file = new File([blob], storagePath.split("/").pop() || "image", {
-    type: blob.type || "image/jpeg",
+  const file = new File([blob], storagePath.split("/").pop() || "media", {
+    type: blob.type || (type === "video" ? "video/mp4" : "image/jpeg"),
   });
-  const variants = await generateMediaVariants(file, "image");
+  const variants = await generateMediaVariants(file, type);
   if (!variants.medium && !variants.thumb) return;
 
   const dir = storagePath.slice(0, storagePath.lastIndexOf("/") + 1);
@@ -109,6 +133,18 @@ async function run({ userId, noteId, attachment }: BackfillArgs): Promise<void> 
 
   if (!Object.keys(patch).length) return;
   await patchNote(userId, noteId, patch, markerPatch);
+
+  // Let the grid show the poster right away (video cards especially, which
+  // otherwise stay a black box until reload).
+  try {
+    onPosterReady?.({
+      bucket,
+      variantThumbPath: markerPatch.variantThumbPath,
+      variantMediumPath: markerPatch.variantMediumPath,
+    });
+  } catch {
+    /* non-fatal */
+  }
 }
 
 async function patchNote(

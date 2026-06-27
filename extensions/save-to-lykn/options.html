@@ -59,8 +59,21 @@
     </p>
     <label for="baseUrl">LYKN base URL</label>
     <input id="baseUrl" type="url" placeholder="https://lykn.io" />
+    <hr style="margin: 24px 0; border: none; border-top: 1px solid #e5e7eb;" />
+    <h2 style="margin: 0 0 4px; font-size: 15px;">Live page bridge</h2>
+    <p class="hint">
+      Streams visible page text to the LYKN desktop app on localhost so Live Screen Watch
+      can use text instead of screenshots (much cheaper). Requires the LYKN app running.
+    </p>
+    <label>
+      <input id="pageBridgeEnabled" type="checkbox" checked />
+      Enable live page sync to desktop
+    </label>
+    <label for="bridgePort" style="margin-top: 12px;">Desktop bridge port</label>
+    <input id="bridgePort" type="number" min="1024" max="65535" placeholder="38471" />
     <div class="row">
       <button id="save">Save</button>
+      <button id="testBridge" type="button" style="background: transparent; color: inherit; border-color: #ccc;">Test connection</button>
       <span class="status" id="status"></span>
     </div>
     <script src="options.js"></script>

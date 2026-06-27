@@ -48,11 +48,12 @@ export function SupabaseAuthProvider({ children }) {
   // /login, so the legacy login page never flashes before the walkthrough.
   const [signingOut, setSigningOut] = useState(false);
   const signOutTimerRef = useRef(null);
-  const recoveryInFlightRef = useRef(false);
   const userRef = useRef(null);
 
   useEffect(() => {
     let isMounted = true;
+    /** @type {import('@supabase/supabase-js').Subscription | null} */
+    let subscription = null;
 
     // Surface any OAuth error params from the redirect URL
     const params = new URLSearchParams(window.location.search);
@@ -73,109 +74,108 @@ export function SupabaseAuthProvider({ children }) {
     // The Supabase client fires INITIAL_SESSION within a few seconds at most;
     // if it hasn't arrived by 10s something went wrong.
     const safetyTimeout = setTimeout(() => {
-      if (isMounted && loading) {
+      if (isMounted) {
         if (import.meta.env.DEV) console.warn('[Auth] Safety timeout — forcing loading=false');
         setLoading(false);
       }
     }, 10_000);
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (!isMounted) return;
+    const cancelSignOutTimer = () => {
+      if (signOutTimerRef.current) {
+        clearTimeout(signOutTimerRef.current);
+        signOutTimerRef.current = null;
+      }
+    };
 
-        if (import.meta.env.DEV) {
-          console.log('[Auth]', event, session?.user?.email ?? '(no user)');
-        }
-
-        // INITIAL_SESSION fires once when the listener is registered.
-        // With detectSessionInUrl:true the client will have already exchanged
-        // any ?code= from an OAuth return, so the session is ready here.
-        if (event === 'INITIAL_SESSION') {
-          const nextUser = session?.user ?? null;
-          userRef.current = nextUser;
-          setUser(nextUser);
-          setLoading(false);
-          if (nextUser) {
-            kickoffVaultBackfill();
-            kickoffInviteAcceptance(nextUser.id);
-          }
-          return;
-        }
-
-        if (session?.user) {
-          if (signOutTimerRef.current) {
-            clearTimeout(signOutTimerRef.current);
-            signOutTimerRef.current = null;
-          }
-          const wasSignedOut = !userRef.current;
-          userRef.current = session.user;
-          setUser(session.user);
-          if (wasSignedOut) {
-            kickoffVaultBackfill();
-            kickoffInviteAcceptance(session.user.id);
-          }
-          return;
-        }
-
-        // Explicit sign-out should update UI immediately.
-        if (event === 'SIGNED_OUT') {
-          if (signOutTimerRef.current) {
-            clearTimeout(signOutTimerRef.current);
-            signOutTimerRef.current = null;
-          }
-          userRef.current = null;
+    // Debounce-clear guest state only — never wipe an established session on
+    // ambiguous null-session events (those caused login loops after sign-in).
+    const scheduleGuestClear = () => {
+      if (userRef.current || signOutTimerRef.current) return;
+      signOutTimerRef.current = setTimeout(() => {
+        signOutTimerRef.current = null;
+        if (isMounted && !userRef.current) {
           setUser(null);
-          resetVaultDescriptionBackfill();
-          return;
         }
+      }, 1500);
+    };
 
-        // Debounce fallback for refresh edge-cases: wait 1.5s before
-        // clearing the user to avoid cascading logouts from transient
-        // token-refresh failures. If a valid session arrives in the meantime
-        // the timer is cancelled above.
-        if (event === 'TOKEN_REFRESHED') {
-          if (recoveryInFlightRef.current) return;
-          recoveryInFlightRef.current = true;
-
-          try {
-            const { data } = await supabase.auth.getSession();
-            if (!isMounted) return;
-            if (data?.session?.user) {
-              userRef.current = data.session.user;
-              setUser(data.session.user);
-              return;
-            }
-          } catch { /* fall through to debounced sign-out */ }
-          finally { recoveryInFlightRef.current = false; }
-
-          // Only debounce-clear when we never had a signed-in user in
-          // this tab. A transient refresh failure while browsing
-          // /vault or /connections used to flip the UI back to guest +
-          // re-arm the walkthrough lock (sidebar chevron vanished).
-          if (!userRef.current) {
-            if (!signOutTimerRef.current) {
-              signOutTimerRef.current = setTimeout(() => {
-                signOutTimerRef.current = null;
-                if (isMounted) {
-                  userRef.current = null;
-                  setUser(null);
-                }
-              }, 1500);
-            }
-          }
-          return;
+    const applySession = (session) => {
+      if (session?.user) {
+        cancelSignOutTimer();
+        const wasSignedOut = !userRef.current;
+        userRef.current = session.user;
+        setUser(session.user);
+        if (wasSignedOut) {
+          kickoffVaultBackfill();
+          kickoffInviteAcceptance(session.user.id);
         }
+        return true;
+      }
+      return false;
+    };
 
+    // Sync handler only — never call supabase.auth.* inside this callback;
+    // async auth calls here deadlock the client's session lock and can
+    // trigger TOKEN_REFRESHED → SIGNED_OUT loops (supabase/auth-js#762).
+    const handleAuthChange = (event, session) => {
+      if (!isMounted) return;
+
+      if (import.meta.env.DEV) {
+        console.log('[Auth]', event, session?.user?.email ?? '(no user)');
+      }
+
+      // INITIAL_SESSION fires once when the listener is registered.
+      // With detectSessionInUrl:true the client will have already exchanged
+      // any ?code= from an OAuth return, so the session is ready here.
+      if (event === 'INITIAL_SESSION') {
+        const nextUser = session?.user ?? null;
+        userRef.current = nextUser;
+        setUser(nextUser);
+        setLoading(false);
+        if (nextUser) {
+          kickoffVaultBackfill();
+          kickoffInviteAcceptance(nextUser.id);
+        }
+        return;
+      }
+
+      if (applySession(session)) {
+        return;
+      }
+
+      // Explicit sign-out should update UI immediately.
+      if (event === 'SIGNED_OUT') {
+        cancelSignOutTimer();
         userRef.current = null;
         setUser(null);
+        resetVaultDescriptionBackfill();
+        return;
       }
-    );
+
+      // TOKEN_REFRESHED / other null-session events: keep an established
+      // session in this tab; only debounce-clear when we never signed in.
+      scheduleGuestClear();
+    };
+
+    // Let _initialize finish before subscribing so the listener can't race
+    // token refresh on load (supabase/supabase-js#2344).
+    void (async () => {
+      try {
+        await supabase.auth.getSession();
+      } catch {
+        /* init may still proceed */
+      }
+      if (!isMounted) return;
+
+      const { data: { subscription: sub } } = supabase.auth.onAuthStateChange(handleAuthChange);
+      subscription = sub;
+    })();
 
     return () => {
       isMounted = false;
       clearTimeout(safetyTimeout);
-      subscription.unsubscribe();
-      if (signOutTimerRef.current) clearTimeout(signOutTimerRef.current);
+      subscription?.unsubscribe();
+      cancelSignOutTimer();
     };
   }, []);
 

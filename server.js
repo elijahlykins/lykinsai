@@ -3,6 +3,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import fetch from 'node-fetch';
 import multer from 'multer';
 import * as cheerio from 'cheerio';
@@ -27,6 +28,7 @@ import { searchWeb, formatSearchResultsForPrompt } from './lib/exterior/webSearc
 import { fetchWebPage } from './lib/exterior/webFetch.js';
 import { verifyFileToken, FILE_PROXY_ROUTE } from './lib/exterior/fileProxy.js';
 import { mimeTypeForFilename } from './lib/exterior/capabilityStorage.js';
+import { buildAttachmentColumns } from './lib/vault/attachmentType.js';
 import { chunkTextForSynthesis } from './synthesis-service.js';
 import { contextualizeChunks } from './lib/rag/contextualize.js';
 import {
@@ -62,6 +64,10 @@ import {
 } from './src/lib/modelTiers.js';
 import { PLAN_LIMITS } from './src/lib/pricing-config.js';
 import { compressConversation as compressConversationForPrompt } from './src/lib/ai/conversationFormat.js';
+import { runHoloBrowserStep } from './lib/holo/browserAgent.js';
+import { runScreenReader } from './lib/holo/screenReader.js';
+import { runBrowserTaskReport } from './lib/holo/browserReport.js';
+import { resolveOrdinalDomClick, parseOrdinalFromIntent } from './lib/holo/ordinalIntent.js';
 import {
   discoverFeed,
   fetchAndSaveNewEntries,
@@ -143,6 +149,7 @@ import {
 // closes the "wait until tomorrow morning" gap when a learning pass produced
 // new facts/chunks that might form a new cluster.
 import { runConceptsForUser } from './jobs/conceptsJob.js';
+import { runVaultReconciler } from './jobs/vaultReconcilerJob.js';
 import {
   runBeliefPromotionPass,
   proposeRulesForBelief,
@@ -204,6 +211,7 @@ import {
   tokenPrefix,
 } from './security-logger.js';
 
+const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
 
@@ -238,6 +246,13 @@ console.log('  DISCOVER_INGEST_SECRET:', process.env.DISCOVER_INGEST_SECRET ? '�
 console.log('  META_APP_TOKEN:', process.env.META_APP_TOKEN ? '✅ Set' : '⚪ Not set (Instagram/Facebook oEmbed disabled)');
 console.log('  STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? '✅ Set' : '⚪ Not set (Stripe billing disabled)');
 console.log('  STRIPE_WEBHOOK_SECRET:', process.env.STRIPE_WEBHOOK_SECRET ? '✅ Set' : '⚪ Not set (webhook signature check disabled)');
+console.log('  HAI_API_KEY:', process.env.HAI_API_KEY ? '✅ Set (Holo browser control)' : '⚪ Not set (browser control uses OpenAI)');
+if (process.env.HAI_API_KEY || process.env.BROWSER_CONTROL_PROVIDER) {
+  console.log(`  Browser control: ${getBrowserControlProvider()} → ${pickBrowserControlModel(true)}`);
+  if (getBrowserControlProvider() === 'holo') {
+    console.log(`  Browser pipeline: ${process.env.BROWSER_SCREEN_READER_MODEL || 'gpt-4.1'} read → Holo act → ${process.env.BROWSER_REPORT_MODEL || 'gpt-4.1-nano'} report`);
+  }
+}
 
 const app = express();
 
@@ -902,6 +917,9 @@ const imageJsonParser = express.json({ limit: '12mb' });
 const IMAGE_BEARING_AI_ROUTES = new Set([
   '/api/ai/stream',
   '/api/ai/invoke',
+  '/api/desktop/browser-plan',
+  '/api/desktop/browser-plan-next',
+  '/api/desktop/browser-report',
 ]);
 app.use((req, res, next) => {
   if (IMAGE_BEARING_AI_ROUTES.has(req.path)) {
@@ -1162,9 +1180,30 @@ async function requireAuth(req, res, next) {
   }
   try {
     const token = authHeader.slice(7);
-    const resp = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
-    });
+    // Verify against Supabase with a timeout + small retry. A transient network
+    // blip (socket hang up, brief DNS hiccup) used to throw and surface to the
+    // user as "Auth verification failed" — retrying once or twice rides out the
+    // blip. We only retry on a THROWN network error, never on an HTTP response
+    // (a 401 is a real answer and returns immediately).
+    let resp = null;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 6000);
+      try {
+        resp = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+          headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
+          signal: ctrl.signal,
+        });
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (!resp) throw lastErr || new Error('supabase_unreachable');
     if (!resp.ok) {
       const bodyPreview = await resp.text().catch(() => '');
       console.warn('🔒 requireAuth: Supabase rejected token', { status: resp.status, path: req.path, body: bodyPreview.slice(0, 300) });
@@ -1186,7 +1225,7 @@ async function requireAuth(req, res, next) {
       reason: 'supabase_fetch_threw',
       errName: err?.name || null,
     }, { req });
-    return res.status(401).json({ error: 'Auth verification failed' });
+    return res.status(503).json({ error: 'Auth verification failed' });
   }
 }
 
@@ -10907,6 +10946,47 @@ async function collectBackfillUserIds(singleUserId) {
   return [...set];
 }
 
+// Vault upload reconciler — cron-triggered backstop for the orphan-upload
+// race (see jobs/vaultReconcilerJob.js). Bearer-authed with the same operator
+// secret as the synthesis backfill. SAFE BY DEFAULT: dry-run unless the body
+// opts in. Destructive leaked-file deletion is double-gated — the request must
+// set deleteLeaked AND the server must have VAULT_RECONCILER_DELETE_ENABLED=1.
+app.post('/api/vault/reconcile', async (req, res) => {
+  if (!verifyBackfillSecret(req)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'SUPABASE_SERVICE_ROLE_KEY required for reconcile' });
+  }
+
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const apply = body.apply === true || body.dryRun === false;
+  const deleteEnabled = String(process.env.VAULT_RECONCILER_DELETE_ENABLED || '') === '1';
+  const deleteLeaked = body.deleteLeaked === true && deleteEnabled;
+  const toInt = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+
+  try {
+    const summary = await runVaultReconciler({
+      dryRun: !apply,
+      deleteLeaked,
+      graceMinutes: toInt(body.graceMinutes, undefined),
+      leakGraceMinutes: toInt(body.leakGraceMinutes, undefined),
+      bucket: typeof body.bucket === 'string' ? body.bucket : undefined,
+    });
+    return res.json({
+      ok: true,
+      // Surface when a destructive delete was requested but refused by config,
+      // so an operator isn't surprised that nothing was deleted.
+      deleteLeakedRequested: body.deleteLeaked === true,
+      deleteLeakedEnabled: deleteEnabled,
+      summary,
+    });
+  } catch (err) {
+    console.error('❌ /api/vault/reconcile:', err?.stack || err?.message || err);
+    return res.status(500).json({ error: err?.message || 'reconcile_failed' });
+  }
+});
+
 app.post('/api/synthesis/backfill', async (req, res) => {
   if (!verifyBackfillSecret(req)) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -12802,7 +12882,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     const normalizedModel = normalizeRequestedModel(req.body?.model);
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
     const imageUrls = incomingImageUrls.slice(0, 8);
-    let { prompt, text, intent, context, knowledgeBase, projectId, conversation, conversationMemory, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext } = req.body;
+    let { prompt, text, intent, context, knowledgeBase, projectId, conversation, conversationMemory, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext, overlayAsk, liveWatch } = req.body;
     const aiName = req.body?.aiName;
     // Chat-bar "+" capability modes. The client sets one of these when the
     // user explicitly armed a mode for this turn, so we force the matching
@@ -13291,7 +13371,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     const streamSkipSearch    = (forceWebSearch || deepResearch)
       ? false
       : (skipWebSearch || streamEnrichTierEffective !== 'full');
-    const streamSkipSynthesis = streamEnrichTierEffective === 'none';
+    // Overlay (⌘L) asks are screen-grounded — the screenshot/page IS the context,
+    // so the semantic vault retrieval (an OpenAI embedding round-trip + RPC on the
+    // critical path) rarely helps and just delays the first token. Skip it for
+    // overlay asks; beliefs/identity/project still inject personalization.
+    const streamSkipSynthesis = streamEnrichTierEffective === 'none' || Boolean(overlayAsk) || Boolean(liveWatch);
     const streamSkipUserModel = streamEnrichTierEffective === 'none';
     let streamSkipBeliefs   = streamEnrichTierEffective === 'none' || !isChatIntent;
     streamSkipBeliefs = shouldSkipSynthesisBeliefsForCustomModel(
@@ -15367,7 +15451,31 @@ app.post('/api/ai/suggest', requireAuth, aiLimiter, async (req, res) => {
 
     const question = String(req.body?.question || '').slice(0, 1500).trim();
     const answer = String(req.body?.answer || '').slice(0, 4000).trim();
+    const mode = String(req.body?.mode || '').trim();
     if (!question && !answer) return res.json(empty);
+
+    const liveWatchMode = mode === 'live_watch';
+    const systemPrompt = liveWatchMode
+      ? 'You help a desktop AI assistant suggest follow-up questions while the user has live screen feedback on. ' +
+        'Given context about what page or app they are on and what LYKN observed, return ONLY a JSON object:\n' +
+        '{"followups": string[], "searchQuery": string}\n\n' +
+        '- followups: 3 short, specific questions the USER would ask about their CURRENT activity — ' +
+        'the page they are on, what they are reading or doing, or sensible next actions. ' +
+        'Use the page title and URL when available. Phrase in first person, under ~10 words each. ' +
+        'Examples: "Summarize this article", "Compare these prices", "What does this error mean?"\n' +
+        '- searchQuery: a web search query for sources related to their current page or task when ' +
+        'external reference info would help. Empty string if the context is purely personal/on-screen.\n\n' +
+        'Output only the JSON.'
+      : 'You help a desktop AI assistant suggest next steps after it answers a user. ' +
+        'Given the user\'s question and the assistant\'s answer, return ONLY a JSON object:\n' +
+        '{"followups": string[], "searchQuery": string}\n\n' +
+        '- followups: 3 short, natural follow-up questions the user would plausibly ask next. ' +
+        'Each under ~8 words, phrased as the user (first person). No numbering.\n' +
+        '- searchQuery: a single web search query that would surface helpful sources/links ' +
+        'for this topic. Provide one ONLY when external, current, or reference info would ' +
+        'genuinely help. If the topic is purely about the user\'s own screen/personal data ' +
+        'and a web lookup would not help, return an empty string.\n\n' +
+        'Output only the JSON.';
 
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -15378,20 +15486,7 @@ app.post('/api/ai/suggest', requireAuth, aiLimiter, async (req, res) => {
         max_tokens: 320,
         response_format: { type: 'json_object' },
         messages: [
-          {
-            role: 'system',
-            content:
-              'You help a desktop AI assistant suggest next steps after it answers a user. ' +
-              'Given the user\'s question and the assistant\'s answer, return ONLY a JSON object:\n' +
-              '{"followups": string[], "searchQuery": string}\n\n' +
-              '- followups: 3 short, natural follow-up questions the user would plausibly ask next. ' +
-              'Each under ~8 words, phrased as the user (first person). No numbering.\n' +
-              '- searchQuery: a single web search query that would surface helpful sources/links ' +
-              'for this topic. Provide one ONLY when external, current, or reference info would ' +
-              'genuinely help. If the topic is purely about the user\'s own screen/personal data ' +
-              'and a web lookup would not help, return an empty string.\n\n' +
-              'Output only the JSON.',
-          },
+          { role: 'system', content: systemPrompt },
           { role: 'user', content: `QUESTION:\n${question}\n\nANSWER:\n${answer}` },
         ],
       }),
@@ -15567,81 +15662,443 @@ function desktopChatTitle(row, state) {
   return title || 'New Chat';
 }
 
+function userWantsSearchOrType(intent) {
+  return /search( for| up)?|look up|look for|google|find (info|information|out about)|type into|type in|enter .+ (into|in)|fill in|query for/i.test(
+    String(intent || '').toLowerCase(),
+  );
+}
+
+function userWantsVisionClick(intent) {
+  return /click (on |the )?(image|picture|photo|thumbnail|icon|graphic)|find (the |a )?(image|picture|photo|one that|one with|one showing)|select (the |a )?(image|picture|photo)|looks like|that shows|showing a|with (a |the )?(cat|dog|bird|face|person|logo|map|chart|diagram)|visual/i.test(
+    String(intent || '').toLowerCase(),
+  );
+}
+
+function userWantsComplexTask(intent) {
+  return (
+    wantsMultiQuestion(intent) ||
+    userWantsVisionClick(intent) ||
+    /multiple|several|all of them|each one|one by one|keep going|step by step|go through|find .+ and click|click on (all|each|every)/i.test(
+      String(intent || '').toLowerCase(),
+    )
+  );
+}
+
+function summarizeTaskProgress(completedSteps, intent) {
+  const steps = Array.isArray(completedSteps) ? completedSteps : [];
+  const checks = countChecksCompleted(steps);
+  const parts = [];
+  if (wantsMultiQuestion(intent) && checks > 0) {
+    parts.push(`${checks} question(s) checked so far — keep going until the exercise is fully complete`);
+  }
+  const imageClicks = steps.filter(
+    (s) => s?.ok && s.type === 'click' && /image|picture|photo|thumbnail/i.test(String(s.label || '')),
+  ).length;
+  if (userWantsVisionClick(intent) && imageClicks > 0) {
+    parts.push(`${imageClicks} image target(s) clicked so far`);
+  }
+  if (parts.length) return parts.join('. ') + '.';
+  return '';
+}
+
+function wantsMultiQuestion(intent) {
+  return /all questions|each question|every question|another question|next question|second question|go through|go to the (new|next) screen|then go to|and then (go|answer)|complete the (quiz|exercise|practice|lesson)|finish the (quiz|exercise|practice|lesson)|whole (quiz|exercise|practice)|run out of questions|until you run out|until (there are )?no more|do this until|keep going through|next page.*until|until done|until finished|submit it and then|answer.*submit.*then/i.test(
+    String(intent || '').toLowerCase(),
+  );
+}
+
+function pageShowsExerciseComplete(text) {
+  return /you('ve| have) (finished|completed)|great work|nice work|way to go|unit complete|lesson complete|practice complete|exercise complete|all done|no more questions|course challenge complete|mastery|congratulations|keep practicing|review lesson|points earned|skill (mastered|completed)|show summary|you got \d|100%|perfect score|end of (the )?(quiz|exercise|practice)/i.test(
+    String(text || ''),
+  );
+}
+
+function countChecksCompleted(completedSteps) {
+  return (Array.isArray(completedSteps) ? completedSteps : []).filter(
+    (s) => s?.ok && /^check(\s|$|\b)/i.test(String(s?.label || '')),
+  ).length;
+}
+
+function filterCatalogForIntent(catalog, intent, pageText) {
+  // General agent: never strip elements based on task type. A general task may
+  // need to click nav, log in, open a menu, fill a form, pick an option, etc.
+  // We only reorder likely targets (e.g. the search box) to the front so the
+  // planner sees them first. The planner reads the whole screen and decides.
+  const list = Array.isArray(catalog) ? catalog : [];
+  return prioritizeCatalogForIntent(list, intent);
+}
+
+function prioritizeCatalogForIntent(catalog, intent) {
+  const list = Array.isArray(catalog) ? catalog : [];
+  if (!userWantsSearchOrType(intent)) return list;
+  const searchFirst = [];
+  const rest = [];
+  for (const el of list) {
+    const role = String(el?.role || '').toLowerCase();
+    const type = String(el?.type || '').toLowerCase();
+    const label = String(el?.label || '').toLowerCase();
+    if (role === 'searchbox' || role === 'combobox' || type === 'search' || /search/.test(label)) {
+      searchFirst.push(el);
+    } else {
+      rest.push(el);
+    }
+  }
+  return searchFirst.length ? [...searchFirst, ...rest] : list;
+}
+
+// Compact view of the catalog for the model: id + label + a little context, and
+// crucially NO selector. The model acts on elements by their id ("el7"), so it
+// never has to copy a long CSS selector (which it truncates/invents). This also
+// cuts a lot of prompt tokens.
+function compactCatalogForModel(catalog) {
+  return (Array.isArray(catalog) ? catalog : []).map((el) => {
+    const o = { id: el.id, label: String(el.label || '').slice(0, 100) };
+    if (el.role) o.role = el.role;
+    else if (el.tag) o.tag = el.tag;
+    if (el.type) o.type = el.type;
+    if (el.value) o.value = String(el.value).slice(0, 60);
+    if (el.checked) o.checked = 1;
+    return o;
+  });
+}
+
+function buildBrowserControlSystemContent({ intent, taskPlan, isFirstTurn, searchHint, complexTask, visionClick }) {
+  const planSteps = complexTask ? '2–12' : '2–5';
+  const firstTurnNote = isFirstTurn
+    ? `\n- FIRST TURN ONLY: set taskPlan to a ${planSteps} step plan for the whole goal, exactly like chat advice.`
+    : '';
+  const searchNote = searchHint
+    ? `\n- Search query to type: "${searchHint}". Use a type action with that value, then press Enter. Do NOT click Search/navigation buttons in a loop.`
+    : '';
+  const planNote = taskPlan
+    ? '\n- Follow the TASK PLAN below — pick the next unfinished step. Do NOT set done:true until the entire plan / user goal is finished.'
+    : '';
+  const complexNote = complexTask
+    ? '\n- COMPLEX TASK: do NOT stop after one step. Set done:true ONLY when the full USER GOAL is accomplished.'
+    : '';
+  const visionNote = visionClick
+    ? '\n- VISION / IMAGE TASK: read the SCREENSHOT carefully. Match images by appearance (not just text). Prefer img/figure elements from ELEMENTS by alt label. If no selector fits, use click_coord with x,y as 0–1000 coords (center of the target on screen).'
+    : '';
+  const holoNote = getBrowserControlProvider() === 'holo'
+    ? '\n- You are Holo, a GUI agent model. Read the SCREENSHOT first for spatial layout, then cross-check ELEMENTS. For icons, images, or canvas targets, prefer click_coord at the visual center (0–1000) when ELEMENTS labels are ambiguous.'
+    : '';
+
+  return (
+    'You are LYKN, operating the user\'s browser for them — the SAME assistant as overlay chat.\n' +
+    'You can SEE the screen (screenshot) and a list of the page\'s interactive ELEMENTS.\n' +
+    'Your job is general-purpose: do whatever USER GOAL says, one action at a time, the way a\n' +
+    'person would. The goal can be ANYTHING — search, navigate, open a menu, fill a form, click a\n' +
+    'button, log in, change a setting, add to cart, answer a question, etc. There is no single\n' +
+    'use case. Read the WHOLE screen, decide the single best next action toward the goal, do it.\n\n' +
+    'You get a FRESH screen read every turn. The page changes as you act, so always trust the\n' +
+    'current PAGE TEXT / ELEMENTS / screenshot over any earlier plan or memory.\n' +
+    'If "WHAT CHANGED" says a NEW screen loaded, treat it as a clean slate and re-read it.\n' +
+    'If it says NOTHING changed, your last action did nothing — try a DIFFERENT element or\n' +
+    'approach (e.g. a coordinate click), do not repeat the same click.\n\n' +
+    'Each turn:\n' +
+    '1. VERIFY: if "WHAT CHANGED AFTER YOUR LAST ACTION" is present, confirm your previous step\n' +
+    '   did what you intended. If your last action ALREADY produced the intended result (e.g. the\n' +
+    '   email opened, the page navigated, the item was added), set done:true — do NOT click it\n' +
+    '   again. If it did nothing or the wrong thing, adjust — do not blindly continue the old\n' +
+    '   plan or repeat the same failed action.\n' +
+    '2. reasoning: describe what is on screen NOW and the single next step toward USER GOAL.\n' +
+    '3. Return exactly 1 action (or 2 ONLY for a type + press Enter pair).\n' +
+    '4. Set done:true ONLY when the whole USER GOAL is accomplished — not after one step of a\n' +
+    '   longer task.\n\n' +
+    'HOW TO ACT:\n' +
+    '- Each ELEMENT has a short "id" (like "el7"). To act on an element, put its id in the action.\n' +
+    '  Do NOT write CSS selectors — just the id. The ELEMENTS list is comprehensive (it INCLUDES\n' +
+    '  list rows, emails, search results, table rows, cards, menu items); find the one you want by\n' +
+    '  its label/role and use its id.\n' +
+    '- If the target is genuinely NOT in ELEMENTS (visible in the screenshot but no matching id),\n' +
+    '  use click_coord with x,y as 0–1000 normalized coordinates at the CENTER of the target.\n' +
+    '  NEVER return no action — if no id fits, click_coord so you always make progress.\n' +
+    '- To enter text: TYPE into the correct field (by id), then press Enter (or click submit).\n' +
+    '- Click nav, tabs, menus, or links ONLY when the goal needs them.\n\n' +
+    'The taskPlan is a guide, not a script. Re-plan whenever the screen does not match expectation.\n\n' +
+    'Return ONLY JSON: {"reasoning": string, "done": boolean, "explanation": string, "actions": Action[], "taskPlan"?: string}\n' +
+    'Action: {"type":"click"|"type"|"press"|"scroll"|"click_coord","id"?:string,"label":string,"value"?:string,"key"?:string,"delta"?:number,"x"?:number,"y"?:number}\n' +
+    'Use "id" (from ELEMENTS) for click/type/press. Use x,y (0–1000, center of target) only for click_coord.\n\n' +
+    'CRITICAL:\n' +
+    '- reasoning MUST come first — think, then act.\n' +
+    '- If done is false, actions MUST contain 1 action (or 2 for type+Enter only).\n' +
+    '- For search: TYPE into the search field, then Enter — never click random links in a loop.\n' +
+    '- Reference elements by their id from ELEMENTS. Never invent CSS selectors.\n' +
+    '- explanation: short status of what you\'re doing now.' +
+    searchNote +
+    planNote +
+    complexNote +
+    visionNote +
+    holoNote +
+    firstTurnNote
+  );
+}
+
+function getBrowserControlProvider() {
+  const pref = String(process.env.BROWSER_CONTROL_PROVIDER || 'auto').trim().toLowerCase();
+  if (pref === 'openai') return 'openai';
+  if (pref === 'holo' || pref === 'hcompany' || pref === 'hai') return 'holo';
+  // auto: prefer Holo when configured — it's trained for GUI agents / computer use.
+  if (process.env.HAI_API_KEY) return 'holo';
+  return 'openai';
+}
+
+function pickBrowserControlModel(_hasImage) {
+  if (getBrowserControlProvider() === 'holo') {
+    return String(process.env.BROWSER_CONTROL_HOLO_MODEL || 'holo3-1-35b-a3b').trim();
+  }
+  // Fallback: same model family as overlay chat (lykn → gpt-4.1-nano).
+  return process.env.OPENAI_API_KEY ? 'gpt-4.1-nano' : 'gpt-4o-mini';
+}
+
+const HOLO_API_BASE = 'https://api.hcompany.ai/v1/';
+
+// Unified planner call — routes to H Company (Holo3) or OpenAI depending on env.
+// Holo is OpenAI-compatible but expects enable_thinking + reasoning_effort for
+// agent-style planning. Returns { ok, data, provider, model } or { ok:false, ... }.
+async function callBrowserControlPlanner({ messages, temperature = 0.15, maxTokens = 900 }) {
+  const provider = getBrowserControlProvider();
+  const model = pickBrowserControlModel(true);
+
+  if (provider === 'holo') {
+    const apiKey = process.env.HAI_API_KEY;
+    if (!apiKey) return { ok: false, status: 503, error: 'HAI_API_KEY not set' };
+    const res = await fetch(`${HOLO_API_BASE}chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: Math.max(temperature, 0.2),
+        max_tokens: maxTokens,
+        reasoning_effort: 'medium',
+        response_format: { type: 'json_object' },
+        chat_template_kwargs: { enable_thinking: true },
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      return { ok: false, status: res.status, error: errText.slice(0, 400), provider, model };
+    }
+    const data = await res.json();
+    return { ok: true, data, provider, model };
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return { ok: false, status: 503, error: 'OPENAI_API_KEY not set' };
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      temperature,
+      max_tokens: maxTokens,
+      response_format: { type: 'json_object' },
+      messages,
+    }),
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    return { ok: false, status: res.status, error: errText.slice(0, 400), provider, model };
+  }
+  const data = await res.json();
+  return { ok: true, data, provider, model };
+}
+
+// Holo's single-turn element localization — best for pure vision grounding when
+// the DOM catalog has no matching id. Returns { x, y } on 0–1000 scale or null.
+async function callHoloElementLocalization(imageUrl, targetDescription) {
+  const apiKey = process.env.HAI_API_KEY;
+  if (!apiKey || !String(imageUrl || '').startsWith('data:image/')) return null;
+  const target = String(targetDescription || '').trim().slice(0, 400);
+  if (!target) return null;
+  const model = pickBrowserControlModel(true);
+  const schema = {
+    type: 'object',
+    properties: {
+      x: { type: 'integer', minimum: 0, maximum: 1000, description: 'X coordinate in [0, 1000]' },
+      y: { type: 'integer', minimum: 0, maximum: 1000, description: 'Y coordinate in [0, 1000]' },
+    },
+    required: ['x', 'y'],
+  };
+  const prompt =
+    'Localize an element on the GUI image according to the provided target and output a click position.\n' +
+    ` * You must output a valid JSON following the format: ${JSON.stringify(schema)}\n` +
+    ` Your target is:\n${target}`;
+  try {
+    const res = await fetch(`${HOLO_API_BASE}chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: imageUrl } },
+            { type: 'text', text: prompt },
+          ],
+        }],
+        temperature: 0,
+        max_tokens: 64,
+        structured_outputs: { json: schema },
+        chat_template_kwargs: { enable_thinking: false },
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+    const x = Number(parsed.x);
+    const y = Number(parsed.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x: Math.max(0, Math.min(1000, Math.round(x))), y: Math.max(0, Math.min(1000, Math.round(y))) };
+  } catch {
+    return null;
+  }
+}
+
+function browserControlConfigured() {
+  const provider = getBrowserControlProvider();
+  if (provider === 'holo') return !!process.env.HAI_API_KEY;
+  return !!process.env.OPENAI_API_KEY;
+}
+
+function formatConversationForBrowserPlan(history) {
+  if (!Array.isArray(history) || !history.length) return '';
+  return history
+    .slice(-8)
+    .map((m) => {
+      const role = m?.role === 'assistant' ? 'LYKN' : 'User';
+      return `${role}: ${String(m?.content || '').replace(/\s+/g, ' ').trim().slice(0, 700)}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+// Build OpenAI chat messages for browser planning (text + optional screenshot).
+function buildBrowserPlannerMessages({ systemContent, userText, imageUrl }) {
+  const hasImage = String(imageUrl || "").startsWith("data:image/");
+  return [
+    { role: "system", content: systemContent },
+    hasImage
+      ? {
+          role: "user",
+          content: [
+            { type: "text", text: userText },
+            { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
+          ],
+        }
+      : { role: "user", content: userText },
+  ];
+}
+
 // Plan browser-control steps for the desktop overlay: given the user's intent
 // and a list of interactable elements on the active tab, return a short action
 // sequence (click / type / press / scroll). Selectors must come from the scan.
 app.post('/api/desktop/browser-plan', requireAuth, aiLimiter, async (req, res) => {
   try {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return res.status(503).json({ error: 'AI not configured' });
+    if (!browserControlConfigured()) return res.status(503).json({ error: 'AI not configured' });
 
     const intent = String(req.body?.intent || '').slice(0, 500).trim();
     const url = String(req.body?.url || '').slice(0, 500).trim();
     const title = String(req.body?.title || '').slice(0, 200).trim();
-    const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 60) : [];
+    const pageText = String(req.body?.pageText || '').slice(0, 15000).trim();
+    const imageUrl = String(req.body?.imageUrl || '').trim();
+    const hasImage = imageUrl.startsWith('data:image/');
+    const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 130) : [];
+    const useHoloAgent = getBrowserControlProvider() === 'holo';
     if (!intent) return res.status(400).json({ error: 'Missing intent' });
-    if (!items.length) return res.status(400).json({ error: 'No interactable elements' });
+    if (!items.length && !useHoloAgent) return res.status(400).json({ error: 'No interactable elements' });
+
+    const conversationContext = formatConversationForBrowserPlan(req.body?.conversationHistory);
+
+    if (useHoloAgent) {
+      const readerResult = await runScreenReader({
+        intent,
+        imageUrl,
+        url,
+        title,
+        pageText,
+        items,
+        conversationContext,
+        isPreview: true,
+      });
+      if (!readerResult.ok) {
+        console.error('❌ /api/desktop/browser-plan screen-reader:', readerResult.status, readerResult.error?.slice(0, 200));
+        return res.status(502).json({ error: 'Planning failed' });
+      }
+      getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+        const usage = extractOpenAIUsage(readerResult.data);
+        logAiUsage({
+          sessionId: session?.id, userId: req.user?.id, actionType: 'browser_screen_read',
+          model: readerResult.model || 'gpt-4.1',
+          provider: 'openai',
+          inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0,
+        });
+      }).catch(() => {});
+      return res.json({
+        agentMode: 'holo',
+        pipeline: 'reader-holo-report',
+        explanation: readerResult.explanation || '',
+        taskPlan: readerResult.taskPlan || readerResult.explanation || '',
+        actions: [],
+      });
+    }
 
     const catalog = items.map((el, i) => ({
       id: String(el?.id || `el${i}`),
       tag: String(el?.tag || ''),
       type: String(el?.type || ''),
+      role: String(el?.role || ''),
       selector: String(el?.selector || '').slice(0, 300),
       label: String(el?.label || '').slice(0, 120),
       value: String(el?.value || '').slice(0, 80),
       href: String(el?.href || '').slice(0, 200),
+      checked: !!el?.checked,
     })).filter((el) => el.selector);
 
-    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        temperature: 0.2,
-        max_tokens: 700,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You plan safe browser UI automation for a desktop assistant. The user describes ' +
-              'what they want done on a web page. You receive the page URL/title and a JSON list of ' +
-              'interactable elements (each has a unique CSS selector you MUST use verbatim).\n\n' +
-              'Return ONLY JSON: {"explanation": string, "actions": Action[]}\n' +
-              'Action: {"type":"click"|"type"|"press"|"scroll","selector":string,"label":string,' +
-              '"value"?:string,"key"?:string,"delta"?:number}\n\n' +
-              'Rules:\n' +
-              '- Max 8 actions. Prefer the shortest path.\n' +
-              '- type: click buttons/links; type into inputs/textareas; press Enter to submit/search.\n' +
-              '- scroll: selector may be empty; delta positive = down (~400).\n' +
-              '- Use ONLY selectors from the provided list. Never invent selectors.\n' +
-              '- label: short human description of the element (from the list).\n' +
-              '- Do not fill password fields unless the user explicitly asked to sign in.\n' +
-              '- Do not purchase, delete accounts, or irreversible actions unless explicitly requested.\n' +
-              '- explanation: 1-2 sentences telling the user what you will do.',
-          },
-          {
-            role: 'user',
-            content:
-              `INTENT: ${intent}\n\nPAGE: ${title}\nURL: ${url}\n\nELEMENTS:\n` +
-              JSON.stringify(catalog, null, 0),
-          },
-        ],
-      }),
+    const filteredCatalog = filterCatalogForIntent(catalog, intent, pageText);
+
+    const searchHint = userWantsSearchOrType(intent)
+      ? intent.replace(/^search( for| up)?\s*/i, '').replace(/^look up\s*/i, '').trim().slice(0, 120)
+      : '';
+    const systemContent =
+      buildBrowserControlSystemContent({ intent, taskPlan: '', isFirstTurn: true, searchHint }) +
+      '\n\nThis is a PREVIEW — return an empty actions array. Set taskPlan to the step-by-step plan (like chat advice). In explanation, summarize what you will do.';
+
+    const userText =
+      `USER GOAL (execute this — every action must serve it):\n${intent}\n\n` +
+      (conversationContext
+        ? `PRIOR CHAT (same overlay session — user may have already discussed this):\n${conversationContext}\n\n`
+        : '') +
+      `PAGE: ${title}\nURL: ${url}\n\n` +
+      (pageText ? `PAGE TEXT (visible on screen):\n${pageText}\n\n` : '') +
+      `ELEMENTS (act on one by its "id"):\n${JSON.stringify(compactCatalogForModel(filteredCatalog), null, 0)}` +
+      (hasImage ? '\n\n(Screenshot attached — read it like overlay chat.)' : '');
+
+    const plannerMessages = buildBrowserPlannerMessages({ systemContent, userText, imageUrl });
+    const plannerResult = await callBrowserControlPlanner({
+      messages: plannerMessages,
+      temperature: 0.15,
+      maxTokens: 900,
     });
 
-    if (!openaiRes.ok) {
-      const errText = await openaiRes.text().catch(() => '');
-      console.error('❌ /api/desktop/browser-plan openai:', openaiRes.status, errText.slice(0, 200));
+    if (!plannerResult.ok) {
+      console.error(
+        `❌ /api/desktop/browser-plan ${plannerResult.provider || 'unknown'}:`,
+        plannerResult.status,
+        plannerResult.error?.slice(0, 200),
+      );
       return res.status(502).json({ error: 'Planning failed' });
     }
 
-    const data = await openaiRes.json();
+    const data = plannerResult.data;
     let explanation = '';
+    let taskPlan = '';
     let actions = [];
     try {
       const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}');
-      explanation = String(parsed.explanation || '').trim().slice(0, 600);
+      explanation = String(parsed.explanation || parsed.reasoning || '').trim().slice(0, 600);
+      taskPlan = String(parsed.taskPlan || '').trim().slice(0, 2000);
       actions = Array.isArray(parsed.actions) ? parsed.actions : [];
     } catch (_) { /* keep defaults */ }
 
@@ -15649,17 +16106,412 @@ app.post('/api/desktop/browser-plan', requireAuth, aiLimiter, async (req, res) =
       const usage = extractOpenAIUsage(data);
       logAiUsage({
         sessionId: session?.id, userId: req.user?.id, actionType: 'browser_plan',
-        model: 'gpt-4o-mini', provider: 'openai',
+        model: plannerResult.model || 'browser-control',
+        provider: plannerResult.provider || 'openai',
         inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0,
       });
     }).catch(() => {});
 
-    return res.json({ explanation, actions });
+    return res.json({ explanation, taskPlan, actions });
   } catch (err) {
     console.error('❌ /api/desktop/browser-plan:', err?.message || err);
     return res.status(500).json({ error: 'Planning failed' });
   }
 });
+
+// Next-step planner for adaptive browser control — re-scan after each action.
+app.post('/api/desktop/browser-plan-next', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    if (!browserControlConfigured()) return res.status(503).json({ error: 'AI not configured' });
+
+    const intent = String(req.body?.intent || '').slice(0, 500).trim();
+    const url = String(req.body?.url || '').slice(0, 500).trim();
+    const title = String(req.body?.title || '').slice(0, 200).trim();
+    // General tasks may need more of the page in view (dense apps, long forms).
+    // The planner still gets the screenshot too, so this is the upper bound of
+    // what it can click by selector.
+    const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 130) : [];
+    const pageText = String(req.body?.pageText || '').slice(0, 15000).trim();
+    const imageUrl = String(req.body?.imageUrl || '').trim();
+    const hasImage = imageUrl.startsWith('data:image/');
+    const conversationContext = formatConversationForBrowserPlan(req.body?.conversationHistory);
+    const stuckHint = String(req.body?.stuckHint || '').slice(0, 500).trim();
+    const forceAction = !!req.body?.forceAction;
+    const completedSteps = Array.isArray(req.body?.completedSteps)
+      ? req.body.completedSteps.slice(-25)
+      : [];
+    const useHoloAgent = getBrowserControlProvider() === 'holo';
+    if (!intent) return res.status(400).json({ error: 'Missing intent' });
+    if (!items.length && !useHoloAgent) return res.status(400).json({ error: 'No interactable elements' });
+
+    const taskPlan = String(req.body?.taskPlan || '').slice(0, 2000).trim();
+    const lastActionDiff = String(req.body?.lastActionDiff || '').slice(0, 400).trim();
+
+    if (useHoloAgent) {
+      const domOrdinalClick = resolveOrdinalDomClick(intent, items);
+      if (domOrdinalClick) {
+        const ord = parseOrdinalFromIntent(intent);
+        return res.json({
+          agentMode: 'holo',
+          pipeline: 'dom-ordinal-click',
+          holoSkipped: true,
+          done: false,
+          explanation: `Clicking ${ord?.ordinal === -1 ? 'last' : `#${ord?.ordinal || ''}`} visible row via DOM.`,
+          reasoning: domOrdinalClick.label || '',
+          taskPlan,
+          actions: [domOrdinalClick],
+        });
+      }
+
+      const readerResult = await runScreenReader({
+        intent,
+        imageUrl,
+        url,
+        title,
+        pageText,
+        taskPlan,
+        lastActionDiff,
+        completedSteps,
+        conversationContext,
+        items,
+      });
+      if (!readerResult.ok) {
+        console.error('❌ /api/desktop/browser-plan-next screen-reader:', readerResult.status, readerResult.error?.slice(0, 200));
+        return res.status(502).json({ error: 'Planning failed' });
+      }
+
+      if (readerResult.brief?.goalProgress === 'complete' || readerResult.brief?.goalProgress === 'likely_complete') {
+        if (readerResult.brief?.nextStep?.action === 'done') {
+          getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+            const usage = extractOpenAIUsage(readerResult.data);
+            logAiUsage({
+              sessionId: session?.id, userId: req.user?.id, actionType: 'browser_screen_read',
+              model: readerResult.model || 'gpt-4.1',
+              provider: 'openai',
+              inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0,
+            });
+          }).catch(() => {});
+          return res.json({
+            agentMode: 'holo',
+            pipeline: 'reader-holo-report',
+            done: true,
+            explanation: readerResult.brief?.nextStep?.rationale || readerResult.explanation || 'Task appears complete.',
+            reasoning: readerResult.brief?.summary || '',
+            taskPlan,
+            actions: [],
+            screenBrief: readerResult.screenBrief,
+            agentResult: readerResult.brief?.nextStep?.rationale || readerResult.explanation || '',
+          });
+        }
+      }
+
+      // Reader provides grounded click coords — skip Holo so it can't re-pick item #1.
+      if (readerResult.directClick) {
+        getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+          const usage = extractOpenAIUsage(readerResult.data);
+          logAiUsage({
+            sessionId: session?.id, userId: req.user?.id, actionType: 'browser_screen_read',
+            model: readerResult.model || 'gpt-4.1',
+            provider: 'openai',
+            inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0,
+          });
+        }).catch(() => {});
+        return res.json({
+          agentMode: 'holo',
+          pipeline: 'reader-direct-click',
+          holoSkipped: true,
+          done: false,
+          explanation: readerResult.brief?.nextStep?.rationale || readerResult.explanation || '',
+          reasoning: readerResult.brief?.summary || '',
+          taskPlan,
+          actions: [readerResult.directClick],
+          screenBrief: readerResult.screenBrief,
+        });
+      }
+
+      const holoResult = await runHoloBrowserStep({
+        holoMessages: req.body?.holoMessages,
+        intent,
+        imageUrl,
+        toolOutput: req.body?.toolOutput,
+        toolName: req.body?.toolName,
+        pageText,
+        url,
+        title,
+        lastActionDiff,
+        conversationContext,
+        screenBrief: readerResult.screenBrief,
+      });
+      if (!holoResult.ok) {
+        console.error('❌ /api/desktop/browser-plan-next holo:', holoResult.status, holoResult.error?.slice(0, 200));
+        return res.status(502).json({ error: 'Planning failed' });
+      }
+      getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+        const readerUsage = extractOpenAIUsage(readerResult.data);
+        const holoUsage = extractOpenAIUsage(holoResult.data);
+        logAiUsage({
+          sessionId: session?.id, userId: req.user?.id, actionType: 'browser_screen_read',
+          model: readerResult.model || 'gpt-4.1',
+          provider: 'openai',
+          inputTokens: readerUsage.input_tokens || 0, outputTokens: readerUsage.output_tokens || 0,
+        });
+        logAiUsage({
+          sessionId: session?.id, userId: req.user?.id, actionType: 'browser_plan_next',
+          model: holoResult.model || 'browser-control',
+          provider: 'holo',
+          inputTokens: holoUsage.input_tokens || 0, outputTokens: holoUsage.output_tokens || 0,
+        });
+      }).catch(() => {});
+      let actions = Array.isArray(holoResult.actions) ? holoResult.actions : [];
+      if (actions.length > 1 && actions[0]?.type !== 'os_write') actions = actions.slice(0, 1);
+      return res.json({
+        agentMode: 'holo',
+        pipeline: 'reader-holo-report',
+        holoMessages: holoResult.holoMessages,
+        holoToolName: holoResult.holoToolName,
+        done: !!holoResult.done,
+        explanation: holoResult.explanation || readerResult.explanation || holoResult.reasoning || '',
+        reasoning: holoResult.reasoning || readerResult.brief?.summary || '',
+        taskPlan,
+        actions,
+        screenBrief: readerResult.screenBrief,
+        agentResult: holoResult.done ? (holoResult.explanation || '') : '',
+      });
+    }
+
+    const catalog = items.map((el, i) => ({
+      id: String(el?.id || `el${i}`),
+      tag: String(el?.tag || ''),
+      type: String(el?.type || ''),
+      role: String(el?.role || ''),
+      selector: String(el?.selector || '').slice(0, 300),
+      label: String(el?.label || '').slice(0, 120),
+      value: String(el?.value || '').slice(0, 80),
+      href: String(el?.href || '').slice(0, 200),
+      checked: !!el?.checked,
+    })).filter((el) => el.selector);
+
+    const filteredCatalog = filterCatalogForIntent(catalog, intent, pageText);
+    const lastReasoning = String(req.body?.lastReasoning || '').slice(0, 800).trim();
+    const isFirstTurn = completedSteps.length === 0;
+    const complexTask = userWantsComplexTask(intent);
+    const visionClick = userWantsVisionClick(intent);
+    const progressNote = summarizeTaskProgress(completedSteps, intent);
+    const sessionSummary = String(req.body?.sessionSummary || '').slice(0, 1200).trim();
+
+    const doneSummary = completedSteps
+      .map((s, i) => {
+        const changed = s.screenChanged ? 'screen updated' : 'no visible change';
+        const wrong = s.wasWrong ? ' (wrong answer)' : '';
+        const diff = s.pageDiff ? ` — ${s.pageDiff}` : '';
+        return `${i + 1}. ${s.type || 'step'} “${String(s.label || '').slice(0, 80)}” ${s.ok ? 'ok' : 'failed'} (${changed})${wrong}${diff}`;
+      })
+      .join('\n');
+
+    const searchHint = userWantsSearchOrType(intent)
+      ? String(req.body?.searchHint || intent.replace(/^search( for| up)?\s*/i, '').replace(/^look up\s*/i, '').trim()).slice(0, 200).trim()
+      : '';
+    const systemContent = buildBrowserControlSystemContent({
+      intent,
+      taskPlan,
+      isFirstTurn,
+      searchHint,
+      complexTask,
+      visionClick,
+    });
+
+    const userText =
+      `USER GOAL (execute this — every action must serve it):\n${intent}\n\n` +
+      (conversationContext
+        ? `PRIOR CHAT (same overlay session):\n${conversationContext}\n\n`
+        : '') +
+      `PAGE NOW: ${title}\nURL: ${url}\n\n` +
+      (pageText
+        ? `PAGE TEXT:\n${pageText}\n\n`
+        : 'WARNING: No page text — read the screenshot carefully.\n\n') +
+      (lastActionDiff ? `WHAT CHANGED AFTER YOUR LAST ACTION (verify this matches what you intended):\n${lastActionDiff}\n\n` : '') +
+      (progressNote ? `PROGRESS: ${progressNote}\n\n` : '') +
+      (sessionSummary ? `SESSION MEMORY (what you already did — do NOT repeat these steps):\n${sessionSummary}\n\n` : '') +
+      (taskPlan ? `TASK PLAN (follow this — pick the next unfinished step):\n${taskPlan}\n\n` : '') +
+      (lastReasoning ? `YOUR LAST REASONING:\n${lastReasoning}\n\n` : '') +
+      (searchHint ? `SEARCH QUERY TO TYPE: ${searchHint}\n\n` : '') +
+      (forceAction || stuckHint
+        ? `MANDATORY: ${stuckHint || 'Return exactly one action from ELEMENTS now.'}\n\n`
+        : '') +
+      (doneSummary ? `ALREADY DONE:\n${doneSummary}\n\n` : '') +
+      `ELEMENTS (act on one by its "id"):\n${JSON.stringify(compactCatalogForModel(filteredCatalog), null, 0)}` +
+      (hasImage ? '\n\n(Screenshot attached — read the UI like you would in overlay chat.)' : '');
+
+    async function callPlanner(extraSystem = '') {
+      const plannerResult = await callBrowserControlPlanner({
+        messages: buildBrowserPlannerMessages({
+          systemContent: systemContent + extraSystem,
+          userText,
+          imageUrl,
+        }),
+        temperature: 0.1,
+        maxTokens: 900,
+      });
+      if (!plannerResult.ok) {
+        console.error(
+          `❌ /api/desktop/browser-plan-next ${plannerResult.provider || 'unknown'}:`,
+          plannerResult.status,
+          plannerResult.error?.slice(0, 200),
+        );
+        return null;
+      }
+      return { data: plannerResult.data, provider: plannerResult.provider, model: plannerResult.model };
+    }
+
+    let plannerMeta = await callPlanner();
+    if (!plannerMeta) return res.status(502).json({ error: 'Planning failed' });
+    let data = plannerMeta.data;
+
+    let done = false;
+    let explanation = '';
+    let reasoning = '';
+    let nextTaskPlan = taskPlan;
+    let actions = [];
+    try {
+      const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+      done = !!parsed.done;
+      reasoning = String(parsed.reasoning || '').trim().slice(0, 800);
+      explanation = String(parsed.explanation || reasoning || '').trim().slice(0, 600);
+      if (parsed.taskPlan) nextTaskPlan = String(parsed.taskPlan).trim().slice(0, 2000);
+      actions = Array.isArray(parsed.actions) ? parsed.actions : [];
+    } catch (_) { /* keep defaults */ }
+
+    // Complex tasks: don't accept done:true until exercise truly complete or progress says so.
+    if (done && complexTask) {
+      const checks = countChecksCompleted(completedSteps);
+      if (wantsMultiQuestion(intent) && !pageShowsExerciseComplete(pageText)) {
+        done = false;
+      } else if (userWantsVisionClick(intent) && checks === 0 && completedSteps.length < 2) {
+        done = false;
+      }
+    }
+
+    // Retry once if model returned prose without a click action.
+    if (!done && !actions.length) {
+      const retryExtra = userWantsSearchOrType(intent)
+        ? 'Think like chat: click the search field, type the query, press Enter. Return type + press Enter actions.'
+        : visionClick
+          ? 'Read the SCREENSHOT. Return click on matching img from ELEMENTS, or click_coord with x,y (0-1000) at the target center.'
+          : 'Return done:false, fill reasoning, and exactly ONE action that advances the USER GOAL — an element from ELEMENTS (copy its selector verbatim), or a click_coord at the target center if it is not in ELEMENTS.';
+      const retryMeta = await callPlanner(`\n\nRETRY: Your previous response had no actions. ${retryExtra}`);
+      if (retryMeta) {
+        plannerMeta = retryMeta;
+        data = retryMeta.data;
+        try {
+          const parsed = JSON.parse(retryMeta.data.choices?.[0]?.message?.content || '{}');
+          done = !!parsed.done;
+          reasoning = String(parsed.reasoning || reasoning || '').trim().slice(0, 800);
+          explanation = String(parsed.explanation || reasoning || explanation || '').trim().slice(0, 600);
+          if (parsed.taskPlan) nextTaskPlan = String(parsed.taskPlan).trim().slice(0, 2000);
+          actions = Array.isArray(parsed.actions) ? parsed.actions : [];
+        } catch (_) { /* keep first parse */ }
+      }
+    }
+
+    // Holo grounding fallback: when vision is needed and the planner still returned
+    // no click, use Holo's single-turn element localization (ScreenSpot-grade).
+    if (
+      !done &&
+      !actions.length &&
+      getBrowserControlProvider() === 'holo' &&
+      hasImage &&
+      (visionClick || forceAction)
+    ) {
+      const target =
+        String(req.body?.visionTarget || '').trim().slice(0, 400) ||
+        intent.slice(0, 200);
+      const pt = await callHoloElementLocalization(imageUrl, target);
+      if (pt) {
+        actions = [{
+          type: 'click_coord',
+          x: pt.x,
+          y: pt.y,
+          label: target.slice(0, 120) || 'vision click',
+        }];
+        explanation = explanation || `Clicking “${target.slice(0, 80)}” (Holo vision).`;
+        reasoning = reasoning || `Localized target at (${pt.x}, ${pt.y}).`;
+      }
+    }
+
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+      const usage = extractOpenAIUsage(data);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'browser_plan_next',
+        model: plannerMeta?.model || 'browser-control',
+        provider: plannerMeta?.provider || 'openai',
+        inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0,
+      });
+    }).catch(() => {});
+
+    // Limit to one action, or an atomic type+Enter pair, or one click_coord.
+    if (actions.length > 2) actions = actions.slice(0, 2);
+    if (actions.length === 2 && !(actions[0]?.type === 'type' && actions[1]?.type === 'press')) {
+      actions = actions.slice(0, 1);
+    }
+    if (actions[0]?.type === 'click_coord') {
+      actions = actions.slice(0, 1);
+    }
+
+    return res.json({ done, explanation, reasoning, taskPlan: nextTaskPlan, actions });
+  } catch (err) {
+    console.error('❌ /api/desktop/browser-plan-next:', err?.message || err);
+    return res.status(500).json({ error: 'Planning failed' });
+  }
+});
+
+
+// Turn raw browser automation results into a user-facing LYKN overlay message.
+app.post('/api/desktop/browser-report', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'AI not configured' });
+
+    const intent = String(req.body?.intent || '').slice(0, 500).trim();
+    const url = String(req.body?.url || '').slice(0, 500).trim();
+    const title = String(req.body?.title || '').slice(0, 200).trim();
+    const screenBrief = String(req.body?.screenBrief || '').slice(0, 4000).trim();
+    const agentResult = String(req.body?.agentResult || req.body?.explanation || '').slice(0, 2000).trim();
+    const ok = req.body?.ok !== false;
+    const completedSteps = Array.isArray(req.body?.completedSteps) ? req.body.completedSteps.slice(-20) : [];
+    const conversationContext = formatConversationForBrowserPlan(req.body?.conversationHistory);
+    if (!intent) return res.status(400).json({ error: 'Missing intent' });
+
+    const reportResult = await runBrowserTaskReport({
+      intent,
+      ok,
+      completedSteps,
+      screenBrief,
+      agentResult,
+      url,
+      title,
+      conversationContext,
+    });
+    if (!reportResult.ok) {
+      console.error('❌ /api/desktop/browser-report:', reportResult.status, reportResult.error?.slice(0, 200));
+      return res.status(502).json({ error: 'Report failed' });
+    }
+
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+      const usage = extractOpenAIUsage(reportResult.data);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'browser_report',
+        model: reportResult.model || 'gpt-4.1-nano',
+        provider: 'openai',
+        inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0,
+      });
+    }).catch(() => {});
+
+    return res.json({ message: reportResult.message });
+  } catch (err) {
+    console.error('❌ /api/desktop/browser-report:', err?.message || err);
+    return res.status(500).json({ error: 'Report failed' });
+  }
+});
+
 
 app.get('/api/desktop/chats', requireAuth, async (req, res) => {
   try {
@@ -15704,6 +16556,129 @@ app.get('/api/desktop/chats', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('❌ /api/desktop/chats:', err?.message || err);
     return res.status(500).json({ error: 'Failed to load chats' });
+  }
+});
+
+// Persist a ⌘L overlay conversation into the SAME store the web/desktop app
+// reads (lykn_chats + lykn_chat_states), so overlay chats show up in the app's
+// "previous chats" sidebar — not just the overlay's own list. The overlay keeps
+// its local copy (overlay-sessions.json) for offline/instant listing; this is
+// the durable, cross-surface mirror. Idempotent upsert keyed on the overlay
+// sessionId (already a UUID), so re-saving the same conversation updates it.
+app.post('/api/desktop/chats/save', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not signed in' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+
+    const chatId = String(req.body?.chatId || '').trim();
+    // lykn_chats.id is a uuid column — reject anything that isn't one so a
+    // malformed id can't 500 the insert.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_RE.test(chatId)) return res.status(400).json({ error: 'invalid_chat_id' });
+
+    const rawMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+    const messages = rawMessages
+      .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim())
+      .map((m) => ({
+        role: m.role,
+        content: String(m.content).slice(0, 12000),
+        at: typeof m.at === 'string' ? m.at : null,
+      }));
+    if (!messages.length) return res.json({ ok: false, reason: 'empty' });
+
+    // Pair the flat user/assistant stream into the app's chatMessages shape
+    // ({ id, content: <user>, aiResponse: <assistant> }) that the chat rail
+    // renders and the desktop-chats listing reads for title/preview.
+    // NOTE: the app's chat renderer (LyknChatView) keys every turn on
+    // `role: "user"` and shows the assistant bubble only when
+    // `msg.role === "user" && msg.aiResponse`. So each paired turn MUST carry
+    // role:"user" — without it the prompt renders but the AI reply is hidden.
+    const chatMessages = [];
+    let pending = null;
+    for (const m of messages) {
+      if (m.role === 'user') {
+        if (pending) chatMessages.push(pending);
+        pending = { id: crypto.randomUUID(), role: 'user', content: m.content, aiResponse: '', ...(m.at ? { createdAt: m.at } : {}) };
+      } else {
+        if (pending) {
+          pending.aiResponse = m.content;
+          if (m.at) pending.aiCompletedAt = m.at;
+          chatMessages.push(pending);
+          pending = null;
+        } else {
+          chatMessages.push({ id: crypto.randomUUID(), role: 'user', content: '', aiResponse: m.content, ...(m.at ? { aiCompletedAt: m.at } : {}) });
+        }
+      }
+    }
+    if (pending) chatMessages.push(pending);
+
+    const title =
+      (String(req.body?.title || '').trim() ||
+        chatMessages.find((m) => m.content)?.content ||
+        'New Chat').slice(0, 120);
+
+    const now = new Date().toISOString();
+    // Mirror the web client's snapshot contract (useLyknChatPersistence
+    // buildSnapshot): an empty canvas + the conversation. SNAPSHOT_VERSION = 2.
+    const snapshot = {
+      version: 2,
+      blocks: {},
+      blockOrder: [],
+      camera: { x: 0, y: 0, zoom: 1 },
+      gridSize: 24,
+      wireConnections: [],
+      chatMessages,
+      aiThread: messages.map((m) => ({ role: m.role, content: m.content })).slice(-40),
+      notesPages: [
+        { id: crypto.randomUUID(), title: 'Page 1', content: { type: 'doc', content: [{ type: 'paragraph' }] } },
+      ],
+      title,
+      source: 'overlay',
+    };
+
+    // Upsert the board row (don't clobber a title the user set in the app:
+    // only update title if the existing one is still a default).
+    const { data: existing } = await supabaseAdmin
+      .from('lykn_chats')
+      .select('id, title')
+      .eq('id', chatId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!existing?.id) {
+      const { error: insErr } = await supabaseAdmin
+        .from('lykn_chats')
+        .insert({ id: chatId, user_id: userId, title, updated_at: now });
+      if (insErr) {
+        // A row may exist under a different user_id (shouldn't happen) — bail safely.
+        console.error('❌ overlay chat board insert:', insErr.message);
+        return res.status(500).json({ error: 'board_insert_failed' });
+      }
+    } else {
+      const keepTitle = existing.title && !DEFAULT_CHAT_TITLES.has(String(existing.title).trim());
+      await supabaseAdmin
+        .from('lykn_chats')
+        .update({ updated_at: now, ...(keepTitle ? {} : { title }) })
+        .eq('id', chatId)
+        .eq('user_id', userId);
+    }
+
+    const { error: stateErr } = await supabaseAdmin
+      .from('lykn_chat_states')
+      .upsert(
+        { chat_id: chatId, state: snapshot, version: 2, user_id: userId, updated_at: now },
+        { onConflict: 'chat_id' },
+      );
+    if (stateErr) {
+      console.error('❌ overlay chat state upsert:', stateErr.message);
+      return res.status(500).json({ error: 'state_save_failed' });
+    }
+
+    return res.json({ ok: true, id: chatId });
+  } catch (err) {
+    console.error('❌ /api/desktop/chats/save:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to save chat' });
   }
 });
 
@@ -18841,6 +19816,128 @@ app.post('/api/files/parse-spreadsheet', requireAuth, upload.single('file'), asy
   } catch (error) {
     console.error('❌ Spreadsheet parse error:', error);
     res.status(500).json({ error: `Failed to parse spreadsheet: ${error.message}` });
+  }
+});
+
+// Save an image (e.g. an AI-snipped screen region from the desktop overlay)
+// straight into the user's Vault. The overlay's Electron main process can't run
+// the browser upload pipeline (supabase-js + File + canvas), so it POSTs the raw
+// PNG bytes here and we do the storage upload + vault_items insert server-side,
+// mirroring what createVaultNote() does on the web client. Accepts either a
+// multipart "image" field or a base64 `dataUrl` in the JSON body.
+app.post('/api/vault/save-image', requireAuth, upload.single('image'), async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'storage_unavailable' });
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+    // Bytes can arrive as multipart (preferred) or a base64 data URL in the body.
+    let buffer = req.file?.buffer || null;
+    let mimeType = String(req.file?.mimetype || '').toLowerCase();
+    let originalName = String(req.file?.originalname || '');
+    if ((!buffer || !buffer.length) && req.body?.dataUrl) {
+      const m = String(req.body.dataUrl).match(/^data:([^;]+);base64,(.+)$/);
+      if (m) {
+        mimeType = m[1].toLowerCase();
+        buffer = Buffer.from(m[2], 'base64');
+      }
+    }
+    if (!buffer || !buffer.length) {
+      return res.status(400).json({ error: 'no_image' });
+    }
+    if (!mimeType.startsWith('image/')) mimeType = 'image/png';
+    // Guard against absurd payloads (multer already caps at 50MB).
+    if (buffer.length > 25 * 1024 * 1024) {
+      return res.status(413).json({ error: 'image_too_large' });
+    }
+
+    const title = (String(req.body?.title || '').trim() || 'Screenshot').slice(0, 200);
+    const width = Number(req.body?.width) || null;
+    const height = Number(req.body?.height) || null;
+    const folder = (String(req.body?.folder || '').trim() || 'Screenshots').slice(0, 80);
+
+    const ext = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
+    const bucket = 'user-files';
+    const fileId = crypto.randomUUID();
+    const storagePath = `${userId}/${fileId}/original.${ext}`;
+
+    const { error: upErr } = await supabaseAdmin.storage
+      .from(bucket)
+      .upload(storagePath, buffer, { contentType: mimeType, cacheControl: '31536000', upsert: false });
+    if (upErr) {
+      console.error('❌ Vault image upload failed:', upErr.message || upErr);
+      return res.status(500).json({ error: upErr.message || 'upload_failed' });
+    }
+
+    // Sign a URL so the attachment renders immediately; the Vault renderer
+    // re-signs from storagePath/storageBucket once this one expires.
+    let fileUrl = null;
+    try {
+      const { data: signed } = await supabaseAdmin.storage
+        .from(bucket)
+        .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS);
+      fileUrl = signed?.signedUrl || null;
+    } catch { /* re-signing on the client still works via storagePath */ }
+
+    const filename = originalName || `${title}.${ext}`;
+    const attachment = {
+      type: 'image',
+      url: fileUrl,
+      name: filename,
+      storagePath,
+      storageBucket: bucket,
+      size: buffer.length,
+      mimeType,
+      ...(width && height && width > 0 && height > 0 ? { width, height } : {}),
+    };
+    const content = `[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
+
+    const richInsert = {
+      user_id: userId,
+      title,
+      content,
+      folder,
+      source: 'overlay_snip',
+      tags: ['image', 'screenshot'],
+      ...buildAttachmentColumns(attachment),
+    };
+
+    let { data: note, error: insErr } = await supabaseAdmin
+      .from('vault_items')
+      .insert(richInsert)
+      .select('id, title')
+      .single();
+
+    // Pre-migration DBs may lack the normalized attachment columns — retry with
+    // just the marker (same fallback the web upload pipeline uses).
+    const missingColumn =
+      insErr &&
+      (insErr.code === 'PGRST204' ||
+        /could not find|does not exist/i.test(String(insErr.message || '')));
+    if (missingColumn) {
+      ({ data: note, error: insErr } = await supabaseAdmin
+        .from('vault_items')
+        .insert({ user_id: userId, title, content })
+        .select('id, title')
+        .single());
+    }
+
+    if (insErr) {
+      // Clean up the orphaned object so we don't leak storage on a failed row.
+      await supabaseAdmin.storage.from(bucket).remove([storagePath]).catch(() => {});
+      const msg = String(insErr.message || '');
+      if (msg.includes('vault_cap_reached')) {
+        return res.status(403).json({ error: 'vault_cap_reached' });
+      }
+      console.error('❌ Vault image insert failed:', msg);
+      return res.status(500).json({ error: msg || 'insert_failed' });
+    }
+
+    console.log(`✅ Saved overlay image to vault: ${note?.id} (${(buffer.length / 1024).toFixed(0)}KB)`);
+    return res.json({ ok: true, id: note?.id || null, title });
+  } catch (error) {
+    console.error('❌ Vault save-image error:', error);
+    return res.status(500).json({ error: error?.message || 'save_failed' });
   }
 });
 

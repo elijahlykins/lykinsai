@@ -1,16 +1,23 @@
 {
   "manifest_version": 3,
-  "name": "Save to LYKN",
-  "version": "0.1.0",
-  "description": "One-click save the current page (or any link) to your LYKN Vault.",
+  "name": "LYKN Chrome Live Feed",
+  "short_name": "LYKN Live Feed",
+  "version": "0.2.4",
+  "description": "Save pages to LYKN Vault and stream live page text to the desktop app for cheaper screen watch.",
   "permissions": ["activeTab", "contextMenus", "storage", "scripting"],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": ["<all_urls>", "http://127.0.0.1/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Save to LYKN",
+    "default_title": "LYKN Chrome Live Feed",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",

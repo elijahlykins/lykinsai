@@ -19,7 +19,7 @@ import { useUserPlan } from "@/lib/useUserPlan";
  * — the user can start uploading on /vault and keep browsing while the
  * background workers finish.
  */
-export default function DragDropFileUpload({ onUploadComplete, onFileComplete, triggerRef, beforeUpload, onRequireSignIn, onNoteCreated, refreshVaultCount }) {
+export default function DragDropFileUpload({ onUploadComplete, onFileComplete, onVariantsReady, triggerRef, beforeUpload, onRequireSignIn, onNoteCreated, refreshVaultCount }) {
   const { user } = useAuth();
   const { planId } = useUserPlan();
   const [isDragging, setIsDragging] = useState(false);
@@ -186,9 +186,10 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, t
         onNoteCreated,
         onAllComplete: onUploadComplete,
         onFileComplete,
+        onVariantsReady,
       });
     },
-    [user?.id, planId, beforeUpload, processFileList, onUploadComplete, onFileComplete, onRequireSignIn, onNoteCreated, refreshVaultCount],
+    [user?.id, planId, beforeUpload, processFileList, onUploadComplete, onFileComplete, onVariantsReady, onRequireSignIn, onNoteCreated, refreshVaultCount],
   );
 
   const onDrop = useCallback(

@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld("lyknOnboarding", {
   openScreenSettings: () => ipcRenderer.send("lykn:onboarding-open-screen-settings"),
   // Trigger the system Screen Recording prompt by attempting a capture.
   requestScreen: () => ipcRenderer.invoke("lykn:onboarding-request-screen"),
+  accessibilityStatus: () => ipcRenderer.invoke("lykn:onboarding-accessibility-status"),
+  requestAccessibility: () => ipcRenderer.invoke("lykn:onboarding-request-accessibility"),
+  openAccessibilitySettings: () => ipcRenderer.send("lykn:onboarding-open-accessibility-settings"),
   // Probe "Allow JavaScript from Apple Events" in the active browser.
   // -> { ok, state: 'granted'|'denied'|'no-browser'|'error', browser, message }
   testAppleEvents: () => ipcRenderer.invoke("lykn:onboarding-test-apple-events"),

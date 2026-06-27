@@ -22,16 +22,30 @@ const {
   screen,
   systemPreferences,
   dialog,
+  nativeImage,
+  clipboard,
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
 const crypto = require("node:crypto");
 const { execFile } = require("node:child_process");
 const {
   collectBrowserInteractables,
+  collectBrowserPageContext,
   executeBrowserActions,
-  sanitizePlanActions,
+  executeAdaptiveBrowserTask,
+  resolvePlanActions,
+  userWantsSearchOrType,
+  screenFingerprint,
 } = require("./browserAct.cjs");
+const { screenDiffRatio, textSimilarity } = require("../lib/browserScreen.cjs");
+const { startExtensionBridge } = require("./extensionBridge.cjs");
+const {
+  installExtensionOneClick,
+  getExtensionInstallMode,
+  getUserExtensionDir,
+} = require("./extensionInstaller.cjs");
 
 const IMAGE_MIME_BY_EXT = {
   ".png": "image/png",
@@ -126,8 +140,22 @@ function isAuthOrigin(origin) {
 let mainWindow = null;
 /** @type {BrowserWindow | null} */
 let overlayWindow = null;
+// NOTE: macOS non-activating panels (`type: 'panel'`) won't receive OS file
+// drops — the drag falls behind the bar. We tried dropping the panel type to
+// make the window activatable + drop-capable, but that breaks float-over-
+// everything (the bar sinks behind other windows). So the panel type stays, and
+// adding files goes through the in-bar attach button / native picker instead.
+const OVERLAY_ACTIVATABLE_FOR_DROPS = false;
+/** @type {BrowserWindow | null} */
+let burstWindow = null;
+let burstHideTimer = null;
+let burstWindowWarmed = false;
+let browserExecuteInFlight = false;
 /** @type {BrowserWindow | null} */
 let onboardingWindow = null;
+/** @type {BrowserWindow | null} */
+let extensionInstallWindow = null;
+let overlayVisibleBeforeExtensionInstall = false;
 
 // Once the user drags the bar we stop auto-centering it. We anchor by the
 // BOTTOM-RIGHT corner so the chat column stays put as answers stream in (grows
@@ -243,8 +271,9 @@ function setupSystemAudioCapture() {
 /* ------------------------------------------------------------------ */
 
 const OVERLAY_WIDTH = 520; // the chat column
-const OVERLAY_SIDE_WIDTH = 300; // side panels (sources right, more menu left)
-const OVERLAY_MAX_WIDTH = OVERLAY_WIDTH + OVERLAY_SIDE_WIDTH;
+const OVERLAY_SIDE_WIDTH = 300; // side panels (sources, etc.)
+const OVERLAY_WATCH_SIDE_WIDTH = 360; // wider live-watch feed panel
+const OVERLAY_MAX_WIDTH = OVERLAY_WIDTH + OVERLAY_WATCH_SIDE_WIDTH;
 const OVERLAY_MIN_HEIGHT = 82;
 const OVERLAY_BOTTOM_MARGIN = 90;
 
@@ -289,8 +318,11 @@ function createOverlayWindow() {
     alwaysOnTop: true,
     // macOS: a non-activating panel can become key for text input WITHOUT
     // activating the app, so summoning it never yanks the user to LYKN's Space
-    // or out of the full-screen app they're in.
-    ...(process.platform === "darwin" ? { type: "panel" } : {}),
+    // or out of the full-screen app they're in. We drop the panel type when
+    // OVERLAY_ACTIVATABLE_FOR_DROPS is on so the window can accept OS file drops.
+    ...(process.platform === "darwin" && !OVERLAY_ACTIVATABLE_FOR_DROPS
+      ? { type: "panel" }
+      : {}),
     webPreferences: {
       preload: path.join(__dirname, "overlay-preload.cjs"),
       contextIsolation: true,
@@ -301,10 +333,11 @@ function createOverlayWindow() {
 
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
   // Exclude the overlay itself from screen capture (NSWindowSharingNone on
-  // macOS). The user still sees the glass bar, but our own screenshots — and
-  // any other screen recording — won't include it, so LYKN never "sees" its own
-  // chat window when reading the screen.
-  overlayWindow.setContentProtection(true);
+  // macOS / WDA_EXCLUDEFROMCAPTURE on Windows). The user still sees the glass
+  // bar, but our own screenshots — and any other screen recording/share — won't
+  // include it, so LYKN never "sees" its own chat window when reading the screen.
+  // User-toggleable + persisted; defaults ON.
+  overlayWindow.setContentProtection(isContentProtectionEnabled());
   // canJoinAllSpaces + fullScreenAuxiliary so the panel appears on the CURRENT
   // Space (over full-screen apps too); skipTransformProcessType stops macOS
   // from switching Spaces when it shows.
@@ -395,6 +428,29 @@ function setOverlaySize(width, height) {
 
 function hideOverlay() {
   if (overlayWindow && overlayWindow.isVisible()) overlayWindow.hide();
+  // Tear down the full-screen "LYKN is on" glass alongside the bar.
+  hideOverlayGlass();
+}
+
+function setOverlayClickThrough(enabled) {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  try {
+    overlayWindow.setIgnoreMouseEvents(!!enabled, enabled ? { forward: true } : undefined);
+  } catch (_) {}
+}
+
+async function withOverlayHiddenForClick(fn) {
+  const vis = overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible();
+  if (vis) overlayWindow.hide();
+  await new Promise((r) => setTimeout(r, 200));
+  try {
+    return await fn();
+  } finally {
+    if (vis && overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.show();
+      overlayWindow.moveTop();
+    }
+  }
 }
 
 // Returns 'granted' | 'denied' | 'not-determined' | 'restricted'. On non-mac
@@ -412,11 +468,17 @@ function screenCaptureStatus() {
 // ("Failed to get sources") when asked for a very large thumbnail (e.g. full
 // Retina resolution), so we try a ladder of decreasing sizes and take the
 // first that succeeds — sharp when possible, reliable always.
-async function capturePrimaryScreen() {
+async function capturePrimaryScreen({ maxWidth, format = "png", quality = 80 } = {}) {
   const display = screen.getPrimaryDisplay();
   const { width: w, height: h } = display.size;
   const aspect = h / w;
-  const widths = [Math.min(w, 2048), 1600, 1280, 960];
+  // When a caller only needs a smaller image (e.g. the browser thumbnail), ask
+  // the compositor for it directly instead of grabbing 2048px and downscaling —
+  // capturing fewer pixels is meaningfully faster.
+  const cap = maxWidth ? Math.min(w, maxWidth) : Math.min(w, 2048);
+  const widths = maxWidth
+    ? [cap, Math.round(cap * 0.8), 960]
+    : [cap, 1600, 1280, 960];
   const sizes = widths.map((width) => ({ width, height: Math.round(width * aspect) }));
 
   let lastErr = null;
@@ -425,13 +487,174 @@ async function capturePrimaryScreen() {
       const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
       const primary =
         sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
-      if (primary && !primary.thumbnail.isEmpty()) return primary.thumbnail.toDataURL();
+      if (primary && !primary.thumbnail.isEmpty()) {
+        // JPEG is 5–10× smaller than PNG for a screenshot — much faster to upload
+        // and for the vision model to ingest, at no meaningful cost to OCR quality.
+        if (format === "jpeg") {
+          return `data:image/jpeg;base64,${primary.thumbnail.toJPEG(quality).toString("base64")}`;
+        }
+        return primary.thumbnail.toDataURL();
+      }
     } catch (e) {
       lastErr = e;
     }
   }
   if (lastErr) console.error("[LYKN] screen capture failed:", lastErr.message);
   return null;
+}
+
+async function captureBrowserScreenThumbnail() {
+  if (screenCaptureStatus() !== "granted") return "";
+  try {
+    const dataUrl = await capturePrimaryScreen({ maxWidth: 1280 });
+    if (!dataUrl) return "";
+    const img = nativeImage.createFromDataURL(dataUrl);
+    const { width } = img.getSize();
+    const resized = width > 1280 ? img.resize({ width: 1280 }) : img;
+    const jpeg = resized.toJPEG(70);
+    return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+  } catch {
+    return "";
+  }
+}
+
+// ── "LYKN is on" glass ───────────────────────────────────────────────────
+// A full-screen, transparent, click-through window that fades in a subtle
+// frosted-glass wash (pink→blue, with a glowing rim) across the WHOLE screen
+// while the overlay is active — an unmistakable "LYKN is live" cue. It sits
+// behind the glass bar, never steals focus, and stays up until the overlay is
+// dismissed (then hideOverlayGlass() fades it out).
+function createBurstWindow() {
+  const { bounds } = screen.getPrimaryDisplay();
+  burstWindow = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    hasShadow: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    focusable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    // Same panel treatment as the overlay so it floats over full-screen apps
+    // and Spaces without yanking focus.
+    ...(process.platform === "darwin" ? { type: "panel" } : {}),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // Keep the renderer hot so the first summon doesn't pay a wake-up cost.
+      backgroundThrottling: false,
+    },
+  });
+
+  // Below the overlay (screen-saver) so the glass bar stays crisp on top, but
+  // above everything else on screen.
+  burstWindow.setAlwaysOnTop(true, "pop-up-menu");
+  // Clicks pass straight through to whatever is underneath.
+  burstWindow.setIgnoreMouseEvents(true, { forward: true });
+  // Keep our own screen reads from capturing the flash.
+  try { burstWindow.setContentProtection(true); } catch (_) {}
+  burstWindow.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true,
+  });
+  burstWindow.loadFile(path.join(__dirname, "burst.html"));
+
+  // Warm-up: run the full burst animation ONCE while the window is parked
+  // entirely off-screen (so it's invisible) — this forces the renderer to
+  // actually rasterize the blurred color layers + noise tiles, so the first
+  // real ⌘+L has everything cached and doesn't hitch.
+  burstWindow.webContents.once("did-finish-load", () => {
+    if (!burstWindow || burstWindow.isDestroyed() || burstWindowWarmed) return;
+    burstWindowWarmed = true;
+    try {
+      const { bounds } = screen.getPrimaryDisplay();
+      // Park the window one full screen-height above the display.
+      burstWindow.setBounds({
+        x: bounds.x,
+        y: bounds.y - bounds.height - 120,
+        width: bounds.width,
+        height: bounds.height,
+      });
+      burstWindow.setIgnoreMouseEvents(true, { forward: true });
+      burstWindow.showInactive();
+      burstWindow.webContents
+        .executeJavaScript("window.__lyknBurst && window.__lyknBurst();", true)
+        .catch(() => {});
+      setTimeout(() => {
+        if (!burstWindow || burstWindow.isDestroyed()) return;
+        burstWindow.webContents
+          .executeJavaScript("window.__lyknBurstOff && window.__lyknBurstOff();", true)
+          .catch(() => {});
+        burstWindow.hide();
+      }, 1500);
+    } catch (_) {
+      /* warm-up is best-effort */
+    }
+  });
+
+  burstWindow.on("closed", () => {
+    burstWindow = null;
+  });
+}
+
+function playOverlayBurst() {
+  try {
+    if (!burstWindow || burstWindow.isDestroyed()) createBurstWindow();
+    // Re-cover the (possibly changed) primary display each time.
+    const { bounds } = screen.getPrimaryDisplay();
+    burstWindow.setBounds(bounds);
+    burstWindow.setIgnoreMouseEvents(true, { forward: true });
+    // Show without activating so the overlay keeps key focus for typing.
+    burstWindow.showInactive();
+    const fire = () => {
+      if (!burstWindow || burstWindow.isDestroyed()) return;
+      burstWindow.webContents
+        .executeJavaScript("window.__lyknBurst && window.__lyknBurst();", true)
+        .catch(() => {});
+    };
+    if (burstWindow.webContents.isLoading()) {
+      burstWindow.webContents.once("did-finish-load", fire);
+    } else {
+      fire();
+    }
+    // The glass PERSISTS while the overlay is active (it's the "LYKN is on"
+    // cue); the one-shot color burst plays once on summon (see burst.html).
+    // hideOverlayGlass() fades everything out when the overlay is dismissed.
+    if (burstHideTimer) {
+      clearTimeout(burstHideTimer);
+      burstHideTimer = null;
+    }
+  } catch (_) {
+    /* the burst is purely cosmetic — never block showing the overlay */
+  }
+}
+
+// Fade the full-screen glass back out, then hide its window once the CSS
+// transition has finished. Called whenever the overlay is dismissed.
+function hideOverlayGlass() {
+  try {
+    if (!burstWindow || burstWindow.isDestroyed()) return;
+    burstWindow.webContents
+      .executeJavaScript("window.__lyknBurstOff && window.__lyknBurstOff();", true)
+      .catch(() => {});
+    if (burstHideTimer) clearTimeout(burstHideTimer);
+    burstHideTimer = setTimeout(() => {
+      burstHideTimer = null;
+      if (burstWindow && !burstWindow.isDestroyed()) burstWindow.hide();
+    }, 360);
+  } catch (_) {
+    /* purely cosmetic */
+  }
 }
 
 // ⌘+L: toggle the floating glass bar. Screen capture happens silently at ask
@@ -449,7 +672,14 @@ function showOverlay() {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
+  // Re-assert content protection on every show — like the window level, it can
+  // be dropped after a restart or Space/full-screen transition.
+  applyContentProtection();
+  // Fade in the full-screen glass behind the bar so the user gets an
+  // unmistakable "LYKN is on" cue for as long as the overlay is up.
+  playOverlayBurst();
   overlayWindow.show();
+  // Re-assert top-of-stack so the glass bar stays above the burst flash.
   overlayWindow.moveTop();
   overlayWindow.focus();
   overlayWindow.webContents.send("lykn:overlay-shown");
@@ -478,6 +708,79 @@ function stripHiddenTags(s) {
     .replace(/\[TAG_NOTES:[^\]]*\]/gi, "");
 }
 
+function parseJsonFromAiText(text) {
+  const raw = stripHiddenTags(String(text || "")).trim();
+  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fence ? fence[1].trim() : raw;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(candidate.slice(start, end + 1));
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+async function fetchAiStreamCompletion(token, body, { timeoutMs = 60000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}/api/ai/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  if (!res.ok) {
+    return { error: `LYKN backend error (${res.status})` };
+  }
+  const ctype = res.headers.get("content-type") || "";
+  if (!ctype.includes("text/event-stream") || !res.body) {
+    const data = await res.json().catch(() => null);
+    const text = stripHiddenTags(data?.response || data?.answer || data?.text || "");
+    return text.trim() ? { text } : { error: "Empty AI response" };
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let accumulated = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() || "";
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const payload = t.slice(t.indexOf(":") + 1).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const j = JSON.parse(payload);
+        if (typeof j.t === "string") accumulated += j.t;
+        else if (j.error) return { error: String(j.error) || "Stream error" };
+      } catch {
+        /* ignore keepalive */
+      }
+    }
+  }
+  const text = stripHiddenTags(accumulated).trim();
+  return text ? { text } : { error: "Empty AI response" };
+  } catch (e) {
+    if (e && e.name === "AbortError") return { error: "Quiz solve timed out (60s)" };
+    return { error: e && e.message ? e.message : "Stream request failed" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Read the Supabase access token from the signed-in main window. The web app
 // keeps it in localStorage (sb-<ref>-auth-token) and auto-refreshes it, so a
 // live read is current. We attach it as a Bearer token exactly like the web
@@ -504,6 +807,850 @@ async function getAuthToken() {
     return typeof raw === "string" && raw ? raw : null;
   } catch {
     return null;
+  }
+}
+
+// ── Overlay settings (small, synchronous JSON store) ───────────────────────
+// Persists user toggles that must be known the instant the window is created
+// (before any async IPC), so we read/write it synchronously. Currently holds
+// `contentProtection` — whether the overlay is excluded from screen capture.
+
+function overlaySettingsPath() {
+  return path.join(app.getPath("userData"), "overlay-settings.json");
+}
+
+function readOverlaySettings() {
+  try {
+    return JSON.parse(fsSync.readFileSync(overlaySettingsPath(), "utf8")) || {};
+  } catch {
+    return {};
+  }
+}
+
+function writeOverlaySettings(patch) {
+  const next = { ...readOverlaySettings(), ...patch };
+  try {
+    fsSync.writeFileSync(overlaySettingsPath(), JSON.stringify(next, null, 2), "utf8");
+  } catch (e) {
+    console.error("[LYKN] failed to write overlay settings:", e?.message);
+  }
+  return next;
+}
+
+// Default ON: the overlay stays out of the user's own screen recordings/shares
+// unless they explicitly turn it off.
+function isContentProtectionEnabled() {
+  const v = readOverlaySettings().contentProtection;
+  return v === undefined ? true : !!v;
+}
+
+// Apply the current content-protection setting to every capture-excludable
+// window. Safe to call repeatedly (we re-assert it on show).
+function applyContentProtection(enabled) {
+  const on = enabled === undefined ? isContentProtectionEnabled() : !!enabled;
+  for (const win of [overlayWindow, burstWindow]) {
+    try {
+      if (win && !win.isDestroyed()) win.setContentProtection(on);
+    } catch {
+      /* platform may not support it (e.g. Linux) */
+    }
+  }
+  return on;
+}
+
+const OVERLAY_IGNORE_NOTE =
+  "IMPORTANT: Ignore LYKN's own interface in the image — a translucent floating " +
+  "glass bar/panel (it may contain this same question, an input field, mic/send " +
+  "buttons, a chevron, or a live transcript). It is NOT part of the user's screen. " +
+  "Never describe, mention, quote, or refer to it; answer only about the actual " +
+  "app/website content behind it.";
+
+// ── Live Watch — continuous screen awareness ────────────────────────────────
+// Captures the screen on a motion-aware schedule, diffs frames locally, and
+// only calls the vision model when pixels meaningfully change. Maintains a
+// rolling text summary injected into overlay chat + voice sessions.
+const LIVE_WATCH_STATIC_MS = 2000; // 0.5 fps when static
+const LIVE_WATCH_ACTIVE_MS = 500; // 2 fps when moderate motion
+const LIVE_WATCH_BURST_MS = 200; // 5 fps during heavy motion
+const LIVE_WATCH_BURST_DURATION_MS = 4000;
+const LIVE_WATCH_VISION_MIN_MS = 2500; // min gap between vision calls
+const LIVE_WATCH_DIFF_VISION = 0.04; // call vision above this diff
+const LIVE_WATCH_DIFF_MOTION = 0.02; // treat as "something moved"
+const LIVE_WATCH_DIFF_BURST = 0.12; // heavy motion → burst fps
+const LIVE_WATCH_SUMMARY_MAX_AGE_MS = 45000;
+
+// Vision only sees still JPEGs every ~1–2s — not video. Models often misread a
+// frozen-looking gameplay frame as "paused"; this note goes in every live-watch prompt.
+const LIVE_WATCH_SNAPSHOT_NOTE =
+  "CRITICAL — HOW CAPTURE WORKS: You receive still screenshots every 1–2 seconds, NOT " +
+  "live video. A frame that looks frozen or unchanged does NOT mean the user paused — " +
+  "active games, videos, and apps often look static between snapshots. Only say paused, " +
+  "idle, or stopped if you clearly see an explicit pause menu, pause icon, or PAUSED text " +
+  "on screen. Never infer pause from a static-looking image alone.";
+
+let liveWatchTimer = null;
+let liveWatchCaptureInFlight = false;
+let liveWatchVisionInFlight = false;
+let liveWatchLastFingerprint = "";
+let liveWatchLastFrameUrl = "";
+let liveWatchLastVisionAt = 0;
+let liveWatchBurstUntil = 0;
+let liveWatchForceVision = false;
+let liveWatchState = {
+  enabled: false,
+  summary: "",
+  commentary: "",
+  commentaryKind: "note", // note | alert
+  at: 0,
+  motionLevel: "static",
+  lastDiff: 0,
+  capturing: false,
+  isNewCommentary: false,
+  rules: [], // { id, text, createdAt }
+  contextSource: "vision", // extension | scrape | vision
+  extensionConnected: false,
+  pageTitle: "",
+  pageUrl: "",
+};
+
+let liveWatchTextInFlight = false;
+let liveWatchForceTextPass = false;
+let liveWatchPendingTextPass = false;
+let liveWatchLastPageText = "";
+let liveWatchLastPageSig = "";
+let liveWatchLastPageUrl = "";
+let liveWatchLastScrapeAt = 0;
+const LIVE_WATCH_SCRAPE_MIN_MS = 3000;
+const LIVE_WATCH_TEXT_MIN_MS = 2000;
+const LIVE_WATCH_TEXT_CHANGE = 0.08; // ~8% text change triggers LLM
+
+let extensionBridge = null;
+
+let liveWatchLastRuleCheckAt = 0;
+let liveWatchSettleUntil = 0;
+let liveWatchPendingNavVision = false;
+let liveWatchConsecutiveBurstFrames = 0;
+const LIVE_WATCH_RULE_CHECK_MS = 3500;
+const LIVE_WATCH_MAX_RULES = 8;
+const LIVE_WATCH_CAPTURE_TIMEOUT_MS = 6000;
+const LIVE_WATCH_VISION_TIMEOUT_MS = 35000;
+const LIVE_WATCH_NAV_DIFF = 0.55; // full page/app switch — settle before re-reading
+const LIVE_WATCH_NAV_SETTLE_MS = 1400;
+
+function parseWatchRuleIntent(text) {
+  const t = String(text || "").trim();
+  const patterns = [
+    /^(?:tell me|let me know|notify me|alert me|warn me|ping me)\s+when\s+(.+)$/i,
+    /^watch\s+(?:for|out for)\s+(.+)$/i,
+    /^(?:alert|notify)\s+(?:me\s+)?when\s+(.+)$/i,
+    /^let me know if\s+(.+)$/i,
+  ];
+  for (const re of patterns) {
+    const m = t.match(re);
+    if (m && m[1]) return m[1].trim().replace(/[.?!]+$/, "");
+  }
+  return null;
+}
+
+function looksLikeClearWatchRules(text) {
+  const t = String(text || "").trim().toLowerCase();
+  return (
+    /\b(clear|stop|cancel|remove|delete)\b.*\b(watch rules?|alerts?|notifications?)\b/.test(t) ||
+    /^stop watching for\b/.test(t) ||
+    /^clear watch\b/.test(t)
+  );
+}
+
+function addLiveWatchRule(ruleText) {
+  const text = String(ruleText || "").trim().slice(0, 200);
+  if (!text) return null;
+  const dupe = liveWatchState.rules.some((r) => textSimilarity(r.text, text) > 0.85);
+  if (dupe) return liveWatchState.rules.find((r) => textSimilarity(r.text, text) > 0.85);
+  const entry = { id: crypto.randomUUID(), text, createdAt: Date.now() };
+  liveWatchState.rules.push(entry);
+  if (liveWatchState.rules.length > LIVE_WATCH_MAX_RULES) {
+    liveWatchState.rules = liveWatchState.rules.slice(-LIVE_WATCH_MAX_RULES);
+  }
+  liveWatchForceVision = true;
+  scheduleLiveWatchTick(100);
+  notifyLiveWatchUpdate();
+  return entry;
+}
+
+function clearLiveWatchRules() {
+  liveWatchState.rules = [];
+  notifyLiveWatchUpdate();
+}
+
+function parseLiveWatchResponse(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed || /^\[unchanged\]$/i.test(trimmed)) return { type: "unchanged" };
+  const alertBracket = trimmed.match(/^\[alert:\s*(.+?)\]$/is);
+  if (alertBracket) return { type: "alert", text: alertBracket[1].trim() };
+  const alertTag = trimmed.match(/^\[alert\]\s*(.+)/is);
+  if (alertTag) return { type: "alert", text: alertTag[1].trim() };
+  const noteBracket = trimmed.match(/^\[note:\s*(.+?)\]$/is);
+  if (noteBracket) return { type: "note", text: noteBracket[1].trim() };
+  return { type: "note", text: trimmed };
+}
+
+function buildLiveWatchRulesSection() {
+  if (!liveWatchState.rules.length) return "";
+  const lines = liveWatchState.rules.map((r, i) => `${i + 1}. ${r.text}`).join("\n");
+  return (
+    "\n\nUSER WATCH RULES — check the screenshot against EACH rule. " +
+    "If one is clearly true RIGHT NOW, output [alert: one short sentence] " +
+    "describing what happened (under 15 words). Rules:\n" +
+    lines
+  );
+}
+
+function isLiveWatchEnabled() {
+  return !!readOverlaySettings().liveWatch;
+}
+
+function getLiveWatchStatus() {
+  return {
+    enabled: liveWatchState.enabled,
+    summary: liveWatchState.summary,
+    commentary: liveWatchState.commentary,
+    commentaryKind: liveWatchState.commentaryKind,
+    at: liveWatchState.at,
+    motionLevel: liveWatchState.motionLevel,
+    lastDiff: liveWatchState.lastDiff,
+    capturing: liveWatchState.capturing,
+    isNewCommentary: liveWatchState.isNewCommentary,
+    rules: liveWatchState.rules.map((r) => r.text),
+    contextSource: liveWatchState.contextSource,
+    extensionConnected: !!extensionBridge?.isConnected?.(),
+    pageTitle: liveWatchState.pageTitle || "",
+    pageUrl: liveWatchState.pageUrl || "",
+  };
+}
+
+function getFreshLiveWatchSummary(maxAgeMs = LIVE_WATCH_SUMMARY_MAX_AGE_MS) {
+  const text = String(liveWatchState.summary || "").trim();
+  if (!text || !liveWatchState.at) return "";
+  if (Date.now() - liveWatchState.at > maxAgeMs) return "";
+  return text;
+}
+
+function getLiveWatchContextSection() {
+  const text = getFreshLiveWatchSummary();
+  if (!text) return "";
+  const ageSec = Math.max(0, Math.round((Date.now() - liveWatchState.at) / 1000));
+  return (
+    "\n\n[LIVE SCREEN WATCH] LYKN has been continuously watching the user's screen " +
+    `(last updated ${ageSec}s ago). Use this rolling summary as your live view — ` +
+    "it may be more current than a single screenshot for fast-moving apps and games.\n" +
+    `--- LIVE SCREEN SUMMARY ---\n${text}\n--- END LIVE SCREEN SUMMARY ---`
+  );
+}
+
+function notifyLiveWatchUpdate() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send("lykn:live-watch-update", getLiveWatchStatus());
+  }
+}
+
+function setLiveWatchCapturing(on) {
+  const next = !!on;
+  if (liveWatchState.capturing === next) return;
+  liveWatchState.capturing = next;
+  notifyLiveWatchUpdate();
+}
+
+function setLiveWatchSummary(text, { motionLevel, diff, kind = "note" } = {}) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return;
+  const prev = liveWatchState.commentary || liveWatchState.summary;
+  const isNew = kind === "alert" || !prev || textSimilarity(prev, trimmed) < 0.62;
+  liveWatchState.summary = trimmed.slice(0, 4000);
+  liveWatchState.commentary = trimmed.slice(0, 1200);
+  liveWatchState.commentaryKind = kind === "alert" ? "alert" : "note";
+  liveWatchState.isNewCommentary = isNew;
+  liveWatchState.at = Date.now();
+  if (motionLevel) liveWatchState.motionLevel = motionLevel;
+  if (typeof diff === "number") liveWatchState.lastDiff = diff;
+  notifyLiveWatchUpdate();
+  liveWatchState.isNewCommentary = false;
+}
+
+function liveWatchIntervalMs() {
+  const now = Date.now();
+  // Slow down while a vision/text call is in flight — prevents pile-up on page switches.
+  if (liveWatchVisionInFlight || liveWatchTextInFlight) return LIVE_WATCH_STATIC_MS;
+  if (now < liveWatchSettleUntil) return 400;
+  if (now < liveWatchBurstUntil || liveWatchState.motionLevel === "burst") {
+    return LIVE_WATCH_BURST_MS;
+  }
+  if (liveWatchState.motionLevel === "active") return LIVE_WATCH_ACTIVE_MS;
+  return LIVE_WATCH_STATIC_MS;
+}
+
+async function captureForLiveWatch() {
+  try {
+    return await Promise.race([
+      capturePrimaryScreen({ maxWidth: 960, format: "jpeg", quality: 72 }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("capture_timeout")), LIVE_WATCH_CAPTURE_TIMEOUT_MS),
+      ),
+    ]);
+  } catch (e) {
+    console.warn("[live-watch] capture failed:", e?.message);
+    return null;
+  }
+}
+
+async function postAiStreamTextWithTimeout(body, token, timeoutMs = LIVE_WATCH_VISION_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}/api/ai/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) return "";
+    const ctype = res.headers.get("content-type") || "";
+    if (!ctype.includes("text/event-stream")) {
+      const data = await res.json().catch(() => null);
+      return stripHiddenTags(data?.response || data?.answer || data?.text || "").trim();
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let accumulated = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t.startsWith("data:")) continue;
+        const payload = t.slice(t.indexOf(":") + 1).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          const j = JSON.parse(payload);
+          if (typeof j.t === "string") accumulated += j.t;
+        } catch {
+          /* ignore keepalive */
+        }
+      }
+    }
+    return stripHiddenTags(accumulated).trim();
+  } catch (e) {
+    if (e?.name === "AbortError") console.warn("[live-watch] vision timed out");
+    else console.warn("[live-watch] vision fetch failed:", e?.message);
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function scheduleLiveWatchTick(delayMs) {
+  if (liveWatchTimer) clearTimeout(liveWatchTimer);
+  if (!liveWatchState.enabled) {
+    liveWatchTimer = null;
+    return;
+  }
+  liveWatchTimer = setTimeout(() => void liveWatchTick(), Math.max(50, delayMs || liveWatchIntervalMs()));
+}
+
+function stopLiveWatch() {
+  liveWatchState.enabled = false;
+  if (liveWatchTimer) {
+    clearTimeout(liveWatchTimer);
+    liveWatchTimer = null;
+  }
+  liveWatchCaptureInFlight = false;
+  liveWatchForceVision = false;
+  liveWatchState.motionLevel = "static";
+  setLiveWatchCapturing(false);
+  liveWatchState.commentary = "";
+  liveWatchState.summary = "";
+  liveWatchState.rules = [];
+  liveWatchSettleUntil = 0;
+  liveWatchPendingNavVision = false;
+  liveWatchConsecutiveBurstFrames = 0;
+  liveWatchTextInFlight = false;
+  liveWatchForceTextPass = false;
+  liveWatchPendingTextPass = false;
+  liveWatchLastPageText = "";
+  liveWatchLastPageSig = "";
+  liveWatchLastPageUrl = "";
+  liveWatchLastScrapeAt = 0;
+  liveWatchState.contextSource = "vision";
+  liveWatchState.pageTitle = "";
+  liveWatchState.pageUrl = "";
+  notifyLiveWatchUpdate();
+}
+
+function startLiveWatch() {
+  if (screenCaptureStatus() !== "granted") {
+    return { ok: false, error: "no_permission" };
+  }
+  liveWatchState.enabled = true;
+  liveWatchForceVision = true;
+  liveWatchLastFingerprint = "";
+  liveWatchLastFrameUrl = "";
+  liveWatchSettleUntil = 0;
+  liveWatchPendingNavVision = false;
+  liveWatchConsecutiveBurstFrames = 0;
+  notifyLiveWatchUpdate();
+  scheduleLiveWatchTick(100);
+  return { ok: true, ...getLiveWatchStatus() };
+}
+
+function setLiveWatchEnabled(on) {
+  const enabled = !!on;
+  if (enabled) {
+    const result = startLiveWatch();
+    if (!result.ok) return result;
+    writeOverlaySettings({ liveWatch: true });
+    return { ...result, needsExtension: !extensionBridge?.isConnected?.() };
+  }
+  writeOverlaySettings({ liveWatch: false });
+  stopLiveWatch();
+  return { ok: true, enabled: false, ...getLiveWatchStatus() };
+}
+
+function getExtensionDir() {
+  const userCopy = getUserExtensionDir(app.getPath("userData"));
+  if (fsSync.existsSync(userCopy)) return userCopy;
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "extensions", "save-to-lykn");
+  }
+  return path.join(__dirname, "..", "extensions", "save-to-lykn");
+}
+
+function restoreOverlayAfterExtensionInstall() {
+  if (
+    overlayVisibleBeforeExtensionInstall &&
+    overlayWindow &&
+    !overlayWindow.isDestroyed()
+  ) {
+    overlayWindow.show();
+    overlayWindow.moveTop();
+  }
+  overlayVisibleBeforeExtensionInstall = false;
+}
+
+function createExtensionInstallWindow() {
+  if (extensionInstallWindow && !extensionInstallWindow.isDestroyed()) {
+    overlayVisibleBeforeExtensionInstall =
+      overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible();
+    if (overlayVisibleBeforeExtensionInstall) hideOverlay();
+    extensionInstallWindow.show();
+    extensionInstallWindow.focus();
+    return;
+  }
+
+  overlayVisibleBeforeExtensionInstall =
+    overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible();
+  if (overlayVisibleBeforeExtensionInstall) hideOverlay();
+
+  extensionInstallWindow = new BrowserWindow({
+    width: 360,
+    height: 340,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    title: "Chrome Live Feed",
+    backgroundColor: "#0b0b0f",
+    webPreferences: {
+      preload: path.join(__dirname, "extension-install-preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  extensionInstallWindow.setMenu(null);
+  extensionInstallWindow.loadFile(path.join(__dirname, "extension-install.html"));
+  extensionInstallWindow.center();
+  extensionInstallWindow.on("closed", () => {
+    extensionInstallWindow = null;
+    restoreOverlayAfterExtensionInstall();
+  });
+}
+
+async function describeLiveWatchFrame(dataURL, previousSummary, { diff = 1, motionLevel = "static", rulesOnly = false } = {}) {
+  const token = await getAuthToken();
+  if (!token) return { error: "not_authenticated" };
+
+  const prev = String(previousSummary || "").trim();
+  const hasRules = liveWatchState.rules.length > 0;
+  const rulesSection = buildLiveWatchRulesSection();
+  const changePct = Math.round(Math.min(1, Math.max(0, diff)) * 100);
+  const changeLine =
+    diff >= 0.99
+      ? ""
+      : `\n\nSnapshot metadata: ~${changePct}% of screen pixels changed since the last capture ` +
+        `(motion: ${motionLevel}).`;
+
+  const outputRules =
+    "OUTPUT (pick exactly one):\n" +
+    "- [unchanged] — nothing new" +
+    (hasRules ? ", no watch rules triggered" : "") +
+    "\n" +
+    (hasRules ? "- [alert: message] — a USER WATCH RULE is true on screen now (max 15 words)\n" : "") +
+    (rulesOnly
+      ? "- Rules-only check: output [alert: …] or [unchanged] only.\n"
+      : "- [note: message] — one brief basic line if something changed (max 12 words)\n");
+
+  const prompt = prev
+    ? "You are LYKN watching the user's screen via still snapshots every 1–2 seconds.\n\n" +
+      `LAST UPDATE:\n${prev.slice(0, 800)}\n\n` +
+      outputRules +
+      rulesSection +
+      LIVE_WATCH_SNAPSHOT_NOTE +
+      changeLine +
+      "\n" +
+      OVERLAY_IGNORE_NOTE
+    : "You are LYKN watching the user's screen via still snapshots every 1–2 seconds.\n\n" +
+      outputRules +
+      rulesSection +
+      "If nothing to say yet, output [unchanged]. Otherwise one short [note: …] about what they're doing (max 12 words).\n" +
+      LIVE_WATCH_SNAPSHOT_NOTE +
+      "\n" +
+      OVERLAY_IGNORE_NOTE;
+
+  const text = await postAiStreamTextWithTimeout(
+    {
+      model: "lykn",
+      intent: "ask",
+      text: "Live screen watch.",
+      prompt,
+      imageUrls: [dataURL],
+      useTools: false,
+      skipWebSearch: true,
+      overlayAsk: true,
+      liveWatch: true,
+    },
+    token,
+  );
+  const parsed = parseLiveWatchResponse(text);
+  if (parsed.type === "unchanged") return { error: "unchanged" };
+  const out = parsed.text.trim();
+  if (!out) return { error: "unchanged" };
+  if (parsed.type === "alert") return { text: out, kind: "alert" };
+  // Reject pause/idling guesses when pixels barely moved — classic snapshot artifact.
+  if (diff < 0.05 && /\b(paused?|on pause|you(?:'re| are) idle|standing still|not moving|game is paused)\b/i.test(out)) {
+    return { error: "unchanged" };
+  }
+  // Skip long general chatter — keep live feed basic.
+  if (out.split(/\s+/).length > 18) {
+    return { text: out.split(/\s+/).slice(0, 15).join(" ") + "…", kind: "note" };
+  }
+  return { text: out, kind: "note" };
+}
+
+async function describeLiveWatchPageText(snap, previousSummary, { textSim = 0, rulesOnly = false } = {}) {
+  const token = await getAuthToken();
+  if (!token) return { error: "not_authenticated" };
+
+  const prev = String(previousSummary || "").trim();
+  const hasRules = liveWatchState.rules.length > 0;
+  const rulesSection = buildLiveWatchRulesSection();
+  const changePct = Math.round(Math.min(100, Math.max(0, (1 - textSim) * 100)));
+  const pageBlock =
+    `PAGE: ${snap.title || "Untitled"}\nURL: ${snap.url || ""}\n\n` +
+    `VISIBLE TEXT (live DOM from browser — not a screenshot):\n${String(snap.text || "").slice(0, 8000)}`;
+
+  const outputRules =
+    "OUTPUT (pick exactly one):\n" +
+    "- [unchanged] — nothing new" +
+    (hasRules ? ", no watch rules triggered" : "") +
+    "\n" +
+    (hasRules ? "- [alert: message] — a USER WATCH RULE is true on this page now (max 15 words)\n" : "") +
+    (rulesOnly
+      ? "- Rules-only check: output [alert: …] or [unchanged] only.\n"
+      : "- [note: message] — one brief basic line if something changed (max 12 words)\n");
+
+  const prompt = prev
+    ? "You are LYKN watching the user's browser via live page text (DOM, not screenshots).\n\n" +
+      `LAST UPDATE:\n${prev.slice(0, 800)}\n\n` +
+      `${pageBlock}\n\n` +
+      `Page text ~${changePct}% changed since last check.\n\n` +
+      outputRules +
+      rulesSection +
+      "\n" +
+      OVERLAY_IGNORE_NOTE
+    : "You are LYKN watching the user's browser via live page text (DOM, not screenshots).\n\n" +
+      `${pageBlock}\n\n` +
+      outputRules +
+      rulesSection +
+      "If nothing to say yet, output [unchanged]. Otherwise one short [note: …] about what they're reading or doing (max 12 words).\n" +
+      "\n" +
+      OVERLAY_IGNORE_NOTE;
+
+  const text = await postAiStreamTextWithTimeout(
+    {
+      model: "lykn",
+      intent: "ask",
+      text: "Live browser watch.",
+      prompt,
+      useTools: false,
+      skipWebSearch: true,
+      overlayAsk: true,
+      liveWatch: true,
+    },
+    token,
+  );
+  const parsed = parseLiveWatchResponse(text);
+  if (parsed.type === "unchanged") return { error: "unchanged" };
+  const out = parsed.text.trim();
+  if (!out) return { error: "unchanged" };
+  if (parsed.type === "alert") return { text: out, kind: "alert" };
+  if (out.split(/\s+/).length > 18) {
+    return { text: out.split(/\s+/).slice(0, 15).join(" ") + "…", kind: "note" };
+  }
+  return { text: out, kind: "note" };
+}
+
+async function liveWatchTextPass(snap, { textSim = 0, rulesOnly = false } = {}) {
+  if (liveWatchTextInFlight) return;
+  const now = Date.now();
+  const force = liveWatchForceTextPass;
+  if (!force && now - liveWatchLastVisionAt < LIVE_WATCH_TEXT_MIN_MS) return;
+
+  liveWatchTextInFlight = true;
+  liveWatchForceTextPass = false;
+  liveWatchLastVisionAt = now;
+  if (rulesOnly) liveWatchLastRuleCheckAt = now;
+  try {
+    const result = await describeLiveWatchPageText(snap, liveWatchState.summary, { textSim, rulesOnly });
+    if (result?.text) {
+      setLiveWatchSummary(result.text, {
+        motionLevel: liveWatchState.motionLevel,
+        diff: 1 - textSim,
+        kind: result.kind || "note",
+      });
+    }
+  } catch (e) {
+    console.warn("[live-watch] text pass failed:", e?.message);
+  } finally {
+    liveWatchTextInFlight = false;
+  }
+}
+
+async function tryLiveWatchBrowserScrape() {
+  const now = Date.now();
+  if (now - liveWatchLastScrapeAt < LIVE_WATCH_SCRAPE_MIN_MS) return null;
+  liveWatchLastScrapeAt = now;
+  try {
+    const target = await getActiveBrowserTarget();
+    if (!target?.appName) return null;
+    const live = await getBrowserPageText(target.appName);
+    const text = String(live?.text || live?.pageText || "").trim();
+    if (text.length < 80) return null;
+    const url = String(live?.url || target.url || "");
+    const title = String(live?.title || target.title || "");
+    const sig = `${url}|${text.length}|${text.slice(0, 240)}|${text.slice(-120)}`;
+    return { url, title, text: text.slice(0, 15000), sig, at: Date.now(), source: "scrape" };
+  } catch {
+    return null;
+  }
+}
+
+async function liveWatchPageTextTick(snap, source) {
+  liveWatchState.contextSource = source;
+  liveWatchState.extensionConnected = source === "extension" || !!extensionBridge?.isConnected?.();
+  liveWatchState.pageTitle = String(snap.title || "").trim();
+  liveWatchState.pageUrl = String(snap.url || "").trim();
+
+  const textSim =
+    snap.sig && snap.sig === liveWatchLastPageSig
+      ? 1
+      : liveWatchLastPageText
+        ? textSimilarity(liveWatchLastPageText, snap.text)
+        : 0;
+  const textChanged = 1 - textSim >= LIVE_WATCH_TEXT_CHANGE;
+  liveWatchState.lastDiff = 1 - textSim;
+
+  const now = Date.now();
+  const urlChanged = liveWatchLastPageUrl && snap.url && liveWatchLastPageUrl !== snap.url;
+
+  if (urlChanged) {
+    liveWatchSettleUntil = now + 800;
+    liveWatchPendingTextPass = true;
+    liveWatchLastPageUrl = snap.url;
+    liveWatchLastPageText = snap.text;
+    liveWatchLastPageSig = snap.sig || "";
+    return Math.max(300, liveWatchSettleUntil - now + 50);
+  }
+
+  if (now < liveWatchSettleUntil) {
+    return Math.max(200, liveWatchSettleUntil - now + 50);
+  }
+
+  if (liveWatchPendingTextPass) {
+    liveWatchPendingTextPass = false;
+    liveWatchForceTextPass = true;
+  }
+
+  liveWatchState.motionLevel = textChanged ? "active" : "static";
+
+  const hasRules = liveWatchState.rules.length > 0;
+  const ruleCheckDue = hasRules && now - liveWatchLastRuleCheckAt >= LIVE_WATCH_RULE_CHECK_MS;
+  const shouldPass =
+    liveWatchForceTextPass || !liveWatchState.summary || textChanged || ruleCheckDue;
+  const skipNearDuplicate =
+    !liveWatchForceTextPass && !ruleCheckDue && liveWatchState.summary && textSim > 0.97;
+
+  if (shouldPass && !skipNearDuplicate && !liveWatchTextInFlight) {
+    void liveWatchTextPass(snap, { textSim, rulesOnly: ruleCheckDue && !textChanged });
+  }
+
+  liveWatchLastPageText = snap.text;
+  liveWatchLastPageSig = snap.sig || "";
+  liveWatchLastPageUrl = snap.url || "";
+
+  notifyLiveWatchUpdate();
+  return textChanged ? LIVE_WATCH_ACTIVE_MS : LIVE_WATCH_STATIC_MS;
+}
+
+async function liveWatchVisionPass(dataURL, diff, { rulesOnly = false } = {}) {
+  if (liveWatchVisionInFlight) return;
+  const now = Date.now();
+  const force = liveWatchForceVision;
+  if (!force && now - liveWatchLastVisionAt < LIVE_WATCH_VISION_MIN_MS) return;
+
+  liveWatchVisionInFlight = true;
+  liveWatchForceVision = false;
+  liveWatchLastVisionAt = now;
+  if (rulesOnly) liveWatchLastRuleCheckAt = now;
+  try {
+    const result = await describeLiveWatchFrame(dataURL, liveWatchState.summary, {
+      diff,
+      motionLevel: liveWatchState.motionLevel,
+      rulesOnly,
+    });
+    if (result?.text) {
+      setLiveWatchSummary(result.text, {
+        motionLevel: liveWatchState.motionLevel,
+        diff,
+        kind: result.kind || "note",
+      });
+    }
+  } catch (e) {
+    console.warn("[live-watch] vision pass failed:", e?.message);
+  } finally {
+    liveWatchVisionInFlight = false;
+  }
+}
+
+async function liveWatchTick() {
+  if (!liveWatchState.enabled) return;
+  if (screenCaptureStatus() !== "granted") {
+    stopLiveWatch();
+    return;
+  }
+  if (liveWatchCaptureInFlight) {
+    scheduleLiveWatchTick(liveWatchIntervalMs());
+    return;
+  }
+
+  liveWatchCaptureInFlight = true;
+  let nextDelay = null;
+
+  try {
+    // Text-first: browser extension (cheapest — no screenshot, no vision).
+    const extSnap = extensionBridge?.getSnapshot?.(6000);
+    if (extSnap?.text && extSnap.text.length >= 80) {
+      nextDelay = await liveWatchPageTextTick(extSnap, "extension");
+      return;
+    }
+
+    // Text fallback: AppleScript DOM scrape when extension not connected.
+    const scrapeSnap = await tryLiveWatchBrowserScrape();
+    if (scrapeSnap?.text && scrapeSnap.text.length >= 80) {
+      nextDelay = await liveWatchPageTextTick(scrapeSnap, "scrape");
+      return;
+    }
+
+    liveWatchState.extensionConnected = !!extensionBridge?.isConnected?.();
+    liveWatchState.contextSource = "vision";
+
+    setLiveWatchCapturing(true);
+    const dataURL = await captureForLiveWatch();
+    if (!liveWatchState.enabled) return;
+    if (!dataURL) {
+      nextDelay = LIVE_WATCH_STATIC_MS;
+      return;
+    }
+
+    liveWatchLastFrameUrl = dataURL;
+    const fp = screenFingerprint(dataURL);
+    const diff = liveWatchLastFingerprint ? screenDiffRatio(liveWatchLastFingerprint, fp) : 1;
+    liveWatchLastFingerprint = fp;
+    liveWatchState.lastDiff = diff;
+
+    const now = Date.now();
+    const navigated = diff >= LIVE_WATCH_NAV_DIFF;
+
+    if (navigated) {
+      // Page/app switch — wait for the new screen to settle instead of burst-flooding vision.
+      liveWatchSettleUntil = now + LIVE_WATCH_NAV_SETTLE_MS;
+      liveWatchPendingNavVision = true;
+      liveWatchBurstUntil = 0;
+      liveWatchConsecutiveBurstFrames = 0;
+      liveWatchState.motionLevel = "static";
+      nextDelay = Math.max(200, liveWatchSettleUntil - now + 50);
+      return;
+    }
+
+    if (now < liveWatchSettleUntil) {
+      nextDelay = Math.max(200, liveWatchSettleUntil - now + 50);
+      return;
+    }
+
+    if (liveWatchPendingNavVision) {
+      liveWatchPendingNavVision = false;
+      liveWatchForceVision = true;
+    }
+
+    if (diff >= LIVE_WATCH_DIFF_BURST) {
+      liveWatchConsecutiveBurstFrames += 1;
+      if (liveWatchConsecutiveBurstFrames >= 2) {
+        liveWatchState.motionLevel = "burst";
+        liveWatchBurstUntil = now + LIVE_WATCH_BURST_DURATION_MS;
+      } else {
+        liveWatchState.motionLevel = "active";
+      }
+    } else if (diff >= LIVE_WATCH_DIFF_MOTION) {
+      liveWatchConsecutiveBurstFrames = 0;
+      liveWatchState.motionLevel = "active";
+    } else if (now >= liveWatchBurstUntil) {
+      liveWatchConsecutiveBurstFrames = 0;
+      liveWatchState.motionLevel = "static";
+    }
+
+    const hasRules = liveWatchState.rules.length > 0;
+    const ruleCheckDue = hasRules && now - liveWatchLastRuleCheckAt >= LIVE_WATCH_RULE_CHECK_MS;
+    const shouldVision =
+      liveWatchForceVision ||
+      !liveWatchState.summary ||
+      diff >= LIVE_WATCH_DIFF_VISION ||
+      ruleCheckDue;
+    const skipNearDuplicate =
+      !liveWatchForceVision && !ruleCheckDue && liveWatchState.summary && diff < 0.03;
+    if (shouldVision && !skipNearDuplicate && !liveWatchVisionInFlight) {
+      void liveWatchVisionPass(dataURL, diff, { rulesOnly: ruleCheckDue && diff < LIVE_WATCH_DIFF_VISION });
+    }
+  } catch (e) {
+    console.warn("[live-watch] capture tick failed:", e?.message);
+    nextDelay = LIVE_WATCH_STATIC_MS;
+  } finally {
+    liveWatchCaptureInFlight = false;
+    setLiveWatchCapturing(false);
+    if (liveWatchState.enabled) {
+      scheduleLiveWatchTick(nextDelay != null ? nextDelay : liveWatchIntervalMs());
+    }
   }
 }
 
@@ -543,6 +1690,83 @@ function overlaySessionPreview(messages) {
   return "";
 }
 
+// Normalize a URL to a stable "page key" so we can recognize when the user is
+// back on the same page across sessions. Drops protocol, www, query, hash, and
+// trailing slashes — host + path is a good balance between "same page" and not
+// over-merging different articles on one site.
+function normalizeUrlForMatch(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.replace(/^www\./i, "");
+    const path = u.pathname.replace(/\/+$/, "");
+    return `${host}${path}`.toLowerCase();
+  } catch {
+    return raw
+      .toLowerCase()
+      .replace(/^[a-z]+:\/\//, "")
+      .replace(/^www\./, "")
+      .replace(/[#?].*$/, "")
+      .replace(/\/+$/, "");
+  }
+}
+
+// Find earlier ⌘L conversations that happened on the same page (matched by
+// normalized URL) and format the most recent excerpts. Lets the overlay AI
+// remember what it already discussed when the user returns to a page.
+async function buildPastPageConversationSection(normalizedUrl, excludeSessionId) {
+  if (!normalizedUrl) return "";
+  let store;
+  try {
+    store = await readOverlaySessionsStore();
+  } catch {
+    return "";
+  }
+  const matches = (store.sessions || [])
+    .filter((s) => s && s.id !== excludeSessionId && Array.isArray(s.messages) && s.messages.length)
+    .filter((s) => {
+      const pages = Array.isArray(s.pages) ? s.pages : [];
+      if (pages.includes(normalizedUrl)) return true;
+      if (s.pageUrl && normalizeUrlForMatch(s.pageUrl) === normalizedUrl) return true;
+      return false;
+    })
+    .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
+    .slice(0, 3);
+  if (!matches.length) return "";
+
+  const blocks = [];
+  let budget = 4000;
+  for (const s of matches) {
+    const when = s.updatedAt
+      ? new Date(s.updatedAt).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : "";
+    const turns = s.messages
+      .slice(-6)
+      .map((m) => {
+        const role = m && m.role === "assistant" ? "LYKN" : "User";
+        const content = String((m && m.content) || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 600);
+        return content ? `${role}: ${content}` : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (!turns) continue;
+    const entry = `Earlier conversation${when ? ` (${when})` : ""}:\n${turns}`;
+    if (entry.length > budget) break;
+    budget -= entry.length;
+    blocks.push(entry);
+  }
+  return blocks.join("\n\n");
+}
+
 async function fetchAppChatsForOverlay() {
   const token = await getAuthToken();
   if (!token) return { chats: [], error: "not_signed_in" };
@@ -558,6 +1782,26 @@ async function fetchAppChatsForOverlay() {
     return { chats: Array.isArray(data.chats) ? data.chats : [] };
   } catch (e) {
     return { chats: [], error: e && e.message ? e.message : "fetch_failed" };
+  }
+}
+
+// Mirror an overlay conversation into the app's durable chat store so it shows
+// up in the actual app's "previous chats" alongside chats started in-app. The
+// overlay sessionId is already a UUID, so it doubles as the lykn_chats row id —
+// repeated saves of the same conversation upsert the same row. Best-effort.
+async function pushOverlaySessionToApp(sessionId, title, messages) {
+  try {
+    const token = await getAuthToken();
+    if (!token) return false;
+    if (!sessionId || !Array.isArray(messages) || !messages.length) return false;
+    const res = await fetch(`${API_BASE}/api/desktop/chats/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ chatId: sessionId, title, messages }),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -1088,84 +2332,175 @@ async function fetchYouTubeTranscript(videoId, appName) {
   }
 }
 
-const OVERLAY_IGNORE_NOTE =
-  "IMPORTANT: Ignore LYKN's own interface in the image — a translucent floating " +
-  "glass bar/panel (it may contain this same question, an input field, mic/send " +
-  "buttons, a chevron, or a live transcript). It is NOT part of the user's screen. " +
-  "Never describe, mention, quote, or refer to it; answer only about the actual " +
-  "app/website content behind it.";
+let overlayAskGeneration = 0;
+let overlayAskAbort = null;
 
-async function streamScreenAnswer(event, { text, history, attachments }) {
-  const wc = event.sender;
-  const send = (channel, payload) => {
-    if (!wc.isDestroyed()) wc.send(channel, payload);
-  };
+function isRetryableStreamError(err) {
+  const msg = String(err?.message || err || "").toLowerCase();
+  return (
+    /terminated|econnreset|econnrefused|socket hang up|network|fetch failed|aborted|unexpected end|broken pipe|reset by peer/.test(
+      msg,
+    ) && !/sign in|not authenticated|401|403|429/.test(msg)
+  );
+}
 
-  // Split dropped attachments into images (sent as image inputs) and text files
-  // (inlined into the prompt).
-  const atts = Array.isArray(attachments) ? attachments : [];
-  const imageAtts = atts.filter((a) => a && a.kind === "image" && a.dataUrl);
-  const textAtts = atts.filter((a) => a && a.kind === "text" && a.text);
+function humanizeStreamError(err) {
+  const msg = String(err?.message || err || "").trim();
+  if (/terminated|econnreset|socket hang up|broken pipe|reset by peer/i.test(msg)) {
+    return "Connection dropped before LYKN could finish — usually a brief network or server hiccup. Try again.";
+  }
+  if (/aborted/i.test(msg)) return "Request was cancelled.";
+  return msg ? `Request failed: ${msg}` : "Request failed.";
+}
 
-  // Capture the screen unless the user dropped their own image(s) to ask about —
-  // then we don't force a screenshot (and don't block on the permission).
-  let dataURL = null;
-  if (screenCaptureStatus() === "granted") {
-    try {
-      dataURL = await capturePrimaryScreen();
-    } catch {
-      /* fall through */
-    }
-  } else if (imageAtts.length === 0) {
-    send("lykn:answer-error", {
-      message:
-        "LYKN needs Screen Recording permission. Enable it in System Settings → Privacy & Security → Screen Recording, then reopen LYKN.",
-    });
-    return;
+async function readOverlayStreamResponse(res, send) {
+  const ctype = res.headers.get("content-type") || "";
+  if (!res.ok || !res.body) {
+    throw new Error(`LYKN backend error (${res.status}).`);
   }
 
-  if (!dataURL && imageAtts.length === 0) {
-    send("lykn:answer-error", { message: "Couldn't capture the screen." });
-    return;
+  if (!ctype.includes("text/event-stream")) {
+    const data = await res.json().catch(() => null);
+    const answer = stripHiddenTags(data?.response || data?.answer || data?.text || "");
+    if (answer.trim()) send("lykn:answer-delta", { text: answer });
+    return answer;
   }
 
-  // If the user is looking at a web page, pull the live URL from the frontmost
-  // browser and scrape the full article text so the model reads the real content
-  // (not just OCR of the visible viewport). Best-effort — falls back silently.
-  let pageContext = null;
-  if (imageAtts.length === 0) {
-    try {
-      const target = await getActiveBrowserTarget();
-      console.log(
-        "[scrape] active browser URL:",
-        target ? `${target.url} (${target.appName})` : "(none detected)",
-      );
-      if (target && target.url) {
-        let title = "";
-        let text = "";
-        let kind = "page";
-
-        // YouTube (or other video): the spoken content isn't in the page text,
-        // so fetch the caption transcript instead.
-        const ytId = parseYouTubeId(target.url);
-        if (ytId) {
-          send("lykn:answer-status", { status: "Reading the video transcript…" });
-          const yt = await fetchYouTubeTranscript(ytId, target.appName);
-          if (yt && yt.text) {
-            title = yt.title || "";
-            text = yt.text;
-            kind = "video";
-            console.log(`[scrape] OK (yt transcript) — "${title || ytId}" (${text.length} chars)`);
-          } else {
-            console.log("[scrape] no transcript/captions available for video", ytId);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let accumulated = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() || "";
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const payload = t.slice(t.indexOf(":") + 1).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const j = JSON.parse(payload);
+        if (typeof j.t === "string") {
+          accumulated += j.t;
+          send("lykn:answer-delta", { text: stripHiddenTags(accumulated) });
+        } else if (typeof j.status === "string" && j.status.trim()) {
+          send("lykn:answer-status", { status: j.status.trim() });
+        } else if (j.tool_call && typeof j.tool_call === "object") {
+          const tc = j.tool_call;
+          if (tc.status === "running") {
+            const label = TOOL_STATUS_LABELS[tc.name] || "Working on it…";
+            send("lykn:answer-status", { status: label });
           }
+        } else if (j.error) {
+          throw new Error(String(j.error) || "Stream error.");
         }
+      } catch (e) {
+        if (e instanceof SyntaxError) continue;
+        throw e;
+      }
+    }
+  }
+  return stripHiddenTags(accumulated);
+}
 
-        if (text) {
-          // already have video transcript — skip the DOM/HTTP path below
-          pageContext = { url: target.url, title, text: text.slice(0, 16000), kind };
-          send("lykn:page-source", { url: target.url, title });
+function overlayMessageLooksScreenRelated(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return false;
+  return /\b(on my screen|what('| i)?s on|what do you see|this (page|site|tab|website|article|video|error|message|screen|one|problem|question)|look at|read (this|the|my)|what am i|explain (this|it)|summarize (this|it)|the (question|quiz|problem|error|answer)|fix (this|it)|help me with this|can you see|what is (this|that|on)|what are (these|those)|why (is|does|are)|how (do|does|can)|where (is|are)|who (is|are)|tell me about (this|the|what)|describe (this|the|what)|click|submit|solve (this|it|the)|answer (this|the|it)|is (this|that|it) (right|correct|wrong|good|true|false)|which (one|answer|option|choice)|what should i (pick|choose|select|do)|(next|this) one)\b/.test(
+    t,
+  );
+}
+
+function overlayMessageIsPhatic(text) {
+  const t = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[!?.…,]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t || t.length > 80) return false;
+  if (overlayMessageLooksScreenRelated(t)) return false;
+  // Emoji-only acknowledgements.
+  if (/^(👍|🙏|🔥|💯|✅|🙌|😂|😄|🤝|👌)+$/.test(t)) return true;
+  // Acknowledgement phrases — a message is phatic when it's made up ONLY of these
+  // (plus a few filler words), so "gotcha thanks", "ok cool thanks so much", and
+  // "ah that makes sense" all count, not just single-word replies.
+  const ackPhrases =
+    /\b(awesome|great|perfect|nice one|nice|cool|thank you|thanks|thx|ty|got ?it|got ?cha|gotcha|gotchu|ok(?:ay)?|kk?|sounds (good|great)|that makes sense|makes sense|that helps|that helped|helpful|appreciate (it|that|you)|love it|wonderful|excellent|good (to know|stuff|call|point|looks)|good|understood|fair enough|sweet|bet|for sure|totally|yep|yup|yeah|yes|right on|exactly|100%|no worries|np|my bad|lol+|haha+|hah|cheers|alright|aight|roger|copy (that)?|all good|will do|word|dope|facts|solid|neat|ditto|same here|same|of course|np)\b/g;
+  const filler = /\b(and|i|you|me|so|then|just|really|very|much|the|a|an|to|know|ya|ah+|oh+|hmm+|well|now|then|man|dude|cool)\b/g;
+  const stripped = t
+    .replace(ackPhrases, " ")
+    .replace(filler, " ")
+    .replace(/[^a-z0-9%]/g, "")
+    .trim();
+  return stripped.length === 0;
+}
+
+function overlayMessageIsConversationFollowUp(text, history) {
+  if (!Array.isArray(history) || history.length < 1) return false;
+  const msg = String(text || "").trim();
+  if (!msg || overlayMessageLooksScreenRelated(msg)) return false;
+  if (overlayMessageIsPhatic(msg)) return true;
+  // Only skip the screen when the message clearly refers to the PRIOR CONVERSATION.
+  // Bare deictic words ("this", "it", "that") frequently point at the SCREEN, so
+  // they must NOT suppress screen capture on their own — otherwise the AI goes blind
+  // the moment there's any chat history. Require an explicit conversational anchor.
+  if (
+    msg.length <= 220 &&
+    /\b(you (said|mentioned|told me|wrote|asked|meant)|like you said|as you (said|mentioned)|earlier you|before you|your (last |previous )?(answer|reply|response|point)|expand( on)?|elaborate|go deeper|tell me more|more about (that|it|this)|what you (said|meant)|follow[- ]?up|one more thing|rephrase|reword|say (that|it) again|repeat (that|it))\b/i.test(
+      msg,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// Pull the live page/video the user is looking at, plus any earlier ⌘L
+// conversation about that same page. Factored out of streamScreenAnswer so it can
+// run CONCURRENTLY with the screenshot + auth fetch (it was the slowest serial
+// step). Returns best-effort; never throws.
+async function gatherOverlayPageContext({ send, superseded }) {
+  let pageContext = null;
+  try {
+    const target = await getActiveBrowserTarget();
+    console.log(
+      "[scrape] active browser URL:",
+      target ? `${target.url} (${target.appName})` : "(none detected)",
+    );
+    if (target && target.url) {
+      let title = "";
+      let text = "";
+      let kind = "page";
+
+      // YouTube (or other video): the spoken content isn't in the page text,
+      // so fetch the caption transcript instead.
+      const ytId = parseYouTubeId(target.url);
+      if (ytId) {
+        send("lykn:answer-status", { status: "Reading the video transcript…" });
+        const yt = await Promise.race([
+          fetchYouTubeTranscript(ytId, target.appName),
+          new Promise((resolve) => setTimeout(() => resolve(null), 12000)),
+        ]);
+        if (superseded()) return { pageContext: null, pastPageSection: "" };
+        if (yt && yt.text) {
+          title = yt.title || "";
+          text = yt.text;
+          kind = "video";
+          console.log(`[scrape] OK (yt transcript) — "${title || ytId}" (${text.length} chars)`);
         } else {
+          console.log("[scrape] no transcript/captions available for video", ytId);
+        }
+      }
+
+      if (text) {
+        // already have video transcript — skip the DOM/HTTP path below
+        pageContext = { url: target.url, title, text: text.slice(0, 16000), kind };
+        send("lykn:page-source", { url: target.url, title });
+      } else {
         send("lykn:answer-status", { status: "Reading the page…" });
         // 1) Live rendered DOM from the user's own tab (most reliable).
         const live = await getBrowserPageText(target.appName);
@@ -1186,28 +2521,165 @@ async function streamScreenAnswer(event, { text, history, attachments }) {
             console.log(`[scrape] OK (http) — "${title || "(no title)"}" (${text.length} chars)`);
           }
         }
-          if (text) {
-            pageContext = { url: target.url, title, text: text.slice(0, 12000) };
-            send("lykn:page-source", { url: target.url, title });
-          } else {
-            console.log("[scrape] failed to extract text from", target.url);
-          }
+        if (text) {
+          pageContext = { url: target.url, title, text: text.slice(0, 12000) };
+          send("lykn:page-source", { url: target.url, title });
+        } else {
+          console.log("[scrape] failed to extract text from", target.url);
         }
       }
-    } catch (e) {
-      console.log("[scrape] error:", e && e.message ? e.message : e);
+    }
+  } catch (e) {
+    console.log("[scrape] error:", e && e.message ? e.message : e);
+  }
+
+  // Recall earlier ⌘L conversations the user had on this same page, so LYKN can
+  // pick up where it left off instead of starting cold each visit.
+  let pastPageSection = "";
+  if (pageContext && pageContext.url) {
+    try {
+      const store = await readOverlaySessionsStore();
+      pastPageSection = await buildPastPageConversationSection(
+        normalizeUrlForMatch(pageContext.url),
+        store.currentSessionId,
+      );
+    } catch {
+      /* best-effort */
     }
   }
 
-  let prompt = dataURL
-    ? "You are LYKN, a helpful assistant. The attached image is a screenshot of the " +
-      "user's current screen, provided as CONTEXT in case it's relevant. Decide based " +
-      "on the user's message: if they're asking about what's on their screen (this " +
-      "page, app, error, etc.), use the screenshot to answer specifically. If it's a " +
-      "general question or normal conversation that isn't about the screen, just answer " +
-      "it normally like a regular assistant — do NOT force the screen into your reply or " +
-      "describe what's on it. Be concise and specific. " +
+  return { pageContext, pastPageSection };
+}
+
+async function streamScreenAnswer(event, { text, history, attachments }) {
+  const wc = event.sender;
+  const askGen = ++overlayAskGeneration;
+  if (overlayAskAbort) {
+    try {
+      overlayAskAbort.abort();
+    } catch {
+      /* ignore */
+    }
+  }
+  overlayAskAbort = new AbortController();
+  const askSignal = overlayAskAbort.signal;
+
+  const send = (channel, payload) => {
+    if (askGen !== overlayAskGeneration) return;
+    if (!wc.isDestroyed()) wc.send(channel, payload);
+  };
+  const superseded = () => askGen !== overlayAskGeneration || askSignal.aborted;
+
+  // Split dropped attachments into images (sent as image inputs) and text files
+  // (inlined into the prompt).
+  const atts = Array.isArray(attachments) ? attachments : [];
+  const imageAtts = atts.filter((a) => a && a.kind === "image" && a.dataUrl);
+  const textAtts = atts.filter((a) => a && a.kind === "text" && a.text);
+  const conversationFollowUp = overlayMessageIsConversationFollowUp(text, history);
+  const skipScreenContext =
+    conversationFollowUp && imageAtts.length === 0 && textAtts.length === 0;
+  const liveWatchSummary = !skipScreenContext ? getFreshLiveWatchSummary(4000) : "";
+
+  // Fail fast on missing permission before kicking off any work.
+  const needScreen = !skipScreenContext && imageAtts.length === 0;
+  if (needScreen && screenCaptureStatus() !== "granted") {
+    send("lykn:answer-error", {
+      message:
+        "LYKN needs Screen Recording permission. Enable it in System Settings → Privacy & Security → Screen Recording, then reopen LYKN.",
+    });
+    return;
+  }
+
+  // Gather everything the backend needs CONCURRENTLY. The screenshot, the page
+  // scrape, and the auth token are independent of each other, so running them in
+  // parallel (instead of one-after-another) is the single biggest win for
+  // time-to-first-token — pre-fetch latency drops from sum() to max().
+  const capturePromise =
+    !skipScreenContext && screenCaptureStatus() === "granted"
+      ? liveWatchSummary && liveWatchLastFrameUrl
+        ? Promise.resolve(liveWatchLastFrameUrl)
+        : capturePrimaryScreen({ maxWidth: 1536, format: "jpeg", quality: 82 }).catch(() => null)
+      : Promise.resolve(null);
+  const pageContextPromise =
+    imageAtts.length === 0 && !skipScreenContext
+      ? gatherOverlayPageContext({ send, superseded })
+      : Promise.resolve({ pageContext: null, pastPageSection: "" });
+  const tokenPromise = getAuthToken().catch(() => null);
+
+  const [dataURL, pageBundle, token] = await Promise.all([
+    capturePromise,
+    pageContextPromise,
+    tokenPromise,
+  ]);
+  if (superseded()) return;
+
+  const pageContext = pageBundle?.pageContext || null;
+  const pastPageSection = pageBundle?.pastPageSection || "";
+
+  if (needScreen && !dataURL) {
+    send("lykn:answer-error", { message: "Couldn't capture the screen." });
+    return;
+  }
+  if (!token) {
+    send("lykn:answer-error", {
+      message: "Sign in to LYKN first — open the main LYKN window and log in, then try again.",
+    });
+    return;
+  }
+
+  const hasVideoTranscript = pageContext?.kind === "video" && !!pageContext?.text;
+  // If we scraped substantial page text, the text IS the context — so drop the
+  // screenshot and let the request go text-only. That keeps the backend on the
+  // fast model (no nano→gpt-4.1 vision upgrade) and shrinks the upload to almost
+  // nothing — the single biggest "feels instant" win for reading pages. We still
+  // captured the screenshot above as a fallback for thin pages / non-browser apps.
+  const RICH_PAGE_TEXT_CHARS = 1200;
+  const hasRichPageText =
+    !!pageContext &&
+    pageContext.kind !== "video" &&
+    (pageContext.text?.length || 0) >= RICH_PAGE_TEXT_CHARS;
+  // Live Watch already ran a recent vision pass — skip the screenshot upload when
+  // there's no scraped page text (games, native apps) to stay fast.
+  let attachScreenshot =
+    !!dataURL && !hasVideoTranscript && !hasRichPageText && !liveWatchSummary;
+  if (hasRichPageText && dataURL) {
+    console.log(
+      `[overlay-ask] text-rich page (${pageContext.text.length} chars) — dropping screenshot, staying on fast model`,
+    );
+  }
+  let prompt = skipScreenContext
+    ? "You are LYKN, a helpful assistant. The user is continuing an ongoing conversation " +
+      "with you — respond naturally to their latest message. Do NOT describe their screen, " +
+      "do NOT say 'on your screen I see', and do NOT re-introduce context they already know. " +
+      "Keep it brief and conversational unless they ask for more detail."
+    : hasVideoTranscript
+    ? "You are LYKN, a helpful assistant. The user is watching a video and its " +
+      "caption transcript is provided below. Answer their question using that " +
+      "transcript as the authoritative source — summarize, explain, or quote from it. " +
+      "Be concise and specific. Do NOT ask them to paste the video link."
+    : attachScreenshot
+    ? "You are LYKN, a helpful assistant that CAN see the user's screen. The attached " +
+      "image is a screenshot of their current screen, provided as CONTEXT. " +
+      "The user is looking at their screen while talking to you, so when their message " +
+      "is ambiguous or uses words like 'this', 'that', 'it', 'here', 'the question', " +
+      "'the answer', or 'this one' without a clear referent earlier in the conversation, " +
+      "ASSUME they mean what is currently on their screen and use the screenshot to answer " +
+      "specifically. Only treat the message as unrelated to the screen when it is clearly a " +
+      "general question or normal conversation — in that case answer normally and do NOT " +
+      "describe what's on screen. When in doubt, look at the screen first. " +
+      "If the user's message is just small talk, an acknowledgement, or a thank-you " +
+      "(e.g. 'gotcha thanks', 'cool', 'makes sense'), reply briefly and warmly in one line " +
+      "and do NOT read or describe the screen. Match the user's energy — short messages get short replies. " +
+      "Be concise and specific. " +
       OVERLAY_IGNORE_NOTE
+    : hasRichPageText
+    ? "You are LYKN, a helpful assistant. The user is reading the web page whose full text " +
+      "is provided below — treat that text as your view of their screen and answer from it " +
+      "directly and specifically. When their message is ambiguous or uses words like 'this', " +
+      "'that', 'it', 'the question', or 'the answer', assume they mean something on this page. " +
+      "If their message is clearly a general question or just small talk, answer normally and " +
+      "do NOT summarize the page. If they ask about something purely visual that isn't in the " +
+      "text, say briefly you can't see it this time. Be concise and specific."
     : "You are LYKN, a helpful assistant. Use the attached image(s) and any files below " +
       "if they're relevant to the user's question; otherwise just answer normally. " +
       "Be concise and specific.";
@@ -1244,12 +2716,28 @@ async function streamScreenAnswer(event, { text, history, attachments }) {
       (pageContext.title ? `Page title: ${pageContext.title}\n` : "") +
       `--- PAGE CONTENT ---\n${pageContext.text}\n--- END PAGE CONTENT ---`;
   }
+  if (pastPageSection) {
+    prompt +=
+      "\n\nYou (LYKN) have spoken with this user about this exact page before. " +
+      "Below are excerpts from those earlier conversations. Use them for continuity: " +
+      "remember what you already explained, build on it, and avoid repeating yourself. " +
+      "If the user's new question is unrelated to this prior context, ignore it.\n" +
+      "--- EARLIER CONVERSATIONS ON THIS PAGE ---\n" +
+      pastPageSection +
+      "\n--- END EARLIER CONVERSATIONS ---";
+  }
+  if (!skipScreenContext) {
+    const liveSection = getLiveWatchContextSection();
+    if (liveSection) prompt += liveSection;
+  }
   prompt += `\n\nUser: ${String(text || "").slice(0, 4000)}`;
 
-  const imageUrls = [
-    ...(dataURL ? [dataURL] : []),
-    ...imageAtts.map((a) => a.dataUrl),
-  ];
+  // Attach the screenshot only when we actually need it (no video transcript and
+  // no rich page text). Dropping it for text-rich pages keeps the request on the
+  // fast model and avoids a multi-hundred-KB upload.
+  const imageUrls = attachScreenshot
+    ? [dataURL, ...imageAtts.map((a) => a.dataUrl)]
+    : imageAtts.map((a) => a.dataUrl);
 
   const body = {
     model: "lykn",
@@ -1257,84 +2745,47 @@ async function streamScreenAnswer(event, { text, history, attachments }) {
     text: String(text || "").slice(0, 4000),
     prompt,
     imageUrls,
-    useTools: true,
+    useTools: !hasVideoTranscript && !skipScreenContext,
+    skipWebSearch: true,
+    overlayAsk: true,
     ...(Array.isArray(history) && history.length ? { conversation: history.slice(-8) } : {}),
   };
 
-  const token = await getAuthToken();
-  if (!token) {
-    send("lykn:answer-error", {
-      message: "Sign in to LYKN first — open the main LYKN window and log in, then try again.",
-    });
-    return;
-  }
-
   try {
-    const res = await fetch(`${API_BASE}/api/ai/stream`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    const ctype = res.headers.get("content-type") || "";
-    if (!res.ok || !res.body) {
-      send("lykn:answer-error", { message: `LYKN backend error (${res.status}).` });
-      return;
-    }
-
-    // Non-streaming JSON fallback (some tiers/paths return a plain answer).
-    if (!ctype.includes("text/event-stream")) {
-      const data = await res.json().catch(() => null);
-      const answer = stripHiddenTags(data?.response || data?.answer || data?.text || "");
-      if (answer.trim()) send("lykn:answer-delta", { text: answer });
-      send("lykn:answer-done", {});
-      return;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    let accumulated = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() || "";
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith("data:")) continue;
-        const payload = t.slice(t.indexOf(":") + 1).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const j = JSON.parse(payload);
-          if (typeof j.t === "string") {
-            accumulated += j.t;
-            send("lykn:answer-delta", { text: stripHiddenTags(accumulated) });
-          } else if (typeof j.status === "string" && j.status.trim()) {
-            // Server-provided thinking/tool status, e.g. "Searching the web…".
-            send("lykn:answer-status", { status: j.status.trim() });
-          } else if (j.tool_call && typeof j.tool_call === "object") {
-            // Fallback label when a tool starts but no status string came with it.
-            const tc = j.tool_call;
-            if (tc.status === "running") {
-              const label = TOOL_STATUS_LABELS[tc.name] || "Working on it…";
-              send("lykn:answer-status", { status: label });
-            }
-          } else if (j.error) {
-            send("lykn:answer-error", { message: String(j.error) || "Stream error." });
-          }
-        } catch {
-          /* ignore non-JSON keepalive lines */
-        }
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (superseded()) return;
+      if (attempt > 0) {
+        send("lykn:answer-status", { status: "Retrying…" });
+        await new Promise((r) => setTimeout(r, 700 * attempt));
+      } else {
+        send("lykn:answer-status", { status: hasVideoTranscript ? "Analyzing transcript…" : "Thinking…" });
+      }
+      try {
+        const res = await fetch(`${API_BASE}/api/ai/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(body),
+          signal: askSignal,
+        });
+        const accumulated = await readOverlayStreamResponse(res, send);
+        if (superseded()) return;
+        send("lykn:answer-done", { text: accumulated });
+        return;
+      } catch (e) {
+        if (superseded()) return;
+        lastErr = e;
+        if (!isRetryableStreamError(e) || attempt >= 2) break;
+        console.log("[overlay-ask] retry after stream error:", e && e.message ? e.message : e);
       }
     }
-    send("lykn:answer-done", { text: stripHiddenTags(accumulated) });
+    send("lykn:answer-error", { message: humanizeStreamError(lastErr) });
   } catch (e) {
-    send("lykn:answer-error", { message: `Request failed: ${e && e.message ? e.message : e}` });
+    if (superseded()) return;
+    send("lykn:answer-error", { message: humanizeStreamError(e) });
   }
 }
 
@@ -1343,6 +2794,9 @@ async function streamScreenAnswer(event, { text, history, attachments }) {
 // live agent as contextual text — giving voice the same "sees your screen"
 // ability the typed overlay chat has.
 async function captureScreenDescription() {
+  const liveSummary = getFreshLiveWatchSummary(8000);
+  if (liveSummary) return { text: liveSummary, source: "live_watch" };
+
   const status = screenCaptureStatus();
   console.log("[screen-context] capture status:", status);
   if (status !== "granted") return { error: "no_permission" };
@@ -1423,8 +2877,300 @@ async function captureScreenDescription() {
   }
 }
 
+// POST a one-shot request to the AI stream endpoint and return the full
+// accumulated text (handles both SSE and plain-JSON responses).
+async function postAiStreamText(body, token) {
+  const res = await fetch(`${API_BASE}/api/ai/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) return "";
+  const ctype = res.headers.get("content-type") || "";
+  if (!ctype.includes("text/event-stream")) {
+    const data = await res.json().catch(() => null);
+    return stripHiddenTags(data?.response || data?.answer || data?.text || "").trim();
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let accumulated = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() || "";
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const payload = t.slice(t.indexOf(":") + 1).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const j = JSON.parse(payload);
+        if (typeof j.t === "string") accumulated += j.t;
+      } catch {
+        /* ignore keepalive */
+      }
+    }
+  }
+  return stripHiddenTags(accumulated).trim();
+}
+
+// Ask the vision model for the bounding box (as 0..1 fractions from the
+// top-left) of the on-screen region the user described. Returns { full: true }
+// for "whole screen", a { x, y, width, height } box, or null if undetermined.
+async function requestScreenRegionBox(dataURL, description, token, model = "lykn") {
+  const isGemini = String(model || "").startsWith("gemini");
+  // Each model speaks its own box dialect. Gemini's grounding is native to
+  // [ymin, xmin, ymax, xmax] on a 0–1000 scale; everyone else gets the simple
+  // 0..1 {x,y,width,height}. The parser below tolerates either regardless.
+  const formatInstruction = isGemini
+    ? "Respond with ONLY a JSON array of four integers [ymin, xmin, ymax, xmax] giving the " +
+      "tight bounding box on a 0–1000 scale (the standard Gemini box_2d convention), measured " +
+      "from the top-left corner. If the user means the whole screen, or you cannot identify a " +
+      'specific region, respond exactly {"full":true}. No other text or code fences.'
+    : "Respond with ONLY a compact JSON object giving the tight bounding box to crop, using " +
+      'fractions of the image measured from the TOP-LEFT corner: {"x":<0..1>,"y":<0..1>,"width":<0..1>,"height":<0..1>}. ' +
+      "Draw the box snugly around the described element. If the user means the whole screen, or " +
+      'you cannot confidently identify a specific region, respond exactly {"full":true}. No other ' +
+      "text or code fences.";
+  const body = {
+    model,
+    // NOTE: a non-chat intent is deliberate. "ask"/"chat"/"question" trigger the
+    // server's full LYKN enrichment (synthesis, beliefs, user model, identity),
+    // which prepends ~70K+ chars of irrelevant context and wrecks the model's
+    // visual grounding. A non-chat intent skips all of that so the model sees
+    // only the screenshot + this instruction. For non-chat intents the server
+    // passes `prompt` straight to the model, so the instruction lives there.
+    intent: "vision_box",
+    text: "Find the region to crop.",
+    prompt:
+      "You are a precise vision grounding tool. The attached image is a screenshot of the " +
+      'user\'s screen. The user wants to SAVE a specific part of it, described as: "' +
+      String(description || "").slice(0, 400) +
+      '". ' +
+      formatInstruction,
+    imageUrls: [dataURL],
+    useTools: false,
+    skipWebSearch: true,
+  };
+  let text = "";
+  try {
+    text = await postAiStreamText(body, token);
+  } catch {
+    return null;
+  }
+  return parseRegionBox(text, isGemini);
+}
+
+// Tolerant box parser. Accepts the 0..1 {x,y,width,height} object, the corner
+// {ymin,xmin,ymax,xmax} object, or a bare [ymin,xmin,ymax,xmax]/[xmin,ymin,...]
+// array — at either 0..1 or 0–1000 scale. Returns { full } / {x,y,width,height}
+// fractions / null. `geminiOrder` decides array axis order (y-first for Gemini).
+function parseRegionBox(text, geminiOrder) {
+  if (!text) return null;
+  if (/"full"\s*:\s*true/i.test(text)) return { full: true };
+  // Normalize a set of numbers to 0..1: if anything looks like 0–1000, scale down.
+  const toFrac = (vals) => {
+    const maxV = Math.max(...vals.map((v) => Math.abs(v)));
+    const scale = maxV > 1.5 ? 1000 : 1;
+    return vals.map((v) => v / scale);
+  };
+  const cornersToBox = (ymin, xmin, ymax, xmax) => ({
+    x: Math.min(xmin, xmax),
+    y: Math.min(ymin, ymax),
+    width: Math.abs(xmax - xmin),
+    height: Math.abs(ymax - ymin),
+  });
+
+  // 1) Bare array of 4 numbers.
+  const arrMatch = text.match(/\[\s*-?\d[\d.\s,+-]*\]/);
+  if (arrMatch) {
+    const nums = (arrMatch[0].match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    if (nums.length >= 4) {
+      const [a, b, c, d] = toFrac(nums.slice(0, 4));
+      // Gemini → [ymin, xmin, ymax, xmax]; otherwise assume [xmin, ymin, xmax, ymax].
+      return geminiOrder ? cornersToBox(a, b, c, d) : cornersToBox(b, a, d, c);
+    }
+  }
+
+  // 2) JSON object with named keys.
+  const objMatch = text.match(/\{[\s\S]*\}/);
+  if (objMatch) {
+    let obj;
+    try {
+      obj = JSON.parse(objMatch[0]);
+    } catch {
+      obj = null;
+    }
+    if (obj) {
+      if (obj.full === true) return { full: true };
+      const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+      const ymin = num(obj.ymin),
+        xmin = num(obj.xmin),
+        ymax = num(obj.ymax),
+        xmax = num(obj.xmax);
+      if (ymin !== null && xmin !== null && ymax !== null && xmax !== null) {
+        const [yn, xn, yx, xx] = toFrac([ymin, xmin, ymax, xmax]);
+        return cornersToBox(yn, xn, yx, xx);
+      }
+      const x = num(obj.x),
+        y = num(obj.y),
+        w = num(obj.width),
+        h = num(obj.height);
+      if (x !== null && y !== null && w !== null && h !== null) {
+        const [xf, yf, wf, hf] = toFrac([x, y, w, h]);
+        return { x: xf, y: yf, width: wf, height: hf };
+      }
+    }
+  }
+  return null;
+}
+
+// Capture the screen, let the AI pick the region the user described, crop to it
+// (full screen if unsure), then save the PNG to Downloads and copy it to the
+// clipboard. The "drag from screen" replacement: LYKN grabs the region for you.
+async function saveScreenRegion(description) {
+  if (screenCaptureStatus() !== "granted") return { ok: false, error: "no_permission" };
+  let dataURL = null;
+  try {
+    dataURL = await capturePrimaryScreen();
+  } catch {
+    dataURL = null;
+  }
+  if (!dataURL) return { ok: false, error: "capture_failed" };
+
+  let image = nativeImage.createFromDataURL(dataURL);
+  if (!image || image.isEmpty()) return { ok: false, error: "capture_failed" };
+  const { width: imgW, height: imgH } = image.getSize();
+
+  let full = true;
+  const token = await getAuthToken();
+  if (token && String(description || "").trim()) {
+    // Use the default reader (gpt-4.1 on the image turn). NOTE: gemini-pro is
+    // plan-locked for most tiers and silently downgrades to this anyway, so we
+    // don't waste a round-trip requesting it.
+    const box = await requestScreenRegionBox(dataURL, description, token, "lykn");
+    if (box && !box.full) {
+      // Clamp the fractional box to the image.
+      let x = Math.max(0, Math.min(1, box.x));
+      let y = Math.max(0, Math.min(1, box.y));
+      let w = Math.max(0.02, Math.min(1 - x, box.width));
+      let h = Math.max(0.02, Math.min(1 - y, box.height));
+      // Tiny safety margin so a slightly-off detection still fully contains the
+      // subject without obviously over-cropping. We now ask for a tight box, so
+      // keep this minimal (~3% of the box).
+      const padX = w * 0.03;
+      const padY = h * 0.03;
+      x = Math.max(0, x - padX);
+      y = Math.max(0, y - padY);
+      w = Math.min(1 - x, w + padX * 2);
+      h = Math.min(1 - y, h + padY * 2);
+      const rect = {
+        x: Math.round(x * imgW),
+        y: Math.round(y * imgH),
+        width: Math.max(1, Math.round(w * imgW)),
+        height: Math.max(1, Math.round(h * imgH)),
+      };
+      try {
+        const cropped = image.crop(rect);
+        if (cropped && !cropped.isEmpty()) {
+          image = cropped;
+          full = false;
+        }
+      } catch {
+        /* fall back to full screen */
+      }
+    }
+  }
+
+  const png = image.toPNG();
+  const stamp = new Date()
+    .toLocaleString("sv")
+    .replace(/[:]/g, ".")
+    .replace(" ", " at ");
+  const fileName = `LYKN Screenshot ${stamp}.png`;
+  let savedPath = null;
+  try {
+    savedPath = path.join(app.getPath("downloads"), fileName);
+    await fs.writeFile(savedPath, png);
+  } catch {
+    savedPath = null;
+  }
+  try {
+    clipboard.writeImage(image);
+  } catch {
+    /* clipboard best-effort */
+  }
+
+  // The AI took this shot because the user asked us to "save" something, so it
+  // belongs in their Vault too — not just Downloads/clipboard. Best-effort: a
+  // vault failure (offline, not signed in) shouldn't fail the whole snip.
+  const { width: outW, height: outH } = image.getSize();
+  let savedToVault = false;
+  try {
+    const title = (String(description || "").trim() || "Screenshot").slice(0, 120);
+    savedToVault = await saveImageToVault(png, {
+      title,
+      fileName,
+      width: outW,
+      height: outH,
+      token,
+    });
+  } catch {
+    savedToVault = false;
+  }
+
+  return {
+    ok: true,
+    full,
+    fileName: savedPath ? fileName : null,
+    savedToFile: !!savedPath,
+    savedToVault,
+    width: outW,
+    height: outH,
+  };
+}
+
+// POST a PNG buffer to the server, which uploads it to storage and creates a
+// vault_items row (the browser upload pipeline can't run in the Electron main
+// process). Multipart so large screenshots aren't capped by the JSON body
+// limit. Returns true on success. Best-effort by design.
+async function saveImageToVault(png, { title, fileName, width, height, token } = {}) {
+  const authToken = token || (await getAuthToken());
+  if (!authToken || !png || !png.length) return false;
+  try {
+    const form = new FormData();
+    form.append(
+      "image",
+      new Blob([png], { type: "image/png" }),
+      fileName || "screenshot.png",
+    );
+    if (title) form.append("title", String(title));
+    if (width) form.append("width", String(width));
+    if (height) form.append("height", String(height));
+    const res = await fetch(`${API_BASE}/api/vault/save-image`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authToken}` },
+      body: form,
+    });
+    const data = await res.json().catch(() => null);
+    return !!(res.ok && data && data.ok);
+  } catch {
+    return false;
+  }
+}
+
 function registerOverlayIpc() {
   ipcMain.on("lykn:hide-overlay", () => hideOverlay());
+  ipcMain.handle("lykn:save-screen-region", async (_e, description) => {
+    try {
+      return await saveScreenRegion(description);
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : "save_failed" };
+    }
+  });
   ipcMain.on("lykn:open-main", () => {
     if (!mainWindow) createMainWindow();
     else {
@@ -1449,6 +3195,29 @@ function registerOverlayIpc() {
     }
   });
   ipcMain.on("lykn:collapse", (_e, collapsed) => setOverlayCollapsed(!!collapsed));
+  // Content protection (exclude the overlay from screen capture). Persisted so
+  // it survives restarts; applied to overlay + burst windows immediately.
+  ipcMain.handle("lykn:get-content-protection", () => isContentProtectionEnabled());
+  ipcMain.handle("lykn:set-content-protection", (_e, enabled) => {
+    const on = !!enabled;
+    writeOverlaySettings({ contentProtection: on });
+    applyContentProtection(on);
+    return on;
+  });
+  // Live Watch — continuous screen awareness with motion-aware frame diffing.
+  ipcMain.handle("lykn:get-live-watch", () => getLiveWatchStatus());
+  ipcMain.handle("lykn:set-live-watch", (_e, enabled) => setLiveWatchEnabled(!!enabled));
+  ipcMain.handle("lykn:add-live-watch-rule", (_e, { text } = {}) => {
+    if (!liveWatchState.enabled) return { ok: false, error: "watch_off" };
+    const ruleText = parseWatchRuleIntent(text) || String(text || "").trim();
+    if (!ruleText) return { ok: false, error: "empty_rule" };
+    const entry = addLiveWatchRule(ruleText);
+    return { ok: true, rule: entry?.text || ruleText, rules: liveWatchState.rules.map((r) => r.text) };
+  });
+  ipcMain.handle("lykn:clear-live-watch-rules", () => {
+    clearLiveWatchRules();
+    return { ok: true, rules: [] };
+  });
   ipcMain.on("lykn:move-by", (_e, { dx, dy }) => {
     if (!overlayWindow) return;
     const b = overlayWindow.getBounds();
@@ -1463,6 +3232,33 @@ function registerOverlayIpc() {
   });
   ipcMain.on("lykn:ask", (event, args) => {
     streamScreenAnswer(event, args || {});
+  });
+
+  // Save a note (task summary, snippet, etc.) into the user's LYKN vault.
+  ipcMain.handle("lykn:save-vault-note", async (_e, { title, content, tags, folder } = {}) => {
+    try {
+      const body = String(content || "").trim();
+      if (!body) return { ok: false, error: "empty" };
+      const token = await getAuthToken();
+      if (!token) return { ok: false, error: "no_auth" };
+      const res = await fetch(`${API_BASE}/api/v1/synthesis/vault`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          title: String(title || "").slice(0, 200),
+          content: body.slice(0, 60000),
+          tags: Array.isArray(tags) ? tags.slice(0, 12).map((t) => String(t).slice(0, 32)) : undefined,
+          folder: folder ? String(folder).slice(0, 80) : undefined,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data || data.ok === false) {
+        return { ok: false, error: (data && (data.error || data.text)) || `HTTP ${res.status}` };
+      }
+      return { ok: true, note: data.note || null };
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : "save_failed" };
+    }
   });
 
   // Native "attach files" picker. Dragging onto an always-on-top non-activating
@@ -1506,6 +3302,54 @@ function registerOverlayIpc() {
     }
   });
 
+  // Snip-to-attach: let the user drag-select a region of the screen (native
+  // macOS crosshair) and return it as an image attachment — "grab what's on
+  // screen" without downloading anything. The overlay is hidden during the
+  // selection so it's never in the way (and never in the shot).
+  ipcMain.handle("lykn:snip-screen", async () => {
+    if (process.platform !== "darwin") {
+      // Fallback for non-macOS: capture the whole primary screen.
+      try {
+        const dataUrl = await capturePrimaryScreen();
+        return dataUrl ? { kind: "image", name: "Screenshot.png", dataUrl } : null;
+      } catch {
+        return null;
+      }
+    }
+    const outPath = path.join(app.getPath("temp"), `lykn-snip-${crypto.randomUUID()}.png`);
+    try {
+      await withOverlayHiddenForClick(
+        () =>
+          new Promise((resolve) => {
+            // -i: interactive region select, -x: no camera sound.
+            execFile("screencapture", ["-i", "-x", outPath], () => resolve());
+          }),
+      );
+      // The file only exists if the user actually completed a selection
+      // (pressing Escape cancels and writes nothing).
+      let buf = null;
+      try {
+        buf = await fs.readFile(outPath);
+      } catch {
+        buf = null;
+      }
+      if (!buf || !buf.length) return null;
+      return {
+        kind: "image",
+        name: "Screenshot.png",
+        dataUrl: `data:image/png;base64,${buf.toString("base64")}`,
+      };
+    } catch {
+      return null;
+    } finally {
+      try {
+        await fs.unlink(outPath);
+      } catch {
+        /* nothing to clean up */
+      }
+    }
+  });
+
   // Past chats — merge ⌘L overlay sessions (local) with app chats (Supabase).
   ipcMain.handle("lykn:list-chats", async () => {
     const store = await readOverlaySessionsStore();
@@ -1519,9 +3363,15 @@ function registerOverlayIpc() {
       }))
       .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
     const appResult = await fetchAppChatsForOverlay();
+    // Overlay sessions are now also mirrored into the app store (so they show
+    // in the app's sidebar), which means they come back in BOTH lists with the
+    // same id. The local overlay copy is canonical here (clicking it loads the
+    // session inline), so drop the app duplicates to avoid double entries.
+    const overlayIds = new Set(overlay.map((s) => s.id));
+    const app = (appResult.chats || []).filter((c) => !overlayIds.has(c.id));
     return {
       overlay,
-      app: appResult.chats || [],
+      app,
       currentSessionId: store.currentSessionId,
       error: appResult.error || null,
     };
@@ -1554,11 +3404,32 @@ function registerOverlayIpc() {
     const now = new Date().toISOString();
     const title = String(payload.title || "").trim() || overlaySessionTitle(messages);
     const existingIdx = store.sessions.findIndex((s) => s.id === sessionId);
+    const existing = existingIdx >= 0 ? store.sessions[existingIdx] : null;
+
+    // Track which pages this conversation touched so we can recall it later when
+    // the user returns to the same page. Merge with any pages already recorded.
+    const pageSource =
+      payload.pageSource && payload.pageSource.url ? payload.pageSource : null;
+    const pages = new Set(
+      existing && Array.isArray(existing.pages) ? existing.pages : [],
+    );
+    let pageUrl = existing ? existing.pageUrl || null : null;
+    let pageTitle = existing ? existing.pageTitle || null : null;
+    if (pageSource) {
+      const norm = normalizeUrlForMatch(pageSource.url);
+      if (norm) pages.add(norm);
+      pageUrl = pageSource.url;
+      pageTitle = pageSource.title || pageTitle;
+    }
+
     const session = {
       id: sessionId,
       title,
       updatedAt: now,
       messages,
+      pages: Array.from(pages).slice(-20),
+      pageUrl,
+      pageTitle,
     };
     if (existingIdx >= 0) store.sessions[existingIdx] = session;
     else store.sessions.unshift(session);
@@ -1569,6 +3440,13 @@ function registerOverlayIpc() {
     store.sessions = store.sessions.slice(0, 80);
     store.currentSessionId = sessionId;
     await writeOverlaySessionsStore(store);
+
+    // Mirror the conversation into the app's chat store (lykn_chats /
+    // lykn_chat_states) so it also appears in the actual app's "previous
+    // chats" — not just the overlay's local list. Fire-and-forget: a failure
+    // (offline, signed out) must never break the local save above.
+    void pushOverlaySessionToApp(sessionId, title, messages);
+
     return { ok: true, sessionId };
   });
 
@@ -1776,7 +3654,7 @@ function registerOverlayIpc() {
     };
   });
 
-  ipcMain.handle("lykn:browser-plan", async (_e, { intent } = {}) => {
+  ipcMain.handle("lykn:browser-plan", async (_e, { intent, conversationHistory } = {}) => {
     const fail = (error, extra = {}) => ({ ok: false, error, ...extra });
     if (process.platform !== "darwin") return fail("unsupported");
     const goal = String(intent || "").trim().slice(0, 500);
@@ -1805,6 +3683,13 @@ function registerOverlayIpc() {
     }
     const token = await getAuthToken();
     if (!token) return fail("no_auth", { message: "Sign in to LYKN to use browser control." });
+    const pageCtx = await collectBrowserPageContext(runOsascript, target.appName);
+    let pageText = String(pageCtx?.text || "");
+    try {
+      const live = await getBrowserPageText(target.appName);
+      if (live && live.length > pageText.length) pageText = live;
+    } catch (_) {}
+    const imageUrl = await captureBrowserScreenThumbnail();
     try {
       const res = await fetch(`${API_BASE}/api/desktop/browser-plan`, {
         method: "POST",
@@ -1813,44 +3698,328 @@ function registerOverlayIpc() {
           intent: goal,
           url: collected.page.url || target.url,
           title: collected.page.title || "",
-          items: (collected.page.items || []).slice(0, 60),
+          pageText: pageText.slice(0, 15000),
+          imageUrl: imageUrl || "",
+          items: (collected.page.items || []).slice(0, 130),
+          conversationHistory: Array.isArray(conversationHistory) ? conversationHistory.slice(-8) : [],
         }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data) {
         return fail("plan_failed", { message: (data && data.error) || "Could not plan actions." });
       }
-      const selectors = new Set(
-        (collected.page.items || []).map((i) => String(i.selector || "").trim()).filter(Boolean),
-      );
-      const actions = sanitizePlanActions(data.actions, selectors);
-      if (!actions.length) {
-        return fail("no_actions", {
-          message: "No safe actions could be planned for this page.",
-          explanation: String(data.explanation || "").trim(),
-        });
-      }
+      const actions = resolvePlanActions(data.actions, collected.page.items || []);
+      const explanation =
+        String(data.explanation || "").trim() ||
+        (actions.length
+          ? ""
+          : "Click Run once — LYKN will read the page, act step by step, and verify as it goes.");
       return {
         ok: true,
         browser: target.appName,
+        appName: target.appName,
         url: collected.page.url || target.url,
         title: collected.page.title || "",
-        explanation: String(data.explanation || "").trim(),
+        explanation,
+        taskPlan: String(data.taskPlan || "").trim(),
+        plannedAnswer: String(data.plannedAnswer || "").trim(),
         actions,
+        agentMode: data.agentMode || "",
+        holoMessages: data.holoMessages || null,
       };
     } catch (e) {
       return fail("plan_failed", { message: e && e.message ? e.message : "Could not plan actions." });
     }
   });
 
-  ipcMain.handle("lykn:browser-execute", async (_e, { actions, appName } = {}) => {
-    if (process.platform !== "darwin") return { ok: false, error: "unsupported" };
+  ipcMain.handle("lykn:browser-execute", async (event, { actions, appName, url, intent, taskPlan, conversationHistory, holoMessages: seedHoloMessages } = {}) => {
+    const sendProgress = (status) => {
+      try {
+        if (event.sender && !event.sender.isDestroyed()) {
+          event.sender.send("lykn:browser-progress", { status: String(status || "") });
+        }
+      } catch (_) {}
+    };
+    if (browserExecuteInFlight) {
+      return {
+        ok: false,
+        error: "busy",
+        results: [],
+        message: "Browser control is already running — wait for it to finish.",
+      };
+    }
+    if (process.platform !== "darwin") {
+      return { ok: false, error: "unsupported", results: [], message: "macOS only." };
+    }
     const browser = String(appName || "").trim();
-    if (!browser) return { ok: false, error: "no_browser" };
-    const steps = sanitizePlanActions(actions, null);
-    if (!steps.length) return { ok: false, error: "no_actions" };
+    if (!browser) {
+      return {
+        ok: false,
+        error: "no_browser",
+        results: [],
+        message: "Missing browser name — plan again from Control this page.",
+      };
+    }
+    const pageUrl = String(url || "").trim();
+    const goal = String(intent || "").trim();
+
+    if (process.platform === "darwin" && goal) {
+      const trusted = systemPreferences.isTrustedAccessibilityClient(false);
+      if (!trusted) {
+        systemPreferences.isTrustedAccessibilityClient(true);
+      }
+      if (!systemPreferences.isTrustedAccessibilityClient(false)) {
+        return {
+          ok: false,
+          error: "accessibility_required",
+          results: [],
+          message:
+            "Browser clicks need Accessibility. Open System Settings → Privacy & Security → Accessibility, enable LYKN (or Electron when developing), then quit and reopen the app.",
+        };
+      }
+    }
+
+    browserExecuteInFlight = true;
+    const hadOverlay =
+      overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible();
+    if (hadOverlay) setOverlayClickThrough(true);
+    await new Promise((r) => setTimeout(r, 200));
+
+    let holoMessages = Array.isArray(seedHoloMessages) && seedHoloMessages.length ? seedHoloMessages : null;
+    let lastScreenBrief = "";
+    let lastAgentResult = "";
+
+    async function callPlanNext(body) {
+      const token = await getAuthToken();
+      if (!token) return { error: "no_auth", message: "Sign in to LYKN to use browser control." };
+
+      let pageText = String(body.pageText || "");
+      if (!pageText) {
+        const ctx = await collectBrowserPageContext(runOsascript, browser);
+        if (ctx?.text) {
+          pageText = ctx.text;
+        } else {
+          const live = await getBrowserPageText(browser);
+          pageText = String(live || "");
+        }
+      } else {
+        try {
+          const live = await getBrowserPageText(browser);
+          if (live && live.length > pageText.length) pageText = live;
+        } catch (_) {}
+      }
+
+      const payload = {
+        intent: String(body.intent || ""),
+        url: String(body.url || ""),
+        title: String(body.title || ""),
+        pageText: pageText.slice(0, 15000),
+        imageUrl: String(body.imageUrl || ""),
+        items: Array.isArray(body.items) ? body.items : [],
+        completedSteps: Array.isArray(body.completedSteps) ? body.completedSteps : [],
+        stuckHint: String(body.stuckHint || "").slice(0, 500),
+        taskPlan: String(body.taskPlan || "").slice(0, 2000),
+        lastReasoning: String(body.lastReasoning || "").slice(0, 800),
+        lastActionDiff: String(body.lastActionDiff || "").slice(0, 400),
+        sessionSummary: String(body.sessionSummary || "").slice(0, 1200),
+        conversationHistory: Array.isArray(body.conversationHistory) ? body.conversationHistory.slice(-8) : [],
+      };
+
+      if (holoMessages) payload.holoMessages = holoMessages;
+      if (body.toolName) {
+        payload.toolName = String(body.toolName);
+        payload.toolOutput = body.toolOutput != null ? String(body.toolOutput).slice(0, 2000) : "ok";
+      }
+
+      if (userWantsSearchOrType(payload.intent) && !payload.stuckHint) {
+        const query = payload.intent
+          .replace(/^search( for| up)?\s*/i, "")
+          .replace(/^look up\s*/i, "")
+          .trim();
+        payload.searchHint = query.slice(0, 120);
+      }
+
+      let res = await fetch(`${API_BASE}/api/desktop/browser-plan-next`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) {
+        const hint =
+          res.status === 404
+            ? "Restart npm run server (or dev:overlay) — API route missing."
+            : "";
+        return {
+          error: "plan_failed",
+          message: (data && data.error) || hint || `Could not plan next step (HTTP ${res.status}).`,
+        };
+      }
+
+      if (Array.isArray(data.holoMessages)) holoMessages = data.holoMessages;
+      if (data.screenBrief) lastScreenBrief = String(data.screenBrief);
+      if (data.agentResult) lastAgentResult = String(data.agentResult);
+      else if (data.done && data.explanation) lastAgentResult = String(data.explanation);
+
+      let actions = resolvePlanActions(data.actions, payload.items);
+      // Server may return raw DOM ordinal clicks with id+selector — ensure id resolves.
+      if (!actions.length && Array.isArray(data.actions) && data.actions[0]?.selector) {
+        actions = data.actions.slice(0, 1);
+      }
+      if (!(actions[0]?.type === "type" && actions[1]?.type === "press")) {
+        actions = actions.slice(0, 1);
+      } else {
+        actions = actions.slice(0, 2);
+      }
+
+      // Planner returned prose but no executable action — retry only for non-MCQ flows.
+      if (!actions.length && !data.done && !data.planFailed && data.agentMode !== "holo") {
+        const stuckHint = userWantsSearchOrType(payload.intent)
+          ? `User wants to search: "${payload.searchHint || payload.intent}". TYPE the query into the search field, then press Enter. Do not click unrelated navigation.`
+          : "Your last response had no actions. Think like chat advice, then return exactly one click or type action from ELEMENTS.";
+        const retryRes = await fetch(`${API_BASE}/api/desktop/browser-plan-next`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            ...payload,
+            stuckHint,
+            forceAction: true,
+          }),
+        });
+        const retryData = await retryRes.json().catch(() => null);
+        if (retryRes.ok && retryData) {
+          data.done = retryData.done;
+          data.explanation = retryData.explanation || data.explanation;
+          data.reasoning = retryData.reasoning || data.reasoning;
+          data.taskPlan = retryData.taskPlan || data.taskPlan;
+          data.actions = retryData.actions;
+          data.solved = retryData.solved ?? data.solved;
+          data.actionKind = retryData.actionKind || data.actionKind;
+          data.planFailed = retryData.planFailed ?? data.planFailed;
+          actions = resolvePlanActions(retryData.actions, payload.items);
+          if (!(actions[0]?.type === "type" && actions[1]?.type === "press")) {
+            actions = actions.slice(0, 1);
+          } else {
+            actions = actions.slice(0, 2);
+          }
+        }
+      }
+
+      const done =
+        typeof data.done === "boolean"
+          ? data.done
+          : !actions.length && payload.completedSteps.length > 0;
+
+      return {
+        done,
+        explanation: String(data.explanation || "").trim(),
+        reasoning: String(data.reasoning || "").trim(),
+        taskPlan: String(data.taskPlan || payload.taskPlan || "").trim(),
+        actions,
+        screenBrief: String(data.screenBrief || lastScreenBrief || "").trim(),
+        agentResult: String(data.agentResult || "").trim(),
+        planFailed:
+          data.planFailed
+            ? String(data.explanation || "").trim() || "Planning failed — could not determine the next step."
+            : !done && !actions.length
+              ? String(data.explanation || "").trim() || "Planner returned no action"
+              : "",
+      };
+    }
+
     try {
-      const results = await executeBrowserActions(runOsascript, browser, steps);
+      const initialTaskPlan = String(taskPlan || "").slice(0, 2000);
+      const convHistory = Array.isArray(conversationHistory) ? conversationHistory.slice(-8) : [];
+
+      // Dynamic pages: re-scan, verify, and replan after each action.
+      if (goal) {
+        const out = await executeAdaptiveBrowserTask(
+          runOsascript,
+          (payload) =>
+            callPlanNext({
+              ...payload,
+              conversationHistory: convHistory,
+              taskPlan: payload.taskPlan || initialTaskPlan,
+            }),
+          browser,
+          goal,
+          pageUrl,
+          {
+            maxRounds: undefined,
+            onProgress: sendProgress,
+            captureScreen: captureBrowserScreenThumbnail,
+            initialTaskPlan,
+            conversationHistory: convHistory,
+          },
+        );
+        const failed = out.results.find((r) => !r.ok);
+        const taskOk = out.done && !failed;
+        let message = failed
+          ? `Stopped at “${failed.label || "step"}”: ${failed.error || "failed"}`
+          : out.done
+            ? out.explanation || "Done — task completed in your browser."
+            : out.message || "Stopped before the task finished.";
+
+        try {
+          const token = await getAuthToken();
+          if (token) {
+            const reportRes = await fetch(`${API_BASE}/api/desktop/browser-report`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({
+                intent: goal,
+                ok: taskOk,
+                url: pageUrl,
+                title: "",
+                screenBrief: lastScreenBrief,
+                agentResult: lastAgentResult || out.explanation || "",
+                completedSteps: out.completed || [],
+                conversationHistory: convHistory,
+              }),
+            });
+            const reportData = await reportRes.json().catch(() => null);
+            if (reportRes.ok && reportData?.message) {
+              message = String(reportData.message).trim();
+            }
+          }
+        } catch (_) {
+          /* keep fallback message */
+        }
+
+        return {
+          ok: taskOk,
+          adaptive: true,
+          results: out.results,
+          rounds: out.completed?.length || out.results.length,
+          message,
+          explanation: out.explanation || "",
+        };
+      }
+
+      const steps = Array.isArray(actions)
+        ? actions
+            .filter((a) => a && typeof a === "object" && a.type)
+            .slice(0, 8)
+            .map((a) => ({
+              type: String(a.type || "").toLowerCase(),
+              selector: String(a.selector || ""),
+              label: String(a.label || a.selector || "step"),
+              value: a.value != null ? String(a.value) : undefined,
+              key: a.key != null ? String(a.key) : undefined,
+              delta: a.delta != null ? Number(a.delta) : undefined,
+            }))
+        : [];
+      if (!steps.length) {
+        console.log("[browser-execute] no steps — raw actions:", actions);
+        return {
+          ok: false,
+          error: "no_actions",
+          results: [],
+          message: "No actions reached the browser. Close and re-open Control this page, then Run again.",
+        };
+      }
+      const results = await executeBrowserActions(runOsascript, browser, steps, { pageUrl });
       const failed = results.find((r) => !r.ok);
       return {
         ok: !failed,
@@ -1860,11 +4029,23 @@ function registerOverlayIpc() {
           : "Done.",
       };
     } catch (e) {
-      return { ok: false, error: "execute_failed", message: e && e.message ? e.message : "Failed." };
+      console.log("[browser-execute] error:", e && e.message ? e.message : e);
+      return {
+        ok: false,
+        error: "execute_failed",
+        results: [],
+        message: e && e.message ? e.message : "Failed to run browser actions.",
+      };
+    } finally {
+      browserExecuteInFlight = false;
+      if (hadOverlay && overlayWindow && !overlayWindow.isDestroyed()) {
+        setOverlayClickThrough(false);
+        overlayWindow.moveTop();
+      }
     }
   });
 
-  ipcMain.handle("lykn:suggest", async (_e, { question, answer } = {}) => {
+  ipcMain.handle("lykn:suggest", async (_e, { question, answer, mode } = {}) => {
     const empty = { followups: [], links: [] };
     try {
       const token = await getAuthToken();
@@ -1872,7 +4053,11 @@ function registerOverlayIpc() {
       const res = await fetch(`${API_BASE}/api/ai/suggest`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ question: String(question || ""), answer: String(answer || "") }),
+        body: JSON.stringify({
+          question: String(question || ""),
+          answer: String(answer || ""),
+          mode: String(mode || ""),
+        }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data) return empty;
@@ -2015,6 +4200,31 @@ function registerOnboardingIpc() {
     );
   });
 
+  ipcMain.handle("lykn:onboarding-accessibility-status", () => {
+    if (process.platform !== "darwin") return "granted";
+    try {
+      return systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied";
+    } catch {
+      return "unknown";
+    }
+  });
+
+  ipcMain.handle("lykn:onboarding-request-accessibility", () => {
+    if (process.platform !== "darwin") return "granted";
+    try {
+      systemPreferences.isTrustedAccessibilityClient(true);
+      return systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied";
+    } catch {
+      return "unknown";
+    }
+  });
+
+  ipcMain.on("lykn:onboarding-open-accessibility-settings", () => {
+    shell.openExternal(
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    );
+  });
+
   ipcMain.handle("lykn:onboarding-test-apple-events", async () => {
     if (process.platform !== "darwin") return { state: "granted", browser: null };
     const target = await getActiveBrowserTarget();
@@ -2039,6 +4249,48 @@ function registerOnboardingIpc() {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show();
       mainWindow.focus();
+    }
+  });
+}
+
+function registerExtensionInstallIpc() {
+  ipcMain.handle("lykn:open-extension-install", () => {
+    createExtensionInstallWindow();
+    return { ok: true };
+  });
+  ipcMain.handle("lykn:extension-install-mode", () => getExtensionInstallMode());
+  ipcMain.handle("lykn:install-extension-one-click", async (_e, { browser } = {}) => {
+    try {
+      return await installExtensionOneClick(
+        {
+          browser: browser || "chrome",
+          userDataPath: app.getPath("userData"),
+          packaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+          appDir: __dirname,
+          shell,
+          clipboard,
+          dialog,
+        },
+      );
+    } catch (e) {
+      console.warn("[extension-install]", e?.message || e);
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("lykn:extension-bridge-status", () => {
+    const connected = !!extensionBridge?.isConnected?.();
+    if (connected) liveWatchState.extensionConnected = true;
+    return {
+      ok: true,
+      connected,
+      live: !!extensionBridge?.isLive?.(),
+      port: extensionBridge?.port || 38471,
+    };
+  });
+  ipcMain.on("lykn:extension-install-close", () => {
+    if (extensionInstallWindow && !extensionInstallWindow.isDestroyed()) {
+      extensionInstallWindow.close();
     }
   });
 }
@@ -2091,7 +4343,7 @@ function initAutoUpdate() {
   setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 6 * 60 * 60 * 1000);
 }
 
-app.whenReady().then(() => {
+  app.whenReady().then(() => {
   // Present a clean Chrome user agent. Google (and some other providers) reject
   // OAuth sign-in from any UA advertising "Electron" with disallowed_useragent,
   // so we strip the Electron/app tokens and look like plain desktop Chrome.
@@ -2104,10 +4356,29 @@ app.whenReady().then(() => {
   buildAppMenu();
   registerOverlayIpc();
   registerOnboardingIpc();
+  registerExtensionInstallIpc();
+  extensionBridge = startExtensionBridge({
+    onUpdate: () => {
+      liveWatchState.extensionConnected = !!extensionBridge?.isConnected?.();
+      writeOverlaySettings({ chromeLiveFeedLinked: true });
+      notifyLiveWatchUpdate();
+      if (extensionInstallWindow && !extensionInstallWindow.isDestroyed()) {
+        setTimeout(() => {
+          if (extensionInstallWindow && !extensionInstallWindow.isDestroyed()) {
+            extensionInstallWindow.close();
+          }
+        }, 2500);
+      }
+    },
+  });
   createMainWindow();
   createOverlayWindow();
+  // Pre-create + warm the full-screen glass/burst window now so the FIRST ⌘+L
+  // doesn't hitch while it loads + rasterizes its blurred layers and noise.
+  createBurstWindow();
   registerGlobalHotkey();
   initAutoUpdate();
+  if (isLiveWatchEnabled()) startLiveWatch();
 
   // Show the permissions walkthrough once, on first launch.
   onboardingComplete().then((done) => {
@@ -2120,6 +4391,8 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
+  stopLiveWatch();
+  extensionBridge?.stop?.();
   globalShortcut.unregisterAll();
 });
 
