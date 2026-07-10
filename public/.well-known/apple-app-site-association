@@ -1,0 +1,17 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["B45S92XC36.io.lykn.app"],
+        "components": [
+          { "/": "/i/*" },
+          { "/": "/billing/success" },
+          { "/": "/billing/cancel" }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["B45S92XC36.io.lykn.app"]
+  }
+}
