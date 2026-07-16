@@ -16,6 +16,15 @@
 --
 -- The DO block is defensive: it skips tables/columns that don't exist or
 -- aren't uuid-typed, and never duplicates an existing FK — safe to re-run.
+--
+-- PRE-APPLY AUDIT 2026-07-16 (live production, read-only): 59 of the 62
+-- targets already carry the FK (earlier partial application); only
+-- vault_items, lykn_chat_states, and lykn_security_audit will be altered,
+-- and all three currently have ZERO orphaned rows — the purge below is a
+-- no-op as of the audit date. The sole inbound FK into those tables
+-- (concept_notes.note_id → vault_items) already cascades, so nothing can
+-- block the purge or the auth.users delete chain. Full audit + post-apply
+-- verification SQL: supabase-queries/verify_migrations_113_115.sql.
 
 DO $$
 DECLARE
