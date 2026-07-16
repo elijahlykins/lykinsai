@@ -7131,24 +7131,57 @@ app.delete('/api/account', requireAuth, async (req, res) => {
       }
     }
 
-    // Step 2: purge storage. List + bulk remove in pages of 100.
+    // Step 2: purge storage. Objects live at `<userId>/<fileId>/<file>`
+    // (plus image variants like thumb.jpg beside the original), so a
+    // single non-recursive list of `<userId>/` only returns the <fileId>
+    // folder placeholders — and Storage `remove()` targets objects, not
+    // folders, so removing those paths silently deletes nothing. Walk the
+    // tree instead: list every folder (entries with a null `id` are
+    // subfolders, non-null are objects — the same convention the iOS
+    // client relies on in SupabaseWriteQueueExecutor.performDelete),
+    // paginate past the per-list cap, then remove objects in batches.
     try {
-      const prefix = `${userId}/`;
-      // List up to ~1000 files; if a user has more this still removes
-      // the vast majority and the bucket lifecycle policy can sweep
-      // residual orphans later.
-      const { data: files } = await supabaseAdmin.storage
-        .from('user-files')
-        .list(prefix, { limit: 1000 });
-      if (Array.isArray(files) && files.length > 0) {
-        const paths = files.map((f) => `${prefix}${f.name}`);
-        for (let i = 0; i < paths.length; i += 100) {
-          const batch = paths.slice(i, i + 100);
-          await supabaseAdmin.storage.from('user-files').remove(batch).catch((e) => {
-            console.warn(`[account-delete] storage batch remove failed: ${e?.message || e}`);
+      const bucket = supabaseAdmin.storage.from('user-files');
+      const objectPaths = [];
+      const pendingFolders = [String(userId)];
+      const PAGE_SIZE = 1000;
+
+      while (pendingFolders.length > 0) {
+        const folder = pendingFolders.pop();
+        let offset = 0;
+        for (;;) {
+          const { data: entries, error: listErr } = await bucket.list(folder, {
+            limit: PAGE_SIZE,
+            offset,
           });
+          if (listErr) {
+            console.warn(`[account-delete] storage list failed for ${folder}: ${listErr.message}`);
+            break;
+          }
+          if (!Array.isArray(entries) || entries.length === 0) break;
+          for (const entry of entries) {
+            if (entry.id === null || entry.id === undefined) {
+              pendingFolders.push(`${folder}/${entry.name}`);
+            } else {
+              objectPaths.push(`${folder}/${entry.name}`);
+            }
+          }
+          if (entries.length < PAGE_SIZE) break;
+          offset += entries.length;
         }
       }
+
+      let removed = 0;
+      for (let i = 0; i < objectPaths.length; i += 100) {
+        const batch = objectPaths.slice(i, i + 100);
+        const { error: removeErr } = await bucket.remove(batch);
+        if (removeErr) {
+          console.warn(`[account-delete] storage batch remove failed: ${removeErr.message}`);
+        } else {
+          removed += batch.length;
+        }
+      }
+      console.log(`[account-delete] storage purge for ${userId}: found ${objectPaths.length} objects, removed ${removed}`);
     } catch (e) {
       console.warn(`[account-delete] storage cleanup error: ${e?.message || e}`);
     }

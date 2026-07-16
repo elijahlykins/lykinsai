@@ -52,6 +52,7 @@ import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
 import CookiePolicy from "./pages/CookiePolicy";
 import DPA from "./pages/DPA";
+import Support from "./pages/Support";
 import { useIsMobile } from "@/hooks/useViewportTier";
 import ProjectsPage from "./pages/ProjectsPage";
 import ProjectDetailPage from "./pages/ProjectDetailPage";
@@ -162,6 +163,7 @@ function AppShell() {
     location.pathname === "/terms" ||
     location.pathname === "/cookies" ||
     location.pathname === "/dpa" ||
+    location.pathname === "/support" ||
     location.pathname.startsWith("/apps/");
   const isSharePage = location.pathname === "/share";
 
@@ -188,7 +190,8 @@ function AppShell() {
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
     location.pathname === "/cookies" ||
-    location.pathname === "/dpa";
+    location.pathname === "/dpa" ||
+    location.pathname === "/support";
   // On mobile the account lives in the More menu (MobileTabBar), so the
   // floating top-left pill is only needed on chrome-less standalone pages.
   const showSignInPillGlobally =
@@ -235,6 +238,7 @@ function AppShell() {
             <Route path="/terms" element={<Terms />} />
             <Route path="/cookies" element={<CookiePolicy />} />
             <Route path="/dpa" element={<DPA />} />
+            <Route path="/support" element={<Support />} />
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/mobile" element={<Mobile />} />
             <Route path="/" element={<GuestOnly><Landing /></GuestOnly>} />
