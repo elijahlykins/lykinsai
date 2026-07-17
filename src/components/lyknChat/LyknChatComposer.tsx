@@ -102,7 +102,7 @@ const LyknChatComposer = React.memo(function LyknChatComposer({
         placeholder={placeholder}
         disabled={disabled}
         rows={1}
-        className={`w-full max-h-[180px] lykn-chat-neu-chat-field outline-none resize-none scrollbar-hide text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 ${
+        className={`w-full max-h-[180px] lykn-chat-neu-chat-field outline-none resize-none text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 ${
           compact
             ? "min-h-[2.75rem] px-2.5 py-1.5 text-[0.6875rem] leading-4"
             : "min-h-[3.25rem] px-3 py-2 text-xs leading-4"

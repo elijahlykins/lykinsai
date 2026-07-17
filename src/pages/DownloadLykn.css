@@ -1,0 +1,165 @@
+/* ============================================================================
+   Download LYKN for Mac (/download) — poster layout: tagline over the big
+   wordmark on a pale blue sky, one CTA, and soft grainy concentric waves
+   rising from the bottom. GlassLanding.css supplies the glass header.
+   ========================================================================== */
+
+.dlp {
+  /* Plain white, same stage the panel art sits on everywhere else. */
+  background: #ffffff;
+}
+
+.dlp-stage {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ── Copy: tagline + wordmark + CTA in the upper third ── */
+.dlp-copy {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: clamp(9rem, 24vh, 14rem) 1.5rem 0;
+}
+/* The tagline sits under the logo lockup, big enough to read as a headline. */
+.dlp-tag {
+  margin: clamp(1.4rem, 3.5vh, 2.2rem) 0 0;
+  font-size: clamp(1.3rem, 2.2vw, 1.9rem);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: #1e293b;
+  animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both;
+}
+/* The rotating tail ("research", "ads", ...). The swap wrapper holds both
+   the outgoing and incoming word during a switch and eases its own width to
+   fit the new word, so the whole line glides instead of snapping. */
+.dlp-tag-swap {
+  position: relative;
+  display: inline-block;
+  white-space: nowrap;
+  text-align: left;
+  vertical-align: baseline;
+  transition: width 520ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.dlp-tag-word {
+  display: inline-block;
+  color: #0e5fe8;
+  white-space: nowrap;
+  animation: dlp-word-in 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* The word on its way out: parked over the incoming one, drifting up and
+   dissolving as the replacement rises underneath it. */
+.dlp-tag-word--out {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  animation: dlp-word-out 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes dlp-word-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.65em);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+@keyframes dlp-word-out {
+  from {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-0.65em);
+    filter: blur(4px);
+  }
+}
+/* The primary logo lockup (icon + wordmark in one asset), scaling as one. */
+.dlp-brand {
+  width: clamp(280px, 38vw, 540px);
+  height: auto;
+  user-select: none;
+  filter: drop-shadow(0 18px 44px rgba(14, 111, 255, 0.18));
+  animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.dlp-btn {
+  margin-top: clamp(2rem, 5vh, 3rem);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.9rem 1.85rem;
+  font-size: 1rem;
+  font-weight: 600;
+  text-decoration: none;
+  color: #ffffff;
+  background: linear-gradient(180deg, #2f7bff, #0e5fe8);
+  border-radius: 999px;
+  box-shadow: 0 18px 44px -14px rgba(14, 95, 232, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
+  animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 180ms both;
+}
+.dlp-btn svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-top: -2px;
+}
+.dlp-btn:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.05);
+  box-shadow: 0 24px 54px -16px rgba(14, 95, 232, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.dlp-btn:active {
+  transform: translateY(0);
+}
+.dlp-meta {
+  margin: 1.1rem 0 0;
+  font-size: 0.82rem;
+  color: #7b87a1;
+  animation: dlp-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 260ms both;
+}
+
+/* The backdrop (wandering blue glow + frosted stripes) comes from the shared
+   GlassBackdrop component — same look, size, and wander as the pricing page,
+   with the orb rising in from the bottom edge on load. */
+
+@keyframes dlp-up {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dlp-tag,
+  .dlp-brand,
+  .dlp-btn,
+  .dlp-meta,
+  .dlp-tag-word {
+    animation: none;
+  }
+  .dlp-tag-swap {
+    transition: none;
+  }
+  /* No exit animation → the parked outgoing word would just overlap. */
+  .dlp-tag-word--out {
+    display: none;
+  }
+}

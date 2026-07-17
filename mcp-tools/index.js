@@ -76,6 +76,9 @@ import { createTodoTool } from './createTodo.js';
 import { listTodosTool } from './listTodos.js';
 import { updateTodoTool } from './updateTodo.js';
 import { deleteTodoTool } from './deleteTodo.js';
+import { createStewardItemTool } from './createStewardItem.js';
+import { listStewardItemsTool } from './listStewardItems.js';
+import { updateStewardItemTool } from './updateStewardItem.js';
 import { listCustomModelsTool } from './listCustomModels.js';
 import { buildWithCursorTool } from './buildWithCursor.js';
 import { checkCursorBuildTool } from './checkCursorBuild.js';
@@ -134,6 +137,10 @@ export const MCP_TOOLS = [
   listTodosTool,
   updateTodoTool,
   deleteTodoTool,
+  // Night Shift steward queue — overnight project triage + research
+  createStewardItemTool,
+  listStewardItemsTool,
+  updateStewardItemTool,
   // Custom models — read the user's Model Builder creations
   listCustomModelsTool,
   // Cursor cloud-agent builds — hand a coding task to Cursor (opens a PR) and

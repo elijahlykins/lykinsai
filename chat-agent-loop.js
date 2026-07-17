@@ -45,6 +45,14 @@ import {
 const MAX_HOPS = 6;
 const MAX_TOOL_CALLS_PER_HOP = 5;
 const TOOL_RESULT_CAP = 16000;
+// A healthy OpenAI-style stream ALWAYS ends with a finish_reason chunk.
+// xAI in particular sometimes drops the connection mid-generation during a
+// long reasoning pause (observed: stream ends cleanly after ~40s with no
+// finish_reason, no tool deltas, no error) — the turn looks like a polite
+// "nothing to do" and the user gets no artifact. Retry the hop ONCE (each
+// doomed attempt costs ~40s of user-visible waiting), then bail with
+// `forced_tool_incomplete` so the server's provider fallback takes over.
+const MAX_TRUNCATED_STREAM_RETRIES = 1;
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -252,10 +260,10 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
 }
 
 // Fields that are only useful for the client-side artifact renderer (e.g. the
-// full HTML used for an inline srcDoc preview). Stripping them keeps the
-// model's tool-result context lean and prevents the model from echoing raw
-// markup back into the chat.
-const CLIENT_ONLY_RESULT_FIELDS = ['preview_html'];
+// full HTML used for an inline srcDoc preview, or the merged JSX after an
+// `edits` patch build). Stripping them keeps the model's tool-result context
+// lean and prevents the model from echoing raw markup back into the chat.
+const CLIENT_ONLY_RESULT_FIELDS = ['preview_html', 'artifact_code'];
 
 function serialiseToolResult(payload) {
   try {
@@ -314,12 +322,32 @@ function makeToolCallRecorder(onToolCall, allToolCalls) {
  *   calls: [{ id, name, args }]
  */
 async function runToolBatch(calls, ctx, record, allowedToolNames) {
-  const capped = calls.slice(0, MAX_TOOL_CALLS_PER_HOP);
-  if (calls.length > MAX_TOOL_CALLS_PER_HOP) {
-    console.warn(`[chat-agent-loop] capping tool calls at ${MAX_TOOL_CALLS_PER_HOP} (model emitted ${calls.length})`);
+  // Drop exact duplicates (same tool, identical args) within one hop.
+  // Models occasionally emit the same call twice in a parallel batch;
+  // for expensive builders that means two persisted artifacts — the user
+  // sees a duplicate card. The duplicate still gets a tool_result (echoing
+  // the first call's payload) so the provider's message contract holds.
+  const seen = new Map(); // key → first call
+  const unique = [];
+  const dupOf = new Map(); // dup call id → original call
+  for (const call of calls) {
+    const key = `${call.name}:${JSON.stringify(call.args ?? {})}`;
+    const first = seen.get(key);
+    if (first) {
+      console.warn(`[chat-agent-loop] dropping duplicate tool call ${call.name} (identical args)`);
+      dupOf.set(call.id, first);
+      continue;
+    }
+    seen.set(key, call);
+    unique.push(call);
+  }
+
+  const capped = unique.slice(0, MAX_TOOL_CALLS_PER_HOP);
+  if (unique.length > MAX_TOOL_CALLS_PER_HOP) {
+    console.warn(`[chat-agent-loop] capping tool calls at ${MAX_TOOL_CALLS_PER_HOP} (model emitted ${unique.length})`);
   }
   const toolOpts = Array.isArray(allowedToolNames) ? { allowedToolNames } : {};
-  return Promise.all(capped.map(async (call) => {
+  const executed = await Promise.all(capped.map(async (call) => {
     record({ id: call.id, name: call.name, args: call.args, status: 'running' });
     const { payload, isError, latencyMs } = await runChatTool(call.name, call.args, ctx, toolOpts);
     record({
@@ -332,6 +360,17 @@ async function runToolBatch(calls, ctx, record, allowedToolNames) {
     });
     return { id: call.id, name: call.name, args: call.args, payload, isError, latencyMs };
   }));
+
+  // Every provider requires a tool result for EVERY call id it emitted —
+  // answer dropped duplicates with the original call's payload (without
+  // re-emitting client events, so no duplicate artifact cards).
+  const byOriginalId = new Map(executed.map((r) => [r.id, r]));
+  const dupResults = [];
+  for (const [dupId, original] of dupOf) {
+    const src = byOriginalId.get(original.id);
+    if (src) dupResults.push({ ...src, id: dupId });
+  }
+  return executed.concat(dupResults);
 }
 
 /**
@@ -470,6 +509,14 @@ async function runOpenAiCompatLoop({
   const record = makeToolCallRecorder(onToolCall, allToolCalls);
   const stripper = makeToolSyntaxStripper(onTextChunk);
   let hadText = false;
+  // Once the FORCED tool has run successfully, lock tools off for the rest
+  // of the turn. Without this, expensive builders (e.g. the React-artifact
+  // tool, whose args are the entire component source) get re-invoked "one
+  // more time" by eager models — each redo streams tens of KB of arguments
+  // again, and a few redos in a row blows straight through the route's
+  // hard SSE timeout while the user watches nothing happen.
+  let forcedToolDone = false;
+  let truncatedRetries = 0;
 
   for (let hop = 0; hop < MAX_HOPS; hop++) {
     if (signal?.aborted) {
@@ -480,8 +527,9 @@ async function runOpenAiCompatLoop({
     let res;
     try {
       // Force a specific tool on the first hop when requested (e.g. the
-      // chat-bar "+" Generate-image mode). Subsequent hops go back to 'auto'
-      // so the model can finish its reply after the forced call.
+      // chat-bar "+" Generate-image mode). Once it has succeeded, tools go
+      // to 'none' so the model must write its final reply; otherwise
+      // subsequent hops go back to 'auto'.
       const forceThisHop = hop === 0 && forceToolName;
       const body = {
         model,
@@ -489,11 +537,17 @@ async function runOpenAiCompatLoop({
         tools,
         tool_choice: forceThisHop
           ? { type: 'function', function: { name: forceToolName } }
-          : 'auto',
+          : (forcedToolDone ? 'none' : 'auto'),
         parallel_tool_calls: forceThisHop ? false : true,
         max_completion_tokens: maxOutputTokens,
         stream: true,
         ...(promptCacheKey && providerLabel === 'openai' ? { prompt_cache_key: promptCacheKey } : {}),
+        // gpt-5.6-* reasoning models reject function tools on
+        // /chat/completions unless reasoning is off ("use /v1/responses or
+        // set reasoning_effort to 'none'"). Tool turns don't need the
+        // reasoning pass, so turn it off rather than porting the whole loop
+        // to the Responses API.
+        ...(providerLabel === 'openai' && /^gpt-5\.6/.test(String(model)) ? { reasoning_effort: 'none' } : {}),
       };
       res = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -547,7 +601,37 @@ async function runOpenAiCompatLoop({
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
     }
 
-    if (finishReason !== 'tool_calls' || pendingCalls.size === 0) {
+    // Truncated stream: the provider closed the connection without ever
+    // sending finish_reason. With a forced tool still pending that means
+    // the model died mid-reasoning (xAI does this reproducibly whenever an
+    // image is attached to a forced-tool request, and intermittently on
+    // long thinking pauses) — nothing was produced, so silently accepting
+    // it strands the user with no artifact and no error. Retry the hop;
+    // once retries are exhausted, surface a distinct reason so the caller
+    // can re-run the whole turn on a different provider.
+    if (!finishReason && pendingCalls.size === 0 && forceToolName && !forcedToolDone) {
+      if (truncatedRetries < MAX_TRUNCATED_STREAM_RETRIES) {
+        truncatedRetries++;
+        console.warn(`[chat-agent-loop] ${providerLabel} stream ended with no finish_reason and no forced tool call — retrying hop (${truncatedRetries}/${MAX_TRUNCATED_STREAM_RETRIES})`);
+        hop--;
+        continue;
+      }
+      stripper.flush();
+      return {
+        ok: false,
+        hadText,
+        toolCalls: allToolCalls,
+        reason: 'forced_tool_incomplete',
+        errorMessage: `${providerLabel} stream truncated ${MAX_TRUNCATED_STREAM_RETRIES + 1}x before the forced tool call completed`,
+      };
+    }
+
+    // Trust the accumulated tool_call deltas over finish_reason: when
+    // tool_choice FORCES a function, OpenAI ends the stream with
+    // finish_reason "stop" (not "tool_calls") even though a complete tool
+    // call was emitted — gating on finish_reason alone silently dropped
+    // every forced call (image gen came back "tools=0, hadText=false").
+    if (pendingCalls.size === 0) {
       stripper.flush();
       return { ok: true, hadText, toolCalls: allToolCalls, reason: 'stop', errorMessage: null };
     }
@@ -583,6 +667,14 @@ async function runOpenAiCompatLoop({
         tool_call_id: r.id,
         content: serialiseToolResult(r.payload),
       });
+      if (
+        forceToolName &&
+        r.name === forceToolName &&
+        !r.isError &&
+        r.payload?.ok !== false
+      ) {
+        forcedToolDone = true;
+      }
     }
   }
 
@@ -650,6 +742,10 @@ async function runAnthropicLoop({
   const record = makeToolCallRecorder(onToolCall, allToolCalls);
   const stripper = makeToolSyntaxStripper(onTextChunk);
   let hadText = false;
+  // Same redo-guard as the OpenAI loop: after the forced tool succeeds,
+  // tool_choice 'none' forces the final text reply instead of letting the
+  // model rebuild the (potentially huge) artifact again.
+  let forcedToolDone = false;
 
   for (let hop = 0; hop < MAX_HOPS; hop++) {
     if (signal?.aborted) {
@@ -666,7 +762,9 @@ async function runAnthropicLoop({
         tools,
         max_tokens: maxOutputTokens,
         stream: true,
-        ...(forceThisHop ? { tool_choice: { type: 'tool', name: forceToolName } } : {}),
+        ...(forceThisHop
+          ? { tool_choice: { type: 'tool', name: forceToolName } }
+          : (forcedToolDone ? { tool_choice: { type: 'none' } } : {})),
       };
       if (systemPrompt) {
         // Cache the system block — Anthropic charges 25% extra on the
@@ -789,6 +887,11 @@ async function runAnthropicLoop({
     try { onStatus?.('Running tools…'); } catch { /* swallow */ }
 
     const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames);
+    for (const r of results) {
+      if (forceToolName && r.name === forceToolName && !r.isError && r.payload?.ok !== false) {
+        forcedToolDone = true;
+      }
+    }
     // Anthropic expects tool_result blocks wrapped as a SINGLE user
     // turn whose content is the array of tool_result blocks (one per
     // tool_use id from the assistant turn). Order doesn't matter as
@@ -878,6 +981,10 @@ async function runGeminiLoop({
   const record = makeToolCallRecorder(onToolCall, allToolCalls);
   const stripper = makeToolSyntaxStripper(onTextChunk);
   let hadText = false;
+  // Same redo-guard as the OpenAI loop: after the forced tool succeeds,
+  // functionCallingConfig NONE forces the final text reply instead of
+  // letting the model rebuild the (potentially huge) artifact again.
+  let forcedToolDone = false;
 
   for (let hop = 0; hop < MAX_HOPS; hop++) {
     if (signal?.aborted) {
@@ -897,7 +1004,9 @@ async function runGeminiLoop({
         },
         ...(forceThisHop
           ? { toolConfig: { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: [forceToolName] } } }
-          : {}),
+          : (forcedToolDone
+              ? { toolConfig: { functionCallingConfig: { mode: 'NONE' } } }
+              : {})),
       };
       if (systemPrompt) {
         body.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -927,6 +1036,7 @@ async function runGeminiLoop({
     // assistant turn for the next hop.
     const assistantParts = [];      // parts to echo back in `contents` for the next request
     const toolCallsThisHop = [];    // calls to execute at end-of-stream
+    const seenCallKeys = new Set(); // Gemini can re-emit the SAME functionCall across chunks
 
     try {
       await readGeminiSseStream(res.body, (parsed) => {
@@ -946,9 +1056,21 @@ async function runGeminiLoop({
           }
           if (part?.functionCall && typeof part.functionCall === 'object') {
             const fc = part.functionCall;
+            // Gemini sometimes streams the identical functionCall part in
+            // several SSE chunks (observed 4x on big forced builds). Execute
+            // — and echo back — each unique call only once, or an expensive
+            // builder runs repeatedly and the echoed turn confuses hop 2.
+            const key = `${fc.name}:${JSON.stringify(fc.args || {})}`;
+            if (seenCallKeys.has(key)) continue;
+            seenCallKeys.add(key);
             const id = fc.id || `fc_${hop}_${toolCallsThisHop.length}`;
             const args = fc.args && typeof fc.args === 'object' ? fc.args : {};
-            assistantParts.push({ functionCall: { name: fc.name, args, ...(fc.id ? { id: fc.id } : {}) } });
+            assistantParts.push({
+              functionCall: { name: fc.name, args, ...(fc.id ? { id: fc.id } : {}) },
+              // Gemini 3.x REQUIRES the thought signature to be echoed back
+              // on the functionCall part — omitting it 400s the next hop.
+              ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
+            });
             toolCallsThisHop.push({ id, name: fc.name, args });
             continue;
           }
@@ -971,6 +1093,11 @@ async function runGeminiLoop({
     try { onStatus?.('Running tools…'); } catch { /* swallow */ }
 
     const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames);
+    for (const r of results) {
+      if (forceToolName && r.name === forceToolName && !r.isError && r.payload?.ok !== false) {
+        forcedToolDone = true;
+      }
+    }
 
     // Gemini wants functionResponse parts in a NEW user turn. Each
     // functionResponse mirrors a prior functionCall by `name` (and id

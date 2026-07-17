@@ -29,6 +29,7 @@ const BOOL_FIELDS = new Set([
   'show_provenance',
   'email_product_updates',
   'email_synthesis_digest',
+  'night_shift_enabled',
 ]);
 
 const INT_FIELDS = new Map([
@@ -36,7 +37,11 @@ const INT_FIELDS = new Map([
   ['chat_retention_days', [1, 3650]],
 ]);
 
-const ALLOWED = new Set([...BOOL_FIELDS, ...INT_FIELDS.keys()]);
+const STRING_FIELDS = new Map([
+  ['night_shift_tier', new Set(['brief', 'research', 'delegate'])],
+]);
+
+const ALLOWED = new Set([...BOOL_FIELDS, ...INT_FIELDS.keys(), ...STRING_FIELDS.keys()]);
 
 export const updateUserPreferenceTool = {
   name: 'lykn_updateUserPreference',
@@ -62,6 +67,11 @@ export const updateUserPreferenceTool = {
     '  • email_product_updates (bool) — product update emails',
     '  • email_synthesis_digest (bool) — nightly digest emails when a',
     '    run finds substantial new facts/concepts',
+    '  • night_shift_enabled (bool) — overnight project morning briefs',
+    '    (Night Shift cron). Ask before enabling.',
+    '  • night_shift_tier (string) — "brief" (morning handoff only),',
+    '    "research" (triage + overnight research), or "delegate" (also Cursor',
+    '    builds + sub-agents for scheduled items). Requires night_shift_enabled.',
     '',
     'Visual / theme prefs are NOT here (they live in browser',
     'localStorage). Don\'t accept "change my theme" requests via this',
@@ -112,6 +122,13 @@ export const updateUserPreferenceTool = {
       } else if (!Number.isInteger(value) || value < min || value > max) {
         return errorContent(`${field} must be an integer between ${min} and ${max}, or null.`);
       }
+    } else if (STRING_FIELDS.has(field)) {
+      const allowed = STRING_FIELDS.get(field);
+      const s = String(value || '').trim();
+      if (!allowed.has(s)) {
+        return errorContent(`${field} must be one of: ${[...allowed].join(', ')}.`);
+      }
+      value = s;
     }
 
     // Upsert so the call works even if the row was somehow missing

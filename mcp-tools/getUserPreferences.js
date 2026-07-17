@@ -24,6 +24,7 @@
 // "missing prefs" state.
 
 import { jsonContent, errorContent } from './index.js';
+import { parseNightShiftTier } from '../lib/nightShift/stewardTier.js';
 
 const PREFS_DEFAULTS = {
   memory_paused: false,
@@ -32,6 +33,8 @@ const PREFS_DEFAULTS = {
   show_provenance: true,
   email_product_updates: true,
   email_synthesis_digest: false,
+  night_shift_enabled: false,
+  night_shift_tier: 'brief',
 };
 
 export const getUserPreferencesTool = {
@@ -54,6 +57,9 @@ export const getUserPreferencesTool = {
     '    asks "where did my old chat go?"',
     '  • show_provenance — UI hint only; controls whether the chat',
     '    surfaces "based on belief X / fact Y" citations by default.',
+    '  • night_shift_enabled — when TRUE, the Night Shift cron writes',
+    '    a morning_brief project-state push for each active project',
+    '    overnight. Surface it in the project panel / overlay.',
     '',
     'CALL THIS at the start of any conversation that\'s about to write',
     'durable state (createVaultNote, addProjectNeurons, …) so you can',
@@ -77,7 +83,7 @@ export const getUserPreferencesTool = {
 
     const { data, error } = await ctx.supabaseAdmin
       .from('lykn_user_preferences')
-      .select('memory_paused, training_opt_out, chat_retention_days, show_provenance, email_product_updates, email_synthesis_digest, metadata, updated_at')
+      .select('memory_paused, training_opt_out, chat_retention_days, show_provenance, email_product_updates, email_synthesis_digest, night_shift_enabled, night_shift_tier, metadata, updated_at')
       .eq('user_id', ctx.userId)
       .maybeSingle();
     if (error) return errorContent(`prefs read failed: ${error.message}`);
@@ -90,6 +96,8 @@ export const getUserPreferencesTool = {
           show_provenance: !!data.show_provenance,
           email_product_updates: !!data.email_product_updates,
           email_synthesis_digest: !!data.email_synthesis_digest,
+          night_shift_enabled: !!data.night_shift_enabled,
+          night_shift_tier: parseNightShiftTier(data.night_shift_tier),
           metadata: data.metadata || {},
           updated_at: data.updated_at || null,
         }

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LYKN</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        width: 100%;
+        background: transparent;
+        overflow: hidden;
+        pointer-events: none;
+      }
+
+      /* ── Highlight glow ──────────────────────────────────────────────────
+         A soft, blurred blue glow placed over the target UI element — pure
+         diffuse light, no solid core or sphere shading, so the element under
+         it stays fully readable. Breathes gently. Positioned by its CENTER
+         via left/top + negative margins. */
+      #orb {
+        position: fixed;
+        width: 64px;
+        height: 64px;
+        margin-left: -32px;
+        margin-top: -32px;
+        border-radius: 50%;
+        opacity: 0;
+        pointer-events: none;
+        /* Dense multi-blue glow: pale sky core → electric blue → royal →
+           deep sapphire fading out. Thicker body (high opacity through the
+           mid stops) with only a light blur so it reads clearly. */
+        background: radial-gradient(
+          circle,
+          rgba(190, 224, 255, 0.95) 0%,
+          rgba(120, 180, 255, 0.9) 22%,
+          rgba(64, 132, 255, 0.85) 42%,
+          rgba(30, 84, 216, 0.7) 58%,
+          rgba(16, 52, 160, 0.4) 72%,
+          rgba(16, 52, 160, 0.0) 86%
+        );
+        filter: blur(5px);
+        transition: opacity 240ms cubic-bezier(0.4, 0, 0.2, 1),
+                    left 200ms ease, top 200ms ease;
+        will-change: transform, opacity;
+      }
+      #orb.active {
+        opacity: 1;
+        animation: lykn-orb-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes lykn-orb-pulse {
+        0%, 100% { transform: scale(1);    opacity: 0.85; }
+        50%      { transform: scale(1.18); opacity: 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="orb"></div>
+    <script>
+      const orb = document.getElementById("orb");
+
+      // Show (or move) the glow orb. pos is the target CENTER in window-local
+      // CSS pixels: { x, y }.
+      window.__lyknHighlight = function (pos) {
+        if (!pos) return;
+        orb.style.left = Math.round(pos.x) + "px";
+        orb.style.top = Math.round(pos.y) + "px";
+        // Restart the pulse from frame 0 when re-shown.
+        orb.classList.remove("active");
+        void orb.offsetWidth;
+        orb.classList.add("active");
+      };
+
+      // Fade the orb out (caller hides the window after the transition).
+      window.__lyknHighlightOff = function () {
+        orb.classList.remove("active");
+      };
+    </script>
+  </body>
+</html>

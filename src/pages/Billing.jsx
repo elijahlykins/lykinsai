@@ -12,6 +12,7 @@ import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { toUserFacingError } from "@/lib/ai/userFacingErrors";
+import { toast } from "@/components/ui/use-toast";
 
 function BillingToggle({ period, onChange }) {
   return (
@@ -126,11 +127,11 @@ function PlanCard({
   };
 
   return (
+    // No initial/animate here — the grid wrapper in the page runs the (staggered)
+    // entry animation; doubling it made each card fade/slide twice. h-full so
+    // all three cards stretch to the tallest and CTAs align at the bottom.
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4 }}
-      className={`relative flex flex-col rounded-2xl border p-5 transition-shadow duration-300 ${
+      className={`relative flex h-full flex-col rounded-2xl border p-5 transition-shadow duration-300 ${
         plan.highlighted
           ? "border-black/15 dark:border-white/25 bg-white dark:bg-neutral-900 shadow-xl shadow-black/[0.06] dark:shadow-black/40 ring-1 ring-black/[0.06] dark:ring-white/10"
           : "border-black/[0.06] dark:border-white/[0.12] bg-white dark:bg-neutral-900 shadow-sm dark:shadow-black/30 hover:shadow-md"
@@ -138,7 +139,7 @@ function PlanCard({
     >
       {plan.comingSoon && (
         <div className="absolute top-4 right-4">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-black/25 dark:text-white/60 bg-black/[0.04] dark:bg-white/[0.08] px-2.5 py-1 rounded-full">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-black/55 dark:text-white/60 bg-black/[0.04] dark:bg-white/[0.08] px-2.5 py-1 rounded-full">
             Coming Soon
           </span>
         </div>
@@ -304,6 +305,7 @@ export default function Billing() {
 
   useEffect(() => {
     if (!user?.id) return;
+    let cancelled = false;
     (async () => {
       const headers = await authHeaders();
 
@@ -320,6 +322,7 @@ export default function Billing() {
         waitlist,
       ]);
 
+      if (cancelled) return;
       if (billingData) {
         setCurrentPlan(billingData.plan || "free");
       }
@@ -330,6 +333,9 @@ export default function Billing() {
         }));
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [user?.id]);
 
   // Surface the result of a Stripe redirect (?checkout=success, etc.) and
@@ -341,17 +347,35 @@ export default function Billing() {
     if (!checkout) return;
 
     if (checkout === "success") {
-      // The webhook updates billing asynchronously; poll /api/billing/me once.
+      // The Stripe webhook updates billing asynchronously, so a single
+      // immediate poll often still sees the old plan and the page keeps
+      // showing "Free" until a manual refresh. Poll a few times with
+      // backoff until the plan flips away from free (or we give up).
+      let cancelled = false;
       (async () => {
-        try {
-          const headers = await authHeaders();
-          const r = await fetch(`${API_BASE_URL}/api/billing/me`, { headers });
-          const data = await r.json();
-          if (data?.plan) setCurrentPlan(data.plan);
-        } catch {
-          /* ignore */
+        for (let attempt = 0; attempt < 5 && !cancelled; attempt++) {
+          try {
+            const headers = await authHeaders();
+            const r = await fetch(`${API_BASE_URL}/api/billing/me`, { headers });
+            const data = await r.json();
+            if (cancelled) return;
+            if (data?.plan) {
+              setCurrentPlan(data.plan);
+              if (data.plan !== "free") return;
+            }
+          } catch {
+            /* transient — retry below */
+          }
+          await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
         }
       })();
+      const url = new URL(window.location.href);
+      url.searchParams.delete("checkout");
+      url.searchParams.delete("session_id");
+      window.history.replaceState({}, "", url.toString());
+      return () => {
+        cancelled = true;
+      };
     }
     const url = new URL(window.location.href);
     url.searchParams.delete("checkout");
@@ -387,7 +411,7 @@ export default function Billing() {
         if (url) window.location.href = url;
       } catch (err) {
         console.error("[Billing] checkout failed:", err);
-        alert(toUserFacingError(err));
+        toast({ variant: "destructive", title: "Checkout failed", description: toUserFacingError(err) });
       } finally {
         setCheckoutBusy(null);
       }
@@ -404,7 +428,7 @@ export default function Billing() {
       setWaitlistState({ joined: Boolean(data?.joined), busy: false });
     } catch (err) {
       console.error("[Billing] waitlist join failed:", err);
-      alert(toUserFacingError(err));
+      toast({ variant: "destructive", title: "Couldn't join the waitlist", description: toUserFacingError(err) });
       setWaitlistState((prev) => ({ ...prev, busy: false }));
     }
   }, [user?.email, waitlistState.joined, waitlistState.busy]);
@@ -424,8 +448,9 @@ export default function Billing() {
           </h2>
           <p className="text-base text-black/45 dark:text-white/60 mt-3 max-w-lg mx-auto leading-relaxed">
             You're already on Free with the full app. Go Pro for every model and
-            an unlimited workspace, or get the same on the Student plan for
-            $15/mo. Cancel anytime, no hidden fees.
+            an unlimited workspace, get the same on the Student plan for $20/mo
+            ($12/mo billed annually), or go Max to remove the monthly usage caps
+            entirely. Cancel anytime, no hidden fees.
           </p>
         </div>
 
@@ -436,8 +461,9 @@ export default function Billing() {
               <p className="text-sm text-black/70 dark:text-white/75">
                 You're on the{" "}
                 <span className="font-semibold text-black/90 dark:text-white">Free</span>{" "}
-                plan — the full app with capped limits: 100 synthesis neurons, 50
-                Vault cards, and LYKN's core models.
+                plan: the full app with capped limits, 100 synthesis neurons, 50
+                Vault cards, LYKN's core models, and monthly usage caps on Glass,
+                image generation, and artifact builds.
               </p>
               <span className="flex-shrink-0 text-xs font-medium text-black/45 dark:text-white/55">
                 Upgrade for unlimited everything →
@@ -447,14 +473,15 @@ export default function Billing() {
         )}
 
         {/* Toggle + Plan Cards */}
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-6xl mx-auto">
         <div className="mb-5 text-center">
           <BillingToggle period={period} onChange={setPeriod} />
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-16">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-16">
           {PLANS.map((plan, i) => (
             <motion.div
               key={plan.id}
+              className="h-full"
               initial={{ opacity: 0, y: 24 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: i * 0.08 }}

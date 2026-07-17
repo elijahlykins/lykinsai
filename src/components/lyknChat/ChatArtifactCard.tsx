@@ -85,8 +85,19 @@ export type ChatArtifactCardProps = {
   onOpen?: () => void;
 };
 
+// Signed cross-origin preview URLs are already isolated by their own origin,
+// so they can keep allow-same-origin (some hosted decks need it).
 const IFRAME_SANDBOX =
   "allow-scripts allow-same-origin allow-popups allow-forms allow-presentation";
+
+// Inline (srcDoc) HTML is same-origin with the app, so allow-same-origin +
+// allow-scripts would let AI-generated markup reach our DOM and the Supabase
+// session in localStorage. Drop allow-same-origin for srcDoc: scripts still
+// run, but in an opaque null origin with no access to LYKN. (Today the prod
+// CSP `script-src 'self'` also blocks these inline scripts — this makes the
+// iframe isolation itself do the work rather than relying solely on the CSP.)
+const IFRAME_SANDBOX_SRCDOC =
+  "allow-scripts allow-popups allow-forms allow-presentation";
 
 function formatLabel(format?: string) {
   if (!format) return "Artifact";
@@ -107,6 +118,7 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
 
   const badge = useMemo(() => {
     if (artifact.kind === "html") return "Interactive preview";
+    if (artifact.kind === "video") return `${formatLabel(artifact.format || "mp4")} video`;
     if (artifact.kind === "image") return formatLabel(artifact.format);
     return formatLabel(artifact.format) || "Download";
   }, [artifact.format, artifact.kind]);
@@ -183,7 +195,8 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
       </div>
 
       <div className="relative bg-[#0f172a] dark:bg-black/40" style={{ height: previewHeight }}>
-        {onOpen ? (
+        {/* Videos keep their native controls clickable — no full-surface open overlay. */}
+        {onOpen && artifact.kind !== "video" ? (
           <button
             type="button"
             onClick={onOpen}
@@ -211,10 +224,20 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
               title={artifact.title}
               srcDoc={artifact.srcDoc}
               className="w-full h-full border-0 bg-white"
-              sandbox={IFRAME_SANDBOX}
+              sandbox={IFRAME_SANDBOX_SRCDOC}
               referrerPolicy="no-referrer"
             />
           ) : null
+        ) : artifact.kind === "video" && artifact.previewUrl ? (
+          <div className="w-full h-full flex items-center justify-center bg-black">
+            <video
+              src={artifact.previewUrl}
+              controls
+              playsInline
+              preload="metadata"
+              className="max-w-full max-h-full rounded-lg"
+            />
+          </div>
         ) : artifact.previewUrl ? (
           <div className="w-full h-full flex items-center justify-center p-4 bg-white dark:bg-zinc-950">
             <img

@@ -17,28 +17,43 @@ function isMissingChatModelKeyColumn(error: { message?: string; code?: string } 
   );
 }
 
-async function fetchBoardListRows(
-  userId: string,
-  overfetch: number,
-): Promise<LyknChatListRow[]> {
-  const query = (select: string) =>
-    supabase
-      .from("lykn_chats")
-      .select(select)
-      .eq("user_id", userId)
-      .order("updated_at", { ascending: false })
-      .limit(overfetch);
+type BoardListQuery = ReturnType<ReturnType<typeof supabase.from>["select"]>;
 
-  const withModel = await query(BOARD_LIST_SELECT_WITH_MODEL);
+/**
+ * Runs the board-list select against `lykn_chats` for `userId`, ordered newest
+ * first, applying `shape` (range / limit / extra filters) to the query. Falls
+ * back to the model-less projection on older DBs that lack `chat_model_key`.
+ */
+async function runBoardListQuery(
+  userId: string,
+  shape: (q: BoardListQuery) => BoardListQuery,
+): Promise<LyknChatListRow[]> {
+  const build = (select: string) =>
+    shape(
+      supabase
+        .from("lykn_chats")
+        .select(select)
+        .eq("user_id", userId)
+        .order("updated_at", { ascending: false }) as unknown as BoardListQuery,
+    );
+
+  const withModel = await build(BOARD_LIST_SELECT_WITH_MODEL);
   if (!withModel.error) return (withModel.data || []) as LyknChatListRow[];
 
   if (isMissingChatModelKeyColumn(withModel.error)) {
-    const fallback = await query(BOARD_LIST_SELECT_BASE);
+    const fallback = await build(BOARD_LIST_SELECT_BASE);
     if (fallback.error) throw fallback.error;
     return (fallback.data || []) as LyknChatListRow[];
   }
 
   throw withModel.error;
+}
+
+async function fetchBoardListRows(
+  userId: string,
+  overfetch: number,
+): Promise<LyknChatListRow[]> {
+  return runBoardListQuery(userId, (q) => q.limit(overfetch) as BoardListQuery);
 }
 
 /**
@@ -54,6 +69,64 @@ export async function fetchLyknChatsWithContext(
   const data = await fetchBoardListRows(userId, overfetch);
   const filtered = filterLyknChatsWithContext(data);
   return filtered.slice(0, limit);
+}
+
+/** Default number of chats fetched per sidebar page (infinite scroll). */
+export const SIDEBAR_PAGE_SIZE = 30;
+
+export interface LyknChatPage {
+  /** Context-filtered chats for this page (empty shells removed). */
+  rows: LyknChatListRow[];
+  /** Offset to pass for the next page, or null when the list is exhausted. */
+  nextOffset: number | null;
+}
+
+/**
+ * Fetches one page of a user's chats (newest first) for the paginated sidebar.
+ * Uses offset/range over `lykn_chats` so older chats stay reachable instead of
+ * being capped at the first 50. Each raw page is context-filtered before return;
+ * `nextOffset` is driven by the RAW page size so filtering can't prematurely end
+ * pagination (a page of all-empty shells still advances the cursor).
+ */
+export async function fetchLyknChatsPage(
+  userId: string,
+  offset = 0,
+  pageSize: number = SIDEBAR_PAGE_SIZE,
+): Promise<LyknChatPage> {
+  if (!userId) return { rows: [], nextOffset: null };
+  const from = Math.max(0, offset);
+  const to = from + pageSize - 1;
+  const raw = await runBoardListQuery(
+    userId,
+    (q) => q.range(from, to) as BoardListQuery,
+  );
+  const rows = filterLyknChatsWithContext(raw);
+  const nextOffset = raw.length === pageSize ? from + pageSize : null;
+  return { rows, nextOffset };
+}
+
+/**
+ * Searches a user's chats by title across the WHOLE history (not just the most
+ * recent page) so old chats remain findable. Title matches are returned through
+ * the context filter, mirroring the previous client-side title-search behaviour.
+ */
+export async function searchLyknChatsByTitle(
+  userId: string,
+  query: string,
+  limit = 60,
+): Promise<LyknChatListRow[]> {
+  if (!userId) return [];
+  const needle = String(query || "").trim();
+  if (!needle) return [];
+  // Escape PostgREST/ILIKE wildcards and the value separator so user text is
+  // matched literally rather than as a pattern.
+  const escaped = needle.replace(/([%_,\\])/g, "\\$1");
+  const pattern = `%${escaped}%`;
+  const raw = await runBoardListQuery(
+    userId,
+    (q) => q.ilike("title", pattern).limit(limit) as BoardListQuery,
+  );
+  return filterLyknChatsWithContext(raw);
 }
 
 /** Most recent chat with content — used when resuming without a /grid/:id URL. */
@@ -79,6 +152,8 @@ export function invalidateLyknChatListQueries(
 ) {
   if (!userId) return;
   queryClient.invalidateQueries({ queryKey: ["boards", userId] });
+  queryClient.invalidateQueries({ queryKey: ["sidebar-boards-paged", userId] });
+  queryClient.invalidateQueries({ queryKey: ["sidebar-boards-search", userId] });
   queryClient.invalidateQueries({ queryKey: ["sidebar-chats", userId] });
   queryClient.invalidateQueries({ queryKey: ["thread-chats", userId] });
   queryClient.invalidateQueries({ queryKey: ["mindmap_boards", userId] });

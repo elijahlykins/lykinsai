@@ -230,11 +230,11 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
           name={`LYKN in ${target.name}`}
           hideIcon
           tagline={target.summary}
-          description={`Use your LYKN synthesis layer inside ${target.name}. It connects over MCP — once linked, ${target.name} can read your context and push updates back without copying anything by hand.`}
+          description={`Use your LYKN synthesis layer inside ${target.name}. It connects over MCP. Once linked, ${target.name} can read your context and push updates back without copying anything by hand.`}
           developer="LYKN"
           tools={LYKN_MCP_TOOLS}
           toolsLabel="Tools LYKN exposes"
-          toolsNote="Beliefs are read-only — the AI can read them but never proposes new ones."
+          toolsNote="Beliefs are read-only: the AI can read them but never proposes new ones."
           connectorUrl={mcpUrl}
           author="LYKN"
           trustNote={`This grants ${target.name} access to your LYKN synthesis layer. You can revoke it any time from Connected Clients below.`}
@@ -277,7 +277,7 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/10 p-3 space-y-2">
               <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-800 dark:text-amber-300">
                 <ShieldAlert className="h-3 w-3" />
-                Copy this token — it's only shown once
+                Copy this token; it's only shown once
               </div>
               <div className="flex items-center gap-2">
                 <code className="flex-1 min-w-0 truncate rounded-md bg-white dark:bg-zinc-900 px-2 py-1.5 text-[11.5px] font-mono text-black/85 dark:text-white/85 border border-black/[0.06] dark:border-white/[0.08]">
@@ -325,7 +325,7 @@ export default function UseLyknWithDialog({ open, onOpenChange, target, onMinted
             <div className="text-[10.5px] text-black/45 dark:text-white/45 leading-relaxed">
               Plan: <span className="font-medium text-black/65 dark:text-white/70">{planId || "free"}</span>.
               Tokens are scoped to your account and respect your plan's read/write quotas.
-              The token never leaves this device — LYKN only stores its SHA-256 hash.
+              The token never leaves this device; LYKN only stores its SHA-256 hash.
             </div>
           </>
         )}
@@ -393,8 +393,8 @@ function ProjectInstructionsSection({ target, snippet, copied, onCopy }) {
         </SectionTitle>
         <p className="text-[11.5px] text-black/65 dark:text-white/70 leading-relaxed">
           The config above wires LYKN's tools in. <strong>This snippet teaches the
-          AI when to use them</strong> — silently load context at conversation start,
-          push project state on decisions. Beliefs are user-authored only —
+          AI when to use them</strong>: silently load context at conversation start,
+          push project state on decisions. Beliefs are user-authored only;
           the AI reads them but never proposes new ones.
           Without it, you'd have to prompt the AI every chat. With it, the
           synthesis layer stays in sync on its own.
@@ -804,56 +804,56 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
             {connectMode === "cursor-deeplink" ? (
               <>
                 One button hands a pre-filled MCP install link to {targetName}.
-                Approve the LYKN consent screen when it pops — we'll auto-detect
+                Approve the LYKN consent screen when it pops, and we'll auto-detect
                 the connection and flip this to Connected.
               </>
             ) : connectMode === "claude-prefill" ? (
               <>
                 One button opens claude.ai with the Add Custom Connector
                 dialog already filled in for LYKN. Hit Add inside Claude,
-                approve the consent screen — we'll auto-detect the connection
+                approve the consent screen, and we'll auto-detect the connection
                 and flip this to Connected.
               </>
             ) : connectMode === "replit-prefill" ? (
               <>
                 One button opens replit.com/integrations with the Add MCP
                 Server form already filled in for LYKN. Hit Test &amp; Save
-                inside Replit, approve the consent screen — we'll auto-detect
+                inside Replit, approve the consent screen, and we'll auto-detect
                 the connection and flip this to Connected.
               </>
             ) : connectMode === "copilot-install" ? (
               <>
                 One button hands a VS Code install link to your browser.
-                Your browser hands off to VS Code — pick where to install
+                Your browser hands off to VS Code. Pick where to install
                 (Global recommended), approve the LYKN consent screen.
                 We'll auto-detect the connection and flip this to Connected.
               </>
             ) : connectMode === "claude-code-cli" ? (
               <>
                 One button copies a <code className="font-mono text-[11.5px]">claude mcp add</code> command.
-                Paste it into your terminal and press Enter — Claude Code
+                Paste it into your terminal and press Enter. Claude Code
                 pops a browser tab to the LYKN consent screen, you approve,
                 we auto-detect the connection.
               </>
             ) : connectMode === "gemini-cli" ? (
               <>
                 One button copies a <code className="font-mono text-[11.5px]">gemini mcp add</code> command.
-                Paste it into your terminal and press Enter — Gemini CLI
+                Paste it into your terminal and press Enter. Gemini CLI
                 pops a browser tab to the LYKN consent screen, you approve,
                 we auto-detect the connection.
               </>
             ) : connectMode === "codex-cli" ? (
               <>
                 One button copies a <code className="font-mono text-[11.5px]">codex mcp add</code> command.
-                Paste it into your terminal and press Enter — Codex pops a
+                Paste it into your terminal and press Enter. Codex pops a
                 browser tab to the LYKN consent screen, you approve, we
                 auto-detect the connection.
               </>
             ) : connectMode === "windsurf-config" ? (
               <>
                 One button copies a JSON snippet. In Windsurf, open the
-                Command Palette and run <code className="font-mono text-[11.5px]">Windsurf: Configure MCP Servers</code> —
-                paste inside the <code className="font-mono text-[11.5px]">mcpServers</code> object,
+                Command Palette and run <code className="font-mono text-[11.5px]">Windsurf: Configure MCP Servers</code>.
+                Paste inside the <code className="font-mono text-[11.5px]">mcpServers</code> object,
                 save, Windsurf hot-reloads and pops the LYKN consent screen.
                 We auto-detect the connection.
               </>
@@ -862,7 +862,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 One button copies a JSON snippet. In any JetBrains IDE, open
                 Settings → Tools → AI Assistant → Model Context Protocol →
                 New, paste the snippet into the JSON field, click OK then
-                Apply. AI Assistant pops the LYKN consent screen — we
+                Apply. AI Assistant pops the LYKN consent screen, and we
                 auto-detect the connection. Junie users can paste the same
                 snippet into <code className="font-mono text-[11.5px]">~/.junie/mcp/mcp.json</code>.
               </>
@@ -872,13 +872,13 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
                 MCP server config (Claude Desktop, Cursor, Zed, Cline, Goose,
                 Warp, Jan, Continue, …) and approve LYKN when the consent
                 screen pops. <strong className="font-semibold">No bearer token
-                to manage</strong> — modern MCP clients handle OAuth themselves.
+                to manage</strong>; modern MCP clients handle OAuth themselves.
                 We auto-detect the connection here.
               </>
             ) : (
               <>
                 One button copies LYKN's MCP URL and opens {targetName} for you.
-                Follow the {installSteps.length}-step checklist below — we'll detect
+                Follow the {installSteps.length}-step checklist below. We'll detect
                 when it's hooked up and flip this to Connected automatically.
               </>
             )}
@@ -892,12 +892,12 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
               <>
                 <CheckCircle2 className="h-4 w-4" />
                 {connectMode === "windsurf-config"
-                  ? `Snippet copied — paste into Windsurf's MCP config`
+                  ? `Snippet copied. Paste into Windsurf's MCP config`
                   : connectMode === "jetbrains-config"
-                    ? `Snippet copied — paste into JetBrains' MCP dialog`
+                    ? `Snippet copied. Paste into JetBrains' MCP dialog`
                     : isCliConnectMode(connectMode)
-                      ? `Command copied — paste in your terminal`
-                      : `URL copied — finish in ${targetName}`}
+                      ? `Command copied. Paste in your terminal`
+                      : `URL copied. Finish in ${targetName}`}
                 <ArrowRight className="h-4 w-4" />
               </>
             ) : (
@@ -918,7 +918,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           </div>
           <p className="text-[12px] leading-relaxed text-black/70 dark:text-white/75">
             Open a new chat in {targetName} and try a prompt like{" "}
-            <em>"Use my LYKN context — what beliefs do you have about me?"</em>{" "}
+            <em>"Use my LYKN context: what beliefs do you have about me?"</em>{" "}
             {targetName} will call your synthesis layer directly.
           </p>
           {successHint && (
@@ -952,7 +952,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           subtitle={
             step === 1 ? (
               <span className="text-emerald-700 dark:text-emerald-400">
-                {targetName} will pop up a LYKN consent screen — click Approve.
+                {targetName} will pop up a LYKN consent screen. Click Approve.
               </span>
             ) : undefined
           }
@@ -963,7 +963,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
           active={step === 1}
           title={
             step === 2
-              ? "LYKN detected the connection — you're done"
+              ? "LYKN detected the connection. You're done"
               : "We'll auto-detect the connection here"
           }
           subtitle={
@@ -1044,7 +1044,7 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
       {/* ── Polling diagnostics + help link ───────────────────────── */}
       {pollingError && step === 1 && (
         <div className="text-[10.5px] text-amber-700 dark:text-amber-400">
-          {pollingError} We'll keep retrying — or refresh this dialog after approving in {targetName}.
+          {pollingError} We'll keep retrying, or refresh this dialog after approving in {targetName}.
         </div>
       )}
 
@@ -1073,30 +1073,30 @@ function OauthMcpSection({ target, mcpUrl, onConnected }) {
 
 function stepOnePromptTitle({ connectMode, targetName }) {
   if (connectMode === "cursor-deeplink") {
-    return `Press Connect — we'll hand a pre-filled install link to ${targetName}`;
+    return `Press Connect and we'll hand a pre-filled install link to ${targetName}`;
   }
   if (connectMode === "claude-prefill") {
-    return `Press Connect — we'll open Claude with LYKN's details pre-filled`;
+    return `Press Connect and we'll open Claude with LYKN's details pre-filled`;
   }
   if (connectMode === "replit-prefill") {
-    return `Press Connect — we'll open Replit with LYKN's details pre-filled`;
+    return `Press Connect and we'll open Replit with LYKN's details pre-filled`;
   }
   if (connectMode === "copilot-install") {
-    return `Press Connect — we'll hand VS Code a pre-filled MCP install link`;
+    return `Press Connect and we'll hand VS Code a pre-filled MCP install link`;
   }
   if (connectMode === "windsurf-config") {
-    return `Press Connect — we'll copy a JSON snippet for Windsurf's MCP config`;
+    return `Press Connect and we'll copy a JSON snippet for Windsurf's MCP config`;
   }
   if (connectMode === "jetbrains-config") {
-    return `Press Connect — we'll copy a JSON snippet for JetBrains' MCP dialog`;
+    return `Press Connect and we'll copy a JSON snippet for JetBrains' MCP dialog`;
   }
   if (isCliConnectMode(connectMode)) {
-    return `Press Connect — we'll copy a one-line ${targetName} install command`;
+    return `Press Connect and we'll copy a one-line ${targetName} install command`;
   }
   if (connectMode === "copy-only") {
-    return `Press Connect — we'll copy LYKN's MCP URL to your clipboard`;
+    return `Press Connect and we'll copy LYKN's MCP URL to your clipboard`;
   }
-  return `Press Connect — we'll copy the URL and open ${targetName}`;
+  return `Press Connect and we'll copy the URL and open ${targetName}`;
 }
 
 function stepOneDoneTitle({ connectMode, targetName }) {
@@ -1113,16 +1113,16 @@ function stepOneDoneTitle({ connectMode, targetName }) {
     return `Install link sent to VS Code`;
   }
   if (connectMode === "windsurf-config") {
-    return `Config snippet copied — paste into Windsurf's MCP config`;
+    return `Config snippet copied. Paste into Windsurf's MCP config`;
   }
   if (connectMode === "jetbrains-config") {
-    return `Config snippet copied — paste into JetBrains' MCP dialog`;
+    return `Config snippet copied. Paste into JetBrains' MCP dialog`;
   }
   if (isCliConnectMode(connectMode)) {
-    return `Install command copied — paste it in your terminal`;
+    return `Install command copied. Paste it in your terminal`;
   }
   if (connectMode === "copy-only") {
-    return `URL copied — paste it into your MCP client's config`;
+    return `URL copied. Paste it into your MCP client's config`;
   }
   return `URL copied + ${targetName} opened in a new tab`;
 }
@@ -1291,7 +1291,7 @@ function OpenApiSection({ target, restBase }) {
         {target.name} doesn't speak MCP yet, so we ship a REST mirror at{" "}
         <code className="text-[10.5px]">{restBase}</code>. Once OpenAI's
         Custom GPT Actions catalog re-opens we'll publish the OpenAPI schema
-        and a one-click action — your token already works against the REST
+        and a one-click action. Your token already works against the REST
         endpoints if you want to wire one up by hand.
       </p>
       {target.helpUrl && (
@@ -1332,7 +1332,7 @@ function RawSection({ raw, copied, onCopy }) {
       />
       <p className="text-[11px] text-black/55 dark:text-white/55 leading-relaxed">
         The MCP endpoint is Streamable HTTP (POST JSON-RPC). The REST mirror
-        accepts the same auth and exposes one endpoint per tool — handy for
+        accepts the same auth and exposes one endpoint per tool, handy for
         clients that don't speak MCP yet.
       </p>
     </div>
@@ -1501,7 +1501,7 @@ function CustomAgentSection({ raw, copied, onCopy }) {
       <p className="text-[11px] text-black/55 dark:text-white/55 leading-relaxed">
         The MCP endpoint speaks Streamable HTTP (POST JSON-RPC, same wire
         format Cursor and Claude use). The REST mirror at <code className="text-[10.5px]">{raw.restBase}</code>{" "}
-        is the easier surface for hand-rolled agents — every MCP tool has
+        is the easier surface for hand-rolled agents: every MCP tool has
         a one-to-one REST route with the same auth.
       </p>
     </div>

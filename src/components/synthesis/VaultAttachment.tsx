@@ -7,6 +7,7 @@ import {
   type VaultAttachment as VaultAttachmentData,
 } from "@/lib/vaultContent";
 import LinkPreview from "@/components/LinkPreview";
+import { safeExternalUrl } from "@/lib/safeExternalUrl";
 
 // Renders a single Vault attachment in whatever shape best fits its
 // `type` field: image / video / YouTube embed / bookmark / spreadsheet
@@ -214,9 +215,22 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
 
   if (rawUrl) {
     const label = linkLabel(att, rawUrl, name);
+    // Only render a clickable anchor for safe schemes — a `javascript:` URL in
+    // a stored attachment would otherwise execute on click.
+    const safeUrl = safeExternalUrl(rawUrl);
+    if (!safeUrl) {
+      return (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-black/5 dark:border-white/8">
+          <ExternalLink size={12} className="text-gray-400 flex-shrink-0" />
+          <span className="text-[0.6875rem] text-gray-600 dark:text-gray-300 truncate">
+            {label}
+          </span>
+        </div>
+      );
+    }
     return (
       <a
-        href={rawUrl}
+        href={safeUrl}
         target="_blank"
         rel="noopener noreferrer"
         className="flex items-center gap-2 px-3 py-2 rounded-lg border border-black/5 dark:border-white/8 hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"

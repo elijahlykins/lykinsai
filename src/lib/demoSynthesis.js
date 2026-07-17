@@ -18,9 +18,9 @@ export const DEMO_PROJECTS = [
 ];
 
 export const DEMO_BOARDS = [
-  { id: "demo-board-harbor", title: "Harbor — business idea", project_id: null },
-  { id: "demo-board-greenroom", title: "Greenroom — content creation", project_id: null },
-  { id: "demo-board-studio12", title: "Studio 12 — design spaces", project_id: null },
+  { id: "demo-board-harbor", title: "Harbor: business idea", project_id: null },
+  { id: "demo-board-greenroom", title: "Greenroom: content creation", project_id: null },
+  { id: "demo-board-studio12", title: "Studio 12: design spaces", project_id: null },
 ];
 
 // Shape matches the real `lykn_user_synthesis_profile` row that buildGraph()
@@ -29,7 +29,7 @@ export const DEMO_BOARDS = [
 export const DEMO_SYNTHESIS_PROFILE = {
   themes: ["calm", "morning", "design", "travel"],
   narrative:
-    "Your vault suggests you're building toward a quieter, more intentional life. Themes of calm spaces, slow mornings, and thoughtful design recur across your saved images and notes. You gravitate toward neutral palettes, natural light, and writing as a practice — and you're drawn to travel that feels restorative rather than packed.",
+    "Your vault suggests you're building toward a quieter, more intentional life. Themes of calm spaces, slow mornings, and thoughtful design recur across your saved images and notes. You gravitate toward neutral palettes, natural light, and writing as a practice, and you're drawn to travel that feels restorative rather than packed.",
   signals: {
     recurring_topics: [
       "slow mornings",
@@ -68,11 +68,11 @@ const NOTE_AI_SUMMARY = {
   "Morning coastline":
     "An early-morning seascape saved as a reminder to protect the first hour of the day.",
   "Quiet workspace":
-    "A minimal desk scene — lots of empty surface, one intentional object per zone.",
+    "A minimal desk scene: lots of empty surface, one intentional object per zone.",
   "Soft architecture":
     "Light-filled atrium; referenced for the brand moodboard's spatial tone.",
   "Coffee ritual":
-    "Slow pour-over — part of an emerging morning practice.",
+    "Slow pour-over, part of an emerging morning practice.",
   "Quiet city":
     "Evening streetscape, low activity. Fits a 'quiet travel' brief.",
 };

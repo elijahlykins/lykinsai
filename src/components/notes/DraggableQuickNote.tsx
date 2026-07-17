@@ -35,7 +35,7 @@ export default function DraggableQuickNote({
 
   const handleVoiceBlob = useCallback(async (blob: Blob) => {
     if (blob.size < VOICE_NOTE_MIN_BYTES) {
-      onVoiceError?.("Recording too short — try speaking a bit longer.");
+      onVoiceError?.("Recording too short. Try speaking a bit longer.");
       return;
     }
     const hint = String(content || "").trim().split(/\s+/).slice(-12).join(" ");

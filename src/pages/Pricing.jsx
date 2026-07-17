@@ -9,38 +9,39 @@ import {
   getAnnualSavings,
 } from "@/lib/pricing-config";
 import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
+import LandingHeader from "@/components/landing/LandingHeader";
+import GlassBackdrop from "@/components/landing/GlassBackdrop";
 
-// Free is the implicit default for accounts without a billing row, so it lives
-// outside the shared PLANS list (which only holds checkout tiers). We add it
-// here purely for display on the marketing pricing page: Free → Student → Pro.
-const FREE_PLAN = {
-  id: "free",
-  name: "Free",
-  tagline: "Start building your intelligence layer, no card required.",
-  monthlyPrice: 0,
-  annualPrice: 0,
-  cta: "Get started",
-  highlighted: false,
-  comingSoon: false,
-  features: [
-    { text: "Up to 100 synthesis neurons" },
-    { text: "50 Vault cards" },
-    { text: "Core models in chat and voice" },
-    { text: "Connect your apps" },
-  ],
-};
+// The three checkout tiers (Student, Pro, Max). Free is the implicit default
+// every account starts on — it's covered by the FAQ and the "no card
+// required" subcopy rather than its own card. Teams is excluded here too.
+const DISPLAY_PLANS = PLANS.filter(
+  (p) => p.id === "student" || p.id === "studio" || p.id === "max",
+);
 
-// Free, then the two checkout tiers (Student, Pro). Teams is excluded here.
-const DISPLAY_PLANS = [
-  FREE_PLAN,
-  ...PLANS.filter((p) => p.id === "student" || p.id === "studio"),
+// Text that sits directly on the Glass backdrop (headlines, subcopy, footer
+// links) — GlassBackdrop blends it toward white as the blue glow passes.
+// Everything on the white plan/FAQ cards keeps its own color.
+const GRAD_TEXT_SELECTORS = [
+  ".lkn-pricing .lkn-section-headline",
+  ".lkn-pricing .lkn-pricing-cta-title",
+];
+const MIX_TEXT_SELECTORS = [
+  ".lkn-pricing .lkn-section-sub",
+  // Billing toggle: the inactive tab's words flip white as the orb passes.
+  // The active tab sits on its own solid white pill and pins its dark color
+  // with !important (see .lkn-pricing-toggle-btn.is-active), which beats the
+  // inline blend, so it stays readable no matter where the glow is.
+  ".lkn-pricing .lkn-pricing-toggle-btn",
+  ".lkn-pricing .lkn-footer-nav button",
+  ".lkn-pricing .lkn-footer-copy",
 ];
 
-// Standalone marketing pricing page. Mirrors the landing page's light/white
-// layout (same .lkn-land theme, header, and footer) but lives at its own
-// /pricing route instead of being a scroll section of the main page. Plan and
-// FAQ content come from the shared pricing-config so it never drifts from the
-// in-app billing screen.
+// Standalone marketing pricing page. Rides the same Glass backdrop as the
+// landing page (drifting blue orb + frosted panels) with the shared header
+// and footer, but lives at its own /pricing route instead of being a scroll
+// section of the main page. Plan and FAQ content come from the shared
+// pricing-config so it never drifts from the in-app billing screen.
 export default function Pricing() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState(BILLING_PERIODS.ANNUAL);
@@ -57,35 +58,17 @@ export default function Pricing() {
 
   return (
     <div className="lkn-land lkn-pricing">
-      <header className="lkn-header is-scrolled">
-        <div className="lkn-header-inner">
-          <button
-            type="button"
-            className="lkn-brand"
-            onClick={() => navigate("/")}
-            aria-label="LYKN home"
-          >
-            <img src={lyknLogo} alt="LYKN" className="lkn-brand-logo" />
-          </button>
+      <LandingHeader />
 
-          <nav className="lkn-nav" aria-label="Primary">
-            <button type="button" className="lkn-nav-link" onClick={() => navigate("/")}>
-              Product
-            </button>
-            <button type="button" className="lkn-nav-link" onClick={() => navigate("/mobile")}>
-              Mobile
-            </button>
-            <div className="lkn-nav-auth">
-              <button type="button" className="lkn-nav-signup" onClick={goToSignup}>
-                Sign up
-              </button>
-              <button type="button" className="lkn-nav-signin" onClick={goToSignup}>
-                Sign in
-              </button>
-            </div>
-          </nav>
-        </div>
-      </header>
+      {/* Fixed page-wide backdrop: the drifting blue glow + frosted panels
+          shared with the Glass landing. The orb drops in from above the top
+          edge, then wanders on its own. */}
+      <GlassBackdrop
+        gradTextSelectors={GRAD_TEXT_SELECTORS}
+        mixTextSelectors={MIX_TEXT_SELECTORS}
+        wander
+        startAtTop
+      />
 
       <main className="lkn-pricing-main">
         {/* Heading + billing toggle */}
@@ -230,10 +213,9 @@ export default function Pricing() {
           <img src={lyknLogo} alt="LYKN" className="lkn-footer-logo" />
           <nav className="lkn-footer-nav" aria-label="Footer">
             <button type="button" onClick={() => navigate("/pricing")}>Pricing</button>
-            <button type="button" onClick={() => navigate("/mobile")}>Mobile</button>
-            <a href="/privacy">Privacy</a>
-            <a href="/terms">Terms</a>
-            <a href="/cookies">Cookies</a>
+            <button type="button" onClick={() => navigate("/privacy")}>Privacy</button>
+            <button type="button" onClick={() => navigate("/terms")}>Terms</button>
+            <button type="button" onClick={() => navigate("/cookies")}>Cookies</button>
           </nav>
           <p className="lkn-footer-copy">© {new Date().getFullYear()} LYKN</p>
         </div>

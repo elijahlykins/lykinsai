@@ -9,15 +9,9 @@ import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import { IntakeProvider } from '@/context/IntakeContext';
 import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
-import {
-  hasAppAccess,
-  isSubscriptionGateExempt,
-} from '@/lib/billingAccess';
-import { API_BASE_URL } from '@/lib/api-config';
-import { useQuery } from '@tanstack/react-query';
 
 import Login from "./pages/Login";
-import Landing from "./pages/Landing";
+import GlassLanding from "./pages/GlassLanding";
 import LyknChat from "./pages/LyknChat";
 import Settings from "./pages/Settings";
 // SynthesisLayer pulls in three.js + react-three-fiber + drei + the
@@ -42,7 +36,9 @@ import {
 import ShareReceiver from "./pages/ShareReceiver";
 import Onboarding from "./pages/Onboarding";
 import Pricing from "./pages/Pricing";
-import Mobile from "./pages/Mobile";
+import DownloadLykn from "./pages/DownloadLykn";
+import CapabilityPage from "./pages/CapabilityPage";
+import News, { NewsArticle } from "./pages/News";
 import AdminUsage from "./pages/AdminUsage";
 import AdminBilling from "./pages/AdminBilling";
 import OAuthConsent from "./pages/OAuthConsent";
@@ -107,45 +103,9 @@ function GuestOnly({ children, to = "/app" }) {
   return children;
 }
 
-async function fetchBillingMeForGate() {
-  const res = await fetch(`${API_BASE_URL}/api/billing/me`);
-  if (!res.ok) throw new Error(`billing/me ${res.status}`);
-  return res.json();
-}
-
-function useSubscriptionGate() {
-  const { user, loading: authLoading } = useAuth();
-  const location = useLocation();
-  const exempt = isSubscriptionGateExempt(location.pathname);
-
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["billing-me", user?.id || "guest"],
-    queryFn: fetchBillingMeForGate,
-    enabled: Boolean(user?.id) && !exempt,
-    staleTime: 5_000,
-    retry: 1,
-  });
-
-  if (authLoading || !user || exempt) {
-    return { redirect: null, loading: false };
-  }
-  if (isLoading) {
-    return { redirect: null, loading: true };
-  }
-  if (!isError && data && !hasAppAccess(data)) {
-    if (location.pathname === "/start-trial") {
-      return { redirect: null, loading: false };
-    }
-    return { redirect: "/start-trial", loading: false };
-  }
-  return { redirect: null, loading: false };
-}
-
 function AppShell() {
-  const { user, loading } = useAuth();
   const location = useLocation();
   const isMobile = useIsMobile();
-  const subscriptionGate = useSubscriptionGate();
   const { isEmbedded: isEmbeddedSurface } = readEmbeddedPreviewParams(
     location.search,
   );
@@ -155,13 +115,17 @@ function AppShell() {
   const isStartTrialPage = location.pathname === "/start-trial";
   const isLandingPage =
     location.pathname === "/" ||
-    location.pathname === "/landing-prototype" ||
+    location.pathname === "/landing" ||
+    location.pathname === "/glass" ||
     location.pathname === "/pricing" ||
-    location.pathname === "/mobile" ||
+    location.pathname === "/download" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
     location.pathname === "/cookies" ||
     location.pathname === "/dpa" ||
+    location.pathname === "/news" ||
+    location.pathname.startsWith("/news/") ||
+    location.pathname.startsWith("/product/") ||
     location.pathname.startsWith("/apps/");
   const isSharePage = location.pathname === "/share";
 
@@ -182,13 +146,17 @@ function AppShell() {
   // from the landing header should stay clean too.
   const isMarketingLanding =
     location.pathname === "/" ||
-    location.pathname === "/landing-prototype" ||
+    location.pathname === "/landing" ||
+    location.pathname === "/glass" ||
     location.pathname === "/pricing" ||
-    location.pathname === "/mobile" ||
+    location.pathname === "/download" ||
     location.pathname === "/privacy" ||
     location.pathname === "/terms" ||
     location.pathname === "/cookies" ||
-    location.pathname === "/dpa";
+    location.pathname === "/dpa" ||
+    location.pathname === "/news" ||
+    location.pathname.startsWith("/news/") ||
+    location.pathname.startsWith("/product/");
   // On mobile the account lives in the More menu (MobileTabBar), so the
   // floating top-left pill is only needed on chrome-less standalone pages.
   const showSignInPillGlobally =
@@ -197,14 +165,6 @@ function AppShell() {
     !isEmbeddedRoute &&
     !isMarketingLanding &&
     chromeHidden;
-
-  if (subscriptionGate.loading) {
-    return null;
-  }
-
-  if (subscriptionGate.redirect && location.pathname !== subscriptionGate.redirect) {
-    return <Navigate to={subscriptionGate.redirect} replace />;
-  }
 
   return (
     <>
@@ -236,9 +196,17 @@ function AppShell() {
             <Route path="/cookies" element={<CookiePolicy />} />
             <Route path="/dpa" element={<DPA />} />
             <Route path="/pricing" element={<Pricing />} />
-            <Route path="/mobile" element={<Mobile />} />
-            <Route path="/" element={<GuestOnly><Landing /></GuestOnly>} />
-            <Route path="/landing" element={<GuestOnly><Landing /></GuestOnly>} />
+            <Route path="/download" element={<DownloadLykn />} />
+            {/* Capability product pages: Chat / Build / Imagine / Voice. */}
+            <Route path="/product/:capId" element={<CapabilityPage />} />
+            <Route path="/news" element={<News />} />
+            <Route path="/news/:slug" element={<NewsArticle />} />
+            {/* LYKN Glass is now the primary landing page. "/glass" stays as an
+                alias; "/" and "/landing" serve the same page so every home /
+                logo link lands on the Glass hero. */}
+            <Route path="/glass" element={<GuestOnly><GlassLanding /></GuestOnly>} />
+            <Route path="/" element={<GuestOnly><GlassLanding /></GuestOnly>} />
+            <Route path="/landing" element={<GuestOnly><GlassLanding /></GuestOnly>} />
             <Route path="/app" element={<ProtectedRoute><LyknChat /></ProtectedRoute>} />
             <Route path="/dashboard" element={<Navigate to="/app" replace />} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />

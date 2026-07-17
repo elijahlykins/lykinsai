@@ -8,6 +8,7 @@ import { preloadVideoCompressor } from "@/lib/vault/compressMedia";
 import { startVaultUploads } from "@/lib/vault/uploadPipeline";
 import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
 import { useUserPlan } from "@/lib/useUserPlan";
+import { toast } from "@/components/ui/use-toast";
 
 /**
  * DragDropFileUpload
@@ -246,11 +247,12 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
       if (!types) return false;
       const allTypes = Array.from(types);
       if (allTypes.includes("application/x-lykn-chat-chat-response")) return false;
-      return (
-        allTypes.includes("Files") ||
-        allTypes.includes("text/uri-list") ||
-        allTypes.includes("text/plain")
-      );
+      // Only react to real files and dragged links. Plain-text-only drags
+      // (e.g. repositioning selected text between windows) used to trigger
+      // the full-screen "Drop files here" takeover even though a text drop
+      // usually does nothing. Links dragged from browsers always include
+      // text/uri-list alongside text/plain, so they still work.
+      return allTypes.includes("Files") || allTypes.includes("text/uri-list");
     };
 
     const getDroppedUrl = (event) => {
@@ -313,7 +315,21 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
       const droppedUrl = getDroppedUrl(event);
       if (droppedUrl) {
         const createdNote = await createDroppedLinkNote(droppedUrl);
-        if (createdNote?.id && onUploadComplete) onUploadComplete({ createdNotes: [createdNote] });
+        if (createdNote?.id) {
+          // Keep the client-side vault count in sync, same as file uploads
+          // (which pass through onNoteCreated via the upload pipeline).
+          onNoteCreated?.();
+          if (onUploadComplete) onUploadComplete({ createdNotes: [createdNote] });
+        } else if (createdNote === null) {
+          // null = insert failed (network, RLS, cap). `false` means the
+          // drop was blocked pre-insert (sign-in gate / limit modal),
+          // which already shows its own UI.
+          toast({
+            title: "Couldn't save link",
+            description: "Something went wrong saving that link. Please try again.",
+            variant: "destructive",
+          });
+        }
       }
     };
 
@@ -332,7 +348,7 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
         dragHideTimeoutRef.current = null;
       }
     };
-  }, [createDroppedLinkNote, onDrop, onUploadComplete]);
+  }, [createDroppedLinkNote, onDrop, onUploadComplete, onNoteCreated]);
 
   const handleFileInput = (e) => {
     const files = Array.from(e.target.files || []);
@@ -361,7 +377,7 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
                 Drop files or folders here
               </p>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                Folders, PDFs, images, videos — up to 200 files, 100 MB each
+                Folders, PDFs, images, videos. Up to 200 files, 100 MB each
               </p>
             </div>
           </div>

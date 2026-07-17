@@ -703,6 +703,21 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
     transition: background-color 0.18s ease, box-shadow 0.18s ease;
   }
 
+  .lykn-chat-neu-chat-toolbar-select-trigger:focus,
+  .lykn-chat-neu-chat-toolbar-select-trigger:focus-visible {
+    outline: none;
+  }
+
+  .lykn-chat-neu-chat-toolbar-select-trigger:focus:not(:hover):not([data-state="open"]) {
+    background-color: transparent;
+    box-shadow: none;
+  }
+
+  .lykn-chat-neu-chat-toolbar-select-trigger[data-state="closed"]:not(:hover) {
+    background-color: transparent;
+    box-shadow: none;
+  }
+
   .lykn-chat-neu-chat-toolbar-select-trigger:hover {
     background-color: rgba(59, 130, 246, 0.1);
     box-shadow: 0 0 12px rgba(59, 130, 246, 0.12);
@@ -711,6 +726,24 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   .dark .lykn-chat-neu-chat-toolbar-select-trigger:hover {
     background-color: rgba(59, 130, 246, 0.12);
     box-shadow: 0 0 14px rgba(59, 130, 246, 0.14);
+  }
+
+  /* Action buttons revealed on hover for mouse users, but always visible
+     (dimmed) on touch devices — `opacity-0 group-hover:opacity-100` alone
+     made delete/edit affordances unreachable on phones and tablets. */
+  .hover-reveal {
+    opacity: 0.55;
+    transition: opacity 0.15s ease;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .hover-reveal {
+      opacity: 0;
+    }
+    .group:hover .hover-reveal,
+    .hover-reveal:focus-within,
+    .hover-reveal:focus-visible {
+      opacity: 1;
+    }
   }
 
   /* Hide scrollbars but keep scrolling (Windows/Chrome friendly) */
@@ -1416,20 +1449,8 @@ body.sidebar-collapsed .app-content:has(.model-builder-page) {
   animation: slideInRight 0.2s ease-out;
 }
 
-@keyframes chatRailSlideIn {
-  from {
-    opacity: 0;
-    transform: translateX(40%);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
 /* Vault walkthrough welcome card. Fades + lifts in from below so it
-   reads as a popover anchored to the bottom-left corner, distinct
-   from the chat rail's right-side slide-in. */
+   reads as a popover anchored to the bottom-left corner. */
 @keyframes vaultIntroCardIn {
   from {
     opacity: 0;
@@ -2027,30 +2048,48 @@ mark {
 }
 
 /* ── Header ─────────────────────────────────────────────── */
+/* Floating glass rectangle, identical on every marketing page: the outer
+   band stays transparent and the inner bar is a contained, rounded frosted
+   panel that doesn't span the screen. */
 .lkn-header {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: 50;
+  padding: 14px clamp(0.9rem, 3vw, 1.5rem) 0;
   background: transparent;
   border-bottom: 1px solid transparent;
   transition: background 220ms ease, border-color 220ms ease,
     backdrop-filter 220ms ease;
+  /* Pin font smoothing AND the font stack so the shared header renders
+     identically on every landing page, regardless of what the page root
+     sets. Without these the nav text metrics changed subtly when switching
+     between roots (e.g. .glass-land sets Inter, .lkn-land doesn't), which
+     made the header links shift a little on navigation. */
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .lkn-header.is-scrolled {
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background: transparent;
+  border-bottom: none;
 }
 
 .lkn-header-inner {
-  max-width: 1180px;
+  max-width: 1120px;
   margin: 0 auto;
-  height: 64px;
-  padding: 0 clamp(1rem, 4vw, 2rem);
+  height: 56px;
+  padding: 0 clamp(1rem, 2.2vw, 1.6rem);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(20px) saturate(170%);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  box-shadow: 0 12px 32px -18px rgba(15, 23, 42, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2099,6 +2138,94 @@ mark {
 
 .lkn-header.is-scrolled .lkn-nav-link:hover {
   color: #0a0c12;
+}
+
+/* ── Product dropdown ───────────────────────────────────── */
+.lkn-prod {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* Bridge part of the hover gap between the trigger and the panel; the
+     close-grace timer in LandingHeader covers the rest of the travel. */
+  padding-bottom: 6px;
+  margin-bottom: -6px;
+}
+
+.lkn-prod-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.lkn-prod-chev {
+  width: 13px;
+  height: 13px;
+  transition: transform 180ms ease;
+}
+
+.lkn-prod-chev.is-open {
+  transform: rotate(180deg);
+}
+
+.lkn-prod-menu {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 300px;
+  padding: 0.5rem;
+  border-radius: 18px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  animation: lkn-prod-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  z-index: 60;
+}
+
+@keyframes lkn-prod-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Each entry is text-only: bold name over a one-line description. */
+.lkn-prod-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: none;
+  border-radius: 13px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 140ms ease;
+}
+
+.lkn-prod-item:hover {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.lkn-prod-name {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #0a0c12;
+  letter-spacing: -0.01em;
+}
+
+.lkn-prod-desc {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: rgba(15, 23, 42, 0.55);
 }
 
 .lkn-nav-auth {
@@ -2165,6 +2292,71 @@ mark {
   border-color: rgba(15, 23, 42, 0.28);
 }
 
+/* Demo video lightbox — opened by the header's "Watch Demo" button. */
+.lkn-demo-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: clamp(1rem, 4vw, 3rem);
+  background: rgba(8, 12, 22, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: lkn-demo-fade 220ms ease both;
+}
+.lkn-demo-frame {
+  position: relative;
+  width: min(1100px, 100%);
+  animation: lkn-demo-pop 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.lkn-demo-frame video {
+  display: block;
+  width: 100%;
+  border-radius: 16px;
+  background: #000;
+  box-shadow: 0 40px 120px -30px rgba(0, 0, 0, 0.8);
+}
+.lkn-demo-close {
+  position: absolute;
+  top: -14px;
+  right: -14px;
+  z-index: 1;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  font-size: 0.85rem;
+  color: #0f172a;
+  background: #ffffff;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s ease;
+}
+.lkn-demo-close:hover {
+  transform: scale(1.08);
+}
+@keyframes lkn-demo-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes lkn-demo-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* Docs dropdown — links to the real legal/docs pages. */
 .lkn-docs-menu {
   position: relative;
@@ -2206,11 +2398,31 @@ mark {
 }
 
 @media (max-width: 640px) {
-  .lkn-nav-link:not([href]) {
-    display: none;
+  /* Keep the primary nav reachable on phones — the header links are
+     <button>s (no href), so a `:not([href])` hide rule removed Product /
+     Pricing / Download entirely with no hamburger fallback.
+     Instead, compact the row so everything still fits. */
+  .lkn-nav {
+    gap: 0.65rem;
+  }
+  .lkn-nav-link {
+    font-size: 0.72rem;
+  }
+  .lkn-nav-signup,
+  .lkn-nav-signin {
+    font-size: 0.72rem;
+    padding: 0.3rem 0.6rem;
   }
   .lkn-docs-menu {
     display: none;
+  }
+  /* Keep the Product panel on-screen when the trigger sits near the left
+     edge of the compacted nav. */
+  .lkn-prod-menu {
+    left: -30px;
+    transform: none;
+    animation: none;
+    width: 270px;
   }
 }
 
@@ -4562,6 +4774,22 @@ mark {
 }
 
 /* ── Standalone pricing page ────────────────────────────── */
+/* The pricing page rides the Glass backdrop (drifting blue orb + frosted
+   panels, rendered fixed at z-index 0 by GlassBackdrop): the page surface
+   goes transparent so the backdrop shows through, content lifts above it,
+   and the footer lets the glow parked at the page bottom read through. */
+.lkn-land.lkn-pricing {
+  background: transparent;
+}
+.lkn-pricing .lkn-pricing-main,
+.lkn-pricing .lkn-footer {
+  position: relative;
+  z-index: 1;
+}
+.lkn-pricing .lkn-footer {
+  background: transparent;
+}
+
 .lkn-pricing-main {
   max-width: 1180px;
   margin: 0 auto;
@@ -4580,8 +4808,13 @@ mark {
   margin-top: clamp(1.5rem, 4vh, 2.25rem);
   padding: 0.3rem;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.06);
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  /* Frosted glass instead of a flat dark tint: over plain white it reads the
+     same, but when the blue orb drifts behind it the pill frosts up blue,
+     visibly reacting to the glow like the backdrop panels do. */
+  background: rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
 }
 
 .lkn-pricing-toggle-btn {
@@ -4601,7 +4834,10 @@ mark {
 
 .lkn-pricing-toggle-btn.is-active {
   background: #ffffff;
-  color: #0a0c12;
+  /* !important so this beats the GlassBackdrop's inline color blend: the
+     active tab sits on its own opaque white pill and must stay dark even
+     when the orb is behind the toggle. */
+  color: #0a0c12 !important;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
 }
 
@@ -4780,6 +5016,12 @@ mark {
   color: #2563eb;
 }
 
+/* Pro (highlighted) card: every checkmark is blue, accent or not. */
+.lkn-plan-card.is-highlighted .lkn-plan-feat-ico {
+  background: rgba(37, 99, 235, 0.14);
+  color: #2563eb;
+}
+
 .lkn-plan-feat-note {
   color: rgba(15, 23, 42, 0.45);
   font-size: 0.8rem;
@@ -4797,22 +5039,27 @@ mark {
 }
 
 .lkn-faq-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-}
-
-.lkn-faq-item {
   border: 1px solid rgba(15, 23, 42, 0.1);
   border-radius: 14px;
   background: #ffffff;
   overflow: hidden;
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  box-shadow: 0 12px 32px -22px rgba(15, 23, 42, 0.2);
+}
+
+/* Connected list — items are divided only by a hairline, with no gaps or
+   per-item card borders. */
+.lkn-faq-item {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+  background: #ffffff;
+  transition: background 160ms ease;
+}
+
+.lkn-faq-item:last-child {
+  border-bottom: none;
 }
 
 .lkn-faq-item.is-open {
-  border-color: rgba(37, 99, 235, 0.3);
-  box-shadow: 0 10px 30px -18px rgba(15, 23, 42, 0.35);
+  background: #fafbfe;
 }
 
 .lkn-faq-question {
@@ -4877,117 +5124,6 @@ mark {
     grid-template-columns: 1fr;
     max-width: 30rem;
     margin: 0 auto;
-  }
-}
-
-/* ── Mobile "coming soon" page ─────────────────────────────────────
-   Reuses the light .lkn-land surface (white page, dark text) with its own
-   intro + a how/why explainer grid. */
-.lkn-mobile-main {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: clamp(7rem, 12vh, 9rem) clamp(1.25rem, 4vw, 3rem) clamp(4rem, 9vh, 7rem);
-}
-
-.lkn-mobile-intro {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-}
-
-.lkn-mobile-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.3rem 0.8rem;
-  border-radius: 999px;
-  border: 1px solid rgba(37, 99, 235, 0.22);
-  background: rgba(59, 130, 246, 0.1);
-  color: #2563eb;
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.lkn-mobile-hero-ico {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: clamp(5rem, 12vw, 6.5rem);
-  height: clamp(5rem, 12vw, 6.5rem);
-  margin: 1.5rem 0 0.25rem;
-  border-radius: 1.6rem;
-  background: linear-gradient(165deg, #5b93f5 0%, #2f6bf0 55%, #1d4ed8 100%);
-  box-shadow: 0 22px 48px -20px rgba(37, 99, 235, 0.55);
-}
-
-.lkn-mobile-hero-glyph {
-  width: 78%;
-  height: 78%;
-  object-fit: contain;
-}
-
-.lkn-mobile-cta-row {
-  margin-top: 1.75rem;
-}
-
-.lkn-mobile-grid {
-  margin-top: clamp(3rem, 8vh, 5rem);
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: clamp(1rem, 2vw, 1.5rem);
-}
-
-.lkn-mobile-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  padding: clamp(1.5rem, 2.5vw, 2rem);
-  border-radius: 22px;
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.07);
-  box-shadow: 0 14px 36px -28px rgba(15, 23, 42, 0.4);
-}
-
-.lkn-mobile-card-ico {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.75rem;
-  height: 2.75rem;
-  border-radius: 0.9rem;
-  background: rgba(59, 130, 246, 0.1);
-  color: #2563eb;
-  margin-bottom: 1rem;
-}
-
-.lkn-mobile-card-title {
-  margin: 0 0 0.5rem;
-  font-size: 1.05rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: #0a0c12;
-}
-
-.lkn-mobile-card-body {
-  margin: 0;
-  font-size: 0.92rem;
-  line-height: 1.55;
-  color: rgba(15, 23, 42, 0.62);
-}
-
-@media (max-width: 980px) {
-  .lkn-mobile-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 640px) {
-  .lkn-mobile-grid {
-    grid-template-columns: 1fr;
-    max-width: 30rem;
-    margin-inline: auto;
   }
 }
 

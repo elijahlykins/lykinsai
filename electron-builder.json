@@ -9,6 +9,7 @@
   },
   "files": [
     "electron/**/*",
+    "lib/browserScreen.cjs",
     "package.json",
     "!**/node_modules/**",
     "node_modules/electron-updater/**",
@@ -26,7 +27,11 @@
     "node_modules/tiny-typed-emitter/**",
     "node_modules/debug/**",
     "node_modules/ms/**",
-    "node_modules/sax/**"
+    "node_modules/sax/**",
+    "node_modules/pdfjs-dist/package.json",
+    "node_modules/pdfjs-dist/legacy/build/pdf.mjs",
+    "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+    "node_modules/pdfjs-dist/standard_fonts/**"
   ],
   "extraResources": [
     {
@@ -36,6 +41,8 @@
     }
   ],
   "extraMetadata": {
+    "name": "lykn",
+    "productName": "LYKN",
     "main": "electron/main.cjs",
     "type": "commonjs"
   },
@@ -44,8 +51,8 @@
     "category": "public.app-category.productivity",
     "icon": "electron/resources/icon.png",
     "target": [
-      { "target": "dmg", "arch": ["arm64", "x64"] },
-      { "target": "zip", "arch": ["arm64", "x64"] }
+      { "target": "dmg", "arch": ["universal"] },
+      { "target": "zip", "arch": ["universal"] }
     ],
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
@@ -59,6 +66,7 @@
   },
   "dmg": {
     "title": "LYKN ${version}",
+    "artifactName": "${productName}.dmg",
     "icon": "electron/resources/icon.png",
     "contents": [
       { "x": 130, "y": 220 },
@@ -68,6 +76,6 @@
   "publish": {
     "provider": "github",
     "owner": "elijahlykins",
-    "repo": "lykinsai"
+    "repo": "lykn-releases"
   }
 }

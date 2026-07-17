@@ -4,6 +4,7 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 import { ICON_PATH, ICON_VIEWBOX } from "./brand";
 
 // ---------------------------------------------------------------------------
@@ -641,6 +642,7 @@ export const LyknProjects: React.FC = () => {
         fontFamily: "Inter, system-ui, sans-serif",
       }}
     >
+      <SceneBackground />
       <div
         style={{
           position: "absolute",

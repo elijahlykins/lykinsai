@@ -67,9 +67,11 @@ export function buildChatModelFilterOptions(customModels = []) {
 }
 
 /**
- * @param {Array<{ id?: string, chat_model_key?: string | null }>} boards
+ * @template {{ id?: string, chat_model_key?: string | null }} T
+ * @param {T[]} boards
  * @param {string} filterValue
  * @param {{ activeChatId?: string | null }} [opts]
+ * @returns {T[]}
  */
 export function filterLyknChatsByChatModel(boards, filterValue, opts = {}) {
   const filter = String(filterValue || CHAT_MODEL_FILTER_ALL).trim();

@@ -275,6 +275,10 @@ export default function BeliefWindowPanel({
 }: BeliefWindowPanelProps) {
   const [data, setData] = useState<BeliefsResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  // Non-null when the most recent mutation (ratify/retire/edit/…) failed.
+  // Surfaced as an inline banner so failures aren't silently swallowed.
+  const [actionError, setActionError] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
   // Tabs: Beliefs (ratify + create principles), Perspectives (long-form
   // stories — the other half of the Belief cluster), Rules (belief-derived
@@ -315,7 +319,12 @@ export default function BeliefWindowPanel({
       const next = await fetchBeliefs();
       if (next) {
         setData(next);
+        setLoadError(false);
         lastLoadedAt.current = Date.now();
+      } else {
+        // Keep any previously-loaded data on screen; only flag the error
+        // so a failed fetch doesn't render as a silently empty panel.
+        setLoadError(true);
       }
       setLoading(false);
     },
@@ -355,24 +364,35 @@ export default function BeliefWindowPanel({
     });
   };
 
+  // postJson/patchJson never throw — they return { ok: false } on any
+  // failure. Every mutation used to ignore that and clear its spinner as
+  // if it worked; route all of them through here so failures surface.
+  const reportResult = (res: { ok?: boolean } | null | undefined) => {
+    if (!res || res.ok === false) {
+      setActionError("That change didn't save — please try again.");
+    } else {
+      setActionError(null);
+    }
+  };
+
   const promoteBeliefs = async () => {
     if (promoting) return;
     setPromoting(true);
-    await postJson("/api/beliefs/promote");
+    reportResult(await postJson("/api/beliefs/promote"));
     await loadData();
     setPromoting(false);
   };
 
   const ratifyBelief = async (id: string) => {
     markPending(id, true);
-    await postJson(`/api/beliefs/${id}/ratify`);
+    reportResult(await postJson(`/api/beliefs/${id}/ratify`));
     await loadData();
     markPending(id, false);
   };
 
   const retireBelief = async (id: string) => {
     markPending(id, true);
-    await postJson(`/api/beliefs/${id}/retire`);
+    reportResult(await postJson(`/api/beliefs/${id}/retire`));
     await loadData();
     markPending(id, false);
   };
@@ -386,7 +406,7 @@ export default function BeliefWindowPanel({
     if (patch.servesNeed != null) body.servesNeed = patch.servesNeed;
     if (!Object.keys(body).length) return;
     markPending(id, true);
-    await patchJson(`/api/beliefs/${id}`, body);
+    reportResult(await patchJson(`/api/beliefs/${id}`, body));
     await loadData();
     markPending(id, false);
   };
@@ -394,35 +414,35 @@ export default function BeliefWindowPanel({
   const createBelief = async (text: string, servesNeed: Need) => {
     const tempId = `__create_${Date.now()}`;
     markPending(tempId, true);
-    await postJson("/api/beliefs/manual", { text, servesNeed });
+    reportResult(await postJson("/api/beliefs/manual", { text, servesNeed }));
     await loadData();
     markPending(tempId, false);
   };
 
   const proposeMoreRules = async (id: string) => {
     markPending(`rules-${id}`, true);
-    await postJson(`/api/beliefs/${id}/propose-rules`);
+    reportResult(await postJson(`/api/beliefs/${id}/propose-rules`));
     await loadData();
     markPending(`rules-${id}`, false);
   };
 
   const ratifyRule = async (id: string) => {
     markPending(id, true);
-    await postJson(`/api/rules/${id}/ratify`);
+    reportResult(await postJson(`/api/rules/${id}/ratify`));
     await loadData();
     markPending(id, false);
   };
 
   const retireRule = async (id: string) => {
     markPending(id, true);
-    await postJson(`/api/rules/${id}/retire`);
+    reportResult(await postJson(`/api/rules/${id}/retire`));
     await loadData();
     markPending(id, false);
   };
 
   const editRule = async (id: string, patch: Record<string, unknown>) => {
     markPending(id, true);
-    await patchJson(`/api/rules/${id}`, patch);
+    reportResult(await patchJson(`/api/rules/${id}`, patch));
     await loadData();
     markPending(id, false);
   };
@@ -437,7 +457,7 @@ export default function BeliefWindowPanel({
     },
   ) => {
     markPending(id, true);
-    await postJson(`/api/applied/${id}/feedback`, payload);
+    reportResult(await postJson(`/api/applied/${id}/feedback`, payload));
     await loadData();
     markPending(id, false);
   };
@@ -494,10 +514,36 @@ export default function BeliefWindowPanel({
 
           {/* Content area */}
           <div className="flex-1 overflow-y-auto px-4 py-3 scrollbar-hide">
+            {actionError && (
+              <div className="mb-3 px-3 py-2 rounded-lg border border-red-400/30 bg-red-500/10 text-red-200 text-[0.7rem] flex items-center justify-between gap-2">
+                <span>{actionError}</span>
+                <button
+                  onClick={() => setActionError(null)}
+                  className="text-red-200/70 hover:text-red-100 shrink-0"
+                  aria-label="Dismiss error"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             {loading && !data && (
               <div className="flex items-center justify-center py-16 text-white/45 text-xs">
                 <Loader2 size={14} className="animate-spin mr-2" />
                 Loading…
+              </div>
+            )}
+            {!loading && !data && loadError && (
+              <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+                <p className="text-white/60 text-xs">
+                  Couldn't load your beliefs right now.
+                </p>
+                <button
+                  onClick={() => loadData()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-white/8 hover:bg-white/12 text-white/80 text-[0.7rem] transition-colors"
+                >
+                  <RefreshCw size={11} />
+                  Try again
+                </button>
               </div>
             )}
 

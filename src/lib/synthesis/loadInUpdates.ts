@@ -761,7 +761,7 @@ function buildCalendarSection(events: ConnectorNote[]): string[] {
     .slice(0, PER_SECTION_BULLETS + 1)
     .map((e) => {
       const title = String(e.title || "(untitled event)").trim();
-      return `- **${title}** — ${formatCalendarWhen(e.created_at)}`;
+      return `- **${title}**: ${formatCalendarWhen(e.created_at)}`;
     });
 }
 
@@ -790,9 +790,9 @@ function buildTodayAndWeekSections(events: ConnectorNote[]): {
         hour: "numeric",
         minute: "2-digit",
       });
-      today.push(`- **${time}** — ${title}`);
+      today.push(`- **${time}**: ${title}`);
     } else {
-      week.push(`- **${title}** — ${formatCalendarWhen(e.created_at)}`);
+      week.push(`- **${title}**: ${formatCalendarWhen(e.created_at)}`);
     }
   }
   return {
@@ -830,7 +830,7 @@ function buildConnectorSection(items: ConnectorNote[]): string[] {
     if (group.length === 1) {
       const title = String(group[0].title || "(untitled)").trim();
       bullets.push(
-        `- **${label}** — “${truncate(title, 64)}” · ${relativeTime(group[0].updated_at)}`,
+        `- **${label}**: “${truncate(title, 64)}” · ${relativeTime(group[0].updated_at)}`,
       );
     } else {
       const newest = group[0];
@@ -839,7 +839,7 @@ function buildConnectorSection(items: ConnectorNote[]): string[] {
         .map((g) => `“${truncate(String(g.title || "untitled"), 32)}”`)
         .join(", ");
       bullets.push(
-        `- **${label}** — ${group.length} new items (${sample}) · ${relativeTime(newest.updated_at)}`,
+        `- **${label}**: ${group.length} new items (${sample}) · ${relativeTime(newest.updated_at)}`,
       );
     }
     if (bullets.length >= PER_SECTION_BULLETS) break;
@@ -883,19 +883,19 @@ function buildRecentSection(events: ActivityEvent[]): string[] {
   for (const e of newProjects) {
     const who = clientDisplay(e.by_client);
     lines.push(
-      `- **New project** “${e.target_label || "Untitled"}” — created by ${who} · ${relativeTime(e.when)}`,
+      `- **New project** “${e.target_label || "Untitled"}”, created by ${who} · ${relativeTime(e.when)}`,
     );
   }
   for (const e of beliefActive) {
     const who = clientDisplay(e.by_client);
     lines.push(
-      `- **New belief active** — “${e.target_label || "a new belief"}” (from ${who}) · ${relativeTime(e.when)}`,
+      `- **New belief active**: “${e.target_label || "a new belief"}” (from ${who}) · ${relativeTime(e.when)}`,
     );
   }
   for (const e of factEvents) {
     const who = clientDisplay(e.by_client);
     lines.push(
-      `- ${who === "you" ? "You added" : `${who} learned`} a new fact — “${e.target_label || "about you"}” · ${relativeTime(e.when)}`,
+      `- ${who === "you" ? "You added" : `${who} learned`} a new fact: “${e.target_label || "about you"}” · ${relativeTime(e.when)}`,
     );
   }
   return lines.slice(0, MAX_RECENT);
@@ -915,12 +915,12 @@ function buildApprovalsSection(events: ActivityEvent[]): string[] {
     const text = e.target_label || "a new belief";
     if (clients.length >= 2) {
       bullets.push(
-        `- **“${text}”** — ${joinClients(clients)} independently surfaced this · ${relativeTime(e.when)}`,
+        `- **“${text}”**: ${joinClients(clients)} independently surfaced this · ${relativeTime(e.when)}`,
       );
     } else {
       const who = clientDisplay(e.by_client);
       bullets.push(
-        `- **“${text}”** — proposed by ${who} · ${relativeTime(e.when)}`,
+        `- **“${text}”**, proposed by ${who} · ${relativeTime(e.when)}`,
       );
     }
     if (bullets.length >= MAX_PROPOSED) break;
@@ -964,7 +964,7 @@ function buildProjectsSection(events: ActivityEvent[]): string[] {
     if (p.created && p.updates.length === 0) {
       const who = clientDisplay(p.created.by_client);
       lines.push(
-        `- **${p.name}** — newly created by ${who} · ${relativeTime(p.created.when)}`,
+        `- **${p.name}**, newly created by ${who} · ${relativeTime(p.created.when)}`,
       );
       continue;
     }
@@ -973,7 +973,7 @@ function buildProjectsSection(events: ActivityEvent[]): string[] {
     const count = p.updates.length;
     const verb = count === 1 ? "update" : "updates";
     lines.push(
-      `- **${p.name}** — ${count} ${verb} (latest from ${who}) · ${relativeTime(newest.when)}`,
+      `- **${p.name}**: ${count} ${verb} (latest from ${who}) · ${relativeTime(newest.when)}`,
     );
   }
   return lines;
@@ -1430,6 +1430,225 @@ function formatTimeOnly(iso: string): string {
   });
 }
 
+// ----------------------------------------------------------------------
+// Today's docket — the user's OWN in-app schedule + task list for today,
+// pulled straight from `lykn_events` and `lykn_todos` (the rows the
+// Projects/Tasks workspace and the AI todo/calendar tools write). This is
+// distinct from the connector "On your calendar" lane above (which mirrors
+// Google Calendar): the docket is what LYKN itself is tracking for you,
+// so it's the first thing the load-in greeting shows.
+// ----------------------------------------------------------------------
+interface DocketEvent {
+  id: string;
+  title: string;
+  startsAt: number;
+  allDay: boolean;
+  location: string | null;
+  projectId: string | null;
+}
+interface DocketTask {
+  id: string;
+  title: string;
+  dueAt: number | null;
+  priority: string;
+  projectId: string | null;
+}
+export interface TodayDocket {
+  events: DocketEvent[];
+  dueToday: DocketTask[];
+  overdue: DocketTask[];
+  projectNames: Record<string, string>;
+  /**
+   * True when the fetch failed (network / RLS / outage). Lets consumers
+   * distinguish "nothing scheduled today" from "we couldn't load your day"
+   * — showing "all clear" during an outage hides overdue work.
+   */
+  error?: boolean;
+}
+
+function startOfToday(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+function endOfToday(): number {
+  const d = new Date();
+  d.setHours(23, 59, 59, 999);
+  return d.getTime();
+}
+
+/**
+ * Pull the user's own events + tasks that matter TODAY. RLS on both
+ * tables scopes the result to rows the signed-in user can read, so no
+ * explicit user filter is needed. Best-effort: any failure returns an
+ * empty docket so the greeting still renders.
+ */
+export async function fetchTodayDocket(): Promise<TodayDocket> {
+  const empty: TodayDocket = { events: [], dueToday: [], overdue: [], projectNames: {} };
+  try {
+    const start = startOfToday();
+    const end = endOfToday();
+    const [eventsRes, tasksRes] = await Promise.all([
+      supabase
+        .from("lykn_events")
+        .select("id, title, starts_at, all_day, location, project_id, status")
+        .neq("status", "cancelled")
+        .gte("starts_at", new Date(start).toISOString())
+        .lte("starts_at", new Date(end).toISOString())
+        .order("starts_at", { ascending: true })
+        .limit(20),
+      supabase
+        .from("lykn_todos")
+        .select("id, title, due_at, priority, project_id, status")
+        .eq("status", "open")
+        .not("due_at", "is", null)
+        .lte("due_at", new Date(end).toISOString())
+        .order("due_at", { ascending: true })
+        .limit(30),
+    ]);
+
+    // Supabase surfaces failures on the result object rather than
+    // throwing — treat either query erroring as a failed docket load.
+    if (eventsRes.error || tasksRes.error) {
+      return { ...empty, error: true };
+    }
+
+    const events: DocketEvent[] = (eventsRes.data || []).map((r: Record<string, unknown>) => ({
+      id: r.id as string,
+      title: ((r.title as string) || "").trim() || "(untitled event)",
+      startsAt: r.starts_at ? new Date(r.starts_at as string).getTime() : start,
+      allDay: Boolean(r.all_day),
+      location: (r.location as string | null) ?? null,
+      projectId: (r.project_id as string | null) ?? null,
+    }));
+
+    const dueToday: DocketTask[] = [];
+    const overdue: DocketTask[] = [];
+    for (const r of (tasksRes.data || []) as Record<string, unknown>[]) {
+      const dueAt = r.due_at ? new Date(r.due_at as string).getTime() : null;
+      const task: DocketTask = {
+        id: r.id as string,
+        title: ((r.title as string) || "").trim() || "(untitled task)",
+        dueAt,
+        priority: (r.priority as string) || "normal",
+        projectId: (r.project_id as string | null) ?? null,
+      };
+      if (dueAt != null && dueAt < start) overdue.push(task);
+      else dueToday.push(task);
+    }
+
+    // Resolve project names for any referenced projects so rows read
+    // "Ship v2 · Launch" rather than a bare uuid.
+    const projectIds = Array.from(
+      new Set(
+        [...events, ...dueToday, ...overdue]
+          .map((x) => x.projectId)
+          .filter((id): id is string => !!id),
+      ),
+    );
+    const projectNames: Record<string, string> = {};
+    if (projectIds.length > 0) {
+      const { data: projRows } = await supabase
+        .from("lykn_projects")
+        .select("id, name")
+        .in("id", projectIds);
+      for (const p of (projRows || []) as Record<string, unknown>[]) {
+        projectNames[p.id as string] = ((p.name as string) || "").trim() || "Project";
+      }
+    }
+
+    return { events, dueToday, overdue, projectNames };
+  } catch {
+    return { ...empty, error: true };
+  }
+}
+
+function docketWhen(task: DocketTask): string {
+  if (task.dueAt == null) return "";
+  const d = new Date(task.dueAt);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function eventWhen(ev: DocketEvent): string {
+  if (ev.allDay) return "All day";
+  const d = new Date(ev.startsAt);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/**
+ * The "Today's docket" section — the user's own events + tasks for the
+ * day, each row deep-linking into its project (or the projects index).
+ * Returns null when there's nothing on the plate so the greeting can
+ * skip an empty heading.
+ */
+function buildTodayDocketSection(docket: TodayDocket | null): LoadInUpdatesSection | null {
+  if (!docket) return null;
+  const { events, dueToday, overdue, projectNames } = docket;
+  if (events.length === 0 && dueToday.length === 0 && overdue.length === 0) {
+    return null;
+  }
+
+  const projectSub = (projectId: string | null): string | undefined =>
+    projectId && projectNames[projectId] ? projectNames[projectId] : undefined;
+  const openAction = (projectId: string | null): LoadInUpdatesAction => ({
+    label: "Open",
+    href: projectId ? `/projects/${projectId}` : "/projects",
+    tone: "primary",
+  });
+
+  const items: LoadInUpdatesItem[] = [];
+
+  // Events first, in start-time order.
+  for (const ev of events.slice(0, 6)) {
+    const parts = [eventWhen(ev)];
+    if (ev.location) parts.push(ev.location);
+    const proj = projectSub(ev.projectId);
+    if (proj) parts.push(proj);
+    items.push({
+      title: ev.title,
+      subtitle: parts.filter(Boolean).join(" · "),
+      action: openAction(ev.projectId),
+    });
+  }
+
+  // Overdue tasks next (they need attention most), then due-today.
+  for (const t of overdue.slice(0, 5)) {
+    const proj = projectSub(t.projectId);
+    items.push({
+      title: t.title,
+      subtitle: `Overdue${docketWhen(t) ? ` · was due ${docketWhen(t)}` : ""}${proj ? ` · ${proj}` : ""}`,
+      action: { ...openAction(t.projectId), tone: "amber" },
+    });
+  }
+  for (const t of dueToday.slice(0, 6)) {
+    const proj = projectSub(t.projectId);
+    const bits = ["Due today"];
+    if (t.priority === "high") bits.push("High priority");
+    if (proj) bits.push(proj);
+    items.push({
+      title: t.title,
+      subtitle: bits.join(" · "),
+      action: openAction(t.projectId),
+    });
+  }
+
+  // One-line summary of the whole plate.
+  const summaryParts: string[] = [];
+  if (events.length > 0) summaryParts.push(`${events.length} event${events.length === 1 ? "" : "s"}`);
+  const taskTotal = dueToday.length + overdue.length;
+  if (taskTotal > 0) summaryParts.push(`${taskTotal} task${taskTotal === 1 ? "" : "s"}`);
+  if (overdue.length > 0) summaryParts.push(`${overdue.length} overdue`);
+
+  return {
+    id: "today-docket",
+    heading: "On your plate today",
+    intro: summaryParts.length ? `${summaryParts.join(" · ")}.` : undefined,
+    items,
+  };
+}
+
 function buildTodaySection(
   events: ConnectorNote[],
   calendarConfigured: boolean,
@@ -1462,7 +1681,7 @@ function buildTodaySection(
       id: "calendar",
       heading: "On your calendar",
       intro:
-        "I can't see your calendar yet — connect Google Calendar and I'll fold today's schedule in here.",
+        "I can't see your calendar yet. Connect Google Calendar and I'll fold today's schedule in here.",
       items: [
         {
           title: sug.platform,
@@ -1491,7 +1710,7 @@ function buildTodaySection(
     return {
       id: "calendar",
       heading: "On your calendar",
-      intro: "Nothing on the books — your day is clear.",
+      intro: "Nothing on the books. Your day is clear.",
       items: [
         {
           title: "Open Calendar",
@@ -1716,7 +1935,7 @@ function buildProjectUpdatesSection(
       return {
         id: `${p.id}-evt-${ix}`,
         title: desc
-          ? `${evVerb} with ${evWho} — ${desc}`
+          ? `${evVerb} with ${evWho}: ${desc}`
           : `${evVerb} with ${evWho}`,
         subtitle: relativeTime(ev.when || ""),
         href: evHref,
@@ -1761,13 +1980,13 @@ const CATEGORY_EMPTY_INTRO: Record<
   Exclude<ConnectorCategory, "calendar" | "health">,
   string
 > = {
-  social: "I'm not reading from any social account yet — connect one and I'll surface what you're bookmarking and reacting to.",
+  social: "I'm not reading from any social account yet. Connect one and I'll surface what you're bookmarking and reacting to.",
   productivity:
-    "I'm not seeing your projects yet — connect a productivity app and I'll fold what you're working on into your daily briefing.",
+    "I'm not seeing your projects yet. Connect a productivity app and I'll fold what you're working on into your daily briefing.",
   reading:
-    "I'm not tracking what you read yet — connect a reading app and I'll roll articles and highlights into your context.",
+    "I'm not tracking what you read yet. Connect a reading app and I'll roll articles and highlights into your context.",
   media:
-    "I'm not seeing your music or design picks yet — connect a media app and I'll fold them into your daily context.",
+    "I'm not seeing your music or design picks yet. Connect a media app and I'll fold them into your daily context.",
 };
 
 function buildConnectorCategorySection(
@@ -1879,7 +2098,7 @@ function buildHealthSection(
       id: "health",
       heading: "Health & activity",
       intro:
-        "I'm not reading from a wearable yet — connect Oura, WHOOP, Fitbit, or Strava and I'll fold sleep, recovery, and activity into how I plan with you.",
+        "I'm not reading from a wearable yet. Connect Oura, WHOOP, Fitbit, or Strava and I'll fold sleep, recovery, and activity into how I plan with you.",
       items: [
         {
           title: sug.platform,
@@ -1900,7 +2119,7 @@ function buildHealthSection(
     return {
       id: "health",
       heading: "Health & activity",
-      intro: "No new readings since your last briefing — your trackers are quiet.",
+      intro: "No new readings since your last briefing. Your trackers are quiet.",
       items: [],
     };
   }
@@ -2298,7 +2517,7 @@ function buildConnectPromptsSection(
     id: "connect",
     heading: "Connect the rest",
     intro:
-      "A few apps I can't see into yet — tap any to wire it up and I'll fold it into your daily briefing.",
+      "A few apps I can't see into yet. Tap any to wire it up and I'll fold it into your daily briefing.",
     items: [],
     chips,
   };
@@ -2361,9 +2580,18 @@ function formatMessage(
   userSections: LoadInUpdatesSection[] = [],
   provenanceByBelief: Map<string, BeliefProvenanceRow[]> = new Map(),
   conceptsMoved: ConceptsMovedRow[] = [],
+  docket: TodayDocket | null = null,
 ): LoadInUpdatesPayload {
   const sections = collectSections(events);
   const { recent, approvals, projects } = sections;
+
+  // The user's own events + tasks for today (from lykn_events / lykn_todos).
+  // Built up front so it can drive both the recap bullets and be pinned to
+  // the top of the structured sections.
+  const docketSection = buildTodayDocketSection(docket);
+  const docketEventCount = docket?.events.length ?? 0;
+  const docketTaskCount = (docket?.dueToday.length ?? 0) + (docket?.overdue.length ?? 0);
+  const docketOverdueCount = docket?.overdue.length ?? 0;
 
   const { today: todayLines, week: weekLines } = connector
     ? buildTodayAndWeekSections(connector.upcomingCalendar)
@@ -2401,6 +2629,7 @@ function formatMessage(
   considerLane("health", healthLines.length > 0);
 
   const hasContent =
+    docketSection != null ||
     recent.length > 0 ||
     approvals.length > 0 ||
     projects.length > 0 ||
@@ -2438,6 +2667,18 @@ function formatMessage(
     `${n} ${n === 1 ? sing : (plural || `${sing}s`)}`;
 
   const bullets: string[] = [];
+  // Lead the recap with the user's own plate for today — the most
+  // actionable line in the whole briefing.
+  if (docketEventCount > 0 || docketTaskCount > 0) {
+    const parts: string[] = [];
+    if (docketEventCount > 0) parts.push(pluralize(docketEventCount, "event"));
+    if (docketTaskCount > 0) parts.push(pluralize(docketTaskCount, "task"));
+    let line = `${parts.join(" · ")} on your plate today`;
+    if (docketOverdueCount > 0) {
+      line += ` (${docketOverdueCount} overdue)`;
+    }
+    bullets.push(line);
+  }
   if (!calendarConfiguredForBullets) {
     bullets.push("Calendar isn't connected yet");
   } else if (todayCount > 0) {
@@ -2473,7 +2714,7 @@ function formatMessage(
   const remainingUnconfigured = unconfigured.filter((c) => c !== "calendar");
   if (remainingUnconfigured.length > 0) {
     bullets.push(
-      `${pluralize(remainingUnconfigured.length, "lane")} I can't see into yet — wire them up below`,
+      `${pluralize(remainingUnconfigured.length, "lane")} I can't see into yet (wire them up below)`,
     );
   }
 
@@ -2507,6 +2748,9 @@ function formatMessage(
       structuredSections.push(s);
     }
   };
+  // Today's docket leads the briefing — the user's own schedule + task
+  // list for the day, ahead of everything connector-driven.
+  pushIfSome(docketSection);
   const calendarConfigured = status.configured.has("calendar");
   // The calendar slot is always rendered: events when connected, a
   // "Connect Google Calendar" prompt when not. We pass an empty list
@@ -2563,7 +2807,7 @@ function formatMessage(
   // section has its own heading + inline action button.
   const welcomeMessage = hasContent
     ? opener
-    : `${opener} Nothing new on the wire — calendar's clear, no pending approvals, your synthesis layer is quiet.`;
+    : `${opener} Nothing new on the wire: calendar's clear, no pending approvals, your synthesis layer is quiet.`;
 
   // Roll-up stats for the right-side dashboard panel. Computed here
   // because every input (events, connector buckets, approvals
@@ -2821,12 +3065,13 @@ export async function fetchLoadInUpdatesMessage(
     ],
     6000,
   );
-  const [synthesisResp, connectorResp, statusResp, userSections] =
+  const [synthesisResp, connectorResp, statusResp, userSections, docket] =
     await Promise.all([
       fetchActivity(),
       fetchConnectorActivity(),
       fetchConnectorStatus(),
       fetchUserAuthoredSections(),
+      fetchTodayDocket(),
     ]);
   // Pull provenance for the small list of beliefs that will actually
   // get rendered as approval items (deduped, capped at 8 inside
@@ -2864,5 +3109,6 @@ export async function fetchLoadInUpdatesMessage(
     userSections,
     provenanceByBelief,
     conceptsMoved,
+    docket,
   );
 }

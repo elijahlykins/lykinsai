@@ -11,14 +11,12 @@ import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/
 import ModelSelectOptions from "@/components/ModelSelectOptions";
 import { toast } from "@/components/ui/use-toast";
 import { useUserPlan } from "@/lib/useUserPlan";
-import { isModelAllowedForPlan, defaultModelForTier, canonicalizeModelId } from "@/lib/modelTiers";
-import { LYKN_ID } from "@/lib/modelCatalog";
+import { isModelAllowedForPlan, defaultModelForTier } from "@/lib/modelTiers";
 import { useAssistantName } from "@/hooks/useAssistantName";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { supabase } from "@/lib/supabase";
 import { useAiStore } from "@/store/aiStore";
 import { useAuth } from "@/lib/SupabaseAuth";
-import RichTextRenderer from "@/components/notes/RichTextRenderer";
 import { useUsageGate } from "@/lib/useUsageGate";
 import UpgradeModal from "@/components/UpgradeModal";
 import { getBlockDefinition } from "@/lyknChat/blockSystem/definitions";
@@ -47,6 +45,7 @@ import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/c
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { fetchLoadInUpdatesMessage } from "@/lib/synthesis/loadInUpdates";
+import DailyDocketCard from "@/components/projects/DailyDocketCard";
 import { useProjectFiles } from "@/hooks/useProjectFiles";
 import LyknChatToolbar from "@/components/lyknChat/LyknChatToolbar";
 import LyknChatToasts from "@/components/lyknChat/LyknChatToasts";
@@ -73,6 +72,7 @@ import {
   parseCustomModelSelectValue,
 } from "@/lib/modelBuilder/customModelSelect";
 import { toChatModelKey } from "@/lib/lyknChat/chatModelKey";
+import { patchThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
 import LyknChatPlusMenu from "@/components/lyknChat/LyknChatPlusMenu";
 import LyknChatProjectPicker, { type LyknChatScopedProject } from "@/components/lyknChat/LyknChatProjectPicker";
 // Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
@@ -583,6 +583,8 @@ function composerModeLabel(mode: ComposerMode): string {
   if (mode === "research") return "Deep research";
   if (mode.startsWith("create:")) {
     const kind = mode.slice("create:".length) as ArtifactKind;
+    // "webapp" is surfaced in the menu as Build mode (AI codes it out live).
+    if (kind === "webapp") return "Build mode";
     return CREATE_MODE_LABELS[kind] ? `Create: ${CREATE_MODE_LABELS[kind]}` : "Create";
   }
   return "";
@@ -590,9 +592,10 @@ function composerModeLabel(mode: ComposerMode): string {
 
 const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   compact, onSend, chatInputHasText, hasAttachments, isChatLoading, isDictating, isTranscribing,
-  modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu, assistantName,
+  modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
   handleStopAi, handleDictateToggle,
   handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
+  handleBuildModeClick,
   handleWebSearchClick, handleDeepResearchClick,
   handleSelectProjectClick, scopedProjectName, handleClearScopedProject,
   handleCreateArtifact,
@@ -609,13 +612,13 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   persistSelectedModel: (v: string) => void;
   modelTier?: string;
   modelSelectMenu: React.ReactNode;
-  assistantName: string;
   handleStopAi: () => void;
   handleDictateToggle: () => void;
   handlePickFiles: () => void;
   handleAddLinkClick: () => void;
   handlePullFromVault: () => void;
   handleGenerateImageClick: () => void;
+  handleBuildModeClick: () => void;
   handleWebSearchClick: () => void;
   handleDeepResearchClick: () => void;
   handleSelectProjectClick: () => void;
@@ -625,23 +628,51 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   composerMode: ComposerMode;
   setComposerMode: (m: ComposerMode) => void;
 }) {
+  const [modelMenuOpen, setModelMenuOpen] = React.useState(false);
   const sendDisabled = (!chatInputHasText && !hasAttachments) || isChatLoading || isDictating || isTranscribing;
   const modelTriggerCls = compact
-    ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
-    : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
+    ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
+    : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
   const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
   const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
   const dropdownCls = "rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5";
 
+  const blurModelTrigger = React.useCallback(() => {
+    requestAnimationFrame(() => {
+      document
+        .querySelectorAll<HTMLElement>(".lykn-chat-neu-chat-toolbar-select-trigger")
+        .forEach((el) => el.blur());
+    });
+  }, []);
+
+  const handleModelOpenChange = React.useCallback(
+    (open: boolean) => {
+      setModelMenuOpen(open);
+      if (!open) blurModelTrigger();
+    },
+    [blurModelTrigger],
+  );
+
+  const handleModelChange = React.useCallback(
+    (value: string) => {
+      setModelMenuOpen(false);
+      persistSelectedModel(value);
+      blurModelTrigger();
+    },
+    [persistSelectedModel, blurModelTrigger],
+  );
+
   return (
     <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>
-      <Select value={modelSelectValue} onValueChange={persistSelectedModel}>
+      <Select
+        modal={false}
+        open={modelMenuOpen}
+        onOpenChange={handleModelOpenChange}
+        value={modelSelectValue}
+        onValueChange={handleModelChange}
+      >
         <SelectTrigger className={modelTriggerCls}>
-          {canonicalizeModelId(modelSelectValue) === LYKN_ID ? (
-            <SelectValue placeholder="Model">{assistantName}</SelectValue>
-          ) : (
-            <SelectValue placeholder="Model" />
-          )}
+          <SelectValue placeholder="Model" />
         </SelectTrigger>
         <SelectContent
           side="top"
@@ -684,6 +715,7 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
         onProjects={handleSelectProjectClick}
         onCreate={handleCreateArtifact}
         onGenerateImage={handleGenerateImageClick}
+        onBuildMode={handleBuildModeClick}
         onDeepResearch={handleDeepResearchClick}
         onWebSearch={handleWebSearchClick}
       />
@@ -737,7 +769,7 @@ export default function LyknChat() {
     try {
       toast({
         title: "Sign in to continue",
-        description: `You need an account to ${what} — it's free.`,
+        description: `You need an account to ${what}. It's free.`,
         action: (
           <button
             type="button"
@@ -1042,6 +1074,10 @@ export default function LyknChat() {
   const convoSummaryRef = useRef<string>("");
   const convoTurnsSinceSummaryRef = useRef(0);
   const [typedWelcome, setTypedWelcome] = useState("");
+  // "Today's briefing" — a toggle chip that's always present in the chat so
+  // the user can pull up their calendar + task rundown any time. Starts
+  // collapsed; only the user opens it (never auto-expands on entry / first chat).
+  const [showDocketCard, setShowDocketCard] = useState(false);
   const [showAiSuggestionToast, setShowAiSuggestionToast] = useState(false);
   const lastSuggestionKeyRef = useRef<string>("");
   const [connectionCards, setConnectionCards] = useState<Array<{ title: string; sourceType: "board" | "media"; reason: string }>>([]);
@@ -1165,6 +1201,15 @@ export default function LyknChat() {
     const firstName = fullName ? fullName.split(/\s+/)[0] : "";
     const preferredName = String(firstName || emailName || "").trim();
     return preferredName ? `Welcome back, ${preferredName}` : "Start a new chat";
+  }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
+
+  const docketGreetingName = useMemo(() => {
+    const emailName = String(user?.email || "").split("@")[0].trim();
+    const fullName = String(
+      user?.user_metadata?.full_name || user?.user_metadata?.name || "",
+    ).trim();
+    const firstName = fullName ? fullName.split(/\s+/)[0] : "";
+    return (firstName || emailName || "").trim() || null;
   }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
 
   useEffect(() => {
@@ -1509,6 +1554,17 @@ export default function LyknChat() {
   //     a brand-new board.
   const loadInGreetingRefreshedRef = useRef<Set<string>>(new Set());
 
+  // Timeout ids for the in-place greeting refresh typewriter. Mirrors the
+  // consume effect's cleanup: without this, switching chats (or leaving the
+  // page) mid-animation keeps firing setChatMessages against the wrong board.
+  const greetingRefreshTimeoutsRef = useRef<number[]>([]);
+  useEffect(() => {
+    return () => {
+      for (const t of greetingRefreshTimeoutsRef.current) window.clearTimeout(t);
+      greetingRefreshTimeoutsRef.current = [];
+    };
+  }, [routeChatId]);
+
   // Reusable refresher used by both the on-mount effect below and the
   // inline user-sections composer in the chat surface. Re-fetches the
   // greeting payload and overlays it onto the single load-in-greeting
@@ -1543,15 +1599,18 @@ export default function LyknChat() {
     // and ends in an ellipsis.
     let isPlaceholder = false;
     let targetMsgId: string | null = null;
-    setChatMessages((prev) => {
-      if (prev.length === 1 && prev[0].kind === "load-in-greeting") {
-        const cur = prev[0];
+    {
+      // Read via the ref instead of a side-effecting setState updater —
+      // updaters must stay pure (StrictMode runs them twice), and by this
+      // point (post-await) the ref mirrors the latest committed state.
+      const currentMsgs = chatMessagesRef.current || [];
+      if (currentMsgs.length === 1 && currentMsgs[0].kind === "load-in-greeting") {
+        const cur = currentMsgs[0];
         const txt = String(cur.aiResponse || "").trim();
         isPlaceholder = txt.startsWith("Catching you up") && txt.endsWith("…");
         targetMsgId = cur.id;
       }
-      return prev;
-    });
+    }
 
     if (!isPlaceholder) {
       // Already-shown briefing → instant overlay, no animation.
@@ -1619,32 +1678,36 @@ export default function LyknChat() {
         ),
       );
       if (i < words.length) {
-        window.setTimeout(tick, baseStepMs);
+        greetingRefreshTimeoutsRef.current.push(
+          window.setTimeout(tick, baseStepMs),
+        );
       } else if (
         (payload!.sections && payload!.sections.length > 0) ||
         (payload!.actions && payload!.actions.length > 0)
       ) {
-        window.setTimeout(() => {
-          setChatMessages((prev) =>
-            prev.map((m) =>
-              m.id === targetMsgId
-                ? {
-                    ...m,
-                    aiResponseSections:
-                      payload!.sections && payload!.sections.length > 0
-                        ? payload!.sections
-                        : undefined,
-                    aiResponseActions:
-                      payload!.sections && payload!.sections.length > 0
-                        ? undefined
-                        : payload!.actions && payload!.actions.length > 0
-                          ? payload!.actions
+        greetingRefreshTimeoutsRef.current.push(
+          window.setTimeout(() => {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === targetMsgId
+                  ? {
+                      ...m,
+                      aiResponseSections:
+                        payload!.sections && payload!.sections.length > 0
+                          ? payload!.sections
                           : undefined,
-                  }
-                : m,
-            ),
-          );
-        }, 240);
+                      aiResponseActions:
+                        payload!.sections && payload!.sections.length > 0
+                          ? undefined
+                          : payload!.actions && payload!.actions.length > 0
+                            ? payload!.actions
+                            : undefined,
+                    }
+                  : m,
+              ),
+            );
+          }, 240),
+        );
       }
     };
     tick();
@@ -1769,6 +1832,24 @@ export default function LyknChat() {
     replaySavedPromptResponse, applyProjectActions,
   } = chatEngine;
   const thinkingStatus = useThinkingStatus(isChatLoading, chatStatusText);
+
+  // Retire the "on your plate today" bubble the moment the user starts a
+  // turn so it doesn't linger beneath the fresh exchange. Declared here (not
+  // beside the trigger) because `isChatLoading` is destructured just above.
+  useEffect(() => {
+    if (showDocketCard && isChatLoading) setShowDocketCard(false);
+  }, [showDocketCard, isChatLoading]);
+
+  // If the user had the briefing open, collapse it when they switch chats —
+  // each conversation starts with the chip only; they reopen via the toggle.
+  const docketPrevChatIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const id = chatId ?? null;
+    if (docketPrevChatIdRef.current && id && id !== docketPrevChatIdRef.current) {
+      setShowDocketCard(false);
+    }
+    if (id) docketPrevChatIdRef.current = id;
+  }, [chatId]);
 
   const clampChatRailWidth = useCallback((raw: number, vw: number) => {
     const width = Math.max(0, Math.floor(vw || 0));
@@ -2220,6 +2301,10 @@ export default function LyknChat() {
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
+      // The embedded vault sidebar is same-origin; reject cross-origin
+      // messages so an external page (e.g. one that window.open()'d us) can't
+      // inject attachments into the composer or drive storage-signing calls.
+      if (e.origin !== window.location.origin) return;
       if (!e.data || typeof e.data !== "object") return;
       if (e.data.type === "lykn-chat-vault-drag-start" && e.data.data) {
         if (import.meta.env.DEV) console.log("[VAULT-DRAG] drag-start received");
@@ -2289,7 +2374,7 @@ export default function LyknChat() {
         ...(uploaded ? { storagePath, storageBucket: "user-files", size: fileSize } : {}),
         mimeType,
       }];
-      const noteContent = `AI-generated image${promptText ? ` — "${promptText.slice(0, 100)}"` : ""}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
+      const noteContent = `AI-generated image${promptText ? `: "${promptText.slice(0, 100)}"` : ""}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
 
       const { data: ins, error } = await supabase
         .from("vault_items")
@@ -2320,7 +2405,7 @@ export default function LyknChat() {
     if (!videoId) return;
     if (!user?.id) { requireSignIn("save to the vault"); return; }
     if (!(await checkVaultLimit())) return;
-    const title = `YouTube Video — ${videoId}`;
+    const title = `YouTube Video: ${videoId}`;
     const watchUrl = url || `https://www.youtube.com/watch?v=${videoId}`;
     const thumbnail = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
     try {
@@ -2504,6 +2589,13 @@ export default function LyknChat() {
     armComposerMode("image");
   }, [armComposerMode]);
 
+  // Build mode — the AI codes the request out as a live React artifact
+  // (landing page, dashboard, tool…). Same pipeline as "+" → Create, forced
+  // to the webapp spec (lykn_build_react_artifact).
+  const handleBuildModeClick = useCallback(() => {
+    armComposerMode("create:webapp");
+  }, [armComposerMode]);
+
   const handleWebSearchClick = useCallback(() => {
     armComposerMode("web");
   }, [armComposerMode]);
@@ -2582,9 +2674,11 @@ export default function LyknChat() {
 
   // Save an AI-built artifact (deck / document / chart / file) from the side
   // panel into the vault. Documents & decks save the human-friendly PDF when
-  // one exists; charts/images save the image; inline HTML (no URL) saves the
-  // markup. The bytes are copied into the user's own storage so the vault note
-  // keeps a permanent, re-signable copy instead of a 7-day proxy link.
+  // one exists; charts/images save the image; websites / React artifacts prefer
+  // the in-memory srcDoc (avoids cross-origin fetch failures on branded /f/
+  // proxy URLs that still work as <a download> navigations). The bytes are
+  // copied into the user's own storage so the vault note keeps a permanent,
+  // re-signable copy instead of a 7-day proxy link.
   const saveArtifactToVault = useCallback(async (artifact: ChatArtifact): Promise<boolean> => {
     if (!artifact) return false;
     if (!user?.id) { requireSignIn("save to the vault"); return false; }
@@ -2593,10 +2687,20 @@ export default function LyknChat() {
     const title = (artifact.title || "Artifact").trim() || "Artifact";
     const downloads = artifact.downloads || [];
     const pdf = downloads.find((d) => String(d.format).toLowerCase() === "pdf");
+    const htmlDownload = downloads.find((d) => String(d.format).toLowerCase() === "html");
 
     let blob: Blob | null = null;
     let filename = "";
     let mimeType = "";
+
+    const useSrcDoc = () => {
+      if (!artifact.srcDoc) return false;
+      blob = new Blob([artifact.srcDoc], { type: "text/html;charset=utf-8" });
+      filename = artifact.filename || `${title}.html`;
+      if (!/\.html?$/i.test(filename)) filename = `${filename}.html`;
+      mimeType = "text/html;charset=utf-8";
+      return true;
+    };
 
     try {
       if (artifact.kind !== "image" && pdf) {
@@ -2605,26 +2709,45 @@ export default function LyknChat() {
         filename = pdf.filename || `${title}.pdf`;
         mimeType = "application/pdf";
       }
-      if (!blob && artifact.srcDoc && !artifact.previewUrl && !artifact.downloadUrl) {
-        // Inline / leaked HTML with no persisted URL — save the markup.
-        blob = new Blob([artifact.srcDoc], { type: "text/html" });
-        filename = `${title}.html`;
-        mimeType = "text/html";
+      // Prefer inline HTML for website / deck / React artifacts — no network,
+      // immune to CORS on the API file proxy. Only skip when we already have a PDF.
+      if (!blob && artifact.kind === "html" && artifact.srcDoc) {
+        useSrcDoc();
       }
       if (!blob) {
-        const url = artifact.previewUrl || artifact.downloadUrl || downloads[0]?.url || "";
+        const url =
+          artifact.previewUrl ||
+          artifact.downloadUrl ||
+          htmlDownload?.url ||
+          downloads[0]?.url ||
+          "";
         if (url) {
-          const res = await fetch(url);
-          if (res.ok) blob = await res.blob();
-          const fmt = String(artifact.format || downloads[0]?.format || "").toLowerCase();
-          const ext = fmt || (blob?.type?.split("/")[1]) || "bin";
-          filename = artifact.filename || downloads[0]?.filename || `${title}.${ext}`;
-          mimeType = blob?.type || "";
-        } else if (artifact.srcDoc) {
-          blob = new Blob([artifact.srcDoc], { type: "text/html" });
-          filename = `${title}.html`;
-          mimeType = "text/html";
+          try {
+            const res = await fetch(url);
+            if (res.ok) blob = await res.blob();
+          } catch { /* CORS / network — fall through to srcDoc */ }
+          if (blob?.size) {
+            const fmt = String(
+              artifact.format || htmlDownload?.format || downloads[0]?.format || "",
+            ).toLowerCase();
+            const ext = fmt || (blob.type?.split("/")[1]) || "bin";
+            filename =
+              artifact.filename ||
+              htmlDownload?.filename ||
+              downloads[0]?.filename ||
+              `${title}.${ext}`;
+            mimeType = blob.type || "";
+          }
         }
+      }
+      // URL fetch failed or missing — still have the live preview markup.
+      if (!blob?.size) useSrcDoc();
+      // React artifacts: last resort save the component source.
+      if (!blob?.size && typeof artifact.code === "string" && artifact.code.trim()) {
+        const base = (artifact.filename || title).replace(/\.[a-z0-9]+$/i, "");
+        blob = new Blob([artifact.code], { type: "text/plain;charset=utf-8" });
+        filename = `${base}.jsx`;
+        mimeType = "text/plain;charset=utf-8";
       }
     } catch { /* network/CORS — handled below */ }
 
@@ -2713,6 +2836,13 @@ export default function LyknChat() {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
   }, []);
 
+  // The scroll container only exists in the conversation branch of the view —
+  // it mounts when the first message arrives (and remounts after any switch
+  // through an empty thread). Re-run the listener effect on that transition,
+  // otherwise the detach listeners never bind and the streaming stick-to-bottom
+  // fights the user's scroll for the entire response.
+  const chatHasMessages = chatMessages.length > 0;
+
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
@@ -2764,7 +2894,7 @@ export default function LyknChat() {
       el.removeEventListener("keydown", onKeyDown);
       el.removeEventListener("scroll", onScroll);
     };
-  }, [chatMode, chatRailVisible, chatIsNearBottom]);
+  }, [chatMode, chatRailVisible, chatIsNearBottom, chatHasMessages]);
 
   useEffect(() => {
     if (!chatMode && !chatRailVisible) return;
@@ -3548,9 +3678,10 @@ export default function LyknChat() {
   const chatBarToolbarProps = useMemo(() => ({
     chatInputHasText, hasAttachments: focusedChatAttachments.length > 0,
     isChatLoading, isDictating, isTranscribing,
-    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu, assistantName,
+    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
     handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
+    handleBuildModeClick,
     handleWebSearchClick, handleDeepResearchClick,
     handleSelectProjectClick, scopedProjectName: chatScopedProject?.name ?? null, handleClearScopedProject,
     handleCreateArtifact,
@@ -3558,9 +3689,10 @@ export default function LyknChat() {
   }), [
     chatInputHasText, focusedChatAttachments.length,
     isChatLoading, isDictating, isTranscribing,
-    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu, assistantName,
+    modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
     handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
+    handleBuildModeClick,
     handleWebSearchClick, handleDeepResearchClick,
     handleSelectProjectClick, chatScopedProject, handleClearScopedProject,
     handleCreateArtifact,
@@ -3642,12 +3774,6 @@ export default function LyknChat() {
     });
   }, [chatReactions, chatMessages, routeChatId, selectedModel]);
 
-  const handleFocusedChatRegenerate = useCallback((msgId: string, content: string) => {
-    setChatMessages((prev) => prev.map((m) => m.id === msgId ? { ...m, aiResponse: undefined, aiImageUrl: undefined, sources: undefined } : m));
-    pendingAiBrickActionRef.current = true;
-    setChatInput(content);
-  }, []);
-
   // Edit a sent prompt: drop the edited turn and everything after it, rebuild
   // the model-facing thread from the surviving history, then re-send the
   // edited text as a fresh turn (edit-and-resend; no version tree yet).
@@ -3670,18 +3796,37 @@ export default function LyknChat() {
         : [{ role: "user" as const, content: p.content }],
     );
     aiThreadRef.current = rebuilt.length > 40 ? rebuilt.slice(rebuilt.length - 40) : rebuilt;
+    // CRITICAL: the send path reads history from the per-chat runtime
+    // snapshot, not from React state — and its reconcile pass only merges
+    // when React is LONGER than the snapshot. Without patching the snapshot
+    // here, the pre-edit turns come back on the next send and the model
+    // still sees the full un-truncated conversation.
+    const bid = String(routeChatId || chatId || "");
+    if (bid) {
+      patchThreadSnapshot(bid, {
+        chatMessages: truncated,
+        aiThread: [...aiThreadRef.current],
+      });
+    }
     pendingAiBrickActionRef.current = true;
     setChatInput(next);
-  }, [setChatMessages, setChatInput]);
+  }, [setChatMessages, setChatInput, routeChatId, chatId]);
+
+  // Regenerate = truncate at the regenerated turn and re-send the same
+  // prompt. Going through the edit-resend path keeps React state, the
+  // model-facing thread, AND the runtime snapshot in sync — the previous
+  // React-only clear left the old answer in the snapshot, so the send
+  // appended a duplicate user bubble and the model still saw the old reply.
+  const handleFocusedChatRegenerate = useCallback((msgId: string, content: string) => {
+    handleFocusedChatEditResend(msgId, content);
+  }, [handleFocusedChatEditResend]);
 
   const handleFocusedChatRegenerateNonUser = useCallback((msgId: string, idx: number) => {
     const prevUserMsg = chatMessages.slice(0, idx).reverse().find((m) => m.role === "user");
     if (prevUserMsg) {
-      setChatMessages((prev) => prev.filter((m) => m.id !== msgId));
-      pendingAiBrickActionRef.current = true;
-      setChatInput(prevUserMsg.content);
+      handleFocusedChatEditResend(prevUserMsg.id, prevUserMsg.content);
     }
-  }, [chatMessages]);
+  }, [chatMessages, handleFocusedChatEditResend]);
 
   const handleVaultOverlayDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -4082,6 +4227,7 @@ export default function LyknChat() {
       <LyknChatToolbar
         isMobilePhone={isMobilePhone}
         notesOpen={notesOpen}
+        rightInset={activeArtifact && !isMobilePhone ? "min(760px, 50vw)" : undefined}
         voiceModeEligible={voiceModeEligible}
         voiceModeOn={voiceModeOn}
         onVoiceModeToggle={toggleVoiceMode}
@@ -4172,6 +4318,15 @@ export default function LyknChat() {
           onChatInputChange={handleChatInputChange}
           onSend={handleChatSend}
           typedWelcome={typedWelcome}
+          docketBubble={
+            !isEmbeddedMode ? (
+              <DailyDocketCard
+                greetingName={docketGreetingName}
+                expanded={showDocketCard}
+                onToggle={() => setShowDocketCard((v) => !v)}
+              />
+            ) : null
+          }
           isMobileGrid={isMobileGrid}
           isMobilePhone={isMobilePhone}
           isDictating={isDictating}
@@ -4233,7 +4388,10 @@ export default function LyknChat() {
         if (!greeting?.aiResponseStats) return null;
         return (
           <div
-            className="hidden lg:block fixed right-4 xl:right-8 top-20 z-[80]"
+            // 2xl breakpoint: below ~1536px the fixed 20rem card overlaps the
+            // centered greeting column it's meant to accompany. overflow-y so
+            // the panel content scrolls on short viewports instead of clipping.
+            className="hidden 2xl:block fixed right-4 xl:right-8 top-20 z-[80] overflow-y-auto"
             style={{
               maxHeight: "calc(100vh - 6rem)",
               width: "20rem",

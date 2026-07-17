@@ -160,6 +160,27 @@ export async function setTodoPriority(
   }
 }
 
+/** Persist manual board ordering (lower = higher up within a column). The
+ * board computes a fractional position between neighbours so a single row
+ * moves without renumbering the rest. */
+export async function setTodoPosition(
+  userId: string | null | undefined,
+  todoId: string,
+  position: number | null,
+): Promise<boolean> {
+  if (!userId || !todoId) return false;
+  try {
+    const { error } = await supabase
+      .from("lykn_todos")
+      .update({ position, updated_at: new Date().toISOString() })
+      .eq("id", todoId);
+    if (error) throw error;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function setTodoDue(
   userId: string | null | undefined,
   todoId: string,

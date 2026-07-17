@@ -49,7 +49,7 @@ const tools = [
   {
     name: "lykn_getContextBlock",
     summary:
-      "One-shot pull of your active beliefs, rules, and current project state — pasted into Claude's reasoning at the top of a chat.",
+      "One-shot pull of your active beliefs, rules, and current project state, pasted into Claude's reasoning at the top of a chat.",
   },
   {
     name: "lykn_getBeliefs",
@@ -69,7 +69,7 @@ const tools = [
   {
     name: "lykn_getProjectState",
     summary:
-      "The working memory of whatever you're currently building — accumulated by every other AI client you use, not just Claude.",
+      "The working memory of whatever you're currently building, accumulated by every other AI client you use, not just Claude.",
   },
   {
     name: "lykn_searchVault",
@@ -103,7 +103,7 @@ const scopes = [
     id: "lykn:read",
     title: "Read",
     description:
-      "Beliefs, rules, facts, vault items, and active project state. Read-only — never modifies anything.",
+      "Beliefs, rules, facts, vault items, and active project state. Read-only: never modifies anything.",
   },
   {
     id: "lykn:write",
@@ -123,7 +123,7 @@ const securityPoints = [
   {
     icon: Lock,
     title: "Tokens hashed at rest",
-    body: "OAuth-issued bearers are stored as SHA-256 digests in LYKN's database. The plaintext leaves our server exactly once — to Claude. We can't read it back to recover access on your behalf, and a database leak doesn't expose live tokens.",
+    body: "OAuth-issued bearers are stored as SHA-256 digests in LYKN's database. The plaintext leaves our server exactly once, to Claude. We can't read it back to recover access on your behalf, and a database leak doesn't expose live tokens.",
   },
   {
     icon: Clock,
@@ -133,7 +133,7 @@ const securityPoints = [
   {
     icon: RefreshCw,
     title: "Refresh-token replay detection",
-    body: "We rotate refresh tokens on every use. The instant a previously-consumed token is replayed, we revoke the entire token family — RFC 6749 §10.4 compliant.",
+    body: "We rotate refresh tokens on every use. The instant a previously-consumed token is replayed, we revoke the entire token family (RFC 6749 §10.4 compliant).",
   },
   {
     icon: Shield,
@@ -230,7 +230,7 @@ export default function AppsClaude() {
           </AnimatedBlock>
           <AnimatedBlock delay={240}>
             <p className="mt-6 text-[16px] sm:text-[18px] leading-relaxed text-black/60 dark:text-white/65 max-w-xl mx-auto">
-              LYKN is your synthesis layer — your ratified beliefs, rules, facts,
+              LYKN is your synthesis layer: your ratified beliefs, rules, facts,
               vault, and live project state. Connect once and every Claude
               surface (web, Desktop, mobile, Cowork, Claude Code) reasons through
               what you actually believe instead of generic best-practice.
@@ -267,7 +267,7 @@ export default function AppsClaude() {
               </a>
             </div>
             <p className="mt-4 text-[11.5px] text-black/45 dark:text-white/45">
-              Works on Free and Pro — no Developer Mode toggle, no
+              Works on Free and Pro. No Developer Mode toggle, no
               waitlist.{" "}
               {!DIRECTORY_URL && (
                 <>
@@ -313,12 +313,12 @@ export default function AppsClaude() {
               {
                 icon: Zap,
                 title: "Pushes back what it learns",
-                body: "When you share a durable fact or make a project decision, Claude can save it to LYKN — facts and project state, not beliefs (those you add yourself).",
+                body: "When you share a durable fact or make a project decision, Claude can save it to LYKN: facts and project state, not beliefs (those you add yourself).",
               },
               {
                 icon: RefreshCw,
                 title: "Read-write, with consent",
-                body: "Claude can read your synthesis layer AND propose fact and project updates — but writes always land in your inbox to ratify, never silently active.",
+                body: "Claude can read your synthesis layer AND propose fact and project updates, but writes always land in your inbox to ratify, never silently active.",
               },
               {
                 icon: Shield,
@@ -457,7 +457,7 @@ export default function AppsClaude() {
                 (S256), Dynamic Client Registration (RFC 7591), Token
                 Revocation (RFC 7009), and Token Introspection (RFC 7662).
                 Anthropic's Connectors flow speaks all of those natively
-                (oauth_dcr) — we didn't invent anything.
+                (oauth_dcr); we didn't invent anything.
               </p>
             </div>
           </AnimatedBlock>
@@ -513,7 +513,7 @@ export default function AppsClaude() {
                   </span>
                   <span>
                     Click <strong>Connect</strong> in Claude. A LYKN consent
-                    screen pops up — Approve.
+                    screen pops up. Approve.
                   </span>
                 </li>
                 <li className="flex gap-3">
@@ -542,7 +542,7 @@ export default function AppsClaude() {
                     Add as a custom connector
                   </h3>
                   <p className="text-[12.5px] text-black/60 dark:text-white/65 leading-relaxed mb-4">
-                    Free and Pro are both eligible — no Developer Mode toggle.
+                    Free and Pro are both eligible, no Developer Mode toggle.
                     We'll copy the URL, deep-link you into{" "}
                     <strong>Settings → Connectors</strong>, and the connection
                     auto-syncs to Desktop, mobile, Cowork, and Claude Code.
@@ -567,7 +567,7 @@ export default function AppsClaude() {
                     Anthropic Connectors Directory
                   </h3>
                   <p className="text-[12.5px] text-black/60 dark:text-white/65 leading-relaxed mb-4">
-                    One-click install from Claude's built-in Directory — no
+                    One-click install from Claude's built-in Directory. No
                     URL paste, no setup. Pending Anthropic review.
                   </p>
                   <a

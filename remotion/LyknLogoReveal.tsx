@@ -13,6 +13,7 @@ import {
   WORDMARK_PATH,
   WORDMARK_VIEWBOX,
 } from "./brand";
+import { SceneBackground } from "./SceneBackground";
 
 const LOGO_FILL = WHITE;
 const LOGO_GLOW = WHITE;
@@ -28,13 +29,20 @@ const GAP = -34;
 
 export type LyknLogoRevealProps = {
   background: string;
+  /** Multiplier on the whole lockup size (1 = original). */
+  scale?: number;
+  /** Animation speed multiplier (2 = twice as fast). */
+  speed?: number;
 };
 
 export const LyknLogoReveal: React.FC<LyknLogoRevealProps> = ({
   background,
+  scale = 1,
+  speed = 1,
 }) => {
-  const frame = useCurrentFrame();
+  const rawFrame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  const frame = rawFrame * speed;
 
   // 1) Icon traces on (stroke draw via normalized pathLength).
   const draw = interpolate(frame, [0, 40], [0, 1], {
@@ -89,20 +97,14 @@ export const LyknLogoReveal: React.FC<LyknLogoRevealProps> = ({
         alignItems: "center",
       }}
     >
-      {/* Ambient glow */}
-      <AbsoluteFill
-        style={{
-          background: `radial-gradient(circle at 50% 50%, ${LOGO_GLOW}40, transparent 55%)`,
-          opacity: glow,
-        }}
-      />
-
+      <SceneBackground />
       <div
         style={{
           display: "flex",
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "center",
+          transform: `scale(${scale})`,
         }}
       >
         {/* Icon */}

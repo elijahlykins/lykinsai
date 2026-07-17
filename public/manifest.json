@@ -1,7 +1,7 @@
 {
   "name": "LYKN",
   "short_name": "LYKN",
-  "description": "Second brain application",
+  "description": "Your personal AI on any screen, one shortcut away.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

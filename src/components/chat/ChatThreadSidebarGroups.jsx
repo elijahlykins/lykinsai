@@ -1,10 +1,15 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { Loader2, MoreHorizontal } from "lucide-react";
 import { useLocation } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { isThreadLoading, subscribeThreadRuntime } from "@/lib/chat/chatThreadRuntime";
-import { fetchLyknChatsWithContext, mergeActiveRouteLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
+import {
+  fetchLyknChatsPage,
+  searchLyknChatsByTitle,
+  mergeActiveRouteLyknChat,
+  SIDEBAR_PAGE_SIZE,
+} from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { filterLyknChatsByChatModel } from "@/lib/lyknChat/chatModelKey";
 
 const COLLAPSED_GROUP_SIZE = 5;
@@ -117,26 +122,95 @@ export default function ChatThreadSidebarGroups({
 
   useEffect(() => subscribeThreadRuntime(() => bump()), []);
 
-  const { data: boards = [], isLoading } = useQuery({
-    queryKey: ["boards", userId],
-    queryFn: () => fetchLyknChatsWithContext(userId, 50),
-    enabled: !!userId,
+  const sentinelRef = useRef(null);
+
+  // List mode: paginate the whole history so old chats stay reachable instead
+  // of being capped at the first 50.
+  const {
+    data: pageData,
+    isLoading: listLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ["sidebar-boards-paged", userId],
+    queryFn: ({ pageParam }) => fetchLyknChatsPage(userId, pageParam, SIDEBAR_PAGE_SIZE),
+    enabled: !!userId && !needle,
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
   });
 
+  // Search mode: query the DB by title across the whole history, not just the
+  // already-fetched pages.
+  const { data: searchResults = [], isLoading: searchLoading } = useQuery({
+    queryKey: ["sidebar-boards-search", userId, needle],
+    queryFn: () => searchLyknChatsByTitle(userId, needle),
+    enabled: !!userId && !!needle,
+  });
+
+  // Flatten pages, de-duping by id (offset pagination can overlap when a chat's
+  // updated_at bumps between page loads).
+  const listBoards = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const page of pageData?.pages || []) {
+      for (const board of page.rows || []) {
+        if (seen.has(board.id)) continue;
+        seen.add(board.id);
+        out.push(board);
+      }
+    }
+    return out;
+  }, [pageData]);
+
+  const boards = needle ? searchResults : listBoards;
+  const isLoading = needle ? searchLoading : listLoading;
+
   const visibleBoards = useMemo(
-    () => mergeActiveRouteLyknChat(boards, location.pathname),
-    [boards, location.pathname],
+    () => (needle ? boards : mergeActiveRouteLyknChat(boards, location.pathname)),
+    [boards, location.pathname, needle],
   );
 
+  // Auto-load the next page when the sentinel scrolls into view. The scroll
+  // container is the sidebar's overflow-y ancestor, so resolve it as the
+  // observer root (plain viewport intersection never fires inside it).
+  useEffect(() => {
+    if (needle) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    let root = el.parentElement;
+    while (root && root !== document.body) {
+      const oy = getComputedStyle(root).overflowY;
+      if (oy === "auto" || oy === "scroll") break;
+      root = root.parentElement;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting) && hasNextPage && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { root: root && root !== document.body ? root : null, rootMargin: "200px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [needle, hasNextPage, isFetchingNextPage, fetchNextPage]);
+
   const filteredBoards = useMemo(() => {
-    let list = filterLyknChatsByChatModel(visibleBoards, modelFilter);
+    // Always keep the chat that's currently open in the list — without
+    // passing activeChatId, a model filter can hide the very conversation
+    // the user is looking at.
+    const activeChatId = location.pathname.startsWith("/chat/")
+      ? location.pathname.slice("/chat/".length)
+      : null;
+    let list = filterLyknChatsByChatModel(visibleBoards, modelFilter, { activeChatId });
     if (needle) {
       list = list.filter((b) =>
         String(b.title || "New Chat").toLowerCase().includes(needle),
       );
     }
     return list;
-  }, [visibleBoards, modelFilter, needle]);
+  }, [visibleBoards, modelFilter, needle, location.pathname]);
 
   const groupedBoards = useMemo(
     () => groupBoardsByTime(filteredBoards),
@@ -161,6 +235,31 @@ export default function ChatThreadSidebarGroups({
   }
 
   if (!filteredBoards.length) {
+    // In list mode there may be more pages whose rows were all filtered out
+    // (empty shells, or chats from another model). Keep the sentinel mounted so
+    // auto-load (or the manual button) can pull deeper pages instead of dead-
+    // ending on a misleading "No chats yet".
+    if (!needle && (hasNextPage || isFetchingNextPage)) {
+      return (
+        <div className="flex flex-col gap-2">
+          <div ref={sentinelRef} aria-hidden className="h-px w-full" />
+          {isFetchingNextPage ? (
+            <div className="flex items-center gap-2 px-2.5 py-1 text-[0.6875rem] text-black/40 dark:text-white/40">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading…
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fetchNextPage()}
+              className="text-left text-[0.6875rem] pl-2.5 pr-2 py-1 rounded-md text-black/50 dark:text-white/50 hover:bg-blue-500/10 hover:text-black/70 dark:hover:text-white/70 transition-colors"
+            >
+              Load older chats
+            </button>
+          )}
+        </div>
+      );
+    }
     return (
       <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">
         {needle || modelFilter !== "all" ? "No matches" : "No chats yet"}
@@ -208,6 +307,25 @@ export default function ChatThreadSidebarGroups({
           </div>
         );
       })}
+      {!needle && (
+        <>
+          <div ref={sentinelRef} aria-hidden className="h-px w-full" />
+          {isFetchingNextPage ? (
+            <div className="flex items-center gap-2 px-2.5 py-1 text-[0.6875rem] text-black/40 dark:text-white/40">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading…
+            </div>
+          ) : hasNextPage ? (
+            <button
+              type="button"
+              onClick={() => fetchNextPage()}
+              className="text-left text-[0.6875rem] pl-2.5 pr-2 py-1 rounded-md text-black/50 dark:text-white/50 hover:bg-blue-500/10 hover:text-black/70 dark:hover:text-white/70 transition-colors"
+            >
+              Load older chats
+            </button>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

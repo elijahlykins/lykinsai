@@ -137,7 +137,7 @@ async function awaitRateLimitSlot(
   // rather than silently letting the upload proceed (which would just
   // bounce off the DB trigger and orphan a storage object).
   throw new Error(
-    "upload_rate_limit: too many uploads queued — please try again later",
+    "upload_rate_limit: too many uploads queued, please try again later",
   );
 }
 
@@ -988,7 +988,7 @@ async function processOne(args: {
   if (!takeVaultSlot(args.vaultSlots)) {
     store.update(args.itemId, {
       status: "error",
-      error: "Vault is full — upgrade your plan to save more.",
+      error: "Vault is full. Upgrade your plan to save more.",
     });
     notifyVaultCapIfApplicable({ message: "vault_cap_reached" });
     unregisterVaultUploadCancellation(args.itemId);
@@ -1042,7 +1042,7 @@ async function processOne(args: {
       }
       store.update(args.itemId, {
         status: "error",
-        error: "Couldn't convert HEIC image — try saving it as JPEG first.",
+        error: "Couldn't convert HEIC image. Try saving it as JPEG first.",
       });
       unregisterVaultUploadCancellation(args.itemId);
       return null;
@@ -1362,13 +1362,13 @@ async function processOne(args: {
     }
 
     if (isCapError) {
-      friendly = "Vault is full — upgrade your plan to keep uploading.";
+      friendly = "Vault is full. Upgrade your plan to keep uploading.";
       didNotifyExternally = true;
     } else if (isRateLimitError) {
-      friendly = "Upload paused — you're uploading too fast. Try again in a moment.";
+      friendly = "Upload paused. You're uploading too fast, try again in a moment.";
       didNotifyExternally = true;
     } else if (lower.includes("exceeded the maximum allowed size") || lower.includes("payload too large") || lower.includes("413")) {
-      friendly = `File too large — max ${formatBytesShort(VAULT_UPLOAD_LIMITS.maxFileBytes)} per file.`;
+      friendly = `File too large. Max ${formatBytesShort(VAULT_UPLOAD_LIMITS.maxFileBytes)} per file.`;
     } else if (lower.includes("mime") && lower.includes("not allowed")) {
       friendly = "This file type is blocked by the storage bucket settings.";
     } else if (lower.includes("bucket not found")) {
@@ -1377,7 +1377,7 @@ async function processOne(args: {
       // The TUS create POST was rejected before any bytes flowed — almost
       // always the storage project's max-file-size limit. Point the user at
       // the actionable cause instead of echoing the raw tus error.
-      friendly = "Video too large to upload — it exceeds your storage size limit.";
+      friendly = "Video too large to upload. It exceeds your storage size limit.";
     } else if (rawMsg) {
       friendly = `Upload failed: ${String(rawMsg).slice(0, 160)}`;
     }
@@ -1463,7 +1463,7 @@ export async function startVaultUploads(input: StartFileUploadsInput): Promise<v
       toast({
         title: `Uploading ${preflight.accepted.length} files`,
         description:
-          "Large import — skipping per-file AI descriptions until this batch finishes. Files still save normally.",
+          "Large import: skipping per-file AI descriptions until this batch finishes. Files still save normally.",
       });
     } catch {
       /* toast unavailable */

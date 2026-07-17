@@ -5,6 +5,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 
 const BRAND_BLUE = "#2563eb";
 const BRAND_BLUE_LIGHT = "#60a5fa";
@@ -56,6 +57,7 @@ export const HelloLykn: React.FC<HelloLyknProps> = ({
         opacity: outro,
       }}
     >
+      <SceneBackground />
       <AbsoluteFill
         style={{
           background: `radial-gradient(circle at ${50 + glowShift}% 30%, ${BRAND_BLUE}33, transparent 60%)`,

@@ -206,7 +206,7 @@ class RouteErrorBoundary extends React.Component {
         <p style={{ fontSize: '0.9rem', color: '#666', marginBottom: '24px', maxWidth: '400px' }}>
           {this.state.retryCount > 0
             ? "Still having trouble. Try clearing cached data or heading back to the dashboard."
-            : "Don't worry — your data is safe. Let's try loading this again."}
+            : "Don't worry, your data is safe. Let's try loading this again."}
         </p>
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
           <button

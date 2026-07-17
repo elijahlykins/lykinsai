@@ -499,7 +499,7 @@ export default function LyknTodosPanel({ active = true }) {
           <>
             {openTodos.length === 0 ? (
               <div className="text-center py-6 text-black/35 dark:text-white/35 text-[0.8125rem]">
-                All caught up — nothing open.
+                All caught up. Nothing open.
               </div>
             ) : (
               openTodos.map(renderRow)

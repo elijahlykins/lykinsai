@@ -11,7 +11,7 @@ import { generateChart } from '../../lib/exterior/generateChart.js';
 import { generateDiagram } from '../../lib/exterior/generateDiagram.js';
 import { getCurrentTime } from '../../lib/exterior/currentTime.js';
 import { runPythonSnippet } from '../../lib/exterior/runPython.js';
-import { generateNanoBananaImage } from '../../lib/exterior/generateImage.js';
+import { generateChatImage } from '../../lib/exterior/generateImage.js';
 import { logAiUsage } from '../../usageTracking.js';
 import { jsonContent, errorContent } from '../index.js';
 import { CAPABILITY_TOOLS } from './capabilityTools.js';
@@ -254,27 +254,44 @@ export const runPythonTool = {
 
 export const generateImageTool = {
   name: 'lykn_generate_image',
-  title: 'Generate an image with Nano Banana (Gemini)',
+  title: 'Generate an image with GPT Image 2 (OpenAI)',
   scope: 'read',
   description: [
-    'Create an image from a text prompt using Google Gemini Nano Banana',
-    '(gemini-2.5-flash-image). Returns a hosted image_url + markdown to embed',
-    'in your reply.',
+    'Create an image from a text prompt using OpenAI GPT Image 2',
+    '(gpt-image-2, the latest OpenAI image model). Returns a hosted',
+    'image_url; the image renders as an inline card in chat automatically.',
     '',
-    'QUOTA: Each user gets 5 generations per calendar month. If the tool',
-    'returns image_gen_monthly_limit_reached, tell the user honestly and',
-    'do NOT pretend an image was created.',
+    'AVAILABILITY: This tool is only offered when the user has explicitly',
+    'turned on image generation for this message (the "Generate image" mode',
+    'in the composer / overlay menu). Never invent images unprompted.',
     '',
-    'WHEN TO CALL:',
-    '  • User asks to generate / create / draw / make an image or poster.',
-    '  • User wants a visual mockup, logo concept, or illustration.',
+    'REFERENCE IMAGES — the image model receives REAL PIXELS, not just text:',
+    '  • Images the user ATTACHED this turn are automatically sent to the',
+    '    image model as pixel references (you do not need to do anything).',
+    '    Because the model sees the actual image, write the prompt as an',
+    '    INSTRUCTION RELATIVE TO IT — "same character, now riding a bike",',
+    '    "this product on a marble countertop, softer lighting" — and only',
+    '    describe what should CHANGE or be ADDED. Do NOT waste the prompt',
+    '    re-describing what the reference already shows; a long from-scratch',
+    '    description FIGHTS the reference and reduces likeness.',
+    '  • If the user attached an image for an UNRELATED reason ("here is my',
+    '    homework, also generate a dragon"), pass use_attached_images: false',
+    '    so the generation is not contaminated by it.',
+    '  • ITERATING on an image you generated earlier in THIS conversation',
+    '    ("same but at night", "make the sky pink"): pass that image\'s',
+    '    image_url in reference_image_urls so the new render is grounded in',
+    '    the previous pixels instead of regenerated from words — this is what',
+    '    keeps the subject consistent across refinements.',
+    '',
+    'QUOTA: If the tool returns image_gen_monthly_limit_reached, the user',
+    'hit their monthly cap — tell them honestly and do NOT pretend an image',
+    'was created. (The cap is currently lifted, so this should not occur.)',
     '',
     'WHEN NOT TO CALL:',
     '  • User only wants a diagram or flowchart — use lykn_generate_diagram.',
     '  • User wants a data chart — use lykn_generate_chart.',
     '  • User attached an image to analyze — answer from vision, do not regenerate.',
     '',
-    'Include the returned markdown in your reply so the image renders in chat.',
     'Omit aspect_ratio and image_size unless the user explicitly asks — defaults',
     'work best for most prompts.',
   ].join('\n'),
@@ -283,7 +300,23 @@ export const generateImageTool = {
     properties: {
       prompt: {
         type: 'string',
-        description: 'Detailed image description (style, subject, colors, composition).',
+        description:
+          'Image description. With reference images present, describe only the CHANGES/additions ' +
+          'relative to the reference — not a from-scratch scene description.',
+      },
+      reference_image_urls: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Optional http(s) URLs of images to ground the generation in (e.g. the image_url of a ' +
+          'generation earlier in this conversation, for iterative refinement). User attachments ' +
+          'this turn are included automatically and do NOT need to be listed.',
+      },
+      use_attached_images: {
+        type: 'boolean',
+        description:
+          'Default true: images the user attached this turn are sent to the image model as pixel ' +
+          'references. Pass false ONLY when the attachment is unrelated to the requested image.',
       },
       aspect_ratio: {
         type: 'string',
@@ -303,17 +336,44 @@ export const generateImageTool = {
     if (!ctx?.userId || !ctx?.supabaseAdmin) {
       return errorContent('Unauthorized — sign in to generate images.');
     }
-    const result = await generateNanoBananaImage({
+    // Pixel references for the image model. Two sources, both optional:
+    //   1. The user's attached images this turn — ctx.turnAttachments carries
+    //      the metadata (only USER uploads have an imageIndex; the overlay's
+    //      auto-screenshot is never listed there), ctx.turnImageUrls the
+    //      matching data: / http URLs. On by default, opt out via
+    //      use_attached_images: false.
+    //   2. reference_image_urls the model passed explicitly (previous
+    //      generations, for iterative refinement).
+    // generateChatImage normalizes + fetches these and routes them to the
+    // provider's pixel-grounded path (OpenAI /images/edits, Gemini inline
+    // parts) — dropping any that fail so generation still proceeds.
+    const referenceImages = [];
+    if (args.use_attached_images !== false) {
+      const atts = Array.isArray(ctx?.turnAttachments) ? ctx.turnAttachments : [];
+      const urls = Array.isArray(ctx?.turnImageUrls) ? ctx.turnImageUrls : [];
+      for (const a of atts) {
+        if (a?.type === 'image' && Number.isInteger(a.imageIndex) && urls[a.imageIndex]) {
+          referenceImages.push(urls[a.imageIndex]);
+        }
+      }
+    }
+    for (const u of Array.isArray(args.reference_image_urls) ? args.reference_image_urls : []) {
+      if (typeof u === 'string' && /^https?:\/\//i.test(u.trim())) referenceImages.push(u.trim());
+    }
+    const result = await generateChatImage({
       prompt: args.prompt,
       aspectRatio: args.aspect_ratio,
       imageSize: args.image_size,
+      referenceImages,
       userId: ctx.userId,
       supabaseAdmin: ctx.supabaseAdmin,
       logUsage: (info) => logAiUsage(info),
     });
     if (!result.ok) {
       const msg = result.message || result.error || 'image_generation_failed';
-      return errorContent(msg);
+      // Keep the hint attached: it tells the model whether to retry (transient
+      // provider error), rephrase (moderation), or report the failure honestly.
+      return errorContent(result.hint ? `${msg} — ${result.hint}` : msg);
     }
     return jsonContent(result);
   },

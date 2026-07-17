@@ -66,14 +66,14 @@ class SynthesisSceneErrorBoundary extends React.Component<Props, State> {
           </p>
           <p className="text-xs text-gray-400 leading-relaxed">
             The interactive 3D mind map needs a desktop browser. On mobile we
-            show a simple list — open LYKN on a laptop or desktop to explore
+            show a simple list. Open LYKN on a laptop or desktop to explore
             the full layer.
           </p>
           {neurons.length > 0 && (
             <div className="mt-4 flex flex-wrap justify-center gap-1.5">
-              {neurons.map((label) => (
+              {neurons.map((label, i) => (
                 <span
-                  key={label}
+                  key={`${label}-${i}`}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-pink-200 border border-pink-400/40 bg-pink-500/[0.08]"
                 >
                   <span

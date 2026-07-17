@@ -72,13 +72,19 @@ export function SectionLabel({ children }) {
 
 // One AI-pushed state card. Pressing it opens an inline editor; saving
 // supersedes the AI's row with a user-attributed correction.
-export function UpdateCard({ update, onSave }) {
+// `canEdit` gates the editor for shared-project viewers — RLS would
+// reject their write anyway (editProjectStateUpdate requires the edit
+// role), so opening the editor just sets them up for a silent failure.
+export function UpdateCard({ update, onSave, canEdit = true }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(update.value);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
 
   const startEdit = () => {
+    if (!canEdit) return;
     setDraft(update.value);
+    setSaveError(false);
     setEditing(true);
   };
 
@@ -90,20 +96,29 @@ export function UpdateCard({ update, onSave }) {
     }
     setSaving(true);
     try {
-      await onSave(update, value);
+      // onSave resolves false when the supersede write was rejected
+      // (viewer role, network) — keep the editor open so the user sees
+      // their correction didn't land instead of silently closing.
+      const ok = await onSave(update, value);
+      if (ok === false) {
+        setSaveError(true);
+        return;
+      }
       setEditing(false);
     } finally {
       setSaving(false);
     }
   };
 
+  const interactive = canEdit && !editing;
+
   return (
     <div
-      role={editing ? undefined : "button"}
-      tabIndex={editing ? undefined : 0}
-      onClick={editing ? undefined : startEdit}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      onClick={interactive ? startEdit : undefined}
       onKeyDown={
-        editing
+        !interactive
           ? undefined
           : (e) => {
               if (e.key === "Enter" || e.key === " ") {
@@ -115,7 +130,9 @@ export function UpdateCard({ update, onSave }) {
       className={`rounded-xl border px-3 py-2 transition-colors ${
         editing
           ? "border-blue-500/30 bg-blue-500/[0.04]"
-          : "border-black/[0.06] dark:border-white/[0.07] bg-black/[0.02] dark:bg-white/[0.02] cursor-pointer hover:border-blue-500/25 hover:bg-blue-500/[0.04]"
+          : `border-black/[0.06] dark:border-white/[0.07] bg-black/[0.02] dark:bg-white/[0.02] ${
+              canEdit ? "cursor-pointer hover:border-blue-500/25 hover:bg-blue-500/[0.04]" : ""
+            }`
       }`}
     >
       <div className="flex items-center gap-2">
@@ -125,7 +142,7 @@ export function UpdateCard({ update, onSave }) {
         <span className="flex-shrink-0 ml-auto text-[0.625rem] text-black/35 dark:text-white/35">
           {update.setByClient || "unknown client"} · {relativeTime(update.setAt)}
         </span>
-        {!editing && (
+        {!editing && canEdit && (
           <Pencil className="w-3 h-3 flex-shrink-0 text-black/30 dark:text-white/30" />
         )}
       </div>
@@ -144,8 +161,10 @@ export function UpdateCard({ update, onSave }) {
             className="w-full text-xs leading-relaxed px-2.5 py-2 rounded-lg border border-black/10 dark:border-white/10 bg-white/70 dark:bg-zinc-900/60 text-black/80 dark:text-white/80 outline-none focus:border-blue-500/40 resize-y scrollbar-hide"
           />
           <div className="mt-1.5 flex items-center justify-between">
-            <span className="text-[0.625rem] text-black/30 dark:text-white/30">
-              {draft.trim().length}/2000 · saved as your correction
+            <span className={`text-[0.625rem] ${saveError ? "text-red-500 dark:text-red-400" : "text-black/30 dark:text-white/30"}`}>
+              {saveError
+                ? "Couldn't save. Please try again"
+                : `${draft.trim().length}/2000 · saved as your correction`}
             </span>
             <div className="flex items-center gap-1.5">
               <button

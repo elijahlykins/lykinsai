@@ -87,3 +87,18 @@ services:
     schedule: "0 4 * * *"
     buildCommand: npm install
     startCommand: node jobs/runVaultReconciler.js --apply
+
+  # -------------------------------------------------------------------
+  # Night Shift morning brief — runs jobs/runNightBrief.js.
+  # -------------------------------------------------------------------
+  # Schedule: 04:30 UTC, after synthesis/concepts/reconciler so project
+  # state from yesterday's AI sessions is settled. Opt-in per user via
+  # lykn_user_preferences.night_shift_enabled. Writes morning_brief to
+  # lykn_project_state for each active project.
+  - type: cron
+    name: lykinsai-night-shift-brief
+    runtime: node
+    plan: starter
+    schedule: "30 4 * * *"
+    buildCommand: npm install
+    startCommand: node jobs/runNightBrief.js

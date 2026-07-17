@@ -7,27 +7,36 @@ export const BILLING_PERIODS = {
 // Stripe price map in server.js, PLAN_LIMITS below). Don't rename without a
 // migration. `free` is the default tier every account starts on — full app
 // access with capped limits, no card required (see PLAN_LIMITS.free). The paid
-// tiers are Student ($15/mo, full Pro entitlements for verified students) and
-// Pro ($25/mo or $17/mo billed annually), which lift the caps and unlock every
-// frontier model. Legacy ids `studio_pro` / `studio_max` may still appear on
-// older billing rows — they resolve to the same limits as `studio`.
+// tiers are Student ($20/mo or $12/mo billed annually, full Pro entitlements
+// for verified students),
+// Pro ($25/mo or $17/mo billed annually), which lifts the caps and unlocks
+// every frontier model, and Max ($100/mo or $75/mo billed annually), which
+// removes the monthly usage caps entirely. Legacy ids `studio_pro` /
+// `studio_max` may still appear on older billing rows — they resolve to the
+// same limits as `studio`.
+//
+// Every card's feature list leads with the three usage meters (LYKN Glass
+// requests, AI image generations, artifact builds) so tiers compare
+// like-for-like; keep the numbers in sync with PLAN_LIMITS below.
 export const PLANS = [
   {
     id: "student",
     name: "Student",
-    tagline: "Everything in Pro at a student price — verify with your school email.",
-    monthlyPrice: 15,
-    // $15/mo billed annually = $180/yr (no extra annual discount).
-    annualPrice: 180,
+    tagline: "Everything in Pro at a student price. Verify with your school email.",
+    monthlyPrice: 20,
+    // $12/mo billed annually = $144/yr.
+    annualPrice: 144,
     cta: "Get Student",
     ctaVariant: "outline",
     highlighted: false,
     checkout: true,
     comingSoon: false,
     features: [
-      { text: "Unlimited neurons", included: true },
-      { text: "Unlimited Vault cards", included: true },
-      { text: "All models — LYKN + frontier picks", included: true },
+      { text: "LYKN Glass: 1,000 requests/month", included: true },
+      { text: "300 AI image generations/month", included: true },
+      { text: "150 artifact builds/month", included: true, note: "Apps, dashboards, decks, docs" },
+      { text: "Unlimited neurons & Vault cards", included: true },
+      { text: "All models: LYKN + frontier picks", included: true },
       { text: "All connections unlocked", included: true },
       {
         text: "Requires a valid student email",
@@ -39,7 +48,7 @@ export const PLANS = [
   {
     id: "studio",
     name: "Pro",
-    tagline: "Unlimited neurons and Vault storage, every model, every connection.",
+    tagline: "Unlimited memory, every model, and serious monthly usage.",
     monthlyPrice: 25,
     // $17/mo billed annually = $204/yr.
     annualPrice: 204,
@@ -50,10 +59,34 @@ export const PLANS = [
     checkout: true,
     comingSoon: false,
     features: [
-      { text: "Unlimited neurons", included: true, accent: true },
-      { text: "Unlimited Vault cards", included: true, accent: true },
-      { text: "All models — LYKN + frontier picks", included: true, accent: true },
+      { text: "LYKN Glass: 1,000 requests/month", included: true, accent: true },
+      { text: "300 AI image generations/month", included: true, accent: true },
+      { text: "150 artifact builds/month", included: true, accent: true, note: "Apps, dashboards, decks, docs" },
+      { text: "Unlimited neurons & Vault cards", included: true },
+      { text: "All models: LYKN + frontier picks", included: true },
       { text: "All connections unlocked", included: true },
+    ],
+  },
+  {
+    id: "max",
+    name: "Max",
+    tagline: "No monthly caps, for people who run their whole day through LYKN.",
+    monthlyPrice: 100,
+    // $75/mo billed annually = $900/yr.
+    annualPrice: 900,
+    cta: "Go Max",
+    ctaVariant: "default",
+    highlighted: false,
+    badge: "New",
+    checkout: true,
+    comingSoon: false,
+    features: [
+      { text: "LYKN Glass: unlimited requests", included: true, accent: true },
+      { text: "Unlimited AI image generations", included: true, accent: true },
+      { text: "Unlimited artifact builds", included: true, accent: true, note: "Apps, dashboards, decks, docs" },
+      { text: "Everything in Pro", included: true },
+      { text: "Priority support", included: true },
+      { text: "Early access to new capabilities", included: true },
     ],
   },
   {
@@ -81,7 +114,7 @@ export const FAQ_ITEMS = [
     id: "student-plan",
     question: "What is the Student plan?",
     answer:
-      "The Student plan is the full Pro experience for $15/month: unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection. It's built for students, so verify with a valid student email at checkout to unlock the student price.",
+      "The Student plan is the full Pro experience at a student price: $20/month, or $12/month when billed annually ($144/year). You get unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection. Verify with a valid student email at checkout to unlock the student price.",
   },
   {
     id: "student-eligibility",
@@ -93,19 +126,25 @@ export const FAQ_ITEMS = [
     id: "pro-included",
     question: "What does Pro include?",
     answer:
-      "Pro unlocks unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection. It is $25/month on monthly billing or $17/month when billed annually ($204/year).",
+      "Pro unlocks unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection, with generous monthly usage: 1,000 LYKN Glass requests, 300 AI image generations, and 150 artifact builds. It is $25/month on monthly billing or $17/month when billed annually ($204/year).",
+  },
+  {
+    id: "max-included",
+    question: "What does Max include?",
+    answer:
+      "Max is Pro with the monthly usage caps removed: unlimited LYKN Glass requests, unlimited AI image generations, and unlimited artifact builds, plus priority support and early access to new capabilities. It is $100/month on monthly billing or $75/month when billed annually ($900/year).",
   },
   {
     id: "free-tier",
     question: "Is there a free version?",
     answer:
-      "Yes. Every account starts on Free — no credit card required. You get the full app with capped limits: up to 100 synthesis neurons, 50 Vault cards, LYKN's core models in chat and voice, and your app connections. Upgrade to Pro anytime for unlimited memory and every frontier model.",
+      "Yes. Every account starts on Free, no credit card required. You get the full app with capped limits: up to 100 synthesis neurons, 50 Vault cards, LYKN's core models in chat and voice, 50 LYKN Glass requests, 20 AI image generations, and 10 artifact builds per month. Upgrade anytime for unlimited memory and every frontier model.",
   },
   {
     id: "annual-savings",
     question: "How much do I save by paying yearly?",
     answer:
-      "Roughly a third off. Pro is $25/mo monthly or $17/mo when billed annually ($204/yr).",
+      "Roughly a third off. Pro is $25/mo monthly or $17/mo when billed annually ($204/yr), and Max is $100/mo monthly or $75/mo when billed annually ($900/yr).",
   },
   {
     id: "switch-or-cancel",
@@ -147,6 +186,11 @@ export const FAQ_ITEMS = [
 // Server enforcement: `enforce_synthesis_neuron_cap()` triggers on
 // `lykn_chats`, `lykn_beliefs`, `lykn_user_model_facts` defined in
 // `supabase-migrations/066_synthesis_neuron_cap_trigger.sql`.
+// `glassRequests`, `imageGens`, and `artifactBuilds` are the monthly usage
+// meters shown on every pricing card — keep them in sync with the PLANS
+// feature copy above. They are marketing-source-of-truth here; server-side
+// enforcement (imageGenQuota.js etc.) should read these numbers as caps get
+// wired up.
 export const PLAN_LIMITS = {
   free: {
     requests: Infinity,
@@ -157,6 +201,9 @@ export const PLAN_LIMITS = {
     synthesisNodes: 100,
     seats: 1,
     modelTier: "basic",
+    glassRequests: 50,
+    imageGens: 20,
+    artifactBuilds: 10,
   },
   // Student — full Pro entitlements at the discounted student price.
   student: {
@@ -168,6 +215,9 @@ export const PLAN_LIMITS = {
     synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
+    glassRequests: 1000,
+    imageGens: 300,
+    artifactBuilds: 150,
   },
   studio: {
     requests: Infinity,
@@ -178,6 +228,23 @@ export const PLAN_LIMITS = {
     synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
+    glassRequests: 1000,
+    imageGens: 300,
+    artifactBuilds: 150,
+  },
+  // Max — Pro with the monthly usage caps removed.
+  max: {
+    requests: Infinity,
+    vaultCards: Infinity,
+    blocksPerGrid: Infinity,
+    grids: Infinity,
+    projects: Infinity,
+    synthesisNodes: Infinity,
+    seats: 1,
+    modelTier: "top+media",
+    glassRequests: Infinity,
+    imageGens: Infinity,
+    artifactBuilds: Infinity,
   },
   // Legacy paid ids — same entitlements as Pro (grandfathered billing rows).
   studio_pro: {
@@ -189,6 +256,9 @@ export const PLAN_LIMITS = {
     synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
+    glassRequests: 1000,
+    imageGens: 300,
+    artifactBuilds: 150,
   },
   studio_max: {
     requests: Infinity,
@@ -199,6 +269,9 @@ export const PLAN_LIMITS = {
     synthesisNodes: Infinity,
     seats: 1,
     modelTier: "top+media",
+    glassRequests: 1000,
+    imageGens: 300,
+    artifactBuilds: 150,
   },
 };
 
@@ -212,6 +285,7 @@ export const UPLOAD_RATE_LIMITS = {
   free:       { perMinute: 20,  perHour: 120  },
   student:    { perMinute: 300, perHour: 3600 },
   studio:     { perMinute: 300, perHour: 3600 },
+  max:        { perMinute: 600, perHour: 7200 },
   studio_pro: { perMinute: 300, perHour: 3600 },
   studio_max: { perMinute: 600, perHour: 7200 },
 };
@@ -231,6 +305,7 @@ export const PLAN_LABELS = {
   free: "Free",
   student: "Student",
   studio: "Pro",
+  max: "Max",
   studio_pro: "Pro",
   studio_max: "Pro",
 };

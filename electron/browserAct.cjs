@@ -582,7 +582,7 @@ async function executeBrowserAction(runOsascript, appName, action, { pageUrl, ph
         return {
           ok: false,
           error:
-            "Click did not register on the page — enable Accessibility + Automation (System Events) for LYKN, click the Chrome tab, then Run again.",
+            "Click did not register on the page. Enable Accessibility + Automation (System Events) for LYKN, click the Chrome tab, then Run again.",
           label: action.label || action.selector,
           coords: { x: clickResult.x, y: clickResult.y },
         };
@@ -682,7 +682,7 @@ function planFailureMessage(plan) {
   const pf = plan?.planFailed;
   if (typeof pf === "string" && pf.trim()) return pf.trim();
   if (explanation) return explanation;
-  if (pf) return "Planning failed — could not determine the next step.";
+  if (pf) return "Planning failed. Could not determine the next step.";
   return String(plan?.message || plan?.error || "Re-plan failed");
 }
 

@@ -7,6 +7,7 @@ import {
   LEGACY_LYKN_LITE_ID,
   LEGACY_LYKN_FAST_ID,
   LEGACY_LYKN_DEEP_ID,
+  LEGACY_FRONTIER_ALIASES,
   FRONTIER_OPENAI_ID,
   FRONTIER_ANTHROPIC_ID,
   FRONTIER_GOOGLE_ID,
@@ -33,6 +34,9 @@ const LEGACY_ALIASES = {
   [LEGACY_LYKN_LITE_ID]: LYKN_ID,
   [LEGACY_LYKN_FAST_ID]: LYKN_ID,
   [LEGACY_LYKN_DEEP_ID]: LYKN_ID,
+  // Retired frontier picks (saved in localStorage / chat rows) migrate to
+  // the current flagship of the same provider.
+  ...LEGACY_FRONTIER_ALIASES,
 };
 
 export function canonicalizeModelId(modelId) {

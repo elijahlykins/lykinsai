@@ -817,7 +817,7 @@ export default function Onboarding() {
         </h1>
         <p className="mt-3 max-w-xl text-[13.5px] leading-relaxed text-black/65 dark:text-white/65">
           LYKN works inside the AI assistants you already use. Connect at
-          least one to start — you can wire up more later from{" "}
+          least one to start; you can wire up more later from{" "}
           <strong className="font-semibold text-black/85 dark:text-white/85">
             Settings → Connections
           </strong>
@@ -826,7 +826,7 @@ export default function Onboarding() {
 
         {!user && (
           <p className="mt-3 text-[12px] text-amber-700 dark:text-amber-400">
-            Sign in to LYKN first — the OAuth flow needs your session in this browser.
+            Sign in to LYKN first. The OAuth flow needs your session in this browser.
           </p>
         )}
 
@@ -847,7 +847,7 @@ export default function Onboarding() {
             id="claude"
             name="Claude"
             domain="claude.ai"
-            tagline="One click opens Claude with the Add Connector dialog pre-filled. Hit Add, Approve — covers web, Desktop, mobile, and Cowork."
+            tagline="One click opens Claude with the Add Connector dialog pre-filled. Hit Add, Approve. Covers web, Desktop, mobile, and Cowork."
             badge="1-click"
             connected={connected.has("claude")}
             pending={pending === "claude" && !connected.has("claude")}
@@ -859,7 +859,7 @@ export default function Onboarding() {
             secondaryNote={
               <>
                 Available on Free and Pro. One approval syncs LYKN to
-                every Claude surface signed into your account — Desktop, mobile,
+                every Claude surface signed into your account: Desktop, mobile,
                 Cowork, and Claude Code all pick it up automatically.
               </>
             }
@@ -868,7 +868,7 @@ export default function Onboarding() {
             id="chatgpt"
             name="ChatGPT"
             domain="chatgpt.com"
-            tagline="Plus / Pro / Team / Enterprise + Developer Mode. We open ChatGPT and copy the URL — follow the 5 steps."
+            tagline="Plus / Pro / Team / Enterprise + Developer Mode. We open ChatGPT and copy the URL, then you follow the 5 steps."
             badge="Guided"
             connected={connected.has("chatgpt")}
             pending={pending === "chatgpt" && !connected.has("chatgpt")}
@@ -879,7 +879,7 @@ export default function Onboarding() {
             onCopyUrl={handleCopyUrl}
             secondaryNote={
               <>
-                Free ChatGPT can't add custom connectors — you'll need Plus
+                Free ChatGPT can't add custom connectors; you'll need Plus
                 or above. Steps inside: Settings → Apps &amp; Connectors →
                 Advanced → Developer Mode on → Create → paste URL, auth =
                 OAuth → Create → Approve.
@@ -902,7 +902,7 @@ export default function Onboarding() {
             id="github-copilot"
             name="GitHub Copilot"
             domain="github.com"
-            tagline="One-click VS Code install. Hands a pre-filled MCP install link to VS Code — pick where to install, approve, Copilot Chat sees LYKN immediately."
+            tagline="One-click VS Code install. Hands a pre-filled MCP install link to VS Code. Pick where to install, approve, and Copilot Chat sees LYKN immediately."
             badge="1-click"
             connected={connected.has("github-copilot")}
             pending={
@@ -916,7 +916,7 @@ export default function Onboarding() {
                 Business / Enterprise). Business / Enterprise admins also
                 need to enable the &ldquo;MCP servers in Copilot&rdquo; policy.
                 JetBrains / Visual Studio / Xcode Copilot MCP support is
-                rolling out — this card targets VS Code today.
+                rolling out; this card targets VS Code today.
               </>
             }
           />
@@ -924,7 +924,7 @@ export default function Onboarding() {
             id="replit"
             name="Replit"
             domain="replit.com"
-            tagline="One-click prefill. Opens Replit's Integrations page with LYKN's MCP server already filled in — hit Test & Save, approve, done."
+            tagline="One-click prefill. Opens Replit's Integrations page with LYKN's MCP server already filled in. Hit Test & Save, approve, done."
             badge="1-click"
             connected={connected.has("replit")}
             pending={pending === "replit" && !connected.has("replit")}
@@ -932,7 +932,7 @@ export default function Onboarding() {
             onConnect={handleReplit}
             secondaryNote={
               <>
-                Requires a paid Replit account (Core or above — same tier
+                Requires a paid Replit account (Core or above, the same tier
                 that unlocks Replit Agent). LYKN tools then show up in
                 every Repl's Agent chat.
               </>
@@ -976,7 +976,7 @@ export default function Onboarding() {
             onCopyUrl={handleCopyUrl}
             secondaryNote={
               <>
-                Business or Enterprise workspaces only — Personal / Plus
+                Business or Enterprise workspaces only; Personal / Plus
                 don't expose Custom Agents. A workspace admin also has to
                 toggle Custom MCP on once under Settings → Notion AI →
                 AI connectors before you can add LYKN per-agent.
@@ -987,7 +987,7 @@ export default function Onboarding() {
             id="claude-code"
             name="Claude Code"
             domain="claude.com"
-            tagline="CLI install. We copy the `claude mcp add` command — paste it in your terminal and Claude Code pops the OAuth approval."
+            tagline="CLI install. We copy the `claude mcp add` command. Paste it in your terminal and Claude Code pops the OAuth approval."
             badge="CLI"
             connected={connected.has("claude-code")}
             pending={pending === "claude-code" && !connected.has("claude-code")}
@@ -1004,7 +1004,7 @@ export default function Onboarding() {
                   --scope user
                 </code>{" "}
                 so the connection persists across every project on your
-                machine — you only do this once.
+                machine. You only do this once.
               </>
             }
           />
@@ -1012,7 +1012,7 @@ export default function Onboarding() {
             id="gemini"
             name="Gemini CLI"
             domain="gemini.google.com"
-            tagline="CLI install. We copy the `gemini mcp add` command — paste it in your terminal and Gemini CLI pops the OAuth approval."
+            tagline="CLI install. We copy the `gemini mcp add` command. Paste it in your terminal and Gemini CLI pops the OAuth approval."
             badge="CLI"
             connected={connected.has("gemini")}
             pending={pending === "gemini" && !connected.has("gemini")}
@@ -1028,7 +1028,7 @@ export default function Onboarding() {
                 <code className="font-mono text-[10px] px-1 py-[1px] rounded bg-black/[0.06] dark:bg-white/10">
                   npm i -g @google/gemini-cli
                 </code>
-                ). Only the CLI surface supports custom MCP today —
+                ). Only the CLI surface supports custom MCP today;
                 gemini.google.com and Workspace don't expose Add Custom
                 Connector yet.
               </>
@@ -1038,7 +1038,7 @@ export default function Onboarding() {
             id="codex-cli"
             name="Codex CLI"
             domain="openai.com"
-            tagline="CLI install. We copy the `codex mcp add` command — paste it in your terminal and Codex pops the OAuth approval. Native streamable HTTP OAuth, no proxy."
+            tagline="CLI install. We copy the `codex mcp add` command. Paste it in your terminal and Codex pops the OAuth approval. Native streamable HTTP OAuth, no proxy."
             badge="CLI"
             connected={connected.has("codex-cli")}
             pending={pending === "codex-cli" && !connected.has("codex-cli")}
@@ -1055,7 +1055,7 @@ export default function Onboarding() {
                   npm i -g @openai/codex
                 </code>
                 ). Codex CLI ships with paid ChatGPT plans (Plus / Pro /
-                Business / Enterprise) — uses your ChatGPT account, no
+                Business / Enterprise) and uses your ChatGPT account, no
                 separate billing.
               </>
             }
@@ -1064,7 +1064,7 @@ export default function Onboarding() {
             id="windsurf"
             name="Windsurf"
             domain="windsurf.com"
-            tagline="Config-file install. We copy a JSON snippet — paste it into Windsurf's MCP config (Cmd+Shift+P → Configure MCP Servers), save, approve."
+            tagline="Config-file install. We copy a JSON snippet. Paste it into Windsurf's MCP config (Cmd+Shift+P → Configure MCP Servers), save, approve."
             badge="Snippet"
             connected={connected.has("windsurf")}
             pending={pending === "windsurf" && !connected.has("windsurf")}
@@ -1105,7 +1105,7 @@ export default function Onboarding() {
               <>
                 JetBrains 2025.2+ with AI Assistant or Junie enabled (any
                 paid AI Pro / AI Ultimate plan). Also needs Node.js
-                installed — JetBrains' native HTTP MCP transport doesn't
+                installed, since JetBrains' native HTTP MCP transport doesn't
                 do OAuth DCR auto-discovery yet, so the snippet bridges
                 via{" "}
                 <code className="font-mono text-[10px] px-1 py-[1px] rounded bg-black/[0.06] dark:bg-white/10">
@@ -1140,7 +1140,7 @@ export default function Onboarding() {
             id="zapier"
             name="Zapier"
             domain="zapier.com"
-            tagline="We open Zapier's MCP Client (beta) and copy the URL. Paste, approve — LYKN becomes a tool every Zap can read."
+            tagline="We open Zapier's MCP Client (beta) and copy the URL. Paste, approve, and LYKN becomes a tool every Zap can read."
             badge="Beta"
             connected={connected.has("zapier")}
             pending={pending === "zapier" && !connected.has("zapier")}
@@ -1161,7 +1161,7 @@ export default function Onboarding() {
             id="elevenlabs"
             name="ElevenLabs"
             domain="elevenlabs.io"
-            tagline="Voice agents that talk to your LYKN. We mint a bearer + open ElevenLabs' MCP integrations dashboard — paste bearer in Secret Token, URL in Server URL, attach to any agent."
+            tagline="Voice agents that talk to your LYKN. We mint a bearer + open ElevenLabs' MCP integrations dashboard. Paste bearer in Secret Token, URL in Server URL, attach to any agent."
             badge="Bearer"
             connected={connected.has("elevenlabs")}
             pending={
@@ -1183,8 +1183,8 @@ export default function Onboarding() {
             }
             secondaryNote={
               <>
-                Free ElevenAgents plan ships 15 min/month of voice calls
-                — plenty to test. ElevenLabs has no OAuth flow yet for
+                Free ElevenAgents plan ships 15 min/month of voice calls,
+                plenty to test. ElevenLabs has no OAuth flow yet for
                 custom MCP servers, so we issue a long-lived LYKN bearer
                 attributed to ElevenLabs. Revoke any time from{" "}
                 <strong className="font-medium">
@@ -1206,7 +1206,7 @@ export default function Onboarding() {
             }}
             className="text-[12px] font-medium text-black/60 dark:text-white/65 hover:text-black/90 dark:hover:text-white underline-offset-2 hover:underline"
           >
-            Skip — wire it up later
+            Skip, wire it up later
           </button>
           <button
             type="button"
@@ -1226,7 +1226,7 @@ export default function Onboarding() {
           Each connection issues a short-lived OAuth bearer scoped to your
           LYKN account. Revoke any of them any time from{" "}
           <strong className="font-medium">Settings → Connections</strong>.
-          LYKN only stores the SHA-256 hash of the token — the plaintext
+          LYKN only stores the SHA-256 hash of the token; the plaintext
           never touches our DB.
         </p>
       </div>

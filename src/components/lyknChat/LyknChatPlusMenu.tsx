@@ -1,6 +1,7 @@
 import React from "react";
 import * as Popover from "@radix-ui/react-popover";
 import {
+  Code,
   FileText,
   FolderKanban,
   Globe,
@@ -35,6 +36,8 @@ export type LyknChatPlusMenuProps = {
   onProjects: () => void;
   onCreate: (kind: ArtifactKind) => void;
   onGenerateImage: () => void;
+  /** Build mode — the AI codes the request out as a live React artifact. */
+  onBuildMode: () => void;
   onDeepResearch: () => void;
   onWebSearch: () => void;
 };
@@ -48,6 +51,7 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
   onProjects,
   onCreate,
   onGenerateImage,
+  onBuildMode,
   onDeepResearch,
   onWebSearch,
 }: LyknChatPlusMenuProps) {
@@ -108,6 +112,10 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
           <button type="button" className={itemCls} onClick={() => run(onGenerateImage)}>
             <span className={iconWrapCls}><ImagePlus className="w-[1.05rem] h-[1.05rem]" /></span>
             Generate image
+          </button>
+          <button type="button" className={itemCls} onClick={() => run(onBuildMode)}>
+            <span className={iconWrapCls}><Code className="w-[1.05rem] h-[1.05rem]" /></span>
+            Build mode
           </button>
           <button type="button" className={itemCls} onClick={() => run(onDeepResearch)}>
             <span className={iconWrapCls}><Telescope className="w-[1.05rem] h-[1.05rem]" /></span>

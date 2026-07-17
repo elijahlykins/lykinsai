@@ -63,7 +63,7 @@ export const pushProjectStateTool = {
     'Pick stable, semantically meaningful keys. Suggested vocabulary:',
     '  tech_stack | architecture | current_blocker | next_milestone |',
     '  open_questions | recent_decisions | scope | constraints |',
-    '  collaborators | progress_summary',
+    '  collaborators | progress_summary | morning_brief',
     '',
     'Project resolution: omit `project_id` to push to the user\'s active',
     'project (set via lykn_setActiveProject). Pass it explicitly only',

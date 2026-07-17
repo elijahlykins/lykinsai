@@ -1,7 +1,15 @@
 import React from 'react';
+import DOMPurify from 'dompurify';
 
 export default function RichTextRenderer({ content, className = '' }) {
   if (!content) return null;
+
+  // `content` is injected via dangerouslySetInnerHTML, so it must be
+  // sanitized — a stored note containing a <script>/onerror payload would
+  // otherwise execute in the user's session. DOMPurify strips scripts,
+  // inline event handlers, and javascript: URLs while keeping formatting.
+  const clean =
+    typeof window === 'undefined' ? '' : DOMPurify.sanitize(String(content));
   
   return (
     <div className={`rich-text-content ${className}`}>
@@ -20,7 +28,7 @@ export default function RichTextRenderer({ content, className = '' }) {
         .dark .rich-text-content a { color: #60a5fa; }
         .rich-text-content img { max-width: 100%; height: auto; border-radius: 0.5rem; }
       `}</style>
-      <div dangerouslySetInnerHTML={{ __html: content }} />
+      <div dangerouslySetInnerHTML={{ __html: clean }} />
     </div>
   );
 }

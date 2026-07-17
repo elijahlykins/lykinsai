@@ -53,7 +53,7 @@ export default function SubAgentTasksStrip({
             <span className="font-medium">{task.sub_model_name || "Sub-agent"}</span>
             <span className="text-black/55 dark:text-white/55"> finished </span>
             <span className="text-black/70 dark:text-white/70">{truncate(task.task_instruction)}</span>
-            <span className="text-black/45 dark:text-white/45"> — ask your main agent for the summary</span>
+            <span className="text-black/45 dark:text-white/45"> (ask your main agent for the summary)</span>
           </div>
         </div>
       ))}

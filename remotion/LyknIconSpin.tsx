@@ -5,6 +5,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 import {
   ICON_BODY_PATH,
   ICON_SPARKLE_CX,
@@ -74,6 +75,7 @@ export const LyknIconSpin: React.FC<LyknIconSpinProps> = ({
         alignItems: "center",
       }}
     >
+      <SceneBackground />
       {/* Soft radial vignette for depth */}
       <AbsoluteFill
         style={{

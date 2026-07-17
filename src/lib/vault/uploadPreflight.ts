@@ -147,7 +147,7 @@ export function summarizePreflightRejections(rejected: PreflightRejected[]): str
   const parts: string[] = [];
   if (unsupported > 0) {
     parts.push(
-      `${unsupported} file${unsupported === 1 ? "" : "s"} skipped — unsupported file type`,
+      `${unsupported} file${unsupported === 1 ? "" : "s"} skipped: unsupported file type`,
     );
   }
   if (tooLarge > 0) {
@@ -157,17 +157,17 @@ export function summarizePreflightRejections(rejected: PreflightRejected[]): str
   }
   if (vaultFull > 0) {
     parts.push(
-      `${vaultFull} file${vaultFull === 1 ? "" : "s"} skipped — vault is full`,
+      `${vaultFull} file${vaultFull === 1 ? "" : "s"} skipped: vault is full`,
     );
   }
   if (vaultSlots > 0) {
     parts.push(
-      `${vaultSlots} file${vaultSlots === 1 ? "" : "s"} skipped — not enough vault slots left in this drop`,
+      `${vaultSlots} file${vaultSlots === 1 ? "" : "s"} skipped: not enough vault slots left in this drop`,
     );
   }
   if (batchCap > 0) {
     parts.push(
-      `${batchCap} file${batchCap === 1 ? "" : "s"} skipped — ${VAULT_UPLOAD_LIMITS.maxFilesPerDrop} files max per drop`,
+      `${batchCap} file${batchCap === 1 ? "" : "s"} skipped: ${VAULT_UPLOAD_LIMITS.maxFilesPerDrop} files max per drop`,
     );
   }
   return parts.join(". ");

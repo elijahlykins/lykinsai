@@ -74,7 +74,7 @@ export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" 
             {cat.label}
           </DialogTitle>
           <DialogDescription className="text-xs text-gray-500 dark:text-gray-400">
-            We read every submission — thank you for helping us improve.
+            We read every submission. Thank you for helping us improve.
           </DialogDescription>
         </DialogHeader>
 

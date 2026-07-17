@@ -142,6 +142,10 @@ export const CHAT_TOOL_NAMES = [
   'lykn_listTodos',
   'lykn_updateTodo',
   'lykn_deleteTodo',
+  // ── Night Shift steward queue ────────────────────────────────────
+  'lykn_createStewardItem',
+  'lykn_listStewardItems',
+  'lykn_updateStewardItem',
   // ── Custom models (read the user's Model Builder creations) ──────
   'lykn_listCustomModels',
   // Talk to ANY published model (sub-agent), main agent or not — sends a
@@ -182,6 +186,12 @@ export const CHAT_TOOL_NAMES = [
   'lykn_parse_document',
   'lykn_run_code',
   'lykn_build_spreadsheet',
+  // Claude-Artifacts-style React builds — documents, dashboards, tools,
+  // games, prototypes rendered live from model-written React code.
+  'lykn_build_react_artifact',
+  // Remotion renders: model-written frame-based compositions → real .mp4
+  // (animated logos, image animations, motion graphics for landing pages).
+  'lykn_render_video',
   'lykn_symbolic_math',
   'lykn_process_image',
   'lykn_transcribe_audio',
@@ -452,6 +462,14 @@ export function buildChatToolCtx(req, extras = {}) {
     boundProjectId: extras.boundProjectId || null,
     /** Board/chat scope from req.body.projectId. */
     boardProjectId: extras.boardProjectId || null,
+    /**
+     * JSX source of the React artifact open in the side panel (from
+     * req.body.activeArtifact). Lets lykn_build_react_artifact apply targeted
+     * `edits` server-side instead of forcing a ground-up re-emit of the code.
+     */
+    activeArtifactCode: typeof extras.activeArtifactCode === 'string' && extras.activeArtifactCode.trim()
+      ? extras.activeArtifactCode
+      : null,
     /**
      * Binary attachments the user dragged/pasted into THIS chat turn (image /
      * pdf / file / video / audio), as compact metadata. lykn_uploadToProject

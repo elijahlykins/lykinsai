@@ -4,6 +4,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 
 // Full-screen warp: hundreds of tiny particles streak past the camera at high
 // speed from the center outward, while waves of color bloom out to fill the
@@ -105,6 +106,7 @@ export const ParticleBurst: React.FC<ParticleBurstProps> = ({
 
   return (
     <AbsoluteFill style={{ background, overflow: "hidden" }}>
+      <SceneBackground />
       {/* Color burst waves blooming out to fill the screen. */}
       <AbsoluteFill
         style={{

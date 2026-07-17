@@ -266,8 +266,8 @@ export function SupabaseAuthProvider({ children }) {
     clearPrototypeState();
 
     // Hard reload to `/` so every store, query cache, and in-memory piece
-    // of user state is dropped on the floor. The LandingPrototype route
-    // is gated by `<GuestOnly>` so a logged-out visitor reliably lands
+    // of user state is dropped on the floor. The Glass landing route is
+    // gated by `<GuestOnly>` so a logged-out visitor reliably lands
     // there. SSR / test guard: only call when window exists.
     if (typeof window !== 'undefined') {
       window.location.assign('/');

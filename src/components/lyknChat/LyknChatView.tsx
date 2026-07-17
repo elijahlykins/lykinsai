@@ -302,6 +302,9 @@ export interface LyknChatViewProps {
   typedWelcome: string;
   /** Optional line under the centered welcome heading (empty-state only). */
   welcomeSubtitle?: React.ReactNode;
+  /** Ephemeral "on your plate today" bubble rendered as the newest turn on
+   *  app open. Not part of `chatMessages`, so it never persists. */
+  docketBubble?: React.ReactNode;
   isMobileGrid: boolean;
   isMobilePhone?: boolean;
 
@@ -666,7 +669,7 @@ const LoadInUserSectionsComposer: React.FC<{
       return;
     }
     if (h.length > 120) {
-      setError("Heading is too long — keep it under 120 characters.");
+      setError("Heading is too long. Keep it under 120 characters.");
       return;
     }
     setSaving(true);
@@ -687,7 +690,7 @@ const LoadInUserSectionsComposer: React.FC<{
           body: body.trim(),
         });
       if (insertErr) {
-        setError(insertErr.message || "Couldn't save — try again?");
+        setError(insertErr.message || "Couldn't save. Try again?");
         setSaving(false);
         return;
       }
@@ -742,7 +745,7 @@ const LoadInUserSectionsComposer: React.FC<{
         <textarea
           value={body}
           onChange={(e) => setBody(e.target.value)}
-          placeholder="Add notes, links, bullets — markdown works."
+          placeholder="Add notes, links, bullets. Markdown works."
           rows={4}
           maxLength={4000}
           disabled={saving}
@@ -1840,6 +1843,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onSend,
   typedWelcome,
   welcomeSubtitle,
+  docketBubble,
   isMobileGrid,
   isMobilePhone = false,
   isDictating,
@@ -2048,7 +2052,10 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
       {chatMessages.length === 0 && !pinComposerToBottom ? (
         /* Empty state: identical to the canvas first-render welcome */
         <div
-          className={`${compactPreview ? "lykn-chat-focused-chat-preview absolute inset-0 z-[65]" : "fixed top-0 right-0 z-[65]"} flex items-center justify-center px-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid && !compactPreview ? "pl-[232px]" : ""}`}
+          // overflow-y-auto + my-auto on the column (instead of items-center)
+          // so when the docket/attachments make the empty state taller than
+          // the viewport it scrolls instead of clipping both ends unreachably.
+          className={`${compactPreview ? "lykn-chat-focused-chat-preview absolute inset-0 z-[65]" : "fixed top-0 right-0 z-[65]"} flex justify-center overflow-y-auto px-4 py-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid && !compactPreview ? "pl-[232px]" : ""}`}
           style={
             compactPreview
               ? undefined
@@ -2061,7 +2068,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
-          <div className={`w-full max-w-2xl ${compactPreview ? "space-y-3 px-1" : "space-y-10 sm:space-y-12"}`}>
+          <div className={`w-full max-w-2xl my-auto ${compactPreview ? "space-y-3 px-1" : "space-y-10 sm:space-y-12"}`}>
             <div className={`pointer-events-none text-center ${compactPreview ? "space-y-1" : "space-y-3"}`}>
               <p
                 className={`font-semibold tracking-tight text-black dark:text-white ${
@@ -2081,6 +2088,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
               ) : null}
             </div>
             <div className="w-full flex flex-col gap-1">
+              {docketBubble ? <div className="mb-2">{docketBubble}</div> : null}
               {composerAbove}
               <div className="lykn-chat-neu-chat-shell lykn-chat-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
               {focusedChatAttachments.length > 0 && (
@@ -2107,7 +2115,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
                   placeholder="Ask me anything..."
                   rows={1}
-                  className="w-full min-h-[3.25rem] max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
+                  className="w-full min-h-[3.25rem] max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
                 />
               )}
               {chatBarToolbar}
@@ -2173,6 +2181,9 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                 {threadFooter}
               </div>
             ) : null}
+            {docketBubble ? (
+              <div className={chatMessages.length > 0 ? "mt-4" : ""}>{docketBubble}</div>
+            ) : null}
             {isChatLoading && (
               <div className="flex justify-start">
                 <div className="max-w-[80%] py-3 text-sm leading-relaxed text-black/70 dark:text-white/60 flex items-center gap-3">
@@ -2208,7 +2219,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
                   placeholder="Ask me anything..."
                   rows={1}
-                  className="w-full min-h-[3.25rem] max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
+                  className="w-full min-h-[3.25rem] max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
                 />
               )}
               {chatBarToolbar}
@@ -2223,6 +2234,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           fullWidth={isMobilePhone}
           onClose={() => onActiveArtifactChange(null)}
           onSaveToVault={onSaveArtifact}
+          onArtifactUpdate={onActiveArtifactChange}
         />
       ) : null}
     </>

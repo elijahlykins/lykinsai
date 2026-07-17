@@ -45,11 +45,18 @@ export async function streamWakeChatPreview(
   history: WakeChatPreviewHistoryMsg[],
   onChunk: (visibleText: string) => void,
   signal?: AbortSignal,
+  mode?: string,
+  pageContext?: string,
 ): Promise<string> {
   const response = await fetch(`${API_BASE_URL}/api/ai/stream-guest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, history }),
+    body: JSON.stringify({
+      prompt,
+      history,
+      ...(mode ? { mode } : {}),
+      ...(pageContext ? { pageContext } : {}),
+    }),
     signal,
   });
   if (!response.ok || !response.body) throw new Error("chat: bad response");

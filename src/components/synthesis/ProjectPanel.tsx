@@ -29,6 +29,8 @@ import {
   PROJECTS_CHANGED_EVENT,
   type ProjectsChangedDetail,
 } from "@/lib/synthesis/projectLiveSync";
+import { findMorningBrief, isFreshMorningBrief } from "@/lib/morningBrief";
+import MorningBriefCard from "@/components/projects/MorningBriefCard";
 
 /**
  * ProjectPanel — the right-side detail surface that opens when the
@@ -273,6 +275,16 @@ export default function ProjectPanel({
     });
   }, [project]);
 
+  const morningBrief = useMemo(() => findMorningBrief(updates), [updates]);
+  const showMorningBrief = useMemo(
+    () => isFreshMorningBrief(morningBrief),
+    [morningBrief],
+  );
+  const displayUpdates = useMemo(
+    () => (showMorningBrief ? updates.filter((u) => u.stateKey !== "morning_brief") : updates),
+    [updates, showMorningBrief],
+  );
+
   return (
     <AnimatePresence>
       {open && project ? (
@@ -353,26 +365,30 @@ export default function ProjectPanel({
               </div>
             </section>
 
+            {showMorningBrief && morningBrief ? (
+              <MorningBriefCard brief={morningBrief} projectName={project.name} compact />
+            ) : null}
+
             {/* Updates — kv-cards from lykn_project_state */}
             <section>
               <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-2">
-                Updates ({updates.length})
+                Updates ({displayUpdates.length})
               </p>
               {updatesLoading ? (
                 <div className="flex items-center gap-2 text-[0.7rem] text-white/45 py-2">
                   <Loader2 size={11} className="animate-spin" />
                   Loading updates…
                 </div>
-              ) : updates.length === 0 ? (
+              ) : displayUpdates.length === 0 ? (
                 <p className="text-[0.7rem] text-white/40 leading-relaxed">
                   No updates yet. When a model in LYKN chat, Claude, Cursor,
                   or any connected client records a decision about this
-                  project, it lands here — working memory the whole brain
+                  project, it lands here: working memory the whole brain
                   can read back.
                 </p>
               ) : (
                 <div className="space-y-2">
-                  {updates.map((u) => (
+                  {displayUpdates.map((u) => (
                     <div
                       key={`${u.stateKey}-${u.setAt}`}
                       className="px-2.5 py-2 rounded-md bg-white/[0.03] border border-white/8"
@@ -406,7 +422,7 @@ export default function ProjectPanel({
               </p>
               {sortedMembers.length === 0 ? (
                 <p className="text-[0.7rem] text-white/40">
-                  No neurons clustered yet — tap "Add neurons" below
+                  No neurons clustered yet. Tap "Add neurons" below
                   to connect a few.
                 </p>
               ) : (

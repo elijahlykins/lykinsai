@@ -536,7 +536,7 @@ export default function CustomApiDialog({ open, onOpenChange, initialPresetId = 
               >
                 <Sparkles className="h-3.5 w-3.5 text-indigo-500 flex-shrink-0" />
                 <span className="text-[11.5px] text-black/75 dark:text-white/80">
-                  Looks like a <span className="font-semibold">{keySuggestion.name}</span> key — use the
+                  Looks like a <span className="font-semibold">{keySuggestion.name}</span> key. Use the
                   preset (fills base URL + endpoints)?
                 </span>
               </button>

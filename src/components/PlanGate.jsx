@@ -14,6 +14,7 @@ const PLAN_RANK = {
   studio: 1,
   studio_pro: 1,
   studio_max: 1,
+  max: 2,
 };
 
 function planRank(planId) {

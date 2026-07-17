@@ -148,7 +148,7 @@ function maybeNotifyModelDowngrade(res: Response | null | undefined) {
   try {
     toast({
       title: "Using a free model for now",
-      description: `${from?.trim() || "That model"} needs a higher plan — we used ${to?.trim() || "a free model"} instead.`,
+      description: `${from?.trim() || "That model"} needs a higher plan, so we used ${to?.trim() || "a free model"} instead.`,
     });
   } catch { /* toast unavailable */ }
 }
@@ -620,6 +620,8 @@ export interface ChatSendParams {
     sections?: any[];
     content?: string;
     theme?: string;
+    /** React component source (lykn_build_react_artifact edit round-trip). */
+    code?: string;
   } | null;
   sentAttachments: FocusedChatAttachment[];
   brickActionData: { imageUrl?: string; videoId?: string } | null;
@@ -707,7 +709,7 @@ async function transcribeAttachments(
           const tSource = String(tData?.source || "").toLowerCase();
           if (t && tSource === "description_fallback") {
             if (!signal.aborted) {
-              onStatus("No captions — transcribing audio...");
+              onStatus("No captions, transcribing audio...");
               const retryRes = await fetch(`${apiBase}/api/youtube/transcript?id=${encodeURIComponent(att.videoId)}&retryWhisper=1`, { signal }).catch(() => null);
               if (retryRes && retryRes.ok) {
                 const retryData = await retryRes.json() as any;
@@ -838,7 +840,7 @@ async function fetchYouTubeGrounding(
 
       let whisperWasAttempted = Boolean(tJson?.whisperAttempted);
       if (transcriptSource === "description_fallback" && !signal.aborted) {
-        state.setChatStatusText("No captions found — transcribing video audio...");
+        state.setChatStatusText("No captions found, transcribing video audio...");
         const retryTimeout = setTimeout(() => { if (!signal.aborted) abortController.abort(); }, 120000);
         const retryRes = await fetch(
           `${apiBase}/api/youtube/transcript?id=${encodeURIComponent(targetVideo.videoId)}&retryWhisper=1`,
@@ -876,19 +878,19 @@ async function fetchYouTubeGrounding(
             ? "Audio transcription was attempted using Whisper speech-to-text but the audio could not be downloaded from YouTube."
             : "No audio transcription was attempted.";
           youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId}\n${whisperNote}\nVideo description (this is NOT a transcript of spoken audio — it is only the video's description/metadata):\n${safeTranscript}`;
-          state.setChatStatusText("Transcription failed — only description available...");
+          state.setChatStatusText("Transcription failed, only description available...");
         } else {
           youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId}\nFull transcript:\n${safeTranscript}`;
-          state.setChatStatusText("Transcript ready — generating response...");
+          state.setChatStatusText("Transcript ready, generating response...");
         }
       } else {
         const whisperNote = whisperWasAttempted ? " Audio transcription was attempted but failed." : "";
-        state.setChatStatusText("No transcript available — answering from metadata...");
+        state.setChatStatusText("No transcript available, answering from metadata...");
         youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId} (${targetVideo.url})\n(No transcript or description available.${whisperNote})`;
       }
     } catch {
       if (!signal.aborted) {
-        state.setChatStatusText("Transcript fetch failed — answering from metadata...");
+        state.setChatStatusText("Transcript fetch failed, answering from metadata...");
         youtubeGrounding = `Video: ${targetVideo.title || targetVideo.videoId} (${targetVideo.url})\n(Transcript fetch failed)`;
       }
     }
@@ -1113,12 +1115,18 @@ async function handleStreamingResponse(
   promptId: string,
   responseBlockId: string | null,
   userText: string,
-): Promise<{ accumulated: string; responseBlockId: string | null; servedModel: string | null }> {
+): Promise<{ accumulated: string; responseBlockId: string | null; servedModel: string | null; generatedImageUrl: string | null }> {
   const { canvas, state, streamRefs } = p;
   const reader = streamRes.body?.getReader();
   const decoder = new TextDecoder();
   let accumulated = "";
   let servedModel: string | null = null;
+  // Image generated this turn (lykn_generate_image → done). The URL is
+  // appended to the conversation-memory entry (NOT the visible bubble, which
+  // renders the image via the artifact card) so the server's follow-up
+  // detector can see "the last assistant turn produced an image" and re-force
+  // the tool on "do the same but…" edits.
+  let generatedImageUrl: string | null = null;
   let firstToken = true;
   let sseBuffer = "";
   let serverErrorMsg = "";
@@ -1322,6 +1330,18 @@ async function handleStreamingResponse(
                   projectId: projectIdFromToolResult(tc.name, tc.result),
                 });
               }
+              // Remember the image generated this turn for conversation memory
+              // (feeds the server's image-follow-up detector next turn).
+              if (
+                tc.status === "done"
+                && tc.name === "lykn_generate_image"
+                && tc.result
+                && typeof tc.result === "object"
+                && typeof (tc.result as { image_url?: string }).image_url === "string"
+                && /^https?:\/\//.test((tc.result as { image_url: string }).image_url)
+              ) {
+                generatedImageUrl = (tc.result as { image_url: string }).image_url;
+              }
               // Self-tuning: when the assistant rewrites the user's own custom
               // instructions (tone / behavior), persist the new text into their
               // settings so it sticks, shows up in Settings → Display for manual
@@ -1491,7 +1511,7 @@ async function handleStreamingResponse(
   if (serverErrorMsg && !accumulated.trim()) {
     accumulated = AI_TEMPORARY_FAILURE_TEXT;
   }
-  return { accumulated, responseBlockId, servedModel };
+  return { accumulated, responseBlockId, servedModel, generatedImageUrl };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2104,6 +2124,7 @@ async function postProcessResponse(
   asksAboutVideo: boolean,
   cappedText: string,
   servedModel: string | null = null,
+  generatedImageUrl: string | null = null,
 ): Promise<void> {
   const { analysis, postProcessing, state, canvas, typing, identity } = p;
 
@@ -2229,7 +2250,14 @@ async function postProcessResponse(
   } : m)));
   // Push the post-cleanup display text into conversation memory so future
   // turns and saved exchanges don't reference internal markers / source tags.
-  p.aiThread.push({ role: "assistant", content: finalDisplayText, model: replyModel || undefined, at: completedAt });
+  // A generated image gets its markdown line appended HERE (memory only — the
+  // visible bubble renders it as a card): the server's follow-up detector
+  // reads it from `conversation` to re-force lykn_generate_image when the
+  // next message is a tweak ("same thing but…", "make it darker").
+  const threadContent = generatedImageUrl
+    ? `${finalDisplayText}\n\n![Generated image](${generatedImageUrl})`
+    : finalDisplayText;
+  p.aiThread.push({ role: "assistant", content: threadContent, model: replyModel || undefined, at: completedAt });
   if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
   typing.maybeRunConversationSummary();
   if (identity.userId) { invalidateMemoryCache(); saveExchange(identity.userId, "chat", identity.routeChatId || identity.chatId || null, p.context.titleRef.current || null, cappedText, finalDisplayText); }
@@ -2880,6 +2908,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       asksAboutVideo,
       cappedText,
       streamResult.servedModel,
+      streamResult.generatedImageUrl,
     );
   } else {
     /* Non-streaming invoke fallback */

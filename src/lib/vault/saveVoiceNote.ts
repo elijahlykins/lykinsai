@@ -28,7 +28,7 @@ export async function transcribeVaultAudio(
   opts?: { promptHint?: string; fileName?: string },
 ): Promise<{ transcript: string } | { error: string }> {
   if (!blob || blob.size < VOICE_NOTE_MIN_BYTES) {
-    return { error: "Recording too short — try speaking a bit longer." };
+    return { error: "Recording too short. Try speaking a bit longer." };
   }
 
   const formData = new FormData();
@@ -49,7 +49,7 @@ export async function transcribeVaultAudio(
 
   const transcript = String(data?.text || "").trim();
   if (!transcript) {
-    return { error: "Couldn't pick up any speech — try again." };
+    return { error: "Couldn't pick up any speech. Try again." };
   }
   return { transcript };
 }

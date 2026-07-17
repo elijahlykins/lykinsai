@@ -1,9 +1,23 @@
 // Local HTTP bridge — receives live page text from the LYKN browser extension.
-// Binds 127.0.0.1 only; no auth token needed for v1 (localhost-only).
+// Binds 127.0.0.1 only.
+//
+// SECURITY: binding to loopback does NOT stop other web pages from reaching
+// this server — any site the user visits can `fetch('http://127.0.0.1:PORT/…')`.
+// So we gate every request on two checks:
+//   1. Host header must be loopback (127.0.0.1 / localhost). A DNS-rebinding
+//      page connects to 127.0.0.1 but carries its own hostname in Host, so
+//      this rejects rebinding attacks.
+//   2. If an Origin header is present it must be a browser-extension origin
+//      (chrome-extension:// / moz-extension:// / safari-web-extension://).
+//      Normal http(s) web pages carry an http(s) Origin and are rejected —
+//      this stops arbitrary sites from reading captured page text or POSTing
+//      attacker-controlled text into LYKN's AI grounding.
+// CORS is reflected only back to an allowed extension origin, never `*`.
 
 const http = require("node:http");
 
 const DEFAULT_PORT = Number(process.env.LYKN_BRIDGE_PORT) || 38471;
+const EXTENSION_ORIGIN_RE = /^(chrome-extension|moz-extension|safari-web-extension):\/\//i;
 const UI_CONNECTED_MS = 120_000; // show "connected" in UI if seen in last 2 min
 const LIVE_DATA_MS = 12_000; // use extension text for live watch if seen in last 12s
 
@@ -63,17 +77,43 @@ function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
   listenPort = port;
 
   server = http.createServer((req, res) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    // --- Anti-DNS-rebinding: require a loopback Host header. ---
+    const hostHeader = String(req.headers.host || "").split(":")[0].toLowerCase();
+    const hostOk = hostHeader === "127.0.0.1" || hostHeader === "localhost" || hostHeader === "[::1]";
+
+    // --- Origin gate: allow only browser-extension origins (or no Origin,
+    // which is what the extension's fetch and the /welcome tab send). Any
+    // http(s) Origin means a normal web page is calling us — reject it. ---
+    // Allow: no Origin (direct nav / some service-worker fetches), the opaque
+    // "null" origin, or an extension origin. Block anything with an http(s)
+    // web origin — that's a normal web page trying to reach the bridge.
+    const origin = String(req.headers.origin || "");
+    const originOk = origin === "" || origin === "null" || EXTENSION_ORIGIN_RE.test(origin);
+
+    if (origin && originOk) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+    const path = (req.url || "").split("?")[0];
+
+    // The /welcome page is a same-tab navigation (no Origin, benign HTML) and
+    // must stay reachable; everything else requires loopback Host + an allowed
+    // (extension or empty) Origin.
+    const isWelcome = req.method === "GET" && path === "/welcome";
+    if (!isWelcome && (!hostOk || !originOk)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end('{"ok":false,"error":"forbidden"}');
+      return;
+    }
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       res.end();
       return;
     }
-
-    const path = (req.url || "").split("?")[0];
 
     if (req.method === "GET" && path === "/status") {
       res.writeHead(200, { "Content-Type": "application/json" });

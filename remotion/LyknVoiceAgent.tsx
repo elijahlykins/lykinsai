@@ -8,6 +8,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 
 // ---------------------------------------------------------------------------
 // LYKN Voice Mode — the actual in-app voice agent UI (dark theme): the
@@ -189,6 +190,7 @@ export const LyknVoiceAgent: React.FC = () => {
         fontFamily: "Inter, system-ui, sans-serif",
       }}
     >
+      <SceneBackground />
       {NARRATION_FILE ? <Audio src={staticFile(NARRATION_FILE)} /> : null}
 
       {/* Preview-card window floating on the gradient */}

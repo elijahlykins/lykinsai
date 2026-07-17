@@ -653,14 +653,17 @@ export async function removeNeuronFromProject(
     return true;
   } catch {
     // Best-effort localStorage parity so the panel still updates
-    // if Supabase blocked the delete.
+    // if Supabase blocked the delete — but report FAILURE: the server
+    // row still exists, so any refetch will resurrect the neuron and
+    // a `true` here would tell the caller the remove worked.
     const local = readLocal(userId);
     const idx = local.findIndex((p) => p.id === projectId);
-    if (idx === -1) return false;
-    const nextMembers = local[idx].members.filter((m) => m.nodeId !== nodeId);
-    local[idx] = { ...local[idx], members: nextMembers, lastActiveAt: Date.now() };
-    writeLocal(userId, local);
-    return true;
+    if (idx !== -1) {
+      const nextMembers = local[idx].members.filter((m) => m.nodeId !== nodeId);
+      local[idx] = { ...local[idx], members: nextMembers, lastActiveAt: Date.now() };
+      writeLocal(userId, local);
+    }
+    return false;
   }
 }
 
@@ -701,10 +704,13 @@ export async function listProjectStateUpdates(
     // dozen distinct keys, but the cap stops a runaway script
     // (which can push as many keys as it wants) from making the
     // panel scroll forever.
+    // No user_id filter — membership-aware RLS (migration 110) already
+    // scopes rows to projects the caller can read, and shared-project
+    // collaborators must see state pushed by the owner and other members.
+    // Filtering to the current user hid everyone else's updates.
     const { data, error } = await supabase
       .from("lykn_project_state")
       .select("id, state_key, state_value, set_by_client, created_at, reason")
-      .eq("user_id", userId)
       .eq("project_id", projectId)
       .is("superseded_at", null)
       .order("created_at", { ascending: false })
@@ -877,10 +883,11 @@ export async function listProjectPushEvents(
 ): Promise<number[]> {
   if (!userId || !projectId) return [];
   try {
+    // Like listProjectStateUpdates: rely on RLS instead of a user_id
+    // filter so a shared project's chart counts every member's pushes.
     const { data, error } = await supabase
       .from("lykn_project_state")
       .select("created_at")
-      .eq("user_id", userId)
       .eq("project_id", projectId)
       .order("created_at", { ascending: false })
       .limit(limit);
@@ -1066,7 +1073,7 @@ export async function mergeUserProjects(
       });
       if (shared === true) {
         throw new Error(
-          "This project is shared with other people. Merging shared projects isn't supported yet — remove collaborators first.",
+          "This project is shared with other people. Merging shared projects isn't supported yet. Remove collaborators first.",
         );
       }
     }

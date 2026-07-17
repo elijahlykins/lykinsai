@@ -212,6 +212,12 @@ interface NeuronProps {
   isDimmed: boolean;
   isTopicMode: boolean;
   onHover: (id: string | null) => void;
+  /**
+   * Pointer-out handler. Receives THIS node's id so the parent can
+   * ignore stale pointer-out events that arrive after another neuron
+   * already claimed the hover (A→B slide fires B.over before A.out).
+   */
+  onHoverOut?: (id: string) => void;
   onClick: (id: string) => void;
   /**
    * If true, this neuron is in the user's current "Link neurons"
@@ -267,7 +273,7 @@ function getGlowTexture(): THREE.CanvasTexture | null {
   return tex;
 }
 
-function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, onClick, isLinkSelected = false, isForming = false, isLight = false }: NeuronProps) {
+function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, onHoverOut, onClick, isLinkSelected = false, isForming = false, isLight = false }: NeuronProps) {
   const groupRef = useRef<THREE.Group>(null);
 
   // Light-theme color/emissive remap. On a light backdrop the additive bloom
@@ -301,6 +307,15 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
   // turns each hover into a soft ~80ms fade instead of a hard flash.
   const hoverMulRef = useRef(1);
   const dimMulRef = useRef(1);
+  // Whether THIS node last set the page cursor to "pointer". If the node
+  // unmounts without a pointer-out (deleted, filtered away, graph refetch)
+  // the cursor would otherwise stay a pointer page-wide until the next hover.
+  const cursorOwnedRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      if (cursorOwnedRef.current) document.body.style.cursor = "";
+    };
+  }, []);
 
   // Map kind → base emissive intensity. Neurons (the "AI Learned" pink nodes)
   // glow brightest by design; root + category get strong glows; vault notes
@@ -488,11 +503,14 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
           e.stopPropagation();
           if (node.kind === "root") return;
           onHover(node.id);
+          cursorOwnedRef.current = true;
           document.body.style.cursor = "pointer";
         }}
         onPointerOut={(e: ThreeEvent<PointerEvent>) => {
           e.stopPropagation();
-          onHover(null);
+          if (onHoverOut) onHoverOut(node.id);
+          else onHover(null);
+          cursorOwnedRef.current = false;
           document.body.style.cursor = "";
         }}
         onClick={(e: ThreeEvent<MouseEvent>) => {
@@ -783,6 +801,24 @@ function SceneInner({
   // "any-focus-applied" flag lets us skip the dim/boost branches
   // entirely when no filter is active — the common case.
   const hasFocus = !!focusedSet && focusedSet.size > 0;
+
+  // Hover ownership guard. When the pointer slides from neuron A to
+  // neuron B, R3F can fire B's pointerOver BEFORE A's pointerOut — a
+  // bare `onHover(null)` in pointerOut would then wipe B's fresh hover
+  // and the highlight flickers off. Track who owns the hover and only
+  // let a node clear it if it is still the owner.
+  const hoverOwnerRef = useRef<string | null>(null);
+  const handleNeuronHoverIn = useCallback((id: string | null) => {
+    hoverOwnerRef.current = id;
+    onHoverNode(id);
+  }, [onHoverNode]);
+  const handleNeuronHoverOut = useCallback((id: string) => {
+    if (hoverOwnerRef.current === id) {
+      hoverOwnerRef.current = null;
+      onHoverNode(null);
+    }
+  }, [onHoverNode]);
+
   const posMap = useMemo(() => {
     const m = new Map<string, Scene3DNode>();
     for (const n of nodes) m.set(n.id, n);
@@ -865,7 +901,8 @@ function SceneInner({
             isSelected={isSelected}
             isDimmed={isDimmed}
             isTopicMode={isTopicMode}
-            onHover={onHoverNode}
+            onHover={handleNeuronHoverIn}
+            onHoverOut={handleNeuronHoverOut}
             onClick={onClickNode}
             isForming={isForming}
             isLinkSelected={isLinkSelected}

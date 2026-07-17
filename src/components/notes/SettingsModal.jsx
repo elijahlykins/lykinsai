@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -15,7 +15,6 @@ import {
   ChevronRight,
   Globe,
   Sparkles,
-  Download,
   Upload,
   FileArchive,
   Plug,
@@ -35,26 +34,31 @@ import ModelSelectOptions from '@/components/ModelSelectOptions';
 import VoicePicker from '@/components/notes/VoicePicker';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
+import { toast } from '@/components/ui/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { useUserPlan } from '@/lib/useUserPlan';
 import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
 import { planLabel } from '@/lib/pricing-config';
 import { API_BASE_URL } from '@/lib/api-config';
+import { parseNightShiftTier } from '@/lib/stewardQueue';
 import { applyTheme, normalizeTheme, readSavedTheme } from '@/lib/theme';
 
 // ---------------------------------------------------------------------
 // MenuRow — single icon + title row in the main settings list.
 // Hover is intentionally very light (bg-black/[0.03] / white/[0.04]).
 // ---------------------------------------------------------------------
-function MenuRow({ icon: Icon, title, onClick, danger = false, trailing = null }) {
+function MenuRow({ icon: Icon, title, onClick, danger = false, trailing = null, disabled = false }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg text-left transition-colors
-        ${danger
-          ? 'text-red-600 dark:text-red-400 hover:bg-red-500/[0.06] dark:hover:bg-red-500/[0.08]'
-          : 'text-black dark:text-white hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'}`}
+        ${disabled
+          ? 'text-black/45 dark:text-white/45 cursor-default'
+          : danger
+            ? 'text-red-600 dark:text-red-400 hover:bg-red-500/[0.06] dark:hover:bg-red-500/[0.08]'
+            : 'text-black dark:text-white hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'}`}
     >
       <Icon className={`w-4 h-4 shrink-0 ${danger ? '' : 'text-gray-500 dark:text-gray-400'}`} />
       <span className="flex-1 text-sm font-medium">{title}</span>
@@ -91,12 +95,12 @@ export default function SettingsModal({ isOpen, onClose }) {
   const location = useLocation();
   const [portalBusy, setPortalBusy] = useState(false);
 
-  // 'menu' | 'account' | 'privacy' | 'display' | 'import' | 'payment' | 'help'
-  // | 'connections'
+  // 'menu' | 'account' | 'privacy' | 'display' | 'aiPersonalization' | 'import'
+  // | 'payment' | 'help' | 'connections'
   const [view, setView] = useState('menu');
 
-  // ---- Display: explicit save feedback ----
-  const [displaySaveStatus, setDisplaySaveStatus] = useState('idle'); // idle | saved
+  // ---- AI personalization: explicit save feedback ----
+  const [aiPersonalizationSaveStatus, setAiPersonalizationSaveStatus] = useState('idle'); // idle | saved
 
   // ---- Import: chat-history .zip upload ----
   const [importFile, setImportFile] = useState(null);
@@ -104,17 +108,122 @@ export default function SettingsModal({ isOpen, onClose }) {
   const [importError, setImportError] = useState('');
   const [isDraggingImport, setIsDraggingImport] = useState(false);
 
+  // ---- Night Shift (server preferences) ----
+  const [nightShiftEnabled, setNightShiftEnabled] = useState(false);
+  const [nightShiftTier, setNightShiftTier] = useState('brief');
+  const [nightShiftLoading, setNightShiftLoading] = useState(false);
+  const [nightShiftSaving, setNightShiftSaving] = useState(false);
+
   // Reset to menu whenever the modal closes/reopens.
   useEffect(() => {
     if (!isOpen) setView('menu');
   }, [isOpen]);
 
-  // The Display "Saved" confirmation persists for the whole visit and only
-  // resets to "Save" once the user leaves the Display view (or closes the
-  // modal, which routes back to the menu).
+  // The AI Personalization "Saved" confirmation persists for the whole visit and
+  // only resets to "Save" once the user leaves that view (or closes the modal).
   useEffect(() => {
-    if (view !== 'display') setDisplaySaveStatus('idle');
+    if (view !== 'aiPersonalization') setAiPersonalizationSaveStatus('idle');
   }, [view]);
+
+  const loadNightShiftPref = useCallback(async () => {
+    if (!user?.id) return;
+    setNightShiftLoading(true);
+    try {
+      const sess = await supabase.auth.getSession();
+      const token = sess?.data?.session?.access_token;
+      if (!token) return;
+      const res = await fetch(`${API_BASE_URL}/api/account/preferences`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.preferences) {
+        setNightShiftEnabled(!!data.preferences.night_shift_enabled);
+        setNightShiftTier(parseNightShiftTier(data.preferences.night_shift_tier));
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      setNightShiftLoading(false);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (isOpen && view === 'privacy' && user?.id) void loadNightShiftPref();
+  }, [isOpen, view, user?.id, loadNightShiftPref]);
+
+  const toggleNightShift = async () => {
+    if (!user?.id || nightShiftSaving) return;
+    const next = !nightShiftEnabled;
+    setNightShiftSaving(true);
+    try {
+      const sess = await supabase.auth.getSession();
+      const token = sess?.data?.session?.access_token;
+      if (!token) return;
+      const res = await fetch(`${API_BASE_URL}/api/account/preferences`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ night_shift_enabled: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.preferences) {
+        setNightShiftEnabled(!!data.preferences.night_shift_enabled);
+        setNightShiftTier(parseNightShiftTier(data.preferences.night_shift_tier));
+      } else {
+        toast({
+          title: "Couldn't update Night Shift",
+          description: "The setting didn't save. Please try again.",
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: "Couldn't update Night Shift",
+        description: "The setting didn't save. Please try again.",
+        variant: 'destructive',
+      });
+    } finally {
+      setNightShiftSaving(false);
+    }
+  };
+
+  const setNightShiftTierPref = async (tier) => {
+    if (!user?.id || nightShiftSaving || tier === nightShiftTier) return;
+    setNightShiftSaving(true);
+    try {
+      const sess = await supabase.auth.getSession();
+      const token = sess?.data?.session?.access_token;
+      if (!token) return;
+      const res = await fetch(`${API_BASE_URL}/api/account/preferences`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ night_shift_tier: tier }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.preferences) {
+        setNightShiftTier(parseNightShiftTier(data.preferences.night_shift_tier));
+      } else {
+        toast({
+          title: "Couldn't update Night Shift",
+          description: "The tier didn't save. Please try again.",
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: "Couldn't update Night Shift",
+        description: "The tier didn't save. Please try again.",
+        variant: 'destructive',
+      });
+    } finally {
+      setNightShiftSaving(false);
+    }
+  };
 
   // Deep-link straight to the connect surface. The app dock's "+" and any
   // "connect an app" entry point route to /settings#connections (or
@@ -143,7 +252,11 @@ export default function SettingsModal({ isOpen, onClose }) {
       window.location.href = json.url;
     } catch (err) {
       if (import.meta.env.DEV) console.error('[Settings] portal failed:', err);
-      alert(err?.message || 'Could not open the billing portal.');
+      toast({
+        variant: 'destructive',
+        title: 'Billing portal unavailable',
+        description: err?.message || 'Could not open the billing portal.',
+      });
       setPortalBusy(false);
     }
   }, [portalBusy]);
@@ -224,6 +337,14 @@ export default function SettingsModal({ isOpen, onClose }) {
     window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
     window.dispatchEvent(new Event('storage'));
   };
+
+  // Render-synced mirror of `settings` for blur/save handlers. Reading the
+  // closed-over `settings` in onBlur can be one keystroke behind (the
+  // onChange state update hasn't re-rendered yet), silently dropping the
+  // last characters typed into assistant name / custom instructions.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const persistCurrentSettings = () => persistSettings(settingsRef.current);
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -346,8 +467,9 @@ export default function SettingsModal({ isOpen, onClose }) {
     return (
       <Dialog open={isOpen} onOpenChange={onClose}>
         <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md">
+          <DialogTitle className="sr-only">Settings</DialogTitle>
           <div className="flex items-center justify-center p-8">
-            <div className="w-6 h-6 border-4 border-slate-200 border-t-slate-800 rounded-full animate-spin" />
+            <div className="w-6 h-6 border-4 border-slate-200 border-t-slate-800 dark:border-white/15 dark:border-t-white/70 rounded-full animate-spin" />
           </div>
         </DialogContent>
       </Dialog>
@@ -370,7 +492,21 @@ export default function SettingsModal({ isOpen, onClose }) {
         <MenuRow icon={Plug} title="Connections" onClick={() => setView('connections')} />
         <MenuRow icon={Shield} title="Privacy" onClick={() => setView('privacy')} />
         <MenuRow icon={Monitor} title="Display" onClick={() => setView('display')} />
-        <MenuRow icon={Upload} title="Import" onClick={() => setView('import')} />
+        <MenuRow icon={Sparkles} title="AI Personalization" onClick={() => setView('aiPersonalization')} />
+        {/* The chat-history import backend (/api/import/chat-history) hasn't
+            shipped yet — every upload 404'd after the user picked a file.
+            Keep the row visible but inert until the server route exists. */}
+        <MenuRow
+          icon={Upload}
+          title="Import"
+          disabled
+          onClick={() => {}}
+          trailing={
+            <span className="text-[11px] text-gray-400 dark:text-gray-500">
+              Coming soon
+            </span>
+          }
+        />
         <MenuRow icon={CreditCard} title="Payment" onClick={() => setView('payment')} />
         <MenuRow icon={HelpCircle} title="Help" onClick={() => setView('help')} />
         {user && (
@@ -433,7 +569,7 @@ export default function SettingsModal({ isOpen, onClose }) {
               onClick={handleSignOutEverywhere}
               disabled={signOutEverywhereBusy}
               variant="outline"
-              className="w-full border-red-300 dark:border-red-900/60 text-red-600 dark:text-red-400 hover:bg-red-500/[0.06] dark:hover:bg-red-500/[0.08] hover:text-red-700 dark:hover:text-red-300 flex items-center justify-center gap-2 disabled:opacity-50"
+              className="w-full !bg-transparent border-red-300 dark:border-red-900/60 text-red-600 dark:text-red-400 !shadow-none hover:!bg-red-500/[0.06] dark:hover:!bg-red-500/[0.08] hover:text-red-700 dark:hover:text-red-300 flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {signOutEverywhereBusy ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -541,21 +677,63 @@ export default function SettingsModal({ isOpen, onClose }) {
       <SubViewHeader title="Privacy" onBack={() => setView('menu')} />
       <div className="space-y-4">
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          Review LYKN&apos;s privacy commitments and download a copy of your data.
+          Review LYKN&apos;s privacy commitments.
         </p>
 
         {user && (
-          <Button
-            disabled
-            variant="outline"
-            className="w-full border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 cursor-not-allowed flex items-center justify-center gap-2"
-          >
-            <Download className="w-4 h-4" />
-            Export my data
-            <span className="ml-2 text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400 bg-amber-100/60 dark:bg-amber-950/30 px-1.5 py-0.5 rounded-full">
-              Soon
-            </span>
-          </Button>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-black dark:text-white">Night Shift</p>
+                <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">
+                  Work on your projects overnight and leave a morning brief.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={nightShiftEnabled}
+                disabled={nightShiftLoading || nightShiftSaving}
+                onClick={() => void toggleNightShift()}
+                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border transition-colors ${
+                  nightShiftEnabled
+                    ? 'bg-sky-500 border-sky-500'
+                    : 'bg-gray-200 dark:bg-gray-700 border-gray-300 dark:border-gray-600'
+                } ${nightShiftLoading || nightShiftSaving ? 'opacity-60 cursor-wait' : ''}`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-0.5 ${
+                    nightShiftEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+            {nightShiftEnabled ? (
+              <div className="flex rounded-lg border border-gray-200 dark:border-gray-700/60 overflow-hidden">
+                {[
+                  { tier: 'brief', label: 'Brief' },
+                  { tier: 'research', label: 'Research' },
+                  { tier: 'delegate', label: 'Delegate' },
+                ].map(({ tier, label }, i) => (
+                  <button
+                    key={tier}
+                    type="button"
+                    disabled={nightShiftSaving}
+                    onClick={() => void setNightShiftTierPref(tier)}
+                    className={`flex-1 px-2 py-1.5 text-xs transition-colors ${
+                      i > 0 ? 'border-l border-gray-200 dark:border-gray-700/60' : ''
+                    } ${
+                      nightShiftTier === tier
+                        ? 'bg-black/[0.05] dark:bg-white/[0.08] font-medium text-black dark:text-white'
+                        : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
         )}
 
         <div className="flex flex-col rounded-lg border border-gray-200 dark:border-gray-700/60 overflow-hidden">
@@ -612,9 +790,19 @@ export default function SettingsModal({ isOpen, onClose }) {
             </SelectContent>
           </Select>
         </div>
+      </div>
+    </div>
+  );
 
-        <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700/60">
-          <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5 pt-2">
+  // ===========================================================
+  // AI PERSONALIZATION
+  // ===========================================================
+  const renderAiPersonalization = () => (
+    <div>
+      <SubViewHeader title="AI Personalization" onBack={() => setView('menu')} />
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5">
             <Sparkles className="w-3 h-3" />
             Default AI model
           </Label>
@@ -650,7 +838,7 @@ export default function SettingsModal({ isOpen, onClose }) {
               value={settings.aiName || ''}
               maxLength={40}
               onChange={(e) => setSettings((prev) => ({ ...prev, aiName: e.target.value }))}
-              onBlur={() => persistSettings(settings)}
+              onBlur={persistCurrentSettings}
               placeholder="LYKN"
               className="flex-1 px-3 py-2 text-sm bg-white dark:bg-[#1f1d1d] border border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20"
             />
@@ -669,12 +857,12 @@ export default function SettingsModal({ isOpen, onClose }) {
               Custom instructions
             </Label>
             <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
-              Tell your assistant how to respond in chat — tone, format, the overall feel, things to always or never do. Applied to every chat.
+              Tell your assistant how to respond in chat: tone, format, the overall feel, things to always or never do. Applied to every chat.
             </p>
             <Textarea
               value={settings.userPrompt || ''}
               onChange={(e) => setSettings((prev) => ({ ...prev, userPrompt: e.target.value }))}
-              onBlur={() => persistSettings(settings)}
+              onBlur={persistCurrentSettings}
               maxLength={1500}
               rows={4}
               placeholder="e.g. Be concise and direct. Use bullet points. Skip the preamble."
@@ -737,12 +925,12 @@ export default function SettingsModal({ isOpen, onClose }) {
             Voice instructions
           </Label>
           <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
-            How you want your assistant to sound and behave in live voice conversations — pace, warmth, formality, the overall feel.
+            How you want your assistant to sound and behave in live voice conversations: pace, warmth, formality, the overall feel.
           </p>
           <Textarea
             value={settings.voicePrompt || ''}
             onChange={(e) => setSettings((prev) => ({ ...prev, voicePrompt: e.target.value }))}
-            onBlur={() => persistSettings(settings)}
+            onBlur={persistCurrentSettings}
             maxLength={1500}
             rows={4}
             placeholder="e.g. Speak warmly and casually, like a close friend. Keep replies short. Don't over-explain."
@@ -756,12 +944,12 @@ export default function SettingsModal({ isOpen, onClose }) {
         <div className="pt-4 mt-1 border-t border-gray-200 dark:border-gray-700/60">
           <Button
             onClick={() => {
-              persistSettings(settings);
-              setDisplaySaveStatus('saved');
+              persistCurrentSettings();
+              setAiPersonalizationSaveStatus('saved');
             }}
             className="w-full bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 flex items-center justify-center gap-2"
           >
-            {displaySaveStatus === 'saved' ? (
+            {aiPersonalizationSaveStatus === 'saved' ? (
               <>
                 <Check className="w-4 h-4" />
                 Saved
@@ -951,6 +1139,7 @@ export default function SettingsModal({ isOpen, onClose }) {
       case 'connections': return renderConnections();
       case 'privacy': return renderPrivacy();
       case 'display': return renderDisplay();
+      case 'aiPersonalization': return renderAiPersonalization();
       case 'import':  return renderImport();
       case 'payment': return renderPayment();
       case 'help':    return renderHelp();
@@ -961,7 +1150,10 @@ export default function SettingsModal({ isOpen, onClose }) {
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent
-        className={`bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white backdrop-blur-md max-h-[90vh] overflow-y-auto overflow-x-hidden ${
+        // flex column with an inner scroll area (not a scrolling DialogContent)
+        // so the "Settings" header and the ✕ stay pinned while long views
+        // (AI Personalization, Connections) scroll underneath.
+        className={`bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white backdrop-blur-md max-h-[90vh] flex flex-col overflow-hidden ${
           view === 'connections' ? 'max-w-2xl' : 'max-w-md'
         }`}
       >
@@ -969,7 +1161,7 @@ export default function SettingsModal({ isOpen, onClose }) {
           <DialogTitle className="text-black dark:text-white">Settings</DialogTitle>
         </DialogHeader>
 
-        <div className="min-w-0 py-2">
+        <div className="min-w-0 py-2 flex-1 overflow-y-auto overflow-x-hidden">
           {renderView()}
         </div>
       </DialogContent>

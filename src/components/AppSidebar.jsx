@@ -28,7 +28,7 @@ import { supabase } from "@/lib/supabase";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import ChatThreadSidebarGroups from "@/components/chat/ChatThreadSidebarGroups";
-import { fetchLyknChatsWithContext, invalidateLyknChatListQueries } from "@/lib/lyknChat/fetchLyknChatsWithContext";
+import { invalidateLyknChatListQueries } from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { fetchPublishedCustomModels } from "@/lib/modelBuilder/customModelsClient";
 import ChatModelFilterSelect from "@/components/chat/ChatModelFilterSelect";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -106,15 +106,6 @@ export default function AppSidebar({
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const menuRef = useRef(null);
 
-  const { data: boards = [] } = useQuery({
-    queryKey: ["boards", user?.id],
-    queryFn: async () => {
-      if (!user?.id) return [];
-      return fetchLyknChatsWithContext(user.id, 50);
-    },
-    enabled: !!user?.id,
-  });
-
   const { data: customModels = [] } = useQuery({
     queryKey: ["published-custom-models", user?.id],
     queryFn: async () => {
@@ -179,7 +170,16 @@ export default function AppSidebar({
       }
     };
     document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
+    // Close on any scroll so the fixed-position menu doesn't float detached
+    // from its chat row when the sidebar list scrolls.
+    const onScroll = () => setMenuChatId(null);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
   }, [menuChatId]);
 
   useEffect(() => {
@@ -206,8 +206,16 @@ export default function AppSidebar({
 
   const renameBoard = async (chatId) => {
     if (!user?.id) return;
-    const board = boards.find((b) => b.id === chatId);
-    const currentTitle = board?.title || "New Chat";
+    let currentTitle = "New Chat";
+    try {
+      const { data } = await supabase
+        .from("lykn_chats")
+        .select("title")
+        .eq("id", chatId)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (data?.title) currentTitle = data.title;
+    } catch { /* fall back to default title */ }
     const next = window.prompt("Rename chat", currentTitle);
     if (next === null) return;
     const name = next.trim() || "New Chat";
@@ -555,7 +563,12 @@ export default function AppSidebar({
         <div
           ref={menuRef}
           className="fixed z-[9999] w-44 rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 text-[0.6875rem] text-black/85 dark:text-white/90"
-          style={{ top: menuPos.top, left: menuPos.left }}
+          style={{
+            // Clamp so the menu never renders past the viewport edge (rows near
+            // the bottom of the chat list would otherwise push Delete off-screen).
+            top: Math.max(8, Math.min(menuPos.top, window.innerHeight - 96)),
+            left: Math.max(8, Math.min(menuPos.left, window.innerWidth - 184)),
+          }}
         >
           <button
             type="button"

@@ -23,7 +23,8 @@ const SUBSCRIPTION_GATE_EXACT = new Set([
   "/cookies",
   "/dpa",
   "/",
-  "/landing-prototype",
+  "/landing",
+  "/glass",
   "/share",
 ]);
 

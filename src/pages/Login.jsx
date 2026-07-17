@@ -3,7 +3,6 @@ import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isConnectOnboardingDone } from "@/lib/landingHandoff";
 import { motion, AnimatePresence } from "framer-motion";
-import lyknLogoWhite from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
 import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-web.png";
 
 const GoogleIcon = () => (
@@ -15,30 +14,100 @@ const GoogleIcon = () => (
   </svg>
 );
 
-// The same blended blue → white vertical gradient the landing hero uses, so
-// the sign-in page reads as part of the same world.
-const HERO_GRADIENT =
-  "linear-gradient(180deg, #1d4ed8 0%, #2f6bf0 22%, #5b93f5 45%, #93bdfa 68%, #cfe0fc 86%, #f6f8fc 100%)";
+// The same Inter stack the Glass landing uses (.glass-land), so type renders
+// identically across the two pages.
+const LANDING_FONT =
+  '"Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif';
 
-// Soft, slowly drifting blurred orbs that give the gradient depth and gentle
-// motion behind the glass cards. Purely decorative.
-const ORBS = [
-  { cls: "w-[28rem] h-[28rem] -top-28 -left-24 bg-white/30", dur: 15, dx: 36, dy: 26 },
-  { cls: "w-[24rem] h-[24rem] top-1/3 -right-28 bg-sky-200/40", dur: 18, dx: -30, dy: 34 },
-  { cls: "w-[22rem] h-[22rem] bottom-[-7rem] left-1/4 bg-indigo-300/30", dur: 22, dx: 26, dy: -22 },
-];
-
-const FloatingOrbs = () => (
-  <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
-    {ORBS.map((o, i) => (
-      <motion.div
-        key={i}
-        className={`absolute rounded-full blur-3xl ${o.cls}`}
-        animate={{ x: [0, o.dx, 0], y: [0, o.dy, 0] }}
-        transition={{ duration: o.dur, repeat: Infinity, ease: "easeInOut" }}
-      />
-    ))}
+// Full-bleed backdrop: the landing's blue burst anchored to the right edge
+// with frosted glass panels running edge to edge across the whole viewport.
+// Pure decoration.
+const PANEL_COUNT = 12;
+const PanelArt = () => (
+  <div className="pointer-events-none absolute inset-0" aria-hidden>
+    <div
+      className="absolute"
+      style={{
+        top: "-12%",
+        bottom: "-12%",
+        right: 0,
+        left: 0,
+        /* A full-width blue sweep (pale at the left, deep brand blue at the
+           right) so the frosted panels are visible across the WHOLE screen,
+           not just where the old right-edge burst sat. */
+        background:
+          "linear-gradient(90deg, #dfe9fb 0%, #b7cdf6 30%, #6d9bf3 62%, #0e6fff 100%)",
+        filter: "blur(18px)",
+      }}
+    />
+    <div className="absolute inset-0 flex">
+      {Array.from({ length: PANEL_COUNT }).map((_, i) => (
+        <span
+          key={i}
+          className="flex-1"
+          style={{
+            borderLeft: i === 0 ? "none" : "1px solid rgba(255,255,255,0.5)",
+            background: "rgba(255,255,255,0.04)",
+            backdropFilter: "blur(14px)",
+            WebkitBackdropFilter: "blur(14px)",
+          }}
+        />
+      ))}
+    </div>
   </div>
+);
+
+// Shared styling for every text input and primary submit button in the form,
+// tuned for the plain white stage (crisp borders instead of glass).
+const INPUT_CLS =
+  "w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all duration-200";
+const SUBMIT_CLS =
+  "w-full rounded-xl px-4 py-3 text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200 mt-1 bg-gradient-to-b from-[#6ea8ff] to-[#2563eb] shadow-[0_12px_26px_-10px_rgba(37,99,235,0.65),inset_0_1px_0_rgba(255,255,255,0.45)] hover:from-[#5b9bff] hover:to-[#1e40af]";
+const SECONDARY_BTN_CLS =
+  "w-full flex items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-all duration-200 shadow-sm";
+
+const Spinner = () => (
+  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+  </svg>
+);
+
+const ErrorBanner = ({ message }) => (
+  <AnimatePresence>
+    {message && (
+      <motion.div
+        initial={{ opacity: 0, y: -4 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -4 }}
+        className="flex items-center gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2.5"
+      >
+        <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+        </svg>
+        <span className="text-xs text-red-700">{message}</span>
+      </motion.div>
+    )}
+  </AnimatePresence>
+);
+
+const SubmitButton = ({ submitting, label, busyLabel }) => (
+  <motion.button
+    type="submit"
+    disabled={submitting}
+    whileHover={{ y: -1 }}
+    whileTap={{ scale: 0.99 }}
+    className={SUBMIT_CLS}
+  >
+    {submitting ? (
+      <span className="flex items-center justify-center gap-2">
+        <Spinner />
+        {busyLabel}
+      </span>
+    ) : (
+      label
+    )}
+  </motion.button>
 );
 
 function friendlyError(raw) {
@@ -75,6 +144,29 @@ function isFreshlyCreatedUser(user) {
   if (!Number.isFinite(createdMs)) return false;
   return Date.now() - createdMs < NEW_USER_WINDOW_MS;
 }
+
+// The page shell shared by the form and the "check your email" state: the
+// full-bleed panel backdrop with a single centered card holding the content.
+const PageShell = ({ children }) => (
+  <div
+    className="fixed inset-0 z-50 overflow-y-auto bg-white"
+    style={{ fontFamily: LANDING_FONT }}
+  >
+    <PanelArt />
+    <div className="relative min-h-full flex flex-col px-5 py-8">
+      <div className="flex-1 flex items-center justify-center py-10">
+        <motion.div
+          initial={{ opacity: 0, y: 24 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+          className="w-full max-w-[440px] rounded-[28px] border border-slate-200 bg-white p-7 sm:p-9 shadow-[0_32px_80px_-32px_rgba(15,23,42,0.35)]"
+        >
+          {children}
+        </motion.div>
+      </div>
+    </div>
+  </div>
+);
 
 export default function Login() {
   const nav = useNavigate();
@@ -176,217 +268,162 @@ export default function Login() {
 
   if (showSuccess) {
     return (
-      <div className="fixed inset-0 z-50 overflow-y-auto" style={{ background: HERO_GRADIENT }}>
-        <FloatingOrbs />
-        <div className="relative min-h-full flex items-center justify-center px-5 py-10">
+      <PageShell>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+        >
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="w-full max-w-[420px] rounded-[28px] border border-white/50 bg-white/70 backdrop-blur-2xl shadow-[0_30px_80px_-30px_rgba(15,23,42,0.55)] p-8 sm:p-10 text-center"
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            transition={{ type: "spring", delay: 0.15 }}
+            className="w-16 h-16 mb-6 rounded-2xl bg-blue-500/15 ring-1 ring-blue-300/50 flex items-center justify-center"
           >
-            <motion.div
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              transition={{ type: "spring", delay: 0.15 }}
-              className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-blue-500/15 ring-1 ring-blue-300/50 flex items-center justify-center"
-            >
-              <svg className="w-8 h-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            </motion.div>
-            <h2 className="text-2xl font-semibold text-[#0a0c12] mb-2">Check your email</h2>
-            <p className="text-slate-600 mb-8">
-              We sent a confirmation link to <span className="font-medium text-slate-800">{email}</span>. Click the link to activate your account.
-            </p>
-            <button
-              onClick={() => { setShowSuccess(false); setMode("login"); }}
-              className="text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors"
-            >
-              Back to login
-            </button>
+            <svg className="w-8 h-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
           </motion.div>
-        </div>
-      </div>
+          <h2 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">
+            Check your email
+          </h2>
+          <p className="text-slate-600 mb-8">
+            We sent a confirmation link to{" "}
+            <span className="font-medium text-slate-800">{email}</span>. Click
+            the link to activate your account.
+          </p>
+          <button
+            onClick={() => { setShowSuccess(false); setMode("login"); }}
+            className="text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors"
+          >
+            Back to login
+          </button>
+        </motion.div>
+      </PageShell>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ background: HERO_GRADIENT }}>
-      <FloatingOrbs />
-
-      <div className="relative min-h-full flex flex-col items-center justify-center px-5 py-12">
-        {/* White logo sits over the blue top of the gradient, mirroring the hero */}
-        <motion.img
-          src={lyknLogoWhite}
-          alt="LYKN"
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
-          className="h-12 w-auto mb-7 drop-shadow-[0_6px_22px_rgba(15,23,42,0.28)]"
-        />
-
-        {/* Glass auth card */}
+    <PageShell>
+      <AnimatePresence mode="wait">
         <motion.div
-          initial={{ opacity: 0, y: 24 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
-          className="w-full max-w-[440px] rounded-[28px] border border-white/50 bg-white/70 backdrop-blur-2xl shadow-[0_30px_80px_-30px_rgba(15,23,42,0.55)] p-7 sm:p-9"
+          key={mode}
+          initial={{ opacity: 0, x: mode === "login" ? -10 : 10 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: mode === "login" ? 10 : -10 }}
+          transition={{ duration: 0.2 }}
         >
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={mode}
-              initial={{ opacity: 0, x: mode === "login" ? -10 : 10 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: mode === "login" ? 10 : -10 }}
-              transition={{ duration: 0.2 }}
-            >
-              <h2 className="text-2xl font-semibold text-[#0a0c12] mb-1">
-                {mode === "login" ? (
-                  <span className="inline-flex items-center gap-2 leading-none">
-                    Welcome to
-                    <img src={lyknWordmark} alt="LYKN" className="h-9 w-auto -ml-2.5" />
-                  </span>
-                ) : (
-                  "Create your account"
-                )}
-              </h2>
-              <p className="text-sm text-slate-600 mb-7">
-                {mode === "login"
-                  ? "Sign in to your intelligence layer"
-                  : "Build an AI that actually knows you"}
-              </p>
-
-              <button
-                type="button"
-                onClick={() => signInWithOAuth("google")}
-                className="w-full flex items-center justify-center gap-3 rounded-xl border border-white/70 bg-white/80 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-white hover:border-white transition-all duration-200 shadow-sm"
-              >
-                <GoogleIcon />
-                Continue with Google
-              </button>
-
-              <div className="relative my-6">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-slate-300/50" />
-                </div>
-                <div className="relative flex justify-center text-xs">
-                  <span className="rounded-full bg-white/70 backdrop-blur-sm px-3 py-0.5 text-slate-500 font-medium">or</span>
-                </div>
-              </div>
-
-              <form onSubmit={handleSubmit} className="space-y-3">
-                {mode === "signup" && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                  >
-                    <input
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Full name"
-                      autoComplete="name"
-                      className="w-full rounded-xl border border-white/70 bg-white/55 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:bg-white/90 focus:ring-2 focus:ring-blue-200/60 transition-all duration-200"
-                    />
-                  </motion.div>
-                )}
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Email address"
-                  autoComplete="email"
-                  className="w-full rounded-xl border border-white/70 bg-white/55 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:bg-white/90 focus:ring-2 focus:ring-blue-200/60 transition-all duration-200"
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900 leading-tight mb-2">
+            {mode === "login" ? (
+              <span className="inline-flex items-center">
+                Login to
+                <img
+                  src={lyknWordmark}
+                  alt="LYKN"
+                  className="h-[1.3em] w-auto ml-1 -mb-0.5"
+                  draggable={false}
                 />
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Password"
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                  className="w-full rounded-xl border border-white/70 bg-white/55 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:bg-white/90 focus:ring-2 focus:ring-blue-200/60 transition-all duration-200"
-                />
+              </span>
+            ) : (
+              "Create your account"
+            )}
+          </h1>
+          <p className="text-sm text-slate-500 mb-8">
+            {mode === "login"
+              ? "Sign in to your intelligence layer"
+              : "Build an AI that actually knows you"}
+          </p>
 
-                <AnimatePresence>
-                  {displayError && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -4 }}
-                      className="flex items-center gap-2 rounded-lg bg-red-50/90 border border-red-200/70 px-3 py-2.5"
-                    >
-                      <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                      </svg>
-                      <span className="text-xs text-red-700">{displayError}</span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+          <button
+            type="button"
+            onClick={() => signInWithOAuth("google")}
+            className={SECONDARY_BTN_CLS}
+          >
+            <GoogleIcon />
+            Continue with Google
+          </button>
 
-                <motion.button
-                  type="submit"
-                  disabled={submitting}
-                  whileHover={{ y: -1 }}
-                  whileTap={{ scale: 0.99 }}
-                  className="w-full rounded-xl px-4 py-3 text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200 mt-1 bg-gradient-to-b from-[#6ea8ff] to-[#2563eb] shadow-[0_12px_26px_-10px_rgba(37,99,235,0.65),inset_0_1px_0_rgba(255,255,255,0.45)] hover:from-[#5b9bff] hover:to-[#1e40af]"
-                >
-                  {submitting ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      {mode === "login" ? "Signing in..." : "Creating account..."}
-                    </span>
-                  ) : (
-                    mode === "login" ? "Sign in" : "Create account"
-                  )}
-                </motion.button>
-              </form>
-            </motion.div>
-          </AnimatePresence>
-
-          <div className="mt-6 text-center text-sm text-slate-600">
-            {mode === "login" ? "Don't have an account?" : "Already have an account?"}{" "}
-            <button
-              type="button"
-              onClick={switchMode}
-              className="font-semibold text-blue-600 hover:text-blue-700 transition-colors"
-            >
-              {mode === "login" ? "Sign up" : "Sign in"}
-            </button>
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-200" />
+            </div>
+            <div className="relative flex justify-center text-xs">
+              <span className="bg-white px-3 py-0.5 text-slate-500 font-medium">or</span>
+            </div>
           </div>
 
-          <p className="mt-6 pt-5 border-t border-slate-300/40 text-center text-[11px] leading-relaxed text-slate-500">
-            By continuing, you agree to LYKN's{" "}
-            <Link to="/terms" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
-              Terms of Service
-            </Link>
-            ,{" "}
-            <Link to="/privacy" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
-              Privacy Policy
-            </Link>
-            , and{" "}
-            <Link to="/cookies" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
-              Cookie Policy
-            </Link>
-            .
-          </p>
-        </motion.div>
+          <form onSubmit={handleSubmit} className="space-y-3">
+            {mode === "signup" && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+              >
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Full name"
+                  autoComplete="name"
+                  className={INPUT_CLS}
+                />
+              </motion.div>
+            )}
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Email address"
+              autoComplete="email"
+              className={INPUT_CLS}
+            />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Password"
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              className={INPUT_CLS}
+            />
 
-        <motion.p
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.6, delay: 0.3 }}
-          className="mt-6 flex items-center gap-2 text-sm text-white/85"
+            <ErrorBanner message={displayError} />
+
+            <SubmitButton
+              submitting={submitting}
+              label={mode === "login" ? "Sign in" : "Create account"}
+              busyLabel={mode === "login" ? "Signing in..." : "Creating account..."}
+            />
+          </form>
+        </motion.div>
+      </AnimatePresence>
+
+      <div className="mt-6 text-sm text-slate-600">
+        {mode === "login" ? "Don't have an account?" : "Already have an account?"}{" "}
+        <button
+          type="button"
+          onClick={switchMode}
+          className="font-semibold text-blue-600 hover:text-blue-700 transition-colors"
         >
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-300" />
-          Free to start · no credit card · upgrade anytime
-        </motion.p>
+          {mode === "login" ? "Sign up" : "Sign in"}
+        </button>
       </div>
-    </div>
+
+      <p className="mt-6 pt-5 border-t border-slate-200 text-[11px] leading-relaxed text-slate-500">
+        By continuing, you agree to LYKN's{" "}
+        <Link to="/terms" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
+          Terms of Service
+        </Link>
+        ,{" "}
+        <Link to="/privacy" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
+          Privacy Policy
+        </Link>
+        , and{" "}
+        <Link to="/cookies" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
+          Cookie Policy
+        </Link>
+        .
+      </p>
+    </PageShell>
   );
 }

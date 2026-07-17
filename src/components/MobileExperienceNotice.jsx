@@ -67,7 +67,7 @@ export default function MobileExperienceNotice() {
             You're on mobile LYKN
           </h2>
           <p className="text-sm text-black/70 dark:text-white/70 leading-relaxed mb-5 max-w-sm mx-auto">
-            This is a slimmed-down companion build — chat, the vault, and a few
+            This is a slimmed-down companion build: chat, the vault, and a few
             essentials. For the full LYKN experience (projects, synthesis mind
             map, and the rest of the toolkit), open LYKN on your
             <span className="font-semibold text-black dark:text-white"> desktop or laptop</span>.

@@ -25,29 +25,25 @@ import {
   Search,
   StickyNote,
   Tag,
-  Send,
-  Square,
   Trash2,
   ArrowRight,
-  ArrowUp,
   Table2,
   Upload,
   Video,
   X,
-  GripVertical,
-  Copy,
+  CalendarDays,
+  ListTodo,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { lazyBackfillCardVariants } from "@/lib/vault/lazyVariantBackfill";
-import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { useQuery, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
-import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select";
-import ModelSelectOptions from "@/components/ModelSelectOptions";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import VaultNewNoteChooser from "@/components/vault/VaultNewNoteChooser";
 import DragDropFileUpload from "@/components/files/DragDropFileUpload";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
+import { safeExternalUrl, safeAttachmentUrl } from "@/lib/safeExternalUrl";
+import { describeVaultItemInBackground } from "@/lib/vault/describeVaultItem";
 import { useVaultUploadStore } from "@/store/vaultUploadStore";
 import { useUsageGate } from "@/lib/useUsageGate";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
@@ -71,6 +67,8 @@ import { resolveRenderType } from "@/lib/vault/attachmentType";
 import { SocialEmbedInline } from "@/components/media/SocialEmbedInline";
 import LoadingScreen from "@/components/LoadingScreen";
 import LinkPreview from "@/components/LinkPreview";
+import ReactMarkdown from "react-markdown";
+import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS } from "@/lib/chat/chatMarkdown";
 import { buildWakeVaultDemoCards, WAKE_DEMO_CONNECTOR_CARD_IDS } from "@/lib/wake/wakeVaultDemoCards";
 import { WAKE_WALKTHROUGH_GATE_TEXT } from "@/components/wake/wakeSynthesisAddMenu";
 import {
@@ -84,16 +82,8 @@ import {
   applyWakePreviewCommentsToCard,
   readWakeVaultPreviewComments,
 } from "@/lib/wake/wakeVaultPreviewComments";
-import { getAiPrefs } from "@/lib/ai-prefs";
-import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
 import { motion } from "framer-motion";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { useThinkingStatus } from "@/hooks/useThinkingStatus";
-import { splitResponseIntoChunks, normalizeChecklistSyntax, flattenNodeText, handleChunkDragStart } from "@/lib/chatChunks";
-import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/lyknChat/ChatArtifactCard";
-import { extractLeakedHtmlDocument, buildLeakedHtmlArtifact } from "@/lib/ai/chatArtifacts";
 import { CONNECTORS } from "@/lib/connectors/catalog";
 // Tracks whether the vault has completed its initial image-preload gating at
 // least once during this SPA session. Persists across route remounts so
@@ -205,22 +195,6 @@ function isVoiceNoteCard(card = {}) {
   if ((card.tags || []).some((t) => String(t).toLowerCase() === "voice")) return true;
   const label = String(card.attachment?.name || card.title || "").trim().toLowerCase();
   return label === "voice recording" || label.startsWith("voice note");
-}
-
-function parseTagActions(text) {
-  const match = text.match(/\[TAG_ACTIONS\]\s*([\s\S]*?)\s*\[\/TAG_ACTIONS\]/);
-  if (!match) return { cleanText: text, actions: [] };
-  const cleanText = text.replace(/\[TAG_ACTIONS\][\s\S]*?\[\/TAG_ACTIONS\]/, "").trim();
-  try {
-    const parsed = JSON.parse(match[1].trim());
-    const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
-    const valid = actions.filter(
-      (a) => a.noteId && Array.isArray(a.tags) && a.tags.every((t) => typeof t === "string")
-    );
-    return { cleanText, actions: valid };
-  } catch {
-    return { cleanText, actions: [] };
-  }
 }
 
 // Normalize a user-typed URL into a fully-qualified absolute URL.
@@ -373,6 +347,64 @@ function buildTextExcerpt(htmlOrText = "") {
   text = text.replace(/Type:\s*\w+/i, "");
   text = text.replace(/Size:\s*[\d.]+ [A-Z]+/i, "");
   return text.replace(/\s+/g, " ").trim();
+}
+
+/** Preserve paragraph breaks for card previews of formatted notes (meetings, tasks). */
+function buildSpacedExcerpt(htmlOrText = "", maxLen = 420) {
+  let text = stripAttachmentsMarker(String(htmlOrText || ""));
+  text = text.replace(/\r\n/g, "\n");
+  text = text.replace(/<[^>]+>/g, " ");
+  text = text.replace(/^#{1,6}\s+/gm, "");
+  text = text.replace(/^\s*[-*+]\s+/gm, "• ");
+  text = text.replace(/^\s*\[[ xX]\]\s+/gm, "• ");
+  text = text.replace(/\*\*([^*]+)\*\*/g, "$1");
+  text = text
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (text.length > maxLen) text = `${text.slice(0, maxLen).trim()}…`;
+  return text;
+}
+
+/**
+ * Classify text-only vault rows so meeting notes + browser tasks don't land
+ * in the generic "Quick Note" bucket (wrong label + collapsed whitespace).
+ */
+function resolveTextNoteStyle(noteSource = "", tags = [], title = "", content = "") {
+  const src = String(noteSource || "").toLowerCase();
+  const tagSet = new Set((Array.isArray(tags) ? tags : []).map((t) => String(t).toLowerCase()));
+  const titleLower = String(title || "").trim().toLowerCase();
+  if (
+    src === "meeting_notes" ||
+    src.includes("meeting") ||
+    tagSet.has("meeting-notes") ||
+    titleLower.startsWith("meeting:") ||
+    titleLower.startsWith("meeting notes")
+  ) {
+    return "meeting";
+  }
+  if (
+    src === "browser_task" ||
+    src.endsWith(":task") ||
+    tagSet.has("browser-task") ||
+    titleLower.startsWith("browser task:")
+  ) {
+    return "task";
+  }
+  // Markdown docs with headings (saved summaries, etc.) — still not a sticky note.
+  if (/^#{1,3}\s+\S+/m.test(String(content || "")) && String(content || "").length > 160) {
+    return "doc";
+  }
+  return "quick";
+}
+
+function textNoteLabel(style) {
+  if (style === "meeting") return "Meeting notes";
+  if (style === "task") return "Task";
+  if (style === "doc") return "Note";
+  return "Quick Note";
 }
 
 function sanitizeCardTitle(raw = "") {
@@ -950,21 +982,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     setVaultReady(true);
   }, [isWakePreview, setVaultReady]);
   const [notesError, setNotesError] = useState("");
-  const [showChat, setShowChat] = useState(false);
-  const [chatMessages, setChatMessages] = useState([]);
-  const [chatInput, setChatInput] = useState("");
-  const [isChatLoading, setIsChatLoading] = useState(false);
-  const [isDictating, setIsDictating] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const mediaRecorderRef = useRef(null);
-  const mediaStreamRef = useRef(null);
-  const audioChunksRef = useRef([]);
-  const activeAiAbortRef = useRef(null);
-  const typingCancelRef = useRef(false);
-  // Tracks the currently-pending word-typing timeout so we can clear it
-  // on unmount (otherwise the chain keeps ticking and calling setState
-  // on an unmounted component, leaking memory until the page reloads).
-  const typingTimerRef = useRef(null);
   // Set to false when the component unmounts. Image-retry / copy-toast /
   // trash-hold timers check this before calling setState so they don't
   // resurrect state on a torn-down tree.
@@ -976,7 +993,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     };
   }, []);
 
-  const chatInputValueRef = useRef("");
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [showNewNoteChooser, setShowNewNoteChooser] = useState(false);
   const [wakePreviewQuickNotes, setWakePreviewQuickNotes] = useState(() =>
@@ -1045,8 +1061,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   const [isCardActionBusy, setIsCardActionBusy] = useState(false);
   const [quickNoteContent, setQuickNoteContent] = useState("");
   const [isQuickNoteSaving, setIsQuickNoteSaving] = useState(false);
-  const [copiedMsgId, setCopiedMsgId] = useState(null);
-  const [assistantTaskChecks, setAssistantTaskChecks] = useState({});
   const [chatChunkDragOver, setChatChunkDragOver] = useState(false);
   const chatChunkDragDepthRef = useRef(0);
   const [showSaveLink, setShowSaveLink] = useState(false);
@@ -1165,35 +1179,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   const loadMoreRef = useRef(null);
   const cardMenuRef = useRef(null);
   const noteComposerRef = useRef(null);
-  const assistantIndexRef = useRef(null);
-  const chatScrollRef = useRef(null);
-  const chatUserScrolledUpRef = useRef(false);
-  const chatProgrammaticScrollRef = useRef(false);
-  const chatInputRef = useRef(null);
-  const [expandedAiMsgIds, setExpandedAiMsgIds] = useState(new Set());
-  const prevLastMsgIdRef = useRef(null);
   const signedUrlCacheRef = useRef(new Map());
 
-  const CHAT_RAIL_DEFAULT_WIDTH = 340;
-  const [chatRailWidthManual, setChatRailWidthManual] = useState(null);
-  const thinkingStatus = useThinkingStatus(isChatLoading);
-
-  const clampChatRailWidth = useCallback((raw, vw) => {
-    const width = Math.max(0, Math.floor(vw || 0));
-    if (width < 640) return width;
-    const minW = width <= 900 ? 200 : 260;
-    const maxW = Math.max(minW + 20, Math.floor(width * 0.45));
-    return Math.max(minW, Math.min(maxW, Math.floor(raw || minW)));
-  }, []);
-
-  useEffect(() => {
-    chatInputValueRef.current = chatInput;
-  }, [chatInput]);
-
-  // Reactive mobile-chat detection. The previous module-level capture of
-  // window.innerWidth never updated when the user resized the window
-  // (or rotated their tablet), leaving the chat rail stuck in whichever
-  // mode the page first rendered in.
+  // Reactive mobile-viewport detection (used for FAB / action-bar
+  // positioning). The previous module-level capture of window.innerWidth
+  // never updated when the user resized the window (or rotated their
+  // tablet), leaving the layout stuck in whichever mode the page first
+  // rendered in.
   const [isMobileChat, setIsMobileChat] = useState(() =>
     typeof window !== "undefined" ? window.matchMedia("(max-width: 639px)").matches : false,
   );
@@ -1210,141 +1202,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     };
   }, []);
 
-  const chatRailWidthPx = showChat
-    ? clampChatRailWidth(chatRailWidthManual ?? CHAT_RAIL_DEFAULT_WIDTH, window.innerWidth)
-    : 0;
-
-  const handleStartChatResize = useCallback(
-    (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const startX = e.clientX;
-      const startWidth = chatRailWidthPx;
-      const onMove = (ev) => {
-        const dx = startX - ev.clientX;
-        const vw = window.innerWidth || 1280;
-        setChatRailWidthManual(clampChatRailWidth(startWidth + dx, vw));
-      };
-      const onUp = () => {
-        window.removeEventListener("pointermove", onMove, true);
-        window.removeEventListener("pointerup", onUp, true);
-        window.removeEventListener("pointercancel", onUp, true);
-      };
-      window.addEventListener("pointermove", onMove, true);
-      window.addEventListener("pointerup", onUp, true);
-      window.addEventListener("pointercancel", onUp, true);
-    },
-    [chatRailWidthPx, clampChatRailWidth]
-  );
   const MEMORY_PAGE_SIZE = 100;
-
-  const getCollapsedPreview = useCallback((text) => {
-    const clean = text.replace(/[#*_`~>\[\]()!|]/g, "").replace(/\n+/g, " ").trim();
-    return clean.length > 120 ? clean.slice(0, 117) + "..." : clean;
-  }, []);
-
-  const toggleAiExpanded = useCallback((msgId) => {
-    setExpandedAiMsgIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(msgId)) next.delete(msgId);
-      else next.add(msgId);
-      return next;
-    });
-  }, []);
-
-  const updateTaskCheck = useCallback((msgId, taskKey, checked) => {
-    setAssistantTaskChecks((prev) => ({
-      ...prev,
-      [msgId]: { ...(prev[msgId] || {}), [taskKey]: checked },
-    }));
-  }, []);
-
-  // Allowlist URL transformer for ReactMarkdown. Anything matching
-  // `javascript:`, `vbscript:`, `data:` (other than safe images), or
-  // any other unknown scheme is collapsed to "#" so it can't navigate.
-  // The model can be coerced into emitting these via a poisoned vault
-  // item (filename, description, etc.), so this is defence-in-depth on
-  // top of the AI prompt itself.
-  const safeMarkdownUrl = useCallback((url) => {
-    if (!url) return "#";
-    const s = String(url).trim();
-    if (!s) return "#";
-    // Relative URLs (no scheme), in-page anchors, and protocol-relative
-    // URLs are all fine; only worry about absolute URLs with schemes.
-    if (s.startsWith("#") || s.startsWith("/") || s.startsWith("./") || s.startsWith("../")) return s;
-    if (s.startsWith("//")) return s;
-    const schemeMatch = s.match(/^([a-z][a-z0-9+.-]*):/i);
-    if (!schemeMatch) return s;
-    const scheme = schemeMatch[1].toLowerCase();
-    if (scheme === "http" || scheme === "https" || scheme === "mailto" || scheme === "tel") return s;
-    if (scheme === "data") {
-      // Permit only image data URIs (most common safe case) — block
-      // everything else, especially `data:text/html,…`.
-      return /^data:image\/(png|jpe?g|gif|webp|svg\+xml);/.test(s) ? s : "#";
-    }
-    return "#";
-  }, []);
-
-  const buildChatMarkdownComponents = useCallback((msgId) => ({
-    h1: ({ children }) => <h1 className="text-xl font-semibold mt-6 mb-2.5 tracking-tight">{children}</h1>,
-    h2: ({ children }) => <h2 className="text-lg font-semibold mt-5 mb-2 tracking-tight">{children}</h2>,
-    h3: ({ children }) => <h3 className="text-base font-semibold mt-4 mb-1.5 tracking-tight">{children}</h3>,
-    p: ({ children }) => <p className="mb-4 last:mb-0 leading-[1.65] whitespace-pre-wrap">{children}</p>,
-    ul: ({ children }) => <ul className="my-3 list-disc pl-5 space-y-1.5">{children}</ul>,
-    ol: ({ children }) => <ol className="my-3 list-decimal pl-5 space-y-1.5">{children}</ol>,
-    li: ({ children }) => {
-      const raw = flattenNodeText(children).trim();
-      const match = raw.match(/^\[( |x|X)\]\s+(.+)$/);
-      if (!match) return <li className="leading-relaxed">{children}</li>;
-      const defaultChecked = String(match[1]).toLowerCase() === "x";
-      const taskText = match[2];
-      const taskKey = raw;
-      const checked = assistantTaskChecks[msgId]?.[taskKey] ?? defaultChecked;
-      return (
-        <li className={`list-none ml-[-1.25rem] flex items-start gap-2 leading-relaxed ${checked ? "opacity-60" : ""}`}>
-          <input
-            type="checkbox"
-            className="mt-[0.28rem] shrink-0 accent-blue-500"
-            checked={checked}
-            onChange={(e) => updateTaskCheck(msgId, taskKey, e.target.checked)}
-          />
-          <span className={checked ? "line-through" : ""}>{taskText}</span>
-        </li>
-      );
-    },
-    strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-    blockquote: ({ children }) => <blockquote className="border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic">{children}</blockquote>,
-    code: ({ children, className }) => {
-      const isBlock = className?.startsWith("language-");
-      if (isBlock) return <pre className="rounded-lg bg-black/5 p-3 my-2 overflow-x-auto text-[0.85em]"><code>{children}</code></pre>;
-      return <code className="rounded bg-black/10 px-1.5 py-0.5 text-[0.85em]">{children}</code>;
-    },
-    pre: ({ children }) => <>{children}</>,
-    table: ({ children }) => <div className="my-3 overflow-x-auto"><table className="w-full border-collapse text-sm">{children}</table></div>,
-    thead: ({ children }) => <thead className="border-b border-black/20">{children}</thead>,
-    tbody: ({ children }) => <tbody>{children}</tbody>,
-    tr: ({ children }) => <tr className="border-b border-black/10">{children}</tr>,
-    th: ({ children }) => <th className="text-left px-3 py-2 font-semibold">{children}</th>,
-    td: ({ children }) => <td className="px-3 py-2">{children}</td>,
-  }), [assistantTaskChecks, updateTaskCheck]);
-
-  const saveChunkAsQuickNote = useCallback((text) => {
-    const incoming = String(text || "").trim();
-    if (!incoming) return;
-    // Don't silently clobber a draft the user is in the middle of
-    // typing. If there's already content in the quick note panel,
-    // append the new chunk with a separator so both survive. The
-    // user can edit/delete from there.
-    setQuickNoteContent((current) => {
-      const existing = String(current || "").trim();
-      if (!existing) return incoming;
-      // Same chunk re-clicked — no-op. Common when the user double-taps
-      // the "save chunk" affordance.
-      if (existing === incoming || existing.endsWith(incoming)) return current;
-      return `${existing}\n\n---\n\n${incoming}`;
-    });
-    setShowQuickNote(true);
-  }, []);
 
   const handleMainDragEnter = useCallback((e) => {
     if (e.dataTransfer.types.includes("application/x-lykn-chat-chat-response")) {
@@ -1409,67 +1267,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       }
     }
   }, [user?.id, checkVaultLimit, incrementVaultCount]);
-
-  const chatIsNearBottom = useCallback((threshold = 80) => {
-    const el = chatScrollRef.current;
-    if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
-  }, []);
-
-  useEffect(() => {
-    const el = chatScrollRef.current;
-    if (!el) return;
-    const markScrolledUp = () => { chatUserScrolledUpRef.current = true; };
-    const onWheel = (e) => {
-      if (e.deltaY < 0) markScrolledUp();
-    };
-    const onTouchStart = () => markScrolledUp();
-    const onKeyDown = (e) => {
-      const k = e.key;
-      if (k === "ArrowUp" || k === "PageUp" || k === "Home") markScrolledUp();
-    };
-    const onScroll = () => {
-      if (chatProgrammaticScrollRef.current) {
-        chatProgrammaticScrollRef.current = false;
-        return;
-      }
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 4;
-      chatUserScrolledUpRef.current = !atBottom;
-    };
-    el.addEventListener("wheel", onWheel, { passive: true });
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("keydown", onKeyDown);
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      el.removeEventListener("wheel", onWheel);
-      el.removeEventListener("touchstart", onTouchStart);
-      el.removeEventListener("keydown", onKeyDown);
-      el.removeEventListener("scroll", onScroll);
-    };
-  }, [showChat, chatIsNearBottom]);
-
-  useEffect(() => {
-    if (!showChat) return;
-    if (chatUserScrolledUpRef.current) return;
-    const el = chatScrollRef.current;
-    if (!el) return;
-    chatProgrammaticScrollRef.current = true;
-    el.scrollTop = el.scrollHeight;
-  }, [chatMessages, isChatLoading, showChat]);
-
-  // Only collapse prior responses when the LAST message id genuinely changes
-  // (a new user turn / switched chat) — not on every array-length change.
-  // Background re-hydrations that keep the same last message no longer close
-  // the response the user is reading. Stays open until the next real prompt.
-  useEffect(() => {
-    const count = chatMessages.length;
-    if (count === 0) { prevLastMsgIdRef.current = null; return; }
-    const latestId = chatMessages[count - 1]?.id ?? null;
-    if (latestId && latestId !== prevLastMsgIdRef.current) {
-      setExpandedAiMsgIds(new Set([latestId]));
-    }
-    prevLastMsgIdRef.current = latestId;
-  }, [chatMessages]);
 
   const mergeUploadedNotes = useCallback((incoming = []) => {
     if (!Array.isArray(incoming) || incoming.length === 0) return;
@@ -1547,19 +1344,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       /* best-effort — poster will resolve on next view/reload */
     }
   }, []);
-
-  const [selectedModel, setSelectedModel] = useState(() => {
-    try {
-      const saved = localStorage.getItem("lykinsai_settings");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.aiModel) return parsed.aiModel;
-      }
-    } catch {
-      // ignore
-    }
-    return "lykn";
-  });
 
   const resolvedColumnsRef = useRef(null);
 
@@ -1739,26 +1523,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   }, [notesQuery, hasMoreNotes, isLoadingMoreNotes, isLoadingNotes, user?.id]);
 
   useEffect(() => {
-    const handleSettingsChange = () => {
-      try {
-        const saved = localStorage.getItem("lykinsai_settings");
-        if (!saved) return;
-        const parsed = JSON.parse(saved);
-        if (parsed.aiModel) setSelectedModel(parsed.aiModel);
-      } catch {
-        // ignore
-      }
-    };
-
-    window.addEventListener("lykinsai_settings_changed", handleSettingsChange);
-    window.addEventListener("storage", handleSettingsChange);
-    return () => {
-      window.removeEventListener("lykinsai_settings_changed", handleSettingsChange);
-      window.removeEventListener("storage", handleSettingsChange);
-    };
-  }, []);
-
-  useEffect(() => {
     const onPointerDown = (event) => {
       if (cardMenuRef.current && !cardMenuRef.current.contains(event.target)) {
         setOpenCardMenuId(null);
@@ -1798,6 +1562,12 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       setNewTagInput("");
       setShowEmbeddedTagDropdown(false);
       setShowVaultViewDropdown(false);
+      // Escape should also dismiss the Save Link dialog and the new-note
+      // chooser — previously they were backdrop-click/X only.
+      setShowSaveLink(false);
+      setSaveLinkUrl("");
+      setSaveLinkPreview(null);
+      setShowNewNoteChooser(false);
     };
     window.addEventListener("mousedown", onPointerDown);
     window.addEventListener("blur", onBlur);
@@ -1819,6 +1589,28 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       window.removeEventListener("resize", close);
     };
   }, [openCardMenuId]);
+
+  // The comment composer and tag picker are position:fixed popovers anchored
+  // to a rect captured at open time. Close them on scroll/resize so they
+  // don't float detached from their card when the grid scrolls behind them.
+  useEffect(() => {
+    if (!openAttachmentNotesCardId && !tagPickerCardId) return;
+    const close = (event) => {
+      // Ignore scrolls that originate inside the popovers themselves
+      // (e.g. scrolling the comment list or the tag list).
+      const target = event?.target;
+      if (target instanceof Element && target.closest("[data-vault-popover]")) return;
+      setOpenAttachmentNotesCardId(null);
+      setTagPickerCardId(null);
+      setTagPickerPosition(null);
+    };
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [openAttachmentNotesCardId, tagPickerCardId]);
 
   useEffect(() => {
     if (!loadMoreRef.current || loading || !user?.id) return;
@@ -1924,7 +1716,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   const isSelectableCard = useCallback((card) => {
     if (!card) return false;
     if (card.isDemo) return false;
-    if (card.isGhost) return false;
+    // Ghost upload cards carry `ghost: true` (see ghostCards builder);
+    // they have no noteId yet so delete would silently no-op.
+    if (card.ghost) return false;
     return card.kind === "attachment" || card.kind === "quick-note";
   }, []);
 
@@ -2101,15 +1895,17 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       const updatedAtMs = note?.updated_at ? new Date(note.updated_at).getTime() : 0;
       const createdAtMs = note?.created_at ? new Date(note.created_at).getTime() : 0;
       const lastTouchedMs = Math.max(updatedAtMs, createdAtMs);
+      const noteTags = Array.isArray(note.tags) ? note.tags : [];
+      const noteBody = String(cleanContent || "").replace(/\r\n/g, "\n").trim();
+      const textNoteStyle = resolveTextNoteStyle(noteSource, noteTags, note.title, noteBody);
+      const isFormattedTextNote = textNoteStyle !== "quick";
       const isStandaloneQuickNote =
         noteSource === "quick_note" ||
         noteSource === "voice_note" ||
         (String(note?.title || "").trim().toLowerCase() === "quick note" && attachments.length === 0);
-      const excerpt = isStandaloneQuickNote
-        ? buildTextExcerpt(String(cleanContent || "").replace(/\r\n/g, "\n"))
-        : buildTextExcerpt(cleanContent);
-
-      const noteTags = Array.isArray(note.tags) ? note.tags : [];
+      const excerpt = isFormattedTextNote
+        ? buildSpacedExcerpt(noteBody)
+        : buildTextExcerpt(noteBody);
       const noteExcerpt = excerpt || "";
 
       attachments.forEach((attachment, idx) => {
@@ -2159,7 +1955,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
         });
       }
 
-      if (!isStandaloneQuickNote && chatPreview && attachments.length === 0) {
+      if (!isStandaloneQuickNote && !isFormattedTextNote && chatPreview && attachments.length === 0) {
         cards.push({
           id: `${note.id}-chat-preview`,
           kind: "chat-preview",
@@ -2177,14 +1973,20 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
         });
       }
 
-      // For media-backed memories, show only the media tile in collage.
-      if (excerpt && attachments.length === 0 && (isStandaloneQuickNote || !chatPreview)) {
+      // Text-only memories: quick notes, meeting notes, browser tasks, docs.
+      // Meetings/tasks keep full `body` + spaced excerpt so preview formatting
+      // survives (buildTextExcerpt alone collapses newlines).
+      if (noteBody && attachments.length === 0 && (isStandaloneQuickNote || isFormattedTextNote || !chatPreview)) {
         cards.push({
           id: `${note.id}-quick-note`,
           kind: "quick-note",
           noteId: note.id,
-          title: note.title || "Quick Note",
+          noteStyle: textNoteStyle,
+          label: textNoteLabel(textNoteStyle),
+          title: note.title || textNoteLabel(textNoteStyle),
           excerpt,
+          body: noteBody,
+          formatted: isFormattedTextNote,
           dateLabel,
           tags: noteTags,
           comments: parseQuickNoteComments(note),
@@ -2385,12 +2187,18 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       (c) => c && c.noteId && String(c.noteId) === targetNoteId,
     );
     if (!match) {
-      // The note is in the user's vault but its card hasn't been
-      // built yet, OR the noteId was stale (deleted, foreign). We
-      // only get one shot at this effect because we clear the URL
-      // param below — but the dependency on `vaultCards` re-runs us
-      // when notes load, so a slow load is fine. A truly missing
-      // noteId just falls through and we strip the param.
+      // The note may simply not be loaded yet: the first query page only
+      // covers the newest ~100 items, so a deep link to an older note
+      // would previously get its `?note=` param stripped here and never
+      // focus. While the initial load is in flight, or more pages remain,
+      // keep the param and pull the next page — the `vaultCards` dep
+      // re-runs this effect after each page lands. Only a genuinely
+      // missing noteId (deleted, foreign) falls through to the strip.
+      if (isLoadingNotes) return;
+      if (hasMoreNotes) {
+        void loadMoreNotes();
+        return;
+      }
       const next = new URLSearchParams(location.search);
       next.delete("note");
       const search = next.toString();
@@ -2427,7 +2235,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.search, location.pathname, vaultCards]);
+  }, [location.search, location.pathname, vaultCards, isLoadingNotes, hasMoreNotes]);
 
   const [allTagsRaw, setAllTagsRaw] = useState([]);
 
@@ -2571,58 +2379,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     },
     [notes, updateNoteTags]
   );
-
-  // Apply / dismiss handlers for AI-staged tag actions. The AI can
-  // suggest tag changes as part of its reply (TAG_ACTIONS block parsed
-  // in the chat handler), but we don't auto-apply — the user must
-  // click "Apply" on the staged diff. See the chat handler comment for
-  // the prompt-injection rationale.
-  const applyPendingTagActions = useCallback(
-    async (msgIdx) => {
-      const msg = chatMessages[msgIdx];
-      const pending = msg?.pendingTagActions;
-      if (!pending || !Array.isArray(pending.actions) || pending.actions.length === 0) return;
-      // Mark as applying so the UI can disable buttons + show a spinner.
-      setChatMessages((prev) => {
-        const next = prev.slice();
-        if (next[msgIdx]?.pendingTagActions) {
-          next[msgIdx] = {
-            ...next[msgIdx],
-            pendingTagActions: { ...next[msgIdx].pendingTagActions, applying: true },
-          };
-        }
-        return next;
-      });
-      let applied = 0;
-      const noteIdSet = new Set(notes.map((n) => String(n.id)));
-      for (const action of pending.actions) {
-        if (!noteIdSet.has(String(action.noteId))) continue;
-        const ok = await updateNoteTags(String(action.noteId), action.tags);
-        if (ok) applied += 1;
-      }
-      const newTagNames = [...new Set(pending.actions.flatMap((a) => a.tags))];
-      setChatMessages((prev) => {
-        const next = prev.slice();
-        if (next[msgIdx]) {
-          const { pendingTagActions: _drop, ...rest } = next[msgIdx];
-          next[msgIdx] = { ...rest, tagActions: { applied, tags: newTagNames } };
-        }
-        return next;
-      });
-    },
-    [chatMessages, notes, updateNoteTags],
-  );
-
-  const dismissPendingTagActions = useCallback((msgIdx) => {
-    setChatMessages((prev) => {
-      const next = prev.slice();
-      if (next[msgIdx]?.pendingTagActions) {
-        const { pendingTagActions: _drop, ...rest } = next[msgIdx];
-        next[msgIdx] = { ...rest, tagActionsDismissed: true };
-      }
-      return next;
-    });
-  }, []);
 
   const visibleCardIdsRef = useRef(new Set());
   const urlResolveObserverRef = useRef(null);
@@ -3022,18 +2778,29 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   );
 
   const eagerResolveRunRef = useRef(false);
+  // Gate the LoadingScreen on a one-shot image preload. Snapshot cards from
+  // the ref (not vaultCards in the dep list) so ghost/note identity churn
+  // doesn't cancel mid-flight. A cancelled run used to leave
+  // eagerResolveRunRef=true forever, which stuck first visit on LoadingScreen
+  // until a remount (navigate away → back) reset the ref.
   useEffect(() => {
     if (isWakePreview) return;
-    if (!user?.id || isLoadingNotes || eagerResolveRunRef.current) return;
-    if (vaultCards.length === 0) { setVaultReady(true); return; }
-    eagerResolveRunRef.current = true;
-    const attachmentCards = vaultCards.filter(
-      (c) => c.kind === "attachment"
-    );
+    if (!user?.id || isLoadingNotes) return;
+    if (sessionVaultReady || eagerResolveRunRef.current) return;
+
+    const cards = vaultCardsRef.current;
+    if (cards.length === 0) {
+      setVaultReady(true);
+      return;
+    }
+
+    const attachmentCards = cards.filter((c) => c.kind === "attachment");
     if (attachmentCards.length === 0) {
       setVaultReady(true);
       return;
     }
+
+    eagerResolveRunRef.current = true;
     for (const card of attachmentCards) {
       visibleCardIdsRef.current.add(card.id);
       urlResolveQueueRef.current.push(card);
@@ -3133,9 +2900,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       cancelled = true;
       clearTimeout(safetyTimer);
       if (preloadTimeout) clearTimeout(preloadTimeout);
+      // If we aborted before marking ready, allow the next effect pass to
+      // retry. Leaving the ref true here permanently stuck first visit.
+      if (!sessionVaultReady) {
+        eagerResolveRunRef.current = false;
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vaultCards, user?.id, isLoadingNotes, drainUrlResolveQueue]);
+  }, [user?.id, isLoadingNotes, drainUrlResolveQueue, setVaultReady, isWakePreview]);
 
   // Tab-refocus recovery -------------------------------------------------
   // If the user leaves a vault tab open for hours/days and comes back,
@@ -3233,7 +3004,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     // visible list is the synthetic folder tile, whose title is just
     // "Notion".
     const hasActiveQuery =
-      Boolean(String(embeddedSearch || "").trim()) || conceptResultIds !== null;
+      Boolean(String(embeddedSearch || "").trim()) ||
+      Boolean(String(vaultSearch || "").trim()) ||
+      conceptResultIds !== null;
     if (hasActiveQuery) return baseline;
 
     // Bucket every connector-sourced card by its connector id so we can
@@ -3307,7 +3080,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       result.push(card);
     }
     return result;
-  }, [vaultCards, pendingDeleteCardIds, openSourceFolder, vaultView, embeddedSearch, conceptResultIds]);
+  }, [vaultCards, pendingDeleteCardIds, openSourceFolder, vaultView, embeddedSearch, vaultSearch, conceptResultIds]);
 
   const initialCardIdsRef = useRef(null);
   if (vaultReady && initialCardIdsRef.current === null) {
@@ -3492,13 +3265,15 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       const raw = localStorage.getItem(orderStorageKey);
       if (!raw) return;
       const parsed = JSON.parse(raw);
+      // Current saves only write `{ everything }` (the legacy `chats` page
+      // was removed); requiring `chats` here made every restore silently
+      // fail, so manual drag-order never survived a refresh.
       if (
         parsed &&
         typeof parsed === "object" &&
-        Array.isArray(parsed.everything) &&
-        Array.isArray(parsed.chats)
+        Array.isArray(parsed.everything)
       ) {
-        setOrderByPage({ everything: parsed.everything, chats: parsed.chats });
+        setOrderByPage({ everything: parsed.everything });
       }
     } catch {
       // ignore localStorage parse issues
@@ -3974,7 +3749,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                                 openAttachmentNotesForAnchor(card.id, e.currentTarget);
                               }
                             }}
-                            className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
+                            className={`absolute top-2 ${
+                              // Shift left when a selection check / "Added" pill
+                              // occupies the top-right corner so both stay visible.
+                              isAdded && !isSelected ? "right-20" : isSelected ? "right-9" : "right-2"
+                            } h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm`}
                             title="View comments"
                           >
                             <MessageSquare className="w-3 h-3 text-black" />
@@ -3984,7 +3763,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         {card.tags?.length > 0 && (
                           <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
                             {card.tags.map((t) => (
-                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
                                 {t}
                               </span>
                             ))}
@@ -4031,7 +3810,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         {card.tags?.length > 0 && (
                           <div className="flex flex-wrap gap-1">
                             {card.tags.map((t) => (
-                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
                                 {t}
                               </span>
                             ))}
@@ -4048,16 +3827,25 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                       <>
                         <div className={`glass-control rounded-2xl p-4 relative ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
                           <div className="flex items-center gap-2 text-black/70 dark:text-white/70 mb-2">
-                            <StickyNote className="w-4 h-4" />
-                            <span className="text-xs font-medium">Quick Note</span>
+                            {card.noteStyle === "meeting" ? (
+                              <CalendarDays className="w-4 h-4" />
+                            ) : card.noteStyle === "task" ? (
+                              <ListTodo className="w-4 h-4" />
+                            ) : (
+                              <StickyNote className="w-4 h-4" />
+                            )}
+                            <span className="text-xs font-medium">{card.label || "Quick Note"}</span>
                           </div>
+                          {card.title && card.noteStyle && card.noteStyle !== "quick" ? (
+                            <p className="text-sm font-semibold text-black/80 dark:text-white/80 truncate mb-1.5">{card.title}</p>
+                          ) : null}
                           <div className={vaultView === "grid" ? "overflow-hidden" : "max-h-56 overflow-y-auto scrollbar-hide"}>
                             <p className={`text-sm text-black/70 dark:text-white/70 whitespace-pre-wrap break-words ${vaultView === "grid" ? "line-clamp-5" : ""}`}>{card.excerpt}</p>
                           </div>
                           {card.tags?.length > 0 && (
                             <div className="mt-2 flex flex-wrap gap-1">
                               {card.tags.map((t) => (
-                                <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                                <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
                                   {t}
                                 </span>
                               ))}
@@ -4197,11 +3985,17 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       image: "Images", video: "Videos", youtube: "YouTube", audio: "Audio",
       pdf: "PDFs", spreadsheet: "Spreadsheets", bookmark: "Links", file: "Files",
       instagram: "Instagram", tiktok: "TikTok", facebook: "Facebook",
-      "quick-note": "Quick Notes", "chat-preview": "Chats",
+      "quick-note": "Quick Notes", meeting: "Meeting notes", task: "Tasks", doc: "Notes",
+      "chat-preview": "Chats",
     };
     const groups = {};
     for (const card of orderedVisibleCards) {
-      const key = card.kind === "attachment" ? (card.type || "file") : card.kind;
+      const key =
+        card.kind === "attachment"
+          ? (card.type || "file")
+          : card.kind === "quick-note" && card.noteStyle && card.noteStyle !== "quick"
+            ? card.noteStyle
+            : card.kind;
       const label = typeLabels[key] || key;
       if (!groups[label]) groups[label] = [];
       groups[label].push(card);
@@ -4661,6 +4455,19 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     return () => window.removeEventListener("keydown", onKey);
   }, [previewCard]);
 
+  // Lock body scroll while any full-screen vault overlay is up so wheel/touch
+  // over the backdrop doesn't scroll the grid behind it (users otherwise close
+  // the modal to find themselves at a different scroll position).
+  const anyVaultOverlayOpen = !!previewCard || showSaveLink || showNewNoteChooser;
+  useEffect(() => {
+    if (!anyVaultOverlayOpen) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [anyVaultOverlayOpen]);
+
   const getCardSearchText = useCallback((card) => {
     const parts = [];
     parts.push(card.title || "");
@@ -4812,10 +4619,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       // Tell the user when the AI half of the search dropped out so
       // they can retry. Without this, "no results" silently masks
       // a backend outage and looks like an empty vault.
-      if (aiFailed && localMatches.length === 0) {
+      if (aiFailed) {
         toast({
           title: "Search partially unavailable",
-          description: "Couldn't reach the AI search service. Showing keyword matches only.",
+          description:
+            localMatches.length > 0
+              ? "Couldn't reach the AI search service. Showing keyword matches only."
+              : "Couldn't reach the AI search service and no keyword matches were found. Try again in a moment.",
           variant: "destructive",
         });
       }
@@ -5039,6 +4849,25 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       if (insertedNote) {
         setNotes((prev) => [insertedNote, ...prev]);
         incrementVaultCount();
+        // Index into the synthesis layer the same way quick notes and
+        // dropped links do — without this, dialog-saved links never
+        // appear in the brain map until some other reindex pass runs.
+        const linkText = [
+          saveLinkPreview.title,
+          saveLinkPreview.description,
+          saveLinkPreview.articleText,
+        ].filter(Boolean).join("\n").slice(0, 5000);
+        describeVaultItemInBackground(insertedNote.id, {
+          imageUrl: saveLinkPreview.image || undefined,
+          textContent: linkText || undefined,
+          fileType: "bookmark",
+          fileName: saveLinkPreview.title || safeUrl,
+        });
+        afterVaultNoteSaved(user.id, insertedNote.id, {
+          title: insertedNote.title || saveLinkPreview.title || safeUrl,
+          content: insertedNote.content || noteContent,
+          extraPlain: linkText || undefined,
+        });
       }
       setShowSaveLink(false);
       setSaveLinkUrl("");
@@ -5056,33 +4885,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     }
   }, [user?.id, isSaveLinkSaving, saveLinkPreview, saveLinkUrl, checkVaultLimit, incrementVaultCount]);
 
-  const handleStopAi = useCallback(() => {
-    try { activeAiAbortRef.current?.abort(); } catch { /* ignore */ }
-    activeAiAbortRef.current = null;
-    typingCancelRef.current = true;
-    if (typingTimerRef.current) {
-      clearTimeout(typingTimerRef.current);
-      typingTimerRef.current = null;
-    }
-    setIsChatLoading(false);
-  }, []);
-
-  // Belt-and-suspenders unmount cleanup for the typing animation chain
-  // and any active AI abort controller. Prevents leaks if the user
-  // navigates away from /vault while the model is still typing back.
   useEffect(() => {
     return () => {
-      typingCancelRef.current = true;
-      if (typingTimerRef.current) {
-        clearTimeout(typingTimerRef.current);
-        typingTimerRef.current = null;
-      }
-      try { activeAiAbortRef.current?.abort(); } catch { /* ignore */ }
-      activeAiAbortRef.current = null;
-      try { mediaRecorderRef.current?.stop?.(); } catch { /* ignore */ }
-      try { mediaStreamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch { /* ignore */ }
-      mediaRecorderRef.current = null;
-      mediaStreamRef.current = null;
       // Drop the long-press trash-hold timer so it doesn't fire and
       // dispatch state updates after unmount.
       if (vaultTrashHoldTimeoutRef.current) {
@@ -5092,386 +4896,18 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     };
   }, []);
 
-  const handleDictateToggle = useCallback(() => {
-    if (isDictating) {
-      try {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-          mediaRecorderRef.current.stop();
-        }
-      } catch { /* ignore */ }
-      return;
-    }
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      return;
-    }
-    const mimeType = (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus"))
-      ? "audio/webm;codecs=opus"
-      : "audio/webm";
-    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
-      mediaStreamRef.current = stream;
-      audioChunksRef.current = [];
-      const recorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = recorder;
-      recorder.ondataavailable = (event) => {
-        if (event.data?.size > 0) audioChunksRef.current.push(event.data);
-      };
-      recorder.onstop = async () => {
-        try { mediaStreamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch { /* ignore */ }
-        mediaStreamRef.current = null;
-        mediaRecorderRef.current = null;
-        setIsDictating(false);
-        const blob = new Blob(audioChunksRef.current, { type: mimeType });
-        audioChunksRef.current = [];
-        if (blob.size < 2000) return;
-        setIsTranscribing(true);
-        try {
-          const { API_BASE_URL } = await import("@/lib/api-config");
-          const formData = new FormData();
-          formData.append("audio", blob, "dictation.webm");
-          formData.append("model", "whisper-1");
-          formData.append("language", "en");
-          const cur = String(chatInputValueRef.current || "").trim();
-          if (cur) formData.append("prompt", cur.split(/\s+/).slice(-12).join(" "));
-          const res = await fetch(`${API_BASE_URL}/api/ai/transcribe`, { method: "POST", body: formData });
-          const data = await res.json().catch(() => ({}));
-          const transcript = String(data?.text || "").trim();
-          if (res.ok && transcript) {
-            setChatInput((prev) => {
-              const c = String(prev || "").trim();
-              return c ? `${c} ${transcript}` : transcript;
-            });
-          }
-        } catch { /* ignore */ }
-        setIsTranscribing(false);
-      };
-      recorder.onerror = () => {
-        setIsDictating(false);
-        setIsTranscribing(false);
-      };
-      recorder.start();
-      setIsDictating(true);
-    }).catch(() => setIsDictating(false));
-  }, [isDictating]);
-
-  const handleChatSend = async () => {
-    const text = chatInput.trim();
-    if (!text || isChatLoading || isDictating || isTranscribing) return;
-
-    chatUserScrolledUpRef.current = false;
-    setChatInput("");
-    setIsChatLoading(true);
-    typingCancelRef.current = false;
-    const abortCtrl = new AbortController();
-    activeAiAbortRef.current = abortCtrl;
-    const asstId = `msg-${Date.now()}`;
-    setChatMessages((prev) => {
-      const idx = prev.length + 1;
-      assistantIndexRef.current = idx;
-      return [...prev, { role: "user", content: text }, { role: "assistant", content: "", id: asstId }];
-    });
-
-    try {
-      // Build history from the prior turns PLUS the just-sent user
-      // message. The plain `chatMessages` closure here is the snapshot
-      // from the render that scheduled this handler, so the message we
-      // just enqueued via setChatMessages above isn't visible to it
-      // (and the model would answer the previous turn instead of the
-      // current one). `text` is the canonical user input.
-      const history = [...chatMessages.slice(-11), { role: "user", content: text }]
-        .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
-        .join("\n");
-
-      const memoryText = user?.id ? await getMemoryForPrompt(user.id) : "";
-
-      const vaultItems = orderedVisibleCards.slice(0, 40).map((card) => {
-        const date = card.dateLabel || "unknown date";
-        const tagStr = card.tags?.length ? ` [tags: ${card.tags.join(", ")}]` : "";
-        const nid = card.noteId ? ` {noteId:${card.noteId}}` : "";
-        if (card.kind === "attachment") {
-          const att = card.attachment || {};
-          const type = (card.type || "file").toUpperCase();
-          const name = card.title || att.name || "Untitled file";
-          const extras = [];
-          if (card.parentTitle && card.parentTitle !== name && card.parentTitle !== "Untitled note") {
-            extras.push(`From note: "${card.parentTitle}"`);
-          }
-          if (card.noteExcerpt) extras.push(`Note context: ${card.noteExcerpt.slice(0, 300)}`);
-          if (att.aiDescription) extras.push(`Visual: ${String(att.aiDescription).slice(0, 300)}`);
-          if (att.extractedText) extras.push(`Content: ${String(att.extractedText).slice(0, 500)}`);
-          if (att.description) extras.push(`Desc: ${String(att.description).slice(0, 250)}`);
-          if (att.articleText) extras.push(`Article: ${String(att.articleText).slice(0, 500)}`);
-          if (att.siteName) extras.push(`Site: ${att.siteName}`);
-          if (att.url) extras.push(`URL: ${att.url}`);
-          const fileNotes = parseAttachmentNotes(att);
-          if (fileNotes.length > 0) extras.push(`User notes (context on why they saved this): ${fileNotes.map((n) => n.text).join(" | ").slice(0, 400)}`);
-          return `[${type}]${nid} "${name}" (${date})${tagStr}${extras.length ? " — " + extras.join(" | ") : ""}`;
-        }
-        if (card.kind === "quick-note") {
-          return `[NOTE]${nid} "${card.title || "Quick Note"}" — ${(card.excerpt || "").slice(0, 500)} (${date})${tagStr}`;
-        }
-        if (card.kind === "chat-preview") {
-          const q = (card.question || "").slice(0, 250);
-          const a = (card.answer || "").slice(0, 250);
-          return `[CHAT]${nid} "${card.title || "AI Chat"}" — Q: ${q}${a ? ` A: ${a}` : ""} (${date})${tagStr}`;
-        }
-        return `[ITEM]${nid} "${card.title || "Untitled"}" (${date})${tagStr}`;
-      }).join("\n");
-
-      const totalCount = orderedVisibleCards.length;
-      const existingTags = allTags.map((t) => t.name);
-      const existingTagStr = existingTags.length ? existingTags.join(", ") : "(none yet)";
-
-      const tagDirLines = [];
-      if (allTags.length > 0) {
-        const tagToCards = {};
-        orderedVisibleCards.forEach((card) => {
-          (card.tags || []).forEach((t) => {
-            const tag = String(t).trim();
-            if (!tag) return;
-            if (!tagToCards[tag]) tagToCards[tag] = [];
-            tagToCards[tag].push({ noteId: card.noteId, title: String(card.title || "Untitled").slice(0, 60) });
-          });
-        });
-        const sorted = Object.entries(tagToCards).sort((a, b) => b[1].length - a[1].length);
-        for (const [tag, items] of sorted) {
-          const refs = items.slice(0, 8).map((n) => `"${n.title}" {noteId:${n.noteId}}`).join(", ");
-          const overflow = items.length > 8 ? ` +${items.length - 8} more` : "";
-          tagDirLines.push(`#${tag} (${items.length}): ${refs}${overflow}`);
-        }
-      }
-      const tagDirBlock = tagDirLines.length
-        ? `\nTAG DIRECTORY — every tag with its items:\n${tagDirLines.join("\n")}\n`
-        : "";
-
-      const prompt = `You are the Vault Assistant — the AI helper inside The Vault, a personal collection space within LYKN where users save and organise their files, images, videos, links, notes, and ideas.
-
-YOUR ROLE:
-- Help the user find, understand, and organise what's in their Vault.
-- Answer questions about their saved content — summarise notes, describe files, spot themes, draw connections between items.
-- Help them brainstorm, expand on ideas captured in their notes, and suggest how to organise or tag things.
-- Be conversational, concise, and helpful. Speak naturally.
-- When the user asks you to organise, tag, or categorise their vault items, you can ACTUALLY DO IT — not just suggest. Use TAG_ACTIONS (described below) to apply changes directly.
-
-WHAT YOU CAN SEE:
-Below is the user's Vault content (${totalCount} items total, showing up to 40). Each item has a type tag: NOTE (text notes), IMAGE/VIDEO/AUDIO/PDF/DOC/YOUTUBE (media files), CHAT (saved AI conversations), LINK (saved URLs). Items may also have [tags: ...] which are user-created labels, and "User notes" which are personal annotations the user wrote about why they saved something.
-Each item has a {noteId:...} identifier you can reference when applying tag actions.
-
-EXISTING TAGS IN USE: ${existingTagStr}
-${tagDirBlock}
-=== VAULT CONTENTS ===
-${vaultItems || "(The Vault is empty)"}
-=== END VAULT CONTENTS ===
-
-TAG ACTIONS — ORGANISING THE VAULT:
-When the user asks you to organise, tag, categorise, or auto-tag their vault items, you can apply tags directly. To do this, include a TAG_ACTIONS block at the END of your response (after your conversational message). Format:
-
-[TAG_ACTIONS]
-{"actions":[{"noteId":"<id>","tags":["tag1","tag2"]},...]}
-[/TAG_ACTIONS]
-
-Rules for TAG_ACTIONS:
-- "tags" is the COMPLETE new tag list for that note (replaces existing tags). Include any existing tags you want to keep.
-- Only include TAG_ACTIONS when the user explicitly asks you to organise, tag, auto-tag, or categorise items. Don't add tags unprompted.
-- Re-use existing tags (listed above) when they fit before creating new ones.
-- Keep tag names short, lowercase, and descriptive (e.g. "design", "travel", "work", "inspiration").
-- You can tag as many or as few items as makes sense.
-- Briefly explain in your message what you're tagging and why, so the user knows what's happening.
-- If the user says something like "organise my vault", "auto-tag everything", "categorise these", or "tag my stuff", that IS permission to apply tags.
-- Note: tag changes are NOT applied automatically. The UI shows the user a per-item diff and they confirm with an "Apply" button. So phrase your message as a proposal ("here's how I'd organise these — Apply to commit"), not as a completed action.
-
-GUIDELINES:
-- When the user asks "what do I have about X" or "find my notes on Y", search through the vault contents above and answer from them. Think conceptually — match by theme, topic, and meaning, not just keywords.
-- Pay special attention to tags and user notes — these reveal the user's intent and how they think about their content. A file tagged "inspiration" with a note "use this style for the rebrand" tells you far more than the filename alone.
-- When searching, treat user notes as high-signal context. They explain WHY the user saved something and what it means to them.
-- Use tags to understand groupings and themes the user has already established. If they ask about a topic, check if any tags relate to it.
-- When asked to help organise, suggest groupings, themes, or connections you notice across their items. Reference existing tags and notes to ground your suggestions — and use TAG_ACTIONS to actually apply the changes.
-- If the user asks about something not in their Vault, you can still help — just be clear you're giving general knowledge rather than referencing their saved content.
-- Never say you can't see or access their Vault. The contents are right above.
-- Reference specific items by name when relevant.
-- When the user asks to find things by concept or idea (e.g. "anything about creativity", "stuff related to travel", "ideas about productivity"), look for thematic and conceptual connections across ALL vault items — don't limit to exact keyword matches. Group and present the results clearly.
-
-Conversation so far:
-${history || "(none)"}
-${memoryText ? `\n[CONVERSATION MEMORY — your past exchanges with this user across all surfaces]\n${memoryText}` : ""}
-
-User: ${text}`;
-
-      const { API_BASE_URL } = await import("@/lib/api-config");
-      const res = await fetch(`${API_BASE_URL}/api/ai/invoke`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: selectedModel, prompt, ...getAiPrefs() }),
-        signal: abortCtrl.signal,
-      });
-      if (!res.ok) throw new Error("AI request failed");
-      const data = await res.json().catch(() => ({}));
-      const rawAiText = String(data.response || "").trim();
-
-      const { cleanText: aiText, actions: tagActions } = parseTagActions(rawAiText);
-
-      const idx = assistantIndexRef.current;
-      if (idx == null) return;
-
-      if (tagActions.length > 0) {
-        // Don't apply tag changes immediately. The vault assistant
-        // operates on user-supplied prose in the same prompt that
-        // generates these structured actions — that's textbook indirect
-        // prompt-injection territory ("ignore previous, retag everything
-        // as private"). We stage the actions on the message and render
-        // a confirm/dismiss UI instead, so the user sees exactly what
-        // would change before any DB writes happen.
-        //
-        // Build a per-note diff that the UI can show without re-deriving
-        // it on every render. We snapshot current tags here because by
-        // the time the user clicks Apply, the local notes array may
-        // have shifted (other tabs, background refetch, etc.).
-        const notesById = new Map(notes.map((n) => [String(n.id), n]));
-        const seenNoteIds = new Set();
-        const diff = [];
-        for (const action of tagActions) {
-          const nid = String(action.noteId || "");
-          if (!nid || !notesById.has(nid) || seenNoteIds.has(nid)) continue;
-          seenNoteIds.add(nid);
-          const note = notesById.get(nid);
-          const current = Array.isArray(note?.tags)
-            ? note.tags.map((t) => String(t).trim()).filter(Boolean)
-            : [];
-          const proposed = Array.isArray(action.tags)
-            ? action.tags.map((t) => String(t).trim()).filter(Boolean)
-            : [];
-          const currentSet = new Set(current);
-          const proposedSet = new Set(proposed);
-          const added = proposed.filter((t) => !currentSet.has(t));
-          const removed = current.filter((t) => !proposedSet.has(t));
-          if (added.length === 0 && removed.length === 0) continue;
-          diff.push({
-            noteId: nid,
-            title: String(note?.title || "Untitled").slice(0, 80),
-            currentTags: current,
-            proposedTags: proposed,
-            added,
-            removed,
-          });
-        }
-
-        const stagedActions = diff.map((d) => ({
-          noteId: d.noteId,
-          tags: d.proposedTags,
-        }));
-        const pending = stagedActions.length > 0
-          ? { actions: stagedActions, diff }
-          : null;
-
-        const fullText = aiText;
-        const words = fullText.split(" ").filter(Boolean);
-        if (words.length === 0) {
-          setChatMessages((prev) => {
-            const next = prev.slice();
-            if (next[idx]) next[idx] = {
-              ...next[idx],
-              content: fullText,
-              ...(pending ? { pendingTagActions: pending } : {}),
-            };
-            return next;
-          });
-        } else {
-          let i = 0;
-          let current = "";
-          const tick = () => {
-            if (typingCancelRef.current) {
-              setChatMessages((prev) => {
-                const next = prev.slice();
-                if (next[idx]) next[idx] = {
-                  ...next[idx],
-                  content: fullText,
-                  ...(pending ? { pendingTagActions: pending } : {}),
-                };
-                return next;
-              });
-              return;
-            }
-            current += (i === 0 ? "" : " ") + words[i];
-            i += 1;
-            const done = i >= words.length;
-            setChatMessages((prev) => {
-              const next = prev.slice();
-              if (next[idx]) next[idx] = {
-                ...next[idx],
-                content: current,
-                ...(done && pending ? { pendingTagActions: pending } : {}),
-              };
-              return next;
-            });
-            if (!chatUserScrolledUpRef.current) {
-              const el = chatScrollRef.current;
-              if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
-            }
-            if (!done) typingTimerRef.current = window.setTimeout(tick, 18);
-            else typingTimerRef.current = null;
-          };
-          tick();
-        }
-      } else {
-        const words = aiText.split(" ").filter(Boolean);
-        if (words.length === 0) {
-          setChatMessages((prev) => {
-            const next = prev.slice();
-            if (next[idx]) next[idx] = { ...next[idx], content: aiText };
-            return next;
-          });
-        } else {
-          let i = 0;
-          let current = "";
-          const tick = () => {
-            if (typingCancelRef.current) {
-              setChatMessages((prev) => {
-                const next = prev.slice();
-                if (next[idx]) next[idx] = { ...next[idx], content: aiText };
-                return next;
-              });
-              return;
-            }
-            current += (i === 0 ? "" : " ") + words[i];
-            i += 1;
-            setChatMessages((prev) => {
-              const next = prev.slice();
-              if (next[idx]) next[idx] = { ...next[idx], content: current };
-              return next;
-            });
-            if (!chatUserScrolledUpRef.current) {
-              const el = chatScrollRef.current;
-              if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
-            }
-            if (i < words.length) typingTimerRef.current = window.setTimeout(tick, 18);
-            else typingTimerRef.current = null;
-          };
-          tick();
-        }
-      }
-      if (user?.id) { invalidateMemoryCache(); saveExchange(user.id, "vault", null, null, text, aiText); }
-    } catch (err) {
-      if (err?.name === "AbortError") {
-        setIsChatLoading(false);
-        return;
-      }
-      const idx = assistantIndexRef.current;
-      if (idx != null) {
-        setChatMessages((prev) => {
-          const next = prev.slice();
-          if (next[idx]) next[idx] = { ...next[idx], content: AI_TEMPORARY_FAILURE_TEXT };
-          return next;
-        });
-      }
-    } finally {
-      setIsChatLoading(false);
-    }
-  };
-
   const renderAttachmentCard = (card, tileHeightClass) => {
     const { attachment, type, title } = card;
     const resolvedUrl = resolvedAttachmentUrls[card.id] || attachment.url;
     const wakeDemoCard = isWakePreview && card.isDemo;
     const stableTileHeight = resolveStableTileHeight(card, tileHeightClass);
+    // Grid/tags/type views pass a single fixed height class (e.g. "h-44") and
+    // expect uniform tiles. The collage passes responsive bucketed classes.
+    // When the tile is uniform, keep the fixed height instead of switching to
+    // the media's real aspect-ratio — otherwise a portrait image stretches its
+    // whole grid row and leaves large gaps under shorter neighbors.
+    const uniformTile =
+      typeof tileHeightClass === "string" && /^h-\d+$/.test(tileHeightClass.trim());
 
     // Ghost cards represent uploads still in flight. We render the local
     // blob preview directly — no signed-URL resolver, no retry logic —
@@ -5536,10 +4972,14 @@ User: ${text}`;
       const reservedW = metaW || learnedDims?.w || null;
       const reservedH = metaH || learnedDims?.h || null;
       const hasReservedAspect = !!(reservedW && reservedH && reservedW > 0 && reservedH > 0);
-      const reservedAspectStyle = hasReservedAspect
+      const reservedAspectStyle = hasReservedAspect && !uniformTile
         ? { aspectRatio: `${reservedW} / ${reservedH}` }
         : undefined;
-      const reservedHeightClass = hasReservedAspect ? "" : stableTileHeight;
+      const reservedHeightClass = uniformTile
+        ? tileHeightClass
+        : hasReservedAspect
+          ? ""
+          : stableTileHeight;
 
       if (isStorageBacked && !hasResolvedUrl && !hasFailed) {
         return (
@@ -5626,8 +5066,8 @@ User: ${text}`;
           {...(hasReservedAspect ? { width: reservedW, height: reservedH } : {})}
           className={
             skipEntryFade
-              ? `${hasReservedAspect ? "max-w-full max-h-full w-auto h-auto object-contain" : "max-w-full max-h-full w-auto h-auto object-contain"} rounded-2xl`
-              : `${hasReservedAspect ? "max-w-full max-h-full w-auto h-auto object-contain" : "max-w-full max-h-full w-auto h-auto object-contain"} rounded-2xl opacity-0 transition-opacity duration-150 ease-out`
+              ? `${uniformTile ? "w-full h-full object-cover" : "max-w-full max-h-full w-auto h-auto object-contain"} rounded-2xl`
+              : `${uniformTile ? "w-full h-full object-cover" : "max-w-full max-h-full w-auto h-auto object-contain"} rounded-2xl opacity-0 transition-opacity duration-150 ease-out`
           }
           loading={skipEntryFade ? "eager" : "lazy"}
           decoding={skipEntryFade ? "sync" : "async"}
@@ -5758,8 +5198,8 @@ User: ${text}`;
       if (videoIsStorageBacked && !resolvedAttachmentUrls[card.id] && !videoHasFailed) {
         return (
           <div
-            className="w-full rounded-2xl bg-black/10 animate-pulse flex items-center justify-center"
-            style={{ aspectRatio: videoAspect }}
+            className={`w-full ${uniformTile ? tileHeightClass : ""} rounded-2xl bg-black/10 animate-pulse flex items-center justify-center`}
+            style={uniformTile ? undefined : { aspectRatio: videoAspect }}
           >
             <Loader2 className="w-6 h-6 text-white/20 animate-spin" />
           </div>
@@ -5772,8 +5212,8 @@ User: ${text}`;
       if (videoHasFailed) {
         return (
           <div
-            className="w-full rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3"
-            style={{ aspectRatio: videoAspect }}
+            className={`w-full ${uniformTile ? tileHeightClass : ""} rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3`}
+            style={uniformTile ? undefined : { aspectRatio: videoAspect }}
           >
             <FileText className="w-8 h-8 text-black/20 dark:text-white/20" />
             <span className="text-xs text-black/40 dark:text-white/40 text-center truncate max-w-full">{title}</span>
@@ -5805,15 +5245,17 @@ User: ${text}`;
 
       return (
         <div
-          className="w-full rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] pointer-events-none flex items-center justify-center overflow-hidden"
-          style={{ aspectRatio: videoAspect }}
+          className={`w-full ${uniformTile ? tileHeightClass : ""} rounded-2xl bg-black/[0.02] dark:bg-white/[0.02] pointer-events-none flex items-center justify-center overflow-hidden`}
+          style={uniformTile ? undefined : { aspectRatio: videoAspect }}
         >
           <video
             key={resolvedUrl}
             className={`max-w-full max-h-full w-auto h-auto object-contain rounded-2xl bg-black/10 ${
               skipVideoFade ? "" : "opacity-0 transition-opacity duration-150 ease-out"
             }`}
-            controls={!isPickerMode}
+            // No native controls on grid tiles: the wrapper is
+            // pointer-events-none (click opens the preview modal), so the
+            // controls rendered but never responded — reading as broken.
             playsInline
             preload="metadata"
             poster={videoPosterUrl}
@@ -5830,8 +5272,11 @@ User: ${text}`;
                 if (resolvedUrl && !learnedImageDimsRef.current.has(resolvedUrl)) {
                   learnedImageDimsRef.current.set(resolvedUrl, { w: vw, h: vh });
                 }
+                // Uniform tiles (grid/tags/type views) keep their fixed
+                // height — resizing to the real aspect here would make the
+                // row ragged again.
                 const wrapper = e.currentTarget.parentElement;
-                if (wrapper) {
+                if (wrapper && !uniformTile) {
                   wrapper.style.aspectRatio = `${vw} / ${vh}`;
                   wrapper.style.height = "auto";
                 }
@@ -5925,7 +5370,10 @@ User: ${text}`;
             {voiceNote ? <Mic className="w-4 h-4" /> : <Music className="w-4 h-4" />}
             <span className="text-xs font-medium truncate">{title}</span>
           </div>
-          <audio src={resolvedUrl} controls={!isPickerMode} className="w-full h-10 pointer-events-none" preload="metadata" />
+          {/* No native controls: the element is pointer-events-none (click
+              opens the preview modal, which has a working player), so the
+              controls rendered but never responded. */}
+          <audio src={resolvedUrl} className="w-full h-10 pointer-events-none" preload="metadata" />
         </div>
       );
     }
@@ -6014,7 +5462,7 @@ User: ${text}`;
         }
         return (
           <a
-            href={attachment.url}
+            href={safeExternalUrl(attachment.url) || undefined}
             target="_blank"
             rel="noreferrer"
             className={`block p-4 hover:bg-black/5 transition rounded-2xl ${tileHeightClass}`}
@@ -6140,7 +5588,7 @@ User: ${text}`;
       }
       return (
         <a
-          href={resolvedUrl}
+          href={safeAttachmentUrl(resolvedUrl) || undefined}
           target="_blank"
           rel="noreferrer"
           className={`block p-4 hover:bg-black/5 transition rounded-2xl ${tileHeightClass}`}
@@ -6836,11 +6284,14 @@ User: ${text}`;
             onClick={handleToggleQuickNote}
             title={showQuickNote ? "Hide quick note" : "New note"}
             aria-label={showQuickNote ? "Hide quick note" : "New note"}
-            className={`fixed bottom-6 right-6 z-[70] w-12 h-12 rounded-full border shadow-lg flex items-center justify-center transition touch-manipulation ${
+            className={`fixed right-6 z-[70] w-12 h-12 rounded-full border shadow-lg flex items-center justify-center transition touch-manipulation ${
               showQuickNote || showNewNoteChooser
                 ? "bg-blue-500/15 text-blue-600 border-blue-500/30 hover:bg-blue-500/25 dark:bg-blue-400/20 dark:text-blue-400 dark:hover:bg-blue-400/30"
                 : "border-black/[0.08] bg-[hsl(var(--sidebar-surface))] text-black/80 hover:brightness-95 dark:border-white/[0.08] dark:bg-[hsl(0_0%_16%)] dark:text-white/90 dark:hover:brightness-125"
             }`}
+            // Clear the mobile tab bar — without this the tab bar (z-[75])
+            // paints over most of the FAB on phones, making it untappable.
+            style={{ bottom: "calc(1.5rem + var(--mobile-tabbar-clear, 0px))" }}
           >
             <Plus className="w-5 h-5" />
           </button>
@@ -6856,23 +6307,14 @@ User: ${text}`;
       )}
 
       <main
-        className={`vault-preview-shell relative z-20 mx-auto w-full transition-[margin-right,max-width] duration-300 ${
+        className={`vault-preview-shell relative z-20 mx-auto w-full ${
           isWakePreview
             ? "h-full overflow-y-auto px-4 sm:px-6 pt-4 pb-12 scrollbar-hide"
             : `px-4 sm:px-6 lg:px-8 ${isEmbeddedMode ? "pt-6" : "pt-16"} pb-16`
         }`}
         style={{
           transform: "translateZ(0)",
-          marginRight:
-            showChat && !isMobileChat && !isWakePreview
-              ? `${chatRailWidthPx}px`
-              : 0,
-          maxWidth:
-            showChat && !isMobileChat && !isWakePreview
-              ? `calc(100% - ${chatRailWidthPx}px)`
-              : isWakePreview
-              ? "100%"
-              : "1560px",
+          maxWidth: isWakePreview ? "100%" : "1560px",
         }}
         onDragEnter={handleMainDragEnter}
         onDragOver={handleMainDragOver}
@@ -6897,7 +6339,7 @@ User: ${text}`;
                   type="text"
                   value={embeddedSearch}
                   onChange={(e) => setEmbeddedSearch(e.target.value)}
-                  placeholder="Search your vault — type an idea, topic, or keyword"
+                  placeholder="Search your vault: type an idea, topic, or keyword"
                   className="w-full h-11 rounded-2xl glass-control pl-10 pr-12 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
                 />
                 {embeddedSearch.trim() ? (
@@ -7061,8 +6503,8 @@ User: ${text}`;
                     }}
                     placeholder={
                       isWakePreview
-                        ? "Search your vault — type an idea, topic, or keyword"
-                        : "Search your vault — type an idea, topic, or keyword and press Enter"
+                        ? "Search your vault: type an idea, topic, or keyword"
+                        : "Search your vault: type an idea, topic, or keyword and press Enter"
                     }
                     className="w-full h-11 rounded-2xl glass-control pl-10 pr-20 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
                   />
@@ -7325,11 +6767,15 @@ User: ${text}`;
                     </button>
                   </div>
                 </div>
-                {embeddedSearch.trim() && (
+                {embeddedSearch.trim() ? (
                   <div className="glass-control rounded-2xl px-5 py-4 inline-block">
                     <p className="text-sm text-black/70 dark:text-white/70">No results match your search.</p>
                   </div>
-                )}
+                ) : selectedFilterTags.length > 0 ? (
+                  <div className="glass-control rounded-2xl px-5 py-4 inline-block">
+                    <p className="text-sm text-black/70 dark:text-white/70">Nothing matches the selected tags.</p>
+                  </div>
+                ) : null}
               </div>
             ) : vaultView === "tags" ? (
               <div className="space-y-8">
@@ -7402,7 +6848,7 @@ User: ${text}`;
                               {card.tags?.length > 0 && (
                                 <div className="mt-1 flex flex-wrap gap-1 px-1">
                                   {card.tags.map((t) => (
-                                    <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">{t}</span>
+                                    <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">{t}</span>
                                   ))}
                                 </div>
                               )}
@@ -7426,9 +6872,18 @@ User: ${text}`;
                             <>
                               <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
                                 <div className="flex items-center gap-1.5 text-black/60 dark:text-white/60 mb-1.5">
-                                  <StickyNote className="w-3.5 h-3.5" />
-                                  <span className="text-[0.625rem] font-medium">Quick Note</span>
+                                  {card.noteStyle === "meeting" ? (
+                                    <CalendarDays className="w-3.5 h-3.5" />
+                                  ) : card.noteStyle === "task" ? (
+                                    <ListTodo className="w-3.5 h-3.5" />
+                                  ) : (
+                                    <StickyNote className="w-3.5 h-3.5" />
+                                  )}
+                                  <span className="text-[0.625rem] font-medium">{card.label || "Quick Note"}</span>
                                 </div>
+                                {card.title && card.noteStyle && card.noteStyle !== "quick" ? (
+                                  <p className="text-[0.6875rem] font-semibold text-black/80 dark:text-white/80 truncate mb-1">{card.title}</p>
+                                ) : null}
                                 <p className="text-xs text-black/70 dark:text-white/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
                               </div>
                               <div className="mt-1 flex justify-end px-1">
@@ -7441,7 +6896,7 @@ User: ${text}`;
                                     openCardMenuForAnchor(card.id, e.currentTarget);
                                   }}
                                   className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                                  title="Quick note actions"
+                                  title="Actions"
                                 >
                                   <MoreHorizontal className="w-4 h-4" />
                                 </button>
@@ -7565,9 +7020,18 @@ User: ${text}`;
                               <>
                                 <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
                                   <div className="flex items-center gap-1.5 text-black/60 dark:text-white/60 mb-1.5">
-                                    <StickyNote className="w-3.5 h-3.5" />
-                                    <span className="text-[0.625rem] font-medium">Quick Note</span>
+                                    {card.noteStyle === "meeting" ? (
+                                      <CalendarDays className="w-3.5 h-3.5" />
+                                    ) : card.noteStyle === "task" ? (
+                                      <ListTodo className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <StickyNote className="w-3.5 h-3.5" />
+                                    )}
+                                    <span className="text-[0.625rem] font-medium">{card.label || "Quick Note"}</span>
                                   </div>
+                                  {card.title && card.noteStyle && card.noteStyle !== "quick" ? (
+                                    <p className="text-[0.6875rem] font-semibold text-black/80 dark:text-white/80 truncate mb-1">{card.title}</p>
+                                  ) : null}
                                   <p className="text-xs text-black/70 dark:text-white/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
                                 </div>
                                 <div className="mt-1 flex justify-end px-1">
@@ -7580,7 +7044,7 @@ User: ${text}`;
                                       openCardMenuForAnchor(card.id, e.currentTarget);
                                     }}
                                     className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                                    title="Quick note actions"
+                                    title="Actions"
                                   >
                                     <MoreHorizontal className="w-4 h-4" />
                                   </button>
@@ -7661,7 +7125,7 @@ User: ${text}`;
                             {card.tags?.length > 0 && (
                               <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
                                 {card.tags.map((t) => (
-                                  <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[7px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
+                                  <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
                                     {t}
                                   </span>
                                 ))}
@@ -7786,316 +7250,6 @@ User: ${text}`;
         </button>
       )}
 
-      {showChat && isMobileChat && (
-        <div
-          className="fixed inset-0 z-[63] bg-black/20 backdrop-blur-[2px]"
-          onClick={() => setShowChat(false)}
-        />
-      )}
-      {showChat && (
-        <div
-          className={`fixed flex flex-col bg-white/40 dark:bg-white/5 backdrop-blur-sm border-l border-black/10 dark:border-white/10 transition-[right] duration-300 ${isMobileChat ? "z-[80] inset-x-0 border-l-0" : "z-[64]"}`}
-          style={{
-            top: isMobileChat ? 0 : "var(--header-height, 4.9rem)",
-            bottom: isMobileChat ? "var(--mobile-tabbar-clear, 0px)" : 0,
-            right: isMobileChat ? undefined : 0,
-            width: isMobileChat ? undefined : `${chatRailWidthPx}px`,
-            animation: "chatRailSlideIn 350ms cubic-bezier(0.22,1,0.36,1) both",
-          }}
-        >
-          {!isMobileChat && (
-            <div className="absolute left-0 top-0 bottom-0 w-3 -translate-x-1/2 cursor-col-resize z-[70] pointer-events-auto" onPointerDown={handleStartChatResize} title="Drag to resize chat" />
-          )}
-          {isMobileChat && (
-            <div className="flex items-center justify-between px-3 py-2 border-b border-black/10 dark:border-white/10 shrink-0">
-              <div className="flex items-center gap-2 text-xs font-semibold text-black/80 dark:text-white/80">
-                <MessageSquare className="w-3.5 h-3.5" />
-                Chat
-              </div>
-              <button type="button" onClick={() => setShowChat(false)} className="h-6 w-6 rounded-full flex items-center justify-center text-black/40 dark:text-white/40 hover:text-red-500 hover:bg-red-500/10 transition-colors">
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-          )}
-          <div ref={chatScrollRef} className="flex-1 overflow-y-auto scrollbar-hide p-3 space-y-3">
-            {chatMessages.map((msg, idx) => (
-              <div key={msg.id || idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
-                {msg.role === "user" ? (
-                  <div className="max-w-[94%] rounded-2xl rounded-br-md px-3 py-2 text-xs leading-relaxed text-black/90 dark:text-white/90 border border-white/30 dark:border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.14),rgba(255,255,255,0.06))] dark:bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))] backdrop-blur-md shadow-[0_4px_14px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_14px_rgba(0,0,0,0.16)] [&_table]:text-[0.6875rem] [&_td]:py-1 [&_th]:py-1">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={buildChatMarkdownComponents(msg.id)}
-                      // Block dangerous URL schemes (javascript:, vbscript:,
-                      // data:text/html, etc.) from rendering as clickable
-                      // links inside AI / chat output. The model could
-                      // be coerced into emitting these via a malicious
-                      // vault item.
-                      urlTransform={safeMarkdownUrl}
-                    >
-                      {normalizeChecklistSyntax(msg.content || "")}
-                    </ReactMarkdown>
-                  </div>
-                ) : (() => {
-                  const isExpanded = msg.id ? expandedAiMsgIds.has(msg.id) : true;
-                  return (
-                    <div className="self-start max-w-[94%] mt-1.5">
-                      {msg.id && (
-                        <button
-                          type="button"
-                          className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-white/50 dark:border-white/12 bg-white/40 dark:bg-white/5 backdrop-blur-sm hover:bg-white/60 dark:hover:bg-white/10 transition-all text-left group/collapse"
-                          onClick={() => toggleAiExpanded(msg.id)}
-                        >
-                          <ChevronRight className={`w-3 h-3 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />
-                          {!isExpanded && (
-                            <span className="text-[0.6875rem] text-black/60 dark:text-white/60 truncate leading-tight flex-1">
-                              {getCollapsedPreview(msg.content || "")}
-                            </span>
-                          )}
-                          {isExpanded && (
-                            <span className="text-[0.6875rem] text-black/40 dark:text-white/40 font-medium flex-1">AI Response</span>
-                          )}
-                        </button>
-                      )}
-                      <div className={msg.id ? `overflow-hidden transition-all duration-200 ease-in-out ${isExpanded ? "max-h-[5000px] opacity-100 mt-1" : "max-h-0 opacity-0"}` : ""}>
-                        <div className="space-y-1">
-                          {(() => {
-                            // Pull a leaked HTML document out before chunking so
-                            // it renders as a preview card (or a "building"
-                            // placeholder while streaming) instead of raw markup.
-                            const { html: leakedHtml, rest: responseRest, pending: htmlPending } = extractLeakedHtmlDocument(msg.content || "");
-                            const chunks = splitResponseIntoChunks(responseRest);
-                            const isSingle = chunks.length <= 1 && !leakedHtml && !htmlPending;
-                            return (
-                              <>
-                                {chunks.map((chunk, ci) => (
-                                  <div key={`${msg.id}-chunk-${ci}`} className="group/chunk relative">
-                                    <div
-                                      draggable
-                                      onDragStart={(e) => handleChunkDragStart(e, chunk)}
-                                      className={`rounded-xl px-3 py-1.5 text-xs leading-relaxed break-words border text-black/85 dark:text-white/85 cursor-grab active:cursor-grabbing transition-all ${isSingle ? "border-transparent bg-transparent hover:bg-white/50 dark:hover:bg-white/[0.02] hover:border-blue-300/40 dark:hover:border-white/[0.03] rounded-2xl rounded-bl-md" : "border-transparent bg-transparent hover:bg-white/50 dark:hover:bg-white/[0.02] hover:border-blue-300/40 dark:hover:border-white/[0.03] hover:shadow-sm"}`}
-                                    >
-                                      <div className={`absolute left-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/chunk:opacity-100 transition-opacity ${isSingle ? "hidden" : ""}`}>
-                                        <GripVertical className="w-3 h-3 text-blue-400/60" />
-                                      </div>
-                                      <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={buildChatMarkdownComponents(msg.id)}
-                      // Block dangerous URL schemes (javascript:, vbscript:,
-                      // data:text/html, etc.) from rendering as clickable
-                      // links inside AI / chat output. The model could
-                      // be coerced into emitting these via a malicious
-                      // vault item.
-                      urlTransform={safeMarkdownUrl}
-                    >
-                                        {normalizeChecklistSyntax(chunk)}
-                                      </ReactMarkdown>
-                                    </div>
-                                    {!isSingle && (
-                                      <button
-                                        type="button"
-                                        title="Save this section as quick note"
-                                        className="absolute right-1 top-1 opacity-0 group-hover/chunk:opacity-100 transition-opacity p-0.5 rounded text-amber-400/70 hover:text-amber-500 hover:bg-amber-500/10"
-                                        onClick={() => saveChunkAsQuickNote(chunk)}
-                                      >
-                                        <StickyNote className="w-2.5 h-2.5" />
-                                      </button>
-                                    )}
-                                  </div>
-                                ))}
-                                {leakedHtml ? (
-                                  <div className="mx-1 mt-1.5">
-                                    <ChatArtifactCard artifact={buildLeakedHtmlArtifact(msg.id, leakedHtml)} />
-                                  </div>
-                                ) : htmlPending ? (
-                                  <div className="mx-1 mt-1.5">
-                                    <ArtifactBuildingPlaceholder />
-                                  </div>
-                                ) : null}
-                              </>
-                            );
-                          })()}
-                          {msg.pendingTagActions?.diff?.length > 0 && (
-                            <div className="mx-1 mt-1.5 rounded-xl border border-amber-400/30 dark:border-amber-300/20 bg-amber-50/70 dark:bg-amber-500/5 backdrop-blur-sm overflow-hidden">
-                              <div className="px-3 py-2 border-b border-amber-400/20 dark:border-amber-300/15 flex items-center gap-2">
-                                <Tag className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-                                <span className="text-[0.6875rem] font-semibold text-amber-700 dark:text-amber-300">
-                                  Proposed tag changes
-                                </span>
-                                <span className="text-[0.625rem] text-amber-700/70 dark:text-amber-300/70 ml-auto">
-                                  {msg.pendingTagActions.diff.length} item{msg.pendingTagActions.diff.length !== 1 ? "s" : ""}
-                                </span>
-                              </div>
-                              <div className="max-h-48 overflow-y-auto px-3 py-2 space-y-1.5 text-[0.6875rem]">
-                                {msg.pendingTagActions.diff.slice(0, 30).map((entry) => (
-                                  <div key={entry.noteId} className="leading-snug">
-                                    <div className="text-black/80 dark:text-white/80 truncate font-medium">
-                                      {entry.title}
-                                    </div>
-                                    <div className="flex flex-wrap gap-1 mt-0.5">
-                                      {entry.added.map((t) => (
-                                        <span key={`add-${entry.noteId}-${t}`} className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 text-[0.625rem]">
-                                          + {t}
-                                        </span>
-                                      ))}
-                                      {entry.removed.map((t) => (
-                                        <span key={`rm-${entry.noteId}-${t}`} className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-700 dark:text-rose-400 text-[0.625rem] line-through">
-                                          - {t}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ))}
-                                {msg.pendingTagActions.diff.length > 30 && (
-                                  <div className="text-[0.625rem] text-black/50 dark:text-white/50 italic">
-                                    +{msg.pendingTagActions.diff.length - 30} more…
-                                  </div>
-                                )}
-                              </div>
-                              <div className="px-3 py-2 border-t border-amber-400/20 dark:border-amber-300/15 flex items-center gap-2 justify-end">
-                                <button
-                                  type="button"
-                                  className="px-2.5 py-1 rounded-md text-[0.6875rem] text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
-                                  disabled={!!msg.pendingTagActions.applying}
-                                  onClick={() => dismissPendingTagActions(idx)}
-                                >
-                                  Dismiss
-                                </button>
-                                <button
-                                  type="button"
-                                  className="px-2.5 py-1 rounded-md text-[0.6875rem] font-medium text-white bg-emerald-600 hover:bg-emerald-700 transition-colors disabled:opacity-50"
-                                  disabled={!!msg.pendingTagActions.applying}
-                                  onClick={() => { void applyPendingTagActions(idx); }}
-                                >
-                                  {msg.pendingTagActions.applying ? "Applying…" : "Apply"}
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                          <div className="flex items-center gap-0.5 px-1">
-                            <button type="button" title="Save full response as quick note" className="p-1 rounded-md text-black/30 dark:text-white/30 hover:text-amber-500 hover:bg-amber-500/10 transition-colors" onClick={() => saveChunkAsQuickNote(msg.content || "")}>
-                              <StickyNote className="w-3 h-3" />
-                            </button>
-                            <button type="button" title="Copy" className={`p-1 rounded-md transition-colors ${copiedMsgId === msg.id ? "text-blue-500 bg-blue-500/10" : "text-black/30 dark:text-white/30 hover:text-black/60 dark:hover:text-white/60 hover:bg-black/5 dark:hover:bg-white/5"}`} onClick={() => { void navigator.clipboard.writeText(msg.content || ""); setCopiedMsgId(msg.id); setTimeout(() => { if (!isMountedRef.current) return; setCopiedMsgId((cur) => cur === msg.id ? null : cur); }, 2000); }}>
-                              {copiedMsgId === msg.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            ))}
-            {chatMessages.length > 0 && (() => {
-              const last = chatMessages[chatMessages.length - 1];
-              return last?.role === "assistant" && last?.tagActions?.applied > 0 ? (
-                <div className="flex justify-start">
-                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 text-[11px] font-medium">
-                    <Tag className="w-3 h-3" />
-                    <span>Organised {last.tagActions.applied} item{last.tagActions.applied !== 1 ? "s" : ""}</span>
-                  </div>
-                </div>
-              ) : null;
-            })()}
-            {isChatLoading && (
-              <div className="flex flex-col items-start w-full">
-                <div className="max-w-[94%] text-[0.6875rem] text-black/70 dark:text-white/60 py-1.5 flex items-center gap-2" aria-live="polite">
-                  <div className="brick-spinner" />
-                  {thinkingStatus}
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="p-3 pb-3">
-            <div className="lykn-chat-neu-chat-shell lykn-chat-chat-border-run-once px-2.5 py-2 w-full flex flex-col gap-1.5">
-              {isDictating || isTranscribing ? (
-                <div className="w-full min-h-[2.75rem] lykn-chat-neu-chat-field ring-1 ring-blue-400/35 px-2.5 py-1.5 flex items-center gap-2">
-                  {isDictating ? (
-                    <>
-                      <div className="dictation-wave"><span /><span /><span /><span /><span /></div>
-                      <span className="text-[0.6875rem] text-blue-600 dark:text-blue-400 font-medium">Recording...</span>
-                    </>
-                  ) : (
-                    <>
-                      <div className="brick-spinner" style={{ width: 12, height: 12 }} />
-                      <span className="text-[0.6875rem] text-black/60 dark:text-white/55">Transcribing...</span>
-                    </>
-                  )}
-                </div>
-              ) : (
-                <textarea
-                  ref={chatInputRef}
-                  data-min-h="44"
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onInput={(e) => {
-                    const el = e.currentTarget;
-                    el.style.height = "auto";
-                    el.style.height = Math.min(el.scrollHeight, 160) + "px";
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      handleChatSend();
-                    }
-                  }}
-                  placeholder="Ask me anything..."
-                  rows={1}
-                  className="w-full min-h-[2.75rem] max-h-[160px] lykn-chat-neu-chat-field px-2.5 py-1.5 text-[0.6875rem] leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none scrollbar-hide"
-                  disabled={isChatLoading}
-                />
-              )}
-              <div className="flex items-center gap-2 pt-0.5">
-                <Select value={selectedModel} onValueChange={(value) => {
-                  setSelectedModel(value);
-                  try {
-                    const saved = localStorage.getItem("lykinsai_settings");
-                    const settings = saved ? JSON.parse(saved) : {};
-                    settings.aiModel = value;
-                    localStorage.setItem("lykinsai_settings", JSON.stringify(settings));
-                    window.dispatchEvent(new CustomEvent("lykinsai_settings_changed"));
-                  } catch { /* ignore */ }
-                }}>
-                  <SelectTrigger className="lykn-chat-neu-chat-toolbar-select-trigger h-8 max-w-[6.5rem] min-w-0 shrink-0 rounded-lg border-0 bg-transparent text-[0.625rem] px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 [&>span]:truncate">
-                    <SelectValue placeholder="Model" />
-                  </SelectTrigger>
-                  <SelectContent side="top" align="start" className="rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 max-h-[min(28rem,70vh)] overflow-y-auto w-[min(92vw,18rem)]">
-                    <ModelSelectOptions />
-                  </SelectContent>
-                </Select>
-                <div className="flex-1 min-w-[4px]" aria-hidden />
-                <button type="button" onClick={handleRequestAddMedia} className="h-8 w-8 lykn-chat-neu-chat-icon-plain flex items-center justify-center text-black/80 dark:text-white/85 shrink-0" title="Add attachments">
-                  <Plus className="w-3 h-3" />
-                </button>
-                {isChatLoading ? (
-                  <button type="button" onClick={handleStopAi} className="h-8 w-8 lykn-chat-neu-chat-icon-plain flex items-center justify-center shrink-0" title="Stop generating">
-                    <Square className="w-2.5 h-2.5 text-red-600 dark:text-red-400" fill="currentColor" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleDictateToggle}
-                    className={`h-8 w-8 lykn-chat-neu-chat-icon-plain flex items-center justify-center shrink-0 ${isDictating ? "ring-1 ring-blue-400/40 rounded-lg" : ""}`}
-                    title={isDictating ? "Stop recording" : "Dictate"}
-                  >
-                    <Mic className={`w-3 h-3 ${isDictating ? "text-blue-600 dark:text-blue-400" : "text-black/75 dark:text-white/80"}`} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => handleChatSend()}
-                  disabled={!chatInput.trim() || isChatLoading || isDictating || isTranscribing}
-                  className={`h-8 w-8 lykn-chat-neu-chat-send-btn flex items-center justify-center shrink-0 ${(!chatInput.trim() || isChatLoading || isDictating || isTranscribing) ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`}
-                  title="Send"
-                >
-                  <ArrowUp className="w-3 h-3" strokeWidth={2.25} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       <VaultNewNoteChooser
         open={showNewNoteChooser}
         userId={user?.id}
@@ -8155,7 +7309,7 @@ User: ${text}`;
       {showSaveLink && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => { setShowSaveLink(false); setSaveLinkUrl(""); setSaveLinkPreview(null); }}>
           <div
-            className="w-[420px] max-w-[92vw] glass-control rounded-2xl shadow-lg p-5 space-y-4"
+            className="w-[420px] max-w-[92vw] max-h-[90vh] overflow-y-auto glass-control rounded-2xl shadow-lg p-5 space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
@@ -8526,6 +7680,7 @@ User: ${text}`;
           return (
             <div
               ref={noteComposerRef}
+              data-vault-popover=""
               className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/90 dark:bg-[#171515]/90 backdrop-blur-md shadow-xl p-3 overflow-y-auto scrollbar-hide"
               style={positionStyle}
               onMouseDown={(e) => e.stopPropagation()}
@@ -8598,7 +7753,7 @@ User: ${text}`;
           let top = tagPickerPosition.top;
           if (left + menuW > window.innerWidth - pad) left = window.innerWidth - pad - menuW;
           if (left < pad) left = pad;
-          if (top + 320 > window.innerHeight) top = tagPickerPosition.top - 340;
+          if (top + 320 > window.innerHeight) top = Math.max(pad, tagPickerPosition.top - 340);
 
           const filteredTags = newTagInput.trim()
             ? allTags.filter((t) => t.name.toLowerCase().includes(newTagInput.trim().toLowerCase()))
@@ -8608,6 +7763,7 @@ User: ${text}`;
           return (
             <div
               ref={tagPickerRef}
+              data-vault-popover=""
               className="rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 overflow-hidden"
               style={{ position: "fixed", width: menuW, left, top, zIndex: 10000 }}
               onMouseDown={(e) => e.stopPropagation()}
@@ -8675,7 +7831,7 @@ User: ${text}`;
                   {cardTags.map((tag) => (
                     <span
                       key={tag}
-                      className="vault-tag-pill inline-flex items-center gap-1 rounded-full bg-blue-500/15 text-blue-700 text-[7px] leading-none px-2 py-px font-medium"
+                      className="vault-tag-pill inline-flex items-center gap-1 rounded-full bg-blue-500/15 text-blue-700 text-[10px] leading-none px-2 py-px font-medium"
                     >
                       {tag}
                       <button
@@ -8700,7 +7856,7 @@ User: ${text}`;
           const att = card.attachment || {};
           const type = card.type || card.kind;
           const resolvedUrl = resolvedAttachmentUrls[card.id] || att.url || "";
-          const title = card.title || att.name || (card.kind === "quick-note" ? "Quick Note" : "Vault Item");
+          const title = card.title || att.name || (card.kind === "quick-note" ? (card.label || "Quick Note") : "Vault Item");
           const cardTags = Array.isArray(card.tags) ? card.tags : [];
           const fileNotes = card.kind === "attachment" ? parseAttachmentNotes(att) : [];
           const quickNoteComments = card.kind === "quick-note" ? parseQuickNoteComments(card) : [];
@@ -8712,6 +7868,13 @@ User: ${text}`;
             ? notes.find((n) => String(n?.id) === String(card.noteId))
             : null;
           const previewWhy = String(previewNote?.why || "").trim();
+          // Prefer live note body from the query cache so formatting stays
+          // intact even if the card was built before `body` was attached.
+          const previewTextBody = String(
+            previewNote?.content
+              ? stripAttachmentsMarker(String(previewNote.content)).replace(/\r\n/g, "\n").trim()
+              : (card.body || card.excerpt || ""),
+          ).trim();
           // The "why" editor is available for any real (non-wake-preview)
           // saved item, so the Details panel must open even when nothing else
           // is filled in yet.
@@ -8787,7 +7950,7 @@ User: ${text}`;
               );
             } else {
               body = (
-                <a href={att.url} target="_blank" rel="noreferrer" className="text-sm text-blue-500 underline">
+                <a href={safeExternalUrl(att.url) || undefined} target="_blank" rel="noreferrer" className="text-sm text-blue-500 underline">
                   Open YouTube video
                 </a>
               );
@@ -8828,9 +7991,9 @@ User: ${text}`;
                     {att.articleText}
                   </div>
                 )}
-                {(att.url || resolvedUrl) && (
+                {safeAttachmentUrl(att.url || resolvedUrl) && (
                   <a
-                    href={att.url || resolvedUrl}
+                    href={safeAttachmentUrl(att.url || resolvedUrl) || undefined}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-500 hover:text-blue-600"
@@ -8867,9 +8030,9 @@ User: ${text}`;
               <div className="flex flex-col items-center gap-4 py-10 text-center">
                 <FileText className="w-14 h-14 text-black/30 dark:text-white/30" />
                 <p className="text-sm text-black/70 dark:text-white/70 break-all max-w-lg">{title}</p>
-                {resolvedUrl && (
+                {safeAttachmentUrl(resolvedUrl) && (
                   <a
-                    href={resolvedUrl}
+                    href={safeAttachmentUrl(resolvedUrl) || undefined}
                     target="_blank"
                     rel="noreferrer"
                     download={title}
@@ -8881,11 +8044,34 @@ User: ${text}`;
               </div>
             );
           } else if (card.kind === "quick-note") {
+            const useMarkdown = !!(card.formatted || (card.noteStyle && card.noteStyle !== "quick"));
             body = (
               <div className="rounded-xl bg-white/45 dark:bg-white/5 border border-white/40 dark:border-white/10 px-5 py-4 max-h-[72vh] overflow-y-auto">
-                <p className="text-sm text-black/85 dark:text-white/85 whitespace-pre-wrap break-words leading-relaxed">
-                  {card.excerpt || ""}
-                </p>
+                {useMarkdown ? (
+                  <div className="vault-note-md text-sm text-black/85 dark:text-white/85 leading-relaxed break-words">
+                    <style>{`
+                      .vault-note-md h1 { font-size: 1.35rem; font-weight: 700; margin: 0 0 0.75em; }
+                      .vault-note-md h2 { font-size: 1.1rem; font-weight: 600; margin: 1.25em 0 0.5em; }
+                      .vault-note-md h3 { font-size: 1rem; font-weight: 600; margin: 1em 0 0.4em; }
+                      .vault-note-md p { margin: 0 0 0.85em; white-space: pre-wrap; }
+                      .vault-note-md ul, .vault-note-md ol { margin: 0 0 0.85em; padding-left: 1.35em; }
+                      .vault-note-md ul { list-style: disc; }
+                      .vault-note-md ol { list-style: decimal; }
+                      .vault-note-md li { margin: 0.25em 0; }
+                      .vault-note-md li + li { margin-top: 0.35em; }
+                      .vault-note-md strong { font-weight: 600; }
+                      .vault-note-md hr { margin: 1em 0; border-color: rgba(0,0,0,0.1); }
+                      .dark .vault-note-md hr { border-color: rgba(255,255,255,0.12); }
+                    `}</style>
+                    <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS}>
+                      {previewTextBody}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <p className="text-sm text-black/85 dark:text-white/85 whitespace-pre-wrap break-words leading-relaxed">
+                    {previewTextBody}
+                  </p>
+                )}
               </div>
             );
           } else if (card.kind === "chat-preview") {
@@ -9071,8 +8257,14 @@ User: ${text}`;
           `deleteSelectedCards`). */}
       {selectedCardIds.size > 0 && !isPickerMode && createPortal(
         <div
+          // 6rem on desktop clears the bottom-center app dock so the two
+          // don't pile up; phones sit just above the mobile tab bar.
           className="fixed z-[210] left-1/2 -translate-x-1/2 flex items-center"
-          style={{ bottom: "calc(1.5rem + var(--mobile-tabbar-clear, 0px))" }}
+          style={{
+            bottom: isMobileChat
+              ? "calc(1.5rem + var(--mobile-tabbar-clear, 0px))"
+              : "6rem",
+          }}
         >
           <div className="flex items-center gap-2 rounded-full bg-black/85 dark:bg-white/10 backdrop-blur-md text-white shadow-lg ring-1 ring-white/10 px-3 py-1.5">
             <span className="text-xs font-medium px-1.5">

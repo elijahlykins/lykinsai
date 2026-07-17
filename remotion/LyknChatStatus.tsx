@@ -4,6 +4,7 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 import { ICON_PATH, ICON_VIEWBOX } from "./brand";
 
 // ---------------------------------------------------------------------------
@@ -317,6 +318,7 @@ export const LyknChatStatus: React.FC = () => {
         fontFamily: "Inter, system-ui, sans-serif",
       }}
     >
+      <SceneBackground />
       {/* Preview-card window floating on the gradient */}
       <div
         style={{

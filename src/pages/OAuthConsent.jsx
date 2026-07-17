@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams, useNavigate } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { Loader2, Sparkles, Shield, CheckCircle2, X, ExternalLink, ShieldAlert } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
@@ -25,7 +25,6 @@ import { toUserFacingError } from "@/lib/ai/userFacingErrors";
  */
 export default function OAuthConsent() {
   const [params] = useSearchParams();
-  const nav = useNavigate();
   const { user, loading: authLoading, signInWithOAuth } = useAuth();
 
   const [submitting, setSubmitting] = useState(false);
@@ -127,6 +126,25 @@ export default function OAuthConsent() {
       setError(toUserFacingError(err));
     }
   }, [signInWithOAuth]);
+
+  // "Switch account": end the current Supabase session, then run the
+  // same inline OAuth sign-in that preserves this consent URL. A plain
+  // nav("/login") would strip the OAuth params (client_id, PKCE
+  // challenge, …) from the URL and strand the in-flight authorization.
+  const [switching, setSwitching] = useState(false);
+  const handleSwitchAccount = useCallback(async () => {
+    if (switching) return;
+    setSwitching(true);
+    setError(null);
+    try {
+      const returnTo = window.location.href;
+      await supabase.auth.signOut();
+      signInWithOAuth?.("google", { redirectTo: returnTo });
+    } catch (err) {
+      setError(toUserFacingError(err));
+      setSwitching(false);
+    }
+  }, [switching, signInWithOAuth]);
 
   // Auto-deny if the user closes the page is handled client-side by
   // OAuth clients (popup `window.closed` watchdogs). We don't need a
@@ -263,10 +281,11 @@ export default function OAuthConsent() {
                     Signed in as <span className="text-black/65 dark:text-white/70 font-medium">{user.email || user.id}</span>.{" "}
                     <button
                       type="button"
-                      onClick={() => nav("/login")}
-                      className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/85"
+                      onClick={handleSwitchAccount}
+                      disabled={switching}
+                      className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/85 disabled:opacity-50"
                     >
-                      Switch account
+                      {switching ? "Switching…" : "Switch account"}
                     </button>
                   </div>
                 </>
@@ -277,7 +296,7 @@ export default function OAuthConsent() {
 
         {/* ── Footer ──────────────────────────────────── */}
         <div className="px-6 py-3 border-t border-black/[0.05] dark:border-white/[0.06] bg-black/[0.015] dark:bg-white/[0.02] text-[10.5px] text-black/45 dark:text-white/45 leading-relaxed">
-          LYKN never shares your raw notes with the connecting app — it gets your
+          LYKN never shares your raw notes with the connecting app. It gets your
           synthesised beliefs, rules, facts, and project state. Tokens are stored
           as SHA-256 hashes; the plaintext leaves the server exactly once.
         </div>
@@ -293,7 +312,7 @@ function labelForScope(scope) {
     case "lykn:write":
       return "Propose new facts and push project state on your behalf. Beliefs are user-authored only.";
     case "offline_access":
-      return "Stay connected after this session ends (refresh tokens — no re-prompt).";
+      return "Stay connected after this session ends (refresh tokens, no re-prompt).";
     default:
       return scope;
   }

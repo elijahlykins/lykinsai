@@ -39,7 +39,7 @@ export default function VaultNewNoteChooser({
       return;
     }
     if (blob.size < VOICE_NOTE_MIN_BYTES) {
-      onError?.("Recording too short — try speaking a bit longer.");
+      onError?.("Recording too short. Try speaking a bit longer.");
       onClose();
       return;
     }

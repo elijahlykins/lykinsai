@@ -1,13 +1,16 @@
 // Preload for the Jarvis glass bar. Exposes a tiny, explicit API to the local
 // overlay page — never the raw ipcRenderer.
 
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, clipboard } = require("electron");
 
 contextBridge.exposeInMainWorld("lyknOverlay", {
   // Ask LYKN about the current screen. The main process captures the screen
   // silently and streams the answer back via onDelta/onDone/onError.
-  ask: (text, history, attachments) =>
-    ipcRenderer.send("lykn:ask", { text, history, attachments }),
+  // opts: { forceImage } — image mode armed via menu → "Create an image".
+  //       { buildMode }  — build mode armed via menu → "Build mode" (the
+  //                        server forces the React artifact builder).
+  ask: (text, history, attachments, opts) =>
+    ipcRenderer.send("lykn:ask", { text, history, attachments, ...(opts || {}) }),
   onShown: (cb) => ipcRenderer.on("lykn:overlay-shown", () => cb()),
   // Thinking / tool-use status updates ("Searching the web…").
   onStatus: (cb) => ipcRenderer.on("lykn:answer-status", (_e, p) => cb(p)),
@@ -24,6 +27,20 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   // Collapse the panel to a small LYKN icon bubble (true) or expand it (false).
   collapse: (v) => ipcRenderer.send("lykn:collapse", !!v),
   hide: () => ipcRenderer.send("lykn:hide-overlay"),
+  // Detached three-dot menu window (floats next to the bar).
+  setMenu: (open) => ipcRenderer.send("lykn:menu-set", { open: !!open }),
+  onMenuVisible: (cb) => ipcRenderer.on("lykn:menu-visible", (_e, v) => cb(!!v)),
+  // Detached side-panel picker window (floats next to the bar, like the menu).
+  setPicker: (open) => ipcRenderer.send("lykn:picker-set", { open: !!open }),
+  onPickerVisible: (cb) => ipcRenderer.on("lykn:picker-visible", (_e, v) => cb(!!v)),
+  // Detached live meeting notes window — this renderer owns the audio capture
+  // and transcript state, and pushes render snapshots to the floating card.
+  setLive: (open) => ipcRenderer.send("lykn:live-set", { open: !!open }),
+  pushLive: (state) => ipcRenderer.send("lykn:live-push", state || {}),
+  // Detached side-panel content window (Sources / Tasks / Notes / Live
+  // feedback) — same snapshot-push pattern as the live card.
+  setPanel: (open) => ipcRenderer.send("lykn:panel-set", { open: !!open }),
+  pushPanel: (state) => ipcRenderer.send("lykn:panel-push", state || {}),
   openMain: () => ipcRenderer.send("lykn:open-main"),
   openAppChat: (chatId) => ipcRenderer.send("lykn:open-app-chat", chatId),
   // Past chats — overlay sessions (local) + app chats (Supabase via API).
@@ -51,12 +68,17 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   ensureMic: () => ipcRenderer.invoke("lykn:ensure-mic"),
   transcribe: (audio, mimeType, prompt) =>
     ipcRenderer.invoke("lykn:transcribe", { audio, mimeType, prompt }),
+  meetingChunk: (audio, mimeType, prompt, context) =>
+    ipcRenderer.invoke("lykn:meeting-chunk", { audio, mimeType, prompt, context }),
   // Wispr-Flow-style cleanup of a raw transcript chunk for live-listen mode.
   cleanTranscript: (text, context) =>
     ipcRenderer.invoke("lykn:clean-transcript", { text, context }),
-  // Rolling meeting notes (summary + key points + action items) from transcript.
-  meetingNotes: (transcript) =>
-    ipcRenderer.invoke("lykn:meeting-notes", { transcript }),
+  // Cluely-style live assist: rolling transcript in, occasional help card out.
+  liveAssist: (transcript, shown) =>
+    ipcRenderer.invoke("lykn:live-assist", { transcript, shown }),
+  // Rolling meeting notes from the live transcript.
+  meetingNotes: (transcript, previousNotes) =>
+    ipcRenderer.invoke("lykn:meeting-notes", { transcript, previousNotes }),
   // Cluely-style follow-up questions + real source links for an answer.
   suggest: (question, answer, opts = {}) =>
     ipcRenderer.invoke("lykn:suggest", { question, answer, ...opts }),
@@ -70,6 +92,11 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   browserExecute: (payload) => ipcRenderer.invoke("lykn:browser-execute", payload || {}),
   // Save a note (e.g. a task summary) to the user's LYKN vault.
   saveVaultNote: (payload) => ipcRenderer.invoke("lykn:save-vault-note", payload || {}),
+  copyText: (text) => {
+    clipboard.writeText(String(text || ""));
+    return true;
+  },
+  openVault: () => ipcRenderer.send("lykn:open-vault"),
   onBrowserProgress: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:browser-progress", fn);
@@ -77,6 +104,13 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   },
   // Open a URL in the default browser (source links, answer links).
   openUrl: (url) => ipcRenderer.send("lykn:open-url", url),
+  // Download a generated image / Build-mode artifact into ~/Downloads and
+  // reveal it in Finder; also saves a copy into the user's Vault (best-effort).
+  // Returns { ok, path, savedToVault } or { ok: false, error }.
+  downloadFile: (url, name, title) => ipcRenderer.invoke("lykn:download-file", { url, name, title }),
+  // Fetch the raw JSX source embedded in a Build-mode artifact's runner HTML
+  // (for the artifact card's "Code" view). Returns { ok, code } or { ok:false }.
+  artifactCode: (url) => ipcRenderer.invoke("lykn:artifact-code", { url }),
   // Content protection — hide the overlay from screen recordings/shares.
   getContentProtection: () => ipcRenderer.invoke("lykn:get-content-protection"),
   setContentProtection: (enabled) =>
@@ -92,4 +126,5 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     return () => ipcRenderer.removeListener("lykn:live-watch-update", fn);
   },
   openExtensionInstall: () => ipcRenderer.invoke("lykn:open-extension-install"),
+  getNightBriefs: () => ipcRenderer.invoke("lykn:get-night-briefs"),
 });

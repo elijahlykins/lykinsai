@@ -1,8 +1,14 @@
 // Inspired by react-hot-toast library
 import { useState, useEffect } from "react";
 
-const TOAST_LIMIT = 20;
-const TOAST_REMOVE_DELAY = 1000000;
+const TOAST_LIMIT = 4;
+// How long a dismissed toast lingers before it's dropped from memory. Toasts
+// are hidden from the UI the moment `open` flips to false (Toaster filters on
+// it), so this only governs cleanup of the backing array.
+const TOAST_REMOVE_DELAY = 500;
+// Default time a toast stays visible before auto-dismissing. Pass
+// `duration: Infinity` (or 0) to a specific toast to make it sticky.
+const DEFAULT_TOAST_DURATION = 5000;
 
 const actionTypes = {
   ADD_TOAST: "ADD_TOAST",
@@ -110,7 +116,7 @@ function dispatch(action) {
   });
 }
 
-function toast({ ...props }) {
+function toast({ duration, ...props }) {
   const id = genId();
 
   const update = (props) =>
@@ -133,6 +139,13 @@ function toast({ ...props }) {
       },
     },
   });
+
+  // Auto-dismiss after the duration unless explicitly made sticky. Without
+  // this every toast stayed on screen forever and stacked up over the UI.
+  const ms = duration === undefined ? DEFAULT_TOAST_DURATION : duration;
+  if (ms !== Infinity && ms > 0) {
+    setTimeout(dismiss, ms);
+  }
 
   return {
     id,

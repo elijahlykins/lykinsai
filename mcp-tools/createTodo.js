@@ -20,6 +20,7 @@
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
 import { resolveInstant } from './_time.js';
+import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const TITLE_MAX = 280;
 const NOTES_MAX = 4000;
@@ -93,7 +94,7 @@ export const createTodoTool = {
       },
       project_id: {
         type: 'string',
-        description: 'Optional id of the project this task relates to (from lykn_listProjects / lykn_getProjectState).',
+        description: 'Optional id of the project this task belongs to (from lykn_listProjects / lykn_getProjectState). If omitted, the task is filed under the user\'s currently active/focused project when there is one; pass an explicit id to override that.',
       },
     },
     required: ['title'],
@@ -137,9 +138,18 @@ export const createTodoTool = {
       ? args.due_at_text.trim().slice(0, TEXT_MAX)
       : '';
     const priority = PRIORITIES.includes(args?.priority) ? args.priority : 'normal';
-    const projectId = typeof args?.project_id === 'string' && args.project_id.trim()
+
+    // Resolve which project this task is filed under. An explicit, writable
+    // project_id wins; otherwise fall back to the chat's scoped project
+    // (custom-model bound / board scope) and finally the user's ACTIVE
+    // project — so a task created from the overlay / voice / chat shows up on
+    // the focused project's workspace instead of landing unfiled. Mirrors
+    // lykn_createStewardItem so all "add to my project" writes resolve alike.
+    const explicitProjectId = typeof args?.project_id === 'string' && args.project_id.trim()
       ? args.project_id.trim()
       : null;
+    const { project: targetProject } = await resolveWriteProjectTarget(ctx, explicitProjectId);
+    const projectId = targetProject?.id || null;
 
     const source = `lykn-chat-agent:${ctx.attribSurface || 'lykn-chat'}`.slice(0, 64);
 
@@ -169,10 +179,12 @@ export const createTodoTool = {
       : dueAt
         ? ` (due ${data.due_at})`
         : '';
+    const projectSpoken = targetProject?.name ? ` on "${targetProject.name}"` : '';
     return jsonContent({
       ok: true,
-      message: `Added to your to-do list: "${title}"${whenSpoken}.`,
+      message: `Added to your to-do list${projectSpoken}: "${title}"${whenSpoken}.`,
       todo: data,
+      project: targetProject ? { id: targetProject.id, name: targetProject.name } : null,
     });
   },
 };

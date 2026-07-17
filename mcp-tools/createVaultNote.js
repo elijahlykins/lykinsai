@@ -94,6 +94,12 @@ export const createVaultNoteTool = {
         type: 'string',
         description: 'Optional folder / collection name (<=80 chars). Defaults to no folder.',
       },
+      source: {
+        type: 'string',
+        description:
+          'Optional source stamp for trusted desktop writers (meeting_notes, browser_task). ' +
+          'Ignored for normal chat agents — those always stamp lykn-chat-agent:<surface>.',
+      },
     },
     required: ['content'],
     additionalProperties: false,
@@ -136,7 +142,21 @@ export const createVaultNoteTool = {
       tags.push(t);
     }
 
-    const source = `lykn-chat-agent:${ctx.attribSurface || 'lykn-chat'}`.slice(0, 64);
+    // Default source stamps the writing surface. Overlay / desktop can
+    // pass an allowlisted override so meeting notes + browser tasks land
+    // as formatted docs in the vault (not "Quick Note" cards).
+    const OVERLAY_SOURCES = new Set([
+      'meeting_notes',
+      'browser_task',
+      'lykn-overlay',
+      'lykn-overlay:meeting',
+      'lykn-overlay:task',
+    ]);
+    const requestedSource =
+      typeof args?.source === 'string' ? args.source.trim().slice(0, 64) : '';
+    const source = OVERLAY_SOURCES.has(requestedSource)
+      ? requestedSource
+      : `lykn-chat-agent:${ctx.attribSurface || 'lykn-chat'}`.slice(0, 64);
 
     const row = {
       user_id: ctx.userId,

@@ -337,11 +337,21 @@ export const LYKN_VOICE_CLIENT_TOOLS = [
   ),
   clientTool(
     'save_to_vault',
-    "Save a note into the user's LYKN vault. Only call when the user explicitly asks to save/remember something.",
+    "Save a TEXT note into the user's LYKN vault. Only call when the user explicitly asks to save/remember something. If the thing to save is fundamentally a LINK/URL, call save_link_to_vault instead so it lands as a rich embedded card.",
     {
       title: { type: 'string', description: 'Short, descriptive title.' },
       content: { type: 'string', description: 'The note body.' },
     },
     ['title', 'content'],
+  ),
+  clientTool(
+    'save_link_to_vault',
+    "Save a LINK/URL into the user's LYKN vault as a rich embedded card (favicon, title, preview — the same card a manual drop produces). Use INSTEAD of save_to_vault whenever the thing being saved is fundamentally a URL: a link the user shared this session, a page from web_search/web_fetch, an article, a YouTube video, or a social post. Same consent rule: only after the user asks to save/keep it.",
+    {
+      url: { type: 'string', description: 'Full http(s) URL to save, including the scheme.' },
+      title: { type: 'string', description: 'Short human-readable title for the link.' },
+      summary: { type: 'string', description: 'Optional 1-2 sentence description of the page.' },
+    },
+    ['url'],
   ),
 ];

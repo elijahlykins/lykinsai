@@ -39,6 +39,14 @@ export type OverlayUIProps = {
   threadAnswer?: React.ReactNode;
   showThinking?: boolean;
   thinkingLabel?: string;
+  /** Hide the send button (e.g. when a flying replica takes its place). */
+  hideSend?: boolean;
+  /** Show the "Snip from screen" crop button between the dots and the mic. */
+  showSnip?: boolean;
+  /** Skip the backdrop-filter when a pre-blurred frost layer sits underneath. */
+  noBackdropBlur?: boolean;
+  /** Optional composer-mode chip (e.g. "Build mode") next to the project picker. */
+  modeChip?: string;
 };
 
 /** Exact overlay.html #wrap replica at 520px — no extra shadows or scaling. */
@@ -50,6 +58,10 @@ export const OverlayUI: React.FC<OverlayUIProps> = ({
   threadAnswer,
   showThinking = false,
   thinkingLabel = "Reading your screen…",
+  hideSend = false,
+  showSnip = false,
+  noBackdropBlur = false,
+  modeChip,
 }) => {
   const showThread = Boolean(threadQuestion);
 
@@ -66,8 +78,12 @@ export const OverlayUI: React.FC<OverlayUIProps> = ({
         overflow: "hidden",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif",
         color: TEXT,
-        backdropFilter: "blur(40px) saturate(180%)",
-        WebkitBackdropFilter: "blur(40px) saturate(180%)",
+        ...(noBackdropBlur
+          ? null
+          : {
+              backdropFilter: "blur(40px) saturate(180%)",
+              WebkitBackdropFilter: "blur(40px) saturate(180%)",
+            }),
       }}
     >
       <div
@@ -139,7 +155,7 @@ export const OverlayUI: React.FC<OverlayUIProps> = ({
             style={{
               flex: 1,
               fontSize: 12,
-              lineHeight: 16,
+              lineHeight: "16px",
               padding: "6px 2px 2px",
               height: 48,
               minHeight: 48,
@@ -174,6 +190,34 @@ export const OverlayUI: React.FC<OverlayUIProps> = ({
           >
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>None</span>
           </button>
+          {modeChip ? (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                height: 26,
+                padding: "0 9px",
+                borderRadius: 999,
+                border: "1px solid rgba(96,165,250,0.42)",
+                background: "rgba(59,130,246,0.16)",
+                color: "#93c5fd",
+                fontSize: 11,
+                fontWeight: 600,
+                flex: "none",
+              }}
+            >
+              <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.25} strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="16 18 22 12 16 6" />
+                <polyline points="8 6 2 12 8 18" />
+              </svg>
+              {modeChip}
+              <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </span>
+          ) : null}
           <span style={{ flex: 1, minWidth: 4 }} />
           <button type="button" className="bar-btn" style={barBtnStyle}>
             <svg viewBox="0 0 24 24" fill="currentColor" width={14} height={14} aria-hidden="true">
@@ -182,6 +226,14 @@ export const OverlayUI: React.FC<OverlayUIProps> = ({
               <circle cx={19} cy={12} r={1.6} />
             </svg>
           </button>
+          {showSnip && (
+            <button type="button" className="bar-btn snip" style={barBtnStyle}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" width={14} height={14} aria-hidden="true">
+                <path d="M6 2v14a2 2 0 0 0 2 2h14" />
+                <path d="M18 22V8a2 2 0 0 0-2-2H2" />
+              </svg>
+            </button>
+          )}
           <button type="button" className="bar-btn" style={barBtnStyle}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" width={14} height={14} aria-hidden="true">
               <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
@@ -189,7 +241,11 @@ export const OverlayUI: React.FC<OverlayUIProps> = ({
               <line x1={12} x2={12} y1={19} y2={22} />
             </svg>
           </button>
-          <button type="button" className="bar-btn send" style={sendBtnStyle}>
+          <button
+            type="button"
+            className="bar-btn send"
+            style={{ ...sendBtnStyle, ...(hideSend ? { opacity: 0 } : null) }}
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.25} strokeLinecap="round" strokeLinejoin="round" width={14} height={14} aria-hidden="true">
               <path d="m5 12 7-7 7 7" />
               <path d="M12 19V5" />

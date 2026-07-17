@@ -52,6 +52,11 @@ async function supabaseAdmin(method, table, { query = '', body } = {}) {
 
 const MODEL_PRICING = {
   // OpenAI
+  // GPT-5.6 family (GA July 9, 2026): Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per M.
+  'gpt-5.6-sol':       { input: 0.005,  output: 0.030 },
+  'gpt-5.6-terra':     { input: 0.0025, output: 0.015 },
+  'gpt-5.6-luna':      { input: 0.001,  output: 0.006 },
+  'gpt-5.5':           { input: 0.005,  output: 0.015 },
   'gpt-5.4':           { input: 0.005,  output: 0.015 },
   'gpt-5.4-pro':       { input: 0.010,  output: 0.030 },
   'gpt-5.2':           { input: 0.004,  output: 0.012 },
@@ -69,6 +74,7 @@ const MODEL_PRICING = {
   'o4-mini':           { input: 0.0011, output: 0.0044 },
 
   // Anthropic
+  'claude-sonnet-4-6':            { input: 0.003, output: 0.015 },
   'claude-opus-4-20250514':       { input: 0.015, output: 0.075 },
   'claude-opus-4-8':              { input: 0.005, output: 0.025 },
   'claude-opus-4-7':              { input: 0.005, output: 0.025 },
@@ -85,6 +91,8 @@ const MODEL_PRICING = {
   'gemini-flash-latest':     { input: 0.0001, output: 0.0004 },
 
   // xAI / Grok
+  'grok-4.5':   { input: 0.002, output: 0.006 },
+  'grok-4.3':   { input: 0.00125, output: 0.0025 },
   'grok-4.1':   { input: 0.003, output: 0.015 },
   'grok-4':     { input: 0.003, output: 0.015 },
   'grok-3':     { input: 0.003, output: 0.015 },
@@ -107,6 +115,7 @@ const MODEL_PRICING = {
 const FIXED_COSTS = {
   image_gen_grok:    0.04,
   image_gen_dalle:   0.04,
+  image_gen_openai:  0.05, // GPT Image 2, default quality 1024px
   image_gen_google:  0.039,
   video_gen_grok:    0.10,
   image_edit_gemini: 0.02,

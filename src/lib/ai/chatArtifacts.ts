@@ -1,7 +1,7 @@
 import type { ToolCallEvent } from "@/lib/ai/chatSendOrchestrator";
 
 /** Visual / downloadable output from a capability tool — rendered inline in chat. */
-export type ChatArtifactKind = "html" | "image" | "download";
+export type ChatArtifactKind = "html" | "image" | "video" | "download";
 
 export type ChatArtifact = {
   id: string;
@@ -25,6 +25,8 @@ export type ChatArtifact = {
   content?: string;
   /** Accent color theme (name or hex) so recolors persist across edits. */
   theme?: string;
+  /** React component source (lykn_build_react_artifact) — the edit round-trip payload. */
+  code?: string;
 };
 
 export type ArtifactDownload = { format: string; url: string; filename?: string };
@@ -37,11 +39,19 @@ export type ArtifactEditContext = {
   sections?: any[];
   content?: string;
   theme?: string;
+  code?: string;
 };
 
-/** Whether an artifact can be refined via chat (only template builds for now). */
+/** Whether an artifact can be refined via chat (template + React builds). */
 export function isEditableArtifact(a: ChatArtifact | null | undefined): boolean {
-  return !!a && a.toolName === "lykn_build_template" && (Array.isArray(a.sections) || typeof a.content === "string");
+  if (!a) return false;
+  if (a.toolName === "lykn_build_template") {
+    return Array.isArray(a.sections) || typeof a.content === "string";
+  }
+  if (a.toolName === "lykn_build_react_artifact") {
+    return typeof a.code === "string" && a.code.trim().length > 0;
+  }
+  return false;
 }
 
 /** Strip an artifact down to the fields the server needs to rebuild it. */
@@ -53,11 +63,14 @@ export function toArtifactEditContext(a: ChatArtifact): ArtifactEditContext {
     sections: Array.isArray(a.sections) ? a.sections : undefined,
     content: typeof a.content === "string" ? a.content : undefined,
     theme: typeof a.theme === "string" ? a.theme : undefined,
+    code: typeof a.code === "string" ? a.code : undefined,
   };
 }
 
 const ARTIFACT_TOOLS = new Set([
   "lykn_build_template",
+  "lykn_build_react_artifact",
+  "lykn_render_video",
   "lykn_build_spreadsheet",
   "lykn_manage_file",
   "lykn_generate_chart",
@@ -223,6 +236,49 @@ function extractFromBuildTemplate(toolCallId: string, result: any): ChatArtifact
   return [];
 }
 
+function extractFromReactArtifact(
+  toolCallId: string,
+  result: any,
+  args: Record<string, unknown> | undefined,
+): ChatArtifact[] {
+  const title = String(result.title || "Interactive artifact").trim() || "Interactive artifact";
+  // The component source powers the edit round-trip — the server shows it to
+  // the model when the panel is open so "make the header blue" patches in
+  // place. On full builds it lives in the tool-call ARGS (the model wrote it
+  // there); on `edits` patch builds the args carry only the patches, so the
+  // server echoes the MERGED source back as result.artifact_code instead.
+  const code =
+    typeof args?.code === "string" && args.code.trim()
+      ? args.code
+      : typeof result.artifact_code === "string" && result.artifact_code.trim()
+        ? result.artifact_code
+        : undefined;
+  const fileUrl = typeof result.file_url === "string" ? result.file_url.trim() : "";
+  const srcDoc =
+    typeof result.preview_html === "string" && isHtmlString(result.preview_html)
+      ? result.preview_html
+      : undefined;
+  if (!fileUrl && !srcDoc) return [];
+
+  const downloads = mapDownloadLinks(result.download_links);
+  return [
+    {
+      id: `${toolCallId}:react`,
+      kind: "html",
+      title,
+      previewUrl: fileUrl || undefined,
+      srcDoc,
+      downloadUrl: fileUrl || undefined,
+      filename: typeof result.filename === "string" ? result.filename : undefined,
+      format: "html",
+      toolName: "lykn_build_react_artifact",
+      toolCallId,
+      downloads: downloads.length ? downloads : undefined,
+      code,
+    },
+  ];
+}
+
 function extractFromManageFile(toolCallId: string, result: any): ChatArtifact[] {
   const out: ChatArtifact[] = [];
   const title = String(result.filename || "File").trim() || "File";
@@ -284,6 +340,28 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
   switch (call.name) {
     case "lykn_build_template":
       return extractFromBuildTemplate(call.id, call.result);
+    case "lykn_build_react_artifact":
+      return extractFromReactArtifact(call.id, call.result, call.args);
+    case "lykn_render_video": {
+      const url = typeof call.result.file_url === "string" ? call.result.file_url.trim() : "";
+      if (!url) return [];
+      const title = String(call.result.title || "Video").trim() || "Video";
+      const downloads = mapDownloadLinks(call.result.download_links);
+      return [
+        {
+          id: `${call.id}:video`,
+          kind: "video",
+          title,
+          previewUrl: url,
+          downloadUrl: url,
+          filename: typeof call.result.filename === "string" ? call.result.filename : undefined,
+          format: "mp4",
+          toolName: call.name,
+          toolCallId: call.id,
+          downloads: downloads.length ? downloads : [{ format: "mp4", url }],
+        },
+      ];
+    }
     case "lykn_build_spreadsheet": {
       const url =
         typeof call.result.file_url === "string"
@@ -404,7 +482,8 @@ export function extractChatArtifacts(toolCalls: ToolCallEvent[] | undefined): Ch
 
 /** Prefer HTML/image previews over download-only cards when both exist for one title. */
 export function sortArtifactsForDisplay(artifacts: ChatArtifact[]): ChatArtifact[] {
-  const rank = (a: ChatArtifact) => (a.kind === "html" ? 0 : a.kind === "image" ? 1 : 2);
+  const rank = (a: ChatArtifact) =>
+    a.kind === "html" ? 0 : a.kind === "video" ? 1 : a.kind === "image" ? 2 : 3;
   return [...artifacts].sort((a, b) => rank(a) - rank(b));
 }
 

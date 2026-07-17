@@ -25,7 +25,7 @@ export const DEMO_VAULT_ITEMS = [
     url: unsplash("photo-1507525428034-b723cf961d3e"),
     tags: ["nature", "morning", "calm"],
     fileNotes: [
-      "Took this on a run before sunrise — clearest I'd seen the horizon in months.",
+      "Took this on a run before sunrise. Clearest I'd seen the horizon in months.",
       "Good reminder to get out earlier.",
     ],
   },
@@ -46,7 +46,7 @@ export const DEMO_VAULT_ITEMS = [
     url: unsplash("photo-1487958449943-2429e8be8625"),
     tags: ["design", "space", "travel"],
     fileNotes: [
-      "Light falling through the atrium — revisit for the brand moodboard.",
+      "Light falling through the atrium. Revisit for the brand moodboard.",
     ],
   },
   {
@@ -107,7 +107,7 @@ export const DEMO_VAULT_ITEMS = [
     url: unsplash("photo-1500382017468-9049fed747ef"),
     tags: ["nature", "travel"],
     fileNotes: [
-      "Drove past this on the way back — pulled over. Glad I did.",
+      "Drove past this on the way back and pulled over. Glad I did.",
     ],
   },
   {
@@ -144,7 +144,7 @@ export const DEMO_VAULT_ITEMS = [
     url: unsplash("photo-1505691938895-1758d7feb511"),
     tags: ["space", "work", "calm"],
     fileNotes: [
-      "How calm studios feel — lots of empty space, a few good objects.",
+      "How calm studios feel: lots of empty space, a few good objects.",
     ],
   },
   {
@@ -165,7 +165,7 @@ export const DEMO_VAULT_ITEMS = [
     kind: "note",
     title: "Quick Note",
     content:
-      "Books to re-read this year — keep the list short so it stays honest.",
+      "Books to re-read this year. Keep the list short so it stays honest.",
     tags: ["reading", "reflection"],
   },
   {
@@ -179,7 +179,7 @@ export const DEMO_VAULT_ITEMS = [
     kind: "note",
     title: "Quick Note",
     content:
-      "Travel list — places that keep coming up in conversation:\n• Lisbon in autumn\n• rural Japan\n• somewhere without wifi for a week",
+      "Travel list, places that keep coming up in conversation:\n• Lisbon in autumn\n• rural Japan\n• somewhere without wifi for a week",
     tags: ["travel", "reading"],
   },
   {

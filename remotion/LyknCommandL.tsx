@@ -4,6 +4,7 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 import {
   OverlayUI,
   OVERLAY_BOTTOM_MARGIN,
@@ -468,7 +469,7 @@ function HeadlineTypewriter({ frame }: { frame: number }) {
           fontWeight: 600,
           letterSpacing: "-0.02em",
           lineHeight: 1.28,
-          color: "#111827",
+          color: "#f4f6fb",
           fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif",
         }}
       >
@@ -590,6 +591,7 @@ export const LyknCommandL: React.FC = () => {
 
   return (
     <AbsoluteFill style={{ background: "#fafafa", fontFamily: "Inter, system-ui, sans-serif" }}>
+      <SceneBackground />
       {!showApp || frame < TRANS_START + 20 ? (
         <>
           <Keyboard3D frame={frame} lit={keysLit} />

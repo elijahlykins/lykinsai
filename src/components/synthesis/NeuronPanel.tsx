@@ -748,7 +748,7 @@ export default function NeuronPanel({
     const ok = await deleteNeuron(node);
     if (!ok) {
       setDeleting(false);
-      setDeleteError("Couldn't delete — try again.");
+      setDeleteError("Couldn't delete. Try again.");
       return;
     }
     // Notify the parent BEFORE closing so it can invalidate the right
@@ -761,10 +761,12 @@ export default function NeuronPanel({
   };
 
   return (
+    // Key on open/close only (not node.id): jumping between connected neurons
+    // swaps the content in place instead of animating two stacked panels.
     <AnimatePresence>
       {open && node ? (
         <motion.aside
-          key={`neuron-panel-${node.id}`}
+          key="neuron-panel"
           initial={{ x: 380, opacity: 0 }}
           animate={{ x: 0, opacity: 1 }}
           exit={{ x: 380, opacity: 0 }}
@@ -824,7 +826,11 @@ export default function NeuronPanel({
                     <button
                       onClick={() => {
                         setEditing(false);
-                        setDraft(node.label);
+                        // Reset to the FULL untruncated name — `node.label`
+                        // is clipped at graph-build time (e.g. beliefs at
+                        // 48 chars), so cancelling would seed the next edit
+                        // with the truncated text.
+                        setDraft(fullName(node));
                       }}
                       className="px-2.5 py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-white/55 text-[0.7rem] transition-colors"
                     >
@@ -873,7 +879,7 @@ export default function NeuronPanel({
                   <p className="text-[0.75rem] text-white/75">
                     {allNodes.filter((n) => n.categoryId === node.id).length} items
                     {allNodes.filter((n) => n.categoryId === node.id).length === 0
-                      ? " — starts empty and fills as you use LYKN."
+                      ? ". Starts empty and fills as you use LYKN."
                       : ""}
                   </p>
                 </div>
@@ -959,7 +965,7 @@ export default function NeuronPanel({
                   </div>
                 ) : (
                   <p className="text-[0.7rem] text-white/35 italic">
-                    No body — just a title.
+                    No body, just a title.
                   </p>
                 )}
               </section>
@@ -973,7 +979,7 @@ export default function NeuronPanel({
               </p>
               {connected.length === 0 ? (
                 <p className="text-[0.7rem] text-white/40">
-                  No connections yet — this neuron stands alone.
+                  No connections yet. This neuron stands alone.
                 </p>
               ) : (
                 <div className="space-y-1">

@@ -5,6 +5,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 import {
   BRAND_BLUE,
   ICON_BODY_PATH,
@@ -99,6 +100,7 @@ export const LyknIconPulse: React.FC<LyknIconPulseProps> = ({
         alignItems: "center",
       }}
     >
+      <SceneBackground />
       {/* Rotating colored glow halo */}
       <div
         style={{

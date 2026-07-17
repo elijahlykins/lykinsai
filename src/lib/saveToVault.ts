@@ -94,13 +94,13 @@ function classifyError(
 ): { reason: "cap" | "rate" | "error"; message: string } {
   if (isVaultCapError(err)) {
     notifyVaultCapIfApplicable(err);
-    return { reason: "cap", message: "Vault is full — upgrade to keep saving." };
+    return { reason: "cap", message: "Vault is full. Upgrade to keep saving." };
   }
   if (isUploadRateLimitError(err)) {
     notifyUploadRateLimitIfApplicable(err);
     return {
       reason: "rate",
-      message: "You're saving too fast — try again in a moment.",
+      message: "You're saving too fast. Try again in a moment.",
     };
   }
   const msg =
@@ -235,7 +235,7 @@ export async function saveFileToVault(
       return {
         ok: false,
         reason: "error",
-        message: "Couldn't save this file — please try again.",
+        message: "Couldn't save this file. Please try again.",
       };
     }
 
@@ -462,7 +462,7 @@ export async function saveLinkToVault(
       return {
         ok: false,
         reason: "error",
-        message: "Couldn't save this link — please try again.",
+        message: "Couldn't save this link. Please try again.",
       };
     }
 

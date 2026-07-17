@@ -6,6 +6,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 import { ICON_PATH, ICON_VIEWBOX, WHITE } from "./brand";
 
 const ICON_SIZE = 440;
@@ -65,6 +66,7 @@ export const LyknIconOutline: React.FC<LyknIconOutlineProps> = ({
         alignItems: "center",
       }}
     >
+      <SceneBackground />
       {/* Ambient glow */}
       <AbsoluteFill
         style={{

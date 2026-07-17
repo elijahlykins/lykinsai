@@ -152,7 +152,7 @@ class ErrorBoundary extends React.Component {
       <div style={{ padding: '40px', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif', textAlign: 'center', maxWidth: '640px', margin: '80px auto' }}>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 600, color: '#1a1a1a', marginBottom: '12px' }}>Something went wrong</h1>
         <p style={{ fontSize: '0.95rem', color: '#666', marginBottom: '24px' }}>
-          We hit an unexpected issue. You can try recovering below — your data is safe in the cloud.
+          We hit an unexpected issue. You can try recovering below. Your data is safe in the cloud.
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
           <button

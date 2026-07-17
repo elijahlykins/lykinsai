@@ -676,7 +676,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
             <DialogHeader>
               <DialogTitle className="sr-only">To-dos</DialogTitle>
               <DialogDescription className="text-[0.625rem] text-black/40 dark:text-white/40">
-                Tasks you and LYKN are tracking. Ask LYKN in chat or voice to add, complete, or clear items — they sync here live.
+                Tasks you and LYKN are tracking. Ask LYKN in chat or voice to add, complete, or clear items. They sync here live.
               </DialogDescription>
             </DialogHeader>
             <LyknTodosPanel active={open && panel === "todos"} />
@@ -694,7 +694,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                     onClick={handleRefreshAll}
                     disabled={refreshingAll}
                     className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center text-black/60 dark:text-white/60 transition-colors disabled:opacity-50"
-                    title="Refresh — re-pull connected calendars"
+                    title="Refresh: re-pull connected calendars"
                   >
                     <RefreshCw className={`w-4 h-4 ${refreshingAll ? "animate-spin" : ""}`} />
                   </button>
@@ -941,7 +941,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                 </div>
                 {!googleConn && (
                   <p className="mt-2 text-[0.625rem] text-black/40 dark:text-white/40">
-                    Pre-verification, Google may show an &quot;unverified app&quot; screen — only Google Cloud test users connect cleanly for now.
+                    Pre-verification, Google may show an &quot;unverified app&quot; screen. Only Google Cloud test users connect cleanly for now.
                   </p>
                 )}
               </div>
@@ -1010,7 +1010,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
 
               <div className="flex items-start gap-1.5 text-[0.625rem] text-black/40 dark:text-white/40">
                 <CheckCircle2 className="w-3 h-3 mt-px flex-shrink-0" />
-                <span>One-way import. Synced events are read-only here — edit or delete them in Google/Apple and they update on the next sync.</span>
+                <span>One-way import. Synced events are read-only here. Edit or delete them in Google/Apple and they update on the next sync.</span>
                 {connLoading && <Loader2 className="w-3 h-3 animate-spin ml-auto" />}
               </div>
             </div>
@@ -1036,7 +1036,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                 <CalendarClock className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
                 <span>
                   Synced from {PROVIDER_LABEL[form.provider] || "an external calendar"}.
-                  It's read-only here — edit it in {PROVIDER_LABEL[form.provider] || "that app"} and it updates on the next sync.
+                  It's read-only here. Edit it in {PROVIDER_LABEL[form.provider] || "that app"} and it updates on the next sync.
                 </span>
               </div>
             )}

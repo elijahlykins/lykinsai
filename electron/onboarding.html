@@ -17,148 +17,358 @@
         --err: #ff6b6b;
       }
       * { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%; }
+      html, body { margin: 0; height: 100%; overflow: hidden; }
       body {
         background: radial-gradient(1200px 600px at 50% -10%, #16161f 0%, var(--bg) 60%);
         color: var(--text);
         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         -webkit-font-smoothing: antialiased;
-        padding: 28px 30px 22px;
         user-select: none;
+        display: flex;
+        flex-direction: column;
       }
-      .head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
-      .logo {
-        width: 38px; height: 38px; border-radius: 10px; object-fit: cover;
-        box-shadow: 0 0 0 1px var(--line), 0 8px 24px rgba(0, 0, 0, 0.4);
+      /* hiddenInset titlebar: draggable strip behind the traffic lights */
+      .titlebar { height: 38px; flex: none; -webkit-app-region: drag; }
+
+      .stage {
+        flex: 1;
+        position: relative;
+        padding: 0 34px;
+        overflow: hidden;
       }
-      h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
-      .sub { color: var(--muted); margin: 2px 0 0; font-size: 12.5px; }
+      .step {
+        position: absolute;
+        inset: 0;
+        padding: 6px 34px 0;
+        display: flex;
+        flex-direction: column;
+        opacity: 0;
+        transform: translateX(24px);
+        pointer-events: none;
+        transition: opacity 0.28s ease, transform 0.28s ease;
+      }
+      .step.active { opacity: 1; transform: translateX(0); pointer-events: auto; }
+      .step.left { transform: translateX(-24px); }
+
+      .glyph {
+        width: 52px; height: 52px; border-radius: 14px;
+        display: flex; align-items: center; justify-content: center;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        margin-bottom: 16px;
+        font-size: 24px;
+      }
+      .glyph img { width: 52px; height: 52px; border-radius: 14px; object-fit: cover; }
+      .glyph svg { width: 24px; height: 24px; stroke: var(--accent); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+      h1 { font-size: 21px; margin: 0 0 6px; letter-spacing: -0.02em; }
+      .lead { color: var(--muted); font-size: 13px; margin: 0 0 18px; max-width: 440px; }
+      .lead .tag { color: var(--text); font-weight: 600; }
+
+      .kbd {
+        font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: rgba(255, 255, 255, 0.08); border: 1px solid var(--line);
+        border-radius: 6px; padding: 1px 6px; color: var(--text);
+      }
+
       .card {
         background: var(--panel);
         border: 1px solid var(--line);
         border-radius: 14px;
-        padding: 16px 16px 15px;
-        margin-bottom: 12px;
+        padding: 14px 16px;
+        margin-bottom: 10px;
       }
-      .card h2 { font-size: 14.5px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
-      .card p { color: var(--muted); margin: 0 0 12px; font-size: 12.5px; }
-      .card ol { color: var(--muted); margin: 0 0 12px; padding-left: 18px; font-size: 12.5px; }
+      .card h3 { font-size: 13.5px; margin: 0 0 3px; }
+      .card p { color: var(--muted); margin: 0 0 10px; font-size: 12.5px; }
+      .card p:last-child { margin-bottom: 0; }
+      .card ol { color: var(--muted); margin: 0 0 10px; padding-left: 18px; font-size: 12px; }
       .card ol li { margin: 2px 0; }
       .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
       .spacer { flex: 1; }
+
       .badge {
         display: inline-flex; align-items: center; gap: 6px;
         font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
-        border: 1px solid var(--line);
+        border: 1px solid var(--line); color: var(--muted);
       }
-      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
       .badge.ok { color: var(--ok); border-color: rgba(62, 207, 142, 0.3); }
       .badge.ok .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
       .badge.warn { color: var(--warn); border-color: rgba(240, 180, 41, 0.3); }
       .badge.warn .dot { background: var(--warn); }
       .badge.err { color: var(--err); border-color: rgba(255, 107, 107, 0.3); }
       .badge.err .dot { background: var(--err); }
+
       button {
         font: inherit; font-weight: 600; font-size: 12.5px; color: var(--text);
         background: rgba(255, 255, 255, 0.06);
         border: 1px solid var(--line); border-radius: 9px;
-        padding: 7px 13px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+        padding: 7px 14px; cursor: pointer; transition: background 0.15s, border-color 0.15s, filter 0.15s;
+        -webkit-app-region: no-drag;
       }
       button:hover { background: rgba(255, 255, 255, 0.1); }
       button.primary {
         background: linear-gradient(180deg, rgba(124, 140, 255, 0.95), rgba(108, 122, 235, 0.95));
         border-color: transparent; color: #fff;
+        padding: 8px 20px;
       }
       button.primary:hover { filter: brightness(1.07); }
-      button.ghost { background: transparent; }
-      .footer { display: flex; align-items: center; margin-top: 6px; }
-      .kbd {
-        font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace;
-        background: rgba(255, 255, 255, 0.08); border: 1px solid var(--line);
-        border-radius: 6px; padding: 1px 6px; color: var(--text);
+      button.primary:disabled { opacity: 0.45; cursor: default; filter: none; }
+      button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+      button.ghost:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+
+      /* Welcome step */
+      .welcome { align-items: center; text-align: center; justify-content: center; padding-bottom: 30px; }
+      .welcome .logo {
+        width: 76px; height: 76px; border-radius: 20px; object-fit: cover;
+        box-shadow: 0 0 0 1px var(--line), 0 18px 48px rgba(0, 0, 0, 0.5);
+        margin-bottom: 20px;
       }
-      .tag { font-weight: 600; color: var(--text); }
+      .welcome h1 { font-size: 26px; }
+      .welcome .lead { margin-bottom: 22px; }
+      .preview { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 380px; }
+      .preview .item {
+        display: flex; align-items: center; gap: 11px;
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 11px; padding: 9px 13px; font-size: 12.5px; color: var(--muted);
+        text-align: left;
+      }
+      .preview .item b { color: var(--text); font-weight: 600; }
+      .preview .n {
+        width: 20px; height: 20px; border-radius: 50%; flex: none;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 11px; font-weight: 700; color: var(--accent);
+        background: rgba(124, 140, 255, 0.12); border: 1px solid rgba(124, 140, 255, 0.3);
+      }
+
+      /* Final step checklist */
+      .checklist { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+      .check {
+        display: flex; align-items: center; gap: 10px;
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 10px; padding: 8px 12px; font-size: 12.5px;
+      }
+      .check .state { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--muted); }
+      .check.ok .state { color: var(--ok); }
+
+      .trybox {
+        margin-top: 2px;
+        border: 1px dashed rgba(124, 140, 255, 0.45);
+        background: rgba(124, 140, 255, 0.07);
+        border-radius: 13px; padding: 14px 16px;
+        display: flex; align-items: center; gap: 12px;
+        transition: border-color 0.3s, background 0.3s;
+      }
+      .trybox.done { border-color: rgba(62, 207, 142, 0.5); background: rgba(62, 207, 142, 0.08); }
+      .trybox .keys { display: flex; gap: 5px; }
+      .trybox .key {
+        font: 700 15px ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: rgba(255, 255, 255, 0.09); border: 1px solid var(--line);
+        border-bottom-width: 2px; border-radius: 8px; padding: 6px 11px;
+      }
+      .trybox .msg { font-size: 12.5px; color: var(--muted); }
+      .trybox .msg b { color: var(--text); }
+      .trybox.done .msg b { color: var(--ok); }
+
+      /* Footer */
+      .footer {
+        flex: none;
+        display: flex; align-items: center; gap: 10px;
+        padding: 14px 34px 20px;
+      }
+      .dots { display: flex; gap: 6px; margin: 0 auto; position: absolute; left: 50%; transform: translateX(-50%); }
+      .dots i {
+        width: 6px; height: 6px; border-radius: 50%;
+        background: rgba(255, 255, 255, 0.16); transition: background 0.2s, width 0.2s;
+      }
+      .dots i.on { background: var(--accent); width: 16px; border-radius: 3px; }
+      .footer { position: relative; }
+
+      .hint { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
     </style>
   </head>
   <body>
-    <div class="head">
-      <img class="logo" src="./resources/icon.png" alt="LYKN" onerror="this.style.display='none'" />
-      <div>
+    <div class="titlebar"></div>
+
+    <div class="stage" id="stage">
+      <!-- 1 · Welcome -->
+      <section class="step welcome" data-step="0">
+        <img class="logo" src="./resources/icon-rounded.png" alt="LYKN"
+             onerror="this.src='./resources/icon.png'" />
         <h1>Welcome to LYKN</h1>
-        <p class="sub">Press <span class="kbd">⌘ L</span> anytime to summon LYKN over whatever you're looking at.</p>
-      </div>
-    </div>
+        <p class="lead">Your personal AI on every screen. Press <span class="kbd">⌘ L</span> anywhere and LYKN appears over whatever you're looking at, already knowing who you are.</p>
+        <div class="preview">
+          <div class="item"><span class="n">1</span><span><b>Sign in</b>: connect your beliefs, projects &amp; vault</span></div>
+          <div class="item"><span class="n">2</span><span><b>Permissions</b>: let LYKN see your screen &amp; hear you</span></div>
+          <div class="item"><span class="n">3</span><span><b>Try it</b>: summon LYKN with one shortcut</span></div>
+        </div>
+      </section>
 
-    <div class="card">
-      <h2>1 · Screen Recording</h2>
-      <p>LYKN reads what's on your screen when you ask — for feedback, notes, and answers. macOS requires you to allow this once.</p>
-      <div class="row">
-        <span id="screen-badge" class="badge"><span class="dot"></span><span id="screen-text">Checking…</span></span>
-        <span class="spacer"></span>
-        <button id="screen-open">Open System Settings</button>
-        <button id="screen-recheck" class="ghost">Recheck</button>
-      </div>
-    </div>
+      <!-- 2 · Sign in -->
+      <section class="step" data-step="1">
+        <div class="glyph">
+          <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </div>
+        <h1>Sign in to your layer</h1>
+        <p class="lead">LYKN syncs your <span class="tag">beliefs, rules, projects, and vault</span> the moment you sign in, so every answer starts personal.</p>
+        <div class="card">
+          <div class="row">
+            <span id="auth-badge" class="badge"><span class="dot"></span><span id="auth-text">Checking…</span></span>
+            <span class="spacer"></span>
+            <button id="auth-open">Open LYKN &amp; sign in</button>
+          </div>
+          <p class="hint">Sign in (or create an account) in the LYKN window, then come back. This step completes on its own.</p>
+        </div>
+      </section>
 
-    <div class="card">
-      <h2>2 · Accessibility <span class="badge" style="font-weight:500">browser control</span></h2>
-      <p>Required to click buttons on web pages (Control this page). In dev, enable <span class="tag">Electron</span> — in the installed app, enable <span class="tag">LYKN</span>.</p>
-      <div class="row">
-        <span id="ax-badge" class="badge"><span class="dot"></span><span id="ax-text">Checking…</span></span>
-        <span class="spacer"></span>
-        <button id="ax-open">Open System Settings</button>
-        <button id="ax-recheck" class="ghost">Recheck</button>
-      </div>
-    </div>
+      <!-- 3 · Screen Recording -->
+      <section class="step" data-step="2">
+        <div class="glyph">
+          <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 22h8M12 18v4"/></svg>
+        </div>
+        <h1>Let LYKN see your screen</h1>
+        <p class="lead">When you ask about what's in front of you, LYKN reads the screen for feedback, notes, and answers. macOS asks you to allow this <span class="tag">once</span>.</p>
+        <div class="card">
+          <div class="row">
+            <span id="screen-badge" class="badge"><span class="dot"></span><span id="screen-text">Checking…</span></span>
+            <span class="spacer"></span>
+            <button id="screen-open" class="primary">Allow Screen Recording</button>
+            <button id="screen-recheck" class="ghost">Recheck</button>
+          </div>
+          <p class="hint">Turn on <span class="tag">LYKN</span> in the list that opens. If macOS asks to quit &amp; reopen the app, do it. This walkthrough picks up where you left off.</p>
+        </div>
+      </section>
 
-    <div class="card">
-      <h2>3 · Read your browser tab <span class="badge" style="font-weight:500">optional</span></h2>
-      <p>To pull live article text and YouTube transcripts from your <span class="tag">active tab</span> (bypassing paywalls & bot blocks), enable "Allow JavaScript from Apple Events" in your browser:</p>
-      <ol>
-        <li><span class="tag">Chrome / Brave / Edge:</span> menu → More Tools → Developer → enable "Allow JavaScript from Apple Events"</li>
-        <li><span class="tag">Safari:</span> Settings → Advanced → "Show features for web developers", then Develop menu → "Allow JavaScript from Apple Events"</li>
-      </ol>
-      <div class="row">
-        <span id="ae-badge" class="badge"><span class="dot"></span><span id="ae-text">Not tested</span></span>
-        <span class="spacer"></span>
-        <button id="ae-open" class="ghost">Automation Settings</button>
-        <button id="ae-test">Test with my browser</button>
-      </div>
+      <!-- 4 · Microphone -->
+      <section class="step" data-step="3">
+        <div class="glyph">
+          <svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4"/></svg>
+        </div>
+        <h1>Talk to LYKN</h1>
+        <p class="lead">Voice mode and dictation let you speak instead of type. Allow the microphone so LYKN can hear you.</p>
+        <div class="card">
+          <div class="row">
+            <span id="mic-badge" class="badge"><span class="dot"></span><span id="mic-text">Checking…</span></span>
+            <span class="spacer"></span>
+            <button id="mic-request" class="primary">Enable Microphone</button>
+          </div>
+          <p class="hint">You can always add this later in System Settings → Privacy &amp; Security → Microphone.</p>
+        </div>
+      </section>
+
+      <!-- 5 · Browser access (optional) -->
+      <section class="step" data-step="4">
+        <div class="glyph">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20z"/></svg>
+        </div>
+        <h1>Browser superpowers <span class="badge" style="font-weight:500;vertical-align:3px">optional</span></h1>
+        <p class="lead">Let LYKN pull live article text and YouTube transcripts straight from your <span class="tag">active tab</span>, past paywalls and bot blocks.</p>
+        <div class="card">
+          <h3>Allow JavaScript from Apple Events</h3>
+          <ol>
+            <li><span class="tag">Chrome / Brave / Edge:</span> menu → More Tools → Developer → "Allow JavaScript from Apple Events"</li>
+            <li><span class="tag">Safari:</span> Settings → Advanced → "Show features for web developers", then Develop → "Allow JavaScript from Apple Events"</li>
+          </ol>
+          <div class="row">
+            <span id="ae-badge" class="badge"><span class="dot"></span><span id="ae-text">Not tested</span></span>
+            <span class="spacer"></span>
+            <button id="ae-open" class="ghost">Automation Settings</button>
+            <button id="ae-test">Test with my browser</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row">
+            <div>
+              <h3>Accessibility</h3>
+              <p style="margin:0">Lets LYKN click and interact with your browser when you ask it to act.</p>
+            </div>
+            <span class="spacer"></span>
+            <span id="ax-badge" class="badge"><span class="dot"></span><span id="ax-text">Checking…</span></span>
+            <button id="ax-request">Enable</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6 · Try it -->
+      <section class="step" data-step="5">
+        <div class="glyph">
+          <svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+        </div>
+        <h1>You're set up</h1>
+        <p class="lead">LYKN lives in your menu bar and starts with your Mac. It's always one shortcut away.</p>
+        <div class="checklist" id="summary"></div>
+        <div class="trybox" id="trybox">
+          <div class="keys"><span class="key">⌘</span><span class="key">L</span></div>
+          <div class="msg" id="try-msg">Press <b>⌘ L</b> right now to summon LYKN for the first time.</div>
+        </div>
+      </section>
     </div>
 
     <div class="footer">
+      <button id="back" class="ghost">Back</button>
+      <div class="dots" id="dots"></div>
       <span class="spacer"></span>
-      <button id="done" class="primary">Get started</button>
+      <button id="skip" class="ghost">Skip for now</button>
+      <button id="next" class="primary">Get started</button>
     </div>
 
     <script>
       const api = window.lyknOnboarding;
       const $ = (id) => document.getElementById(id);
+      const steps = Array.from(document.querySelectorAll(".step"));
+      const TOTAL = steps.length;
 
-      function setBadge(badgeEl, textEl, cls, label) {
-        badgeEl.className = "badge" + (cls ? " " + cls : "");
-        textEl.textContent = label;
+      const state = {
+        step: 0,
+        auth: false,
+        screen: "unknown",
+        mic: "unknown",
+        ax: "unknown",
+        ae: "untested",
+        hotkeyDone: false,
+      };
+
+      /* ── badges ─────────────────────────────────────────────────────── */
+      function setBadge(badge, text, cls, label) {
+        $(badge).className = "badge" + (cls ? " " + cls : "");
+        $(text).textContent = label;
+      }
+
+      /* ── polling per-capability ─────────────────────────────────────── */
+      async function refreshAuth() {
+        state.auth = !!(await api.authStatus().catch(() => false));
+        if (state.auth) setBadge("auth-badge", "auth-text", "ok", "Signed in");
+        else setBadge("auth-badge", "auth-text", "warn", "Not signed in yet");
+        renderNav();
       }
 
       async function refreshScreen() {
-        const status = await api.screenStatus();
-        if (status === "granted") setBadge($("screen-badge"), $("screen-text"), "ok", "Allowed");
-        else if (status === "denied" || status === "restricted")
-          setBadge($("screen-badge"), $("screen-text"), "err", "Not allowed");
-        else setBadge($("screen-badge"), $("screen-text"), "warn", "Needs permission");
+        state.screen = await api.screenStatus().catch(() => "unknown");
+        if (state.screen === "granted") setBadge("screen-badge", "screen-text", "ok", "Allowed");
+        else if (state.screen === "denied" || state.screen === "restricted")
+          setBadge("screen-badge", "screen-text", "err", "Not allowed");
+        else setBadge("screen-badge", "screen-text", "warn", "Needs permission");
+        renderNav();
       }
 
-      async function refreshAccessibility() {
-        const status = await api.accessibilityStatus();
-        if (status === "granted") setBadge($("ax-badge"), $("ax-text"), "ok", "Allowed");
-        else setBadge($("ax-badge"), $("ax-text"), "warn", "Needs permission");
+      async function refreshMic() {
+        state.mic = await api.micStatus().catch(() => "unknown");
+        if (state.mic === "granted") setBadge("mic-badge", "mic-text", "ok", "Allowed");
+        else if (state.mic === "denied" || state.mic === "restricted")
+          setBadge("mic-badge", "mic-text", "err", "Not allowed");
+        else setBadge("mic-badge", "mic-text", "warn", "Needs permission");
+        renderNav();
       }
 
-      $("ax-open").addEventListener("click", () => {
-        api.requestAccessibility();
-        api.openAccessibilitySettings();
-      });
-      $("ax-recheck").addEventListener("click", refreshAccessibility);
+      async function refreshAx() {
+        state.ax = await api.accessibilityStatus().catch(() => "unknown");
+        if (state.ax === "granted") setBadge("ax-badge", "ax-text", "ok", "Allowed");
+        else setBadge("ax-badge", "ax-text", "warn", "Off");
+      }
+
+      /* ── wiring ─────────────────────────────────────────────────────── */
+      $("auth-open").addEventListener("click", () => api.openSignIn());
 
       $("screen-open").addEventListener("click", async () => {
         // Trigger the native prompt first (registers LYKN in the list), then open settings.
@@ -167,26 +377,110 @@
       });
       $("screen-recheck").addEventListener("click", refreshScreen);
 
-      $("ae-open").addEventListener("click", () => api.openAutomationSettings());
-      $("ae-test").addEventListener("click", async () => {
-        setBadge($("ae-badge"), $("ae-text"), "warn", "Testing…");
-        const r = await api.testAppleEvents();
-        if (r.state === "granted")
-          setBadge($("ae-badge"), $("ae-text"), "ok", "Working" + (r.browser ? " · " + r.browser : ""));
-        else if (r.state === "no-browser")
-          setBadge($("ae-badge"), $("ae-text"), "warn", "Open a browser tab, then retry");
-        else if (r.state === "denied")
-          setBadge($("ae-badge"), $("ae-text"), "err", "Turned off" + (r.browser ? " · " + r.browser : ""));
-        else setBadge($("ae-badge"), $("ae-text"), "err", r.message || "Couldn't verify");
+      $("mic-request").addEventListener("click", async () => {
+        await api.requestMic();
+        refreshMic();
       });
 
-      $("done").addEventListener("click", () => api.finish());
+      $("ae-open").addEventListener("click", () => api.openAutomationSettings());
+      $("ae-test").addEventListener("click", async () => {
+        setBadge("ae-badge", "ae-text", "warn", "Testing…");
+        const r = await api.testAppleEvents();
+        state.ae = r.state;
+        if (r.state === "granted")
+          setBadge("ae-badge", "ae-text", "ok", "Working" + (r.browser ? " · " + r.browser : ""));
+        else if (r.state === "no-browser")
+          setBadge("ae-badge", "ae-text", "warn", "Open a browser tab, then retry");
+        else if (r.state === "denied")
+          setBadge("ae-badge", "ae-text", "err", "Turned off" + (r.browser ? " · " + r.browser : ""));
+        else setBadge("ae-badge", "ae-text", "err", r.message || "Couldn't verify");
+      });
 
+      $("ax-request").addEventListener("click", async () => {
+        await api.requestAccessibility();
+        api.openAccessibilitySettings();
+        refreshAx();
+      });
+
+      api.onHotkey(() => {
+        state.hotkeyDone = true;
+        const box = $("trybox");
+        box.classList.add("done");
+        $("try-msg").innerHTML = "<b>There it is.</b> Press <b>⌘ L</b> again anytime, on any screen.";
+      });
+
+      /* ── final summary ──────────────────────────────────────────────── */
+      function renderSummary() {
+        const rows = [
+          ["Signed in", state.auth],
+          ["Screen Recording", state.screen === "granted"],
+          ["Microphone", state.mic === "granted"],
+          ["Browser tab reading", state.ae === "granted"],
+        ];
+        $("summary").innerHTML = rows
+          .map(
+            ([label, ok]) =>
+              `<div class="check${ok ? " ok" : ""}"><span>${label}</span>` +
+              `<span class="state">${ok ? "✓ Ready" : "Later"}</span></div>`,
+          )
+          .join("");
+      }
+
+      /* ── navigation ─────────────────────────────────────────────────── */
+      const dots = $("dots");
+      for (let i = 0; i < TOTAL; i++) dots.appendChild(document.createElement("i"));
+
+      const NEXT_LABEL = ["Get started", "Continue", "Continue", "Continue", "Continue", "Finish"];
+      // Steps the user may skip past without completing (sign-in, mic, browser).
+      const SKIPPABLE = new Set([1, 3, 4]);
+
+      function renderNav() {
+        $("back").style.visibility = state.step === 0 ? "hidden" : "visible";
+        $("next").textContent = NEXT_LABEL[state.step];
+        // Screen Recording is the one thing LYKN can't work without: gate
+        // "Continue" on it, but leave "Skip for now" as the escape hatch so
+        // nobody is ever stranded.
+        const screenGate = state.step === 2 && state.screen !== "granted";
+        $("next").disabled = screenGate;
+        // Once a skippable step is satisfied, "Skip" is just noise — hide it.
+        const satisfied =
+          (state.step === 1 && state.auth) ||
+          (state.step === 3 && state.mic === "granted");
+        const showSkip = screenGate || (SKIPPABLE.has(state.step) && !satisfied);
+        $("skip").style.display = showSkip ? "" : "none";
+      }
+
+      function show(n) {
+        state.step = Math.max(0, Math.min(TOTAL - 1, n));
+        steps.forEach((el, i) => {
+          el.classList.toggle("active", i === state.step);
+          el.classList.toggle("left", i < state.step);
+        });
+        Array.from(dots.children).forEach((d, i) => d.classList.toggle("on", i === state.step));
+        if (state.step === 5) renderSummary();
+        renderNav();
+      }
+
+      $("back").addEventListener("click", () => show(state.step - 1));
+      $("skip").addEventListener("click", () => show(state.step + 1));
+      $("next").addEventListener("click", () => {
+        if (state.step === TOTAL - 1) api.finish();
+        else show(state.step + 1);
+      });
+
+      /* ── boot ───────────────────────────────────────────────────────── */
+      refreshAuth();
       refreshScreen();
-      refreshAccessibility();
-      // Keep the screen badge fresh while the user toggles the setting in System Settings.
-      setInterval(refreshScreen, 2500);
-      setInterval(refreshAccessibility, 2500);
+      refreshMic();
+      refreshAx();
+      setInterval(() => {
+        // Only poll what the visible step (or final summary) cares about.
+        if (state.step === 1 || state.step === 5) refreshAuth();
+        if (state.step === 2 || state.step === 5) refreshScreen();
+        if (state.step === 3 || state.step === 5) refreshMic();
+        if (state.step === 4) refreshAx();
+      }, 2500);
+      show(0);
     </script>
   </body>
 </html>

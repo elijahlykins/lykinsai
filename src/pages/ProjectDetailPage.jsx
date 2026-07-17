@@ -29,11 +29,14 @@ import {
   ChevronRight,
   Circle,
   Clock,
+  Columns3,
   Crosshair,
+  LayoutList,
   Flag,
   FolderKanban,
   ListTodo,
   MapPin,
+  Moon,
   Pause,
   Play,
   Library,
@@ -45,6 +48,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
+import { toast } from "@/components/ui/use-toast";
 import {
   inviteProjectMember,
   listProjectMembers,
@@ -63,6 +67,11 @@ import {
   setActiveProjectId,
   setUserProjectStatus,
 } from "@/lib/userProjects";
+import { findMorningBrief, isFreshMorningBrief } from "@/lib/morningBrief";
+import MorningBriefCard from "@/components/projects/MorningBriefCard";
+import StewardKanban from "@/components/projects/StewardKanban";
+import TasksBoard from "@/components/projects/TasksBoard";
+import { listStewardItems } from "@/lib/stewardQueue";
 import {
   createProjectEvent,
   updateProjectEvent,
@@ -74,6 +83,7 @@ import {
   listProjectEvents,
   listProjectTodos,
   setTodoDue,
+  setTodoPosition,
   setTodoPriority,
   setTodoStatus,
   todoDueLabel,
@@ -456,6 +466,7 @@ function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
   const [adding, setAdding] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const [view, setView] = useState("list");
   const now = Date.now();
 
   const { openTodos, doneTodos } = useMemo(() => {
@@ -482,24 +493,41 @@ function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
     const t = title.trim();
     if (!t || adding) return;
     setAdding(true);
-    await createProjectTodo(userId, projectId, {
+    const created = await createProjectTodo(userId, projectId, {
       title: t,
       priority,
       dueIso: dateInputToIso(due),
       dueText: dateInputToText(due),
     });
+    setAdding(false);
+    if (!created) {
+      // Creation failed (RLS / network) — keep the form contents so the
+      // user's input isn't silently thrown away.
+      toast({
+        title: "Couldn't add task",
+        description: "Something went wrong saving the task. Please try again.",
+        variant: "destructive",
+      });
+      return;
+    }
     setTitle("");
     setPriority("normal");
     setDue("");
-    setAdding(false);
     setShowAdd(false);
     onChanged();
   }, [title, priority, due, adding, userId, projectId, onChanged]);
 
   const toggleDone = async (todo) => {
     setBusyId(todo.id);
-    await setTodoStatus(userId, todo.id, todo.status === "completed" ? "open" : "completed");
+    const ok = await setTodoStatus(userId, todo.id, todo.status === "completed" ? "open" : "completed");
     setBusyId(null);
+    if (!ok) {
+      toast({
+        title: "Couldn't update task",
+        description: "The change didn't save. Please try again.",
+        variant: "destructive",
+      });
+    }
     onChanged();
   };
 
@@ -523,8 +551,30 @@ function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
 
   const remove = async (todo) => {
     setBusyId(todo.id);
-    await deleteProjectTodo(userId, todo.id);
+    const ok = await deleteProjectTodo(userId, todo.id);
     setBusyId(null);
+    if (!ok) {
+      toast({
+        title: "Couldn't delete task",
+        description: "The task wasn't removed. Please try again.",
+        variant: "destructive",
+      });
+    }
+    onChanged();
+  };
+
+  // Board handlers — drag between columns re-prioritises / completes, and
+  // reordering within a column persists to `position`.
+  const boardSetPriority = async (todo, priority) => {
+    await setTodoPriority(userId, todo.id, priority);
+    onChanged();
+  };
+  const boardSetStatus = async (todo, status) => {
+    await setTodoStatus(userId, todo.id, status);
+    onChanged();
+  };
+  const boardSetPosition = async (todo, position) => {
+    await setTodoPosition(userId, todo.id, position);
     onChanged();
   };
 
@@ -574,7 +624,7 @@ function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
                     ? overdue
                       ? "bg-red-500/10 text-red-600 dark:text-red-400"
                       : "bg-amber-500/10 text-amber-600 dark:text-amber-500"
-                    : "text-black/30 dark:text-white/30 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] opacity-0 group-hover:opacity-100"
+                    : "text-black/30 dark:text-white/30 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] hover-reveal"
                 }`}
                 title="Set / change deadline"
               >
@@ -601,7 +651,7 @@ function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
           </span>
         ) : null}
         {canEdit && (
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="flex items-center gap-0.5 hover-reveal">
             {!done && (
               <button
                 type="button"
@@ -635,14 +685,40 @@ function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
         <span className="text-[0.6875rem] text-black/40 dark:text-white/40">
           {openTodos.length} open
         </span>
-        {canEdit && (
-          <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1.5">
+          <div className="inline-flex items-center rounded-full border border-black/[0.08] dark:border-white/[0.1] p-0.5 bg-black/[0.02] dark:bg-white/[0.03]">
+            <button
+              type="button"
+              onClick={() => setView("list")}
+              title="List view"
+              className={`inline-flex items-center justify-center w-6 h-6 rounded-full transition-colors ${
+                view === "list"
+                  ? "bg-white dark:bg-white/[0.12] text-black/80 dark:text-white/90 shadow-sm"
+                  : "text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70"
+              }`}
+            >
+              <LayoutList className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("board")}
+              title="Board view"
+              className={`inline-flex items-center justify-center w-6 h-6 rounded-full transition-colors ${
+                view === "board"
+                  ? "bg-white dark:bg-white/[0.12] text-black/80 dark:text-white/90 shadow-sm"
+                  : "text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70"
+              }`}
+            >
+              <Columns3 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          {canEdit && (
             <AddNewButton
               active={showAdd}
               onClick={() => setShowAdd((v) => !v)}
             />
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {showAdd && (
@@ -660,7 +736,7 @@ function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
           placeholder="Add a task to this project…"
           className="w-full text-sm px-3 py-2 rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/[0.04] outline-none focus:border-blue-500/40 placeholder:text-black/35 dark:placeholder:text-white/35"
         />
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={priority}
             onChange={(e) => setPriority(e.target.value)}
@@ -702,29 +778,46 @@ function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
       </div>
       )}
 
-      <div className="mt-2 max-h-[24rem] overflow-y-auto scrollbar-hide -mx-1 px-1">
-        {openTodos.length === 0 && doneTodos.length === 0 ? (
+      {view === "board" ? (
+        todos.length === 0 ? (
           <p className="text-xs text-black/40 dark:text-white/40 py-6 text-center">
             No tasks yet. Hit "Add new", or ask LYKN to file a task under this project.
           </p>
         ) : (
-          <>
-            {openTodos.length === 0 ? (
-              <p className="text-xs text-black/35 dark:text-white/35 py-4 text-center">All caught up.</p>
-            ) : (
-              openTodos.map(renderRow)
-            )}
-            {doneTodos.length > 0 && (
-              <div className="mt-2 pt-2 border-t border-black/[0.06] dark:border-white/[0.07]">
-                <div className="px-2 pb-1 text-[0.625rem] uppercase tracking-wide text-black/30 dark:text-white/30">
-                  Completed
+          <TasksBoard
+            todos={todos}
+            canEdit={canEdit}
+            onSetPriority={boardSetPriority}
+            onSetStatus={boardSetStatus}
+            onSetPosition={boardSetPosition}
+            onDelete={remove}
+          />
+        )
+      ) : (
+        <div className="mt-2 max-h-[24rem] overflow-y-auto scrollbar-hide -mx-1 px-1">
+          {openTodos.length === 0 && doneTodos.length === 0 ? (
+            <p className="text-xs text-black/40 dark:text-white/40 py-6 text-center">
+              No tasks yet. Hit "Add new", or ask LYKN to file a task under this project.
+            </p>
+          ) : (
+            <>
+              {openTodos.length === 0 ? (
+                <p className="text-xs text-black/35 dark:text-white/35 py-4 text-center">All caught up.</p>
+              ) : (
+                openTodos.map(renderRow)
+              )}
+              {doneTodos.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-black/[0.06] dark:border-white/[0.07]">
+                  <div className="px-2 pb-1 text-[0.625rem] uppercase tracking-wide text-black/30 dark:text-white/30">
+                    Completed
+                  </div>
+                  {doneTodos.map(renderRow)}
                 </div>
-                {doneTodos.map(renderRow)}
-              </div>
-            )}
-          </>
-        )}
-      </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -866,8 +959,15 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
   const remove = async (ev) => {
     if (!window.confirm("Delete this event?")) return;
     setBusyId(ev.id);
-    await deleteProjectEvent(userId, ev.id);
+    const ok = await deleteProjectEvent(userId, ev.id);
     setBusyId(null);
+    if (!ok) {
+      toast({
+        title: "Couldn't delete event",
+        description: "The event wasn't removed. Please try again.",
+        variant: "destructive",
+      });
+    }
     onChanged();
   };
 
@@ -879,15 +979,28 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
     const weekday = Number.isNaN(start.getTime())
       ? ""
       : start.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase();
+    const rowInert = ev.readOnly || !canEdit;
     return (
-      <button
+      // Row is a div-with-button-semantics (not a <button>) so the delete
+      // control inside can be a real, keyboard-focusable <button> — nested
+      // interactive content inside a <button> is invalid HTML and made
+      // delete mouse-only.
+      <div
         key={ev.id}
-        type="button"
-        onClick={() => openEdit(ev)}
-        disabled={ev.readOnly || !canEdit}
-        title={ev.readOnly || !canEdit ? undefined : "Edit event"}
+        role="button"
+        tabIndex={rowInert ? -1 : 0}
+        aria-disabled={rowInert || undefined}
+        onClick={() => { if (!rowInert) openEdit(ev); }}
+        onKeyDown={(e) => {
+          if (rowInert) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openEdit(ev);
+          }
+        }}
+        title={rowInert ? undefined : "Edit event"}
         className={`group w-full text-left flex items-stretch gap-3 p-2.5 rounded-2xl border border-black/[0.05] dark:border-white/[0.06] bg-black/[0.01] dark:bg-white/[0.02] hover:border-black/[0.1] dark:hover:border-white/[0.12] hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors ${
-          ev.readOnly || !canEdit ? "cursor-default" : "cursor-pointer"
+          rowInert ? "cursor-default" : "cursor-pointer"
         }`}
       >
         <div
@@ -932,20 +1045,20 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
           </div>
         </div>
         {!ev.readOnly && canEdit && (
-          <span
-            role="button"
-            tabIndex={-1}
+          <button
+            type="button"
+            disabled={isBusy}
             onClick={(e) => {
               e.stopPropagation();
-              if (!isBusy) remove(ev);
+              remove(ev);
             }}
-            className="self-start p-1 rounded-md text-black/30 dark:text-white/30 hover:text-red-500 hover:bg-black/10 dark:hover:bg-white/10 transition-colors opacity-0 group-hover:opacity-100"
+            className="self-start p-1 rounded-md text-black/30 dark:text-white/30 hover:text-red-500 hover:bg-black/10 dark:hover:bg-white/10 transition-colors hover-reveal disabled:opacity-50"
             title="Delete"
           >
             <Trash2 className="w-3.5 h-3.5" />
-          </span>
+          </button>
         )}
-      </button>
+      </div>
     );
   };
 
@@ -1131,7 +1244,24 @@ function MembersCard({ userId, projectId, isOwner }) {
       return;
     }
     setEmail("");
-    setNotice("Invite added — they'll get access the next time they sign in with that email.");
+    const addr = email.trim().toLowerCase();
+    if (res.status === "added") {
+      setNotice(
+        res.emailSent
+          ? `${addr} has a LYKN account — they're on the project now (we emailed them too).`
+          : `${addr} has a LYKN account — they're on the project now.`,
+      );
+    } else if (res.status === "already_member") {
+      setNotice(`${addr} is already on this project.`);
+    } else if (res.status === "already_invited") {
+      setNotice(`${addr} already has a pending invite.`);
+    } else {
+      setNotice(
+        res.emailSent
+          ? `Invite emailed to ${addr} — they'll get access when they sign up with that email.`
+          : `Invite added for ${addr} — they'll get access when they sign in with that email.`,
+      );
+    }
     refetch();
   };
 
@@ -1263,7 +1393,7 @@ function MembersCard({ userId, projectId, isOwner }) {
                   <button
                     type="button"
                     onClick={() => handleRemove(m)}
-                    className="shrink-0 w-6 h-6 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500/10 text-black/40 dark:text-white/40 hover:text-red-500 transition-all"
+                    className="shrink-0 w-6 h-6 rounded flex items-center justify-center hover-reveal hover:bg-red-500/10 text-black/40 dark:text-white/40 hover:text-red-500 transition-all"
                     title="Remove from project"
                   >
                     <X className="w-3.5 h-3.5" />
@@ -1339,6 +1469,18 @@ export default function ProjectDetailPage() {
     staleTime: 15 * 1000,
   });
 
+  const { data: stewardItems = [] } = useQuery({
+    queryKey: ["lykn_steward_items", userId || "guest", projectId],
+    queryFn: () => listStewardItems(userId, projectId),
+    enabled: !!userId && !!projectId,
+    staleTime: 10 * 1000,
+  });
+
+  const refetchSteward = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["lykn_steward_items", userId || "guest", projectId] }),
+    [queryClient, userId, projectId],
+  );
+
   // Vault note ids in this project (members stored as `vault_<id>`), used to
   // tally the "What's inside" wheel by file type.
   const vaultNoteIds = useMemo(() => {
@@ -1379,6 +1521,16 @@ export default function ProjectDetailPage() {
     return out;
   }, [project, vaultTypeCounts, dark]);
 
+  const morningBrief = useMemo(() => findMorningBrief(updates), [updates]);
+  const showMorningBrief = useMemo(
+    () => isFreshMorningBrief(morningBrief),
+    [morningBrief],
+  );
+  const displayUpdates = useMemo(
+    () => (showMorningBrief ? updates.filter((u) => u.stateKey !== "morning_brief") : updates),
+    [updates, showMorningBrief],
+  );
+
   const refetchProjects = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["lykn_projects"] });
     queryClient.invalidateQueries({ queryKey: ["lykn_project_updates"] });
@@ -1413,9 +1565,14 @@ export default function ProjectDetailPage() {
         { event: "*", schema: "public", table: "lykn_events", filter: `project_id=eq.${projectId}` },
         () => refetchEvents(),
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "lykn_steward_items", filter: `project_id=eq.${projectId}` },
+        () => refetchSteward(),
+      )
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [userId, projectId, refetchTodos, refetchEvents]);
+  }, [userId, projectId, refetchTodos, refetchEvents, refetchSteward]);
 
   useEffect(() => {
     const onChange = () => refetchProjects();
@@ -1446,7 +1603,14 @@ export default function ProjectDetailPage() {
   };
 
   const handleRemoveMember = async (nodeId) => {
-    await removeNeuronFromProject(userId, projectId, nodeId);
+    const ok = await removeNeuronFromProject(userId, projectId, nodeId);
+    if (!ok) {
+      toast({
+        title: "Couldn't remove item",
+        description: "The knowledge item is still linked. Please try again.",
+        variant: "destructive",
+      });
+    }
     refetchProjects();
   };
 
@@ -1485,8 +1649,9 @@ export default function ProjectDetailPage() {
   };
 
   const handleEditUpdate = async (update, newValue) => {
-    await editProjectStateUpdate(userId, projectId, update, newValue);
+    const ok = await editProjectStateUpdate(userId, projectId, update, newValue);
     refetchProjects();
+    return ok;
   };
 
   if (isLoading) {
@@ -1738,14 +1903,14 @@ export default function ProjectDetailPage() {
             </div>
             {updatesLoading ? (
               <p className="text-xs text-black/40 dark:text-white/40">Loading updates…</p>
-            ) : updates.length === 0 ? (
+            ) : displayUpdates.length === 0 ? (
               <p className="text-xs text-black/40 dark:text-white/40">
                 No updates yet. Connected AI clients push their working memory here as you work.
               </p>
             ) : (
               <div className="flex flex-col gap-1.5 max-h-[24rem] overflow-y-auto scrollbar-hide -mx-1 px-1">
-                {updates.map((u) => (
-                  <UpdateCard key={u.id} update={u} onSave={handleEditUpdate} />
+                {displayUpdates.map((u) => (
+                  <UpdateCard key={u.id} update={u} onSave={handleEditUpdate} canEdit={canEdit} />
                 ))}
               </div>
             )}
@@ -1786,7 +1951,7 @@ export default function ProjectDetailPage() {
                           <button
                             type="button"
                             onClick={() => handleRemoveMember(m.nodeId)}
-                            className="flex-shrink-0 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500/10 text-black/40 dark:text-white/40 hover:text-red-500 transition-all"
+                            className="flex-shrink-0 w-5 h-5 rounded flex items-center justify-center hover-reveal hover:bg-red-500/10 text-black/40 dark:text-white/40 hover:text-red-500 transition-all"
                             title="Remove from project"
                           >
                             <X className="w-3 h-3" />
@@ -1799,6 +1964,34 @@ export default function ProjectDetailPage() {
               })}
             </div>
           )}
+        </div>
+
+        {/* Night Shift — morning brief + overnight queue */}
+        <div className={`mt-3 ${CARD} p-4 sm:p-5`}>
+          <div className="flex items-center gap-2 mb-3">
+            <Moon className="w-4 h-4 text-black/45 dark:text-white/45" />
+            <h2 className="text-base font-semibold tracking-tight text-black/90 dark:text-white/90">
+              Night Shift
+            </h2>
+          </div>
+          {showMorningBrief && morningBrief ? (
+            <>
+              <MorningBriefCard
+                embedded
+                brief={morningBrief}
+                projectName={project?.name}
+              />
+              <div className="my-4 border-b border-black/[0.06] dark:border-white/[0.07]" />
+            </>
+          ) : null}
+          <StewardKanban
+            embedded
+            userId={userId}
+            projectId={projectId}
+            items={stewardItems}
+            canEdit={canEdit}
+            onChanged={refetchSteward}
+          />
         </div>
 
         {/* Footer */}

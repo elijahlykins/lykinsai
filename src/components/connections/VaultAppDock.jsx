@@ -321,7 +321,7 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
       if (msg.ok) {
         toast({
           title: "Reconnected",
-          description: "Sync is back on — give it a moment to catch up.",
+          description: "Sync is back on. Give it a moment to catch up.",
         });
       } else {
         toast({

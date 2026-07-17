@@ -18,6 +18,7 @@ import Parser from 'rss-parser';
 import * as cheerio from 'cheerio';
 import crypto from 'crypto';
 import { buildAttachmentColumns } from './lib/vault/attachmentType.js';
+import { safeFetch } from './lib/exterior/ssrfGuard.js';
 
 // ---------------------------------------------------------------------------
 // Configurable constants
@@ -153,8 +154,11 @@ export async function discoverFeed(rawUrl) {
 
   let res;
   try {
-    res = await withTimeout(fetch(inputUrl, { headers, redirect: 'follow' }), FETCH_TIMEOUT_MS, 'discover');
+    // safeFetch validates the resolved IP and re-checks each redirect hop so a
+    // user-supplied feed URL can't reach loopback/private/metadata addresses.
+    res = await withTimeout(safeFetch(inputUrl, { headers }), FETCH_TIMEOUT_MS, 'discover');
   } catch (err) {
+    if (err?.code === 'SSRF_BLOCKED') throw new Error('URL not allowed');
     throw new Error(`Could not reach ${urlObj.host}: ${err.message}`);
   }
   if (!res.ok) {
@@ -362,8 +366,11 @@ export async function fetchAndSaveNewEntries({ supabaseAdmin, feed }) {
 
   let res;
   try {
+    // Stored feed_url is re-validated on every poll (and every redirect hop):
+    // a feed that later starts resolving/redirecting to an internal address is
+    // blocked here rather than trusted because it passed validation at save.
     res = await withTimeout(
-      fetch(feed.feed_url, { headers, redirect: 'follow' }),
+      safeFetch(feed.feed_url, { headers }),
       FETCH_TIMEOUT_MS,
       'rss-fetch',
     );

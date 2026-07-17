@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
 import { BRAND_BLUE, WHITE } from "./brand";
+import { SceneBackground } from "./SceneBackground";
 
 // Deterministic version of the in-app VoiceTechOrb: a Fibonacci-lattice
 // sphere of "neuron" dots that rotates, pulses, and bobs. All motion is
@@ -112,6 +113,7 @@ export const LyknVoiceOrb: React.FC<LyknVoiceOrbProps> = ({
     <AbsoluteFill
       style={{ background, justifyContent: "center", alignItems: "center" }}
     >
+      <SceneBackground />
       {glow && (
         <div
           style={{

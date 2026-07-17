@@ -184,7 +184,7 @@ export const CUSTOM_API_PRESETS = [
     docsUrl: "https://docs.cursor.com/account/api-keys",
     testPath: "/v1/me",
     description:
-      "Cursor REST API (raw access — NOT the LYKN build pipeline). Key info: GET /v1/me. Models: GET /v1/models. Launch a cloud agent: POST /v1/agents. For managed builds that open PRs, use the dedicated Cursor connector instead.",
+      "Cursor REST API (raw access, NOT the LYKN build pipeline). Key info: GET /v1/me. Models: GET /v1/models. Launch a cloud agent: POST /v1/agents. For managed builds that open PRs, use the dedicated Cursor connector instead.",
   },
   {
     id: "airtable",
@@ -298,7 +298,7 @@ export const CUSTOM_API_PRESETS = [
     docsUrl: "https://developer.atlassian.com/cloud/jira/platform/rest/v3/",
     testPath: "/rest/api/3/myself",
     description:
-      "Atlassian Cloud REST API (Jira + Confluence) for your site. Jira — you: GET /rest/api/3/myself; search issues: GET /rest/api/3/search?jql=; create issue: POST /rest/api/3/issue. Confluence — pages: GET /wiki/api/v2/pages, GET /wiki/rest/api/content?cql=. Auth is HTTP Basic as email:api_token (handled for you). IMPORTANT: edit the base URL to your real your-site.atlassian.net host.",
+      "Atlassian Cloud REST API (Jira + Confluence) for your site. Jira: you: GET /rest/api/3/myself; search issues: GET /rest/api/3/search?jql=; create issue: POST /rest/api/3/issue. Confluence: pages: GET /wiki/api/v2/pages, GET /wiki/rest/api/content?cql=. Auth is HTTP Basic as email:api_token (handled for you). IMPORTANT: edit the base URL to your real your-site.atlassian.net host.",
   },
   {
     id: "microsoft365",

@@ -149,7 +149,7 @@ export function useUsageGate() {
           ? `Your ${planName} plan allows ${caps.perMinute} uploads per minute.`
           : windowKind === "hour"
             ? `Your ${planName} plan allows ${caps.perHour} uploads per hour.`
-            : `Your ${planName} plan limits how fast you can upload — try again in a moment.`;
+            : `Your ${planName} plan limits how fast you can upload. Try again in a moment.`;
       setUpgradeModal({
         type: "upload_rate",
         title: "Slow down a sec",

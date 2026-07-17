@@ -100,7 +100,7 @@ export default function OAuthConnectDialog({ open, onOpenChange, connector }) {
       if (msg.ok) {
         toast({
           title: `Connected to ${connector.name}`,
-          description: "Initial sync started — check your Vault in a moment.",
+          description: "Initial sync started. Check your Vault in a moment.",
         });
       } else {
         toast({

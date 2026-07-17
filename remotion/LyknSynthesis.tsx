@@ -4,6 +4,7 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 import { ICON_PATH, ICON_VIEWBOX } from "./brand";
 
 // ---------------------------------------------------------------------------
@@ -355,6 +356,7 @@ export const LyknSynthesis: React.FC = () => {
 
   return (
     <AbsoluteFill style={{ background: "radial-gradient(135% 135% at 50% 0%, #357bff 0%, #1c47c0 42%, #0a205f 100%)", fontFamily: "Inter, system-ui, sans-serif" }}>
+      <SceneBackground />
       <div
         style={{
           position: "absolute",

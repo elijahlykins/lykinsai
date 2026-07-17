@@ -72,7 +72,7 @@ export default function FileDropModeDialog() {
           </DialogTitle>
           <DialogDescription>
             <span className="font-medium text-foreground">{pending.fileName}</span>
-            {" — "}AI will have access to the full content either way.
+            {". "}AI will have access to the full content either way.
           </DialogDescription>
         </DialogHeader>
 

@@ -19,6 +19,7 @@
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
 import { resolveInstant } from './_time.js';
+import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const TITLE_MAX = 280;
 const DESC_MAX = 4000;
@@ -105,7 +106,7 @@ export const createEventTool = {
       },
       project_id: {
         type: 'string',
-        description: 'Optional id of the project this event relates to (from lykn_listProjects).',
+        description: 'Optional id of the project this event belongs to (from lykn_listProjects). If omitted, the event is filed under the user\'s currently active/focused project when there is one; pass an explicit id to override that.',
       },
     },
     required: ['title'],
@@ -181,9 +182,18 @@ export const createEventTool = {
     const location = typeof args?.location === 'string' ? args.location.trim().slice(0, LOC_MAX) : '';
     const timezone = typeof args?.timezone === 'string' ? args.timezone.trim().slice(0, TZ_MAX) : '';
     const color = typeof args?.color === 'string' ? args.color.trim().slice(0, COLOR_MAX) : '';
-    const projectId = typeof args?.project_id === 'string' && args.project_id.trim()
+
+    // Resolve which project this event is filed under. An explicit, writable
+    // project_id wins; otherwise fall back to the chat's scoped project
+    // (custom-model bound / board scope) and finally the user's ACTIVE
+    // project — so an event created from the overlay / voice / chat shows up
+    // on the focused project's calendar instead of landing unfiled. Mirrors
+    // lykn_createTodo / lykn_createStewardItem.
+    const explicitProjectId = typeof args?.project_id === 'string' && args.project_id.trim()
       ? args.project_id.trim()
       : null;
+    const { project: targetProject } = await resolveWriteProjectTarget(ctx, explicitProjectId);
+    const projectId = targetProject?.id || null;
 
     const source = `lykn-chat-agent:${ctx.attribSurface || 'lykn-chat'}`.slice(0, 64);
 
@@ -211,10 +221,12 @@ export const createEventTool = {
       return errorContent(`event insert failed: ${error.message}`);
     }
 
+    const projectSpoken = targetProject?.name ? ` (filed under "${targetProject.name}")` : '';
     return jsonContent({
       ok: true,
-      message: `Added "${title}" to your calendar.`,
+      message: `Added "${title}" to your calendar${projectSpoken}.`,
       event: data,
+      project: targetProject ? { id: targetProject.id, name: targetProject.name } : null,
     });
   },
 };

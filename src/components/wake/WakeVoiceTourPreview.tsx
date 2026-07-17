@@ -81,7 +81,7 @@ const SCRIPT: ScriptLine[] = [
   {
     role: "lykn",
     text:
-      "Looking strong. You added 42 new users overnight, up 18%, with activation holding steady and no error spikes. One thing to flag, though — Emily sent over a bug report by email this morning.",
+      "Looking strong. You added 42 new users overnight, up 18%, with activation holding steady and no error spikes. One thing to flag, though: Emily sent over a bug report by email this morning.",
     src: "/wake-demo/voice/lykn-3.mp3",
   },
   // 4 — Inbox
@@ -94,7 +94,7 @@ const SCRIPT: ScriptLine[] = [
   {
     role: "lykn",
     text:
-      "Emily reported that the dashboard export button does nothing in Safari — no file downloads and no error appears. It works fine in Chrome, so it looks browser-specific.",
+      "Emily reported that the dashboard export button does nothing in Safari: no file downloads and no error appears. It works fine in Chrome, so it looks browser-specific.",
     src: "/wake-demo/voice/lykn-4.mp3",
   },
   // 5 — Cloud agent

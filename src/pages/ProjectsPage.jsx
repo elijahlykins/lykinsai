@@ -10,6 +10,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderKanban, Plus } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { toast } from "@/components/ui/use-toast";
 import {
   createUserProject,
   getActiveProjectId,
@@ -60,9 +61,18 @@ export default function ProjectsPage() {
     setCreating(true);
     try {
       const created = await createUserProject(userId, { name, members: [] });
+      if (!created) {
+        // Keep the typed name on failure so the user can retry.
+        toast({
+          title: "Couldn't create project",
+          description: "Something went wrong. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
       setNewName("");
       refetch();
-      if (created) navigate(`/projects/${created.id}`);
+      navigate(`/projects/${created.id}`);
     } finally {
       setCreating(false);
     }

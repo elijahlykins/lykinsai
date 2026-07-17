@@ -110,7 +110,7 @@ const harborBlocks = [
     id: "demo-harbor-tagline",
     ...at(0, 11, 30, 4),
     content:
-      "Three-day and week-long packages in vetted rural houses. Wifi, food, and a house manager — handled. You bring the team and the work; we handle the other 80%.",
+      "Three-day and week-long packages in vetted rural houses. Wifi, food, and a house manager: handled. You bring the team and the work; we handle the other 80%.",
     variant: "body",
   }),
   imageBlock({
@@ -118,7 +118,7 @@ const harborBlocks = [
     ...at(32, 0, 28, 14),
     url: unsplash("photo-1493809842364-78817add7ffb"),
     name: "harbor-hero.jpg",
-    title: "Flagship house — Catskills",
+    title: "Flagship house: Catskills",
   }),
 
   // — Problem ----------------------------------------------------------
@@ -132,7 +132,7 @@ const harborBlocks = [
     id: "demo-harbor-problem-body",
     ...at(0, 20, 38, 10),
     content:
-      "Most offsites fail before they start. Teams book Airbnbs, lose day one to wifi and groceries, and leave without shipping anything. Solo founders and senior ICs almost never plan their own retreats — the logistics alone kill the intent.\n\nThe people who most need focused time don't take it, or take it badly.",
+      "Most offsites fail before they start. Teams book Airbnbs, lose day one to wifi and groceries, and leave without shipping anything. Solo founders and senior ICs almost never plan their own retreats. The logistics alone kill the intent.\n\nThe people who most need focused time don't take it, or take it badly.",
     variant: "body",
   }),
   imageBlock({
@@ -183,14 +183,14 @@ const harborBlocks = [
     id: "demo-harbor-solution-body",
     ...at(0, 54, 28, 13),
     content:
-      "A small portfolio of vetted rural properties, each with a house manager. Every booking is a fixed package: arrival dinner, a couple of structured check-ins, one facilitated retro, and no other calendar.\n\nMeals, transport, wifi — handled. You arrive, you work, you leave with something shipped.\n\nWe say no to most things so we can say yes to the work.",
+      "A small portfolio of vetted rural properties, each with a house manager. Every booking is a fixed package: arrival dinner, a couple of structured check-ins, one facilitated retro, and no other calendar.\n\nMeals, transport, wifi: handled. You arrive, you work, you leave with something shipped.\n\nWe say no to most things so we can say yes to the work.",
     variant: "body",
   }),
   textBlock({
     id: "demo-harbor-solution-features",
     ...at(29, 54, 14, 13),
     content:
-      "vetted houses — wifi, ergonomics, sleep quality\nprivate chef or stocked pantry\nhouse manager 9am–8pm\noptional facilitator for retros\npre-arrival brief + departure recap\none flat, all-in price",
+      "vetted houses: wifi, ergonomics, sleep quality\nprivate chef or stocked pantry\nhouse manager 9am–8pm\noptional facilitator for retros\npre-arrival brief + departure recap\none flat, all-in price",
     variant: "body",
     listType: "bullet",
   }),
@@ -230,7 +230,7 @@ const harborBlocks = [
   textBlock({
     id: "demo-harbor-market-stat-4",
     ...at(45, 72, 15, 8),
-    content: "~45K\n\ndistributed US startups — bottom-up TAM ≈ $360M",
+    content: "~45K\n\ndistributed US startups, bottom-up TAM ≈ $360M",
     variant: "body",
   }),
 
@@ -259,7 +259,7 @@ const harborBlocks = [
     id: "demo-harbor-comp-3",
     ...at(0, 96, 29, 7),
     content:
-      "Mindtrip / Pioneer Summits\n\nEvent-driven, not private. Good for discovery and networking — not for a team's own offsite.",
+      "Mindtrip / Pioneer Summits\n\nEvent-driven, not private. Good for discovery and networking, not for a team's own offsite.",
     variant: "body",
   }),
   textBlock({
@@ -273,7 +273,7 @@ const harborBlocks = [
     id: "demo-harbor-positioning",
     ...at(0, 104, 60, 4),
     content:
-      "Our wedge: handle the 80% nobody wants to handle, and leave the actual work alone. Not another facilitation company, not another booking platform — the thing in between.",
+      "Our wedge: handle the 80% nobody wants to handle, and leave the actual work alone. Not another facilitation company, not another booking platform: the thing in between.",
     variant: "body",
   }),
 
@@ -288,7 +288,7 @@ const harborBlocks = [
     id: "demo-harbor-bm-day",
     ...at(0, 114, 19, 13),
     content:
-      "Day Pass\n\n$340 / person / day\n2–8 guests · 2-night min\nFood included. BYO itinerary.\n\nEntry tier — designed to let teams try one night before committing to a full retreat.",
+      "Day Pass\n\n$340 / person / day\n2–8 guests · 2-night min\nFood included. BYO itinerary.\n\nEntry tier, designed to let teams try one night before committing to a full retreat.",
     variant: "body",
   }),
   textBlock({
@@ -331,7 +331,7 @@ const harborBlocks = [
     id: "demo-harbor-gtm-channels",
     ...at(29, 138, 14, 10),
     content:
-      "founder Twitter (owned)\nLenny's Newsletter sponsor\nYC partner referrals\nSeries A CEO outbound — 50 / mo\ncase studies after every retreat",
+      "founder Twitter (owned)\nLenny's Newsletter sponsor\nYC partner referrals\nSeries A CEO outbound: 50 / mo\ncase studies after every retreat",
     variant: "body",
     listType: "bullet",
   }),
@@ -347,7 +347,7 @@ const harborBlocks = [
   textBlock({
     id: "demo-harbor-roadmap-h",
     ...at(0, 152, 60, 3),
-    content: "Roadmap — now / next / later",
+    content: "Roadmap: now / next / later",
     variant: "h2",
   }),
   textBlock({
@@ -372,7 +372,7 @@ const harborBlocks = [
     id: "demo-harbor-later",
     ...at(40, 156, 20, 13),
     content:
-      "[ ] 6 properties across 3 regions\n[ ] Alumni community (return-rate > 40%)\n[ ] International pilot — Portugal, Japan\n[ ] Operator playbook productized\n[ ] $3M ARR",
+      "[ ] 6 properties across 3 regions\n[ ] Alumni community (return-rate > 40%)\n[ ] International pilot: Portugal, Japan\n[ ] Operator playbook productized\n[ ] $3M ARR",
     variant: "body",
     listType: "todo",
     format: "todo",
@@ -389,7 +389,7 @@ const harborBlocks = [
     id: "demo-harbor-team-body",
     ...at(0, 176, 38, 10),
     content:
-      "Founder — ex-product designer, 10 years remote, built ops for a YC B2B SaaS.\n\nOps co-founder — former Ace Hotel GM; has opened two boutique properties from scratch.\n\nAdvisor — two-time founder, YC W19, operates in the adjacent hospitality space.\n\nFirst in-person house manager this quarter. Chef roster stays 1099 until volume justifies W2.",
+      "Founder: ex-product designer, 10 years remote, built ops for a YC B2B SaaS.\n\nOps co-founder: former Ace Hotel GM; has opened two boutique properties from scratch.\n\nAdvisor: two-time founder, YC W19, operates in the adjacent hospitality space.\n\nFirst in-person house manager this quarter. Chef roster stays 1099 until volume justifies W2.",
     variant: "body",
   }),
   imageBlock({
@@ -411,7 +411,7 @@ const harborBlocks = [
     id: "demo-harbor-risks",
     ...at(0, 194, 29, 10),
     content:
-      "Risks:\nseasonality — Q1 and Q4 booking soft in most regions\nproperty damage / insurance edge cases at B2B scale\nhouse-manager single-points-of-failure cascade to full retreat\nteam offsite budgets contract sharply in a downturn\nbrand risk if one retreat goes badly — NPS has to stay high early",
+      "Risks:\nseasonality: Q1 and Q4 booking soft in most regions\nproperty damage / insurance edge cases at B2B scale\nhouse-manager single-points-of-failure cascade to full retreat\nteam offsite budgets contract sharply in a downturn\nbrand risk if one retreat goes badly (NPS has to stay high early)",
     variant: "body",
     listType: "bullet",
   }),
@@ -419,7 +419,7 @@ const harborBlocks = [
     id: "demo-harbor-assumptions",
     ...at(31, 194, 29, 10),
     content:
-      "Assumptions:\nteams will pay a premium to not think about logistics\n3 days is the minimum viable retreat length\none house manager can cover ~3 regional properties\nword-of-mouth conversion exceeds 25% within 18 months\nremote-first teams aren't going back — offsites are permanent",
+      "Assumptions:\nteams will pay a premium to not think about logistics\n3 days is the minimum viable retreat length\none house manager can cover ~3 regional properties\nword-of-mouth conversion exceeds 25% within 18 months\nremote-first teams aren't going back, offsites are permanent",
     variant: "body",
     listType: "bullet",
   }),
@@ -435,7 +435,7 @@ const harborBlocks = [
     id: "demo-harbor-q-body",
     ...at(0, 212, 60, 10),
     content:
-      "Do we own, lease, or broker the properties? The capital/control tradeoff is the single biggest model decision and we haven't nailed it.\n\nHow much facilitation do teams actually want — zero, light, or heavy? Our gut says light; the first three retreats will tell us.\n\nIs there a B2C version (writers, creators, couples), or do we stay strictly B2B until the model is proven?\n\nBrand voice — 'restorative' or 'ship-it'? Both? The landing page is doing gymnastics right now.",
+      "Do we own, lease, or broker the properties? The capital/control tradeoff is the single biggest model decision and we haven't nailed it.\n\nHow much facilitation do teams actually want: zero, light, or heavy? Our gut says light; the first three retreats will tell us.\n\nIs there a B2C version (writers, creators, couples), or do we stay strictly B2B until the model is proven?\n\nBrand voice: 'restorative' or 'ship-it'? Both? The landing page is doing gymnastics right now.",
     variant: "body",
   }),
 
@@ -472,7 +472,7 @@ const harborBlocks = [
     ...at(45, 228, 15, 9),
     url: unsplash("photo-1495474472287-4d71bcdd2085"),
     name: "mood-ritual.jpg",
-    title: "Morning ritual — the product moment",
+    title: "Morning ritual: the product moment",
   }),
 
   // — Next check-ins --------------------------------------------------
@@ -486,7 +486,7 @@ const harborBlocks = [
     id: "demo-harbor-todos",
     ...at(0, 244, 29, 10),
     content:
-      "[ ] Close pilot property #2 by Apr 30\n[ ] Write 'Why offsites fail' essay — publish May 5\n[ ] Run pricing page past 5 founder friends\n[ ] Interview 3 house-manager candidates\n[ ] Rework projections with Q1 actuals",
+      "[ ] Close pilot property #2 by Apr 30\n[ ] Write 'Why offsites fail' essay, publish May 5\n[ ] Run pricing page past 5 founder friends\n[ ] Interview 3 house-manager candidates\n[ ] Rework projections with Q1 actuals",
     variant: "body",
     listType: "todo",
     format: "todo",
@@ -551,7 +551,7 @@ const greenroomBlocks = [
     id: "demo-green-tagline",
     ...at(0, 11, 30, 5),
     content:
-      "For people who make things — writers, designers, founders, musicians — trying to do the work without burning themselves out. 10K subscribers, shipping since 2024.",
+      "For people who make things (writers, designers, founders, musicians) trying to do the work without burning themselves out. 10K subscribers, shipping since 2024.",
     variant: "body",
   }),
   imageBlock({
@@ -559,7 +559,7 @@ const greenroomBlocks = [
     ...at(32, 0, 28, 14),
     url: unsplash("photo-1517842645767-c639042777db"),
     name: "greenroom-hero.jpg",
-    title: "Desk — essay draft in progress",
+    title: "Desk: essay draft in progress",
   }),
 
   textBlock({
@@ -601,14 +601,14 @@ const greenroomBlocks = [
     id: "demo-green-what-body",
     ...at(0, 22, 28, 10),
     content:
-      "A personal publication about the craft, mess, and economics of creative work. Essay every Thursday. Podcast every other Monday — long, uncut conversations with people who ship things I admire.\n\nNo productivity tips. No hacks.",
+      "A personal publication about the craft, mess, and economics of creative work. Essay every Thursday. Podcast every other Monday: long, uncut conversations with people who ship things I admire.\n\nNo productivity tips. No hacks.",
     variant: "body",
   }),
   textBlock({
     id: "demo-green-goal",
     ...at(30, 22, 30, 10),
     content:
-      "2026 goal\n\n25K subscribers.\nPaid tier launched.\nTwo long-term sponsors.\nFour live events.\n\nThe measure isn't scale — it's whether readers tell their friends unprompted.",
+      "2026 goal\n\n25K subscribers.\nPaid tier launched.\nTwo long-term sponsors.\nFour live events.\n\nThe measure isn't scale. It's whether readers tell their friends unprompted.",
     variant: "body",
   }),
 
@@ -622,21 +622,21 @@ const greenroomBlocks = [
     id: "demo-green-pillar-1",
     ...at(72, 22, 18, 12),
     content:
-      "Craft — 50%\n\nHow the work actually gets made. Process essays, detailed case studies, post-mortems. The biggest pillar; the reason people subscribe.",
+      "Craft: 50%\n\nHow the work actually gets made. Process essays, detailed case studies, post-mortems. The biggest pillar; the reason people subscribe.",
     variant: "body",
   }),
   textBlock({
     id: "demo-green-pillar-2",
     ...at(92, 22, 18, 12),
     content:
-      "Economics — 30%\n\nHow creative work is paid for — or isn't. Pricing, contracts, platform economics, side income. The pillar that travels furthest on social.",
+      "Economics: 30%\n\nHow creative work is paid for (or isn't). Pricing, contracts, platform economics, side income. The pillar that travels furthest on social.",
     variant: "body",
   }),
   textBlock({
     id: "demo-green-pillar-3",
     ...at(112, 22, 18, 12),
     content:
-      "Practice — 20%\n\nHabits, rituals, burnout, the internal side of the work. Counterweight to the other two. Slower to write, essential to voice.",
+      "Practice: 20%\n\nHabits, rituals, burnout, the internal side of the work. Counterweight to the other two. Slower to write, essential to voice.",
     variant: "body",
   }),
 
@@ -681,19 +681,19 @@ const greenroomBlocks = [
   textBlock({
     id: "demo-green-cal-h",
     ...at(72, 38, 58, 3),
-    content: "Editorial calendar — next 8 weeks",
+    content: "Editorial calendar: next 8 weeks",
     variant: "h2",
   }),
   textBlock({
     id: "demo-green-cal-w1",
     ...at(72, 42, 13, 7),
-    content: "W1 — this week\nEssay: The price of context-switching",
+    content: "W1 (this week)\nEssay: The price of context-switching",
     variant: "body",
   }),
   textBlock({
     id: "demo-green-cal-w2",
     ...at(86, 42, 13, 7),
-    content: "W2\nPodcast Ep. 12 — Craig Mod on place",
+    content: "W2\nPodcast Ep. 12: Craig Mod on place",
     variant: "body",
   }),
   textBlock({
@@ -711,7 +711,7 @@ const greenroomBlocks = [
   textBlock({
     id: "demo-green-cal-w5",
     ...at(72, 50, 13, 7),
-    content: "W5\nPodcast Ep. 13 — Kate Darling on weird objects",
+    content: "W5\nPodcast Ep. 13: Kate Darling on weird objects",
     variant: "body",
   }),
   textBlock({
@@ -729,7 +729,7 @@ const greenroomBlocks = [
   textBlock({
     id: "demo-green-cal-w8",
     ...at(114, 50, 16, 7),
-    content: "W8\nPodcast Ep. 14 — guest TBD",
+    content: "W8\nPodcast Ep. 14: guest TBD",
     variant: "body",
   }),
 
@@ -752,7 +752,7 @@ const greenroomBlocks = [
     id: "demo-green-voice-donts",
     ...at(31, 62, 29, 10),
     content:
-      "Don't:\nuse 'craft' in a headline (overplayed)\nopen with 'recently I've been thinking…'\nbullet-list when a paragraph works\npromote two things at once\nquote myself in my own tweet\npublish on Mondays — dead zone",
+      "Don't:\nuse 'craft' in a headline (overplayed)\nopen with 'recently I've been thinking…'\nbullet-list when a paragraph works\npromote two things at once\nquote myself in my own tweet\npublish on Mondays (dead zone)",
     variant: "body",
     listType: "bullet",
   }),
@@ -766,7 +766,7 @@ const greenroomBlocks = [
   textBlock({
     id: "demo-green-metric-1",
     ...at(72, 62, 13, 8),
-    content: "10.4K\n\nsubscribers — growing ~4% / mo",
+    content: "10.4K\n\nsubscribers, growing ~4% / mo",
     variant: "body",
   }),
   textBlock({
@@ -827,7 +827,7 @@ const greenroomBlocks = [
     id: "demo-green-pipeline-body",
     ...at(72, 82, 58, 9),
     content:
-      "Confirmed:\n— Ep. 12 Craig Mod (recorded, drops W2)\n— Ep. 13 Kate Darling (calendar hold)\n\nOutreach pending:\n— Mandy Brown · Ethan Marcotte · Robin Sloan\n\nCold list, Q3:\n— Jenny Odell · Austin Kleon · Mike Monteiro · Oliver Reichenstein",
+      "Confirmed:\n• Ep. 12 Craig Mod (recorded, drops W2)\n• Ep. 13 Kate Darling (calendar hold)\n\nOutreach pending:\n• Mandy Brown · Ethan Marcotte · Robin Sloan\n\nCold list, Q3:\n• Jenny Odell · Austin Kleon · Mike Monteiro · Oliver Reichenstein",
     variant: "body",
   }),
 
@@ -849,14 +849,14 @@ const greenroomBlocks = [
     id: "demo-green-tier-paid",
     ...at(22, 99, 21, 11),
     content:
-      "Paid — $8/mo or $72/yr\n\nMonthly deep-dive essay, subscriber Q&A, subscriber-only podcast cut.\n\nTarget: 2% of list by EOY. 200 paid subs ≈ $14K/yr.",
+      "Paid: $8/mo or $72/yr\n\nMonthly deep-dive essay, subscriber Q&A, subscriber-only podcast cut.\n\nTarget: 2% of list by EOY. 200 paid subs ≈ $14K/yr.",
     variant: "body",
   }),
   textBlock({
     id: "demo-green-tier-spons",
     ...at(44, 99, 22, 11),
     content:
-      "Sponsors — 2 slots\n\nOne podcast, one newsletter. $2.5K / drop.\n\nOnly products I actually use. No more than one per week.",
+      "Sponsors: 2 slots\n\nOne podcast, one newsletter. $2.5K / drop.\n\nOnly products I actually use. No more than one per week.",
     variant: "body",
   }),
 
@@ -870,7 +870,7 @@ const greenroomBlocks = [
     id: "demo-green-tools-body",
     ...at(72, 99, 28, 11),
     content:
-      "Ghost — newsletter + archive\nDescript — podcast editing\nRiverside — remote recordings\nBuffer — social scheduling\nPlausible — analytics (no Google)\nNotion — editorial calendar\nFigma — essay illustrations",
+      "Ghost: newsletter + archive\nDescript: podcast editing\nRiverside: remote recordings\nBuffer: social scheduling\nPlausible: analytics (no Google)\nNotion: editorial calendar\nFigma: essay illustrations",
     variant: "body",
     listType: "bullet",
   }),
@@ -878,7 +878,7 @@ const greenroomBlocks = [
     id: "demo-green-tools-notes",
     ...at(102, 99, 28, 11),
     content:
-      "Considered Substack, stayed on Ghost for ownership. Tried Squadcast, switched to Riverside after two dropped recordings. Plausible is non-negotiable — Google Analytics signals the wrong thing to readers.",
+      "Considered Substack, stayed on Ghost for ownership. Tried Squadcast, switched to Riverside after two dropped recordings. Plausible is non-negotiable. Google Analytics signals the wrong thing to readers.",
     variant: "body",
   }),
 
@@ -893,7 +893,7 @@ const greenroomBlocks = [
     id: "demo-green-workflow-body",
     ...at(0, 118, 130, 8),
     content:
-      "1. Draft in Ghost, hit preview.   2. Read aloud — every paragraph, every sentence. If a sentence stumbles, cut it.   3. Edit pass with the style-sheet pinned.   4. Schedule for Thu 7:00 PT.   5. Write three amplification posts: Twitter, LinkedIn, Bluesky. Each different, each pulling the same thread.   6. Two hours after drop: reply to every DM for one hour, then stop.   7. Friday: skim analytics, not before — they're a trap.",
+      "1. Draft in Ghost, hit preview.   2. Read aloud: every paragraph, every sentence. If a sentence stumbles, cut it.   3. Edit pass with the style-sheet pinned.   4. Schedule for Thu 7:00 PT.   5. Write three amplification posts: Twitter, LinkedIn, Bluesky. Each different, each pulling the same thread.   6. Two hours after drop: reply to every DM for one hour, then stop.   7. Friday: skim analytics, not before (they're a trap).",
     variant: "body",
   }),
 
@@ -944,7 +944,7 @@ const greenroomBlocks = [
     id: "demo-green-week-todos",
     ...at(0, 152, 60, 10),
     content:
-      "[ ] Ship 'Price of context-switching' essay by Thu 7am\n[ ] Re-record intro for Ep. 12\n[ ] Draft outreach note to Mandy Brown\n[ ] Archive cleanup — tag top 20 craft essays\n[ ] Buy prints for referral milestone",
+      "[ ] Ship 'Price of context-switching' essay by Thu 7am\n[ ] Re-record intro for Ep. 12\n[ ] Draft outreach note to Mandy Brown\n[ ] Archive cleanup: tag top 20 craft essays\n[ ] Buy prints for referral milestone",
     variant: "body",
     listType: "todo",
     format: "todo",
@@ -953,7 +953,7 @@ const greenroomBlocks = [
     id: "demo-green-week-notes",
     ...at(64, 152, 66, 10),
     content:
-      "Open threads:\nShould the podcast move weekly? Probably not — one solid ep beats two mid ones.\nPaid tier copy still not landing. Try the Craig Mod episode as the first lead magnet.\nBluesky is outperforming Twitter for share-through. Lean in.",
+      "Open threads:\nShould the podcast move weekly? Probably not. One solid ep beats two mid ones.\nPaid tier copy still not landing. Try the Craig Mod episode as the first lead magnet.\nBluesky is outperforming Twitter for share-through. Lean in.",
     variant: "body",
   }),
 ];
@@ -1018,7 +1018,7 @@ const studio12Blocks = [
   textBlock({
     id: "demo-studio-oneliner",
     ...at(0, 5, 30, 5),
-    content: "Redesigning the back room — home studio + reading floor.",
+    content: "Redesigning the back room: home studio + reading floor.",
     variant: "h2",
   }),
   textBlock({
@@ -1033,27 +1033,27 @@ const studio12Blocks = [
     ...at(32, 0, 38, 14),
     url: unsplash("photo-1493809842364-78817add7ffb"),
     name: "studio-hero.jpg",
-    title: "Reference — warmth, light, restraint",
+    title: "Reference: warmth, light, restraint",
   }),
   textBlock({
     id: "demo-studio-budget",
     ...at(72, 0, 18, 14),
     content:
-      "Budget — $9,000\n\n$3.5K furniture\n$2K paint + floor\n$1.5K lighting\n$1K rugs + textiles\n$1K contingency\n\nHard ceiling. No financing.",
+      "Budget: $9,000\n\n$3.5K furniture\n$2K paint + floor\n$1.5K lighting\n$1K rugs + textiles\n$1K contingency\n\nHard ceiling. No financing.",
     variant: "body",
   }),
   textBlock({
     id: "demo-studio-time",
     ...at(92, 0, 18, 14),
     content:
-      "Time — 6 weeks\n\nStart: Jun 3\nW1: paint + floor\nW2–3: furniture\nW4–5: lighting\nW6: move-in\nDone: Jul 14",
+      "Time: 6 weeks\n\nStart: Jun 3\nW1: paint + floor\nW2–3: furniture\nW4–5: lighting\nW6: move-in\nDone: Jul 14",
     variant: "body",
   }),
   textBlock({
     id: "demo-studio-structural",
     ...at(112, 0, 18, 14),
     content:
-      "Structural\n\nNo plumbing changes.\nCan add outlets.\nCan't cut the north wall.\nCeiling: 8'6\".\nFloor: existing pine — refinish, not replace.",
+      "Structural\n\nNo plumbing changes.\nCan add outlets.\nCan't cut the north wall.\nCeiling: 8'6\".\nFloor: existing pine (refinish, not replace).",
     variant: "body",
   }),
 
@@ -1082,7 +1082,7 @@ const studio12Blocks = [
     id: "demo-studio-current-notes",
     ...at(0, 48, 22, 8),
     content:
-      "Pain points: overhead lighting. No dedicated desk — I work on the kitchen table and drag books around. Reading on the couch, falling asleep by 9. One closet full of things I haven't touched in two years.",
+      "Pain points: overhead lighting. No dedicated desk. I work on the kitchen table and drag books around. Reading on the couch, falling asleep by 9. One closet full of things I haven't touched in two years.",
     variant: "body",
   }),
 
@@ -1090,14 +1090,14 @@ const studio12Blocks = [
   textBlock({
     id: "demo-studio-floor-h",
     ...at(28, 18, 76, 3),
-    content: "Floor plan — the room",
+    content: "Floor plan: the room",
     variant: "h2",
   }),
   textBlock({
     id: "demo-studio-floor-intro",
     ...at(28, 22, 76, 3),
     content:
-      "Each card below sits roughly where the zone lives. North is up — the window is along the top edge; you enter from the bottom.",
+      "Each card below sits roughly where the zone lives. North is up: the window is along the top edge; you enter from the bottom.",
     variant: "body",
   }),
 
@@ -1106,7 +1106,7 @@ const studio12Blocks = [
     id: "demo-studio-zone-desk",
     ...at(38, 28, 54, 10),
     content:
-      "Desk — 48×28  ·  north wall, centered on the window\n\nThe anchor. Full-spectrum task lamp. Nothing on it except what's in use. Chair that won't make me slouch by 3pm.",
+      "Desk: 48×28  ·  north wall, centered on the window\n\nThe anchor. Full-spectrum task lamp. Nothing on it except what's in use. Chair that won't make me slouch by 3pm.",
     variant: "body",
   }),
 
@@ -1124,7 +1124,7 @@ const studio12Blocks = [
     id: "demo-studio-zone-sleep",
     ...at(30, 58, 18, 14),
     content:
-      "Sleep corner — full bed\nwest, lower\n\nTucked behind a low (36 in) open shelf acting as a subtle divider. Curtain, not a door. 2–3 guest nights / quarter.",
+      "Sleep corner: full bed\nwest, lower\n\nTucked behind a low (36 in) open shelf acting as a subtle divider. Curtain, not a door. 2–3 guest nights / quarter.",
     variant: "body",
   }),
 
@@ -1133,7 +1133,7 @@ const studio12Blocks = [
     id: "demo-studio-zone-shelf",
     ...at(84, 42, 18, 30),
     content:
-      "Built-in shelving\nfull east wall\n\nBooks, paper, supplies, one hidden cable drawer.\n\nAim for ~30% empty on install — rooms need room to grow.",
+      "Built-in shelving\nfull east wall\n\nBooks, paper, supplies, one hidden cable drawer.\n\nAim for ~30% empty on install. Rooms need room to grow.",
     variant: "body",
   }),
 
@@ -1159,7 +1159,7 @@ const studio12Blocks = [
     id: "demo-studio-floor-notes",
     ...at(28, 79, 76, 9),
     content:
-      "Walk in — reading chair to the left, backed by the bookshelf wall. Pass through to the desk at the far end, centered on the north window. Sleep corner carved out of the west, behind a low open shelf. Closet south, beside the door.\n\nCirculation: 36-inch cleared zones everywhere. Never forces you to squeeze past the desk chair to reach the reading chair.",
+      "Walk in: reading chair to the left, backed by the bookshelf wall. Pass through to the desk at the far end, centered on the north window. Sleep corner carved out of the west, behind a low open shelf. Closet south, beside the door.\n\nCirculation: 36-inch cleared zones everywhere. Never forces you to squeeze past the desk chair to reach the reading chair.",
     variant: "body",
   }),
 
@@ -1188,14 +1188,14 @@ const studio12Blocks = [
     id: "demo-studio-swatch-3",
     ...at(108, 44, 22, 10),
     content:
-      "Honey oak\nExisting floor, refinished\n\nNo stain — let it age. The one warm neutral the whole room sits on.",
+      "Honey oak\nExisting floor, refinished\n\nNo stain. Let it age. The one warm neutral the whole room sits on.",
     variant: "body",
   }),
   textBlock({
     id: "demo-studio-materials",
     ...at(108, 55, 22, 11),
     content:
-      "Materials\nlinen — curtains + throw\nwool — 8×10 hand-knotted rug\nmatte brass — lamp bases, hardware\ncognac leather — reading chair\npaper — task lamp shades",
+      "Materials\nlinen: curtains + throw\nwool: 8×10 hand-knotted rug\nmatte brass: lamp bases, hardware\ncognac leather: reading chair\npaper: task lamp shades",
     variant: "body",
     listType: "bullet",
   }),
@@ -1211,7 +1211,7 @@ const studio12Blocks = [
     id: "demo-studio-light-body",
     ...at(0, 64, 22, 14),
     content:
-      "Three layers — ambient, task, accent.\n\nOverhead becomes a flush brass ring, dimmable. Task light at the desk (Anglepoise). Reading chair: floor lamp w/ paper shade. Accent: picture light over the bookshelf.\n\nRule: the room should be readable at 6pm without flipping anything on. If I need the overhead, lighting failed.",
+      "Three layers: ambient, task, accent.\n\nOverhead becomes a flush brass ring, dimmable. Task light at the desk (Anglepoise). Reading chair: floor lamp w/ paper shade. Accent: picture light over the bookshelf.\n\nRule: the room should be readable at 6pm without flipping anything on. If I need the overhead, lighting failed.",
     variant: "body",
   }),
   imageBlock({
@@ -1311,7 +1311,7 @@ const studio12Blocks = [
     id: "demo-studio-mood-notes",
     ...at(0, 129, 130, 6),
     content:
-      "Throughline: quiet, warm, and under-filled. Every image has more empty surface than filled. Light is always indirect. Wood and linen do most of the work; metal is the seasoning. Anti-pattern to avoid: the 'Pinterest Scandinavian' trap — too many greys, too few books, too much performance.",
+      "Throughline: quiet, warm, and under-filled. Every image has more empty surface than filled. Light is always indirect. Wood and linen do most of the work; metal is the seasoning. Anti-pattern to avoid: the 'Pinterest Scandinavian' trap: too many greys, too few books, too much performance.",
     variant: "body",
   }),
 
@@ -1326,21 +1326,21 @@ const studio12Blocks = [
     id: "demo-studio-phase-1",
     ...at(0, 142, 22, 10),
     content:
-      "Week 1 — shell\n\nClear room. Patch + prime. Paint first coat. Refinish floor.\n\nOutcome: clean, freshly painted shell.",
+      "Week 1: shell\n\nClear room. Patch + prime. Paint first coat. Refinish floor.\n\nOutcome: clean, freshly painted shell.",
     variant: "body",
   }),
   textBlock({
     id: "demo-studio-phase-2",
     ...at(24, 142, 22, 10),
     content:
-      "Weeks 2–3 — bones\n\nFixture + outlets. Curtains. Desk + chair. Shelving measured + ordered.\n\nOutcome: usable, even if not finished.",
+      "Weeks 2–3: bones\n\nFixture + outlets. Curtains. Desk + chair. Shelving measured + ordered.\n\nOutcome: usable, even if not finished.",
     variant: "body",
   }),
   textBlock({
     id: "demo-studio-phase-3",
     ...at(48, 142, 22, 10),
     content:
-      "Weeks 4–6 — finish\n\nShelving installed. Reading chair delivered. Lamps + accessories. Rug. Styling pass.\n\nOutcome: complete.",
+      "Weeks 4–6: finish\n\nShelving installed. Reading chair delivered. Lamps + accessories. Rug. Styling pass.\n\nOutcome: complete.",
     variant: "body",
   }),
 
@@ -1354,14 +1354,14 @@ const studio12Blocks = [
     id: "demo-studio-source-1",
     ...at(74, 142, 27, 10),
     content:
-      "Desk — Floyd                  $795\nChair — Sayl                 $420\nFloor lamp — Orbit           $240\nTask lamp — Anglepoise        $380\nRug — Revival 8×10 wool    $1,100",
+      "Desk: Floyd                  $795\nChair: Sayl                 $420\nFloor lamp: Orbit           $240\nTask lamp: Anglepoise        $380\nRug: Revival 8×10 wool    $1,100",
     variant: "body",
   }),
   textBlock({
     id: "demo-studio-source-2",
     ...at(102, 142, 28, 10),
     content:
-      "Curtains — West Elm linen    $280\nBed — reupholster headboard  $300\nBedding — Parachute linen    $340\nPicture light — RH           $180\nPaint — F&B + BM Hale Navy  ~$220",
+      "Curtains: West Elm linen    $280\nBed: reupholster headboard  $300\nBedding: Parachute linen    $340\nPicture light: RH           $180\nPaint: F&B + BM Hale Navy  ~$220",
     variant: "body",
   }),
 
@@ -1369,7 +1369,7 @@ const studio12Blocks = [
   textBlock({
     id: "demo-studio-q-h",
     ...at(0, 156, 60, 3),
-    content: "Questions — architect visit Jun 2",
+    content: "Questions: architect visit Jun 2",
     variant: "h2",
   }),
   textBlock({
@@ -1382,14 +1382,14 @@ const studio12Blocks = [
   textBlock({
     id: "demo-studio-budget-track-h",
     ...at(64, 156, 66, 3),
-    content: "Budget tracker — as of today",
+    content: "Budget tracker: as of today",
     variant: "h2",
   }),
   textBlock({
     id: "demo-studio-budget-track",
     ...at(64, 160, 66, 11),
     content:
-      "Spent / committed: $4,080\n— Paint + supplies           $180\n— Desk + chair             $1,215\n— Shelving deposit          $500\n— Rug                      $1,100\n— Electrician deposit       $200\n— Contingency reserved    $1,000\n\nRemaining: $4,920 of $9,000 — on track.",
+      "Spent / committed: $4,080\n• Paint + supplies           $180\n• Desk + chair             $1,215\n• Shelving deposit          $500\n• Rug                      $1,100\n• Electrician deposit       $200\n• Contingency reserved    $1,000\n\nRemaining: $4,920 of $9,000, on track.",
     variant: "body",
   }),
 
@@ -1404,7 +1404,7 @@ const studio12Blocks = [
     id: "demo-studio-next-todos",
     ...at(0, 179, 62, 10),
     content:
-      "[x] Paint ordered — picked up Sat\n[ ] Call Diego re: shelving schedule (Wed)\n[ ] Visit Oakland estate sale Sat for reading chair\n[ ] Architect visit Jun 2 — prep questions\n[ ] Book floor refinisher\n[ ] Order curtains + bedding",
+      "[x] Paint ordered, picked up Sat\n[ ] Call Diego re: shelving schedule (Wed)\n[ ] Visit Oakland estate sale Sat for reading chair\n[ ] Architect visit Jun 2, prep questions\n[ ] Book floor refinisher\n[ ] Order curtains + bedding",
     variant: "body",
     listType: "todo",
     format: "todo",
@@ -1413,7 +1413,7 @@ const studio12Blocks = [
     id: "demo-studio-next-notes",
     ...at(64, 179, 66, 10),
     content:
-      "Decisions still open:\nBuilt-in shelving vs. freestanding — talk with Diego + architect.\nNorth-wall curtain length: floor-puddle or kiss-the-sill? leaning puddle.\nPicture light wired-in or plug-in? plug-in is cheaper and reversible.",
+      "Decisions still open:\nBuilt-in shelving vs. freestanding: talk with Diego + architect.\nNorth-wall curtain length: floor-puddle or kiss-the-sill? leaning puddle.\nPicture light wired-in or plug-in? plug-in is cheaper and reversible.",
     variant: "body",
   }),
 ];
@@ -1475,16 +1475,16 @@ function buildSnapshot(title, blocks, wires = []) {
 // Keyed by the demo board id. Ids MUST match DEMO_BOARDS in demoSynthesis.js
 // so the synthesis layer's grid nodes can link back here cleanly.
 export const DEMO_GRID_SNAPSHOTS = {
-  "demo-board-harbor": buildSnapshot("Harbor — business idea", harborBlocks, harborWires),
-  "demo-board-greenroom": buildSnapshot("Greenroom — content creation", greenroomBlocks, greenroomWires),
-  "demo-board-studio12": buildSnapshot("Studio 12 — design spaces", studio12Blocks, studio12Wires),
+  "demo-board-harbor": buildSnapshot("Harbor: business idea", harborBlocks, harborWires),
+  "demo-board-greenroom": buildSnapshot("Greenroom: content creation", greenroomBlocks, greenroomWires),
+  "demo-board-studio12": buildSnapshot("Studio 12: design spaces", studio12Blocks, studio12Wires),
 };
 
 // Ordered list for the sidebar. Keeps display order deterministic.
 export const DEMO_GRID_LIST = [
-  { id: "demo-board-harbor", title: "Harbor — business idea" },
-  { id: "demo-board-greenroom", title: "Greenroom — content creation" },
-  { id: "demo-board-studio12", title: "Studio 12 — design spaces" },
+  { id: "demo-board-harbor", title: "Harbor: business idea" },
+  { id: "demo-board-greenroom", title: "Greenroom: content creation" },
+  { id: "demo-board-studio12", title: "Studio 12: design spaces" },
 ];
 
 export function isDemoLyknChatId(id) {

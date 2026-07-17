@@ -26,9 +26,14 @@ import {
 } from './youtubeQa.js';
 import { searchWeb, formatSearchResultsForPrompt } from './lib/exterior/webSearch.js';
 import { fetchWebPage } from './lib/exterior/webFetch.js';
+import { assertUrlSafe, safeFetch } from './lib/exterior/ssrfGuard.js';
 import { verifyFileToken, FILE_PROXY_ROUTE } from './lib/exterior/fileProxy.js';
-import { mimeTypeForFilename } from './lib/exterior/capabilityStorage.js';
+import { buildReactArtifact } from './lib/exterior/capabilities/buildReactArtifact.js';
+import { pickDesignSystem, formatDesignSystemBlock } from './lib/exterior/designSystems.js';
+import { pickDesignGuide, formatDesignGuideBlock } from './lib/exterior/designGuides.js';
+import { mimeTypeForFilename, persistCapabilityArtifact } from './lib/exterior/capabilityStorage.js';
 import { buildAttachmentColumns } from './lib/vault/attachmentType.js';
+import { inferAttachmentKind } from './lib/vaultAttachment.js';
 import { chunkTextForSynthesis } from './synthesis-service.js';
 import { contextualizeChunks } from './lib/rag/contextualize.js';
 import {
@@ -804,6 +809,10 @@ const STRIPE_PRICE_MAP = {
     monthly: process.env.STRIPE_PRICE_STUDIO_MONTHLY,
     annual: process.env.STRIPE_PRICE_STUDIO_ANNUAL,
   },
+  max: {
+    monthly: process.env.STRIPE_PRICE_MAX_MONTHLY,
+    annual: process.env.STRIPE_PRICE_MAX_ANNUAL,
+  },
   studio_pro: {
     monthly: process.env.STRIPE_PRICE_STUDIO_PRO_MONTHLY,
     annual: process.env.STRIPE_PRICE_STUDIO_PRO_ANNUAL,
@@ -920,6 +929,7 @@ const IMAGE_BEARING_AI_ROUTES = new Set([
   '/api/desktop/browser-plan',
   '/api/desktop/browser-plan-next',
   '/api/desktop/browser-report',
+  '/api/desktop/locate-element',
 ]);
 app.use((req, res, next) => {
   if (IMAGE_BEARING_AI_ROUTES.has(req.path)) {
@@ -1275,6 +1285,9 @@ const FILE_PROXY_FRAME_ANCESTORS = [
   'https://*.lykn.io',
   'https://*.vercel.app',
   'http://localhost:*',
+  // The Electron glass overlay (loaded via loadFile → file:// origin) embeds
+  // built artifacts in an inline preview iframe (Build mode).
+  'file:',
   process.env.FRONTEND_BASE_URL,
   process.env.FRONTEND_URL,
 ]
@@ -1330,7 +1343,9 @@ app.get(FILE_PROXY_ROUTE, async (req, res) => {
         "default-src 'self' data: blob: https:; " +
           "img-src 'self' data: blob: https:; " +
           "style-src 'unsafe-inline' 'self' https:; " +
-          "script-src 'unsafe-inline' 'self' blob: https:; " +
+          // 'unsafe-eval': React artifacts (lykn_build_react_artifact) compile
+          // their JSX with Babel Standalone in-page and run it via new Function.
+          "script-src 'unsafe-inline' 'unsafe-eval' 'self' blob: https:; " +
           "font-src 'self' data: https:; " +
           "media-src 'self' blob: https:; " +
           `frame-ancestors ${FILE_PROXY_FRAME_ANCESTORS}`,
@@ -1354,6 +1369,25 @@ app.get(FILE_PROXY_ROUTE, async (req, res) => {
   } catch (err) {
     console.error('📎 File proxy error:', err?.message || err);
     return res.status(500).type('text/plain').send('Download failed');
+  }
+});
+
+// Manual code edits from the artifact panel's Code view: the user edited the
+// React artifact's JSX by hand and wants it re-rendered. Runs the exact same
+// validate → wrap-in-runner → persist pipeline as the lykn_build_react_artifact
+// tool (no AI involved), returning the same result shape (file_url,
+// preview_html, download_links) so the client swaps the artifact in place.
+app.post('/api/artifacts/react/rebuild', requireAuth, async (req, res) => {
+  try {
+    const result = await buildReactArtifact(
+      { title: req.body?.title, code: req.body?.code },
+      { supabaseAdmin, userId: req.user.id },
+    );
+    if (result?.ok === false) return res.status(400).json(result);
+    return res.json(result);
+  } catch (err) {
+    console.error('🧩 Artifact manual rebuild failed:', err?.message || err);
+    return res.status(500).json({ ok: false, error: 'rebuild_failed' });
   }
 });
 
@@ -1636,6 +1670,12 @@ const OUTPUT_CAPS = {
   file_small: 2500,
   vault_search: 800,
   discover_takeaway: 600,
+  // Coded-artifact turns (lykn_build_react_artifact): the model writes a
+  // complete React app/site/worksheet into a tool-call argument, so it needs
+  // far more room than a chat reply. 30k tokens ≈ 120KB of code — matches
+  // the tool's MAX_CODE_LEN. clampForProvider still bounds this per provider
+  // (grok/gemini 32k ceilings pass it through; openai/claude clamp lower).
+  coded_artifact: 30000,
   // `max` is the hard ceiling for caller `override` values — bumped from
   // 8,192 (old Gemini Flash 2.0 ceiling) to 16,384, the smallest modern
   // ceiling we still hit (GPT-4o). Per-provider clamping at the actual
@@ -1647,12 +1687,14 @@ const OUTPUT_CAPS = {
 // before the request goes out so we never get a 400 "max_tokens too
 // large" from any provider — no matter how generous OUTPUT_CAPS gets.
 // Keep these conservative: when in doubt, use the lower model in the
-// family. The 8,192 floor for Claude is for 3.5 Sonnet; Sonnet 4 / 4.5
-// allow 64K, but starting from the lower number is safe.
+// family. Claude was 8,192 (the 3.5 Sonnet floor) but resolveAnthropicModel
+// now maps every legacy id to 4.x models (64K output), and coded-artifact
+// builds on Opus need well past 8K for the component source — 32,768
+// matches the gemini/grok ceiling and stays under every 4.x model's limit.
 const PROVIDER_OUTPUT_CEILINGS = {
   gemini: 32768,
   openai: 16384,
-  claude: 8192,
+  claude: 32768,
   grok: 32768,
 };
 
@@ -4240,6 +4282,7 @@ const PLAN_REQUEST_LIMITS = {
   free: Infinity,
   student: Infinity,
   studio: Infinity,
+  max: Infinity,
   studio_pro: Infinity,
   studio_max: Infinity,
 };
@@ -4273,18 +4316,16 @@ async function checkAiUsageLimit(req, res, next) {
 // ============================================
 // SSRF PROTECTION — block private/internal IPs
 // ============================================
-function isUrlSafe(urlString) {
-  try {
-    const parsed = new URL(urlString);
-    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
-    const host = parsed.hostname.toLowerCase();
-    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return false;
-    if (host.startsWith('10.') || host.startsWith('192.168.') || host.startsWith('172.')) return false;
-    if (host === '169.254.169.254' || host.endsWith('.internal') || host.endsWith('.local')) return false;
-    return true;
-  } catch {
-    return false;
-  }
+// Backed by the shared ssrfGuard, which resolves the hostname via DNS and
+// rejects the RESOLVED IP if it is loopback/private/link-local/CGNAT — so
+// decimal/octal/hex IP encodings, raw IPv6 literals, and DNS-rebinding are all
+// caught (the old string-prefix check missed 127.0.0.2, 2130706433, [::ffff:…],
+// and any public name pointing at a private address). Async because it does a
+// DNS lookup; every caller is inside an async route handler. For the actual
+// fetch, prefer safeFetch() which re-validates each redirect hop.
+async function isUrlSafe(urlString) {
+  const result = await assertUrlSafe(urlString);
+  return result.ok;
 }
 
 // ============================================
@@ -4381,13 +4422,96 @@ const upgradeModelForVision = (model, hasImages) => {
   return model;
 };
 
+// Coded-artifact turns (forced lykn_build_react_artifact build, or an open
+// React artifact being edited) route to a dedicated CODING model instead of
+// whatever chat model the turn arrived on:
+//
+//   1. Nano-tier chat models (the everyday `lykn` route → gpt-4.1-nano, and
+//      the glass overlay always sends `lykn`) reliably FAIL at writing a
+//      complete React component into a tool-call argument — they emit the
+//      forced call with an empty `code`, get the `code_required` error back,
+//      and apologize in a loop instead of coding.
+//   2. Grok 4.5 is xAI's frontier coding model ($2/M in, $6/M out — cheaper
+//      than sonnet/gpt frontier tiers) and writes full apps/sites/worksheets
+//      in one shot, so when the xAI key is configured EVERY coded-artifact
+//      turn goes there regardless of the incoming model.
+//
+// Without an xAI key we fall back to the old behavior: bump weak models to
+// the same strong same-provider models the vision upgrade uses. Normal
+// (non-artifact) turns are never touched.
+//
+// CODED_ARTIFACT_MODEL env var overrides the default (e.g. when the xAI
+// account runs out of credits, point it at gemini-3.1-pro-preview or
+// gpt-4.1 until credits are topped up).
+const CODED_ARTIFACT_MODEL = String(process.env.CODED_ARTIFACT_MODEL || 'grok-4.5').trim();
+const codedArtifactModelAvailable = () => {
+  if (CODED_ARTIFACT_MODEL.includes('grok')) return !!process.env.XAI_API_KEY;
+  if (CODED_ARTIFACT_MODEL.includes('claude')) return !!process.env.ANTHROPIC_API_KEY;
+  if (CODED_ARTIFACT_MODEL.includes('gemini')) return !!process.env.GOOGLE_API_KEY;
+  return !!process.env.OPENAI_API_KEY;
+};
+// Does a BUILD request lean on what's currently on screen? ("build a chart
+// based off of this data", "make me a website like this one", "recreate
+// this page"). When it does, the overlay screenshot is real input — keep it
+// and route to a vision-capable coder instead of dropping it for grok.
+// Deliberately narrow: bare "this"/"it" without a screen-ish noun or a
+// "based on/off / like / from" frame does NOT match, so self-contained
+// requests ("build me a website for this idea: …") stay on the cheap path.
+const BUILD_SCREEN_REF_RE = new RegExp(
+  [
+    // "…my screen / the screen / on screen"
+    /\b(?:on\s+)?(?:my|the)\s+screen\b/.source,
+    // "what you see / what I'm looking at"
+    /\bwhat\s+(?:you|i)(?:'m|\s+am)?\s+(?:can\s+)?(?:see|see(?:ing)?|look(?:ing)?\s+at)\b/.source,
+    // "this <screen-ish thing>" — data, table, page, design, one, …
+    /\b(?:this|that)\s+(?:data|dataset|table|chart|graph|figure|numbers?|stats?|page|site|website|web\s?page|article|design|layout|ui|mockup|screenshot|image|picture|spreadsheet|sheet|doc(?:ument)?|form|list|dashboard|one)\b/.source,
+    // "these numbers / those values"
+    /\b(?:these|those)\s+(?:numbers?|stats?|values?|results?|figures?|rows?|entries|data)\b/.source,
+    // "based on/off (of) this|that", "like this|that", "from this|that",
+    // "off of this" — reference frames where the pronoun stands alone
+    /\b(?:based\s+(?:on|off)(?:\s+of)?|like|from|off\s+of|copy(?:ing)?|recreate|rebuild|clone)\s+(?:this|that|it)\b/.source,
+  ].join('|'),
+  'i',
+);
+
+// Video-render turns (lykn_render_video) are model-chosen, not a forced mode,
+// so we can only sniff intent from the text. Used to (a) extend the SSE hard
+// timeout — server-side Remotion renders take 1-4 real minutes on top of code
+// generation — and (b) surface the [USER_IMAGES]/[GENERATED_IMAGES] URL blocks
+// so the model can feed hosted images into <Img>. Deliberately loose: a false
+// positive just means a longer ceiling and an extra prompt block, both benign.
+const VIDEO_RENDER_INTENT_RE =
+  /\b(?:mp4|video|animat(?:e|ed|ion|ions)|motion\s+graphics?|ken\s*burns|(?:intro|title|logo)\s+(?:clip|reel|animation)|clip\s+for\b)\b/i;
+
+const upgradeModelForCodedArtifact = (model, needsCodedArtifact) => {
+  if (!needsCodedArtifact) return model;
+  if (codedArtifactModelAvailable()) {
+    if (model !== CODED_ARTIFACT_MODEL) {
+      console.log(`🧑‍💻 Code-artifact route: ${model} → ${CODED_ARTIFACT_MODEL} (React artifact turn — dedicated coding model)`);
+    }
+    return CODED_ARTIFACT_MODEL;
+  }
+  if (!WEAK_VISION_MODELS.has(model)) return model;
+  const upgraded = pickStrongVisionModel(model);
+  if (upgraded && upgraded !== model) {
+    console.log(`🧑‍💻 Code-artifact upgrade: ${model} → ${upgraded} (React artifact turn — stronger code writer)`);
+    return upgraded;
+  }
+  return model;
+};
+
 const OPENAI_O_SERIES = new Set(['o3', 'o3-pro', 'o4-mini']);
 const isOpenAIModel = (m) => m.startsWith('gpt-') || OPENAI_O_SERIES.has(m);
 const isTogetherModel = (m) => isTogetherInferenceModel(m);
 
 const RETRYABLE_STATUSES = new Set([429, 503, 529]);
+// "Retryable" here means "another provider in the fallback chain can still
+// answer" — that includes account-level failures on ONE provider (credits
+// exhausted, spending limit, billing/permission 403s), not just transient
+// capacity errors. xAI's out-of-credits message is "used all available
+// credits or reached its monthly spending limit" (code permission-denied).
 const isRetryableProviderError = (errMsg) =>
-  /429|rate.?limit|overloaded|529|503|too many|capacity|resource.?exhaust|quota.?exceed/i.test(errMsg) ||
+  /429|rate.?limit|overloaded|529|503|too many|capacity|resource.?exhaust|quota.?exceed|credits?|spending.?limit|permission.?denied|billing|insufficient.?funds/i.test(errMsg) ||
   isTogetherDedicatedEndpointError(errMsg);
 
 function getFallbackModels(failedModel) {
@@ -5036,6 +5160,55 @@ const GUEST_SYSTEM_PROMPT = [
 ].join('\n');
 
 /* ------------------------------------------------------------------ */
+/*  Glass demo addendum                                                */
+/*                                                                    */
+/*  Appended to GUEST_SYSTEM_PROMPT only when the client passes        */
+/*  mode === 'glass-demo'. This is the ⌘L overlay demo on the          */
+/*  marketing site, where LYKN should be able to speak accurately      */
+/*  about the FULL product — the on-screen overlay, project            */
+/*  management, calendar, and every other feature — not just the       */
+/*  Vault + Synthesis Layer the base guest prompt describes.           */
+/* ------------------------------------------------------------------ */
+const GLASS_DEMO_ADDENDUM = [
+  '=== LYKN GLASS DEMO MODE (marketing site overlay) ===',
+  'You are running as the LYKN Glass overlay, summoned with ⌘L on the LYKN marketing site. The visitor is trying LYKN live. Speak as LYKN and explain, accurately and specifically, everything LYKN can do. This section is AUTHORITATIVE and EXPANDS the product description above — treat the features it lists as real. (It does NOT reintroduce a grid, board, or canvas — those still do not exist.)',
+  '',
+  '=== THE FULL PRODUCT — WHAT LYKN CAN DO ===',
+  '- LYKN GLASS (the on-screen overlay): LYKN lives on top of every screen you work on. Press ⌘L (Ctrl+L) anywhere — over any app, document, browser, or design — and LYKN appears as a floating glass bar, already knowing who you are and what you are working on. It can read what is on your screen when you ask, answer about it, and take action, then get out of your way. This overlay is the surface the visitor is using to talk to you right now.',
+  '- PROJECT MANAGEMENT: LYKN is your AI project manager. It holds the full context of everything you are working on, tracks your projects and their tasks, knows what is done and what is due, and pushes the next step forward from wherever you are — keeping every connected tool and model in sync.',
+  '- CALENDAR: LYKN manages your calendar. It knows what is coming up, can schedule and reschedule, flag conflicts, and tie events back to the relevant project so your time and your work stay in sync.',
+  '- CHAT & MODELS: chat with LYKN in one fast everyday model, or (on Pro) switch to frontier models — GPT, Claude, Gemini, Grok — from the model menu, every one grounded in your context.',
+  '- VOICE MODE: talk to LYKN hands-free and get answers out loud; dictation and YouTube transcript ingestion are built in.',
+  '- THE VAULT: your long-term memory — files, notes, links, and media saved, tagged, and searchable on demand.',
+  '- THE SYNTHESIS LAYER (Mind Map): a live map of your beliefs, projects, and Vault items as connected nodes that reveals how everything you think about relates.',
+  '- CONNECTIONS: LYKN connects to the tools you already use and carries your context across them, so every assistant you talk to shares the same understanding of you.',
+  '- PORTABLE INTELLIGENCE LAYER: your beliefs, preferences, facts, and voice travel with you across every app, model, and screen — that is what makes every answer personal to you.',
+  '',
+  'When the visitor asks what LYKN is or what it can do, draw from the features above — accurately, and never invent capabilities beyond these. Keep replies tight and conversational; do not dump the whole list unless they ask for everything.',
+  '',
+  '=== YOU ARE IN A DEMO ===',
+  'You know you are a live DEMO of the LYKN Glass overlay running on the LYKN marketing website — not yet installed on the visitor\'s own machine. Behave exactly like the real overlay would, but be honest if it comes up: this is a taste of Glass on the landing page, and downloading LYKN for Mac (or pressing ⌘L after install) puts this same overlay on every screen they actually work on, grounded in THEIR context. Do not pretend you have access to their private apps, files, or accounts yet — you do not, because they have not signed in. Never break character as LYKN.',
+  '',
+  '=== NEVER CLAIM YOU ALREADY KNOW THIS VISITOR ===',
+  'You have learned NOTHING about this visitor beyond what they type in this demo conversation. NEVER claim otherwise. Banned framings: "I\'ve learned how you work", "I\'ve noticed you tend to…", "based on what I know about you", "your projects", "your calendar shows…", "I remember when you…", or any sentence implying you hold their history, preferences, files, or context. You do not — they are an anonymous visitor. Speak about personalization strictly in CAPABILITY terms: what you CAN do once they\'re set up. Correct framings: "I can learn how you work…", "Once you\'re signed in, I hold the context of your projects…", "After you install LYKN, I\'ll know what\'s on your plate…". Present tense "I know/I\'ve learned" is only allowed for things from THIS conversation ("you mentioned a launch earlier") or the demo context (they\'re on the LYKN landing page).',
+  '',
+  '=== "DO YOU READ MY SCREEN?" — HOW TO ANSWER ===',
+  'If the visitor asks whether you read / see / access their screen, do NOT say "not directly" or any wishy-washy hedge. Answer plainly with the two-part frame: in THIS demo, no — you are not reading their real screen; but if they download LYKN, then YES, the installed overlay reads whatever is actually on their screen and acts on it. Example shape (write it fresh, do not copy): "In this demo, no. But download LYKN and yes — I read whatever\'s on your screen and work with it. Right now I just know you\'re on the LYKN landing page." Keep it confident and short.',
+  '',
+  '=== YOUR CURRENT SCREEN (what the visitor is looking at) ===',
+  'For the demo you DO know the visitor is on the LYKN landing page (lykn.ai). So if they ask what is on this page, what they are looking at, or to explain/summarize it, answer confidently and specifically from this (this is demo context, not you reading their private screen):',
+  '- A top navigation header: the LYKN logo, and links for Product, Pricing, Mobile, Download, plus Sign up / Sign in buttons.',
+  '- A hero section with the headline "AI Anywhere You Need" and a floating LYKN Glass bar, plus a ⌘ keycap hint in the corner (that is what they pressed to summon you).',
+  '- A section "When you need it on any screen" with two cards: LYKN running your projects on any screen, and LYKN being there the instant you need it.',
+  '- A section on the Vault (long-term memory) and how LYKN saves and surfaces what matters.',
+  '- A project-management section titled "Your AI project manager" showing live project, calendar, task, and kanban UI.',
+  '- A "Chat & Voice" section showing chat with LYKN and other models, plus a dark voice mode.',
+  '- A "Personal AI" section showing the Synthesis Layer mind-map, personalization settings, and "bring this personal AI on any page".',
+  '- An FAQ section and a "Put LYKN on your Mac" download section, then the footer.',
+  'If they ask you to do something that needs their real, private screen or accounts (read their actual email, see their real calendar, etc.), explain that the live overlay does exactly that once installed — here in the demo you can see this landing page and answer anything about LYKN.',
+].join('\n');
+
+/* ------------------------------------------------------------------ */
 /*  Landing-prototype onboarding addendum                              */
 /*                                                                    */
 /*  Appended to GUEST_SYSTEM_PROMPT only when the client passes        */
@@ -5310,15 +5483,21 @@ const LYKN_STREAM_PERSONA_FULL = [
 // builder tool that must run and the prompt hint the model needs to use it
 // well. `label` is shown to the model; `templateType` only applies to the
 // lykn_build_template tool (slideshow/education/document/etc.).
+// Documents / study guides / worksheets / mini-apps now build through the
+// claude.ai-style React artifact tool: the model WRITES a React component and
+// the client renders it live in the sandboxed panel. Decks stay on
+// lykn_build_template (its PPTX export path); spreadsheets/charts/diagrams
+// keep their dedicated builders.
 const ARTIFACT_BUILD_SPEC = {
   deck:      { tool: 'lykn_build_template',  label: 'pitch deck / slideshow',           templateType: 'presentation' },
-  study:     { tool: 'lykn_build_template',  label: 'study guide',                      templateType: 'education' },
-  document:  { tool: 'lykn_build_template',  label: 'document / report',                templateType: 'document' },
-  worksheet: { tool: 'lykn_build_template',  label: 'worksheet',                        templateType: 'worksheet' },
+  study:     { tool: 'lykn_build_react_artifact', label: 'study guide',                 templateType: null },
+  document:  { tool: 'lykn_build_react_artifact', label: 'document / report',           templateType: null },
+  worksheet: { tool: 'lykn_build_react_artifact', label: 'worksheet',                   templateType: null },
   spreadsheet: { tool: 'lykn_build_spreadsheet', label: 'spreadsheet / data table',     templateType: null },
   chart:     { tool: 'lykn_generate_chart',  label: 'chart / graph',                    templateType: null },
   diagram:   { tool: 'lykn_generate_diagram', label: 'diagram / flowchart',             templateType: null },
-  webapp:    { tool: 'lykn_manage_file',     label: 'interactive page / mini-app (HTML)', templateType: null },
+  webapp:    { tool: 'lykn_build_react_artifact', label: 'interactive app / page',      templateType: null },
+  video:     { tool: 'lykn_render_video',    label: 'rendered .mp4 video',              templateType: null },
 };
 
 const LYKN_CHAT_TOOL_GUIDANCE = [
@@ -5680,7 +5859,8 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    chart, image, document, marketing plan, deck, spreadsheet, or a',
   '    sub-agent\'s report you just produced (often the OUTPUT of',
   '    lykn_generate_chart, lykn_generate_image, lykn_build_template,',
-  '    lykn_build_spreadsheet, lykn_generate_speech, lykn_manage_file, or',
+  '    lykn_build_react_artifact (pass its file_url),',
+  '    lykn_build_spreadsheet, lykn_manage_file, or',
   '    lykn_communicate_with_model). Pass the artifact\'s text/markdown as',
   '    `content` (that\'s what gets searched) AND, whenever it produced a',
   '    chart/image/file, pass its URL as `file_url` — use chart_url for',
@@ -5752,8 +5932,20 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  Reach for a real tool FIRST when one exists: calendar (lykn_createEvent /',
   '  lykn_listEvents), to-dos (lykn_createTodo / lykn_listTodos), code changes',
   '  in the user\'s connected repo (lykn_build_with_cursor → PR), a connected',
-  '  app action (lykn_call_app), live web (lykn_web_search), reading a URL',
-  '  (lykn_web_fetch), or image generation (lykn_generate_image, 5/month). Use',
+  '  app action (lykn_call_app), live web (lykn_web_search), or reading a URL',
+  '  (lykn_web_fetch). Image generation (lykn_generate_image, 5/month) is',
+  '  user-armed: it only appears in your tool list when the user turns on the',
+  '  "Generate image" mode for that message. If they ask for an image while',
+  '  the tool is absent, tell them to tap "+" → Generate image (web/app) or',
+  '  the overlay menu\'s "Create an image" and resend — never fake one.',
+  '  This INCLUDES follow-ups to an image you already generated: "do the',
+  '  exact same thing but…", "make it darker", "same but with the ⌘ symbol"',
+  '  right after an image turn is a NEW image request. When the image tool',
+  '  is not in your list on such a turn, the ONLY correct reply is the',
+  '  one-line redirect above. NEVER substitute lykn_generate_diagram, a',
+  '  mermaid/markdown code block, ASCII art, or made-up "Download SVG/PNG"',
+  '  links for a requested image — a diagram is not an image, and invented',
+  '  download links are broken links. Use',
   '  lykn_recommendTools ONLY for actions no native tool or connected app',
   '  covers — e.g. the user asks to SEND an email but no email app is',
   '  connected. In that case the honest answer to "send this", "make me a',
@@ -5805,8 +5997,10 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    between projects, and keep each project\'s working memory up to date.',
   '  • Schedule & track — calendar events, reminders, and a to-do list.',
   '  • Make things — slideshows / pitch decks, documents, worksheets,',
-  '    spreadsheets, charts, diagrams, images, speech/audio, and',
-  '    self-contained mini-apps / HTML pages (rendered inline in chat).',
+  '    spreadsheets, charts, diagrams, images, speech/audio, real .mp4',
+  '    videos (animated logos / image animations / motion graphics), and',
+  '    live interactive apps, dashboards, and tools (coded in React and',
+  '    rendered in a side panel next to the chat).',
   '  • Compute & convert — exact math, symbolic algebra/calculus, run',
   '    Python or JavaScript, translate, parse documents, OCR/analyse/edit',
   '    images, transcribe audio.',
@@ -5852,22 +6046,57 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
 // ---------------------------------------------------------------------------
 const TOOL_GUIDANCE_VISUAL = [
   'VISUAL ARTIFACTS (interactive previews — like claude.ai Artifacts):',
-  '  When the user asks for a slideshow, pitch deck, dashboard, mini-app,',
-  '  landing page, worksheet, or any visual/interactive deliverable, BUILD',
-  '  IT WITH TOOLS — do not dump a long HTML/code block only in markdown.',
-  '  LYKN renders tool output inline in the chat as a live preview.',
-  '  • lykn_build_template — slideshows, pitch decks, lessons, forms,',
-  '    layouts. Pass template_type + title + sections[{heading, body,',
-  '    notes}]. Always include export_formats: ["html","pptx"] for decks.',
-  '  • lykn_manage_file — self-contained HTML/CSS/JS apps, custom pages,',
-  '    or one-off documents. action=create, filename ends in .html, full',
-  '    page in content. Prefer this for interactive UIs and prototypes.',
-  '  • lykn_generate_chart / lykn_generate_diagram / lykn_generate_image',
-  '    — charts, diagrams, and images render inline too.',
+  '  When the user asks for a document, report, study guide, worksheet,',
+  '  dashboard, mini-app, landing page, or any visual/interactive deliverable,',
+  '  BUILD IT WITH TOOLS — do not dump a long HTML/code block only in markdown.',
+  '  LYKN renders tool output live in a side panel next to the chat.',
+  '  • lykn_build_react_artifact — THE DEFAULT builder. You WRITE a complete',
+  '    React component and it renders live. A big library stack is already in',
+  '    scope: Tailwind classes, all React hooks, Recharts, lucide-react,',
+  '    framer-motion (motion / AnimatePresence), d3, three.js (THREE),',
+  '    lodash (_), dayjs, mathjs (math), PapaParse (Papa), marked, Tone.js,',
+  '    canvas-confetti (confetti), html2canvas + jsPDF (jsPDF). Use for full',
+  '    mini-apps and websites, presentations, documents, reports, study',
+  '    guides, worksheets, dashboards, calculators, quizzes, games,',
+  '    prototypes — anything read or interactive. Code well and BUILD BIG:',
+  '    real layout and typography, multi-view apps and full page sections',
+  '    when asked, animation where it helps, no emojis in document-style',
+  '    artifacts. STYLE IT by following the [DESIGN_SYSTEM] brief included',
+  '    below — its color tokens, type scale, spacing, and component recipes —',
+  '    and, when a [STYLE_GUIDE] block is also included, follow its per-format',
+  '    structure rules (website section order, slide-deck navigation,',
+  '    dashboard layout, document typography, app interaction states).',
+  '    The runner already loads Inter + Space Grotesk (font-display) +',
+  '    JetBrains Mono, daisyUI classes, animate.css, and Tailwind forms/',
+  '    typography (prose) plugins; never ship browser-default styling.',
+  '  • lykn_render_video — a REAL downloadable .mp4, rendered server-side',
+  '    from a Remotion composition you write (frame-driven React: import only',
+  '    from "remotion"/"react", useCurrentFrame + interpolate/spring, inline',
+  '    styles, <Img> for hosted image URLs). Use when the user wants a video',
+  '    FILE — "make this an mp4", "animate my logo into a video", "a clip for',
+  '    my landing page", "turn that image into an animation I can download".',
+  '    Keep clips short (default 5s, max 30s) — rendering takes real minutes.',
+  '    For in-page motion that stays interactive, use the React artifact with',
+  '    framer-motion instead; you can also embed a rendered video inside a',
+  '    later artifact via <video src autoPlay muted loop playsInline>.',
+  '  • lykn_build_template — ONLY for slide decks / presentations that need',
+  '    a PPTX download. Pass template_type "presentation" + sections +',
+  '    export_formats: ["html","pptx"].',
+  '  • lykn_manage_file — plain downloadable files (markdown, csv, json).',
+  '    Do not use it for HTML pages anymore — write React instead.',
+  '  • lykn_generate_chart / lykn_generate_diagram — single standalone charts',
+  '    and diagrams, ONLY when the user actually asked for a chart/diagram/',
+  '    flowchart. For a chart INSIDE a dashboard, use Recharts in the React',
+  '    artifact instead. Image generation (lykn_generate_image, GPT Image 2)',
+  '    is only available when the user arms "Generate image"; if they ask for',
+  '    an image (or a tweak to one you just generated) and the tool is missing',
+  '    from your list, tell them to switch on "+" → Generate image (or the',
+  '    overlay menu\'s "Create an image") and resend — do NOT pass off a',
+  '    diagram, mermaid block, or fabricated download links as the image.',
   '  Do NOT put emojis in any built document, deck, worksheet, or PDF',
   '  (titles, headings, body, notes) — keep them clean and professional.',
-  '  After the tool returns, give a brief summary in prose — the preview',
-  '  card appears automatically; you do not need to paste download URLs.',
+  '  After the tool returns, give a brief summary in prose — the artifact',
+  '  panel opens automatically; never paste the code or download URLs.',
 ].join('\n');
 
 const TOOL_GUIDANCE_SCHEDULING = [
@@ -5995,11 +6224,11 @@ const TOOL_GUIDANCE_EXTERIOR = [
   '    or a web page (PDF, docx, etc.) so you can summarise or act on it.',
   '  • lykn_process_image — OCR, analyse, or edit an image the user gave you.',
   '  • lykn_transcribe_audio — speech-to-text from an audio URL / payload.',
-  '  • lykn_generate_speech — text-to-speech; returns a hosted audio URL.',
   '  • lykn_translate — translate text into a target language.',
   '  • lykn_http_request — make a raw HTTP/API request when no dedicated tool',
   '    or connected app covers the need.',
-  '  • lykn_generate_image — Nano Banana image (5/month cap); embed markdown.',
+  '  • lykn_generate_image — GPT Image 2 (5/month cap; only offered when the',
+  '    user arms "Generate image" mode); the result renders inline on its own.',
 ].join('\n');
 
 // Intent detectors for the gated blocks above. Deliberately broad. The
@@ -6008,7 +6237,7 @@ const TOOL_GUIDANCE_EXTERIOR = [
 // the web" turns (it gates VISUAL + EXTERIOR, which are the produce/compute
 // tools). AGENTS_APPS_CODE covers other models, connected-app calls, and
 // Cursor coding builds.
-const MAKING_INTENT_RE = /\b(slideshow|slide|deck|presentation|pitch|keynote|document|doc|report|essay|memo|worksheet|handout|spreadsheet|sheet|csv|table|chart|graph|plot|diagram|flow ?chart|mind ?map|mermaid|image|picture|photo|logo|poster|icon|illustration|drawing|render|mock ?up|prototype|wireframe|landing ?page|web ?page|mini[- ]?app|webapp|html|speech|audio|voice ?over|narration|podcast|transcribe|transcript|ocr|parse|pdf|translate|translation|calculate|calculation|compute|equation|solve|integral|integrate|derivative|differentiate|simplify|factor|run (?:code|this|python|js|javascript)|python|javascript|script|search (?:the )?web|web search|google (?:it|that|this)|look (?:it|that|this)? ?up|online|latest)\b/i;
+const MAKING_INTENT_RE = /\b(slideshow|slide|deck|presentation|pitch|keynote|document|doc|report|essay|memo|worksheet|handout|spreadsheet|sheet|csv|table|chart|graph|plot|diagram|flow ?chart|mind ?map|mermaid|image|picture|photo|logo|poster|icon|illustration|drawing|render|mock ?up|prototype|wireframe|landing ?page|web ?page|mini[- ]?app|webapp|html|video|mp4|animation|animate|motion graphics?|speech|audio|voice ?over|narration|podcast|transcribe|transcript|ocr|parse|pdf|translate|translation|calculate|calculation|compute|equation|solve|integral|integrate|derivative|differentiate|simplify|factor|run (?:code|this|python|js|javascript)|python|javascript|script|search (?:the )?web|web search|google (?:it|that|this)|look (?:it|that|this)? ?up|online|latest)\b/i;
 const MAKING_VERB_RE = /\b(make|build|create|generate|draw|design|produce|write me|put together|turn (?:this|that|it) into|convert)\b/i;
 const AGENTS_APPS_CODE_INTENT_RE = /\b(my (?:model|models|agent|persona)|sub[- ]?agent|sub[- ]?model|delegate|main agent|custom model|models i (?:made|built|created|have)|which model|ask my|connected app|my app|apps?|api|integration|integrate with|endpoint|call (?:my|the|an)|post to|fix (?:the|this|that|a)? ?bug|pull request|open a pr|build with cursor|cursor (?:agent|build|cloud)|cloud agent|code ?base|repo|repository|implement|refactor|deploy|ship (?:it|this|the))\b/i;
 
@@ -6027,6 +6256,9 @@ const AGENTS_APPS_CODE_INTENT_RE = /\b(my (?:model|models|agent|persona)|sub[- ]
 // "make sense of this chart" never trip a build.
 const ARTIFACT_INTENT_NOUNS = [
   // First match wins → most specific kinds before the generic "document".
+  // video FIRST: "make me a video/mp4/animation" renders a real .mp4 via
+  // lykn_render_video ("video game" stays a webapp build).
+  { type: 'video',     re: /(mp4|videos?(?! ?game)|animations?|motion ?graphics?)/i },
   { type: 'deck',      re: /(pitch ?deck|slide ?deck|slide ?show|slides?|presentation|keynote|power ?point|ppt)/i },
   { type: 'study',     re: /(study ?guide|study ?sheet|revision ?guide|cheat ?sheet|flash ?cards?|lesson plan)/i },
   { type: 'worksheet', re: /(work ?sheet|practice ?sheet|practice problems?|problem set|exercise sheet|handout|quiz)/i },
@@ -6037,7 +6269,10 @@ const ARTIFACT_INTENT_NOUNS = [
   // chart" classify as diagrams, not as a bare "chart".
   { type: 'diagram',   re: /(flow ?chart|flow ?diagram|mind ?map|org ?chart|sequence diagram|state diagram|gantt ?chart|gantt|diagram)/i },
   { type: 'chart',     re: /(bar ?chart|line ?chart|pie ?chart|column ?chart|chart|graph|histogram|scatter ?plot|plot)/i },
-  { type: 'webapp',    re: /(interactive (?:page|app|web ?page)|mini[- ]?app|web ?app|web ?site|landing ?page|web ?page|html (?:page|app)|prototype|wireframe)/i },
+  // dashboard/game/calculator-style asks are webapp builds too — "build me a
+  // dashboard" used to fall through to a free-text turn where the model
+  // (grok especially) announced the build and never called the tool.
+  { type: 'webapp',    re: /(interactive (?:page|app|web ?page)|mini[- ]?app|web ?app|web ?site|landing ?page|web ?page|html (?:page|app)|prototype|wireframe|dashboards?|admin ?panel|trackers?|calculators?|games?(?! ?plan)|timers?|converters?|widgets?|simulators?|planners?|todo ?(?:list|app)|apps?|tools?)/i },
   // "doc"/"docs" (incl. "word doc"/"google doc") are the everyday way people
   // ask for a document — without them "write me a doc" fell through to a free
   // text reply, where the model often dumped raw HTML into the chat body.
@@ -6064,6 +6299,101 @@ function detectArtifactIntent(message) {
   return null;
 }
 
+// "+" → Generate image PARITY: same idea as detectArtifactIntent, for image
+// generation. lykn_generate_image is stripped from the default whitelist so
+// the model can't burn the image quota uninvited — but that meant a TYPED
+// "generate an image of a dog" (without arming the "+" mode) left the model
+// with an image request and no tool: it produced no text and no tool calls,
+// and the turn surfaced as the "didn't produce a written reply" fallback.
+// A clear typed build-verb request is exactly as invited as the armed mode,
+// so we detect it and force the tool the same way the "+" menu would.
+const IMAGE_INTENT_NOUN_RE =
+  /(images?|pictures?|photos?|photographs?|pics?|logos?|illustrations?|icons?|wallpapers?|art ?works?|drawings?|sketch(?:es)?|portraits?|avatars?|thumbnails?|stickers?|posters?|banners?|memes?)/i;
+// Restyle asks bind the verb to a deictic object instead of a determiner —
+// "make THIS a ghibli style image", "generate THIS IMAGE but with…",
+// "turn IT into a cartoon" — which the build-verb regex (verb + a/an/the)
+// can't see. Style nouns count as image nouns here: "turn this into a
+// watercolor" is unambiguously image gen.
+const IMAGE_RESTYLE_RE =
+  /\b(?:make|turn|convert|transform|render|redraw|remake|redo|generate|create|draw|recreate|reimagine|restyle)\s+(?:this|that|it|him|her|them|me|us|my \w+|the \w+)\b[^.!?\n]{0,50}?\b(?:images?|pictures?|photos?|drawings?|sketch(?:es)?|paintings?|posters?|memes?|cartoons?|caricatures?|portraits?|avatars?|stickers?|anime|ghibli|pixar|pixel ?art|watercolou?r|oil painting|line ?art|comic)/i;
+// A bare noun-first prompt is how people type into an image box: "image of a
+// dog on a skateboard", "a picture of the northern lights", "an image like
+// this one but darker" (with a reference attachment).
+const IMAGE_NOUN_LEAD_RE =
+  /^(?:an?\s+|the\s+)?(?:images?|pictures?|photos?|illustrations?|drawings?|sketch(?:es)?|logos?|posters?|wallpapers?|portraits?|avatars?|memes?|stickers?)\s+(?:of|for|with|showing|depicting|like|similar to|based on|inspired by)\b/i;
+// "…an image like this one…" / "…a picture based on that…" anywhere in the
+// sentence: an image noun bound to a reference comparator is an image ask no
+// matter which verb introduced it.
+const IMAGE_NOUN_REF_RE =
+  /\b(?:images?|pictures?|photos?|illustrations?|drawings?|sketch(?:es)?|logos?|posters?|wallpapers?|portraits?|avatars?|memes?|stickers?)\s+(?:like|similar to|based on|inspired by|from|of)\s+(?:this|that|these|those|it)\b/i;
+
+function detectImageIntent(message) {
+  const t = String(message || '').trim();
+  if (!t || t.length > 600) return false;
+  if (ARTIFACT_ANALYSIS_LEAD_RE.test(t)) return false;
+  if (IMAGE_NOUN_LEAD_RE.test(t)) return true;
+  if (IMAGE_RESTYLE_RE.test(t)) return true;
+  if (IMAGE_NOUN_REF_RE.test(t)) return true;
+  const m = ARTIFACT_BUILD_VERB_RE.exec(t);
+  if (!m) return false;
+  // Bind the build verb to its object, exactly like detectArtifactIntent.
+  const tail = t.slice(m.index + m[0].length, m.index + m[0].length + 60);
+  return IMAGE_INTENT_NOUN_RE.test(tail);
+}
+
+// FOLLOW-UP EDIT PARITY: right after an image is generated, the natural next
+// message is a tweak with no image noun in it at all — "do the exact same
+// thing but use the ⌘ symbol", "make it darker", "now remove the text".
+// detectImageIntent can't see those (nothing image-shaped in the words), and
+// image mode disarms after every send, so the model landed with an image ask
+// and no image tool — and reached for lykn_generate_diagram / a markdown
+// mermaid dump with fake download links instead. If the LAST assistant turn
+// contains a generated image and the new message reads like a modification of
+// "that", it IS an image request — re-force the tool exactly like the armed
+// mode would.
+//
+// Generated images arrive in assistant text as a standalone markdown image
+// line; the "lykn-artifact:" alt prefix marks React-artifact previews, which
+// are NOT images and must not arm this path.
+const GENERATED_IMAGE_IN_REPLY_RE =
+  /!\[(?!lykn-artifact:)[^\]]*\]\(https?:\/\/[^\s)]+\)/;
+// Nouns that mean the follow-up is about some OTHER surface even though it
+// starts with a modification verb ("add that to my todo list", "make a note
+// of this") — never burn image quota on those.
+const IMAGE_FOLLOWUP_BLOCK_RE =
+  /\b(?:to-?dos?|task list|reminders?|calendar|events?|schedule|projects?|vault|notes?|emails?|messages?|essay|paragraph|summary|explanation|code|script|function|spreadsheet|deck|slides?|documents?)\b/i;
+const IMAGE_FOLLOWUP_EDIT_RE = new RegExp(
+  [
+    // "do the exact same thing but…", "same image but with…", "same but darker"
+    String.raw`\b(?:exact(?:ly)?\s+the\s+same|the\s+exact\s+same|same\s+(?:thing|one|image|picture|style|look|prompt)|same\s+but)\b`,
+    // "…but instead of it saying command have the command symbol"
+    String.raw`\binstead\s+of\b`,
+    // "again but darker", "one more with…", "another one without the text"
+    String.raw`\b(?:again|one more|another one)\b[^.!?\n]{0,40}\b(?:but|with|without|except|this time)\b`,
+    // Modification verb up front, bound to a deictic/definite object somewhere
+    // in the message: "make it darker", "change the background", "now redo
+    // that with…", "remove the text from it".
+    String.raw`^(?:ok(?:ay)?|yes|yeah|nice|cool|great|perfect|love it|thanks|thank you)?[\s,.!—-]*(?:can you\s+|could you\s+|please\s+|now\s+|but\s+|and\s+)*(?:make|change|turn|do|redo|re-?generate|remove|delete|add|put|replace|swap|update|adjust|tweak|edit|render|recolou?r|resize|crop|flip|rotate|brighten|darken|try)\b[^.!?\n]{0,80}\b(?:it|that|this|the|its|them|one)\b`,
+  ].join('|'),
+  'i',
+);
+
+function detectImageFollowUpIntent(message, conversation) {
+  const t = String(message || '').trim();
+  if (!t || t.length > 400) return false;
+  const turns = Array.isArray(conversation) ? conversation : [];
+  let lastAssistant = null;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const m = turns[i];
+    const role = m && typeof m === 'object' ? String(m.role || '') : '';
+    if (role === 'assistant' || role === 'model') { lastAssistant = m; break; }
+  }
+  if (!lastAssistant || typeof lastAssistant.content !== 'string') return false;
+  if (!GENERATED_IMAGE_IN_REPLY_RE.test(lastAssistant.content)) return false;
+  if (IMAGE_FOLLOWUP_BLOCK_RE.test(t)) return false;
+  return IMAGE_FOLLOWUP_EDIT_RE.test(t);
+}
+
 /**
  * Compose the tool-calling guidance for a turn: the always-on core
  * (LYKN_CHAT_TOOL_GUIDANCE) plus only the detail blocks whose intent matches
@@ -6077,6 +6407,18 @@ function buildChatToolGuidance(userMessage, opts = {}) {
   const parts = [LYKN_CHAT_TOOL_GUIDANCE];
   if (opts.forceMaking || MAKING_INTENT_RE.test(t) || MAKING_VERB_RE.test(t)) {
     parts.push(TOOL_GUIDANCE_VISUAL, TOOL_GUIDANCE_EXTERIOR);
+    // Coded artifacts follow a named design system (DESIGN.md-style brief,
+    // format adapted from open-design). Picked from the request wording —
+    // "fun quiz" → Playful, "dashboard" → Dark Dashboard — default LYKN.
+    parts.push(formatDesignSystemBlock(pickDesignSystem(userMessage)));
+    // Plus the per-FORMAT style guide (design-guides/*.md): website section
+    // order, slide-deck mechanics, dashboard layout, document typography,
+    // app interaction craft. Only when the format is discernible.
+    const guideId = pickDesignGuide(userMessage, opts.artifactType);
+    if (guideId) {
+      const guideBlock = formatDesignGuideBlock(guideId);
+      if (guideBlock) parts.push(guideBlock);
+    }
   }
   if (MANAGED_SURFACE_INTENT.test(t)) {
     parts.push(TOOL_GUIDANCE_SCHEDULING);
@@ -6138,9 +6480,33 @@ app.post('/api/ai/stream-guest', guestAiGlobalLimiter, guestAiLimiter, guestAiHo
   const alreadyLearned = Array.isArray(req.body?.alreadyLearned)
     ? req.body.alreadyLearned
     : [];
+
+  // Glass-demo only: the overlay sends a snapshot of the landing page text it
+  // is floating over, so LYKN can answer questions about the page from the
+  // real, current content rather than a hardcoded summary. Capped + sanitized
+  // (it is untrusted DOM text) before it enters the prompt.
+  let glassPageContext = '';
+  if (mode === 'glass-demo' && typeof req.body?.pageContext === 'string') {
+    const _ctx = sanitizeUserContentWithCount(req.body.pageContext.slice(0, 14000));
+    glassPageContext = _ctx.content;
+    _injectionStripCount += _ctx.removed;
+  }
+
+  const buildGlassDemoPrompt = () => {
+    let p = `${GUEST_SYSTEM_PROMPT}\n\n${GLASS_DEMO_ADDENDUM}`;
+    if (glassPageContext) {
+      p += '\n\n=== EXACT LANDING PAGE CONTENT (verbatim — what the visitor is looking at right now) ===\n'
+        + 'This is the real text of the page behind you, captured live. It is your SOURCE OF TRUTH for anything about the page, the site, LYKN\'s features, the FAQ, pricing, or any copy written here. When the visitor asks about the page or what it says, answer from this — accurately, quoting or paraphrasing it — and never contradict or invent beyond it:\n'
+        + '"""\n' + glassPageContext + '\n"""';
+    }
+    return p;
+  };
+
   const systemPrompt = mode === 'landing-onboarding'
     ? buildLandingOnboardingSystemPrompt(alreadyLearned)
-    : GUEST_SYSTEM_PROMPT;
+    : mode === 'glass-demo'
+      ? buildGlassDemoPrompt()
+      : GUEST_SYSTEM_PROMPT;
 
   // Lightly sanitized conversation history — role + content only.
   // SECURITY (Agent 04): sanitize the content of EVERY prior turn, not
@@ -6978,6 +7344,8 @@ const USER_PREFERENCE_DEFAULTS = Object.freeze({
   show_provenance: true,
   email_product_updates: true,
   email_synthesis_digest: false,
+  night_shift_enabled: false,
+  night_shift_tier: 'brief',
   metadata: {},
 });
 
@@ -7004,6 +7372,17 @@ function sanitisePreferencesPatch(body) {
   if ('email_synthesis_digest' in body) {
     if (typeof body.email_synthesis_digest !== 'boolean') return { ok: false, reason: 'email_synthesis_digest_must_be_boolean' };
     out.email_synthesis_digest = body.email_synthesis_digest;
+  }
+  if ('night_shift_enabled' in body) {
+    if (typeof body.night_shift_enabled !== 'boolean') return { ok: false, reason: 'night_shift_enabled_must_be_boolean' };
+    out.night_shift_enabled = body.night_shift_enabled;
+  }
+  if ('night_shift_tier' in body) {
+    const tier = String(body.night_shift_tier || '').trim();
+    if (tier !== 'brief' && tier !== 'research' && tier !== 'delegate') {
+      return { ok: false, reason: 'night_shift_tier_invalid' };
+    }
+    out.night_shift_tier = tier;
   }
   if ('chat_retention_days' in body) {
     const v = body.chat_retention_days;
@@ -7081,6 +7460,157 @@ app.patch('/api/account/preferences', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('❌ PATCH /api/account/preferences:', e?.message || e);
     return res.status(500).json({ error: 'preferences_update_failed' });
+  }
+});
+
+// GET /api/night-shift/briefs — fresh morning_brief rows for overlay / desktop.
+const NIGHT_SHIFT_BRIEF_MAX_AGE_MS = 20 * 60 * 60 * 1000;
+app.get('/api/night-shift/briefs', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+
+    const since = new Date(Date.now() - NIGHT_SHIFT_BRIEF_MAX_AGE_MS).toISOString();
+    const { data: rows, error } = await supabaseAdmin
+      .from('lykn_project_state')
+      .select('id, project_id, state_value, created_at, set_by_client')
+      .eq('user_id', userId)
+      .eq('state_key', 'morning_brief')
+      .is('superseded_at', null)
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (error) throw error;
+
+    const projectIds = [...new Set((rows || []).map((r) => r.project_id).filter(Boolean))];
+    let projectNameById = new Map();
+    if (projectIds.length) {
+      const { data: projects, error: projErr } = await supabaseAdmin
+        .from('lykn_projects')
+        .select('id, name')
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .in('id', projectIds);
+      if (projErr) throw projErr;
+      projectNameById = new Map((projects || []).map((p) => [p.id, p.name]));
+    }
+
+    const briefs = (rows || [])
+      .filter((row) => projectNameById.has(row.project_id))
+      .slice(0, 12)
+      .map((row) => ({
+        id: row.id,
+        projectId: row.project_id,
+        projectName: projectNameById.get(row.project_id) || 'Project',
+        value: row.state_value,
+        setAt: row.created_at,
+        setByClient: row.set_by_client,
+      }));
+
+    return res.json({ ok: true, briefs });
+  } catch (e) {
+    console.error('❌ GET /api/night-shift/briefs:', e?.message || e);
+    return res.status(500).json({ error: 'night_shift_briefs_failed' });
+  }
+});
+
+// GET /api/steward/items?project_id=
+app.get('/api/steward/items', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const projectId = String(req.query.project_id || '').trim();
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!projectId) return res.status(400).json({ error: 'project_id_required' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+
+    const { data, error } = await supabaseAdmin
+      .from('lykn_steward_items')
+      .select('id, title, spec, status, result_summary, blocked_reason, approved_at, created_at, updated_at, completed_at, source, execution_kind, repo, sub_model_id, cursor_build_id, sub_model_task_id')
+      .eq('user_id', userId)
+      .eq('project_id', projectId)
+      .neq('status', 'cancelled')
+      .order('updated_at', { ascending: false })
+      .limit(60);
+    if (error) throw error;
+    return res.json({ ok: true, items: data || [] });
+  } catch (e) {
+    console.error('❌ GET /api/steward/items:', e?.message || e);
+    return res.status(500).json({ error: 'steward_list_failed' });
+  }
+});
+
+// POST /api/steward/items { project_id, title }
+app.post('/api/steward/items', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+
+    const projectId = String(req.body?.project_id || '').trim();
+    const title = String(req.body?.title || '').trim().slice(0, 280);
+    if (!projectId || !title) return res.status(400).json({ error: 'project_id_and_title_required' });
+
+    const { data, error } = await supabaseAdmin
+      .from('lykn_steward_items')
+      .insert({
+        user_id: userId,
+        project_id: projectId,
+        title,
+        status: 'backlog',
+        source: 'projects-ui',
+      })
+      .select('id, title, spec, status, created_at, updated_at')
+      .single();
+    if (error) throw error;
+    return res.json({ ok: true, item: data });
+  } catch (e) {
+    console.error('❌ POST /api/steward/items:', e?.message || e);
+    return res.status(500).json({ error: 'steward_create_failed' });
+  }
+});
+
+// PATCH /api/steward/items/:id { status?, spec? }
+app.patch('/api/steward/items/:id', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const id = String(req.params.id || '').trim();
+    if (!userId || !id) return res.status(400).json({ error: 'bad_request' });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+
+    const allowed = new Set(['backlog', 'ready', 'scheduled', 'cancelled']);
+    const patch = {};
+    if ('status' in req.body) {
+      const st = String(req.body.status || '').trim();
+      if (!allowed.has(st)) return res.status(400).json({ error: 'invalid_status' });
+      patch.status = st;
+      if (st === 'scheduled') patch.approved_at = new Date().toISOString();
+    }
+    if ('spec' in req.body) patch.spec = String(req.body.spec || '').trim().slice(0, 4000);
+    if ('execution_kind' in req.body) {
+      const kind = String(req.body.execution_kind || '').trim();
+      if (kind === 'research' || kind === 'code' || kind === 'agent') patch.execution_kind = kind;
+    }
+    if ('repo' in req.body) patch.repo = String(req.body.repo || '').trim().slice(0, 500) || null;
+    if ('sub_model_id' in req.body) {
+      const sid = String(req.body.sub_model_id || '').trim();
+      patch.sub_model_id = sid || null;
+    }
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'no_valid_fields' });
+
+    const { data, error } = await supabaseAdmin
+      .from('lykn_steward_items')
+      .update(patch)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select('id, title, spec, status, approved_at, updated_at, result_summary, blocked_reason, execution_kind, repo, sub_model_id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'not_found' });
+    return res.json({ ok: true, item: data });
+  } catch (e) {
+    console.error('❌ PATCH /api/steward/items:', e?.message || e);
+    return res.status(500).json({ error: 'steward_update_failed' });
   }
 });
 
@@ -10747,6 +11277,19 @@ app.post('/api/vault/enrich-note', requireAuth, synthesisLimiter, async (req, re
   }
 });
 
+// Constant-time string equality. Returns false on length mismatch (the length
+// itself isn't secret here) without leaking a per-character timing signal.
+function timingSafeEqualStr(a, b) {
+  try {
+    const bufA = Buffer.from(String(a ?? ''), 'utf8');
+    const bufB = Buffer.from(String(b ?? ''), 'utf8');
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
+  } catch {
+    return false;
+  }
+}
+
 function verifyBackfillSecret(req) {
   const expected = process.env.BACKFILL_SECRET;
   if (!expected || String(expected).length < 8) return false;
@@ -12881,7 +13424,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     _ck('entered /api/ai/stream');
     const normalizedModel = normalizeRequestedModel(req.body?.model);
     const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
-    const imageUrls = incomingImageUrls.slice(0, 8);
+    // `let`: coded-artifact turns may drop the overlay's auto-screenshot so
+    // the build can stay on grok (which can't take images on forced tools).
+    let imageUrls = incomingImageUrls.slice(0, 8);
     let { prompt, text, intent, context, knowledgeBase, projectId, conversation, conversationMemory, userPrompt, responseLength, hasFocusedBricks, skipWebSearch, workspaceContext, overlayAsk, liveWatch } = req.body;
     const aiName = req.body?.aiName;
     // Chat-bar "+" capability modes. The client sets one of these when the
@@ -12889,7 +13434,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // behavior deterministically instead of relying on the model's choice.
     const forceWebSearch = req.body?.forceWebSearch === true;
     const deepResearch = req.body?.deepResearch === true;
-    const forceImage = req.body?.forceImage === true;
+    let forceImage = req.body?.forceImage === true;
     // Chat-bar "+" → Create: the user asked to BUILD a rich artifact (deck,
     // study guide, chart, diagram, document, mini-app) — claude.ai-style
     // Artifacts. We map the chosen type to the exact builder tool and force
@@ -12908,6 +13453,48 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       && typeof req.body.activeArtifact === 'object'
       && !Array.isArray(req.body.activeArtifact)
     );
+    // Image parity first: "generate an image of a dog" typed into the chat
+    // forces lykn_generate_image exactly like the armed "+" → Generate image
+    // mode. Checked before artifact inference so an explicit image ask never
+    // falls through to a document/chart builder (or worse, to a model with
+    // no image tool at all, which used to reply with nothing).
+    if (!forceImage && !forceArtifact && !hasActiveArtifactBody && detectImageIntent(text || '')) {
+      forceImage = true;
+      console.log('🖼 Stream: inferred image-generation intent from message — forcing lykn_generate_image like the "+" → Generate image mode');
+    } else if (
+      !forceImage && !forceArtifact && !hasActiveArtifactBody
+      && detectImageFollowUpIntent(text || '', conversation)
+    ) {
+      // The previous assistant turn generated an image and this message is a
+      // tweak of it ("do the exact same thing but…") — image mode disarms
+      // after every send, so re-force the tool or the model answers with a
+      // diagram/mermaid substitute instead of a new image.
+      forceImage = true;
+      console.log('🖼 Stream: follow-up edit to the just-generated image — re-forcing lykn_generate_image');
+    } else if (!forceImage && IMAGE_INTENT_NOUN_RE.test(String(text || ''))) {
+      // Diagnostic: the message mentions an image noun but the intent detector
+      // said no — log what we actually saw so misses are debuggable from the
+      // server log instead of guessing at the client's phrasing.
+      console.log(
+        `🖼 Stream: image-ish message did NOT trip inference (forceArtifact=${forceArtifact}, activeArtifact=${hasActiveArtifactBody}) — text[0..160]=${JSON.stringify(String(text || '').slice(0, 160))}`,
+      );
+    }
+    // Iterative image refinement: when this image turn follows a generated
+    // image, pull that image's URL out of the last assistant reply so the
+    // prompt can hand it to the model as an explicit pixel reference
+    // (reference_image_urls) — refinements stay grounded in the previous
+    // render instead of being regenerated from a fresh text description.
+    let imageFollowUpRefUrl = null;
+    if (forceImage && Array.isArray(conversation)) {
+      for (let i = conversation.length - 1; i >= 0 && !imageFollowUpRefUrl; i--) {
+        const m = conversation[i];
+        const role = m && typeof m === 'object' ? String(m.role || '') : '';
+        if (role !== 'assistant' && role !== 'model') continue;
+        const matches = [...String(m.content || '').matchAll(/!\[(?!lykn-artifact:)[^\]]*\]\((https?:\/\/[^\s)]+)\)/g)];
+        if (matches.length) imageFollowUpRefUrl = matches[matches.length - 1][1];
+        break; // only the LAST assistant turn counts — older images are stale context
+      }
+    }
     if (!forceArtifact && !forceImage && !hasActiveArtifactBody) {
       const inferredArtifactType = detectArtifactIntent(text || '');
       if (inferredArtifactType) {
@@ -12916,10 +13503,23 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         console.log(`🎨 Stream: inferred Create-panel artifact intent (${artifactType}) from message — forcing builder like the "+" → Create panel`);
       }
     }
-    const artifactBuildSpec = (forceArtifact || artifactAutoInferred)
+    let artifactBuildSpec = (forceArtifact || artifactAutoInferred)
       ? (ARTIFACT_BUILD_SPEC[artifactType] || ARTIFACT_BUILD_SPEC.document)
       : null;
-    const artifactToolName = artifactBuildSpec ? artifactBuildSpec.tool : null;
+    let artifactToolName = artifactBuildSpec ? artifactBuildSpec.tool : null;
+    // Build mode + an explicit VIDEO-FILE ask ("make an mp4 of my logo",
+    // "turn that image into a video") should render a real .mp4 via Remotion,
+    // not force an interactive React artifact. Tight match: the video noun
+    // must be the requested deliverable, not incidental ("landing page with a
+    // video section" stays a React build).
+    if (
+      artifactToolName === 'lykn_build_react_artifact' &&
+      /(?:\bmp4\b|\bvideo file\b|\b(?:make|create|render|generate|turn|animate)\b[^.?!\n]{0,50}\binto (?:a |an )?(?:mp4|video)\b|\b(?:make|create|render|generate)\b(?:\s+(?:me|us))?\s+(?:a|an)\s+(?:short\s+|quick\s+|little\s+|looping\s+)*(?:video|animation)\b)/i.test(String(text || ''))
+    ) {
+      artifactBuildSpec = { tool: 'lykn_render_video', label: 'rendered .mp4 video', templateType: null };
+      artifactToolName = 'lykn_render_video';
+      console.log('🎬 Stream: build request asks for a video file — forcing lykn_render_video instead of the React artifact builder');
+    }
     // Chat-based artifact editing: when the user has an artifact open in the
     // side panel, the client sends its current structured source so the model
     // can refine it in place (rebuild via lykn_build_template with the COMPLETE
@@ -12929,7 +13529,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         ? req.body.activeArtifact
         : null;
     const activeArtifactEditable =
-      !!activeArtifact && activeArtifact.toolName === 'lykn_build_template' && !artifactBuildSpec;
+      !!activeArtifact &&
+      !artifactBuildSpec &&
+      (activeArtifact.toolName === 'lykn_build_template' ||
+        (activeArtifact.toolName === 'lykn_build_react_artifact' && typeof activeArtifact.code === 'string' && activeArtifact.code.trim()));
     // Chat-bar "+" → Projects: a LYKN project the user explicitly scoped this
     // chat to. Unlike `projectId` (which can be a board-linked Omnia project),
     // this is always a `lykn_projects` row, so we load its [CURRENT_PROJECT]
@@ -13124,6 +13727,23 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         streamChatToolNames = names;
       }
       useTools = true;
+    } else if (!Array.isArray(streamChatToolNames)) {
+      // Image generation is explicit-opt-in: the user arms it via "+" →
+      // Generate image (web) or the overlay's "Create an image" menu, both of
+      // which send forceImage. On ordinary turns the default whitelist must
+      // NOT expose the tool, or the model could burn the monthly image quota
+      // uninvited. Custom-model tool subsets (arrays) are left alone — there
+      // the user opted in explicitly via Model Builder capabilities.
+      //
+      // Text-to-speech is likewise stripped from the default whitelist:
+      // models were reaching for lykn_generate_speech on vague "format this
+      // differently" turns and answering with an mp3 instead of formatted
+      // text. Ordinary chat never produces audio files — the tool stays
+      // available only to custom models whose builder explicitly enabled the
+      // audio_generation capability.
+      streamChatToolNames = CHAT_TOOLS
+        .map((t) => t.name)
+        .filter((n) => n !== 'lykn_generate_image' && n !== 'lykn_generate_speech');
     }
     // Forced artifact build from the "+" → Create submenu: same guarantee as
     // image — ensure the builder tool is whitelisted and keep the agent loop on
@@ -13139,9 +13759,12 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // Artifact open in the side panel: keep the builder tool available so a
     // plain-language edit ("make the intro shorter") can rebuild it.
     if (activeArtifactEditable) {
+      const editToolName = activeArtifact.toolName === 'lykn_build_react_artifact'
+        ? 'lykn_build_react_artifact'
+        : 'lykn_build_template';
       const names = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : undefined;
-      if (names && !names.includes('lykn_build_template')) {
-        names.push('lykn_build_template');
+      if (names && !names.includes(editToolName)) {
+        names.push(editToolName);
         streamChatToolNames = names;
       }
       useTools = true;
@@ -13481,10 +14104,29 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `You MUST call the ${artifactBuildSpec.tool} tool on this turn to produce it` +
         (artifactBuildSpec.templateType ? ` with template_type "${artifactBuildSpec.templateType}"` : '') +
         (artifactBuildSpec.tool === 'lykn_build_spreadsheet' ? ` with output_format "xlsx" (a real downloadable spreadsheet), passing headers + rows` : '') +
+        (artifactBuildSpec.tool === 'lykn_build_react_artifact'
+          ? `. WRITE the deliverable as one complete React component (export default, no props): Tailwind for layout/typography, React hooks for interactivity, and the in-scope library stack when it helps — Recharts/LucideReact for charts and icons, framer-motion (motion/AnimatePresence) for animation, d3, three.js (THREE) for 3D, lodash (_), dayjs, mathjs (math), Papa, marked, Tone, confetti, html2canvas + jsPDF for export buttons. STYLE IT by following the [DESIGN_SYSTEM] brief below exactly — its color tokens, type scale, spacing, and component recipes — plus the [STYLE_GUIDE] block's structure rules when one is included. BUILD BIG — a working mini-app, full multi-section website, or complete presentation/worksheet, not a sketch`
+          : '') +
+        (artifactBuildSpec.tool === 'lykn_render_video'
+          ? `. WRITE the deliverable as one complete Remotion composition (export default one component; imports ONLY from "remotion" and "react"; every visual property a pure function of useCurrentFrame() via interpolate/spring; inline style objects, system fonts; <Img> from "remotion" for hosted image URLs listed in [USER_IMAGES]/[GENERATED_IMAGES] — never invented URLs; no registerRoot/<Composition>). Keep it SHORT and purposeful (default ~5s, max 30s), end with the motion resolved, and pass duration_in_frames/fps/width/height that fit the request`
+          : '') +
         `. Infer the topic and full contents from the user's message and any context above; make it complete, well-structured, and visually clean — don't ask a clarifying question first unless the request is truly unusable. ` +
-        `After the tool returns, reply with just a 1-2 sentence summary of what you built; do NOT paste the raw HTML, markup, or chart config into the chat (the artifact renders on its own).]`;
+        `After the tool returns, reply with just a 1-2 sentence summary of what you built; do NOT paste the raw HTML, code, or chart config into the chat (the artifact renders on its own).]`;
     }
-    if (activeArtifactEditable) {
+    if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact') {
+      const a = activeArtifact;
+      const codeSrc = String(a.code || '').slice(0, 60000);
+      prompt +=
+        `\n\n[ARTIFACT_OPEN — The user has this coded React artifact open in the side panel and may ask you to refine it:\n` +
+        `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
+        `• current component source (JSX):\n\`\`\`jsx\n${codeSrc}\n\`\`\`\n` +
+        `If the user's message asks to change, fix, add to, shorten, expand, restyle, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
+        `SCOPE DISCIPLINE — this is the rule users complain about most when it's broken: implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
+        `DEFAULT to the \`edits\` argument — {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. Do not re-send the full code for a targeted change. ` +
+        `Pass COMPLETE \`code\` only when the user explicitly asked for a sweeping change (full restyle, major restructure, "start over") — then ALSO pass full_rewrite: true, and still copy everything the request doesn't cover verbatim from the source above. The server measures your diff against the open artifact and rejects broad rewrites that aren't declared. ` +
+        `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
+        `If the message is NOT about the artifact, ignore this and answer normally.]`;
+    } else if (activeArtifactEditable) {
       const a = activeArtifact;
       const tType = String(a.templateType || 'document');
       const curTheme = (typeof a.theme === 'string' && a.theme.trim()) ? a.theme.trim() : 'default (clay/orange)';
@@ -13581,6 +14223,63 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // text inside the image is actually legible (no-op for text-only turns).
     actualModel = upgradeModelForVision(actualModel, imageUrls.length > 0);
 
+    // Coded-artifact turns (forced lykn_build_react_artifact build, or an
+    // open React artifact being edited) route to the dedicated coding model
+    // (grok-4.5 when the xAI key is set — cheaper frontier coder) and get a
+    // bigger per-hop output cap below so a full app/site fits in one call.
+    const codedArtifactTurn =
+      artifactToolName === 'lykn_build_react_artifact' ||
+      (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact');
+    // Video-render turns (lykn_render_video) are model-chosen — sniffed from
+    // wording only. Extends the SSE ceiling and image-URL prompt blocks below.
+    const videoRenderLikelyTurn =
+      artifactToolName === 'lykn_render_video' || VIDEO_RENDER_INTENT_RE.test(String(text || ''));
+    actualModel = upgradeModelForCodedArtifact(actualModel, codedArtifactTurn);
+    // grok-4.5 reproducibly truncates its stream (no finish_reason, no tool
+    // call) whenever an IMAGE rides on a forced-tool request. Images reach a
+    // build turn two ways, distinguished via the per-turn `attachments`
+    // metadata (user uploads carry an imageIndex; the overlay's automatic
+    // screenshot is never listed there):
+    //   • user ATTACHED an image (mockup/reference) → the pixels matter, so
+    //     switch to a vision-capable frontier coder: Opus 4.8, then GPT-5.6.
+    //   • screenshot only, request REFERENCES the screen ("build a chart
+    //     from this data", "a site like this one") → the pixels matter just
+    //     the same: keep the screenshot and switch to the vision coders.
+    //     (The scraped page text also stays in the prompt as backup.)
+    //   • screenshot only, request is self-contained ("build me a website
+    //     for LYKN") → DROP it and stay on grok. The screenshot is dead
+    //     weight that would otherwise force a slower, pricier model on
+    //     every overlay build.
+    if (codedArtifactTurn && imageUrls.length > 0 && actualModel.includes('grok')) {
+      const userAttachedImage = (Array.isArray(req.body?.attachments) ? req.body.attachments : [])
+        .some((a) => a && a.type === 'image');
+      const buildReferencesScreen = BUILD_SCREEN_REF_RE.test(String(text || ''));
+      const imageMatters = userAttachedImage || buildReferencesScreen;
+      const why = userAttachedImage
+        ? 'user attached an image'
+        : 'request references the screen';
+      if (!imageMatters) {
+        console.log(`🧑‍💻 Code-artifact: dropping ${imageUrls.length} screen-capture image(s) (self-contained build request) — staying on ${actualModel}`);
+        imageUrls = [];
+      } else if (process.env.ANTHROPIC_API_KEY) {
+        console.log(`🧑‍💻 Code-artifact reroute: ${actualModel} → claude-opus-4-8 (${why} — grok truncates forced-tool streams with images)`);
+        actualModel = 'claude-opus-4-8';
+      } else if (process.env.OPENAI_API_KEY) {
+        console.log(`🧑‍💻 Code-artifact reroute: ${actualModel} → gpt-5.6-sol (${why} — grok truncates forced-tool streams with images)`);
+        actualModel = 'gpt-5.6-sol';
+      } else if (process.env.GOOGLE_API_KEY) {
+        console.log(`🧑‍💻 Code-artifact reroute: ${actualModel} → gemini-3.1-pro-preview (${why} — grok truncates forced-tool streams with images)`);
+        actualModel = 'gemini-3.1-pro-preview';
+      } else {
+        // No vision-capable alternative configured — drop the images so the
+        // build at least completes instead of dying in grok retries. The
+        // scraped page text still rides in the prompt, so grok gets a
+        // textual account of the screen even without the pixels.
+        console.warn('🧑‍💻 Code-artifact: no alternate provider for screen-referenced build — dropping images, staying on grok (page text still in prompt)');
+        imageUrls = [];
+      }
+    }
+
     // Tool-calling agent loop: all four providers (OpenAI / Anthropic /
     // Gemini / Grok) support native function calling via chat-agent-loop.js.
     // We respect whatever model the user picked — no forced downgrade.
@@ -13600,7 +14299,134 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       prompt += '\n\n' + buildChatToolGuidance(streamPureUserMessage || streamSearchText, {
         forceMaking: Boolean(forceImage || artifactToolName || activeArtifactEditable),
         isMainAgent: Boolean(streamOrchestrationCtx?.isMainAgent),
+        // Pins the [STYLE_GUIDE] pick for Create-menu builds that map to a
+        // known format (study/document/worksheet); wording decides otherwise.
+        artifactType: artifactToolName === 'lykn_build_react_artifact' ? artifactType : null,
       });
+    }
+    // Image mode armed: the model has no other way to know the user flipped
+    // the "Generate image" toggle — without this it replies "arm image mode
+    // and I'll recreate it" WHILE the mode is on, or narrates a spec instead
+    // of generating. tool_choice forces the call regardless; this line makes
+    // the accompanying text match reality.
+    if (forceImage) {
+      prompt +=
+        '\n\n[IMAGE_MODE — image generation is ALREADY ARMED for this message; lykn_generate_image WILL run. ' +
+        'Never tell the user to arm/enable/turn on image mode, never ask permission, and never describe what an ' +
+        'image WOULD look like instead of generating it. Any image(s) the user attached this turn are ' +
+        'automatically given to the image model as pixel references — for "recreate this" asks, call the tool ' +
+        'with a prompt describing only the desired CHANGES (or "faithful recreation, cleaned up" if none) and ' +
+        'trust the reference to carry the likeness.]';
+    }
+    // Iterative image refinement (see imageFollowUpRefUrl above): hand the
+    // previous render's URL to the model so it grounds the new generation in
+    // those pixels via reference_image_urls.
+    if (forceImage && imageFollowUpRefUrl) {
+      prompt +=
+        '\n\n[IMAGE_REFERENCE — this request refines an image you generated earlier (its markdown card is in the ' +
+        `conversation). When you call lykn_generate_image, pass reference_image_urls: ["${imageFollowUpRefUrl}"] ` +
+        'so the image model works from the ACTUAL previous pixels, and write the prompt as the CHANGE relative to ' +
+        'it ("same scene at night") — do not re-describe the whole image from scratch. Skip the reference only if ' +
+        'the user is clearly asking for a brand-new unrelated image.]';
+    }
+    // Reference-image builds: when a coded-artifact turn carries images the
+    // user actually supplied (attachment metadata, or an overlay screenshot
+    // the request explicitly references), two things change:
+    //   1. FIDELITY OVERRIDE — the model must build what the reference SHOWS
+    //      (its layout, its sampled colors — even purple/gradients — its type
+    //      feel), demoting the design system / structure roll to gap-filler.
+    //      Appended AFTER the guidance block so it reads as the override.
+    //   2. HOSTED EMBEDS — user-attached images are persisted to capability
+    //      storage and their proxied URLs handed to the model, so "put my
+    //      logo in the header" / "use this photo in the hero" can embed the
+    //      real pixels via <img src> instead of a placeholder.
+    if ((codedArtifactTurn || videoRenderLikelyTurn) && imageUrls.length > 0) {
+      const attachedImageMeta = (Array.isArray(req.body?.attachments) ? req.body.attachments : [])
+        .filter((a) => a && a.type === 'image' && Number.isInteger(a.imageIndex));
+      const referencesScreen = BUILD_SCREEN_REF_RE.test(String(text || ''));
+      if (codedArtifactTurn && (attachedImageMeta.length > 0 || referencesScreen)) {
+        prompt +=
+          '\n\n[REFERENCE_BUILD — the user supplied image(s)/screen context as the REFERENCE for this build. ' +
+          'FIDELITY OVERRIDES THE DESIGN SYSTEM: recreate what the reference shows. ' +
+          'WORK IN TWO PASSES. PASS 1 — TRANSCRIBE (do this mentally before writing any code): inventory the ' +
+          'reference top-to-bottom — (a) every section/region in order and its internal layout (columns, grids, ' +
+          'alignment); (b) ALL visible text VERBATIM (headlines, labels, buttons, nav items, numbers — copy the ' +
+          'exact words, do not paraphrase or invent replacements); (c) concrete colors as hex approximations ' +
+          'sampled from the image (background, surfaces, text, accents — purple and gradients ARE allowed here ' +
+          'when the reference uses them); (d) typography (relative sizes, weights, casing) and (e) shape language ' +
+          '(corner radii, borders, shadows, spacing density, icon style). PASS 2 — REBUILD that inventory 1:1 in ' +
+          'Tailwind, with exact arbitrary values (e.g. bg-[#1a2b3c], rounded-[14px]) instead of the nearest ' +
+          'default token when the reference clearly differs. Match element COUNTS (4 cards means exactly 4 ' +
+          'cards) and positions; when a detail is genuinely illegible, choose the most plausible value consistent ' +
+          'with the rest — never substitute your own taste for a visible detail. The [DESIGN_SYSTEM], ' +
+          '[STYLE_GUIDE], and STRUCTURE ROLL apply ONLY to details the reference does not show; the never-do ' +
+          'list yields wherever it conflicts with a faithful recreation. If the user asked for changes relative ' +
+          'to the reference ("like this but dark"), transcribe first, then apply exactly those changes.]';
+      }
+      if (attachedImageMeta.length > 0 && supabaseAdmin && req.user?.id) {
+        const hosted = [];
+        for (const a of attachedImageMeta.slice(0, 4)) {
+          const dataUrl = imageUrls[a.imageIndex];
+          const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(String(dataUrl || ''));
+          if (!m) continue; // already-hosted URLs can be used as-is; only raw base64 needs persisting
+          try {
+            const ext = (m[1].split('/')[1] || 'png').replace('jpeg', 'jpg').split('+')[0];
+            const stored = await persistCapabilityArtifact(supabaseAdmin, req.user.id, {
+              buffer: Buffer.from(m[2], 'base64'),
+              filename: `${String(a.name || 'image').replace(/\.[a-z0-9]+$/i, '').slice(0, 40) || 'image'}.${ext}`,
+              mimeType: m[1],
+              category: 'user-images',
+            });
+            if (stored.ok) hosted.push({ name: a.name || `image ${hosted.length + 1}`, url: stored.file_url });
+          } catch (err) {
+            console.warn('🧑‍💻 Code-artifact: failed to host user image for embedding:', err?.message);
+          }
+        }
+        if (hosted.length > 0) {
+          prompt +=
+            '\n\n[USER_IMAGES — the user\'s attached image(s) are hosted and embeddable in builds:\n' +
+            hosted.map((h, i) => `  ${i + 1}. ${h.name} → ${h.url}`).join('\n') +
+            '\nWhen the user wants their image IN the build (their photo, logo, product shot, artwork), embed these ' +
+            'exact URLs — <img src> / CSS background-image in a React artifact, or <Img src> from "remotion" in a ' +
+            'lykn_render_video composition. When the image is purely a design reference to recreate, follow ' +
+            '[REFERENCE_BUILD] and only embed it if they asked.]';
+          console.log(`🧑‍💻 Code-artifact: hosted ${hosted.length} user image(s) for in-artifact embedding`);
+        }
+      }
+    }
+    // Images LYKN GENERATED earlier in this chat are build material too:
+    // "animate that logo", "build a hero section around the image you just
+    // made". They live in assistant replies as markdown image lines (the
+    // lykn-artifact: prefix marks React previews, which are not images);
+    // collect the recent ones and hand their hosted URLs to the build.
+    if ((codedArtifactTurn || videoRenderLikelyTurn) && Array.isArray(conversation)) {
+      const genSeen = new Set();
+      const genImages = [];
+      for (let i = conversation.length - 1; i >= 0 && genImages.length < 4; i--) {
+        const m = conversation[i];
+        const role = m && typeof m === 'object' ? String(m.role || '') : '';
+        if (role !== 'assistant' && role !== 'model') continue;
+        const found = [...String(m.content || '').matchAll(/!\[(?!lykn-artifact:)[^\]]*\]\((https?:\/\/[^\s)]+)\)/g)];
+        for (let j = found.length - 1; j >= 0 && genImages.length < 4; j--) {
+          const url = found[j][1];
+          if (!genSeen.has(url)) {
+            genSeen.add(url);
+            genImages.push(url);
+          }
+        }
+      }
+      if (genImages.length > 0) {
+        prompt +=
+          '\n\n[GENERATED_IMAGES — image(s) generated earlier in this conversation, hosted and embeddable in the ' +
+          'artifact (most recent first):\n' +
+          genImages.map((u, i) => `  ${i + 1}. ${u}`).join('\n') +
+          '\nWhen the request builds on one of these ("animate it", "make a landing page with that image", "turn ' +
+          'it into a game sprite", "make it an mp4"), embed the exact URL — <img src> / CSS background-image ' +
+          'animated with framer-motion or CSS keyframes in a React artifact, or <Img src> from "remotion" in a ' +
+          'lykn_render_video composition when the user wants a real video file. Use the most recent one when the ' +
+          'user says "that image" without specifying.]';
+        console.log(`🧑‍💻 Code-artifact: offering ${genImages.length} generated image(s) from this chat for embedding`);
+      }
     }
     // Always anchor the model to the user's LOCAL current time + timezone so
     // scheduling tools (createEvent/createReminder) resolve clock times to the
@@ -13727,12 +14553,19 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         lastClientWriteAt = Date.now();
       } catch { /* socket closed */ }
     }, 15000);
+    // Coded-artifact turns get 10min instead of 5: the model streams the
+    // whole React component as tool-call arguments (tens of KB of tokens),
+    // and an edit turn re-streams it — a legitimate build can brush 5min.
+    // Video-render turns get the same ceiling: composition streaming plus a
+    // server-side Remotion render (bundle + headless-Chrome frames + encode)
+    // can legitimately take several real minutes.
+    const hardKillMs = codedArtifactTurn || videoRenderLikelyTurn ? 600000 : 300000;
     hardKill = setTimeout(() => {
       if (!res.writableEnded) {
-        console.error('⏰ Hard timeout — SSE connection open > 5min, killing');
+        console.error(`⏰ Hard timeout — SSE connection open > ${Math.round(hardKillMs / 60000)}min, killing`);
         sendError(AI_TEMPORARY_FAILURE_TEXT);
       }
-    }, 300000);
+    }, hardKillMs);
     res.on('close', cleanup);
 
     // Hard ceiling per provider attempt. The fetch() Promise resolves the
@@ -14430,15 +15263,18 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
 
       // Build provider-correct user content shape. Multimodal image
       // attachments need provider-native parts; text-only turns just
-      // pass the string.
-      let agentUserContent = agentUser;
-      if (imageUrls.length > 0) {
-        if (toolProvider === 'openai' || toolProvider === 'grok') {
-          agentUserContent = [
+      // pass the string. A function (not a one-shot) because the forced-
+      // tool fallback below may re-run the turn on a DIFFERENT provider,
+      // which needs its own content shape.
+      const buildAgentUserContent = async (providerId) => {
+        if (imageUrls.length === 0) return agentUser;
+        if (providerId === 'openai' || providerId === 'grok') {
+          return [
             { type: 'text', text: agentUser },
             ...imageUrls.map((u) => ({ type: 'image_url', image_url: { url: u } })),
           ];
-        } else if (toolProvider === 'anthropic') {
+        }
+        if (providerId === 'anthropic') {
           const parts = [{ type: 'text', text: agentUser }];
           for (const url of imageUrls) {
             if (url.startsWith('data:image/')) {
@@ -14448,8 +15284,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               parts.push({ type: 'image', source: { type: 'url', url } });
             }
           }
-          agentUserContent = parts;
-        } else if (toolProvider === 'gemini') {
+          return parts;
+        }
+        if (providerId === 'gemini') {
           const parts = [{ text: agentUser }];
           for (const url of imageUrls) {
             try {
@@ -14470,9 +15307,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               console.warn('⚠️ agent loop: failed to fetch image for Gemini:', e.message);
             }
           }
-          agentUserContent = parts;
+          return parts;
         }
-      }
+        return agentUser;
+      };
 
       // Resolve Gemini alias quirks the same way the legacy path does
       // so a user picking the alias `gemini-flash-latest` ends up
@@ -14486,42 +15324,88 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         agentModel = resolveAnthropicModel(actualModel);
       }
 
-      // pickOutputCap with no intent → OUTPUT_CAPS.chat (same as the
-      // non-tool path uses). Tool loops can run multiple hops; the cap
-      // is per-hop, so the model gets full headroom on the final reply
-      // after tool results land.
-      const agentCap = clampForProvider(pickOutputCap({
-        hasImages: imageUrls.length > 0,
-      }), agentModel);
       const agentCacheKey = `lykn-${(req.user?.id || 'anon').slice(0, 32)}`;
+      const forcedToolNameForTurn = forceImage ? 'lykn_generate_image' : (artifactToolName || undefined);
+
+      // Forced-tool turns (artifact builds, image gen) get a provider
+      // fallback chain: grok-4.5 reproducibly truncates its stream mid-
+      // reasoning on some forced-tool requests (every time an image is
+      // attached, intermittently otherwise), which used to end the turn
+      // "successfully" with no artifact and leave the user staring at
+      // nothing. When the forced tool never completes on the primary
+      // provider, the whole turn re-runs on the next available one.
+      const agentAttempts = [{ provider: toolProvider, model: agentModel }];
+      if (forcedToolNameForTurn) {
+        // Order matches the coded-artifact reroute preference: Opus 4.8 →
+        // GPT-5.6 → Gemini 3.1 Pro. Coded builds use the stronger coders;
+        // non-artifact forced tools (image gen) just need any tool-capable
+        // provider, so the same chain is fine there too.
+        const fallbacks = [
+          { provider: 'anthropic', model: 'claude-opus-4-8', available: !!process.env.ANTHROPIC_API_KEY },
+          { provider: 'openai', model: 'gpt-5.6-sol', available: !!process.env.OPENAI_API_KEY },
+          { provider: 'gemini', model: 'gemini-3.1-pro-preview', available: !!process.env.GOOGLE_API_KEY },
+        ];
+        for (const f of fallbacks) {
+          if (f.available && f.provider !== toolProvider) {
+            agentAttempts.push({ provider: f.provider, model: f.model });
+          }
+        }
+      }
 
       try {
-        const agentResult = await runAgentLoop({
-          provider: toolProvider,
-          model: agentModel,
+        const runAttempt = async ({ provider: attemptProvider, model: attemptModel }) => runAgentLoop({
+          provider: attemptProvider,
+          model: attemptModel,
           systemPrompt: agentSys,
-          userContent: agentUserContent,
+          userContent: await buildAgentUserContent(attemptProvider),
           // We deliberately do NOT thread `conversation` through here:
           // the [CONVERSATION] block already lives inside `prompt` via
           // buildLyknStreamPrompt, so passing priorTurns again would
           // double-count. The agent-loop's priorTurns is for callers
           // that don't pre-bake conversation into the system prompt.
           priorTurns: [],
-          maxOutputTokens: agentCap,
+          // pickOutputCap with no intent → OUTPUT_CAPS.chat (same as the
+          // non-tool path uses). Tool loops can run multiple hops; the cap
+          // is per-hop, so the model gets full headroom on the final reply
+          // after tool results land. Coded-artifact turns get the big cap —
+          // the whole React component must fit in one tool-call argument.
+          maxOutputTokens: codedArtifactTurn || videoRenderLikelyTurn
+            ? clampForProvider(OUTPUT_CAPS.coded_artifact, attemptModel)
+            : clampForProvider(pickOutputCap({
+                hasImages: imageUrls.length > 0,
+              }), attemptModel),
           promptCacheKey: agentCacheKey,
           chatToolNames: streamChatToolNames,
-          forceToolName: forceImage ? 'lykn_generate_image' : (artifactToolName || undefined),
+          forceToolName: forcedToolNameForTurn,
           env: process.env,
           ctx: (() => {
             const chatModelLabel = resolveChatModelLabel({
               customModelName: streamCustomModelCtx.customModel?.name,
-              modelId: agentModel,
+              modelId: attemptModel,
             });
             const base = buildChatToolCtx(req, {
               chatModelLabel,
               boundProjectId: streamBoundProjectId,
               boardProjectId: streamBoardProjectId,
+              // Enables the `edits` patch path on lykn_build_react_artifact
+              // when a coded artifact is open in the panel.
+              activeArtifactCode:
+                activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact'
+                  ? String(activeArtifact.code || '')
+                  : null,
             });
+            // Remotion renders (lykn_render_video) run 1-4 real minutes with
+            // no provider stream — ping the stall watchdog on every frame and
+            // surface throttled percent updates so the client sees progress.
+            let lastVideoStatusAt = 0;
+            base.onRenderProgress = (progress) => {
+              noteStreamActivity();
+              const now = Date.now();
+              if (now - lastVideoStatusAt > 4000) {
+                lastVideoStatusAt = now;
+                sendStatus(`Rendering video… ${Math.round((Number(progress) || 0) * 100)}%`);
+              }
+            };
             if (!streamOrchestrationCtx?.isMainAgent) return base;
             const mainModelId = streamOrchestrationCtx.mainModelId;
             const chatId = streamChatId;
@@ -14573,7 +15457,29 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           onStatus: (s) => sendStatus(s),
           onActivity: noteStreamActivity,
         });
-        _ck(`agent loop ${agentResult.reason} (provider=${toolProvider}, tools=${agentResult.toolCalls.length}, hadText=${agentResult.hadText})`);
+
+        let agentResult;
+        for (let ai = 0; ai < agentAttempts.length; ai++) {
+          const attempt = agentAttempts[ai];
+          agentResult = await runAttempt(attempt);
+          _ck(`agent loop ${agentResult.reason} (provider=${attempt.provider}, model=${attempt.model}, tools=${agentResult.toolCalls.length}, hadText=${agentResult.hadText})`);
+
+          // Did the forced tool actually complete? (No forced tool → n/a.)
+          const forcedToolOk = !forcedToolNameForTurn || (agentResult.toolCalls || []).some(
+            (tc) => tc && tc.name === forcedToolNameForTurn && tc.status === 'done' && tc.result?.ok !== false,
+          );
+          if (agentResult.ok && forcedToolOk) break;
+
+          const canFallback =
+            forcedToolNameForTurn && !forcedToolOk && ai + 1 < agentAttempts.length &&
+            (agentResult.reason === 'forced_tool_incomplete' ||
+             (agentResult.reason === 'error' && isRetryableProviderError(String(agentResult.errorMessage || ''))));
+          if (!canFallback) break;
+
+          const next = agentAttempts[ai + 1];
+          console.warn(`[stream] forced tool never completed on ${attempt.provider}/${attempt.model} (${agentResult.reason}) — retrying turn on ${next.provider}/${next.model}`);
+          sendStatus('Still working on it…');
+        }
 
         if (agentResult.ok && agentResult.hadText) {
           return sendDone();
@@ -15201,6 +16107,124 @@ app.post('/api/ai/transcribe', requireAuth, requireAppAccess, aiLimiter, checkAi
   }
 });
 
+// Fast path for live meeting notes — ASR (+ optional cleanup) in one round trip.
+// The desktop overlay does VAD endpointing client-side and passes fast=1, in
+// which case we return the raw ASR text immediately (the overlay polishes it
+// asynchronously via /api/ai/clean-transcript and swaps it in place).
+app.post('/api/ai/meeting-chunk', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, upload.single('audio'), async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'OpenAI API key not configured.' });
+    }
+
+    const audioFile = req.file;
+    if (!audioFile?.buffer?.length) {
+      return res.status(400).json({ error: 'Missing audio file.' });
+    }
+
+    const mimeType = String(audioFile.mimetype || 'audio/webm');
+    const fileName = String(audioFile.originalname || 'meeting.webm');
+    const language = String(req.body?.language || 'en').trim();
+    const promptHint = String(req.body?.prompt || '').trim();
+    const fast = req.body?.fast === '1' || req.body?.fast === 'true';
+    // gpt-4o-mini-transcribe is both faster and markedly more accurate than
+    // whisper-1 on short conversational clips; whisper-1 stays the fallback.
+    const requested = String(req.body?.model || '').trim();
+    const model = ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1'].includes(requested)
+      ? requested
+      : 'whisper-1';
+    // The 4o transcribe models don't support verbose_json (no segment stats).
+    const verbose = model === 'whisper-1';
+
+    const formData = new FormData();
+    formData.append('model', model);
+    formData.append('language', language);
+    formData.append('response_format', verbose ? 'verbose_json' : 'json');
+    formData.append('temperature', '0');
+    if (promptHint) formData.append('prompt', promptHint);
+    formData.append('file', new Blob([audioFile.buffer], { type: mimeType }), fileName);
+
+    const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: formData,
+    });
+
+    const data = await whisperRes.json().catch(() => ({}));
+    if (!whisperRes.ok) {
+      const err = String(data?.error?.message || whisperRes.statusText || 'Whisper request failed');
+      return res.status(500).json({ error: `Whisper: ${err}` });
+    }
+
+    const raw = String(data?.text || '').trim();
+    const segments = Array.isArray(data?.segments) ? data.segments : [];
+    const avgNoSpeech = segments.length > 0
+      ? segments.reduce((sum, s) => sum + (s?.no_speech_prob || 0), 0) / segments.length
+      : 0;
+
+    const audioDurationSec = data?.duration || (segments.length > 0 ? segments[segments.length - 1]?.end || 0 : 0);
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'meeting_chunk',
+        model, provider: 'openai',
+        inputTokens: Math.ceil(audioDurationSec),
+        metadata: { duration_sec: audioDurationSec },
+      });
+    }).catch(() => {});
+
+    if (!raw || avgNoSpeech > 0.72) {
+      return res.json({ text: '', raw: '', no_speech_prob: avgNoSpeech });
+    }
+
+    // fast=1: the client shows raw text immediately and cleans it up
+    // asynchronously — skipping the serial LLM pass here cuts ~200–400ms
+    // off every utterance's time-to-screen.
+    if (fast || raw.length < 14) {
+      return res.json({ text: raw, raw, no_speech_prob: avgNoSpeech });
+    }
+
+    const context = String(req.body?.context || '').slice(-600).trim();
+    const cleanRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4.1-nano',
+        temperature: 0,
+        max_tokens: 280,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You clean up live speech-to-text for a meeting transcript. Strip filler words, ' +
+              'false starts, and stutters. Fix punctuation. Do NOT summarize or invent. ' +
+              'Return ONLY the cleaned fragment.',
+          },
+          {
+            role: 'user',
+            content: context
+              ? `PREVIOUS TAIL:\n${context}\n\nRAW FRAGMENT:\n${raw}`
+              : `RAW FRAGMENT:\n${raw}`,
+          },
+        ],
+      }),
+    });
+
+    let text = raw;
+    if (cleanRes.ok) {
+      const cleanData = await cleanRes.json();
+      const cleaned = String(cleanData.choices?.[0]?.message?.content || '').trim();
+      if (cleaned) text = cleaned;
+    }
+
+    return res.json({ text, raw, no_speech_prob: avgNoSpeech });
+  } catch (error) {
+    return res.status(500).json({
+      error: `Meeting chunk failed: ${error?.message || 'Unknown error'}`,
+    });
+  }
+});
+
 // ──────────────────────────────────────────────────
 // Conversation summarization — compress older turns to save tokens
 // ──────────────────────────────────────────────────
@@ -15353,21 +16377,170 @@ app.post('/api/ai/clean-transcript', requireAuth, aiLimiter, async (req, res) =>
 });
 
 // ──────────────────────────────────────────────────
+// Live assist — Cluely-style in-call copilot. The overlay streams the rolling
+// meeting transcript here after each utterance; a fast model decides whether
+// THIS moment deserves a private help card (a question the user was asked, a
+// company/term worth a quick brief, a claim worth verifying, a "what should I
+// say" moment). When live data would materially improve the card, we run a
+// quick Serper search mid-sentence and compose the answer from real results.
+// Returns { insight: null } for most calls — silence is the default.
+// ──────────────────────────────────────────────────
+app.post('/api/ai/live-assist', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
+
+    const transcript = String(req.body?.transcript || '').slice(-2400).trim();
+    if (transcript.length < 30) return res.json({ insight: null });
+    const shown = Array.isArray(req.body?.shown)
+      ? req.body.shown.map((s) => String(s || '').slice(0, 80)).slice(-10)
+      : [];
+
+    const detectRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4.1-mini',
+        temperature: 0.2,
+        max_tokens: 300,
+        response_format: { type: 'json_object' },
+        prompt_cache_key: `live-assist:${req.user?.id || 'anon'}`,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a live in-meeting copilot rendered on a private overlay only the user ' +
+              '("You" in the transcript) can see. You watch the rolling transcript and decide ' +
+              'whether THIS moment deserves a help card.\n\n' +
+              'TRIGGER only when the NEWEST lines contain one of:\n' +
+              '1. A question directed at the user that they may need help answering — draft the ' +
+              'answer for them (kind "answer").\n' +
+              '2. A company, product, person, or technical term worth a 2-sentence brief ' +
+              '(kind "brief").\n' +
+              '3. A factual claim, number, or date worth verifying (kind "fact").\n' +
+              '4. The user is clearly stuck or asked aloud what to say — suggest their next line ' +
+              '(kind "suggest").\n\n' +
+              'DO NOT trigger for small talk, pleasantries, scheduling chatter, or anything ' +
+              'similar to an ALREADY SHOWN card. Most calls should NOT trigger — silence is ' +
+              'the default, cards must feel earned.\n\n' +
+              'Set "search_query" (a short web query) ONLY when live/external data would ' +
+              'materially improve the card: company facts, current prices/news, a specific ' +
+              'person, recent releases. Leave it null for general knowledge.\n\n' +
+              'Reply with JSON ONLY:\n' +
+              '{"trigger": boolean, "kind": "answer"|"brief"|"fact"|"suggest", ' +
+              '"title": "<= 8 words", "body": "2-4 direct, usable sentences", ' +
+              '"search_query": string|null}',
+          },
+          {
+            role: 'user',
+            content:
+              `ROLLING TRANSCRIPT (newest last):\n${transcript}\n\n` +
+              (shown.length ? `ALREADY SHOWN CARDS (do not repeat):\n- ${shown.join('\n- ')}` : ''),
+          },
+        ],
+      }),
+    });
+    if (!detectRes.ok) return res.json({ insight: null });
+    const detectData = await detectRes.json();
+    let parsed = null;
+    try {
+      parsed = JSON.parse(detectData.choices?.[0]?.message?.content || 'null');
+    } catch (_) {
+      parsed = null;
+    }
+
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+      const usage = extractOpenAIUsage(detectData);
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'live_assist',
+        model: 'gpt-4.1-mini', provider: 'openai',
+        inputTokens: usage.input_tokens || estimateTokens(transcript),
+        outputTokens: usage.output_tokens || 0,
+      });
+    }).catch(() => {});
+
+    if (!parsed?.trigger || !parsed?.body) return res.json({ insight: null });
+
+    const kind = ['answer', 'brief', 'fact', 'suggest'].includes(parsed.kind) ? parsed.kind : 'suggest';
+    let body = String(parsed.body || '').slice(0, 700).trim();
+    const title = String(parsed.title || '').slice(0, 90).trim() || 'Heads up';
+    let sources = [];
+
+    // Mid-sentence lookup: quick Serper pass (snippets only — deep browsing
+    // would blow the latency budget), then recompose the card from real data.
+    const query = String(parsed.search_query || '').trim();
+    if (query && process.env.SERPER_API_KEY) {
+      try {
+        const found = await searchWeb(query, { num: 4, deepBrowse: false });
+        if (found.ok && found.results?.length) {
+          sources = found.results.slice(0, 3).map((r) => ({ title: r.title, url: r.url }));
+          const snippets = found.results
+            .map((r) => `- ${r.title}: ${r.snippet}`)
+            .join('\n');
+          const composeRes = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'gpt-4.1-mini',
+              temperature: 0.2,
+              max_tokens: 220,
+              messages: [
+                {
+                  role: 'system',
+                  content:
+                    'Rewrite the meeting help card below using the live search results. ' +
+                    'Keep it to 2-4 direct, factual sentences the user can say or act on ' +
+                    'mid-conversation. No preamble, no markdown headers. Output only the ' +
+                    'rewritten card body.',
+                },
+                {
+                  role: 'user',
+                  content: `CARD DRAFT:\n${body}\n\nLIVE SEARCH RESULTS for "${query}":\n${snippets}`,
+                },
+              ],
+            }),
+          });
+          if (composeRes.ok) {
+            const composeData = await composeRes.json();
+            const composed = String(composeData.choices?.[0]?.message?.content || '').trim();
+            if (composed) body = composed.slice(0, 700);
+          }
+        }
+      } catch (_) {
+        /* search is best-effort — the draft card still ships */
+      }
+    }
+
+    return res.json({ insight: { kind, title, body, sources } });
+  } catch (error) {
+    console.error('❌ live-assist error:', error?.message);
+    return res.json({ insight: null });
+  }
+});
+
+// ──────────────────────────────────────────────────
 // Meeting notes — rolling summary + key points + action items from the desktop
 // overlay's live transcript. The transcript is speaker-labeled ("You" = the
 // user, "Them" = others). Called periodically while listening so the overlay can
 // show notes that build up live. Returns structured JSON.
 // ──────────────────────────────────────────────────
 app.post('/api/ai/meeting-notes', requireAuth, aiLimiter, async (req, res) => {
-  const empty = { summary: '', keyPoints: [], actionItems: [] };
+  const empty = {
+    summary: '', keyPoints: [], actionItems: [], questionsToAsk: [], suggestions: [], topics: [],
+  };
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
 
-    // Keep the most recent window — enough for solid notes without ballooning
-    // tokens on long meetings.
     const transcript = String(req.body?.transcript || '').slice(-16000).trim();
     if (transcript.length < 40) return res.json(empty);
+    const previous = req.body?.previousNotes && typeof req.body.previousNotes === 'object'
+      ? req.body.previousNotes
+      : null;
+
+    const prevBlock = previous
+      ? `\n\nPREVIOUS NOTES (update — keep what's still valid, revise as the conversation evolves):\n${JSON.stringify(previous)}`
+      : '';
 
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -15375,28 +16548,27 @@ app.post('/api/ai/meeting-notes', requireAuth, aiLimiter, async (req, res) => {
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         temperature: 0.2,
-        max_tokens: 600,
+        max_tokens: 900,
         response_format: { type: 'json_object' },
         messages: [
           {
             role: 'system',
             content:
-              'You produce concise running notes from a LIVE meeting/conversation transcript. ' +
-              'The transcript is labeled by speaker: "You" is the user wearing the app, "Them" is ' +
-              'the other participant(s) / a video.\n\n' +
-              'Return ONLY a JSON object with this exact shape:\n' +
-              '{"summary": string, "keyPoints": string[], "actionItems": string[]}\n\n' +
-              '- summary: 2-3 sentence plain-language overview of what the conversation is about ' +
-              'and where it stands right now.\n' +
-              '- keyPoints: the most important facts, decisions, and topics (max 6, each a short ' +
-              'phrase). Empty array if none yet.\n' +
-              '- actionItems: concrete tasks, follow-ups, or commitments. Prefix with who owns it ' +
-              'when clear (e.g. "You: send the deck", "Them: confirm budget"). Max 8. Empty array ' +
-              'if none yet.\n\n' +
-              'Be factual and specific. NEVER invent content not supported by the transcript. ' +
-              'Output only the JSON, nothing else.',
+              'You produce live meeting intelligence from a conversation transcript — like Granola or Otter. ' +
+              'Speakers: "You" = the user wearing LYKN (mic). "Others" = remote participants / meeting audio.\n\n' +
+              'Return ONLY a JSON object:\n' +
+              '{"summary": string, "keyPoints": string[], "actionItems": string[], ' +
+              '"questionsToAsk": string[], "suggestions": string[], "topics": string[]}\n\n' +
+              '- summary: 2-4 sentences on what the meeting is about and where it stands NOW.\n' +
+              '- keyPoints: important facts, decisions, numbers (max 8, short phrases).\n' +
+              '- actionItems: tasks/follow-ups with owner when clear ("You: …", "Others: …"). Max 8.\n' +
+              '- questionsToAsk: 3-5 smart questions YOU would ask next to move the conversation forward ' +
+              '(first person, under 12 words each). Be specific to what was just discussed.\n' +
+              '- suggestions: 2-4 brief talking points or clarifications the user could offer right now.\n' +
+              '- topics: 2-5 topic tags for the meeting so far (short nouns/phrases).\n\n' +
+              'Be factual. NEVER invent content not in the transcript. Output only JSON.',
           },
-          { role: 'user', content: transcript },
+          { role: 'user', content: transcript + prevBlock },
         ],
       }),
     });
@@ -15409,14 +16581,15 @@ app.post('/api/ai/meeting-notes', requireAuth, aiLimiter, async (req, res) => {
     } catch (_) {
       parsed = empty;
     }
+    const pick = (arr, max) =>
+      Array.isArray(arr) ? arr.map((s) => String(s || '').trim()).filter(Boolean).slice(0, max) : [];
     const result = {
       summary: String(parsed.summary || '').trim(),
-      keyPoints: Array.isArray(parsed.keyPoints)
-        ? parsed.keyPoints.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 6)
-        : [],
-      actionItems: Array.isArray(parsed.actionItems)
-        ? parsed.actionItems.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8)
-        : [],
+      keyPoints: pick(parsed.keyPoints, 8),
+      actionItems: pick(parsed.actionItems, 8),
+      questionsToAsk: pick(parsed.questionsToAsk, 5),
+      suggestions: pick(parsed.suggestions, 4),
+      topics: pick(parsed.topics, 5),
     };
 
     getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
@@ -15990,6 +17163,28 @@ function buildBrowserPlannerMessages({ systemContent, userText, imageUrl }) {
       : { role: "user", content: userText },
   ];
 }
+
+// Locate a described UI element on a screenshot for the desktop overlay's
+// highlight ring. GPT-class models are unreliable at precise bounding boxes,
+// so when Holo (the GUI-grounding model already used for browser clicks) is
+// configured we use its single-turn element localization — it returns a
+// dependable click-point on a 0–1000 scale. The Electron client combines this
+// point with (or falls back to) its own vision-box request.
+app.post('/api/desktop/locate-element', requireAuth, aiLimiter, async (req, res) => {
+  try {
+    const imageUrl = String(req.body?.imageUrl || '');
+    const target = String(req.body?.target || '').slice(0, 400).trim();
+    if (!imageUrl.startsWith('data:image/') || !target) {
+      return res.status(400).json({ error: 'imageUrl (data URL) and target are required' });
+    }
+    if (!process.env.HAI_API_KEY) return res.json({ ok: false, error: 'locator_unavailable' });
+    const point = await callHoloElementLocalization(imageUrl, target);
+    if (!point) return res.json({ ok: false });
+    return res.json({ ok: true, point }); // { x, y } on a 0–1000 scale
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || 'locate_failed' });
+  }
+});
 
 // Plan browser-control steps for the desktop overlay: given the user's intent
 // and a list of interactable elements on the active tab, return a short action
@@ -16957,7 +18152,9 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "create_todo / list_todos / update_todo / delete_todo (manage the user's to-do list — open tasks they want to get done, with an OPTIONAL due date; use these for 'add X to my todo list', 'what's on my list', 'mark that done'), " +
   "list_custom_models (see every model the user built AND each model's purpose), " +
   "communicate_with_model (hand a task or question to one of the user's OTHER models — a sub-agent, main or not — and read back the report it returns), " +
-  "save_to_vault (save a note — only when the user explicitly asks), " +
+  "save_to_vault (save a TEXT note — only when the user explicitly asks), " +
+  "save_link_to_vault (save a LINK/URL — an article, video, page, or post the user shared or you found — into their vault as a rich " +
+  "embedded card; use it instead of save_to_vault whenever the thing being saved is a URL, same explicit-ask rule), " +
   "add_to_project (when the user shares a file in this session — drags or pastes in an image, PDF, or doc — and asks you to " +
   "'add this to my <project>' / 'put that in the <project> project' / 'upload this to <project>'; the file is already saved in " +
   "their vault, so just pass project_name and it gets clustered into that project — you don't need a node id, it uses the file " +
@@ -17638,9 +18835,11 @@ const LYKN_VOICE_TOOL_DEFS = [
     name: 'save_to_vault',
     mcp: 'lykn_createVaultNote',
     description:
-      "Save a note into the user's LYKN vault (their long-term memory) — a summary, idea, draft, or " +
+      "Save a TEXT note into the user's LYKN vault (their long-term memory) — a summary, idea, draft, or " +
       'snippet worth keeping past this conversation. ONLY call after the user clearly asks you to ' +
-      'save / capture / "put this in my vault" / "remember this". Never save silently.',
+      'save / capture / "put this in my vault" / "remember this". Never save silently. ' +
+      'If the thing to save is fundamentally a LINK/URL (an article, video, page, or post), call ' +
+      'save_link_to_vault instead so it lands as a rich embedded card, not raw text.',
     parameters: {
       type: 'object',
       properties: {
@@ -17648,6 +18847,26 @@ const LYKN_VOICE_TOOL_DEFS = [
         content: { type: 'string', description: 'The note body to save.' },
       },
       required: ['title', 'content'],
+    },
+  },
+  {
+    name: 'save_link_to_vault',
+    mcp: 'lykn_saveLinkToVault',
+    description:
+      "Save a LINK/URL into the user's LYKN vault as a rich embedded card (favicon, title, preview — " +
+      'the same card a manual drop produces). Use this INSTEAD of save_to_vault whenever the thing ' +
+      'being saved is fundamentally a URL: a link the user shared in this session, a page you found ' +
+      'via web_search / web_fetch, an article, a YouTube video, or a social post. Pass the URL plus ' +
+      'a short title and a 1-2 sentence summary when you know them. Same consent rule as ' +
+      'save_to_vault: only call after the user asks you to save/keep it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Full http(s) URL to save, including the scheme.' },
+        title: { type: 'string', description: 'Short human-readable title for the link (<=200 chars).' },
+        summary: { type: 'string', description: 'Optional 1-2 sentence description of what the page is about.' },
+      },
+      required: ['url'],
     },
   },
   // ── Add a shared file to a project ───────────────────────────────────
@@ -18208,6 +19427,35 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
       });
     }
 
+    // save_to_vault safety net: voice models sometimes save a link as a plain
+    // note ("Article: https://…"), which the vault renders as raw text (URLs
+    // are even stripped from quick-note excerpts) instead of an embedded card.
+    // When the note is fundamentally a URL — a link plus at most a short
+    // title/summary — reroute it to lykn_saveLinkToVault so it lands as the
+    // same rich card a manual drop produces. Longer bodies that merely
+    // mention a URL stay plain notes (fall through to the generic dispatch).
+    if (name === 'save_to_vault') {
+      const content = String(args.content || '');
+      const urlMatch = content.match(/https?:\/\/[^\s)\]>"']+/i);
+      if (urlMatch) {
+        const url = urlMatch[0].replace(/[.,;:!?]+$/, '');
+        const leftover = content
+          .replace(/https?:\/\/[^\s)\]>"']+/gi, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (leftover.length <= 280) {
+          const out = await runMcp('lykn_saveLinkToVault', {
+            url,
+            ...(args.title ? { title: String(args.title).slice(0, 200) } : {}),
+            ...(leftover ? { summary: leftover.slice(0, 4000) } : {}),
+          });
+          // saveLinkToVault rejects some URLs (e.g. generated artifacts);
+          // fall back to the plain note rather than losing the save.
+          if (out?.ok !== false) return res.json(out);
+        }
+      }
+    }
+
     // Generic synthesis-layer tools → run the mapped MCP handler with the
     // model-provided args passed straight through (each handler validates +
     // applies its own defaults / write-scope).
@@ -18578,10 +19826,12 @@ const elevenCustomLlmHandler = async (req, res) => {
     const expected = process.env.ELEVENLABS_LLM_SECRET;
     if (!expected) { customLlmStats.lastResult = 'no_secret_configured'; return res.status(503).json({ error: 'Custom LLM not configured.' }); }
     const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-    if (presented !== expected) {
+    if (!timingSafeEqualStr(presented, expected)) {
       customLlmStats.authFails += 1;
       customLlmStats.lastResult = 'auth_fail';
-      customLlmStats.lastAuthFail = { at: new Date().toISOString(), presentedLen: presented.length, presentedPrefix: presented.slice(0, 6) };
+      // Don't record any prefix of the presented secret — a leaked prefix
+      // narrows a brute-force. Length alone is enough to debug misconfig.
+      customLlmStats.lastAuthFail = { at: new Date().toISOString(), presentedLen: presented.length };
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
@@ -18785,7 +20035,7 @@ const customLlmStats = { hits: 0, authFails: 0, lastHitAt: null, lastResult: nul
 app.get('/api/ai/elevenlabs/llm/_debug', (req, res) => {
   const expected = process.env.ELEVENLABS_LLM_SECRET;
   const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  if (!expected || presented !== expected) return res.status(401).json({ error: 'Unauthorized' });
+  if (!expected || !timingSafeEqualStr(presented, expected)) return res.status(401).json({ error: 'Unauthorized' });
   return res.json({ customLlmStats, lastCustomLlmError, configuredAgentUrlHint: '/api/ai/elevenlabs/llm (base) — EL appends /chat/completions' });
 });
 
@@ -19218,15 +20468,16 @@ app.get('/api/scrape', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Missing URL parameter' });
     }
 
-    if (!isUrlSafe(url)) {
+    if (!(await isUrlSafe(url))) {
       return res.status(400).json({ error: 'URL not allowed' });
     }
     
     console.log(`🌐 Scraping website: ${url}`);
     
     try {
-      // Fetch the website
-      const response = await fetch(url, {
+      // Fetch the website — safeFetch re-validates every redirect hop so a
+      // public URL can't 30x into an internal address.
+      const response = await safeFetch(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
@@ -19299,7 +20550,7 @@ app.get('/api/unfurl', requireAuth, async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'Missing url parameter' });
 
-  if (!isUrlSafe(url)) {
+  if (!(await isUrlSafe(url))) {
     return res.status(400).json({ error: 'URL not allowed' });
   }
 
@@ -19941,6 +21192,109 @@ app.post('/api/vault/save-image', requireAuth, upload.single('image'), async (re
   }
 });
 
+// Generic file variant of save-image: persist ANY generated file (a Build-mode
+// React artifact HTML, a generated image, a downloaded doc) from the desktop
+// overlay straight into the Vault as a rich attachment card. The overlay's
+// Download button posts the bytes it already fetched, so the vault copy is
+// durable even after the original signed URL expires.
+app.post('/api/vault/save-file', requireAuth, upload.single('file'), async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'storage_unavailable' });
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+    const buffer = req.file?.buffer || null;
+    if (!buffer || !buffer.length) return res.status(400).json({ error: 'no_file' });
+    if (buffer.length > 25 * 1024 * 1024) {
+      return res.status(413).json({ error: 'file_too_large' });
+    }
+    const originalName = String(req.file?.originalname || '').trim();
+    let mimeType = String(req.file?.mimetype || '').toLowerCase().split(';')[0].trim();
+    if (!mimeType || mimeType === 'application/octet-stream') {
+      mimeType = mimeTypeForFilename(originalName || 'file.bin');
+    }
+
+    const title = (String(req.body?.title || '').trim() || originalName || 'Generated file').slice(0, 200);
+    const folder = (String(req.body?.folder || '').trim() || 'Generated').slice(0, 80);
+
+    const bucket = 'user-files';
+    const fileId = crypto.randomUUID();
+    const safeName = (originalName || 'file').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 120) || 'file';
+    const storagePath = `${userId}/${fileId}/${safeName}`;
+
+    const { error: upErr } = await supabaseAdmin.storage
+      .from(bucket)
+      .upload(storagePath, buffer, { contentType: mimeType, cacheControl: '31536000', upsert: false });
+    if (upErr) {
+      console.error('❌ Vault file upload failed:', upErr.message || upErr);
+      return res.status(500).json({ error: upErr.message || 'upload_failed' });
+    }
+
+    let fileUrl = null;
+    try {
+      const { data: signed } = await supabaseAdmin.storage
+        .from(bucket)
+        .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS);
+      fileUrl = signed?.signedUrl || null;
+    } catch { /* re-signing on the client still works via storagePath */ }
+
+    const attachment = {
+      type: inferAttachmentKind(mimeType, originalName, ''),
+      url: fileUrl,
+      name: originalName || safeName,
+      storagePath,
+      storageBucket: bucket,
+      size: buffer.length,
+      mimeType,
+    };
+    const content = `[ATTACHMENTS_JSON:${JSON.stringify([attachment])}]`;
+
+    const richInsert = {
+      user_id: userId,
+      title,
+      content,
+      folder,
+      source: 'overlay_download',
+      tags: ['generated'],
+      ...buildAttachmentColumns(attachment),
+    };
+
+    let { data: note, error: insErr } = await supabaseAdmin
+      .from('vault_items')
+      .insert(richInsert)
+      .select('id, title')
+      .single();
+
+    const missingColumn =
+      insErr &&
+      (insErr.code === 'PGRST204' ||
+        /could not find|does not exist/i.test(String(insErr.message || '')));
+    if (missingColumn) {
+      ({ data: note, error: insErr } = await supabaseAdmin
+        .from('vault_items')
+        .insert({ user_id: userId, title, content })
+        .select('id, title')
+        .single());
+    }
+
+    if (insErr) {
+      await supabaseAdmin.storage.from(bucket).remove([storagePath]).catch(() => {});
+      const msg = String(insErr.message || '');
+      if (msg.includes('vault_cap_reached')) {
+        return res.status(403).json({ error: 'vault_cap_reached' });
+      }
+      console.error('❌ Vault file insert failed:', msg);
+      return res.status(500).json({ error: msg || 'insert_failed' });
+    }
+
+    console.log(`✅ Saved overlay file to vault: ${note?.id} (${(buffer.length / 1024).toFixed(0)}KB, ${mimeType})`);
+    return res.json({ ok: true, id: note?.id || null, title });
+  } catch (error) {
+    console.error('❌ Vault save-file error:', error);
+    return res.status(500).json({ error: error?.message || 'save_failed' });
+  }
+});
+
 // ============================================
 // FILE PROCESSING ENDPOINTS
 // ============================================
@@ -20092,6 +21446,150 @@ app.post('/api/feedback', requireAuth, validate(feedbackSchema), async (req, res
   } catch (error) {
     console.error('❌ Feedback endpoint error:', error);
     res.status(500).json({ error: 'Failed to submit feedback' });
+  }
+});
+
+// ============================================
+// PROJECT COLLABORATION — invite people by email
+// ============================================
+// The client used to insert the lykn_project_members row directly via
+// supabase-js, which "worked" but never told the invitee anything: no email,
+// no notification, and access only materialised if they happened to sign in
+// fresh with the invited address. This endpoint makes invites real:
+//   • owner check against lykn_projects (canonical owner = user_id)
+//   • if the invitee ALREADY has a LYKN account, membership is granted
+//     immediately (user_id + accepted_at stamped — no login roundtrip needed)
+//   • otherwise a pending row is inserted and claimed by
+//     lykn_accept_project_invites() on their first sign-in
+//   • an invite email goes out via Resend either way (best-effort)
+
+// Find an auth user by email via the admin API. listUsers has no email
+// filter, so page through (bounded — fine at current user counts; replace
+// with an RPC against auth.users if the user base outgrows this).
+async function findAuthUserByEmail(email) {
+  const want = String(email || '').trim().toLowerCase();
+  if (!want || typeof supabaseAdmin.auth?.admin?.listUsers !== 'function') return null;
+  for (let page = 1; page <= 10; page++) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
+    if (error) return null;
+    const users = data?.users || [];
+    const hit = users.find((u) => String(u.email || '').toLowerCase() === want);
+    if (hit) return hit;
+    if (users.length < 1000) return null; // last page
+  }
+  return null;
+}
+
+const projectInviteSchema = z.object({
+  project_id: z.string().uuid(),
+  email: z.string().email().max(320),
+  role: z.enum(['editor', 'viewer']).optional(),
+});
+
+app.post('/api/projects/invite', requireAuth, validate(projectInviteSchema), async (req, res) => {
+  try {
+    const ownerId = req.user?.id;
+    if (!ownerId) return res.status(401).json({ ok: false, error: 'Not signed in.' });
+    const { project_id: projectId } = req.body;
+    const email = String(req.body.email).trim().toLowerCase();
+    const role = req.body.role === 'viewer' ? 'viewer' : 'editor';
+
+    const { data: project, error: projErr } = await supabaseAdmin
+      .from('lykn_projects')
+      .select('id, name, user_id')
+      .eq('id', projectId)
+      .maybeSingle();
+    if (projErr) throw projErr;
+    if (!project) return res.status(404).json({ ok: false, error: 'Project not found.' });
+    if (project.user_id !== ownerId) {
+      return res.status(403).json({ ok: false, error: 'Only the project owner can invite people.' });
+    }
+    if (email === String(req.user?.email || '').toLowerCase()) {
+      return res.status(400).json({ ok: false, error: "That's your own email — you're already the owner." });
+    }
+
+    const invitee = await findAuthUserByEmail(email);
+    let status;
+    if (invitee) {
+      // Existing LYKN account → grant membership NOW instead of waiting for
+      // them to sign in fresh. Clear any stale pending invite for the same
+      // email first so the partial unique indexes can't collide.
+      const { data: existing } = await supabaseAdmin
+        .from('lykn_project_members')
+        .select('id')
+        .eq('project_id', projectId)
+        .eq('user_id', invitee.id)
+        .limit(1);
+      if (existing && existing.length > 0) {
+        return res.json({ ok: true, status: 'already_member', email });
+      }
+      await supabaseAdmin
+        .from('lykn_project_members')
+        .delete()
+        .eq('project_id', projectId)
+        .is('user_id', null)
+        .ilike('invited_email', email);
+      const { error: insErr } = await supabaseAdmin.from('lykn_project_members').insert({
+        project_id: projectId,
+        user_id: invitee.id,
+        invited_email: email,
+        role,
+        invited_by: ownerId,
+        accepted_at: new Date().toISOString(),
+      });
+      if (insErr) {
+        if (insErr.code === '23505') return res.json({ ok: true, status: 'already_member', email });
+        throw insErr;
+      }
+      status = 'added';
+    } else {
+      // No account yet → pending invite, claimed on their first sign-in.
+      const { error: insErr } = await supabaseAdmin.from('lykn_project_members').insert({
+        project_id: projectId,
+        invited_email: email,
+        role,
+        invited_by: ownerId,
+      });
+      if (insErr) {
+        if (insErr.code === '23505') return res.json({ ok: true, status: 'already_invited', email });
+        throw insErr;
+      }
+      status = 'invited';
+    }
+
+    // Invite email — best-effort; membership already stands either way.
+    let emailSent = false;
+    if (resendClient) {
+      try {
+        const inviterName = pickUserDisplayName(req.user) || req.user?.email || 'Someone';
+        const appUrl = process.env.FRONTEND_URL || 'https://lykn.io';
+        const projectName = project.name || 'a project';
+        const roleLabel = role === 'viewer' ? 'view' : 'view and edit';
+        const cta = status === 'added'
+          ? `<a href="${appUrl}/projects/${projectId}" style="display:inline-block;padding:10px 18px;background:#111;color:#fff;border-radius:10px;text-decoration:none">Open the project</a>`
+          : `<a href="${appUrl}" style="display:inline-block;padding:10px 18px;background:#111;color:#fff;border-radius:10px;text-decoration:none">Join LYKN</a>
+             <p style="color:#666;font-size:13px">Sign up with <strong>${email}</strong> and the project will be waiting for you.</p>`;
+        await resendClient.emails.send({
+          from: process.env.RESEND_FROM_EMAIL || 'LYKN <feedback@lykn.io>',
+          to: [email],
+          subject: `${inviterName} invited you to "${projectName}" on LYKN`,
+          html: `
+            <h2 style="margin:0 0 8px">You've been invited to a project</h2>
+            <p><strong>${inviterName}</strong> invited you to collaborate on <strong>${projectName}</strong> on LYKN.</p>
+            <p style="color:#666;font-size:13px">You'll be able to ${roleLabel} the project's tasks, calendar, and AI working memory. Your own vault and beliefs stay private.</p>
+            ${cta}
+          `,
+        });
+        emailSent = true;
+      } catch (emailErr) {
+        console.warn('⚠️ Project invite email failed:', emailErr?.message || emailErr);
+      }
+    }
+
+    return res.json({ ok: true, status, email, email_sent: emailSent });
+  } catch (error) {
+    console.error('❌ Project invite error:', error?.message || error);
+    return res.status(500).json({ ok: false, error: 'Could not send the invite.' });
   }
 });
 
@@ -20688,10 +22186,10 @@ app.get('/api/admin/security/audit', requireAuth, requireAdmin, async (req, res)
 // STRIPE BILLING — customer + checkout + portal + webhook handler
 // ============================================
 
-// Student (`student`) and Pro (`studio`) are offered at checkout. Legacy price
-// ids for studio_pro / studio_max still map via STRIPE_PRICE_MAP for existing
-// subs.
-const PLAN_IDS = new Set(['student', 'studio']);
+// Student (`student`), Pro (`studio`), and Max (`max`) are offered at
+// checkout. Legacy price ids for studio_pro / studio_max still map via
+// STRIPE_PRICE_MAP for existing subs.
+const PLAN_IDS = new Set(['student', 'studio', 'max']);
 const BILLING_PERIODS = new Set(['monthly', 'annual']);
 
 // ---------------------------------------------------------------------------
@@ -20707,7 +22205,7 @@ const BILLING_PERIODS = new Set(['monthly', 'annual']);
 // product rule is "once upgraded, always upgraded" — payment-collection
 // belongs to Stripe + status flags, not to the access-control gate.
 // ---------------------------------------------------------------------------
-const PLAN_RANK = { free: 0, student: 1, studio: 1, studio_pro: 1, studio_max: 1 };
+const PLAN_RANK = { free: 0, student: 1, studio: 1, studio_pro: 1, studio_max: 1, max: 2 };
 
 function planRank(plan) {
   return PLAN_RANK[String(plan || 'free').toLowerCase()] ?? 0;
@@ -21500,7 +22998,7 @@ app.post('/api/feeds/discover', requireAuth, async (req, res) => {
     if (!url || typeof url !== 'string') {
       return res.status(400).json({ error: 'Missing url' });
     }
-    if (!isUrlSafe(url)) {
+    if (!(await isUrlSafe(url))) {
       return res.status(400).json({ error: 'URL not allowed' });
     }
     const result = await discoverFeed(url);
@@ -21569,7 +23067,7 @@ app.post('/api/feeds', requireAuth, validate(createFeedSchema), async (req, res)
     if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
 
     const { url, initialBackfillCount } = req.body;
-    if (!isUrlSafe(url)) {
+    if (!(await isUrlSafe(url))) {
       return res.status(400).json({ error: 'URL not allowed' });
     }
 
@@ -21773,7 +23271,14 @@ app.post('/api/ai/cursor-builds/poll-due', async (req, res) => {
     }
     if (!supabaseAdmin) return res.status(503).json({ error: 'Database unavailable' });
     const result = await pollRunningBuilds(supabaseAdmin);
-    return res.json({ ok: true, ...result });
+    let stewardSync = { synced: 0, completed: 0 };
+    try {
+      const { syncStewardDelegations } = await import('./lib/nightShift/stewardCompletion.js');
+      stewardSync = await syncStewardDelegations(supabaseAdmin);
+    } catch (e) {
+      console.warn('[cursor-builds poll-due] steward sync:', e?.message || e);
+    }
+    return res.json({ ok: true, ...result, steward: stewardSync });
   } catch (err) {
     return res.status(500).json({ error: 'Poll failed' });
   }

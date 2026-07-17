@@ -37,6 +37,16 @@ export default function ShareReceiver() {
   const [status, setStatus] = useState("idle"); // idle | saving | done | error | dup
   const [message, setMessage] = useState("");
   const ranRef = useRef(false);
+  // Redirect timers scheduled after a save resolves; cleared on unmount so
+  // leaving /share within the 900ms window doesn't fire a surprise nav or
+  // trigger setState-after-unmount warnings.
+  const redirectTimerRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (redirectTimerRef.current) window.clearTimeout(redirectTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (loading) return;
@@ -80,7 +90,7 @@ export default function ShareReceiver() {
           setStatus("done");
           setMessage("Saved to Vault");
           toast({ title: "Saved to Vault", description: url });
-          setTimeout(() => nav("/vault", { replace: true }), 900);
+          redirectTimerRef.current = window.setTimeout(() => nav("/vault", { replace: true }), 900);
           return;
         }
         // Discriminated failure: tell the user the truth instead of
@@ -91,7 +101,7 @@ export default function ShareReceiver() {
           setStatus("dup");
           setMessage("Already in your Vault");
           toast({ title: "Already saved", description: url });
-          setTimeout(() => nav("/vault", { replace: true }), 900);
+          redirectTimerRef.current = window.setTimeout(() => nav("/vault", { replace: true }), 900);
         } else if (result.reason === "cap") {
           setStatus("error");
           setMessage("Vault is full — upgrade to keep saving.");

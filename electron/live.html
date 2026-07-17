@@ -1,0 +1,405 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /* Live meeting notes / transcription card — its OWN vibrancy window
+         floating next to the glass bar, exactly like the three-dot menu and
+         view picker cards (window-level vibrancy fills the whole window rect,
+         so this can't live inside the overlay window without stretching it).
+         Styling mirrors the chat card: native blur + the same tint/border. */
+      :root {
+        --tint: rgba(16, 18, 24, 0.28);
+        --border: rgba(255, 255, 255, 0.12);
+        --text: #f4f6fb;
+        --muted: #aab2c2;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        width: 100%;
+        background: transparent;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 13px;
+        color: var(--text);
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #card {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        background: var(--tint);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 12px 14px;
+        overflow: hidden;
+      }
+      /* Header row: dot + title grow/truncate on the left, copy/save/close
+         stay pinned top-right. The tabs live on their OWN row below so this
+         row can never wrap (wrapping used to dump the X button onto a second
+         line at the left, with its hover box floating in the wrong spot). */
+      .live-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: none;
+        min-width: 0;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .live-dot {
+        flex: none;
+        width: 7px; height: 7px; border-radius: 50%;
+        background: #6b7280;
+      }
+      .live-dot.live {
+        background: #ef4444;
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.7);
+        animation: livePulse 1.4s ease-in-out infinite;
+      }
+      .live-title {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      @keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+      .live-tabs {
+        display: flex;
+        gap: 4px;
+        flex: none;
+        margin-bottom: 8px;
+      }
+      .live-tab {
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-size: 10px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 7px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .live-tab:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+      .live-tab.active { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+      .live-close {
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 20px; height: 20px;
+        padding: 0;
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .live-close:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
+      .live-close svg { display: block; width: 14px; height: 14px; }
+      .live-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        flex: none;
+      }
+      .live-icon-btn {
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 22px; height: 22px;
+        padding: 0;
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .live-icon-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
+      .live-icon-btn.saved { color: #34d399; }
+      .live-icon-btn svg { display: block; width: 13px; height: 13px; }
+      .live-saved-toast {
+        flex: none;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: #34d399;
+        padding: 2px 0 4px;
+        cursor: pointer;
+      }
+      .live-saved-toast:hover { text-decoration: underline; }
+      .live-pane {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+      }
+      .live-pane::-webkit-scrollbar { width: 6px; }
+      .live-pane::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+      }
+      /* Live assist cards — Cluely-style in-call help, newest on top. */
+      .assist-feed { display: flex; flex-direction: column; gap: 8px; }
+      .assist-feed:not(:empty) { margin-bottom: 12px; }
+      .assist-card {
+        border: 1px solid rgba(96, 165, 250, 0.22);
+        background: rgba(96, 165, 250, 0.08);
+        border-radius: 12px;
+        padding: 9px 11px;
+        animation: assistIn 0.18s ease;
+      }
+      @keyframes assistIn {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: none; }
+      }
+      .assist-card.kind-fact {
+        border-color: rgba(251, 191, 36, 0.25);
+        background: rgba(251, 191, 36, 0.07);
+      }
+      .assist-card.kind-suggest {
+        border-color: rgba(52, 211, 153, 0.25);
+        background: rgba(52, 211, 153, 0.07);
+      }
+      .assist-head {
+        display: flex;
+        align-items: baseline;
+        gap: 7px;
+        margin-bottom: 4px;
+      }
+      .assist-kind {
+        flex: none;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #93c5fd;
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: rgba(96, 165, 250, 0.16);
+      }
+      .kind-fact .assist-kind { color: #fcd34d; background: rgba(251, 191, 36, 0.16); }
+      .kind-suggest .assist-kind { color: #6ee7b7; background: rgba(52, 211, 153, 0.16); }
+      .assist-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+        min-width: 0;
+      }
+      .assist-body {
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: var(--text);
+        user-select: text;
+        -webkit-user-select: text;
+      }
+      .assist-sources {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-top: 6px;
+      }
+      .assist-src {
+        border: none;
+        font: inherit;
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.07);
+        padding: 2px 8px;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .assist-src:hover { color: var(--text); background: rgba(255, 255, 255, 0.14); }
+      .notes-summary {
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--text);
+      }
+      .notes-summary:empty::after {
+        content: "Live summary, key points, and action items appear here.";
+        color: var(--muted);
+        font-style: italic;
+      }
+      .notes-section { margin-top: 10px; }
+      .notes-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .notes-list { list-style: none; margin: 0; padding: 0; }
+      .notes-list li {
+        position: relative;
+        padding-left: 16px;
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--text);
+        margin-bottom: 4px;
+      }
+      .notes-list li::before {
+        content: "";
+        position: absolute;
+        left: 3px; top: 8px;
+        width: 4px; height: 4px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+      .notes-list.actions li::before {
+        content: "";
+        left: 2px; top: 4px;
+        width: 9px; height: 9px;
+        border-radius: 3px;
+        background: transparent;
+        border: 1.5px solid #60a5fa;
+      }
+      .notes-topics {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-top: 8px;
+      }
+      .notes-topic {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--muted);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .meeting-question {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        width: 100%;
+        text-align: left;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        border-radius: 10px;
+        padding: 8px 10px;
+        font: inherit;
+        font-size: 12.5px;
+        line-height: 1.4;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .meeting-question:hover {
+        background: rgba(96, 165, 250, 0.1);
+        border-color: rgba(96, 165, 250, 0.25);
+      }
+      .meeting-question-ico {
+        flex: none;
+        color: #60a5fa;
+        margin-top: 1px;
+      }
+      .meeting-question-ico svg { width: 13px; height: 13px; display: block; }
+      .meeting-questions-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .meeting-questions-list:empty::after {
+        content: "Smart questions will appear as the meeting unfolds.";
+        color: var(--muted);
+        font-size: 13px;
+        font-style: italic;
+        line-height: 1.45;
+      }
+      .live-body {
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--text);
+        word-break: break-word;
+        user-select: text;
+        -webkit-user-select: text;
+      }
+      .live-body:empty::after {
+        content: "Capturing audio… speech will appear here.";
+        color: var(--muted);
+        font-style: italic;
+      }
+      .live-line { margin-bottom: 8px; }
+      .live-line:last-child { margin-bottom: 0; }
+      .live-line.transcribing .live-text {
+        color: var(--muted);
+        font-style: italic;
+      }
+      .live-time {
+        font-size: 10px;
+        color: rgba(255, 255, 255, 0.35);
+        margin-right: 6px;
+        font-variant-numeric: tabular-nums;
+      }
+      .live-speaker {
+        display: inline-block;
+        margin-right: 7px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .live-line.you .live-speaker { color: #60a5fa; }
+    </style>
+  </head>
+  <body>
+    <div id="card">
+      <div class="live-head">
+        <span class="live-dot" id="live-dot"></span>
+        <span class="live-title" id="live-title">Listening…</span>
+        <div class="live-actions">
+          <button class="live-icon-btn" id="live-copy" type="button" title="Copy transcript" aria-label="Copy transcript">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+              <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+            </svg>
+          </button>
+          <button class="live-icon-btn" id="live-save" type="button" title="Save to Vault" aria-label="Save to Vault">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <polyline points="17 21 17 13 7 13 7 21" />
+              <polyline points="7 3 7 8 15 8" />
+            </svg>
+          </button>
+        </div>
+        <button class="live-close" id="live-close" type="button" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+          </svg>
+        </button>
+      </div>
+      <div class="live-tabs">
+        <button class="live-tab active" id="tab-notes" type="button" data-pane="notes">Notes</button>
+        <button class="live-tab" id="tab-ask" type="button" data-pane="ask">Suggestions</button>
+        <button class="live-tab" id="tab-transcript" type="button" data-pane="transcript">Transcript</button>
+      </div>
+      <div class="live-saved-toast" id="live-saved-toast" hidden>Open in Vault →</div>
+      <div class="live-pane" id="pane-notes"></div>
+      <div class="live-pane" id="pane-ask" hidden></div>
+      <div class="live-pane" id="pane-transcript" hidden></div>
+    </div>
+    <script src="live.js"></script>
+  </body>
+</html>

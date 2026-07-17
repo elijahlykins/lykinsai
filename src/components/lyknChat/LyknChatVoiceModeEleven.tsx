@@ -91,6 +91,7 @@ const TOOL_STATUS_COPY: Record<string, string> = {
   build_with_cursor: "Kicking off the build…",
   check_cursor_build: "Checking the build…",
   save_to_vault: "Saving to your vault…",
+  save_link_to_vault: "Saving the link to your vault…",
   add_to_project: "Adding it to the project…",
   [TUNE_VOICE_TOOL]: "Adjusting how it sounds…",
 };
@@ -131,6 +132,7 @@ const TOOL_NAMES = [
   "build_with_cursor",
   "check_cursor_build",
   "save_to_vault",
+  "save_link_to_vault",
   // Add the file the user just shared in this session to a project ("add this
   // to my <project>"). Dispatched server-side; see /api/ai/realtime/tool.
   "add_to_project",
@@ -563,7 +565,7 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
               onPaste={handlePasteBarPaste}
               onKeyDown={handlePasteBarKeyDown}
               disabled={attachBusy}
-              placeholder={attachBusy ? "Sharing…" : "Paste a link, image, PDF, doc — or drag & drop"}
+              placeholder={attachBusy ? "Sharing…" : "Paste a link, image, PDF, doc, or drag & drop"}
               className="flex-1 bg-transparent text-sm text-foreground placeholder:text-foreground/40 outline-none disabled:opacity-50"
               aria-label="Paste links or files to share with the voice agent"
             />

@@ -7,12 +7,19 @@ interface WakeChatSubwindowProps {
   /** Render the preview as a white/light surface. The model menu stays open
       (styled for light via `.lkn-chat-light`) to show the available models. */
   lightMode?: boolean;
+  /** Proportionally scale the surface to fit the window on every viewport (not
+      just phones), so the whole chat is visible inside a fixed frame. */
+  fit?: boolean;
+  /** Layout width (px) before scaling. Bigger = more "zoomed out". */
+  designWidth?: number;
 }
 
 export default function WakeChatSubwindow({
   active,
   preload = false,
   lightMode = false,
+  fit = false,
+  designWidth = 720,
 }: WakeChatSubwindowProps) {
   const showPreview = preload || active;
 
@@ -28,7 +35,7 @@ export default function WakeChatSubwindow({
       </div>
       <div className="lykn-wake-subwindow-body">
         {showPreview ? (
-          <WakePreviewFit designWidth={720}>
+          <WakePreviewFit designWidth={designWidth} always={fit}>
             <WakeChatTourPreview active={active} showModelMenu lightModelMenu={lightMode} />
           </WakePreviewFit>
         ) : null}

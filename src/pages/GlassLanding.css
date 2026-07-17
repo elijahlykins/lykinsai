@@ -1,0 +1,2872 @@
+/* ============================================================================
+   GlassLanding — the production marketing landing page, focused on LYKN Glass
+   (the overlay). Served at "/", "/landing", and "/glass". The
+   header reuses the same .lkn-header markup/classes from index.css so it looks
+   and behaves identically; everything else here is prefixed .gl- / .glo- to
+   avoid any collision with the live landing page.
+   ========================================================================== */
+
+.glass-land {
+  min-height: 100vh;
+  background: transparent;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Sections paint above the fixed page backdrop. */
+.glass-land > main,
+.glass-land > .gl-footer {
+  position: relative;
+  z-index: 1;
+}
+
+/* The floating glass header now lives in index.css (.lkn-header*) so it is
+   identical on every marketing page, not just this one. */
+
+/* ── Page backdrop ──────────────────────────────────────── */
+/* Fixed full-viewport white carrying the roaming blue glow and the frosted
+   panels — every section scrolls over it. The glow starts parked behind the
+   hero panels, wanders on its own while idle, and snakes down the page as
+   the user scrolls (positions come from JS via the CSS vars below). */
+.gl-page-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: #ffffff;
+  overflow: hidden;
+  /* Defaults match the top of the scroll path: centered on the right edge,
+     so only the glow's left half is on screen (as the old hero art was). */
+  --gl-blob-x: 100%;
+  --gl-blob-y: 46%;
+  --gl-trail-x: 100%;
+  --gl-trail-y: 46%;
+}
+
+/* The main blue glow. A free-floating blurred ellipse (rather than the old
+   right-anchored half-ellipse) so it can travel anywhere on the page. */
+.gl-bg-blob {
+  position: absolute;
+  left: var(--gl-blob-x);
+  top: var(--gl-blob-y);
+  width: 130vw;
+  height: 200vh;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(
+    ellipse 50% 50% at 50% 50%,
+    #0e6fff 0%,
+    #0e6fff 32%,
+    rgba(14, 111, 255, 0) 72%
+  );
+  filter: blur(24px);
+  /* Entrance: the glow swells up from small while fading in, landing exactly
+     on gl-bg-drift's first keyframe so the idle wander takes over without a
+     visible snap (entry ends at 160ms + 1100ms = the drift's 1260ms delay). */
+  animation: gl-orb-in 1100ms cubic-bezier(0.22, 1, 0.36, 1) 160ms both,
+    gl-bg-drift 16s ease-in-out 1.26s infinite alternate;
+}
+
+/* The trailing wake: wider, dimmer, and eased toward the main glow from JS,
+   so scrolling stretches a fading blue streak across the sections behind. */
+.gl-bg-blob--trail {
+  left: var(--gl-trail-x);
+  top: var(--gl-trail-y);
+  width: 160vw;
+  height: 230vh;
+  opacity: 0.42;
+  background: radial-gradient(
+    ellipse 50% 50% at 50% 50%,
+    rgba(14, 111, 255, 0.85) 0%,
+    rgba(14, 111, 255, 0) 70%
+  );
+  /* Same entrance, but landing on the drift's *last* keyframe — the trail
+     plays the wander alternate-reverse, so that's where it picks up. */
+  animation: gl-orb-in-trail 1100ms cubic-bezier(0.22, 1, 0.36, 1) 160ms both,
+    gl-bg-drift 22s ease-in-out 1.26s infinite alternate-reverse;
+}
+
+/* Gentle idle wander layered on top of the scroll-driven position, so the
+   blue is visibly moving from the moment the hero loads. */
+@keyframes gl-bg-drift {
+  from {
+    transform: translate(-54%, -53%) scale(1);
+  }
+  to {
+    transform: translate(-46%, -47%) scale(1.07);
+  }
+}
+
+/* Load-in: the glow blooms up from a smaller, transparent state. Each variant
+   ends on the exact transform its gl-bg-drift run starts from (the drift's
+   `from` for the main glow, its `to` for the alternate-reverse trail), so the
+   handoff from entrance to idle wander is seamless. */
+@keyframes gl-orb-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-54%, -53%) scale(1);
+  }
+}
+@keyframes gl-orb-in-trail {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-46%, -47%) scale(1.07);
+  }
+}
+
+/* Frosted panels spanning the whole viewport, behind every section. Over
+   plain white they vanish — only the stretch with blue behind it frosts up,
+   so each section reveals just the slice of panels the glow is passing. */
+.gl-bg-stripes {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+.gl-bg-stripes span {
+  flex: 1;
+  border-left: 1px solid rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gl-bg-blob {
+    animation: gl-fade-in 900ms ease 160ms both;
+  }
+}
+
+@media (max-width: 860px) {
+  /* On phones the glow and panels would sit under the copy — keep the
+     backdrop plain white there. */
+  .gl-bg-blob,
+  .gl-bg-stripes {
+    display: none;
+  }
+}
+
+/* ── Readability over the glow ─────────────────────────────── */
+/* Text sitting directly on the page background blends toward white with the
+   local blue intensity (JS sets inline colors every frame — see
+   GlassBackdrop). Big titles additionally get this class: their glyphs are
+   painted by a JS-computed horizontal gradient, so the white sweeps across
+   them letter by letter as the glow's edge passes. Unscoped: every page
+   hosting the backdrop (landing, pricing) uses it. */
+/* NOTE: deliberately unscoped — Pricing (.lkn-land) and other non-.glass-land
+   pages get this class from GlassBackdrop too. Without the clip rules the
+   painted gradient shows as a solid card behind the title. */
+.gl-grad-text {
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  /* Tight line-heights let descenders (g, y, p) hang below the paint box,
+     and clipped-to-background text goes invisible there. A sliver of bottom
+     padding extends the paint box under the descenders. */
+  padding-bottom: 0.14em;
+}
+
+/* ── Hero ───────────────────────────────────────────────── */
+/* Reference layout: plain white stage, copy + CTA left, and a blue blurred
+   blob behind frosted vertical glass stripes (wordmark + floating labels)
+   on the right. */
+.gl-hero {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  /* Transparent so the page-wide glow + panels show through — the fixed
+     backdrop underneath supplies the white. */
+  background: transparent;
+  padding: clamp(6rem, 14vh, 9rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(3rem, 8vh, 6rem);
+  overflow: hidden;
+}
+
+.gl-hero-inner {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  /* The container is an invisible full-width box layered above the art —
+     let the mouse fall through it so the panels underneath get hover. */
+  pointer-events: none;
+}
+
+/* Top-left headline: "Welcome to / LYKN studio", with the brand name set in
+   the official wordmark art sized to the surrounding type. */
+.gl-hero-headline {
+  margin: 0;
+  font-size: clamp(2.8rem, 6vw, 5rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.12;
+  color: #0f172a;
+  animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* The inline wordmark: scaled to read as part of the headline (the SVG has
+   built-in padding, so it runs a touch taller than the cap height) and
+   nudged down so its baseline sits on the text baseline. */
+.gl-hero-word {
+  display: inline-block;
+  height: 1.14em;
+  width: auto;
+  vertical-align: -0.18em;
+  user-select: none;
+}
+
+/* The first paragraph drops well below the headline, the second follows at
+   normal rhythm, the CTA under that. */
+.gl-hero-headline + .gl-hero-lede {
+  margin-top: clamp(3.5rem, 11vh, 6.5rem);
+}
+
+.gl-hero-lede {
+  margin: clamp(1.1rem, 2.6vh, 1.5rem) 0 0;
+  font-size: clamp(0.98rem, 1.3vw, 1.1rem);
+  line-height: 1.65;
+  color: #0f172a;
+  animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both;
+}
+
+.gl-hero-cta {
+  margin-top: clamp(1.6rem, 3.5vh, 2.25rem);
+  display: inline-flex;
+  align-items: center;
+  padding: 0.8rem 1.9rem;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #ffffff;
+  background: #0f172a;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 12px 30px -12px rgba(15, 23, 42, 0.5);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+  animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 220ms both;
+}
+.gl-hero-cta:hover {
+  background: #1e293b;
+  transform: translateY(-2px);
+  box-shadow: 0 18px 38px -14px rgba(15, 23, 42, 0.55);
+}
+.gl-hero-cta:active {
+  transform: translateY(0);
+}
+
+/* Row holding the hero's two CTAs (Try + Download). The buttons carry their
+   own fade-up animation; the row owns the drop below the ledes. */
+.gl-hero-ctas {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: clamp(1.6rem, 3.5vh, 2.25rem);
+}
+.gl-hero-ctas .gl-hero-cta {
+  margin-top: 0;
+}
+
+/* Blue variant — brand blue pill next to the dark CTA. */
+.gl-hero-cta--blue {
+  color: #ffffff;
+  background: #2563eb;
+  border: none;
+  box-shadow: 0 12px 30px -12px rgba(37, 99, 235, 0.55);
+}
+.gl-hero-cta--blue:hover {
+  background: #1d4ed8;
+  box-shadow: 0 18px 38px -14px rgba(37, 99, 235, 0.6);
+}
+
+/* The copy column under the headline: pinned to the left side and capped in
+   width so it never runs into the panel art on the right. Interactive again
+   (the inner container lets the mouse fall through for panel hovers). */
+.gl-hero-copy {
+  /* Dropped down from the very top of the hero. */
+  margin-top: clamp(3rem, 10vh, 6.5rem);
+  max-width: 34rem;
+  text-align: left;
+  pointer-events: auto;
+}
+
+/* The overlay chat bar floating centered over the panel art on the right. */
+.gl-hero-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 54%;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Let the mouse fall through the empty area so the panels still hover;
+     the bar itself is interactive. */
+  pointer-events: none;
+  animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 280ms both;
+}
+.gl-hero-glassbar {
+  width: min(420px, 84%);
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 24px 60px -18px rgba(15, 23, 42, 0.5);
+}
+
+/* Little angled prompt hints scattered around the bar — decorative white
+   text over the blue panels. */
+.gl-hero-hints {
+  position: absolute;
+  inset: 0;
+}
+.gl-hero-hint {
+  position: absolute;
+  white-space: nowrap;
+  font-size: clamp(0.78rem, 0.95vw, 0.92rem);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #ffffff;
+  text-shadow: 0 1px 12px rgba(10, 40, 120, 0.55), 0 1px 2px rgba(10, 40, 120, 0.4);
+}
+.gl-hero-hint:nth-of-type(1) {
+  top: 22%;
+  left: 10%;
+  transform: rotate(-8deg);
+}
+.gl-hero-hint:nth-of-type(2) {
+  top: 16%;
+  right: 12%;
+  transform: rotate(6deg);
+}
+.gl-hero-hint:nth-of-type(3) {
+  top: 36%;
+  right: 4%;
+  transform: rotate(-5deg);
+}
+.gl-hero-hint:nth-of-type(4) {
+  bottom: 34%;
+  left: 5%;
+  transform: rotate(6deg);
+}
+.gl-hero-hint:nth-of-type(5) {
+  bottom: 25%;
+  right: 10%;
+  transform: rotate(-7deg);
+}
+.gl-hero-hint:nth-of-type(6) {
+  bottom: 15%;
+  left: 16%;
+  transform: rotate(4deg);
+}
+
+@media (max-width: 860px) {
+  /* The panel art is hidden on phones — hide the bar that floats over it. */
+  .gl-hero-bar {
+    display: none;
+  }
+}
+
+@keyframes gl-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes gl-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gl-hero-headline,
+  .gl-hero-lede,
+  .gl-hero-cta,
+  .gl-hero-bar {
+    animation: none;
+  }
+}
+
+/* ── Capabilities grid (under the hero) ───────────────────── */
+/* Reference layout: centered headline + two pill CTAs on white, then a 2×2
+   grid of dark cards — Chat, Build, Imagine, Voice — each with the surface
+   name bottom-left and an "Explore →" link bottom-right. */
+.gl-cap {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  padding: clamp(3.5rem, 9vh, 7rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(4rem, 11vh, 8rem);
+  text-align: center;
+}
+.gl-cap-inner {
+  /* Wider than the other sections (1120px) so the capability cards can run
+     long and low; the centered copy constrains itself. */
+  max-width: 1280px;
+  margin: 0 auto;
+}
+.gl-cap-title {
+  margin: 0;
+  font-size: clamp(2.1rem, 4.4vw, 3.5rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: #0f172a;
+}
+.gl-cap-underline {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.18em;
+  text-decoration-color: rgba(15, 23, 42, 0.55);
+}
+.gl-cap-grid {
+  margin-top: clamp(2.5rem, 6vh, 4rem);
+  /* Wider than the section copy so the cards read long and low. */
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: clamp(0.9rem, 1.8vw, 1.4rem);
+  text-align: left;
+}
+@media (max-width: 860px) {
+  .gl-cap-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gl-cap-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* Fixed height (not min-height): the chat thread grows as bubbles land and
+     must clip inside the card instead of stretching it (and its row). Kept
+     low relative to the width so the cards read wide, like the reference. */
+  height: clamp(200px, 21vw, 280px);
+  border-radius: 20px;
+  overflow: hidden;
+  background: #0b0c0f;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.45);
+}
+
+/* Video cards (Build / Imagine) — the product clip fills the whole card. */
+.gl-cap-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Build card: LYKN typing out code on black. */
+.gl-cap-code {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  /* Charcoal rather than pure black so the card reads softer on the page. */
+  background: #1e2026;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.gl-cap-code-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+.gl-cap-code-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+}
+.gl-cap-code-dot[data-tint="r"] {
+  background: #ff5f57;
+}
+.gl-cap-code-dot[data-tint="y"] {
+  background: #febc2e;
+}
+.gl-cap-code-dot[data-tint="g"] {
+  background: #28c840;
+}
+.gl-cap-code-file {
+  margin-left: 8px;
+}
+.gl-cap-code-mode {
+  margin-left: auto;
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.35);
+}
+.gl-cap-code-body {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0.85rem 1rem 3.2rem;
+  overflow: hidden;
+  overflow-anchor: none;
+  font-size: 0.74rem;
+  line-height: 1.7;
+  color: #dbeafe;
+  /* The snippet grows downward; keep the newest lines visible by pinning the
+     column to the bottom once it overflows, fading clipped lines at the top. */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 18%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 18%);
+}
+.gl-cap-code-line {
+  display: flex;
+  white-space: pre;
+}
+.gl-cap-code-num {
+  flex: none;
+  width: 2em;
+  color: rgba(147, 197, 253, 0.32);
+  font-size: 0.85em;
+  padding-top: 0.1em;
+  user-select: none;
+}
+.gl-cap-code-str {
+  color: #8ce99a;
+}
+.gl-cap-code-kw {
+  color: #c792ea;
+}
+.gl-cap-code-caret {
+  display: inline-block;
+  width: 6px;
+  height: 0.95em;
+  margin-left: 2px;
+  background: #3b78ff;
+  vertical-align: text-bottom;
+  animation: gl-cap-caret-blink 1s steps(1) infinite;
+}
+@keyframes gl-cap-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-cap-code-caret {
+    animation: none;
+  }
+}
+
+/* Bottom row: surface name left, Explore link right, over a legibility
+   gradient so it reads on top of the video/artwork. */
+.gl-cap-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 2.2rem 1.15rem 0.9rem;
+  background: linear-gradient(180deg, transparent 0%, rgba(5, 6, 8, 0.72) 100%);
+}
+.gl-cap-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+.gl-cap-explore {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.62);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.gl-cap-explore:hover {
+  color: #ffffff;
+}
+
+/* Chat card — alternating bubbles: questions right, LYKN answers left with
+   the LYKN mark, mirroring the overlay conversation. The thread is anchored
+   to the bottom; each new bubble grows in and pushes the earlier ones up,
+   which fade out toward the top of the card. */
+.gl-cap-chat {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  /* Without this the flex item refuses to shrink below its content and the
+     thread would spill past the card bottom instead of clipping at the top. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  padding: 1.25rem 1.15rem 3.4rem;
+  overflow: hidden;
+  /* Bubbles landing/shifting must never become the page's scroll anchor —
+     without this the browser "helpfully" scrolls the page to follow them. */
+  overflow-anchor: none;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 22%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 22%);
+}
+.gl-cap-bubble {
+  max-width: 78%;
+  padding: 0.55rem 0.85rem;
+  border-radius: 14px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #e5e7eb;
+  /* Grow-in: height/padding animate from 0 (with a negative margin to cancel
+     the column gap) so the bubbles above slide up smoothly instead of
+     jumping, while the bubble itself rises and fades in. */
+  animation: gl-cap-bubble-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes gl-cap-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-top: -0.65rem;
+  }
+  60% {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    max-height: 12rem;
+    padding-top: 0.55rem;
+    padding-bottom: 0.55rem;
+    margin-top: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-cap-bubble {
+    animation: none;
+  }
+}
+.gl-cap-bubble--user {
+  align-self: flex-end;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom-right-radius: 5px;
+}
+.gl-cap-bubble--lykn {
+  align-self: flex-start;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom-left-radius: 5px;
+  color: #cbd5e1;
+}
+.gl-cap-bubble-mark {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  color: #3b78ff;
+  filter: drop-shadow(0 0 3px rgba(59, 120, 255, 0.7));
+}
+.gl-cap-bubble-mark path {
+  fill: none;
+  stroke: currentColor;
+}
+
+/* Imagine card — a rotating collage of generated images: one big slot on the
+   left, two small stacked slots on the right. Every pool image stays mounted
+   in each slot; the active one fades in over the rest (staggered per slot so
+   the swap cascades across the collage). */
+.gl-cap-imagine {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 2px;
+}
+.gl-cap-img-col {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 2px;
+}
+.gl-cap-img {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+.gl-cap-img img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transform: scale(1.06);
+  transition: opacity 0.9s ease, transform 4s ease;
+}
+.gl-cap-img img.is-on {
+  opacity: 1;
+  transform: scale(1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-cap-img img {
+    transition: none;
+    transform: none;
+  }
+}
+
+/* Voice card — the ACTUAL Voice Mode surface (forced dark), borderless: no
+   window chrome, no audio toggle, just the orb + status filling the card.
+   Laid out at a wide design width and uniformly scaled down (WakePreviewFit)
+   so it reads zoomed out. */
+.gl-cap-voice {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+  /* Charcoal rather than the card's near-black so the orb sits on grey. */
+  background: #1e2026;
+}
+.gl-cap-voice * {
+  pointer-events: none !important;
+}
+
+/* ── About: What is LYKN Glass ───────────────────────────── */
+.gl-about {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  padding: clamp(2rem, 5vh, 4rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(5rem, 13vh, 9rem);
+}
+
+.gl-about-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.gl-about-title {
+  margin: 0;
+  font-size: clamp(1.9rem, 3.6vw, 3rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: #0f172a;
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .gl-about-title {
+    white-space: normal;
+  }
+}
+
+/* In this heading the accent is a plain solid blue, not the hero gradient. */
+.gl-about-title .gl-hero-accent {
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+  -webkit-text-fill-color: #3b82f6;
+  color: #3b82f6;
+}
+
+/* ── Any-screen showcase ─────────────────────────────────── */
+/* One big glass card framing a fake screen (doc in a browser window); on a
+   loop ⌘L "presses" and the LYKN Glass bar pops in over the page. */
+/* Headings deliberately vary in alignment down the page (left / right / …)
+   so the sections don't read as one centered template. */
+.gl-any {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  padding: clamp(3.5rem, 9vh, 7rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(4rem, 11vh, 8rem);
+  text-align: left;
+}
+.gl-any-inner {
+  /* Wider than the standard 1120px section body so the copy slides left and
+     the image slides right, opening up the middle. */
+  max-width: 1360px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.55fr);
+  gap: clamp(2.5rem, 7vw, 7rem);
+  align-items: center;
+}
+@media (max-width: 960px) {
+  .gl-any-inner {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gl-any-title {
+  margin: 0;
+  font-size: clamp(2rem, 3.4vw, 2.9rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.12;
+  color: #0f172a;
+}
+/* Second line reads quieter, like the reference's gray subline. */
+.gl-any-title-dim {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.gl-any-sub {
+  margin: clamp(1rem, 2.4vh, 1.5rem) 0 0;
+  max-width: 30rem;
+  font-size: clamp(0.95rem, 1.2vw, 1.05rem);
+  line-height: 1.65;
+  color: #475569;
+}
+
+/* CTA pills — dark primary + quiet outlined secondary. */
+.gl-any-actions {
+  margin-top: clamp(1.5rem, 3.2vh, 2.25rem);
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.gl-any-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.6rem 1.35rem;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease,
+    transform 0.18s ease;
+}
+.gl-any-btn:hover {
+  transform: translateY(-1px);
+}
+.gl-any-btn--primary {
+  background: #0f172a;
+  border: 1px solid #0f172a;
+  color: #ffffff;
+}
+.gl-any-btn--primary:hover {
+  background: #1e293b;
+}
+/* Download — white pill with blue lettering. */
+.gl-any-btn--ghost {
+  background: #ffffff;
+  border: 1px solid rgba(37, 99, 235, 0.28);
+  color: #2563eb;
+  box-shadow: 0 8px 22px -14px rgba(15, 23, 42, 0.35);
+}
+.gl-any-btn--ghost:hover {
+  border-color: rgba(37, 99, 235, 0.55);
+  background: #f5f8ff;
+}
+
+/* Proof stats — bold value over a small muted label. */
+.gl-any-stats {
+  margin: clamp(2rem, 4.5vh, 3rem) 0 0;
+  display: flex;
+  gap: clamp(1.75rem, 4vw, 3rem);
+}
+.gl-any-stat dt {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.gl-any-stat dd {
+  margin: 0.3rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: #94a3b8;
+}
+
+/* Right column: the Glass demo screenshot (the overlay rebranding an ad over
+   a moodboard), frameless — just rounded corners and a deep shadow. */
+.gl-any-stage {
+  position: relative;
+}
+.gl-any-shot {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  box-shadow: 0 32px 80px -32px rgba(15, 23, 42, 0.45);
+  user-select: none;
+}
+
+/* Step chips under the window (reference: language tabs). */
+.gl-any-chips {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: center;
+  gap: 0.4rem;
+}
+.gl-any-chip {
+  padding: 0.35rem 0.85rem;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+.gl-any-chip:hover {
+  background: #0f172a;
+  color: #ffffff;
+}
+
+/* ── Snip showcase: one wide card playing the snip animation ── */
+.gl-snip {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  padding: 0 clamp(1.25rem, 6vw, 5rem) clamp(4rem, 11vh, 8rem);
+}
+.gl-snip-inner {
+  max-width: 1360px;
+  margin: 0 auto;
+}
+.gl-snip-card {
+  padding: clamp(1rem, 2.5vw, 2rem);
+  border-radius: 28px;
+  overflow: hidden;
+  background: #f6f8fa;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.25);
+}
+.gl-snip-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 16px;
+  box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.4);
+}
+
+.gl-window {
+  max-width: 880px;
+  max-height: 470px;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 14px 14px 0 0;
+  background: #ffffff;
+  text-align: left;
+  box-shadow: 0 34px 70px rgba(40, 60, 120, 0.24),
+    0 8px 20px rgba(40, 60, 120, 0.12);
+}
+
+.gl-window-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+.gl-dots {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.gl-dots span {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+}
+.gl-dots span:nth-child(1) {
+  background: #ff5f57;
+}
+.gl-dots span:nth-child(2) {
+  background: #febc2e;
+}
+.gl-dots span:nth-child(3) {
+  background: #28c840;
+}
+.gl-window-search {
+  flex: 1;
+  max-width: 420px;
+  margin: 0 auto;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: #f1f3f7;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.gl-window-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.gl-window-pill {
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffffff;
+  background: #2563eb;
+  border-radius: 7px;
+  padding: 4px 9px;
+}
+.gl-window-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #c7d2fe, #a5b4fc);
+}
+
+.gl-window-body {
+  padding: 18px 22px;
+}
+
+.gl-window-ask {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 16px;
+  padding: 11px 13px;
+  border-radius: 11px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #fafbfd;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+.gl-window-ask-dot {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  color: #3b78ff;
+}
+.gl-window-ask-dot path {
+  fill: none;
+  stroke: currentColor;
+}
+
+/* Reveal-on-scroll. */
+.gl-reveal {
+  opacity: 0;
+  transform: translateY(26px);
+  transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.gl-reveal.is-in {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* ============================================================================
+   Bottom-right shortcut CTA — neumorphic ⌘ + ↵ keycaps that drop in with a
+   bounce and lift on hover, captioned "AI on any screen at the click of a
+   button".
+   ========================================================================== */
+.gl-cta {
+  position: fixed;
+  right: clamp(1.25rem, 3.5vw, 3rem);
+  bottom: clamp(1.25rem, 3.5vh, 2.75rem);
+  z-index: 45;
+  pointer-events: none;
+}
+
+/* Hover tooltip — a matte grey pop-up that fades in when either key is
+   hovered, sitting off to the left of the keys. */
+.gl-cta-text {
+  position: absolute;
+  left: auto;
+  right: calc(clamp(60px, 5.2vw, 76px) + 2.75rem);
+  bottom: calc(50% + 1.35rem);
+  width: max-content;
+  max-width: 14rem;
+  text-align: left;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: #f4f6fb;
+  padding: 0.7rem 1rem;
+  border-radius: 14px;
+  /* Dark enough to hold white text over the white page. */
+  background: rgba(16, 18, 24, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.3);
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+/* Reveal on hover of either keycap. */
+.gl-keys:has(.gl-key:hover) .gl-cta-text {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Diagonal layout matching the reference: ⌘ sits lower-left, ↵ floats
+   upper-right. The box reserves space for both staggered keys. */
+.gl-keys {
+  position: relative;
+  flex: none;
+  width: clamp(150px, 15.5vw, 186px);
+  height: clamp(140px, 14.5vw, 174px);
+}
+
+.gl-key {
+  --rot: 0deg;
+  position: absolute;
+  pointer-events: auto;
+  width: clamp(60px, 5.2vw, 76px);
+  height: clamp(60px, 5.2vw, 76px);
+  border-radius: 20px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  /* Solid soft-UI keycap — same material/tone as the page so the glyphs can be
+     carved straight into it. Light from top-left: bright TL highlight, soft
+     blue-grey shadow BR. No glass / no backdrop blur. */
+  background: linear-gradient(145deg, #cfd3db 0%, #bdc2cc 100%);
+  border: none;
+  box-shadow: 4px 4px 9px rgba(150, 160, 180, 0.4),
+    -3px -3px 7px rgba(255, 255, 255, 0.28),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+  transform: rotate(var(--rot));
+  animation: gl-key-drop 1100ms cubic-bezier(0.18, 0.9, 0.32, 1.275) backwards;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Solid soft-UI keys have no glass sheen. */
+.gl-key::before {
+  display: none;
+}
+
+.gl-key span,
+.gl-key svg {
+  position: relative;
+  z-index: 1;
+}
+/* Markings carved into the cap: glyph tone ~= cap, with a dark top-left
+   shadow + light bottom-right highlight to read as a pressed-in groove. */
+.gl-key span,
+.gl-key svg {
+  color: #c2c7d1;
+}
+.gl-key span {
+  font-size: clamp(28px, 2.6vw, 36px);
+  font-weight: 600;
+  line-height: 1;
+  text-shadow: -1px -1px 1px rgba(138, 148, 166, 0.95),
+    1px 1px 1px rgba(255, 255, 255, 0.8);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.gl-key svg {
+  width: clamp(34px, 3.1vw, 44px);
+  height: clamp(34px, 3.1vw, 44px);
+  filter: drop-shadow(-1px -1px 0.75px rgba(138, 148, 166, 0.95))
+    drop-shadow(1px 1px 0.75px rgba(255, 255, 255, 0.8));
+}
+
+/* ⌘ — lower-left, tilted CCW. */
+.gl-key--cmd {
+  left: 0;
+  bottom: 0;
+  --rot: -9deg;
+  animation-delay: 140ms;
+}
+/* Glowing white inner border, inset from the cap edge. */
+.gl-key--cmd::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 17px;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 5px rgba(255, 255, 255, 0.35),
+    inset 0 0 5px rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+}
+/* Larger ⌘ with a soft inner white glow (plus a hint of engrave). */
+.gl-key--cmd span {
+  font-size: clamp(42px, 3.8vw, 54px);
+  font-weight: 500;
+  color: #c2c7d1;
+  text-shadow: -1px -1px 1px rgba(138, 148, 166, 0.95),
+    1px 1px 1px rgba(255, 255, 255, 0.8);
+}
+
+/* ↵ — upper-right, tilted CW. */
+.gl-key--ret {
+  right: 0;
+  top: 0;
+  --rot: 8deg;
+  animation-delay: 300ms;
+}
+
+/* Lift on hover — both keys rise together when either is hovered. */
+.gl-keys:has(.gl-key:hover) .gl-key {
+  transform: translateY(-7px) rotate(var(--rot)) scale(1.05);
+  box-shadow: 7px 8px 16px rgba(176, 188, 211, 0.42),
+    -5px -5px 11px rgba(255, 255, 255, 0.32),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+/* Command key's inner border brightens while the keys are lifted. */
+.gl-keys:has(.gl-key:hover) .gl-key--cmd::after {
+  border-color: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.5),
+    inset 0 0 8px rgba(255, 255, 255, 0.4);
+}
+/* Pressed — cap sinks into the surface (inset soft-UI). */
+.gl-key:active {
+  transform: translateY(0) rotate(var(--rot)) scale(0.97);
+  box-shadow: inset 6px 6px 14px rgba(166, 179, 205, 0.8),
+    inset -6px -6px 14px rgba(255, 255, 255, 0.92);
+}
+
+/* Drop down then settle with a couple of bounces. */
+@keyframes gl-key-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-200px) rotate(var(--rot));
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(12px) rotate(var(--rot));
+  }
+  72% {
+    transform: translateY(-9px) rotate(var(--rot));
+  }
+  86% {
+    transform: translateY(5px) rotate(var(--rot));
+  }
+  94% {
+    transform: translateY(-2px) rotate(var(--rot));
+  }
+  100% {
+    transform: translateY(0) rotate(var(--rot));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gl-key,
+  .gl-cta-text {
+    animation: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .gl-cta-text {
+    display: none;
+  }
+  /* Shrink the fixed keycap CTA on phones — at full size the two keys covered
+     ~40% of the viewport width bottom-right, sitting over footer links and
+     the download section. */
+  .gl-keys {
+    width: 96px;
+    height: 90px;
+  }
+  .gl-key {
+    width: 44px;
+    height: 44px;
+    border-radius: 14px;
+  }
+  .gl-key--cmd::after {
+    inset: 3px;
+    border-radius: 11px;
+  }
+  .gl-key--cmd span {
+    font-size: 24px;
+  }
+  .gl-key span {
+    font-size: 20px;
+  }
+  .gl-key svg {
+    width: 22px;
+    height: 22px;
+  }
+}
+
+/* Anchor targets land below the fixed header instead of underneath it. */
+#about,
+#capabilities,
+#create,
+#projects,
+#chat,
+#faq,
+#download {
+  scroll-margin-top: 76px;
+}
+
+/* ============================================================================
+   LYKN Glass overlay chat bar — pixel replica of electron/overlay.html #wrap.
+   On the web the desktop blur (native macOS vibrancy in the app) is recreated
+   with CSS backdrop-filter, plus a floating drop shadow for depth.
+   ========================================================================== */
+.glo-wrap {
+  --glo-tint: rgba(16, 18, 24, 0.28);
+  --glo-border: rgba(255, 255, 255, 0.12);
+  --glo-text: #f4f6fb;
+  --glo-muted: #aab2c2;
+  --glo-blue: #3b78ff;
+
+  width: min(520px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--glo-tint);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 16px;
+  overflow: hidden;
+  color: var(--glo-text);
+  text-align: left;
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.32),
+    0 4px 16px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.42),
+    0 0 12px 1px rgba(255, 255, 255, 0.65),
+    0 0 28px 2px rgba(255, 255, 255, 0.38),
+    inset 0 0 18px rgba(255, 255, 255, 0.14);
+}
+
+/* Optional "Viewed screen" thread block above the composer. */
+.glo-thread {
+  padding: 8px 14px 11px;
+  border-bottom: 1px solid var(--glo-divider, rgba(255, 255, 255, 0.1));
+}
+.glo-thread-label {
+  margin-bottom: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--glo-muted);
+}
+.glo-thread-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #e9edf6;
+}
+
+/* Drag handle */
+.glo-titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  height: 20px;
+  padding: 0 12px;
+  cursor: grab;
+}
+.glo-grip {
+  width: 34px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  transition: background 0.15s ease;
+}
+.glo-titlebar:hover .glo-grip {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+/* Composer */
+.glo-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px 8px;
+  flex: none;
+}
+.glo-field-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+/* LYKN mark */
+.glo-dot {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-top: 5px;
+  color: var(--glo-blue);
+  cursor: pointer;
+  filter: drop-shadow(0 0 3px rgba(59, 120, 255, 0.85))
+    drop-shadow(0 0 6px rgba(59, 120, 255, 0.5));
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.glo-dot:hover {
+  transform: scale(1.12);
+}
+.glo-dot path {
+  fill: none;
+  stroke: currentColor;
+}
+
+/* Prompt field */
+.glo-ask {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--glo-text);
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 16px;
+  padding: 6px 2px 2px;
+  resize: none;
+  height: 48px;
+  min-height: 48px;
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.glo-ask::placeholder {
+  color: var(--glo-muted);
+}
+.glo-ask::-webkit-scrollbar {
+  width: 6px;
+}
+.glo-ask::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+}
+
+/* Bottom toolbar */
+.glo-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 0;
+}
+.glo-toolbar-spacer {
+  flex: 1;
+  min-width: 4px;
+}
+
+.glo-side-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  max-width: 9rem;
+  min-width: 0;
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.75);
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  padding: 0 8px 0 10px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.glo-side-picker:hover {
+  color: var(--glo-text);
+  background: rgba(96, 165, 250, 0.14);
+}
+.glo-side-picker span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.glo-btn {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.72);
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 0;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.glo-btn:hover {
+  color: var(--glo-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.glo-btn svg {
+  width: 14px;
+  height: 14px;
+}
+/* Toggled state (e.g. collapse-all / clean mode) — same tint as the overlay. */
+.glo-btn.is-active {
+  color: #60a5fa;
+  background: rgba(96, 165, 250, 0.14);
+}
+
+/* Send button */
+.glo-send {
+  color: #60a5fa;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: box-shadow 0.18s ease, transform 0.15s ease,
+    background 0.18s ease, border-color 0.18s ease;
+}
+.glo-send:hover {
+  background: rgba(96, 165, 250, 0.16);
+  border-color: rgba(96, 165, 250, 0.4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 16px rgba(59, 130, 246, 0.18);
+}
+.glo-send:active {
+  transform: translateY(1px);
+  background: rgba(96, 165, 250, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.25),
+    0 0 10px rgba(59, 130, 246, 0.14);
+}
+/* Disabled (e.g. demo message limit reached) — stop looking clickable. */
+.glo-btn:disabled,
+.glo-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.glo-send:disabled:hover,
+.glo-send:disabled:active {
+  transform: none;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* ============================================================================
+   Project Manager section — frames the ACTUAL projects + calendar dashboard UI
+   (stat tiles, month calendar, tasks, Night Shift queue) in the browser window
+   chrome, with looping micro-animations so the surface feels alive.
+   ========================================================================== */
+.gl-pm {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  padding: clamp(3.5rem, 9vh, 7rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(4rem, 11vh, 8rem);
+  text-align: left;
+}
+.gl-pm-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+.gl-pm-title {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.08;
+  color: #0f172a;
+}
+.gl-pm-sub {
+  /* Left-aligned section: sub sits under the heading, not centered. */
+  margin: clamp(0.85rem, 2vh, 1.25rem) auto 0 0;
+  max-width: 42rem;
+  font-size: clamp(1rem, 1.5vw, 1.18rem);
+  line-height: 1.55;
+  color: #475569;
+}
+
+.gl-pm-stage {
+  position: relative;
+  margin-top: clamp(2.5rem, 6vh, 4rem);
+  padding: clamp(2rem, 5vw, 4rem) clamp(1.25rem, 4vw, 3.5rem);
+  border-radius: 28px;
+  background: #f6f8fa;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.25);
+}
+
+/* Full-window variant (rounded all corners, grows to fit the dashboard). */
+.gl-window--pm {
+  max-width: 940px;
+  max-height: none;
+  border-radius: 14px;
+}
+.gl-pm-body {
+  padding: 20px 22px 24px;
+  text-align: left;
+}
+
+/* Calendar event/deadline dots gently pulse. */
+.gl-pm-dot {
+  animation: gl-pm-dotpulse 2.4s ease-in-out infinite;
+}
+@keyframes gl-pm-dotpulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.6);
+    opacity: 0.55;
+  }
+}
+
+/* Today cell — an expanding ring that radiates outward on a loop. */
+.gl-pm-today::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 9999px;
+  border: 2px solid rgba(15, 23, 42, 0.28);
+  animation: gl-pm-ring 2.6s ease-out infinite;
+}
+@keyframes gl-pm-ring {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.6;
+  }
+  80%,
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+/* Task checkbox — a rounded ring; the first task auto-checks on a loop to show
+   LYKN working through the list. */
+.gl-pm-cb {
+  position: relative;
+  flex: none;
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 9999px;
+  border: 2px solid #cbd5e1;
+  background: transparent;
+}
+.gl-pm-cb::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 47%;
+  width: 5px;
+  height: 9px;
+  border: solid #ffffff;
+  border-width: 0 2px 2px 0;
+  transform: translate(-50%, -50%) rotate(45deg) scale(0.5);
+  opacity: 0;
+}
+.gl-pm-cb--done {
+  background: #10b981;
+  border-color: #10b981;
+}
+.gl-pm-cb--done::after {
+  opacity: 1;
+  transform: translate(-50%, -50%) rotate(45deg) scale(1);
+}
+.gl-pm-cb--auto {
+  animation: gl-pm-cbfill 6s ease-in-out infinite;
+}
+.gl-pm-cb--auto::after {
+  animation: gl-pm-cbmark 6s ease-in-out infinite;
+}
+@keyframes gl-pm-cbfill {
+  0%,
+  40% {
+    background: transparent;
+    border-color: #cbd5e1;
+  }
+  52%,
+  92% {
+    background: #10b981;
+    border-color: #10b981;
+  }
+  100% {
+    background: transparent;
+    border-color: #cbd5e1;
+  }
+}
+@keyframes gl-pm-cbmark {
+  0%,
+  40% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(45deg) scale(0.5);
+  }
+  52%,
+  92% {
+    opacity: 1;
+    transform: translate(-50%, -50%) rotate(45deg) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(45deg) scale(0.5);
+  }
+}
+
+/* Task label — fades to muted + a strike line sweeps across as it's checked. */
+.gl-pm-tasklabel {
+  position: relative;
+  display: inline-block;
+}
+.gl-pm-tasklabel--done {
+  color: #94a3b8;
+  text-decoration: line-through;
+}
+.gl-pm-tasklabel--auto {
+  animation: gl-pm-strikecolor 6s ease-in-out infinite;
+}
+.gl-pm-tasklabel--auto::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 52%;
+  height: 1.5px;
+  width: 0;
+  background: #94a3b8;
+  animation: gl-pm-strikeline 6s ease-in-out infinite;
+}
+@keyframes gl-pm-strikecolor {
+  0%,
+  40% {
+    color: #1e293b;
+  }
+  52%,
+  92% {
+    color: #94a3b8;
+  }
+  100% {
+    color: #1e293b;
+  }
+}
+@keyframes gl-pm-strikeline {
+  0%,
+  40% {
+    width: 0;
+  }
+  52%,
+  92% {
+    width: 100%;
+  }
+  100% {
+    width: 0;
+  }
+}
+
+/* Freshly-expanded Night Shift card — slides in with a blue glow each loop. */
+.gl-pm-card-fresh {
+  animation: gl-pm-cardin 6s ease-in-out infinite;
+}
+@keyframes gl-pm-cardin {
+  0% {
+    transform: translateX(-10px);
+    opacity: 0;
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+  9% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  14%,
+  42% {
+    box-shadow: 0 0 0 1.5px rgba(59, 130, 246, 0.4),
+      0 8px 18px rgba(59, 130, 246, 0.2);
+  }
+  60%,
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gl-pm-dot,
+  .gl-pm-today::after,
+  .gl-pm-cb--auto,
+  .gl-pm-cb--auto::after,
+  .gl-pm-tasklabel--auto,
+  .gl-pm-tasklabel--auto::after,
+  .gl-pm-card-fresh {
+    animation: none;
+  }
+  .gl-pm-tasklabel--auto::after {
+    width: 0;
+  }
+}
+
+/* ============================================================================
+   Latest news — a row of gradient article tiles (reference: xAI's news strip),
+   date + headline under each tile.
+   ========================================================================== */
+.gl-news {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  padding: clamp(3.5rem, 9vh, 7rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(4rem, 11vh, 8rem);
+}
+.gl-news-inner {
+  max-width: 1360px;
+  margin: 0 auto;
+}
+.gl-news-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: clamp(1.5rem, 3.5vh, 2.5rem);
+}
+.gl-news-title {
+  margin: 0;
+  font-size: clamp(1.5rem, 2.4vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+}
+
+/* "All posts ›" — quiet link-style button on the right of the heading. */
+.gl-news-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #64748b;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.18s ease;
+}
+.gl-news-all:hover {
+  color: #0f172a;
+}
+.gl-news-all svg {
+  width: 15px;
+  height: 15px;
+}
+.gl-news-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: clamp(1rem, 2vw, 1.5rem);
+}
+@media (max-width: 1024px) {
+  .gl-news-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 560px) {
+  .gl-news-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Cards are links to the full articles. */
+.gl-news-card {
+  display: block;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The artwork tile with the post tag centered on it. */
+.gl-news-tile {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background-size: cover;
+  background-position: center;
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.gl-news-card:hover .gl-news-tile {
+  transform: translateY(-4px);
+  box-shadow: 0 22px 44px -22px rgba(15, 23, 42, 0.55);
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-news-tile,
+  .gl-news-card:hover .gl-news-tile {
+    transition: none;
+    transform: none;
+  }
+}
+.gl-news-tag {
+  font-size: clamp(1.05rem, 1.4vw, 1.35rem);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+/* Pale tiles (e.g. the seafoam one) carry dark type instead of white. */
+.gl-news-tag--dark {
+  color: #114b46;
+  text-shadow: none;
+}
+
+.gl-news-date {
+  margin: 0.8rem 0 0.2rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+}
+.gl-news-headline {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #0f172a;
+}
+
+/* Divider closing the section under the article row. */
+.gl-news-divider {
+  margin: clamp(2.5rem, 6vh, 4rem) 0 0;
+  border: none;
+  border-top: 1px solid rgba(15, 23, 42, 0.1);
+}
+
+/* ============================================================================
+   FAQ — accordion with a smooth grid-rows expand and rotating chevron.
+   ========================================================================== */
+.gl-faq {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  padding: clamp(3.5rem, 9vh, 7rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(4rem, 11vh, 8rem);
+}
+.gl-faq-inner {
+  max-width: 760px;
+  margin: 0 auto;
+}
+.gl-faq-title {
+  margin: 0 0 clamp(2rem, 5vh, 3rem);
+  text-align: left;
+  font-size: clamp(2rem, 4vw, 3rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.08;
+  color: #0f172a;
+}
+/* One connected card: items share borders, no gaps between them. */
+.gl-faq-list {
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 18px;
+  background: #f6f8fa;
+  overflow: hidden;
+  box-shadow: 0 24px 60px -30px rgba(15, 23, 42, 0.25);
+}
+.gl-faq-item {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background: transparent;
+  transition: background 0.2s ease;
+}
+.gl-faq-item:last-child {
+  border-bottom: none;
+}
+.gl-faq-item.is-open {
+  background: #ffffff;
+}
+.gl-faq-q {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: clamp(1rem, 2vw, 1.35rem) clamp(1.1rem, 2.4vw, 1.6rem);
+  text-align: left;
+  font: inherit;
+  font-size: clamp(1rem, 1.4vw, 1.1rem);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #0f172a;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.gl-faq-chevron {
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+  color: #94a3b8;
+  transition: transform 0.3s ease, color 0.2s ease;
+}
+.gl-faq-item.is-open .gl-faq-chevron {
+  transform: rotate(180deg);
+  color: #3b82f6;
+}
+.gl-faq-a-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.gl-faq-item.is-open .gl-faq-a-wrap {
+  grid-template-rows: 1fr;
+}
+/* The collapsing element carries NO padding so a 0fr row truly clips to 0.
+   All padding lives on the inner <p>, which never affects the row's min size. */
+.gl-faq-a-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+.gl-faq-a {
+  margin: 0;
+  padding: 0 clamp(1.1rem, 2.4vw, 1.6rem) clamp(1rem, 2vw, 1.35rem);
+  font-size: 0.98rem;
+  line-height: 1.6;
+  color: #64748b;
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-faq-a-wrap,
+  .gl-faq-chevron {
+    transition: none;
+  }
+}
+
+/* ============================================================================
+   Get started — "Choose how to get started" above the footer: two dark
+   option cards (browser app / full Mac experience) with check lists and a
+   pill CTA each, after the reference layout.
+   ========================================================================== */
+.gl-start {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  padding: clamp(3rem, 8vh, 6rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(3.5rem, 9vh, 6.5rem);
+  text-align: center;
+}
+.gl-start-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+.gl-start-title {
+  margin: 0;
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: #0f172a;
+}
+.gl-start-grid {
+  margin-top: clamp(2rem, 5vh, 3.25rem);
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: clamp(1rem, 2vw, 1.6rem);
+  text-align: left;
+}
+@media (max-width: 760px) {
+  .gl-start-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.gl-start-card {
+  display: flex;
+  flex-direction: column;
+  padding: clamp(1.6rem, 3vw, 2.25rem);
+  border-radius: 24px;
+  /* Frosted glass on the white stage, same family as the floating header. */
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(20px) saturate(170%);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  box-shadow: 0 24px 60px -28px rgba(15, 23, 42, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+.gl-start-card-title {
+  margin: 0;
+  font-size: clamp(1.1rem, 1.6vw, 1.3rem);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: #0f172a;
+}
+.gl-start-card-sub {
+  margin: 0.6rem 0 0;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: #64748b;
+}
+.gl-start-list {
+  margin: clamp(1.4rem, 3vh, 2rem) 0 clamp(1.6rem, 3.5vh, 2.5rem);
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+.gl-start-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #334155;
+}
+.gl-start-list svg {
+  flex: none;
+  width: 0.85rem;
+  height: 0.85rem;
+  margin-top: 0.22em;
+  color: #2563eb;
+}
+.gl-start-btn {
+  margin-top: auto;
+  width: 100%;
+  padding: 0.75rem 1.5rem;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: transform 0.18s ease, background 0.18s ease,
+    border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.gl-start-btn:hover {
+  transform: translateY(-1px);
+}
+.gl-start-btn:active {
+  transform: translateY(0);
+}
+.gl-start-btn--solid {
+  color: #ffffff;
+  background: #0f172a;
+  border: 1px solid #0f172a;
+}
+.gl-start-btn--solid:hover {
+  background: #1e293b;
+  box-shadow: 0 14px 30px -12px rgba(15, 23, 42, 0.5);
+}
+.gl-start-btn--ghost {
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(15, 23, 42, 0.18);
+}
+.gl-start-btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(15, 23, 42, 0.32);
+}
+
+/* ============================================================================
+   Footer — dark anchor with brand, inert nav columns, and a copyright row.
+   ========================================================================== */
+.gl-footer {
+  position: relative;
+  z-index: 1;
+  background: #f6f8fa;
+  border-top: 1px solid rgba(15, 23, 42, 0.07);
+  color: #0f172a;
+  padding: clamp(2rem, 5vh, 3.5rem) clamp(1.25rem, 6vw, 5rem)
+    clamp(1.5rem, 3vh, 2.25rem);
+}
+/* On the Glass landing the footer sits transparently over the fixed backdrop,
+   so the blue glow parked at the page bottom shows through it (other pages keep the
+   solid panel above). */
+.glass-land .gl-footer {
+  background: transparent;
+}
+.gl-footer-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1.4fr 2fr;
+  gap: clamp(2rem, 5vw, 4rem);
+}
+@media (max-width: 720px) {
+  .gl-footer-inner {
+    grid-template-columns: 1fr;
+    gap: 2.5rem;
+  }
+}
+.gl-footer-logo {
+  height: 26px;
+  width: auto;
+}
+.gl-footer-tagline {
+  margin: 1rem 0 0;
+  max-width: 22ch;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: #64748b;
+}
+.gl-footer-cols {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: clamp(1.5rem, 3vw, 2.5rem);
+}
+@media (max-width: 480px) {
+  .gl-footer-cols {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.75rem;
+  }
+}
+.gl-footer-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+.gl-footer-col-title {
+  margin: 0 0 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+.gl-footer-link {
+  font: inherit;
+  font-size: 0.92rem;
+  color: #475569;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.gl-footer-link:hover {
+  color: #0f172a;
+}
+.gl-footer-bottom {
+  max-width: 1120px;
+  margin: clamp(2.5rem, 6vh, 4rem) auto 0;
+  padding-top: 1.5rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+.gl-footer-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.gl-footer-shortcut kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 0.78em;
+  font-weight: 600;
+  color: #334155;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Connected-app ticker (Vault section bottom)
+   ───────────────────────────────────────────────────────────── */
+.gl-ticker {
+  margin-top: clamp(2.75rem, 7vh, 4.5rem);
+  width: 100%;
+}
+.gl-ticker-label {
+  text-align: center;
+  margin: 0 0 clamp(1.1rem, 2.5vh, 1.6rem);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+.gl-ticker-viewport {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 8%,
+    #000 92%,
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 8%,
+    #000 92%,
+    transparent
+  );
+}
+.gl-ticker-track {
+  display: flex;
+  width: max-content;
+  animation: gl-ticker-scroll 42s linear infinite;
+}
+.gl-ticker:hover .gl-ticker-track {
+  animation-play-state: paused;
+}
+.gl-ticker-box {
+  flex: none;
+  /* trailing margin (not gap) keeps the loop seamless at -50% */
+  margin-right: clamp(0.85rem, 1.6vw, 1.35rem);
+  display: grid;
+  place-items: center;
+  width: clamp(54px, 5vw, 66px);
+  height: clamp(54px, 5vw, 66px);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.gl-ticker-box:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+.gl-ticker-box img {
+  width: 56%;
+  height: 56%;
+  object-fit: contain;
+}
+.gl-ticker-fallback {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #64748b;
+}
+@keyframes gl-ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-ticker-track {
+    animation: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Product showcase — real UI previews (synthesis / chat / voice)
+   ───────────────────────────────────────────────────────────── */
+.gl-show {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: clamp(3rem, 8vh, 6rem) clamp(1rem, 4vw, 2rem)
+    clamp(4rem, 10vh, 7rem);
+}
+.gl-show-head {
+  text-align: center;
+  max-width: 46rem;
+  margin: 0 auto clamp(2.5rem, 6vh, 4rem);
+}
+.gl-show-title {
+  margin: 0;
+  font-size: clamp(1.9rem, 3.6vw, 3rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: #0f172a;
+}
+.gl-show-lead {
+  margin: clamp(0.85rem, 2vh, 1.2rem) auto 0;
+  max-width: 38rem;
+  font-size: clamp(1rem, 1.5vw, 1.14rem);
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.gl-show-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: clamp(0.9rem, 1.8vw, 1.4rem);
+  align-items: start;
+}
+
+.gl-show-card {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Fixed-aspect stage that frames a real preview window. The embedded
+   subwindow is rendered larger and uniformly scaled down (like the production
+   duo cards) so the inner UI lays out roomily, then locked non-interactive. */
+.gl-show-stage {
+  position: relative;
+  aspect-ratio: 5 / 4;
+  border-radius: 18px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.gl-show-stage * {
+  pointer-events: none !important;
+}
+/* Render the window larger than the frame and scale it down only slightly so
+   the real UI reads big and "zoomed in" on what matters, rather than a tiny
+   full-window screenshot. width/height x scale ≈ 100% so it fills the frame. */
+.gl-show-stage .lykn-wake-subwindow {
+  position: absolute;
+  inset: 0;
+  width: 117.6%;
+  height: 117.6%;
+  transform: scale(0.85);
+  transform-origin: top left;
+  border-radius: 14px;
+}
+/* Match the production landing's softer preview shadow + drop the synth
+   add-button pulse (nothing to click in a static marketing preview). */
+.gl-show-stage .lykn-wake-subwindow {
+  box-shadow: 0 30px 80px -24px rgba(15, 23, 42, 0.35),
+    0 0 0 1px rgba(15, 23, 42, 0.06);
+}
+.gl-show-stage .lykn-wake-synth-preview-add-ring {
+  display: none;
+}
+
+.gl-show-meta {
+  padding: clamp(1rem, 2vh, 1.4rem) 0.25rem 0;
+}
+.gl-show-card-title {
+  margin: 0;
+  font-size: 1.12rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #0f172a;
+}
+.gl-show-card-body {
+  margin: 0.4rem 0 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: #64748b;
+}
+
+@media (max-width: 920px) {
+  .gl-show-grid {
+    grid-template-columns: 1fr;
+    gap: 2.25rem;
+    max-width: 30rem;
+    margin: 0 auto;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   ⌘L demo overlay — a live LYKN Glass panel floating over the page
+   ───────────────────────────────────────────────────────────── */
+/* Non-blocking: the overlay floats over the page WITHOUT dimming it, and lets
+   clicks pass through everywhere except the panel itself. */
+.gl-demo {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: start center;
+  padding: clamp(4rem, 16vh, 9rem) 1rem 2rem;
+  pointer-events: none;
+}
+/* The draggable layer: the overlay panel plus (after the first message) the
+   suggestions side panel, moved together by the titlebar drag. Carries the
+   glass design tokens so the side panel matches the overlay's material. */
+.gl-demo-stage {
+  /* Darker than the hero bars: the demo floats over light sections too. */
+  --glo-tint: rgba(16, 18, 24, 0.6);
+  --glo-text: #f4f6fb;
+  --glo-muted: #aab2c2;
+  --glo-blue: #3b78ff;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  pointer-events: none;
+}
+.gl-demo-stage > * {
+  pointer-events: auto;
+}
+
+/* Same footprint as the real overlay (.glo-wrap width) — only adds the
+   entrance animation. */
+.gl-demo-panel {
+  /* Opacity-only entrance so the inline drag transform isn't overridden. */
+  animation: gl-demo-pop 0.24s ease both;
+  /* The demo floats over the whole page, including near-white sections —
+     the default 28% tint left white text at ~1.8:1 contrast there. */
+  --glo-tint: rgba(16, 18, 24, 0.6);
+  /* No white glow on the floating demo — just the drop shadow. */
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.32),
+    0 4px 16px rgba(15, 23, 42, 0.18);
+}
+
+/* Suggestions side panel — a glass card beside the overlay that surfaces
+   follow-up prompts after the first message, like the real overlay. */
+.gl-demo-side {
+  flex: none;
+  width: 208px;
+  align-self: flex-start;
+  padding: 4px 12px 12px;
+  color: var(--glo-text);
+  background: var(--glo-tint);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 16px;
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.32),
+    0 4px 16px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.42);
+  animation: gl-demo-pop 0.24s ease both;
+}
+/* 800px, not 760px: panel (520) + gap (12) + side panel (208) + page padding
+   needs ~772px — between 761–772px the side panel clipped off the right edge. */
+@media (max-width: 800px) {
+  .gl-demo-side {
+    display: none;
+  }
+}
+
+/* Drag handle — the titlebar moves the whole panel, like the real overlay. */
+.gl-demo-titlebar {
+  cursor: grab;
+}
+.gl-demo-titlebar:active {
+  cursor: grabbing;
+}
+/* Close control pinned to the right end of the titlebar. */
+.gl-demo-close {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--glo-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.gl-demo-close:hover {
+  color: var(--glo-text);
+  background: rgba(255, 255, 255, 0.08);
+}
+.gl-demo-close svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Suggestions window — mirrors the real overlay's follow-up list: a labeled
+   section header with a dismiss control, then a column of full-width chips,
+   each with an arrow icon on the right. */
+.gl-demo-suggest {
+  padding: 4px 12px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.gl-demo-suggest-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 6px 2px 8px;
+}
+.gl-demo-suggest-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--glo-muted);
+}
+.gl-demo-suggest-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--glo-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.gl-demo-suggest-close:hover {
+  color: var(--glo-text);
+  background: rgba(255, 255, 255, 0.08);
+}
+.gl-demo-suggest-close svg {
+  width: 12px;
+  height: 12px;
+}
+.gl-demo-suggest-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.gl-demo-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--glo-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.3;
+  text-align: left;
+  padding: 8px 11px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, transform 0.12s ease;
+}
+.gl-demo-chip:hover {
+  background: rgba(96, 165, 250, 0.14);
+  border-color: rgba(96, 165, 250, 0.4);
+}
+.gl-demo-chip:active {
+  transform: translateY(1px);
+}
+.gl-demo-chip-ico {
+  display: inline-flex;
+  flex: none;
+  color: var(--glo-muted);
+}
+.gl-demo-chip-ico svg {
+  width: 13px;
+  height: 13px;
+}
+.gl-demo-chip:hover .gl-demo-chip-ico {
+  color: #60a5fa;
+}
+
+/* Conversation thread between the titlebar and the composer. */
+.gl-demo-thread {
+  display: flex;
+  flex-direction: column;
+  max-height: min(46vh, 360px);
+  overflow-y: auto;
+  padding: 2px 6px 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.gl-demo-thread::-webkit-scrollbar {
+  width: 6px;
+}
+.gl-demo-thread::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+}
+
+/* One turn (question + answer), mirroring the real overlay's accordion:
+   the prompt doubles as a clickable collapse/expand header, and collapsed
+   turns fold down to just that header. */
+.gl-demo-turn {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.gl-demo-turn:first-child {
+  border-top: none;
+}
+.gl-demo-turn-q {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--glo-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.gl-demo-turn-q:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.gl-demo-turn-chev {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--glo-muted);
+  transition: transform 0.18s ease;
+}
+.gl-demo-turn.is-collapsed .gl-demo-turn-chev {
+  transform: rotate(-90deg);
+}
+.gl-demo-turn-qtext {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gl-demo-turn-a {
+  padding: 0 10px 12px 32px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  color: #e9edf6;
+  user-select: text;
+}
+/* "Thinking…" indicator — pixel match of the real overlay loading row: the
+   LYKN outline draws itself, pops, then the shimmer sweeps the status text. */
+.gl-demo-thinking {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0 4px;
+}
+.gl-demo-spinner {
+  width: 20px;
+  height: 20px;
+  color: #f4f6fb;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: gl-demo-outline-pop 3.6s ease-in-out infinite;
+  flex: none;
+}
+.gl-demo-spinner path {
+  stroke-dasharray: 1;
+  animation: gl-demo-outline-draw 3.6s ease-in-out infinite;
+}
+@keyframes gl-demo-outline-draw {
+  0% { stroke-dashoffset: 1; stroke-opacity: 1; fill-opacity: 0; }
+  40% { stroke-dashoffset: 0; stroke-opacity: 1; fill-opacity: 0; }
+  55% { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }
+  82% { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }
+  96% { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 0; }
+  100% { stroke-dashoffset: 1; stroke-opacity: 0; fill-opacity: 0; }
+}
+@keyframes gl-demo-outline-pop {
+  0% { transform: scale(0.9); }
+  40% { transform: scale(1); }
+  82% { transform: scale(1); }
+  100% { transform: scale(0.9); }
+}
+.gl-demo-thinking-text {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 500;
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0.4) 0%,
+    rgba(255, 255, 255, 0.4) 42%,
+    rgba(255, 255, 255, 0.9) 50%,
+    rgba(255, 255, 255, 0.4) 58%,
+    rgba(255, 255, 255, 0.4) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: gl-demo-shimmer 2.4s linear infinite;
+  will-change: background-position;
+}
+@keyframes gl-demo-shimmer {
+  0% { background-position: 130% 0; }
+  100% { background-position: -130% 0; }
+}
+.gl-demo-hint {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--glo-muted);
+  padding-left: 2px;
+}
+
+/* Sign-up nudge shown once the prompt limit is reached. */
+.gl-demo-limit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.gl-demo-limit span {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--glo-muted);
+}
+.gl-demo-cta {
+  flex: none;
+  border: 1px solid rgba(120, 160, 255, 0.5);
+  background: rgba(59, 120, 255, 0.28);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.12s ease;
+}
+.gl-demo-cta:hover {
+  background: rgba(59, 120, 255, 0.42);
+}
+.gl-demo-cta:active {
+  transform: translateY(1px);
+}
+
+@keyframes gl-demo-pop {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl-demo-panel,
+  .gl-demo-spinner,
+  .gl-demo-spinner path,
+  .gl-demo-thinking-text {
+    animation: none;
+  }
+}
+

@@ -211,7 +211,7 @@ function VaultBody({ payload }: { payload: ChatNeuronVaultPayload }) {
       ) : null}
       {note.truncated ? (
         <p className="text-[0.625rem] italic text-black/40 dark:text-white/40">
-          Showing the start — full note is {note.full_length} characters.
+          Showing the start. Full note is {note.full_length} characters.
         </p>
       ) : null}
       {Array.isArray(note.tags) && note.tags.length > 0 ? (

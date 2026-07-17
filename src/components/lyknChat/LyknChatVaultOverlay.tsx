@@ -30,7 +30,7 @@ const LyknChatVaultOverlay = React.memo(function LyknChatVaultOverlay({
       style={{ background: "transparent" }}
       role="dialog"
       aria-modal="true"
-      aria-label="Drop vault item onto canvas — press Escape to cancel"
+      aria-label="Drop vault item onto canvas. Press Escape to cancel"
       onDragOver={(e) => {
         e.preventDefault();
         e.stopPropagation();

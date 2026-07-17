@@ -73,6 +73,16 @@ function normalizeAssignableRole(role: string | null | undefined): "editor" | "v
 
 export interface InviteMemberResult {
   ok: boolean;
+  /**
+   * What happened, for UI copy:
+   *   added          — invitee already has a LYKN account; access granted NOW.
+   *   invited        — no account yet; pending invite + email, claimed at sign-up.
+   *   already_member — they were already on the project.
+   *   already_invited — a pending invite for that email already exists.
+   */
+  status?: "added" | "invited" | "already_member" | "already_invited";
+  /** True when the invite email actually went out. */
+  emailSent?: boolean;
   /** Human-readable reason on failure, for surfacing in the UI. */
   error?: string;
 }
@@ -80,9 +90,11 @@ export interface InviteMemberResult {
 // ---------------------------------------------------------------------------
 // Invite — owner adds a collaborator by email.
 // ---------------------------------------------------------------------------
-// We insert a pending row (user_id NULL, invited_email set). If that email
-// already belongs to a LYKN account, the invite is claimed the next time they
-// sign in (lykn_accept_project_invites). RLS enforces owner-only insert.
+// Goes through POST /api/projects/invite, which (a) grants membership
+// immediately when the email already belongs to a LYKN account (no
+// sign-in-again roundtrip), and (b) sends the invitee an actual email.
+// Falls back to the legacy direct insert (pending row claimed by
+// lykn_accept_project_invites on login) if the API is unreachable.
 export async function inviteProjectMember(
   userId: string | null | undefined,
   projectId: string,
@@ -92,6 +104,36 @@ export async function inviteProjectMember(
   if (!userId || !projectId) return { ok: false, error: "Not signed in." };
   const clean = email.trim().toLowerCase();
   if (!EMAIL_RE.test(clean)) return { ok: false, error: "Enter a valid email address." };
+
+  try {
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess?.session?.access_token;
+    if (token) {
+      const { API_BASE_URL } = await import("@/lib/api-config");
+      const res = await fetch(`${API_BASE_URL}/api/projects/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          project_id: projectId,
+          email: clean,
+          role: normalizeAssignableRole(role),
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
+        return { ok: true, status: data.status, emailSent: Boolean(data.email_sent) };
+      }
+      // A definitive server verdict (auth/validation) is final — only fall
+      // through to the direct insert when the server itself was unreachable
+      // or errored out.
+      if (res.status !== 500 && data?.error) {
+        return { ok: false, error: String(data.error) };
+      }
+    }
+  } catch {
+    /* network / older server — fall back to the direct insert below */
+  }
+
   try {
     const { error } = await supabase.from("lykn_project_members").insert({
       project_id: projectId,
@@ -106,7 +148,7 @@ export async function inviteProjectMember(
       }
       throw error;
     }
-    return { ok: true };
+    return { ok: true, status: "invited", emailSent: false };
   } catch (e) {
     return { ok: false, error: (e as Error)?.message || "Could not send the invite." };
   }

@@ -1,6 +1,7 @@
 import React, { memo, useEffect, useMemo, useState } from "react";
 import { ExternalLink, Globe } from "lucide-react";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
+import { safeExternalUrl } from "@/lib/safeExternalUrl";
 
 export interface LinkPreviewProps {
   url: string;
@@ -102,19 +103,10 @@ function safeHostname(raw: string): string {
  * here as a safety net — it's a no-op for already-fully-qualified URLs.
  */
 function normalizeHref(raw: string): string {
-  const trimmed = String(raw || "").trim();
-  if (!trimmed) return trimmed;
-  if (/^[a-z][a-z0-9+\-.]*:/i.test(trimmed)) return trimmed;
-  // Only upgrade to https:// when it actually looks like a host —
-  // never blindly prepend a scheme to arbitrary text.
-  if (
-    trimmed.includes(".") ||
-    /^localhost(:\d+)?(\/|$|\?|#)/i.test(trimmed) ||
-    /^\d{1,3}(\.\d{1,3}){3}(:\d+)?/.test(trimmed)
-  ) {
-    return `https://${trimmed}`;
-  }
-  return trimmed;
+  // Route through the shared scheme allowlist: a `javascript:`/`data:`/etc.
+  // URL (these can arrive from a pasted or model-generated attachment) returns
+  // null and we render an inert "#" rather than a clickable XSS vector.
+  return safeExternalUrl(raw) || "#";
 }
 
 function monogramFor(host: string, fallback: string): string {

@@ -1,0 +1,313 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /* Three-dot menu card — its OWN vibrancy window floating next to the
+         glass bar, so the space between it and the chat column is truly
+         transparent (window-level vibrancy always fills the whole window,
+         which is why this can't live inside the overlay window). Styling
+         mirrors the chat card: native blur + the same tint/border. */
+      :root {
+        --tint: rgba(16, 18, 24, 0.28);
+        --border: rgba(255, 255, 255, 0.12);
+        --text: #f4f6fb;
+        --muted: #aab2c2;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        width: 100%;
+        background: transparent;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 13px;
+        color: var(--text);
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #card {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        background: var(--tint);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 6px;
+        overflow: hidden;
+      }
+      #menu {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+      }
+      .menu-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        border: none;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        text-align: left;
+        padding: 7px 10px;
+        border-radius: 9px;
+        cursor: pointer;
+        transition: background 0.12s ease;
+      }
+      .menu-item:hover { background: rgba(255, 255, 255, 0.1); }
+      .menu-item svg { width: 16px; height: 16px; color: var(--muted); flex: none; }
+      .menu-state {
+        margin-left: auto;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 1px 7px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--muted);
+      }
+      .menu-state.on { background: rgba(52, 211, 153, 0.18); color: #34d399; }
+      .menu-item.voice-active { color: #60a5fa; background: rgba(96, 165, 250, 0.12); }
+      .menu-item.voice-active svg { color: #60a5fa; }
+      .menu-item.listening { color: #f87171; background: rgba(248, 113, 113, 0.12); }
+      .menu-item.listening svg { color: #f87171; }
+      .menu-sep { height: 1px; margin: 4px 6px; background: rgba(255, 255, 255, 0.1); flex: none; }
+
+      /* Past chats sub-view. */
+      #history { display: none; flex-direction: column; flex: 1; min-height: 0; }
+      body.history #menu { display: none; }
+      body.history #history { display: flex; }
+      .history-head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 6px 6px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        flex: none;
+      }
+      .history-head-label {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .history-head .spacer { flex: 1; }
+      .history-icon-btn {
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background 0.12s ease, color 0.12s ease;
+      }
+      .history-icon-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+      .history-icon-btn svg { width: 14px; height: 14px; }
+      #history-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding-top: 4px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+      }
+      #history-list::-webkit-scrollbar { width: 6px; }
+      #history-list::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+      }
+      .history-group {
+        padding: 6px 10px 2px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .history-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        text-align: left;
+        border: none;
+        background: transparent;
+        color: var(--text);
+        padding: 6px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 11px;
+        transition: background 0.12s ease;
+      }
+      .history-item:hover { background: rgba(255, 255, 255, 0.06); }
+      .history-item.active { background: rgba(255, 255, 255, 0.08); }
+      .history-item .hi-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        flex: none;
+        background: rgba(255, 255, 255, 0.28);
+      }
+      .history-item.active .hi-dot { background: rgba(255, 255, 255, 0.75); }
+      .history-item .hi-title {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 400;
+      }
+      .history-empty {
+        padding: 14px 12px;
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+      }
+      .history-signin {
+        padding: 10px 12px 14px;
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+      }
+      .history-signin button {
+        margin-top: 6px;
+        font: inherit;
+        font-size: 11px;
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .history-signin button:hover { color: var(--text); }
+    </style>
+  </head>
+  <body>
+    <div id="card">
+      <div id="menu">
+        <button class="menu-item" data-cmd="menu-new" data-close="1" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
+          </svg>
+          New chat
+        </button>
+        <button class="menu-item" id="past-chats" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+            <path d="M12 7v5l4 2" />
+          </svg>
+          Past chats
+        </button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" data-cmd="voice" data-close="1" id="mi-voice" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 10v3" />
+            <path d="M6 6v11" />
+            <path d="M10 3v18" />
+            <path d="M14 8v7" />
+            <path d="M18 5v13" />
+            <path d="M22 10v3" />
+          </svg>
+          <span id="voice-label">Voice mode</span>
+        </button>
+        <button class="menu-item" data-cmd="listen" data-close="1" id="mi-listen" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+          </svg>
+          <span id="listen-label">Live meeting notes</span>
+        </button>
+        <button class="menu-item" data-cmd="menu-live-watch" id="mi-watch" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          Live screen watch
+          <span class="menu-state" id="watch-state">Off</span>
+        </button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" data-cmd="menu-attach" data-close="1" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+          </svg>
+          Add photos &amp; files
+        </button>
+        <button class="menu-item" data-cmd="menu-snip" data-close="1" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 2v14a2 2 0 0 0 2 2h14" />
+            <path d="M18 22V8a2 2 0 0 0-2-2H2" />
+          </svg>
+          Snip from screen
+        </button>
+        <button class="menu-item" data-cmd="menu-image-gen" data-close="1" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            <circle cx="9" cy="9" r="2" />
+            <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+          </svg>
+          Create an image
+          <span class="menu-state" id="image-gen-state">Off</span>
+        </button>
+        <button class="menu-item" data-cmd="menu-build" data-close="1" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="16 18 22 12 16 6" />
+            <polyline points="8 6 2 12 8 18" />
+          </svg>
+          Build mode
+          <span class="menu-state" id="build-state">Off</span>
+        </button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" data-cmd="menu-stealth" id="mi-stealth" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9.88 9.88a3 3 0 0 0 4.24 4.24" />
+            <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+            <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+            <line x1="2" x2="22" y1="2" y2="22" />
+          </svg>
+          Hide from screen recording
+          <span class="menu-state" id="stealth-state">On</span>
+        </button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" data-cmd="menu-open" data-close="1" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 3h6v6" />
+            <path d="M10 14 21 3" />
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+          </svg>
+          Open LYKN app
+        </button>
+      </div>
+      <div id="history">
+        <div class="history-head">
+          <button type="button" id="history-back" class="history-icon-btn" title="Back" aria-label="Back">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+          </button>
+          <span class="history-head-label">Chats</span>
+          <span class="spacer"></span>
+          <button type="button" id="history-new" class="history-icon-btn" title="New chat" aria-label="New chat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
+            </svg>
+          </button>
+        </div>
+        <div id="history-list"></div>
+      </div>
+    </div>
+    <script src="menu.js"></script>
+  </body>
+</html>

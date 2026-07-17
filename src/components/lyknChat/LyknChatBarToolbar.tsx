@@ -14,6 +14,8 @@ export type LyknChatBarToolbarProps = {
   compact?: boolean;
   onSend: () => void | Promise<void>;
   chatInputHasText: boolean;
+  /** Attachment-only sends are valid (mirrors ChatGPT) — keep Send enabled. */
+  hasAttachments?: boolean;
   isChatLoading: boolean;
   isDictating: boolean;
   isTranscribing: boolean;
@@ -33,6 +35,7 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   compact,
   onSend,
   chatInputHasText,
+  hasAttachments,
   isChatLoading,
   isDictating,
   isTranscribing,
@@ -45,11 +48,12 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   handleStopAi,
   handleDictateToggle,
 }: LyknChatBarToolbarProps) {
-  const sendDisabled = !chatInputHasText || isChatLoading || isDictating || isTranscribing;
+  const sendDisabled =
+    (!chatInputHasText && !hasAttachments) || isChatLoading || isDictating || isTranscribing;
   const selectValue = canonicalizeModelId(selectedModel) || LYKN_ID;
   const modelTriggerCls = compact
-    ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
-    : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
+    ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
+    : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
   const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
   const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
   const dropdownCls =
@@ -58,7 +62,23 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   return (
     <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>
       {toolbarSelect ?? (
-        <Select value={selectValue} onValueChange={persistSelectedModel}>
+        <Select
+          value={selectValue}
+          onValueChange={persistSelectedModel}
+          onOpenChange={(open) => {
+            if (!open) {
+              requestAnimationFrame(() => {
+                const el = document.activeElement;
+                if (
+                  el instanceof HTMLElement &&
+                  el.classList.contains("lykn-chat-neu-chat-toolbar-select-trigger")
+                ) {
+                  el.blur();
+                }
+              });
+            }
+          }}
+        >
           <SelectTrigger className={modelTriggerCls}>
             <SelectValue placeholder="Model" />
           </SelectTrigger>

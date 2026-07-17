@@ -406,7 +406,7 @@ const LoadInBriefingPanel: React.FC<Props> = ({ stats, greetingName }) => {
             </ResponsiveContainer>
           ) : (
             <div className="h-full flex items-center justify-center text-[11px] text-black/45 dark:text-white/45 italic">
-              Quiet week — nothing logged yet.
+              Quiet week. Nothing logged yet.
             </div>
           )}
         </div>
@@ -432,7 +432,7 @@ const LoadInBriefingPanel: React.FC<Props> = ({ stats, greetingName }) => {
                 onMouseLeave={() => setHoveredLane(null)}
                 onFocus={() => setHoveredLane(lane.key)}
                 onBlur={() => setHoveredLane(null)}
-                title={`Open ${lane.label} — ${lane.count} ${lane.count === 1 ? "item" : "items"}`}
+                title={`Open ${lane.label} (${lane.count} ${lane.count === 1 ? "item" : "items"})`}
                 className="group/lane flex items-center gap-2 px-2 py-1 -mx-2 rounded-lg transition-all duration-200 hover:bg-white/60 dark:hover:bg-white/[0.06] focus:bg-white/60 dark:focus:bg-white/[0.06] focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/40"
               >
                 <span className="text-[11px] font-medium text-black/65 dark:text-white/65 group-hover/lane:text-black/90 dark:group-hover/lane:text-white/90 w-[68px] flex-shrink-0 truncate transition-colors">

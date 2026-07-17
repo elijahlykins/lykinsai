@@ -537,7 +537,7 @@ export const CONNECTORS = [
     summary:
       "Syncs your iCloud calendars onto your LYKN calendar (read-only) and into your Vault. Uses an app-specific password, never your Apple ID password.",
     accessNote:
-      "Read-only over iCloud CalDAV. The app-specific password is encrypted at rest and grants only calendar access — revoke it any time at appleid.apple.com or here.",
+      "Read-only over iCloud CalDAV. The app-specific password is encrypted at rest and grants only calendar access. Revoke it any time at appleid.apple.com or here.",
     connectFields: [
       {
         name: "email",

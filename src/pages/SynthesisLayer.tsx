@@ -47,6 +47,7 @@ import {
   type ConnectorRollupSummary,
 } from "@/lib/vault/connectorSources";
 import { API_BASE_URL } from "@/lib/api-config";
+import { toast } from "@/components/ui/use-toast";
 import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import {
@@ -1677,7 +1678,7 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
         </p>
         <p className="text-[0.75rem] text-gray-600 dark:text-gray-300 leading-relaxed">
           {status === "stated"
-            ? "You stated this directly in chat — LYKN saved it as a Basic neuron."
+            ? "You stated this directly in chat. LYKN saved it as a Basic neuron."
             : status === "confirmed"
               ? "You confirmed this when LYKN surfaced it from your conversations."
               : "LYKN's synthesis layer inferred this from patterns in your chats and vault. It's awaiting your confirmation before becoming a permanent neuron."}
@@ -1732,7 +1733,7 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
             <p className="text-[0.6875rem] text-red-500">{error}</p>
           ) : (
             <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 text-center">
-              Accepting marks this as confirmed — LYKN will lean on it for context on every reply.
+              Accepting marks this as confirmed. LYKN will lean on it for context on every reply.
             </p>
           )}
         </div>
@@ -2834,11 +2835,11 @@ function DetailPanel({
           const connectedTags = connected.filter((c) => c.kind === "tag");
 
           const originDesc: Record<string, string> = {
-            theme: `The LYKN Synthesis Layer identified "${node.label}" as a recurring theme across your work. This neuron was formed because the AI detected this topic appearing consistently in your grids, vault notes, and conversations — indicating it's a core area of focus for you.`,
+            theme: `The LYKN Synthesis Layer identified "${node.label}" as a recurring theme across your work. This neuron was formed because the AI detected this topic appearing consistently in your grids, vault notes, and conversations, indicating it's a core area of focus for you.`,
             goal: `This neuron represents a goal the AI inferred from your activity. By analyzing patterns in what you create, discuss, and save, the Synthesis Layer recognized "${node.label}" as something you're actively working toward.`,
-            recurring_topic: `The AI noticed "${node.label}" surfacing repeatedly across different contexts — grids, notes, and conversations. This neuron was created to represent this persistent thread in your thinking, helping you see how this topic connects to your broader work.`,
+            recurring_topic: `The AI noticed "${node.label}" surfacing repeatedly across different contexts: grids, notes, and conversations. This neuron was created to represent this persistent thread in your thinking, helping you see how this topic connects to your broader work.`,
             reasoning_style: `This neuron captures a reasoning pattern the AI observed in how you approach problems. The Synthesis Layer recognized "${node.label}" as characteristic of your thinking style based on your conversations and the way you structure ideas.`,
-            vocabulary: `The AI identified "${node.label}" as part of your distinctive vocabulary — a term or phrase you use frequently and meaningfully. This neuron highlights language patterns that reflect how you think and communicate.`,
+            vocabulary: `The AI identified "${node.label}" as part of your distinctive vocabulary: a term or phrase you use frequently and meaningfully. This neuron highlights language patterns that reflect how you think and communicate.`,
           };
 
           return (
@@ -2860,7 +2861,7 @@ function DetailPanel({
                   ? prototypeReason
                     ? prototypeReason
                     : prototypeOrdinal === 1
-                    ? `The very first thing your synthetic intelligence learned about you: "${node.label}". Every neuron after this one will branch out from what you share — your sources, your taste, the way you think — and connect into the same web you see here.`
+                    ? `The very first thing your synthetic intelligence learned about you: "${node.label}". Every neuron after this one will branch out from what you share (your sources, your taste, the way you think) and connect into the same web you see here.`
                     : `The ${ordinalLabel(prototypeOrdinal || 1)} thing your synthetic intelligence learned about you: "${node.label}".`
                   : originDesc[source] || `The AI recognized "${node.label}" as a ${kind} based on your activity across grids, vault, and conversations.`}
               </p>
@@ -3065,7 +3066,7 @@ const NEURON_TYPE_THEME = {
     // this with a single-line input + tight char cap so the user
     // physically can't write a paragraph here.
     description:
-      "Atomic memory the AI can lean on. Keep it to one sentence — \"I work as a designer,\" \"I focus best in the morning.\" Short, true, easy to recall.",
+      "Atomic memory the AI can lean on. Keep it to one sentence: \"I work as a designer,\" \"I focus best in the morning.\" Short, true, easy to recall.",
     accent: "blue",
     accentHex: "#60a5fa", // blue-400
     accentRing: "border-blue-400/35",
@@ -3113,7 +3114,7 @@ const NEURON_TYPE_THEME = {
     // to ground replies in the user's lived experience instead of
     // pattern-matching generic advice.
     description:
-      "A formative story or point of view the AI should know about you. Write the title and then tell the story — a project that changed how you work, a memory that explains how you see things. The AI uses these to ground its replies in your real life.",
+      "A formative story or point of view the AI should know about you. Write the title and then tell the story: a project that changed how you work, a memory that explains how you see things. The AI uses these to ground its replies in your real life.",
     // Perspectives share the Belief cluster's WHITE treatment in the
     // 3D scene after the 5-category collapse (see the
     // "Perspectives now share the white Belief treatment" note
@@ -3130,7 +3131,7 @@ const NEURON_TYPE_THEME = {
     title: "Tag",
     short: "A label you can hang on Vault items",
     description:
-      "Tags are how you organize the Vault. Name one here and it'll show up as a filter the next time you save something — perfect for grouping notes, files, or saved chats by project or theme.",
+      "Tags are how you organize the Vault. Name one here and it'll show up as a filter the next time you save something. Perfect for grouping notes, files, or saved chats by project or theme.",
     accent: "amber",
     accentHex: "#fbbf24", // amber-400 (matches tags palette)
     accentRing: "border-amber-400/35",
@@ -3354,7 +3355,7 @@ function NeuronCreationModal({
           // — dispatch the upgrade modal instead of showing the raw string.
           if (isSynthesisCapError({ message: reason })) {
             notifySynthesisCapIfApplicable({ message: reason });
-            setError("Couldn't save — upgrade required.");
+            setError("Couldn't save. Upgrade required.");
           } else {
             setError(toUserFacingError());
           }
@@ -3389,7 +3390,7 @@ function NeuronCreationModal({
           // `reason`, so cap hits arrive as a recognisable substring.
           if (isSynthesisCapError({ message: reason })) {
             notifySynthesisCapIfApplicable({ message: reason });
-            setError("Couldn't save — upgrade required.");
+            setError("Couldn't save. Upgrade required.");
           } else {
             setError(toUserFacingError());
           }
@@ -3454,7 +3455,7 @@ function NeuronCreationModal({
           // raw PG error into the existing upgrade-modal events before
           // falling back to the inline error string.
           if (notifyVaultCapIfApplicable(insErr) || notifySynthesisCapIfApplicable(insErr)) {
-            setError("Couldn't save — upgrade required.");
+            setError("Couldn't save. Upgrade required.");
           } else {
             setError(toUserFacingError());
           }
@@ -3548,7 +3549,7 @@ function NeuronCreationModal({
         return {
           label: "Title",
           placeholder: "e.g. 'Treat others the way you want to be treated.'",
-          hint: "The principle itself — one sentence.",
+          hint: "The principle itself, in one sentence.",
           maxLength: 200,
         };
       case "concept":
@@ -3676,7 +3677,7 @@ function NeuronCreationModal({
                   Facts + Concepts it goes into metadata.why. */}
               <NeuronFieldLabel
                 label="Why are you adding this?"
-                hint="Optional — gives the AI a hook for explaining itself when it leans on this neuron."
+                hint="Optional. Gives the AI a hook for explaining itself when it leans on this neuron."
               >
                 <textarea
                   value={why}
@@ -3706,7 +3707,7 @@ function NeuronCreationModal({
                   onChange={(e) => setConnectionSearch(e.target.value)}
                   placeholder={
                     (existingNodes || []).length === 0
-                      ? "No other neurons yet — connections come later."
+                      ? "No other neurons yet. Connections come later."
                       : "Search by name…"
                   }
                   disabled={(existingNodes || []).length === 0}
@@ -3765,7 +3766,7 @@ function NeuronCreationModal({
                 hint={
                   type === "perspective"
                     ? "Tell it like you'd tell a friend. The AI uses this to ground replies in your real life."
-                    : "Anything longer that fills out this neuron — context, examples, the back-story."
+                    : "Anything longer that fills out this neuron: context, examples, the back-story."
                 }
               >
                 <textarea
@@ -3790,7 +3791,7 @@ function NeuronCreationModal({
                   in DetailPanel context. */}
               <NeuronFieldLabel
                 label="Additional information"
-                hint="Optional — links, dates, asides, anything else worth attaching."
+                hint="Optional. Links, dates, asides, anything else worth attaching."
               >
                 <textarea
                   value={notes}
@@ -4018,6 +4019,14 @@ export default function SynthesisLayer() {
   // The "+" toolbar menu — { Basic neuron, Core Belief neuron }. Tap a
   // type and the menu closes; a centered creation modal takes over.
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  // "drag to orbit" hint — visible for the first few seconds only. The old
+  // `animate-pulse` version claimed to fade but pulsed forever, permanently
+  // drawing the eye to bottom-center.
+  const [orbitHintVisible, setOrbitHintVisible] = useState(true);
+  useEffect(() => {
+    const t = window.setTimeout(() => setOrbitHintVisible(false), 8000);
+    return () => window.clearTimeout(t);
+  }, []);
   // Which neuron creation modal (if any) is currently open. Single source
   // of truth — only one modal at a time, and the backdrop dimming is
   // implicit in this state.
@@ -4245,9 +4254,11 @@ export default function SynthesisLayer() {
       )
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "notes", filter: `user_id=eq.${uid}` },
+        // NOTE: must target the base table — `notes` is only a compat VIEW
+        // since migration 106, and Realtime never emits events for views.
+        { event: "*", schema: "public", table: "vault_items", filter: `user_id=eq.${uid}` },
         () => {
-          // Any change to `notes` invalidates the mindmap notes query
+          // Any change to `vault_items` invalidates the mindmap notes query
           // so the Vault cluster, Perspectives cluster (notes carrying
           // `_perspective`), tag cluster, and rollup nodes all rebuild
           // off the fresh row set. Deletes are the headline case —
@@ -5032,7 +5043,11 @@ export default function SynthesisLayer() {
     // consistent panel per neuron click regardless of type.
     if (nodeId === "__cat_belief__" || nodeId === "__cat_beliefs__") {
       setBeliefWindowOpen(true);
-      setSelectedId(nodeId);
+      // Don't also select the category node — a non-null selectedId mounts
+      // the generic NeuronPanel, which would stack on top of the belief
+      // manager in the same right-side slot.
+      setSelectedId(null);
+      setSelectedProjectId(null);
       return;
     }
     // Project nodes route to the existing ProjectPanel (updates +
@@ -5057,6 +5072,10 @@ export default function SynthesisLayer() {
     if (beliefWindowOpen) {
       setBeliefWindowOpen(false);
     }
+    // Same mutual exclusion for the project panel: clicking an ordinary
+    // neuron while a ProjectPanel is open must close it, otherwise both
+    // right-side drawers mount on top of each other.
+    setSelectedProjectId(null);
     setSelectedId((prev) => (prev === nodeId ? null : nodeId));
   }, [nodeMap, linkingMode, projectMode, beliefWindowOpen]);
 
@@ -5085,6 +5104,11 @@ export default function SynthesisLayer() {
     setLinkLabel("");
     setLinkingMode(true);
     setSelectedId(null);
+    // Close ALL right panels, not just the neuron panel — an open Core
+    // Beliefs / Project panel would cover the right 380px of the brain,
+    // making those neurons impossible to add to the link selection.
+    setBeliefWindowOpen(false);
+    setSelectedProjectId(null);
     setAddMenuOpen(false);
     // Mutually-exclusive with project-cluster mode (see beginProject's
     // mirroring cleanup). Two floating action bars at bottom-center
@@ -5130,9 +5154,14 @@ export default function SynthesisLayer() {
     } catch (e) {
       // Persistence failure is non-fatal — the userLinks lib already
       // falls back to localStorage internally, so reaching this catch
-      // means something genuinely unexpected happened. Log and bail
-      // out of submitting state so the user can retry.
+      // means something genuinely unexpected happened. Log, tell the
+      // user, and bail out of submitting state so they can retry.
       console.error("commitLinking failed", e);
+      toast({
+        title: "Couldn't connect neurons",
+        description: "Something went wrong saving the link. Please try again.",
+        variant: "destructive",
+      });
       setLinkSubmitting(false);
     }
   }, [linkSelection, linkSubmitting, linkLabel, user?.id, queryClient, cancelLinking]);
@@ -5316,6 +5345,11 @@ export default function SynthesisLayer() {
       // localStorage internally. Reaching this catch means
       // something genuinely unexpected happened.
       console.error("commitProject failed", e);
+      toast({
+        title: "Couldn't save project",
+        description: "Something went wrong creating the cluster. Please try again.",
+        variant: "destructive",
+      });
       setProjectSubmitting(false);
     }
   }, [projectName, projectDescription, projectSelection, projectSubmitting, projectAddTargetId, userProjects, nodeMap, user?.id, queryClient, cancelProject]);
@@ -5365,6 +5399,16 @@ export default function SynthesisLayer() {
   // scene instead of wondering whether the button did anything.
   const [pendingFormingNodeId, setPendingFormingNodeId] = useState<string | null>(null);
   const beliefFormingWatchTimeouts = useRef<number[]>([]);
+  // Expire a pending formation pulse whose node never materialises
+  // (failed save, bogus id) so it can't linger and hijack a later save.
+  useEffect(() => {
+    if (!pendingFormingNodeId) return;
+    const expireAt = window.setTimeout(() => {
+      setPendingFormingNodeId((cur) => (cur === pendingFormingNodeId ? null : cur));
+    }, 15_000);
+    return () => window.clearTimeout(expireAt);
+  }, [pendingFormingNodeId]);
+
   useEffect(() => {
     if (!pendingFormingNodeId) return;
     if (!nodeMap.has(pendingFormingNodeId)) return;
@@ -5425,6 +5469,31 @@ export default function SynthesisLayer() {
     setSelectedId(null);
     setSelectedProjectId(null);
   }, []);
+
+  // Escape dismisses the topmost overlay: creation modal → "+" type menu →
+  // any right panel. Skipped while typing in an input/textarea so it never
+  // hijacks field-level Escape handling (e.g. the concept rename input) or
+  // throws away half-typed creation-form content.
+  useEffect(() => {
+    if (!creatingNeuronType && !addMenuOpen && !anyRightPanelOpen) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (creatingNeuronType) {
+        setCreatingNeuronType(null);
+        return;
+      }
+      if (addMenuOpen) {
+        setAddMenuOpen(false);
+        return;
+      }
+      closeAllRightPanels();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [creatingNeuronType, addMenuOpen, anyRightPanelOpen, closeAllRightPanels]);
+
   const isTopicMode = layoutMode === "topic" && !!filterTag;
 
   const svgAreaRef = useRef<HTMLDivElement>(null);
@@ -5474,7 +5543,7 @@ export default function SynthesisLayer() {
         minPlan="studio"
         feature="Mind Map"
         fallback={null}
-        description={`Your Free plan includes the Synthesis Layer up to ${FREE_SYNTHESIS_NODE_LIMIT} neurons you create yourself (chats, vault notes, perspectives, ratified beliefs, manual facts). You've reached ${userCreatedNodeCount} — upgrade to Pro for the full, unlimited mind map. Concepts and other AI-derived nodes never count against this limit.`}
+        description={`Your Free plan includes the Synthesis Layer up to ${FREE_SYNTHESIS_NODE_LIMIT} neurons you create yourself (chats, vault notes, perspectives, ratified beliefs, manual facts). You've reached ${userCreatedNodeCount}. Upgrade to Pro for the full, unlimited mind map. Concepts and other AI-derived nodes never count against this limit.`}
       >
         {null}
       </PlanGate>
@@ -5696,7 +5765,7 @@ export default function SynthesisLayer() {
             id: n.id,
             title: n.title || n.ai_summary || "Untitled perspective",
             ai_summary: n.ai_summary || null,
-            created_at: null,
+            created_at: n.created_at || null,
           }))}
         // "+ New" inside the Perspectives tab opens the same composer
         // the synthesis-layer "+ → Perspective" path uses.
@@ -5800,10 +5869,11 @@ export default function SynthesisLayer() {
                 queryClient.invalidateQueries({ queryKey: ["mindmap_vault_graph", user?.id] });
               } else if (creatingNeuronType === "tag") {
                 // Tag creation inserts a Vault note carrying the tag.
-                // The tag-cluster node id is derived from the tag text
-                // itself (`tag_<text>`), not the note id, which is why
-                // we queue the pulse off `savedText` rather than newId.
-                if (savedText) setPendingFormingNodeId(`tag_${savedText}`);
+                // Tags are no longer standalone graph nodes (they became
+                // vault-note attributes + cross-edges), so there is no
+                // `tag_<text>` node for a formation pulse to land on —
+                // queuing one would leave `pendingFormingNodeId` stuck
+                // forever. Just refresh the graph.
                 queryClient.invalidateQueries({ queryKey: ["mindmap_vault_graph", user?.id] });
               } else if (newId) {
                 // Basic neurons land in lykn_user_model_facts. We render
@@ -6007,6 +6077,11 @@ export default function SynthesisLayer() {
                           // clicks for the most common flow.
                           setFilterProjectId(p.id);
                           setSelectedProjectId(p.id);
+                          // Right panels are mutually exclusive — without
+                          // these the ProjectPanel mounts directly on top of
+                          // a still-open Core Beliefs / neuron panel.
+                          setBeliefWindowOpen(false);
+                          setSelectedId(null);
                           setShowProjectMenu(false);
                         }}
                         className={`w-full text-left px-3 py-2 text-[0.6875rem] transition-colors flex items-start gap-2 ${
@@ -6130,7 +6205,10 @@ export default function SynthesisLayer() {
       <div
         className="absolute z-20 flex items-end transition-[right] duration-300"
         style={{
-          right: panelOpen || beliefWindowOpen ? 384 : 24,
+          // Shift for ANY right panel — including the ProjectPanel, which
+          // previously wasn't counted, leaving the "+" (and its type menu)
+          // buried underneath the fixed 380px panel.
+          right: anyRightPanelOpen ? 384 : 24,
           bottom: "calc(1.5rem + var(--mobile-tabbar-clear, 0px))",
         }}
       >
@@ -6341,9 +6419,10 @@ export default function SynthesisLayer() {
           Fades after a few seconds via CSS animation; tiny enough to ignore.
           Hidden during linking + project-cluster mode so it doesn't fight
           the action bar for the same bottom-center slot. */}
-      {!linkingMode && !projectMode && (
+      {!linkingMode && !projectMode && orbitHintVisible && (
         <div
-          className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-[0.6rem] text-black/45 dark:text-white/40 pointer-events-none animate-pulse"
+          // Hidden on touch devices (the copy is desktop-only: scroll/shift+drag).
+          className="hidden sm:block absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-[0.6rem] text-black/45 dark:text-white/40 pointer-events-none animate-pulse"
         >
           drag to orbit · scroll to zoom · shift+drag to pan
         </div>
@@ -6683,7 +6762,7 @@ export default function SynthesisLayer() {
                     onChange={(e) => setProjectDescription(e.target.value)}
                     maxLength={320}
                     rows={2}
-                    placeholder="Optional one-liner — what is this project about?"
+                    placeholder="Optional one-liner: what is this project about?"
                     className="w-full bg-black/30 border border-white/15 rounded-lg px-2.5 py-1.5 text-[0.72rem] text-white/95 placeholder:text-white/30 focus:outline-none focus:border-white/30 resize-none"
                   />
                 </div>

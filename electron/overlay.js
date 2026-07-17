@@ -50,7 +50,15 @@ function thinkingHTML(status) {
 // `code`). We escape first so model output can't inject HTML, then build a small
 // set of block/inline elements. Good enough for chat answers without a library.
 function escapeHtml(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Escape quotes too — this output is also interpolated into an href="…"
+  // attribute by renderInline, so an unescaped quote could break out of the
+  // attribute. Belt-and-suspenders alongside the http(s)-only link regex.
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function renderInline(s) {
@@ -59,7 +67,10 @@ function renderInline(s) {
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/__([^_]+)__/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+    // Only http(s) links, no whitespace/quotes in the URL (the &quot;/&#39;
+    // entities from escapeHtml contain no raw quote, and \s already excludes
+    // spaces), and force them through the external browser with rel guards.
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)"']+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>');
 }
 
 function renderMarkdown(md) {
@@ -86,7 +97,57 @@ function renderMarkdown(md) {
       closeList();
       continue;
     }
-    let m = /^(#{1,6})\s+(.*)$/.exec(line);
+    // Standalone image line — how generated images (image mode) arrive.
+    // The "lykn-artifact:" alt prefix marks a coded React artifact (Build
+    // mode) instead: render it as a live iframe preview card, not an <img>.
+    let m = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)$/.exec(line.trim());
+    if (m) {
+      flushPara();
+      closeList();
+      if (m[1].startsWith("lykn-artifact:")) {
+        const artTitle = m[1].slice("lykn-artifact:".length).trim() || "Interactive artifact";
+        const artFile =
+          (artTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
+            "artifact") + ".html";
+        html +=
+          `<div class="md-artifact">` +
+          `<div class="md-artifact-head"><span>${artTitle}</span>` +
+          `<span class="md-artifact-actions">` +
+          `<button class="md-code" type="button" data-url="${m[2]}">Code</button>` +
+          `<button class="md-dl" type="button" data-url="${m[2]}" data-name="${artFile}" data-title="${artTitle}">Download</button>` +
+          `<a href="${m[2]}" rel="noopener noreferrer">Open ↗</a>` +
+          `</span></div>` +
+          `<iframe src="${m[2]}" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" loading="lazy"></iframe>` +
+          `<div class="md-artifact-code" hidden>` +
+          `<div class="md-artifact-code-bar"><span>Component source (JSX)</span>` +
+          `<button class="md-dl md-code-copy" type="button">Copy</button></div>` +
+          `<pre></pre>` +
+          `</div>` +
+          `</div>`;
+      } else if (m[1].startsWith("lykn-video:")) {
+        // Remotion render (lykn_render_video): inline playable mp4 card.
+        const vidTitle = m[1].slice("lykn-video:".length).trim() || "Video";
+        const vidFile =
+          (vidTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
+            "video") + ".mp4";
+        html +=
+          `<div class="md-artifact md-video">` +
+          `<div class="md-artifact-head"><span>${vidTitle}</span>` +
+          `<span class="md-artifact-actions">` +
+          `<button class="md-dl" type="button" data-url="${m[2]}" data-name="${vidFile}" data-title="${vidTitle}">Download</button>` +
+          `<a href="${m[2]}" rel="noopener noreferrer">Open ↗</a>` +
+          `</span></div>` +
+          `<video src="${m[2]}" controls playsinline preload="metadata"></video>` +
+          `</div>`;
+      } else {
+        html +=
+          `<div class="md-img"><img src="${m[2]}" alt="${m[1]}" loading="lazy" />` +
+          `<button class="md-dl md-img-dl" type="button" data-url="${m[2]}" data-name="" data-title="${m[1] || "Generated image"}">Download</button>` +
+          `</div>`;
+      }
+      continue;
+    }
+    m = /^(#{1,6})\s+(.*)$/.exec(line);
     if (m) {
       flushPara();
       closeList();
@@ -134,10 +195,9 @@ const ARROW_ICON_SVG =
   'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M7 7h10v10" /><path d="M7 17 17 7" /></svg>';
 
-const sideEl = document.getElementById("side");
+// Hidden state store for the detached side-panel card (see panel.html).
 const sideInnerEl = document.getElementById("side-inner");
 const sidePickerBtnEl = document.getElementById("side-picker-btn");
-const panelMenuEl = document.getElementById("panel-menu");
 const sidePickerLabelEl = document.getElementById("side-picker-label");
 
 const SIDE_VIEW_OPTIONS = [
@@ -152,7 +212,14 @@ const SIDE_VIEW_OPTIONS = [
 
 let sideContext = null;
 let lastAnswerText = "";
-let liveNotesSnapshot = { keyPoints: [], actionItems: [], summary: "" };
+let liveNotesSnapshot = {
+  keyPoints: [],
+  actionItems: [],
+  summary: "",
+  questionsToAsk: [],
+  suggestions: [],
+  topics: [],
+};
 let sidePanelView = "";
 let panelPickerOpen = false;
 // Live watch feed — rendered in the side panel, not the chat thread.
@@ -250,12 +317,17 @@ function buildSideData() {
   ]);
   const notes = dedupeStrings([
     ...(liveNotesSnapshot.keyPoints || []),
+    ...(liveNotesSnapshot.suggestions || []),
     ...extractNotesFromAnswer(lastAnswerText),
+  ]);
+  const followups = dedupeStrings([
+    ...((sideContext && sideContext.followups) || []),
+    ...(liveNotesSnapshot.questionsToAsk || []),
   ]);
   return {
     pageSource: sideContext && sideContext.pageSource ? sideContext.pageSource : null,
     links: (sideContext && sideContext.links) || [],
-    followups: (sideContext && sideContext.followups) || [],
+    followups,
     tasks,
     notes,
     summary: String(liveNotesSnapshot.summary || "").trim(),
@@ -293,68 +365,109 @@ function updateSidePickerLabel() {
   sidePickerLabelEl.textContent = opt ? opt.label : "None";
 }
 
+// The view picker lives in its OWN little vibrancy window next to the bar
+// (see picker.html / main.cjs), exactly like the three-dot menu. This just
+// asks main to show/hide it; main echoes the actual visibility back via
+// onPickerVisible so `panelPickerOpen` never drifts.
 function setPanelPickerOpen(open) {
-  panelPickerOpen = open;
-  sidePickerBtnEl.classList.toggle("active", open);
-  sidePickerBtnEl.setAttribute("aria-expanded", open ? "true" : "false");
-  composerEl.classList.toggle("panel-open", open);
-  if (open) {
-    if (moreUserOpen) setMenuOpen(false);
-    renderPanelMenu();
-  }
-  reportHeight();
+  try {
+    window.lyknOverlay.setPicker(!!open);
+  } catch (_) {}
 }
 
 function closeSidePickerMenu() {
   setPanelPickerOpen(false);
+  // Drop focus so the trigger doesn't keep the open/active tint after selection.
+  sidePickerBtnEl.blur();
 }
 
-function renderPanelMenu() {
+window.lyknOverlay.onPickerVisible((visible) => {
+  panelPickerOpen = !!visible;
+  sidePickerBtnEl.classList.toggle("active", panelPickerOpen);
+  sidePickerBtnEl.setAttribute("aria-expanded", panelPickerOpen ? "true" : "false");
+  if (!panelPickerOpen) sidePickerBtnEl.blur();
+});
+
+// Remote control from the picker window — the pick is applied HERE because
+// this renderer owns the side-panel state and rendering.
+window.__lyknPickerSelect = (id) => {
+  setSidePanelView(id);
+};
+
+// Options snapshot (labels, counts, active view) for the picker card.
+window.__lyknPickerState = () => {
   const data = buildSideData();
-  panelMenuEl.innerHTML = "";
+  const options = [];
   for (const opt of SIDE_VIEW_OPTIONS) {
     if (opt.id === "watch" && !liveWatchEnabled) continue;
-    const count = opt.id ? sideViewCount(opt.id, data) : 0;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className =
-      "panel-menu-item" +
-      (opt.id === sidePanelView ? " active" : "") +
-      (opt.id && !count ? " empty" : "");
-    btn.setAttribute("role", "option");
-    btn.innerHTML = `<span>${escapeHtml(opt.label)}</span>` +
-      (opt.id && opt.id !== "all" ? `<span class="count">${count || "—"}</span>` : "");
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      setSidePanelView(opt.id);
-      setPanelPickerOpen(false);
+    options.push({
+      id: opt.id,
+      label: opt.label,
+      count: opt.id ? sideViewCount(opt.id, data) : 0,
     });
-    panelMenuEl.appendChild(btn);
   }
-}
+  return { options, active: sidePanelView };
+};
 
 function syncSidePickerState() {
   updateSidePickerLabel();
 }
 
-let sideCloseTimer = null;
+// The side-panel content lives in its OWN vibrancy window floating next to
+// the bar (see panel.html / main.cjs), like the three-dot menu and the live
+// notes card — so it reads as a separate glass card instead of widening the
+// chat bar. The hidden #side-inner DOM here stays the source of truth; we
+// push HTML snapshots over and receive user actions back (__lyknPanelCmd).
 function showSide(open) {
   if (open && !sidePanelView) return;
-  if (sideCloseTimer) {
-    clearTimeout(sideCloseTimer);
-    sideCloseTimer = null;
-  }
-  if (open) {
-    sideEl.classList.add("show");
-    reportHeight();
-  } else {
-    sideEl.classList.remove("show");
-    sideCloseTimer = setTimeout(() => {
-      sideCloseTimer = null;
-      reportHeight();
-    }, 160);
-  }
+  try {
+    window.lyknOverlay.setPanel(!!open);
+  } catch (_) {}
+  if (open) pushPanelState();
 }
+
+function sidePanelTitle() {
+  const opt = SIDE_VIEW_OPTIONS.find((o) => o.id === sidePanelView);
+  return opt && opt.id ? opt.label : "Panel";
+}
+
+function pushPanelState() {
+  if (!sidePanelView) return;
+  try {
+    window.lyknOverlay.pushPanel({
+      title: sidePanelTitle(),
+      html: sideInnerEl.innerHTML,
+      width: sidePanelView === "watch" ? WATCH_SIDE_WIDTH : SIDE_WIDTH,
+      scrollBottom: sidePanelView === "watch",
+    });
+  } catch (_) {}
+}
+
+// Remote control from the panel card — actions run HERE because this
+// renderer owns the side-panel data (and the composer for follow-ups).
+window.__lyknPanelCmd = (name, arg) => {
+  switch (name) {
+    case "close":
+      setSidePanelView("");
+      break;
+    case "url":
+      try {
+        window.lyknOverlay.openUrl(String(arg || ""));
+      } catch (_) {}
+      break;
+    case "ask":
+      askEl.value = String(arg || "");
+      ask();
+      break;
+    case "install":
+      try {
+        window.lyknOverlay.openExtensionInstall?.().catch(() => {});
+      } catch (_) {}
+      break;
+    default:
+      break;
+  }
+};
 
 function clearSide() {
   sideInnerEl.innerHTML = "";
@@ -367,20 +480,14 @@ function clearSide() {
   syncSidePickerState();
 }
 
-// Reset sources/tasks side data for a new chat turn without closing live watch.
+// Reset sources/tasks side data for a new chat turn. The panel card stays
+// OPEN on whatever view the user picked (it only closes from its X or the
+// picker) — the previous turn's content remains visible until the new
+// answer's sources/notes arrive and re-render it in place.
 function resetSideForNewTurn() {
   sideContext = null;
   lastAnswerText = "";
-  if (liveWatchEnabled) {
-    if (!sidePanelView) setSidePanelView("watch");
-    else if (sidePanelView === "watch") renderWatchSidePanel();
-    else renderSidePanel();
-    return;
-  }
-  sidePanelView = "";
-  closeSidePickerMenu();
-  updateSidePickerLabel();
-  showSide(false);
+  if (liveWatchEnabled && !sidePanelView) setSidePanelView("watch");
 }
 
 function setSidePanelView(viewId) {
@@ -400,7 +507,7 @@ sidePickerBtnEl.addEventListener("click", (e) => {
 });
 
 document.addEventListener("click", (e) => {
-  if (panelPickerOpen && !e.target.closest("#composer")) setPanelPickerOpen(false);
+  if (panelPickerOpen && !e.target.closest("#composer")) closeSidePickerMenu();
 });
 
 function sideTextItem(text) {
@@ -562,8 +669,7 @@ function renderWatchSidePanel() {
     empty.textContent = "Live feedback is off.";
     sideInnerEl.appendChild(empty);
   }
-  sideInnerEl.scrollTop = sideInnerEl.scrollHeight;
-  reportHeight();
+  pushPanelState();
 }
 
 function renderSidePanel() {
@@ -605,7 +711,7 @@ function renderSidePanel() {
     empty.textContent = "Nothing here yet.";
     sideInnerEl.appendChild(empty);
   }
-  reportHeight();
+  pushPanelState();
 }
 
 function refreshSidePanelFromLiveNotes() {
@@ -637,6 +743,9 @@ function sourceCard(link) {
   a.className = "suggest-link";
   a.type = "button";
   a.title = link.url;
+  // The detached panel card renders this markup via innerHTML snapshots, so
+  // it needs the URL as data (its click delegation can't see this listener).
+  a.dataset.url = link.url;
 
   const fav = document.createElement("span");
   fav.className = "suggest-fav";
@@ -707,62 +816,93 @@ async function requestSuggestions(question, answer) {
   if (sidePanelView && sidePanelView !== "watch") renderSidePanel();
 }
 
-// Widths must match the main process constants (OVERLAY_WIDTH / side widths).
+// Width must match the main process constant (OVERLAY_WIDTH); the panel card
+// widths match the detached panel window (see panel.html / main.cjs).
 const CHAT_WIDTH = 520;
 const SIDE_WIDTH = 300;
 const WATCH_SIDE_WIDTH = 360;
-const LIVE_WATCH_MIN_HEIGHT = 440;
-const LIVE_WATCH_THREAD_MAX = 320;
 let lastReportedHeight = -1;
 let lastReportedWidth = -1;
 
-function sidePanelWidth() {
-  const side = document.getElementById("side");
-  if (!side || !side.classList.contains("show")) return 0;
-  if (liveWatchEnabled && sidePanelView === "watch") return WATCH_SIDE_WIDTH;
-  return SIDE_WIDTH;
-}
-
+// The live watch feed renders in the detached panel card now, so the chat
+// bar itself never stretches — just open the watch view.
 function applyLiveWatchLayout(on) {
-  const shell = document.getElementById("shell");
-  if (shell) shell.classList.toggle("live-watch-mode", !!on);
-  lastReportedHeight = -1;
-  lastReportedWidth = -1;
   if (on) {
     if (sidePanelView !== "watch") setSidePanelView("watch");
     else {
       renderWatchSidePanel();
       showSide(true);
     }
-    requestAnimationFrame(() => {
-      window.lyknOverlay.resize(CHAT_WIDTH + WATCH_SIDE_WIDTH, LIVE_WATCH_MIN_HEIGHT);
-      reportHeight();
-    });
-  } else {
-    reportHeight();
   }
+}
+
+// The live meeting notes card lives in its OWN vibrancy window floating next
+// to the bar (see live.html / main.cjs), like the three-dot menu — so it never
+// stretches the chat bar or bleeds into the composer. This renderer keeps the
+// hidden #live DOM as the state store and pushes render snapshots to the card.
+let liveNotesOpen = false;
+function applyLiveNotesLayout(on) {
+  liveNotesOpen = !!on;
+  try {
+    window.lyknOverlay.setLive(liveNotesOpen);
+  } catch (_) {}
+  if (liveNotesOpen) pushLiveState();
+}
+
+// Clean-bar toggle: ON hides every previous turn ENTIRELY so only the newest
+// prompt + answer shows (the turns stay in the DOM and `history` is untouched,
+// so the AI keeps full context); OFF brings the older prompts back as the
+// usual collapsed headers. While ON the button stays visible and tinted so it
+// can be toggled back off even with nothing expanded.
+const collapseAllBtn = document.getElementById("collapse-all");
+function refreshCollapseAllBtn() {
+  if (!collapseAllBtn) return;
+  const clean = threadEl.classList.contains("clean");
+  const chatCount = threadEl.querySelectorAll(".chat").length;
+  // Visible whenever there's history worth hiding (2+ turns), regardless of
+  // whether anything is expanded — and always while clean mode is on, so it
+  // can be toggled back off.
+  const show = threadEl.classList.contains("show") && (clean || chatCount >= 2);
+  collapseAllBtn.classList.toggle("show", show);
+  collapseAllBtn.classList.toggle("active", clean);
+}
+if (collapseAllBtn) {
+  collapseAllBtn.addEventListener("click", () => {
+    const on = !threadEl.classList.contains("clean");
+    threadEl.classList.toggle("clean", on);
+    const label = on ? "Show previous chats" : "Hide previous chats";
+    collapseAllBtn.title = label;
+    collapseAllBtn.setAttribute("aria-label", label);
+    if (on) {
+      // Fold everything, then open just the newest turn — the clean bar shows
+      // exactly one prompt + its response.
+      threadEl.querySelectorAll(".chat").forEach((c) => c.classList.add("collapsed"));
+      const last = threadEl.querySelector(".chat:last-child");
+      if (last) last.classList.remove("collapsed");
+    }
+    refreshCollapseAllBtn();
+    reportHeight();
+  });
 }
 
 function reportHeight() {
   // Measure the EXACT content size after layout settles, and only tell main to
   // resize when it actually changed — so the panel grows/shrinks only when needed
   // instead of creeping on every keystroke or delta.
+  refreshCollapseAllBtn();
   requestAnimationFrame(() => {
     const bar = document.querySelector(".composer");
     const title = document.querySelector(".titlebar");
     const att = document.getElementById("attachments");
     const attH = att && att.classList.contains("show") ? att.offsetHeight : 0;
-    const threadMax = liveWatchEnabled ? LIVE_WATCH_THREAD_MAX : 420;
     const threadH = threadEl.classList.contains("show")
-      ? Math.min(threadEl.scrollHeight + 1, threadMax)
+      ? Math.min(threadEl.scrollHeight + 1, 420)
       : 0;
-    const live = document.getElementById("live");
-    const liveH = live && live.classList.contains("show") ? live.offsetHeight : 0;
-    let chatH = title.offsetHeight + threadH + liveH + attH + bar.offsetHeight + 2;
-    if (liveWatchEnabled) chatH = Math.max(chatH, LIVE_WATCH_MIN_HEIGHT);
+    // The live meeting notes and side-panel cards are their own floating
+    // windows now, so they never contribute to the chat column size.
+    const chatH = title.offsetHeight + threadH + attH + bar.offsetHeight + 2;
 
-    const sideW = sidePanelWidth();
-    let w = CHAT_WIDTH + sideW;
+    const w = CHAT_WIDTH;
     const h = chatH;
     if (h !== lastReportedHeight || w !== lastReportedWidth) {
       lastReportedHeight = h;
@@ -883,6 +1023,9 @@ async function loadOverlaySession(session) {
   clearSide();
   setHistoryOpen(false);
   setMenuOpen(false);
+  // Opening a chat always lands in plain chat mode — image/build stickiness
+  // belongs to the session the user armed it in, not the one they open.
+  setComposerMode("chat");
   askEl.focus();
 }
 
@@ -897,9 +1040,18 @@ async function startNewOverlayChat() {
   history.length = 0;
   threadEl.innerHTML = "";
   threadEl.classList.remove("show");
-  liveNotesSnapshot = { keyPoints: [], actionItems: [], summary: "" };
+  liveNotesSnapshot = {
+    keyPoints: [],
+    actionItems: [],
+    summary: "",
+    questionsToAsk: [],
+    suggestions: [],
+    topics: [],
+  };
   clearSide();
   setHistoryOpen(false);
+  // New chats always start in plain chat mode.
+  setComposerMode("chat");
   askEl.focus();
   reportHeight();
 }
@@ -923,12 +1075,76 @@ function updateAnswer(text) {
   currentHasText = true;
   currentAnswerEl.classList.add("has-md");
   currentAnswerEl.innerHTML = renderMarkdown(trimmed);
+  // Generated images load async — resize the panel again once pixels arrive,
+  // or the bubble stays sized for text only and the image gets clipped.
+  currentAnswerEl.querySelectorAll(".md-img img").forEach((img) => {
+    if (img.complete) return;
+    img.addEventListener(
+      "load",
+      () => {
+        threadEl.scrollTop = threadEl.scrollHeight;
+        reportHeight();
+      },
+      { once: true },
+    );
+  });
   threadEl.scrollTop = threadEl.scrollHeight;
   reportHeight();
 }
 
 const DEFAULT_ASK_PLACEHOLDER = "Ask LYKN about your screen…";
 let browserActArmed = false;
+// Image generation is explicit-opt-in (menu → "Create an image"), mirroring
+// the web app's "+" → Generate image mode. STICKY: once armed, every send is
+// an image prompt (forceImage rides along to the server, which forces GPT
+// Image 2) until the user switches back to chat mode — via the composer's
+// mode pill ✕, the menu toggle, or starting a new chat.
+let imageGenArmed = false;
+// Build mode (menu → "Build mode"): sends ask LYKN to CODE the thing out — a
+// live React artifact (landing page, dashboard, mini-tool…) rendered inline,
+// same pipeline as the web app's Claude-style artifacts. Sticky like image
+// mode.
+let buildModeArmed = false;
+
+// ── Composer mode (chat / image / build) ───────────────────────────────────
+// One switch owns the armed flags, the placeholder, the composer pill, and
+// the drawer badges, so every entry point (menu toggle, pill ✕, new chat,
+// Escape) stays consistent.
+const COMPOSER_MODES = {
+  chat: { placeholder: DEFAULT_ASK_PLACEHOLDER, pill: "" },
+  image: { placeholder: "Describe the image to create, then Send…", pill: "Image mode" },
+  build: { placeholder: "Describe what to build, then Send…", pill: "Build mode" },
+};
+let composerMode = "chat";
+const modePillEl = document.getElementById("mode-pill");
+const modePillLabelEl = document.getElementById("mode-pill-label");
+
+function renderModeBadge(id, on) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = on ? "On" : "Off";
+}
+
+function setComposerMode(mode) {
+  composerMode = COMPOSER_MODES[mode] ? mode : "chat";
+  imageGenArmed = composerMode === "image";
+  buildModeArmed = composerMode === "build";
+  askEl.placeholder = COMPOSER_MODES[composerMode].placeholder;
+  if (modePillEl) {
+    modePillEl.hidden = composerMode === "chat";
+    if (modePillLabelEl) modePillLabelEl.textContent = COMPOSER_MODES[composerMode].pill;
+  }
+  renderModeBadge("image-gen-state", composerMode === "image");
+  renderModeBadge("build-state", composerMode === "build");
+  reportHeight();
+}
+
+// The pill's ✕ (or clicking the pill anywhere) drops back to chat mode.
+if (modePillEl) {
+  modePillEl.addEventListener("click", () => {
+    setComposerMode("chat");
+    askEl.focus();
+  });
+}
 let pendingBrowserPlan = null;
 let executingBrowser = false;
 
@@ -967,7 +1183,7 @@ function browserActErrorMessage(plan) {
   if (code === "new_tab") {
     return (
       plan?.message ||
-      "Navigate to a real website first (e.g. youtube.com) — blank new-tab pages can't be controlled."
+      "Navigate to a real website first (e.g. youtube.com). Blank new-tab pages can't be controlled."
     );
   }
   if (code === "no_browser") {
@@ -1056,7 +1272,9 @@ async function runBrowserAct(intent) {
   const goal = String(intent || "").trim();
   if (!goal || busy || executingBrowser) return;
   browserActArmed = false;
-  askEl.placeholder = DEFAULT_ASK_PLACEHOLDER;
+  // Restore the placeholder for whatever composer mode is armed (image/build
+  // stay sticky through a browser-act detour).
+  askEl.placeholder = COMPOSER_MODES[composerMode].placeholder;
   askEl.value = "";
   askEl.style.height = "48px";
   setBusy(true);
@@ -1089,7 +1307,7 @@ async function runBrowserAct(intent) {
       updateAnswer(
         (plan.explanation || "Here's what I'll do.") +
           (plan.taskPlan ? `\n\n**Plan:**\n${plan.taskPlan}` : "") +
-          "\n\n⚠️ This is a significant action — **click Run to confirm**, or refine your request.",
+          "\n\n⚠️ This is a significant action. **Click Run to confirm**, or refine your request.",
       );
       setBusy(false);
       askEl.focus();
@@ -1115,7 +1333,7 @@ async function executeBrowserAct({ auto = false } = {}) {
   const intent = plan.intent || "";
   if (!actions.length && !intent) {
     currentHasText = true;
-    updateAnswer("No planned steps to run — try Control this page again.");
+    updateAnswer("No planned steps to run. Try Control this page again.");
     executingBrowser = false;
     setBusy(false);
     return;
@@ -1146,7 +1364,7 @@ async function executeBrowserAct({ auto = false } = {}) {
       holoMessages: plan.holoMessages || null,
     });
     const summary = result?.ok
-      ? result?.message || result?.explanation || "Done — completed the task in your browser."
+      ? result?.message || result?.explanation || "Done. Completed the task in your browser."
       : result?.message ||
         (result?.error === "no_actions"
           ? "No actions reached the browser."
@@ -1178,6 +1396,7 @@ async function executeBrowserAct({ auto = false } = {}) {
 
 // Save a concise record of a finished browser task to the user's vault, then
 // append a small confirmation line to the on-screen summary. Best-effort.
+// Saved as a formatted task note (source=browser_task) — not a Quick Note.
 async function saveBrowserTaskToVault({ intent, summary, result, pageUrl }) {
   if (typeof window.lyknOverlay.saveVaultNote !== "function") return;
   try {
@@ -1186,20 +1405,26 @@ async function saveBrowserTaskToVault({ intent, summary, result, pageUrl }) {
           .filter((r) => r && (r.label || r.type))
           .map((r) => `- ${r.ok ? "✓" : "✗"} ${String(r.label || r.type).slice(0, 120)}`)
       : [];
+    const title = String(intent || "Browser task").trim().slice(0, 120) || "Browser task";
     const content = [
-      `Task: ${intent}`,
+      `# ${title}`,
       "",
-      summary,
-      steps.length ? `\nSteps:\n${steps.join("\n")}` : "",
-      pageUrl ? `\nPage: ${pageUrl}` : "",
-      `\nCompleted: ${new Date().toLocaleString()}`,
+      summary ? String(summary).trim() : "",
+      steps.length ? ["", "## Steps", "", ...steps].join("\n") : "",
+      pageUrl ? ["", "## Page", "", pageUrl].join("\n") : "",
+      "",
+      `Completed: ${new Date().toLocaleString()}`,
     ]
-      .filter(Boolean)
-      .join("\n");
+      .filter((line) => line !== "")
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
     const saved = await window.lyknOverlay.saveVaultNote({
-      title: `Browser task: ${intent}`.slice(0, 120),
+      title: title.slice(0, 120),
       content,
       tags: ["lykn-overlay", "browser-task"],
+      folder: "Tasks",
+      source: "browser_task",
     });
     if (saved?.ok) {
       updateAnswer(`${summary}\n\n_Saved a summary to your vault._`);
@@ -1299,7 +1524,7 @@ async function registerWatchRule(q) {
       const msg =
         res?.error === "watch_off"
           ? "Turn on **Live screen watch** first (menu), then set alerts."
-          : "Couldn't add that watch rule — try rephrasing.";
+          : "Couldn't add that watch rule. Try rephrasing.";
       updateAnswer(msg);
       history.push({ role: "assistant", content: msg, at: new Date().toISOString() });
       setBusy(false);
@@ -1308,7 +1533,7 @@ async function registerWatchRule(q) {
     }
     const rule = res.rule || q;
     if (Array.isArray(res.rules)) watchActiveRules = res.rules.slice();
-    const msg = `Got it — I'll alert you when **${rule}**.`;
+    const msg = `Got it. I'll alert you when **${rule}**.`;
     updateAnswer(msg);
     history.push({ role: "assistant", content: msg, at: new Date().toISOString() });
     appendWatchCommentary(`Alert set: ${rule}`, { system: true });
@@ -1352,25 +1577,50 @@ function ask() {
     return;
   }
   if ((!q && attachments.length === 0) || busy) return;
-  // Live watch alerts — "tell me when an enemy is near", "watch for stock drop", etc.
-  if (q && attachments.length === 0 && looksLikeClearWatchRules(q)) {
-    askEl.value = "";
-    askEl.style.height = "52px";
-    void clearWatchRules(q);
-    return;
-  }
-  if (q && attachments.length === 0 && looksLikeWatchRule(q)) {
-    askEl.value = "";
-    askEl.style.height = "52px";
-    void registerWatchRule(q);
-    return;
-  }
-  // "Save that part of my screen" → capture + AI-crop + save, no round-trip ask.
-  if (q && attachments.length === 0 && looksLikeSaveScreen(q)) {
-    askEl.value = "";
-    askEl.style.height = "52px";
-    void runSaveScreen(q);
-    return;
+  // Image mode armed (menu → "Create an image"): this send is an image
+  // prompt — skip the watch/save/voice shortcut heuristics and route it to
+  // the streamed chat with forceImage so the server forces GPT Image 2.
+  // Attachment-only sends count too ("remix this picture" with no caption).
+  const imageAsk = imageGenArmed && (!!q || attachments.length > 0);
+  // Build mode armed (menu → "Build mode"): this send is a build brief —
+  // route it straight to the streamed chat with buildMode so the server
+  // forces the React artifact builder (Claude-style coded artifact).
+  const buildAsk = !imageAsk && buildModeArmed && (!!q || attachments.length > 0);
+  // Modes are STICKY — they stay armed across sends (follow-up edits are the
+  // normal flow: "same but darker", "now add a header…"). The user leaves a
+  // mode via the composer pill's ✕, the menu toggle, or a new chat.
+  if (!imageAsk && !buildAsk) {
+    // Live watch alerts — "tell me when an enemy is near", "watch for stock drop", etc.
+    if (q && attachments.length === 0 && looksLikeClearWatchRules(q)) {
+      askEl.value = "";
+      askEl.style.height = "52px";
+      void clearWatchRules(q);
+      return;
+    }
+    if (q && attachments.length === 0 && looksLikeWatchRule(q)) {
+      askEl.value = "";
+      askEl.style.height = "52px";
+      void registerWatchRule(q);
+      return;
+    }
+    // "Save that part of my screen" → capture + AI-crop + save, no round-trip ask.
+    if (q && attachments.length === 0 && looksLikeSaveScreen(q)) {
+      askEl.value = "";
+      askEl.style.height = "52px";
+      void runSaveScreen(q);
+      return;
+    }
+    // Voice mode: route typed prompts/links into the LIVE voice session instead
+    // of the streamed chat, so the user can talk to the voice agent by text too
+    // (paste a link for it to fetch/save, type a question while muted, etc.).
+    if (voiceActive || voiceStarting) {
+      if (sendTextToVoice(q, attachments.slice())) {
+        askEl.value = "";
+        askEl.style.height = "52px";
+        clearAttachments();
+      }
+      return;
+    }
   }
   askEl.value = "";
   askEl.style.height = "52px";
@@ -1380,18 +1630,120 @@ function ask() {
     q || (sentAttachments.length ? `Sent ${sentAttachments.length} attachment(s)` : "");
   startTurn(label);
   history.push({ role: "user", content: q, at: new Date().toISOString() });
-  window.lyknOverlay.ask(q, history, sentAttachments);
+  window.lyknOverlay.ask(
+    q,
+    history,
+    sentAttachments,
+    imageAsk ? { forceImage: true } : buildAsk ? { buildMode: true } : undefined,
+  );
   clearAttachments();
 }
 
 // Accordion: clicking a turn's header opens it and collapses every other turn,
 // keeping only one answer visible at a time. Clicking the open one closes it.
 threadEl.addEventListener("click", (e) => {
+  // "Code" toggle on Build-mode artifact cards: swap the live preview for the
+  // raw JSX the AI wrote (fetched once from the runner HTML's embedded source
+  // block via main, then cached on the card). Copy button sits above it.
+  const codeCopyBtn = e.target.closest(".md-code-copy");
+  if (codeCopyBtn) {
+    e.preventDefault();
+    const pre = codeCopyBtn.closest(".md-artifact-code")?.querySelector("pre");
+    if (pre && pre.textContent) {
+      window.lyknOverlay.copyText(pre.textContent);
+      const orig = codeCopyBtn.textContent;
+      codeCopyBtn.textContent = "Copied ✓";
+      setTimeout(() => { codeCopyBtn.textContent = orig; }, 1600);
+    }
+    return;
+  }
+  const codeBtn = e.target.closest(".md-code");
+  if (codeBtn) {
+    e.preventDefault();
+    const card = codeBtn.closest(".md-artifact");
+    const frame = card?.querySelector("iframe");
+    const codeEl = card?.querySelector(".md-artifact-code");
+    if (!card || !frame || !codeEl) return;
+    const showingCode = !codeEl.hidden;
+    if (showingCode) {
+      codeEl.hidden = true;
+      frame.style.display = "";
+      codeBtn.textContent = "Code";
+      reportHeight();
+      return;
+    }
+    const pre = codeEl.querySelector("pre");
+    const reveal = () => {
+      frame.style.display = "none";
+      codeEl.hidden = false;
+      codeBtn.textContent = "Preview";
+      reportHeight();
+    };
+    if (pre.textContent) {
+      reveal();
+      return;
+    }
+    codeBtn.disabled = true;
+    codeBtn.textContent = "Loading…";
+    void (async () => {
+      let res = null;
+      try {
+        res = await window.lyknOverlay.artifactCode(codeBtn.getAttribute("data-url") || "");
+      } catch (_) {}
+      codeBtn.disabled = false;
+      if (res && res.ok && res.code) {
+        pre.textContent = res.code;
+        reveal();
+      } else {
+        codeBtn.textContent = "Code";
+        pre.textContent = "";
+      }
+    })();
+    return;
+  }
+  // Download buttons on generated images / Build-mode artifacts: save the
+  // file into ~/Downloads via the main process (revealed in Finder) AND into
+  // the user's Vault as a rich card.
+  const dlBtn = e.target.closest(".md-dl");
+  if (dlBtn) {
+    e.preventDefault();
+    if (dlBtn.disabled) return;
+    const url = dlBtn.getAttribute("data-url") || "";
+    const name = dlBtn.getAttribute("data-name") || "";
+    const title = dlBtn.getAttribute("data-title") || "";
+    const origLabel = dlBtn.textContent;
+    dlBtn.disabled = true;
+    dlBtn.textContent = "Saving…";
+    void (async () => {
+      let ok = false;
+      let vaulted = false;
+      try {
+        const res = await window.lyknOverlay.downloadFile(url, name, title);
+        ok = !!(res && res.ok);
+        vaulted = !!(res && res.savedToVault);
+      } catch (_) {
+        ok = false;
+      }
+      dlBtn.textContent = ok ? (vaulted ? "Saved + Vault ✓" : "Saved ✓") : "Failed";
+      setTimeout(() => {
+        dlBtn.textContent = origLabel;
+        dlBtn.disabled = false;
+      }, 2200);
+    })();
+    return;
+  }
   // Markdown links in answers open in the default browser, never in the overlay.
   const link = e.target.closest("a[href]");
   if (link) {
     e.preventDefault();
     window.lyknOverlay.openUrl(link.getAttribute("href"));
+    return;
+  }
+  // Generated images open full-size in the default browser.
+  const genImg = e.target.closest(".md-img img");
+  if (genImg && genImg.src) {
+    e.preventDefault();
+    window.lyknOverlay.openUrl(genImg.src);
     return;
   }
   const header = e.target.closest(".chat-q");
@@ -1441,8 +1793,75 @@ window.lyknOverlay.onPageSource((p) => {
   if (p && p.url) currentPageSource = { url: p.url, title: p.title || "" };
 });
 
+const nightBriefEl = document.getElementById("night-brief");
+const nightBriefProjectEl = document.getElementById("night-brief-project");
+const nightBriefBodyEl = document.getElementById("night-brief-body");
+const nightBriefCloseEl = document.getElementById("night-brief-close");
+const NIGHT_BRIEF_DISMISS_KEY = "lykn_night_brief_dismissed";
+
+function nightBriefDismissToken(briefs) {
+  if (!Array.isArray(briefs) || !briefs.length) return "";
+  return briefs
+    .map((b) => `${b.id || ""}:${b.setAt || ""}`)
+    .sort()
+    .join("|");
+}
+
+function hideNightBriefBanner() {
+  if (!nightBriefEl) return;
+  nightBriefEl.classList.remove("show");
+  nightBriefEl.hidden = true;
+}
+
+function showNightBriefBanner(briefs) {
+  if (!nightBriefEl || !nightBriefBodyEl || !nightBriefProjectEl) return;
+  const token = nightBriefDismissToken(briefs);
+  if (!token) {
+    hideNightBriefBanner();
+    return;
+  }
+  try {
+    if (localStorage.getItem(NIGHT_BRIEF_DISMISS_KEY) === token) {
+      hideNightBriefBanner();
+      return;
+    }
+  } catch (_) {}
+
+  const primary = briefs[0];
+  const extra = briefs.length > 1 ? ` (+${briefs.length - 1} more project${briefs.length > 2 ? "s" : ""})` : "";
+  nightBriefProjectEl.textContent = `${primary.projectName || "Project"}${extra}`;
+  nightBriefBodyEl.innerHTML = renderMarkdown(String(primary.value || ""));
+  nightBriefEl.hidden = false;
+  nightBriefEl.classList.add("show");
+  nightBriefEl.dataset.dismissToken = token;
+}
+
+async function refreshNightBriefBanner() {
+  if (!window.lyknOverlay?.getNightBriefs) return;
+  try {
+    const data = await window.lyknOverlay.getNightBriefs();
+    if (data?.ok && data.briefs?.length) showNightBriefBanner(data.briefs);
+    else hideNightBriefBanner();
+  } catch (_) {
+    hideNightBriefBanner();
+  }
+}
+
+if (nightBriefCloseEl) {
+  nightBriefCloseEl.addEventListener("click", () => {
+    const token = nightBriefEl?.dataset?.dismissToken || "";
+    if (token) {
+      try {
+        localStorage.setItem(NIGHT_BRIEF_DISMISS_KEY, token);
+      } catch (_) {}
+    }
+    hideNightBriefBanner();
+  });
+}
+
 window.lyknOverlay.onShown(() => {
   setTimeout(() => askEl.focus(), 40);
+  void refreshNightBriefBanner();
 });
 
 // Drag the panel around via the top-left handle. Pointer capture + screen coords
@@ -1555,8 +1974,6 @@ const RECORD_MIME = (() => {
     return "audio/webm";
   }
 })();
-const DEFAULT_PLACEHOLDER = askEl.getAttribute("placeholder") || "Ask LYKN about your screen…";
-
 function setMicState() {
   micEl.classList.toggle("recording", recording);
   micEl.classList.toggle("transcribing", transcribing);
@@ -1566,7 +1983,7 @@ function setMicState() {
     ? "Listening… click the mic to stop"
     : transcribing
       ? "Transcribing…"
-      : DEFAULT_PLACEHOLDER;
+      : COMPOSER_MODES[composerMode].placeholder;
 }
 
 async function startDictation() {
@@ -1749,7 +2166,7 @@ async function addFiles(fileList) {
           id: ++attachSeq,
           kind: "text",
           name: file.name,
-          text: `(Unsupported file type: ${file.type || "unknown"} — not included.)`,
+          text: `(Unsupported file type: ${file.type || "unknown"}, not included.)`,
         });
       }
     } catch (_) {
@@ -1769,18 +2186,106 @@ const historyListEl = document.getElementById("history-list");
 let historyOpen = false;
 let moreUserOpen = false;
 
+// The three-dot menu lives in its OWN little vibrancy window next to the bar
+// (see menu.html / main.cjs) so the gap between it and the chat stays truly
+// transparent. This just asks main to show/hide it; main echoes the actual
+// visibility back via onMenuVisible so `moreUserOpen` never drifts.
+// (Main hides the picker card when the menu opens, and vice versa — only one
+// floating card sits next to the bar at a time.)
 function setMenuOpen(open) {
-  moreUserOpen = open;
-  moreBtn.classList.toggle("active", open);
-  composerEl.classList.toggle("more-open", open);
-  if (open) setPanelPickerOpen(false);
-  if (!open) {
-    historyOpen = false;
-    historyPanelEl.classList.remove("show");
-    menuEl.style.display = "";
-  }
-  reportHeight();
+  try {
+    window.lyknOverlay.setMenu(!!open);
+  } catch (_) {}
 }
+
+window.lyknOverlay.onMenuVisible((visible) => {
+  moreUserOpen = !!visible;
+  moreBtn.classList.toggle("active", moreUserOpen);
+});
+
+// Remote control from the menu window — actions run HERE because this
+// renderer owns voice/listen/watch/stealth/attachment/session state. Most
+// commands just click the existing (now hidden) drawer buttons.
+window.__lyknMenuCmd = (name, arg) => {
+  switch (name) {
+    case "menu-new":
+      void startNewOverlayChat();
+      break;
+    case "voice":
+      document.getElementById("voice").click();
+      break;
+    case "listen":
+      document.getElementById("listen").click();
+      break;
+    case "menu-live-watch": {
+      const b = document.getElementById("menu-live-watch");
+      if (b) b.click();
+      break;
+    }
+    case "menu-attach":
+      void openFilePicker();
+      break;
+    case "menu-snip":
+      void snipFromScreen();
+      break;
+    case "menu-image-gen": {
+      // Clicks the hidden drawer button, which arms image mode — see its
+      // listener below. (Never auto-sends; the user presses Send.)
+      const b = document.getElementById("menu-image-gen");
+      if (b) b.click();
+      break;
+    }
+    case "menu-build": {
+      const b = document.getElementById("menu-build");
+      if (b) b.click();
+      break;
+    }
+    case "menu-stealth": {
+      const b = document.getElementById("menu-stealth");
+      if (b) b.click();
+      break;
+    }
+    case "menu-open":
+      try {
+        window.lyknOverlay.openMain();
+      } catch (_) {}
+      break;
+    case "open-overlay-session":
+      void (async () => {
+        try {
+          const session = await window.lyknOverlay.getOverlaySession(arg);
+          if (session) await loadOverlaySession(session);
+        } catch (_) {}
+      })();
+      break;
+  }
+};
+
+// Toggle-state snapshot for the menu window's badges, read off the hidden
+// drawer DOM that the feature code already keeps up to date.
+window.__lyknMenuState = () => {
+  const voiceEl2 = document.getElementById("voice");
+  const listenEl2 = document.getElementById("listen");
+  const watchBtn = document.getElementById("menu-live-watch");
+  const stealthBtn2 = document.getElementById("menu-stealth");
+  const text = (id) => {
+    const el = document.getElementById(id);
+    return el ? el.textContent : "";
+  };
+  return {
+    currentSessionId,
+    voiceActive: !!(voiceEl2 && voiceEl2.classList.contains("voice-active")),
+    voiceLabel: text("voice-label"),
+    listening: !!(listenEl2 && listenEl2.classList.contains("listening")),
+    listenLabel: text("listen-label"),
+    watchOn: !!(watchBtn && watchBtn.getAttribute("aria-pressed") === "true"),
+    watchState: text("live-watch-state"),
+    stealthOn: !!(stealthBtn2 && stealthBtn2.getAttribute("aria-pressed") === "true"),
+    stealthState: text("stealth-state"),
+    imageModeOn: composerMode === "image",
+    buildModeOn: composerMode === "build",
+  };
+};
 
 function setHistoryOpen(open) {
   historyOpen = open;
@@ -1981,23 +2486,52 @@ if (attachBtn) attachBtn.addEventListener("click", () => void openFilePicker());
 const snipBtn = document.getElementById("snip");
 if (snipBtn) snipBtn.addEventListener("click", () => void snipFromScreen());
 
-document.getElementById("menu-browser-act").addEventListener("click", () => {
-  setMenuOpen(false);
-  const q = askEl.value.trim();
-  if (q) {
-    void runBrowserAct(q);
-    return;
-  }
-  browserActArmed = true;
-  askEl.placeholder = "Describe what to do on this page, then Send…";
-  askEl.focus();
-});
+// Menu → "Create an image": switch the composer into image mode — every send
+// generates a picture (GPT Image 2) until the user switches back to chat.
+// Clicking it again while already in image mode toggles back to chat. Never
+// auto-send on switch — the user may still be mid-prompt; they press Send.
+const menuImageGenEl = document.getElementById("menu-image-gen");
+if (menuImageGenEl) {
+  menuImageGenEl.addEventListener("click", () => {
+    setMenuOpen(false);
+    setComposerMode(composerMode === "image" ? "chat" : "image");
+    askEl.focus();
+  });
+}
 
-browserActCancelEl.addEventListener("click", () => hideBrowserActPanel());
-browserActRunEl.addEventListener("click", () => {
-  if (executingBrowser || busy) return;
-  void executeBrowserAct();
-});
+// Menu → "Build mode": switch the composer into build mode — sends have LYKN
+// code the thing out as a live React artifact ("make me a landing page",
+// "build a budget tracker"…) until the user switches back to chat. Clicking
+// it again toggles back. Never auto-send on switch — the user may still be
+// mid-prompt; the brief goes out when they press Send.
+const menuBuildEl = document.getElementById("menu-build");
+if (menuBuildEl) {
+  menuBuildEl.addEventListener("click", () => {
+    setMenuOpen(false);
+    setComposerMode(composerMode === "build" ? "chat" : "build");
+    askEl.focus();
+  });
+}
+
+// Never fire immediately off whatever is typed — the prompt may be unfinished.
+// Arm the mode and let the user press Send when they're ready.
+const menuBrowserActEl = document.getElementById("menu-browser-act");
+if (menuBrowserActEl) {
+  menuBrowserActEl.addEventListener("click", () => {
+    setMenuOpen(false);
+    browserActArmed = true;
+    askEl.placeholder = "Describe what to do on this page, then Send…";
+    askEl.focus();
+  });
+}
+
+if (browserActCancelEl) browserActCancelEl.addEventListener("click", () => hideBrowserActPanel());
+if (browserActRunEl) {
+  browserActRunEl.addEventListener("click", () => {
+    if (executingBrowser || busy) return;
+    void executeBrowserAct();
+  });
+}
 
 document.getElementById("menu-open").addEventListener("click", () => {
   setMenuOpen(false);
@@ -2072,16 +2606,11 @@ function stopWatchFeed() {
   lastWatchSuggestKey = "";
   if (watchSuggestTimer) clearTimeout(watchSuggestTimer);
   watchSuggestTimer = null;
-  const shell = document.getElementById("shell");
-  if (shell) shell.classList.remove("live-watch-mode");
   if (sidePanelView === "watch") {
     sidePanelView = "";
     showSide(false);
     updateSidePickerLabel();
   }
-  lastReportedHeight = -1;
-  lastReportedWidth = -1;
-  reportHeight();
 }
 
 async function requestWatchSuggestions(status) {
@@ -2180,7 +2709,7 @@ if (liveWatchBtn) {
         askEl.placeholder = "Enable Screen Recording in System Settings first";
         setTimeout(() => {
           if (askEl.placeholder === "Enable Screen Recording in System Settings first") {
-            askEl.placeholder = DEFAULT_PLACEHOLDER;
+            askEl.placeholder = COMPOSER_MODES[composerMode].placeholder;
           }
         }, 4000);
       }
@@ -2218,7 +2747,7 @@ const VOICE_TOOL_NAMES = [
   "update_reminder", "create_event", "list_events", "update_event", "delete_event",
   "create_todo", "list_todos", "update_todo", "delete_todo", "list_custom_models",
   "communicate_with_model", "build_with_cursor", "check_cursor_build", "save_to_vault",
-  "add_to_project",
+  "save_link_to_vault", "add_to_project",
 ];
 let voiceConvo = null;
 let voiceActive = false;
@@ -2293,18 +2822,20 @@ function setVoiceUi(state) {
   voiceEl.title = on ? "Stop voice mode" : "Voice mode";
   const voiceLabel = document.getElementById("voice-label");
   if (voiceLabel) voiceLabel.textContent = on ? "Stop voice mode" : "Voice mode";
-  askEl.disabled = on;
+  // The composer stays ENABLED during voice — typed prompts/links route into
+  // the live voice session via sendTextToVoice() instead of the streamed chat.
+  askEl.disabled = false;
   if (on) {
     askEl.placeholder =
       state === "connecting"
         ? "Connecting voice…"
         : state === "speaking"
-          ? "LYKN is speaking…"
+          ? "LYKN is speaking… type to chime in"
           : state === "thinking"
             ? "Thinking…"
-            : "Listening… (click the waveform to stop)";
+            : "Listening… speak or type (Esc stops voice)";
   } else {
-    askEl.placeholder = DEFAULT_PLACEHOLDER;
+    askEl.placeholder = COMPOSER_MODES[composerMode].placeholder;
   }
 }
 
@@ -2314,6 +2845,54 @@ function voiceUserMessage(text) {
   startTurn(t);
   setThinkingStatus("Thinking…");
   voiceAwaitingAnswer = true;
+}
+
+// ── Typed messages into the live voice session ──────────────────────────────
+// The composer stays usable during voice: ask() routes typed prompts here.
+// The ElevenLabs SDK's sendUserMessage() delivers the text as a normal user
+// turn, so the agent answers it out loud (and can run tools on it — fetch a
+// pasted link, save it to the vault, etc.). We render the turn locally and
+// suppress the transcript echo the server sends back for the same text.
+let lastTypedVoiceText = "";
+let lastTypedVoiceAt = 0;
+
+function sendTextToVoice(text, atts) {
+  if (!voiceConvo || typeof voiceConvo.sendUserMessage !== "function") {
+    // Still connecting — keep the draft in the composer so nothing is lost.
+    askEl.placeholder = "Voice is still connecting. Try again in a second…";
+    return false;
+  }
+  const q = String(text || "").trim();
+  const parts = [];
+  if (q) parts.push(q);
+  // Text attachments (files/snips with extracted text) ride along inline; the
+  // voice LLM is text-only, so images are named rather than sent.
+  for (const a of atts || []) {
+    if (!a) continue;
+    if (a.kind === "text" && a.text) {
+      parts.push(`[Attached file "${a.name || "file"}"]\n${String(a.text).slice(0, 6000)}`);
+    } else if (a.kind === "image") {
+      parts.push(
+        `[The user attached an image ("${a.name || "image"}"). Its pixels are not available in voice mode — ask them to describe it or to share it in the regular chat if you need its contents.]`,
+      );
+    }
+  }
+  if (!parts.length) return false;
+  const message = parts.join("\n\n");
+  try {
+    voiceConvo.sendUserMessage(message);
+  } catch (_) {
+    voiceError("Couldn't send that to the voice agent. Try again.");
+    return false;
+  }
+  lastTypedVoiceText = message;
+  lastTypedVoiceAt = Date.now();
+  const label = q || (atts && atts.length ? `Sent ${atts.length} attachment(s)` : message);
+  voiceUserMessage(label);
+  history.push({ role: "user", content: message, at: new Date().toISOString() });
+  // Keep the server's screen grounding fresh for this turn (throttled).
+  void pushScreenContext(false);
+  return true;
 }
 
 function voiceAiMessage(text) {
@@ -2459,6 +3038,9 @@ async function startVoice() {
       const text = String((m && m.message) || "").trim();
       if (!text) return;
       if (m.source === "user") {
+        // Typed messages are already rendered by sendTextToVoice(); skip the
+        // transcript echo the server sends back for the same text.
+        if (text === lastTypedVoiceText && Date.now() - lastTypedVoiceAt < 15000) return;
         voiceUserMessage(text);
         // Keep the server's screen grounding fresh for the next turn (throttled).
         void pushScreenContext(false);
@@ -2544,8 +3126,8 @@ voiceEl.addEventListener("click", () => {
   else void startVoice();
 });
 
-// Escape ends voice mode (the input is disabled while it's live, so its own
-// Escape handler won't fire); otherwise the input's handler hides the overlay.
+// Escape ends voice mode (the composer's own Escape handler defers to this
+// while voice is live); otherwise the input's handler hides the overlay.
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && (voiceActive || voiceStarting)) {
     e.preventDefault();
@@ -2555,52 +3137,323 @@ document.addEventListener("keydown", (e) => {
 
 // ── Live listen: capture system (meeting) audio → rolling transcript ────────
 // Uses getDisplayMedia with loopback audio (ScreenCaptureKit on macOS 13+, wired
-// up in main via setDisplayMediaRequestHandler). We record short back-to-back
-// clips and transcribe each with Whisper so a live transcript builds up.
+// up in main via setDisplayMediaRequestHandler).
+//
+// Wispr-Flow-style pipeline: instead of fixed-length clips, a lightweight VAD
+// (energy endpointing with an adaptive noise floor) cuts each recording at
+// natural pauses — so words are never split mid-syllable and silence is never
+// uploaded (no more hallucinated fragments, far fewer API calls). The raw ASR
+// text is displayed the moment it arrives; LLM cleanup runs asynchronously and
+// swaps the polished text in place, so cleanup latency never delays the
+// transcript.
 const listenEl = document.getElementById("listen");
-const liveEl = document.getElementById("live");
 const liveBodyEl = document.getElementById("live-body");
 const liveDotEl = document.getElementById("live-dot");
 const liveTitleEl = document.getElementById("live-title");
-const liveCloseEl = document.getElementById("live-close");
 const notesSummaryEl = document.getElementById("notes-summary");
+const notesTopicsEl = document.getElementById("notes-topics");
 const notesKeyWrapEl = document.getElementById("notes-key-wrap");
 const notesKeyEl = document.getElementById("notes-key");
+const notesSuggestWrapEl = document.getElementById("notes-suggest-wrap");
+const notesSuggestEl = document.getElementById("notes-suggest");
 const notesActionsWrapEl = document.getElementById("notes-actions-wrap");
 const notesActionsEl = document.getElementById("notes-actions");
+const notesQuestionsEl = document.getElementById("notes-questions");
+const notesQuestionsWrapEl = document.getElementById("notes-questions-wrap");
 let listening = false;
-let listenDisplayStream = null; // full getDisplayMedia stream (we keep it to stop tracks)
-let listenSysStream = null; // loopback audio only = "Them" (the video/other person)
-let listenMicStream = null; // microphone = "You" (the user)
-let listenRecorders = []; // active per-source MediaRecorders
-let listenQueue = Promise.resolve();
-// Separate rolling context per speaker so cleanup never bleeds one into the other.
+let listenDisplayStream = null;
+let listenSysStream = null;
+let listenMicStream = null;
+// Per-speaker queues — mic and meeting audio transcribe in parallel.
+const listenQueues = { them: Promise.resolve(), you: Promise.resolve() };
 const listenTails = { them: "", you: "" };
-// Full speaker-labeled transcript, fed to the meeting-notes summarizer.
+const listenInterim = { them: null, you: null };
+let listenStartedAt = 0;
 let transcriptText = "";
+// Every ASR utterance becomes a fragment so async LLM cleanup can swap the
+// polished text in place after the raw text has already been shown.
+let listenFragments = [];
+let listenFragSeq = 0;
 let notesTimer = null;
 let notesInFlight = false;
 let lastNotesLen = 0;
-const LISTEN_CHUNK_MS = 6000;
-const NOTES_INTERVAL_MS = 25000;
-const SPEAKER_LABEL = { them: "Them", you: "You" };
+let lastNotesAt = 0;
+const NOTES_INTERVAL_MS = 12000;
+const SPEAKER_LABEL = { them: "Others", you: "You" };
+const liveSaveBtn = document.getElementById("live-save");
+const liveSavedToastEl = document.getElementById("live-saved-toast");
+let meetingVaultSaved = false;
+let meetingSaving = false;
+let meetingSaveToastTimer = null;
+let livePane = "notes";
+
+// Push a render snapshot to the detached live notes card. The hidden #live
+// DOM in this page stays the single source of truth (all the feature code
+// below keeps writing into it); the floating window just mirrors its HTML.
+function pushLiveState() {
+  if (!liveNotesOpen) return;
+  try {
+    window.lyknOverlay.pushLive({
+      listening,
+      title: liveTitleEl.textContent,
+      pane: livePane,
+      notesHtml: document.getElementById("pane-notes").innerHTML,
+      askHtml: document.getElementById("pane-ask").innerHTML,
+      transcriptHtml: liveBodyEl.innerHTML,
+      saveSaved: !!(liveSaveBtn && liveSaveBtn.classList.contains("saved")),
+      saveDisabled: !!(liveSaveBtn && liveSaveBtn.disabled),
+      toastText:
+        liveSavedToastEl && !liveSavedToastEl.hidden ? liveSavedToastEl.textContent : "",
+    });
+  } catch (_) {}
+}
+
+// Remote control from the live card window — actions run HERE because this
+// renderer owns the audio streams, transcript, and notes state.
+window.__lyknLiveCmd = (name, arg) => {
+  switch (name) {
+    case "pane":
+      switchLivePane(String(arg || "notes"));
+      break;
+    case "close":
+      closeLive();
+      break;
+    case "copy":
+      copyMeetingTranscript();
+      break;
+    case "save":
+      void saveMeetingToVault({ force: true });
+      break;
+    case "vault":
+      try {
+        window.lyknOverlay.openVault?.();
+      } catch (_) {}
+      break;
+    case "ask": {
+      const q = String(arg || "").trim();
+      if (q) {
+        askEl.value = q;
+        ask();
+      }
+      break;
+    }
+    case "url":
+      try {
+        window.lyknOverlay.openUrl(String(arg || ""));
+      } catch (_) {}
+      break;
+  }
+};
+
+function formatMeetingDuration() {
+  const ms = Math.max(0, Date.now() - (listenStartedAt || Date.now()));
+  const sec = Math.floor(ms / 1000);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
+  }
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function buildMeetingTitle() {
+  const topics = liveNotesSnapshot.topics || [];
+  if (topics[0]) return `Meeting: ${topics[0]}`.slice(0, 120);
+  const summary = String(liveNotesSnapshot.summary || "").trim();
+  if (summary) {
+    const first = summary.split(/[.!?]/)[0].trim();
+    if (first.length >= 8) return first.slice(0, 120);
+  }
+  const d = new Date(listenStartedAt || Date.now());
+  return `Meeting notes · ${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
+
+function buildMeetingVaultContent() {
+  const snap = liveNotesSnapshot;
+  const lines = [
+    `# ${buildMeetingTitle()}`,
+    "",
+    `**Recorded:** ${new Date(listenStartedAt || Date.now()).toLocaleString()}`,
+    `**Duration:** ${formatMeetingDuration()}`,
+    "",
+  ];
+  if (snap.summary) {
+    lines.push("## Summary", "", String(snap.summary).trim(), "");
+  }
+  if (snap.keyPoints?.length) {
+    lines.push("## Key points", "");
+    for (const p of snap.keyPoints) lines.push(`- ${String(p).trim()}`);
+    lines.push("");
+  }
+  if (snap.actionItems?.length) {
+    lines.push("## Action items", "");
+    for (const p of snap.actionItems) lines.push(`- [ ] ${String(p).trim()}`);
+    lines.push("");
+  }
+  if (snap.suggestions?.length) {
+    lines.push("## Talking points", "");
+    for (const p of snap.suggestions) lines.push(`- ${String(p).trim()}`);
+    lines.push("");
+  }
+  if (snap.questionsToAsk?.length) {
+    lines.push("## Questions to revisit", "");
+    for (const p of snap.questionsToAsk) lines.push(`- ${String(p).trim()}`);
+    lines.push("");
+  }
+  const txt = transcriptText.trim();
+  if (txt) {
+    lines.push("## Transcript", "", txt);
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function buildMeetingCopyText() {
+  const header = [
+    buildMeetingTitle(),
+    `Duration: ${formatMeetingDuration()}`,
+    liveNotesSnapshot.summary ? `\nSummary:\n${liveNotesSnapshot.summary}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const body = transcriptText.trim();
+  return body ? `${header}\n\n---\n\n${body}` : header;
+}
+
+function showMeetingSavedToast(label = "Saved to Vault · Open in Vault →") {
+  if (!liveSavedToastEl) return;
+  liveSavedToastEl.textContent = label;
+  liveSavedToastEl.hidden = false;
+  if (liveSaveBtn) liveSaveBtn.classList.add("saved");
+  if (meetingSaveToastTimer) clearTimeout(meetingSaveToastTimer);
+  meetingSaveToastTimer = setTimeout(() => {
+    if (liveSavedToastEl) liveSavedToastEl.hidden = true;
+    pushLiveState();
+  }, 12000);
+  pushLiveState();
+}
+
+async function saveMeetingToVault({ auto = false, force = false } = {}) {
+  if (meetingSaving || typeof window.lyknOverlay.saveVaultNote !== "function") return { ok: false };
+  const txt = transcriptText.trim();
+  if (txt.length < 40) {
+    if (!auto) showMeetingSavedToast("Nothing to save yet");
+    return { ok: false };
+  }
+  if (auto && meetingVaultSaved && !force) return { ok: false };
+
+  meetingSaving = true;
+  if (liveSaveBtn) liveSaveBtn.disabled = true;
+  try {
+    const content = buildMeetingVaultContent();
+    const saved = await window.lyknOverlay.saveVaultNote({
+      title: buildMeetingTitle(),
+      content,
+      tags: ["lykn-overlay", "meeting-notes"],
+      folder: "Meetings",
+      source: "meeting_notes",
+    });
+    if (saved?.ok) {
+      meetingVaultSaved = true;
+      showMeetingSavedToast(auto ? "Auto-saved to Vault · Open in Vault →" : "Saved to Vault · Open in Vault →");
+      return { ok: true };
+    }
+    if (!auto) showMeetingSavedToast("Couldn't save. Sign in to LYKN");
+  } catch (_) {
+    if (!auto) showMeetingSavedToast("Couldn't save to Vault");
+  } finally {
+    meetingSaving = false;
+    if (liveSaveBtn) liveSaveBtn.disabled = false;
+    pushLiveState();
+  }
+  return { ok: false };
+}
+
+function copyMeetingTranscript() {
+  const text = buildMeetingCopyText();
+  if (!text.trim()) {
+    showMeetingSavedToast("Nothing to copy yet");
+    return;
+  }
+  try {
+    window.lyknOverlay.copyText?.(text);
+    showMeetingSavedToast("Transcript copied");
+  } catch (_) {}
+}
+
+function formatListenTime(ms) {
+  const sec = Math.max(0, Math.floor((ms - listenStartedAt) / 1000));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function setSpeakerTranscribing(speaker, active) {
+  if (active) {
+    if (listenInterim[speaker]) return;
+    const line = document.createElement("div");
+    line.className = `live-line ${speaker} transcribing`;
+    line.dataset.speaker = speaker;
+    line.dataset.interim = "1";
+    const time = document.createElement("span");
+    time.className = "live-time";
+    time.textContent = formatListenTime(Date.now());
+    const lab = document.createElement("span");
+    lab.className = "live-speaker";
+    lab.textContent = SPEAKER_LABEL[speaker];
+    const body = document.createElement("span");
+    body.className = "live-text";
+    body.textContent = "…";
+    line.append(time, lab, body);
+    liveBodyEl.appendChild(line);
+    listenInterim[speaker] = line;
+    liveBodyEl.scrollTop = liveBodyEl.scrollHeight;
+    pushLiveState();
+  } else if (listenInterim[speaker]) {
+    listenInterim[speaker].remove();
+    listenInterim[speaker] = null;
+    pushLiveState();
+  }
+}
+
+// The "…" indicator shows from the moment the VAD hears speech until the last
+// in-flight utterance for that speaker has been transcribed.
+function updateSpeakerInterim(speaker) {
+  setSpeakerTranscribing(speaker, !!vadActive[speaker] || listenPending[speaker] > 0);
+}
 
 function setListenUi() {
   listenEl.classList.toggle("listening", listening);
-  listenEl.title = listening ? "Stop listening" : "Live meeting notes";
+  listenEl.title = listening ? "Stop live meeting notes" : "Live meeting notes";
   const listenLabel = document.getElementById("listen-label");
   if (listenLabel) listenLabel.textContent = listening ? "Stop live notes" : "Live meeting notes";
   liveDotEl.classList.toggle("live", listening);
-  liveTitleEl.textContent = listening ? "Listening…" : "Stopped";
-  reportHeight();
+  liveTitleEl.textContent = listening ? "Live · transcribing" : "Meeting notes";
+  pushLiveState();
 }
 
 function switchLivePane(pane) {
-  document.getElementById("tab-notes").classList.toggle("active", pane === "notes");
-  document.getElementById("tab-transcript").classList.toggle("active", pane === "transcript");
-  document.getElementById("pane-notes").hidden = pane !== "notes";
-  document.getElementById("pane-transcript").hidden = pane !== "transcript";
-  reportHeight();
+  livePane = pane;
+  pushLiveState();
+}
+
+function renderMeetingQuestion(q) {
+  const li = document.createElement("li");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "meeting-question";
+  const ico = document.createElement("span");
+  ico.className = "meeting-question-ico";
+  ico.innerHTML = ARROW_ICON_SVG;
+  const span = document.createElement("span");
+  span.textContent = String(q);
+  btn.append(ico, span);
+  btn.addEventListener("click", () => {
+    askEl.value = String(q);
+    ask();
+  });
+  li.appendChild(btn);
+  return li;
 }
 
 function renderNotes(notes) {
@@ -2614,134 +3467,550 @@ function renderNotes(notes) {
       li.textContent = String(it);
       listEl.appendChild(li);
     }
-    wrapEl.hidden = arr.length === 0;
+    if (wrapEl) wrapEl.hidden = arr.length === 0;
   };
   fill(notesKeyEl, notesKeyWrapEl, notes.keyPoints);
+  fill(notesSuggestEl, notesSuggestWrapEl, notes.suggestions);
   fill(notesActionsEl, notesActionsWrapEl, notes.actionItems);
+
+  notesQuestionsEl.innerHTML = "";
+  const questions = Array.isArray(notes.questionsToAsk) ? notes.questionsToAsk.filter(Boolean) : [];
+  for (const q of questions) notesQuestionsEl.appendChild(renderMeetingQuestion(q));
+  if (notesQuestionsWrapEl) {
+    notesQuestionsWrapEl.hidden = questions.length === 0;
+  }
+
+  notesTopicsEl.innerHTML = "";
+  const topics = Array.isArray(notes.topics) ? notes.topics.filter(Boolean) : [];
+  for (const t of topics) {
+    const chip = document.createElement("span");
+    chip.className = "notes-topic";
+    chip.textContent = String(t);
+    notesTopicsEl.appendChild(chip);
+  }
+  notesTopicsEl.hidden = topics.length === 0;
+  pushLiveState();
+
   liveNotesSnapshot = {
     keyPoints: Array.isArray(notes.keyPoints) ? notes.keyPoints.filter(Boolean) : [],
     actionItems: Array.isArray(notes.actionItems) ? notes.actionItems.filter(Boolean) : [],
     summary: String(notes.summary || "").trim(),
+    questionsToAsk: questions,
+    suggestions: Array.isArray(notes.suggestions) ? notes.suggestions.filter(Boolean) : [],
+    topics,
   };
   refreshSidePanelFromLiveNotes();
   reportHeight();
 }
 
-// Pull fresh meeting notes from the transcript (throttled; skips if nothing new
-// was said since the last pull). Best-effort — failures leave existing notes.
-async function refreshNotes() {
+async function refreshNotes(force = false) {
   if (notesInFlight) return;
   const txt = transcriptText.trim();
-  if (txt.length < 40 || txt.length === lastNotesLen) return;
+  if (txt.length < 40) return;
+  const now = Date.now();
+  const grew = txt.length - lastNotesLen >= 50;
+  const due = now - lastNotesAt >= NOTES_INTERVAL_MS;
+  if (!force && !grew && !due) return;
   notesInFlight = true;
   lastNotesLen = txt.length;
+  lastNotesAt = now;
   try {
-    const notes = await window.lyknOverlay.meetingNotes(txt);
-    if (notes && (notes.summary || notes.keyPoints?.length || notes.actionItems?.length)) {
+    const prev = liveNotesSnapshot.summary
+      ? {
+          summary: liveNotesSnapshot.summary,
+          keyPoints: liveNotesSnapshot.keyPoints,
+          actionItems: liveNotesSnapshot.actionItems,
+        }
+      : null;
+    const notes = await window.lyknOverlay.meetingNotes(txt, prev);
+    if (
+      notes &&
+      (notes.summary ||
+        notes.keyPoints?.length ||
+        notes.actionItems?.length ||
+        notes.questionsToAsk?.length ||
+        notes.suggestions?.length)
+    ) {
       renderNotes(notes);
     }
   } catch (_) {}
   notesInFlight = false;
 }
 
-// Append cleaned text under a speaker. Consecutive lines from the same speaker
-// merge into one block so the transcript reads as a conversation.
-function appendLiveText(speaker, text) {
+// Rebuild the flat transcript (used for notes / vault / copy) from fragments,
+// merging consecutive same-speaker utterances into one line.
+function rebuildTranscriptText() {
+  const parts = [];
+  let curSpeaker = null;
+  let cur = [];
+  for (const f of listenFragments) {
+    if (f.speaker !== curSpeaker) {
+      if (cur.length) parts.push(`${SPEAKER_LABEL[curSpeaker] || curSpeaker}: ${cur.join(" ")}`);
+      curSpeaker = f.speaker;
+      cur = [];
+    }
+    cur.push(f.text);
+  }
+  if (cur.length) parts.push(`${SPEAKER_LABEL[curSpeaker] || curSpeaker}: ${cur.join(" ")}`);
+  transcriptText = parts.length ? `${parts.join("\n")}\n` : "";
+}
+
+// ── Live assist (Cluely-style in-call copilot) ──────────────────────────────
+// After each utterance settles, the rolling transcript is sent to the backend,
+// which decides whether THIS moment deserves a private help card — an answer
+// to a question the user was just asked, a quick brief on a company/term that
+// came up, a fact check, or a suggested next line — optionally composed from
+// a live web search run mid-sentence. Cards land at the top of the Notes pane
+// in the floating live window. Silence is the default; cards must feel earned.
+const assistFeedEl = document.getElementById("assist-feed");
+const ASSIST_DEBOUNCE_MS = 1200; // let the sentence settle before asking
+const ASSIST_MIN_INTERVAL_MS = 6000; // never ping the backend faster than this
+const ASSIST_MAX_CARDS = 6;
+const ASSIST_KIND_LABEL = {
+  answer: "Answer",
+  brief: "Brief",
+  fact: "Fact check",
+  suggest: "Say this",
+};
+let assistShownTitles = [];
+let assistInFlight = false;
+let assistTimer = null;
+let assistLastRanAt = 0;
+let assistLastLen = 0;
+
+function scheduleLiveAssist() {
+  if (!listening) return;
+  if (assistTimer) clearTimeout(assistTimer);
+  const wait = Math.max(
+    ASSIST_DEBOUNCE_MS,
+    ASSIST_MIN_INTERVAL_MS - (Date.now() - assistLastRanAt),
+  );
+  assistTimer = setTimeout(() => {
+    assistTimer = null;
+    void runLiveAssist();
+  }, wait);
+}
+
+async function runLiveAssist() {
+  if (!listening || assistInFlight) return;
+  const txt = transcriptText.trim();
+  // Need real new content since the last look — not just a stray word.
+  if (txt.length < 60 || txt.length - assistLastLen < 24) return;
+  assistInFlight = true;
+  assistLastRanAt = Date.now();
+  assistLastLen = txt.length;
+  try {
+    const r = await window.lyknOverlay.liveAssist(txt.slice(-2400), assistShownTitles);
+    const insight = r && r.insight;
+    if (insight && insight.body && listening) addAssistCard(insight);
+  } catch (_) {}
+  assistInFlight = false;
+}
+
+function addAssistCard(insight) {
+  const kind = ASSIST_KIND_LABEL[insight.kind] ? insight.kind : "suggest";
+  const title = String(insight.title || "").trim() || "Heads up";
+  assistShownTitles.push(title);
+  assistShownTitles = assistShownTitles.slice(-12);
+
+  const card = document.createElement("div");
+  card.className = `assist-card kind-${kind}`;
+  const head = document.createElement("div");
+  head.className = "assist-head";
+  const kindEl = document.createElement("span");
+  kindEl.className = "assist-kind";
+  kindEl.textContent = ASSIST_KIND_LABEL[kind];
+  const titleEl = document.createElement("span");
+  titleEl.className = "assist-title";
+  titleEl.textContent = title;
+  head.append(kindEl, titleEl);
+  const body = document.createElement("div");
+  body.className = "assist-body";
+  body.textContent = String(insight.body || "").trim();
+  card.append(head, body);
+
+  const sources = Array.isArray(insight.sources) ? insight.sources.filter((s) => s && s.url) : [];
+  if (sources.length) {
+    const row = document.createElement("div");
+    row.className = "assist-sources";
+    for (const s of sources.slice(0, 3)) {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "assist-src";
+      link.dataset.url = s.url;
+      try {
+        link.textContent = new URL(s.url).hostname.replace(/^www\./, "");
+      } catch (_) {
+        link.textContent = "source";
+      }
+      row.appendChild(link);
+    }
+    card.appendChild(row);
+  }
+
+  assistFeedEl.prepend(card);
+  while (assistFeedEl.children.length > ASSIST_MAX_CARDS) assistFeedEl.lastChild.remove();
+  // Surface the card: flip the live window to the Suggestions pane so the
+  // help is actually seen the moment it lands.
+  if (livePane !== "ask") switchLivePane("ask");
+  else pushLiveState();
+}
+
+// ── Junk suppression ────────────────────────────────────────────────────────
+// Three classes of garbage never reach the transcript:
+//  1. ASR artifacts — stock phrases speech models emit on music/noise.
+//  2. Echo duplicates — without headphones the mic re-hears the meeting audio,
+//     so "You" would repeat what "Others" just said (and vice versa).
+//  3. Stuck repeats — the same utterance recognized twice back-to-back.
+function normalizeUtterance(t) {
+  return String(t || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9' ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Conservative list: only phrases that are near-certain hallucinations when
+// they arrive as a WHOLE standalone utterance (classic YouTube-outro junk).
+const ASR_ARTIFACTS = new Set([
+  "you",
+  "bye",
+  "thanks for watching",
+  "thank you for watching",
+  "thank you so much for watching",
+  "please subscribe",
+  "like and subscribe",
+  "don't forget to subscribe",
+  "see you in the next video",
+  "see you next time",
+  "subtitles by the amara org community",
+]);
+
+const lastUtter = { them: { norm: "", at: 0 }, you: { norm: "", at: 0 } };
+
+function isJunkUtterance(speaker, norm) {
+  if (!norm) return true;
+  if (ASR_ARTIFACTS.has(norm)) return true;
+  const now = Date.now();
+  // Stuck repeat from the same speaker.
+  const mine = lastUtter[speaker];
+  if (mine.norm && norm === mine.norm && now - mine.at < 6000) return true;
+  // Speaker echo: the new utterance is (a piece of) what the other source
+  // just heard. Only the CONTAINED direction is an echo — a longer utterance
+  // that merely includes the other's text is new speech and must be kept.
+  const other = lastUtter[speaker === "you" ? "them" : "you"];
+  if (other.norm && now - other.at < 6000) {
+    if (norm === other.norm) return true;
+    if (norm.length > 12 && other.norm.includes(norm)) return true;
+  }
+  return false;
+}
+
+// Show the raw ASR text IMMEDIATELY (Wispr-Flow-style: never make the user
+// wait on the polish), keyed by fragment id so the async LLM cleanup below
+// can swap the corrected text in place.
+function appendUtterance(speaker, text) {
   const t = String(text || "").trim();
   if (!t) return;
+  const norm = normalizeUtterance(t);
+  if (isJunkUtterance(speaker, norm)) return;
+  lastUtter[speaker] = { norm, at: Date.now() };
+  const frag = { id: String(++listenFragSeq), speaker, text: t };
+  listenFragments.push(frag);
+
+  const span = document.createElement("span");
+  span.className = "live-frag";
+  span.dataset.frag = frag.id;
+  span.textContent = t;
+
   const last = liveBodyEl.lastElementChild;
-  if (last && last.dataset.speaker === speaker) {
+  if (last && last.dataset.speaker === speaker && !last.dataset.interim) {
     const body = last.querySelector(".live-text");
-    body.textContent = `${body.textContent} ${t}`;
+    body.append(document.createTextNode(" "), span);
   } else {
     const line = document.createElement("div");
     line.className = `live-line ${speaker}`;
     line.dataset.speaker = speaker;
+    const time = document.createElement("span");
+    time.className = "live-time";
+    time.textContent = formatListenTime(Date.now());
     const lab = document.createElement("span");
     lab.className = "live-speaker";
     lab.textContent = SPEAKER_LABEL[speaker] || speaker;
     const body = document.createElement("span");
     body.className = "live-text";
-    body.textContent = t;
-    line.append(lab, body);
+    body.appendChild(span);
+    line.append(time, lab, body);
     liveBodyEl.appendChild(line);
   }
+
   listenTails[speaker] = `${listenTails[speaker] ? `${listenTails[speaker]} ` : ""}${t}`
     .split(/\s+/)
-    .slice(-30)
+    .slice(-50)
     .join(" ");
-  transcriptText += `${SPEAKER_LABEL[speaker] || speaker}: ${t}\n`;
+  rebuildTranscriptText();
   liveBodyEl.scrollTop = liveBodyEl.scrollHeight;
-  reportHeight();
+  void refreshNotes();
+  scheduleLiveAssist();
+  pushLiveState();
+  void cleanFragment(frag);
 }
 
-// Transcribe one chunk for a given speaker, drop it if it's silence/noise, then
-// run a Wispr-Flow-style cleanup pass before showing it. Fails open to raw text.
-async function processListenChunk(buf, speaker) {
+// Drop a fragment entirely (the cleanup model judged it pure filler): remove
+// its span, and the whole line if nothing else is left on it.
+function removeFragment(frag) {
+  const i = listenFragments.indexOf(frag);
+  if (i >= 0) listenFragments.splice(i, 1);
+  const span = liveBodyEl.querySelector(`.live-frag[data-frag="${frag.id}"]`);
+  if (span) {
+    const line = span.closest(".live-line");
+    const body = span.closest(".live-text");
+    const prev = span.previousSibling;
+    if (prev && prev.nodeType === Node.TEXT_NODE) prev.remove();
+    span.remove();
+    if (line && body && !body.querySelector(".live-frag")) line.remove();
+  }
+  rebuildTranscriptText();
+  pushLiveState();
+}
+
+// Async polish pass — strips fillers/stutters and fixes punctuation, then
+// swaps the fragment in place. Fails open: the raw text simply stays.
+async function cleanFragment(frag) {
+  // Nothing worth polishing (and one less LLM round trip) on tiny fragments.
+  if (frag.text.length < 14) return;
+  const idx = listenFragments.indexOf(frag);
+  const context = listenFragments
+    .slice(Math.max(0, idx - 4), idx)
+    .map((f) => f.text)
+    .join(" ")
+    .slice(-500);
+  let cleaned = null;
+  try {
+    const r = await window.lyknOverlay.cleanTranscript(frag.text, context);
+    cleaned = r && typeof r.text === "string" ? r.text.trim() : null;
+  } catch (_) {}
+  if (cleaned == null) return; // request failed — keep raw
+  if (!cleaned) {
+    // The model deemed it pure filler. Only trust that for very short
+    // fragments — never let it blank out a real sentence.
+    if (frag.text.length < 24 && listenFragments.includes(frag)) removeFragment(frag);
+    return;
+  }
+  if (cleaned === frag.text) return;
+  frag.text = cleaned;
+  const span = liveBodyEl.querySelector(`.live-frag[data-frag="${frag.id}"]`);
+  if (span) span.textContent = cleaned;
+  rebuildTranscriptText();
+  pushLiveState();
+}
+
+async function processUtterance(wavBuf, speaker) {
   if (!listening) return;
-  let raw = "";
+  let text = "";
   let noSpeech = 0;
   try {
-    const r = await window.lyknOverlay.transcribe(buf, RECORD_MIME, listenTails[speaker]);
-    raw = r && r.text ? r.text.trim() : "";
+    const r = await window.lyknOverlay.meetingChunk(
+      wavBuf,
+      "audio/wav",
+      listenTails[speaker],
+      listenTails[speaker],
+    );
+    text = r && r.text ? r.text.trim() : "";
     noSpeech = r && typeof r.noSpeech === "number" ? r.noSpeech : 0;
   } catch (_) {}
-  // High no-speech probability = silence; Whisper tends to hallucinate ("Thank
-  // you.", "Bye.") on quiet clips, so skip those outright.
-  if (!raw || noSpeech > 0.7 || !listening) return;
-  let clean = raw;
-  try {
-    const c = await window.lyknOverlay.cleanTranscript(raw, listenTails[speaker]);
-    if (c && typeof c.text === "string") clean = c.text.trim();
-  } catch (_) {}
-  if (clean) appendLiveText(speaker, clean);
+  listenPending[speaker] = Math.max(0, listenPending[speaker] - 1);
+  updateSpeakerInterim(speaker);
+  if (!text || noSpeech > 0.72 || !listening) return;
+  appendUtterance(speaker, text);
 }
 
-// Record one short clip from a source stream, then loop. Each source (system
-// audio = "them", mic = "you") runs its own independent loop.
-function recordSourceChunk(stream, speaker) {
-  if (!listening || !stream) return;
-  let rec;
+// ── VAD capture — continuous PCM with energy endpointing ────────────────────
+// Instead of blind fixed-length clips (which split words mid-syllable and
+// upload silence), we tap raw PCM off each stream and cut utterances at
+// natural pauses: an adaptive noise floor decides when speech starts, a short
+// hangover decides when it ended, and a pre-roll ring keeps the first
+// syllable intact. Only actual speech ever reaches the ASR API.
+const LISTEN_SAMPLE_RATE = 16000;
+const VAD_FRAME_MS = 128; // ScriptProcessor buffer of 2048 samples @ 16k
+const VAD_HANG_MS = 450; // silence needed to close an utterance
+// A single frame of clear speech is enough to keep an utterance — RMS gating
+// undercounts soft speech, so a stricter gate silently dropped short words
+// ("No.", "Sure.") and quiet sentence starts.
+const VAD_MIN_SPEECH_MS = 150;
+const VAD_PRE_ROLL_MS = 480; // audio kept from before speech onset
+const VAD_MAX_UTTER_MS = 8000; // prefer a cut past this, at the next soft frame
+const VAD_HARD_MAX_UTTER_MS = 12000; // …but never run longer than this
+const vadActive = { them: false, you: false };
+const listenPending = { them: 0, you: 0 };
+let listenAudioCtx = null;
+let listenTaps = [];
+
+// 16-bit mono WAV — tiny header + PCM, cheapest reliable container for API upload.
+function encodeWav(float32, sampleRate) {
+  const pcm = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const dv = new DataView(buf);
+  const writeStr = (off, s) => {
+    for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  dv.setUint32(4, 36 + pcm.length * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true); // PCM
+  dv.setUint16(22, 1, true); // mono
+  dv.setUint32(24, sampleRate, true);
+  dv.setUint32(28, sampleRate * 2, true);
+  dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true);
+  writeStr(36, "data");
+  dv.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return buf;
+}
+
+function tapStreamWithVad(stream, speaker) {
+  if (!listening || !stream || !listenAudioCtx) return;
+  let source;
   try {
-    rec = new MediaRecorder(stream, { mimeType: RECORD_MIME });
+    source = listenAudioCtx.createMediaStreamSource(stream);
   } catch (_) {
     return;
   }
-  listenRecorders.push(rec);
-  const chunks = [];
-  rec.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) chunks.push(e.data);
-  };
-  rec.onstop = async () => {
-    listenRecorders = listenRecorders.filter((r) => r !== rec);
-    // Start the next clip immediately so capture stays continuous.
-    if (listening) recordSourceChunk(stream, speaker);
-    const blob = new Blob(chunks, { type: RECORD_MIME });
-    if (blob.size < 2000) return;
-    let buf;
-    try {
-      buf = await blob.arrayBuffer();
-    } catch (_) {
+  const proc = listenAudioCtx.createScriptProcessor(2048, 1, 1);
+  // Keep the node alive without feeding audio anywhere audible.
+  const sink = listenAudioCtx.createGain();
+  sink.gain.value = 0;
+
+  const framesPerMs = listenAudioCtx.sampleRate / 1000;
+  const preRollFrames = Math.ceil((VAD_PRE_ROLL_MS * framesPerMs) / 2048);
+  const hangFrames = Math.ceil((VAD_HANG_MS * framesPerMs) / 2048);
+  const preRoll = [];
+  let utterance = [];
+  let speechMs = 0;
+  let silentFrames = 0;
+  let utterMs = 0;
+  // Adaptive noise floor: EMA of frame RMS while not speaking. Seeded high so
+  // the first frames don't trigger; converges within ~a second.
+  let noiseFloor = 0.02;
+
+  const finalize = (force) => {
+    const hadSpeech = speechMs >= VAD_MIN_SPEECH_MS;
+    const chunks = utterance;
+    utterance = [];
+    speechMs = 0;
+    silentFrames = 0;
+    utterMs = 0;
+    vadActive[speaker] = false;
+    if (!hadSpeech || !chunks.length) {
+      updateSpeakerInterim(speaker);
       return;
     }
-    // Single shared queue keeps both speakers' lines in completion order.
-    listenQueue = listenQueue.then(() => processListenChunk(buf, speaker)).catch(() => {});
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const joined = new Float32Array(total);
+    let off = 0;
+    for (const c of chunks) {
+      joined.set(c, off);
+      off += c.length;
+    }
+    const wav = encodeWav(joined, listenAudioCtx.sampleRate);
+    listenPending[speaker] += 1;
+    updateSpeakerInterim(speaker);
+    listenQueues[speaker] = listenQueues[speaker]
+      .then(() => processUtterance(wav, speaker))
+      .catch(() => {});
+    if (force) {
+      // Forced mid-speech cut: stay "active" so capture continues seamlessly.
+      vadActive[speaker] = true;
+    }
   };
-  try {
-    rec.start();
-  } catch (_) {
-    return;
+
+  proc.onaudioprocess = (e) => {
+    if (!listening) return;
+    const data = e.inputBuffer.getChannelData(0);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    const rms = Math.sqrt(sum / data.length);
+    // 2.0× floor (was 2.5×) with a lower absolute minimum — quiet speakers
+    // and soft sentence onsets were sitting just under the old trigger.
+    const threshold = Math.max(0.0045, noiseFloor * 2.0);
+    const frame = new Float32Array(data); // copy — the buffer is reused
+
+    if (!vadActive[speaker]) {
+      // Idle: learn the noise floor, keep a pre-roll ring.
+      noiseFloor = noiseFloor * 0.95 + rms * 0.05;
+      preRoll.push(frame);
+      if (preRoll.length > preRollFrames) preRoll.shift();
+      if (rms > threshold) {
+        vadActive[speaker] = true;
+        utterance = preRoll.splice(0, preRoll.length);
+        utterance.push(frame);
+        speechMs = VAD_FRAME_MS;
+        silentFrames = 0;
+        utterMs = utterance.length * VAD_FRAME_MS;
+        updateSpeakerInterim(speaker);
+      }
+      return;
+    }
+
+    // In an utterance: keep capturing through short pauses.
+    utterance.push(frame);
+    utterMs += VAD_FRAME_MS;
+    if (rms > threshold) {
+      speechMs += VAD_FRAME_MS;
+      silentFrames = 0;
+    } else {
+      silentFrames += 1;
+      // Silence keeps refining the floor so the threshold tracks room tone.
+      noiseFloor = noiseFloor * 0.98 + rms * 0.02;
+    }
+    if (silentFrames >= hangFrames) {
+      // Keep the full hangover tail — trailing fricatives and soft word
+      // endings read as "silence" to an RMS gate, and trimming them was
+      // clipping the last word. 450ms of extra audio costs nothing.
+      finalize(false);
+    } else if (utterMs >= VAD_MAX_UTTER_MS && silentFrames > 0) {
+      // Past the soft cap: cut at the first below-threshold frame so the cut
+      // lands between words instead of mid-syllable.
+      finalize(true);
+    } else if (utterMs >= VAD_HARD_MAX_UTTER_MS) {
+      finalize(true);
+    }
+  };
+
+  source.connect(proc);
+  proc.connect(sink);
+  sink.connect(listenAudioCtx.destination);
+  listenTaps.push({ source, proc, sink });
+}
+
+function teardownListenTaps() {
+  for (const t of listenTaps) {
+    try { t.proc.onaudioprocess = null; } catch (_) {}
+    try { t.source.disconnect(); } catch (_) {}
+    try { t.proc.disconnect(); } catch (_) {}
+    try { t.sink.disconnect(); } catch (_) {}
   }
-  setTimeout(() => {
-    try {
-      if (rec.state !== "inactive") rec.stop();
-    } catch (_) {}
-  }, LISTEN_CHUNK_MS);
+  listenTaps = [];
+  if (listenAudioCtx) {
+    try { void listenAudioCtx.close(); } catch (_) {}
+    listenAudioCtx = null;
+  }
+  vadActive.them = false;
+  vadActive.you = false;
+  listenPending.them = 0;
+  listenPending.you = 0;
 }
 
 async function startListen() {
   if (listening) return;
-  // 1) System (loopback) audio = the video / person on the other end ("Them").
   let display;
   try {
     display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
@@ -2749,7 +4018,7 @@ async function startListen() {
     startTurn("Live notes");
     currentHasText = true;
     currentAnswerEl.textContent =
-      "LYKN needs Screen Recording permission to capture audio. Enable it in System Settings → Privacy & Security → Screen Recording, then try again.";
+      "LYKN needs Screen Recording permission to capture meeting audio. Enable it in System Settings → Privacy & Security → Screen Recording, then try again.";
     reportHeight();
     return;
   }
@@ -2763,9 +4032,6 @@ async function startListen() {
     reportHeight();
     return;
   }
-  // 2) Microphone = the user ("You"). Best-effort: if mic is denied we still
-  // capture the other side. Echo cancellation keeps the speakers' audio from
-  // bleeding into the mic and being double-counted as "You".
   let micStream = null;
   try {
     const ok = await window.lyknOverlay.ensureMic();
@@ -2783,46 +4049,85 @@ async function startListen() {
   listenMicStream = micStream;
   listenTails.them = "";
   listenTails.you = "";
-  listenQueue = Promise.resolve();
+  listenQueues.them = Promise.resolve();
+  listenQueues.you = Promise.resolve();
+  listenInterim.them = null;
+  listenInterim.you = null;
+  listenStartedAt = Date.now();
   transcriptText = "";
+  listenFragments = [];
+  listenFragSeq = 0;
+  lastUtter.them = { norm: "", at: 0 };
+  lastUtter.you = { norm: "", at: 0 };
+  assistFeedEl.innerHTML = "";
+  assistShownTitles = [];
+  assistLastRanAt = 0;
+  assistLastLen = 0;
   lastNotesLen = 0;
+  lastNotesAt = 0;
+  meetingVaultSaved = false;
+  meetingSaving = false;
+  if (liveSaveBtn) {
+    liveSaveBtn.classList.remove("saved");
+    liveSaveBtn.disabled = false;
+  }
+  if (liveSavedToastEl) liveSavedToastEl.hidden = true;
   liveBodyEl.innerHTML = "";
   notesSummaryEl.textContent = "";
+  notesTopicsEl.innerHTML = "";
+  notesTopicsEl.hidden = true;
   notesKeyEl.innerHTML = "";
+  notesSuggestEl.innerHTML = "";
   notesActionsEl.innerHTML = "";
+  notesQuestionsEl.innerHTML = "";
   notesKeyWrapEl.hidden = true;
+  notesSuggestWrapEl.hidden = true;
   notesActionsWrapEl.hidden = true;
+  if (notesQuestionsWrapEl) notesQuestionsWrapEl.hidden = true;
+  liveNotesSnapshot = {
+    keyPoints: [],
+    actionItems: [],
+    summary: "",
+    questionsToAsk: [],
+    suggestions: [],
+    topics: [],
+  };
   listening = true;
-  liveEl.classList.add("show");
+  applyLiveNotesLayout(true);
   switchLivePane("notes");
   setListenUi();
-  // Build notes on a steady cadence while listening, plus an earlier first pass
-  // so the user sees something well before the full interval elapses.
   if (notesTimer) clearInterval(notesTimer);
-  notesTimer = setInterval(() => void refreshNotes(), NOTES_INTERVAL_MS);
+  notesTimer = setInterval(() => void refreshNotes(true), NOTES_INTERVAL_MS);
   setTimeout(() => {
-    if (listening) void refreshNotes();
-  }, 12000);
-  // If the OS ends the capture (or the user revokes it), stop cleanly.
+    if (listening) void refreshNotes(true);
+  }, 5000);
   sysTracks[0].addEventListener("ended", () => {
     if (listening) stopListen();
   });
-  recordSourceChunk(listenSysStream, "them");
-  if (listenMicStream) recordSourceChunk(listenMicStream, "you");
+  // Continuous PCM taps with VAD endpointing — 16 kHz mono is exactly what
+  // Whisper ingests, and resampling here keeps upload sizes small.
+  try {
+    listenAudioCtx = new AudioContext({ sampleRate: LISTEN_SAMPLE_RATE });
+  } catch (_) {
+    listenAudioCtx = new AudioContext();
+  }
+  tapStreamWithVad(listenSysStream, "them");
+  if (listenMicStream) tapStreamWithVad(listenMicStream, "you");
 }
 
 function stopListen() {
   listening = false;
+  teardownListenTaps();
+  setSpeakerTranscribing("them", false);
+  setSpeakerTranscribing("you", false);
+  if (assistTimer) {
+    clearTimeout(assistTimer);
+    assistTimer = null;
+  }
   if (notesTimer) {
     clearInterval(notesTimer);
     notesTimer = null;
   }
-  for (const r of listenRecorders) {
-    try {
-      if (r.state !== "inactive") r.stop();
-    } catch (_) {}
-  }
-  listenRecorders = [];
   try {
     listenDisplayStream && listenDisplayStream.getTracks().forEach((t) => t.stop());
   } catch (_) {}
@@ -2833,24 +4138,23 @@ function stopListen() {
   listenSysStream = null;
   listenMicStream = null;
   setListenUi();
-  // One last notes pass so the final words make it in. The panel stays open so
-  // the user can review the notes after the meeting ends.
-  void refreshNotes();
+  void (async () => {
+    await refreshNotes(true);
+    await saveMeetingToVault({ auto: true });
+  })();
 }
 
 function closeLive() {
   if (listening) stopListen();
-  liveEl.classList.remove("show");
-  reportHeight();
+  applyLiveNotesLayout(false);
 }
 
 listenEl.addEventListener("click", () => {
   if (listening) stopListen();
   else void startListen();
 });
-liveCloseEl.addEventListener("click", closeLive);
-document.getElementById("tab-notes").addEventListener("click", () => switchLivePane("notes"));
-document.getElementById("tab-transcript").addEventListener("click", () => switchLivePane("transcript"));
+// The card's own controls (tabs, close, copy, save, toast) live in the
+// detached window and arrive as commands via window.__lyknLiveCmd above.
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && listening) {
@@ -2930,7 +4234,9 @@ askEl.addEventListener("keydown", (e) => {
     e.preventDefault();
     ask();
   } else if (e.key === "Escape") {
-    window.lyknOverlay.hide();
+    // While voice is live, Escape stops voice (the document-level handler
+    // below takes it); only hide the overlay when voice is off.
+    if (!(voiceActive || voiceStarting)) window.lyknOverlay.hide();
   }
 });
 

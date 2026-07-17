@@ -343,8 +343,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const streamDisplayedLenRef = useRef(0);
   const streamTypingRafRef = useRef<number | null>(null);
   const streamPromptIdRef = useRef<string | null>(null);
-  const chatTypingTimerRef = useRef<number | null>(null);
-  const chatTypingPendingRef = useRef<{ promptId: string; fullText: string; resolve: () => void; chatId: string | null } | null>(null);
+  // Per-board typewriter state (non-streaming invoke fallback). Keyed by
+  // chat id so two chats animating at once never clear each other's timer.
+  const chatTypingTimersRef = useRef<Map<string, number>>(new Map());
+  const chatTypingPendingsRef = useRef<Map<string, { promptId: string; fullText: string; resolve: () => void; chatId: string | null }>>(new Map());
   const aiTypingRunRef = useRef(0);
   const lastAiResponseBlockRef = useRef<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -1226,23 +1228,27 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   const typeResponseIntoChat = useCallback((promptId: string, fullText: string, targetChatId?: string | null): Promise<void> => {
     return new Promise((resolve) => {
-      if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
-      const prev = chatTypingPendingRef.current;
-      if (prev) {
-        patchThreadMessages((msgs) => msgs.map((m) => (m.id === prev.promptId ? { ...m, aiResponse: prev.fullText } : m)), prev.chatId);
-        prev.resolve();
-        chatTypingPendingRef.current = null;
-      }
       // Pin every write for this animation to the board that owns the
       // stream. Without this, switching chat tabs mid-stream reroutes the
       // typewriter into whatever board is now active (cross-chat bleed).
       const bid = targetChatId ?? streamChatIdRef.current ?? chatId ?? routeChatId ?? null;
+      const key = String(bid || "");
+      // Only supersede a previous animation on the SAME board — a second
+      // chat starting its own typewriter must not cut off the first.
+      const prevTimer = chatTypingTimersRef.current.get(key);
+      if (prevTimer) { window.clearInterval(prevTimer); chatTypingTimersRef.current.delete(key); }
+      const prev = chatTypingPendingsRef.current.get(key);
+      if (prev) {
+        patchThreadMessages((msgs) => msgs.map((m) => (m.id === prev.promptId ? { ...m, aiResponse: prev.fullText } : m)), prev.chatId);
+        prev.resolve();
+        chatTypingPendingsRef.current.delete(key);
+      }
       const isActiveBoard = () => getActiveThreadChatId() === String(bid);
       const words = fullText.split(/(\s+)/);
       let idx = 0;
-      chatTypingPendingRef.current = { promptId, fullText, resolve, chatId: bid };
+      chatTypingPendingsRef.current.set(key, { promptId, fullText, resolve, chatId: bid });
       patchThreadMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: "" } : m)), bid);
-      chatTypingTimerRef.current = window.setInterval(() => {
+      const timer = window.setInterval(() => {
         idx += 3;
         const partial = words.slice(0, idx).join("");
         patchThreadMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: partial } : m)), bid);
@@ -1251,13 +1257,14 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           if (el) { chatProgrammaticScrollRef.current = true; el.scrollTop = el.scrollHeight; }
         }
         if (idx >= words.length) {
-          if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
-          chatTypingTimerRef.current = null;
-          chatTypingPendingRef.current = null;
+          window.clearInterval(timer);
+          if (chatTypingTimersRef.current.get(key) === timer) chatTypingTimersRef.current.delete(key);
+          if (chatTypingPendingsRef.current.get(key)?.promptId === promptId) chatTypingPendingsRef.current.delete(key);
           patchThreadMessages((msgs) => msgs.map((m) => (m.id === promptId ? { ...m, aiResponse: fullText } : m)), bid);
           resolve();
         }
       }, 30);
+      chatTypingTimersRef.current.set(key, timer);
     });
   }, [patchThreadMessages, chatId, routeChatId]);
 
@@ -1993,7 +2000,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           try { sessionStorage.setItem(flagKey, "1"); } catch { /* ignore */ }
           toast({
             title: "This is a demo chat",
-            description: "Changes here aren't saved — refresh and they're gone. Sign in and start a new chat to keep this work.",
+            description: "Changes here aren't saved. Refresh and they're gone. Sign in and start a new chat to keep this work.",
             duration: 8000,
           });
         }
@@ -2026,7 +2033,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     chatUserScrolledUpRef.current = false;
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
     const now = Date.now();
-    const sig = text.length > 100 ? text.slice(0, 100) : text;
+    // Scope the dupe-send signature to the target chat — a single global
+    // signature silently swallowed sends of the same text into a different
+    // chat within the debounce window.
+    const sig = `${streamChatId}|${text.length > 100 ? text.slice(0, 100) : text}`;
     if (lastSendSigRef.current.text === sig && now - lastSendSigRef.current.at < 900) return;
     lastSendSigRef.current = { text: sig, at: now };
 
@@ -2244,12 +2254,13 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       }
       sr.streamTargetTextRef.current = ""; sr.streamDisplayedLenRef.current = 0; sr.streamPromptIdRef.current = null;
     }
-    if (chatTypingTimerRef.current) { window.clearInterval(chatTypingTimerRef.current); chatTypingTimerRef.current = null; }
-    const pending = chatTypingPendingRef.current;
-    if (pending && (!bid || pending.chatId === bid)) {
+    const stoppedTimer = chatTypingTimersRef.current.get(bid);
+    if (stoppedTimer) { window.clearInterval(stoppedTimer); chatTypingTimersRef.current.delete(bid); }
+    const pending = chatTypingPendingsRef.current.get(bid);
+    if (pending) {
       patchThreadMessages((prev) => prev.map((m) => (m.id === pending.promptId ? { ...m, aiResponse: pending.fullText } : m)), pending.chatId);
       pending.resolve();
-      chatTypingPendingRef.current = null;
+      chatTypingPendingsRef.current.delete(bid);
     }
     if (bid) {
       sendingBoardsRef.current.delete(bid);
@@ -2463,9 +2474,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   }, [chatInputHasText, handleChatSend]);
 
   const cleanupDraftTimers = useCallback(() => {
-    if (chatTypingTimerRef.current) window.clearInterval(chatTypingTimerRef.current);
-    chatTypingTimerRef.current = null;
-    chatTypingPendingRef.current = null;
+    for (const timer of chatTypingTimersRef.current.values()) window.clearInterval(timer);
+    chatTypingTimersRef.current.clear();
+    chatTypingPendingsRef.current.clear();
     if (streamTypingRafRef.current) { clearTimeout(streamTypingRafRef.current); streamTypingRafRef.current = null; }
     for (const sr of streamRuntimeRef.current.values()) {
       if (sr.streamTypingRafRef.current) { clearTimeout(sr.streamTypingRafRef.current); sr.streamTypingRafRef.current = null; }

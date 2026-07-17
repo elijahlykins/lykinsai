@@ -1,4 +1,5 @@
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
+import { SceneBackground } from "./SceneBackground";
 
 // An animated take on the soft blue gradient: light at the top, a vibrant
 // electric-blue bloom drifting through the left/center, fading to black toward
@@ -30,6 +31,7 @@ export const ActivationGradient: React.FC<ActivationGradientProps> = ({
 
   return (
     <AbsoluteFill style={{ background: "#04060e" }}>
+      <SceneBackground />
       {/* Deep base shadow sweeping in from the bottom-right. */}
       <AbsoluteFill
         style={{

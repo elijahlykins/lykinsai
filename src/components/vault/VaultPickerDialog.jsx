@@ -72,6 +72,17 @@ export default function VaultPickerDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  // Lock body scroll while the picker is open so wheel/touch over the
+  // backdrop doesn't scroll the page behind the dialog.
+  useEffect(() => {
+    if (!open) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
   const mergeWithBaseline = useCallback((noteIds) => {
     return mergeNoteIds(baselineAtOpenRef.current, noteIds);
   }, []);

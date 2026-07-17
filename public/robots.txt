@@ -1,6 +1,15 @@
 User-agent: *
-Allow: /favicon.svg
-Allow: /favicon.ico
-Allow: /manifest.json
+Allow: /
+Disallow: /app
+Disallow: /chat/
+Disallow: /settings
+Disallow: /vault
+Disallow: /projects
+Disallow: /synthesis-layer
+Disallow: /billing
+Disallow: /admin/
+Disallow: /onboarding/
+Disallow: /oauth/
+Disallow: /share
 
 Sitemap: https://lykn.io/sitemap.xml
