@@ -68,9 +68,12 @@
     "title": "LYKN ${version}",
     "artifactName": "${productName}.dmg",
     "icon": "electron/resources/icon.png",
+    "background": "electron/resources/dmgBackground.tiff",
+    "iconSize": 110,
+    "window": { "width": 540, "height": 380 },
     "contents": [
-      { "x": 130, "y": 220 },
-      { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      { "x": 130, "y": 200 },
+      { "x": 410, "y": 200, "type": "link", "path": "/Applications" }
     ]
   },
   "publish": {

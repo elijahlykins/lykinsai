@@ -46,6 +46,7 @@ import { ParticleBurst, particleBurstDefaults } from "./ParticleBurst";
 import { AiAnywhere } from "./AiAnywhere";
 import { GlassBarStill, glassBarStillDefaults } from "./GlassBarStill";
 import { GlassPoster, glassPosterDefaults } from "./GlassPoster";
+import { LyknDmgBackground } from "./LyknDmgBackground";
 
 // Every composition you want to render or preview is registered here.
 // Add more <Composition> entries as we build new things.
@@ -436,6 +437,14 @@ export const RemotionRoot: React.FC = () => {
         width={990}
         height={2048}
         defaultProps={glassPosterDefaults}
+      />
+      <Composition
+        id="LyknDmgBackground"
+        component={LyknDmgBackground}
+        durationInFrames={1}
+        fps={30}
+        width={540}
+        height={380}
       />
       <Composition
         id="AiAnywhere"
