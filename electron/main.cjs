@@ -6048,13 +6048,9 @@ function initAutoUpdate() {
   initAutoUpdate();
   if (isLiveWatchEnabled()) startLiveWatch();
 
-  // Show the permissions walkthrough once, on first launch (but never when
-  // silently auto-started at login).
-  if (!backgroundLaunch) {
-    onboardingComplete().then((done) => {
-      if (!done) createOnboardingWindow();
-    });
-  }
+  // First launch goes straight to the web app's login screen — no automatic
+  // permissions walkthrough. It stays reachable from the tray menu
+  // ("Set Up LYKN / Permissions…") for when the user is ready.
 
   // Menu-bar-app mode: no main window (silent login launch, or the user
   // closed it) → no Dock icon. The tray + ⌘L are the way back in.

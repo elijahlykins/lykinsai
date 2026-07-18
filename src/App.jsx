@@ -100,6 +100,11 @@ function GuestOnly({ children, to = "/app" }) {
     }
     return <Navigate to={to} replace />;
   }
+  // Inside the desktop shell the marketing landing makes no sense — the user
+  // already downloaded the app. Signed-out desktop users go straight to login.
+  if (typeof window !== "undefined" && window.lykn?.desktop) {
+    return <Navigate to="/login" replace />;
+  }
   return children;
 }
 
