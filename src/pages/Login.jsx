@@ -149,17 +149,19 @@ function isFreshlyCreatedUser(user) {
 // full-bleed panel backdrop with a single centered card holding the content.
 const PageShell = ({ children }) => (
   <div
-    className="fixed inset-0 z-50 overflow-y-auto bg-white"
+    className="fixed inset-0 z-50 overflow-hidden bg-white"
     style={{ fontFamily: LANDING_FONT }}
   >
     <PanelArt />
-    <div className="relative min-h-full flex flex-col px-5 py-8">
-      <div className="flex-1 flex items-center justify-center py-10">
+    <div className="relative h-full flex flex-col px-5 py-4">
+      {/* The card centers via m-auto (not items-center) so that on windows
+          shorter than the card the top edge stays reachable when scrolling. */}
+      <div className="flex-1 flex overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
-          className="w-full max-w-[440px] rounded-[28px] border border-slate-200 bg-white p-7 sm:p-9 shadow-[0_32px_80px_-32px_rgba(15,23,42,0.35)]"
+          className="m-auto w-full max-w-[440px] rounded-[28px] border border-slate-200 bg-white p-7 sm:p-9 shadow-[0_32px_80px_-32px_rgba(15,23,42,0.35)]"
         >
           {children}
         </motion.div>
