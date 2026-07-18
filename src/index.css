@@ -2397,32 +2397,152 @@ mark {
   color: #0a0c12;
 }
 
-@media (max-width: 640px) {
-  /* Keep the primary nav reachable on phones — the header links are
-     <button>s (no href), so a `:not([href])` hide rule removed Product /
-     Pricing / Download entirely with no hamburger fallback.
-     Instead, compact the row so everything still fits. */
+/* ── Mobile header: hamburger + slide-down menu ─────────────── */
+/* The hamburger toggle. Hidden on desktop, where the inline nav shows. */
+.lkn-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: #ffffff;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+.lkn-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.lkn-header.is-scrolled .lkn-menu-btn {
+  color: #0f172a;
+}
+.lkn-header.is-scrolled .lkn-menu-btn:hover {
+  background: rgba(15, 23, 42, 0.06);
+}
+.lkn-menu-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* The slide-down panel under the header bar. Same frosted material as the
+   header, scrollable if it outgrows the viewport. */
+.lkn-mobile-menu {
+  display: none;
+  margin-top: 8px;
+  padding: 0.9rem 1rem 1.1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  box-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  max-height: calc(100vh - 96px);
+  max-height: calc(100dvh - 96px);
+  overflow-y: auto;
+  flex-direction: column;
+  gap: 1rem;
+  animation: lkn-mobile-menu-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes lkn-mobile-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.lkn-mobile-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lkn-mobile-group + .lkn-mobile-group {
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+.lkn-mobile-label {
+  padding: 0 0.7rem 0.35rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(15, 23, 42, 0.45);
+}
+.lkn-mobile-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 140ms ease;
+}
+.lkn-mobile-link:hover,
+.lkn-mobile-link:active {
+  background: rgba(15, 23, 42, 0.06);
+}
+.lkn-mobile-link-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #0a0c12;
+  letter-spacing: -0.01em;
+}
+.lkn-mobile-link-desc {
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: rgba(15, 23, 42, 0.55);
+}
+/* The two CTAs, full-width. Colors pinned here: the shared button classes
+   invert with the header's scrolled state, but this panel is always light. */
+.lkn-mobile-ctas {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+.lkn-mobile-ctas .lkn-nav-signin,
+.lkn-mobile-ctas .lkn-nav-signup {
+  width: 100%;
+  padding: 0.65rem 1rem;
+  font-size: 0.9rem;
+  border-radius: 12px;
+}
+.lkn-mobile-ctas .lkn-nav-signin {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.16);
+  color: #0f172a;
+}
+.lkn-mobile-ctas .lkn-nav-signup {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+@media (max-width: 860px) {
+  /* Phones/small tablets: the inline nav can't fit — swap it for the
+     hamburger + slide-down menu. */
   .lkn-nav {
-    gap: 0.65rem;
+    display: none;
   }
-  .lkn-nav-link {
-    font-size: 0.72rem;
+  .lkn-menu-btn {
+    display: inline-flex;
   }
-  .lkn-nav-signup,
-  .lkn-nav-signin {
-    font-size: 0.72rem;
-    padding: 0.3rem 0.6rem;
+  .lkn-mobile-menu {
+    display: flex;
   }
   .lkn-docs-menu {
     display: none;
-  }
-  /* Keep the Product panel on-screen when the trigger sits near the left
-     edge of the compacted nav. */
-  .lkn-prod-menu {
-    left: -30px;
-    transform: none;
-    animation: none;
-    width: 270px;
   }
 }
 

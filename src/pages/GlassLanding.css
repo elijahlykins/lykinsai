@@ -370,8 +370,41 @@
 }
 
 @media (max-width: 860px) {
-  /* The panel art is hidden on phones — hide the bar that floats over it. */
+  /* Phones: the hero stacks — copy first, then the overlay bar sitting on
+     its own blue panel (standing in for the hidden page-wide glow), so the
+     product visual survives the switch to one column. */
+  .gl-hero {
+    flex-direction: column;
+    min-height: 0;
+    padding-top: clamp(5.5rem, 12vh, 7rem);
+  }
+  .gl-hero-inner {
+    order: 1;
+  }
+  .gl-hero-copy {
+    margin-top: 0.5rem;
+    max-width: 100%;
+  }
+  .gl-hero-headline + .gl-hero-lede {
+    margin-top: clamp(1.5rem, 4vh, 2.5rem);
+  }
   .gl-hero-bar {
+    order: 2;
+    position: relative;
+    inset: auto;
+    width: 100%;
+    min-height: 300px;
+    margin-top: clamp(2.25rem, 6vh, 3.5rem);
+    padding: 2rem 1.25rem;
+    border-radius: 24px;
+    overflow: hidden;
+    background:
+      radial-gradient(120% 140% at 85% -10%, #4d94ff 0%, rgba(77, 148, 255, 0) 55%),
+      linear-gradient(150deg, #2f7bff 0%, #0e6fff 55%, #0847c9 100%);
+    box-shadow: 0 24px 60px -28px rgba(14, 111, 255, 0.55);
+  }
+  /* The angled prompt hints would collide with the bar in the small panel. */
+  .gl-hero-hints {
     display: none;
   }
 }
@@ -1343,6 +1376,82 @@
 #faq,
 #download {
   scroll-margin-top: 76px;
+}
+
+/* ── Mobile section rhythm ─────────────────────────────────── */
+/* Phones don't get the roaming orb (too much for the small screen) — the
+   blue lives in flat panel bands instead: the Glass explainer + snip demo,
+   the news strip, and the get-started section become solid blue with white
+   type, while every other section stays plain white. */
+@media (max-width: 860px) {
+  .glass-land .gl-any,
+  .glass-land .gl-snip,
+  .glass-land .gl-news,
+  .glass-land .gl-start {
+    background: linear-gradient(150deg, #2f7bff 0%, #0e6fff 55%, #0847c9 100%);
+  }
+  /* The explainer and its snip demo sit back-to-back — merge them into one
+     continuous band. Both gradients run straight down and meet on the same
+     color (#0a54e6) at the shared edge, so the seam is invisible. */
+  .glass-land .gl-any {
+    background: linear-gradient(180deg, #2f7bff 0%, #0e6fff 60%, #0a54e6 100%);
+  }
+  .glass-land .gl-snip {
+    background: linear-gradient(180deg, #0a54e6 0%, #0847c9 100%);
+  }
+
+  /* "One shortcut. Every screen." — white type on the blue band. */
+  .glass-land .gl-any-title {
+    color: #ffffff;
+  }
+  .glass-land .gl-any-title-dim {
+    color: rgba(255, 255, 255, 0.65);
+  }
+  .glass-land .gl-any-sub {
+    color: rgba(255, 255, 255, 0.88);
+  }
+  .glass-land .gl-any-stat dt {
+    color: #ffffff;
+  }
+  .glass-land .gl-any-stat dd {
+    color: rgba(255, 255, 255, 0.72);
+  }
+  .glass-land .gl-any-chip {
+    color: rgba(255, 255, 255, 0.8);
+  }
+  .glass-land .gl-any-chip:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: #ffffff;
+  }
+
+  /* Latest news — white type; tiles/cards already carry their own art. */
+  .glass-land .gl-news-title {
+    color: #ffffff;
+  }
+  .glass-land .gl-news-all {
+    color: rgba(255, 255, 255, 0.8);
+  }
+  .glass-land .gl-news-all:hover {
+    color: #ffffff;
+  }
+  .glass-land .gl-news-date {
+    color: rgba(255, 255, 255, 0.72);
+  }
+  .glass-land .gl-news-headline {
+    color: #ffffff;
+  }
+  .glass-land .gl-news-divider {
+    border-top-color: rgba(255, 255, 255, 0.3);
+  }
+
+  /* Get started — white title; the frosted cards go nearly opaque so their
+     dark copy keeps its contrast over the strong blue. */
+  .glass-land .gl-start-title {
+    color: #ffffff;
+  }
+  .glass-land .gl-start-card {
+    background: rgba(255, 255, 255, 0.92);
+  }
 }
 
 /* ============================================================================
@@ -2851,6 +2960,18 @@
 }
 .gl-demo-cta:active {
   transform: translateY(1px);
+}
+
+@media (max-width: 860px) {
+  /* Phones: keep the demo reachable near the top and stop iOS Safari from
+     zooming the page when the composer is focused (it zooms any input whose
+     font-size is under 16px). */
+  .gl-demo {
+    padding: 5rem 0.75rem 2rem;
+  }
+  .gl-demo .glo-ask {
+    font-size: 16px;
+  }
 }
 
 @keyframes gl-demo-pop {

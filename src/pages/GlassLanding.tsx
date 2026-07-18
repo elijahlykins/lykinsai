@@ -1601,7 +1601,7 @@ function PmKanban() {
         Drop ideas in Backlog. Overnight, LYKN expands them to Ready, then
         approve to schedule the next run.
       </p>
-      <div className="grid grid-cols-3 gap-2 items-start">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-start">
         {PM_KANBAN.map((c) => (
           <div
             key={c.col}

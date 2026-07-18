@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Menu, X } from "lucide-react";
 import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
 import lyknLogoWhite from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
 
@@ -99,9 +99,33 @@ export default function LandingHeader({
   const navigate = useNavigate();
   const [demoOpen, setDemoOpen] = useState(false);
   const [prodOpen, setProdOpen] = useState(false);
+  // Slide-down menu behind the hamburger on phones (the inline nav is hidden
+  // there — see the .lkn-menu-btn / .lkn-mobile-menu rules in index.css).
+  const [menuOpen, setMenuOpen] = useState(false);
   const prodRef = useRef<HTMLDivElement>(null);
   const goToSignup = () => navigate("/login");
   const goHome = () => navigate("/");
+
+  // Close the mobile menu on Escape and lock the page scroll behind it.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [menuOpen]);
+
+  /** Mobile menu taps: close the panel, then run the action. */
+  const menuGo = (fn: () => void) => {
+    setMenuOpen(false);
+    fn();
+  };
 
   // Hover open/close with a short grace period on leave, so the menu stays
   // put while the cursor travels down into it (or briefly strays off it)
@@ -238,7 +262,79 @@ export default function LandingHeader({
             </button>
           </div>
         </nav>
+
+        {/* Hamburger — only rendered visible on phones (CSS), where the inline
+            nav above is hidden. */}
+        <button
+          type="button"
+          className="lkn-menu-btn"
+          aria-label={menuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((o) => !o)}
+        >
+          {menuOpen ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
+        </button>
       </div>
+
+      {/* Slide-down mobile menu: product entries, the page links, and the
+          two CTAs, all full-width for thumbs. */}
+      {menuOpen && (
+        <nav className="lkn-mobile-menu" aria-label="Primary">
+          <div className="lkn-mobile-group">
+            <span className="lkn-mobile-label">Product</span>
+            {PRODUCT_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="lkn-mobile-link"
+                onClick={() => menuGo(() => goToProduct(item))}
+              >
+                <span className="lkn-mobile-link-name">{item.name}</span>
+                <span className="lkn-mobile-link-desc">{item.desc}</span>
+              </button>
+            ))}
+          </div>
+          <div className="lkn-mobile-group">
+            <button
+              type="button"
+              className="lkn-mobile-link"
+              onClick={() => menuGo(() => navigate("/pricing"))}
+            >
+              <span className="lkn-mobile-link-name">Pricing</span>
+            </button>
+            <button
+              type="button"
+              className="lkn-mobile-link"
+              onClick={() => menuGo(() => navigate("/news"))}
+            >
+              <span className="lkn-mobile-link-name">News</span>
+            </button>
+            <button
+              type="button"
+              className="lkn-mobile-link"
+              onClick={() => menuGo(() => navigate("/download"))}
+            >
+              <span className="lkn-mobile-link-name">Download</span>
+            </button>
+          </div>
+          <div className="lkn-mobile-ctas">
+            <button
+              type="button"
+              className="lkn-nav-signin"
+              onClick={() => menuGo(() => setDemoOpen(true))}
+            >
+              Watch Demo
+            </button>
+            <button
+              type="button"
+              className="lkn-nav-signup"
+              onClick={() => menuGo(goToSignup)}
+            >
+              Try for free
+            </button>
+          </div>
+        </nav>
+      )}
 
       {demoOpen && <DemoLightbox onClose={() => setDemoOpen(false)} />}
     </header>

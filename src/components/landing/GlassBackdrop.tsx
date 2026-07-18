@@ -1,5 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import "@/pages/GlassLanding.css";
+
+/* Below this width the glow + frosted panels are display:none (see
+   GlassLanding.css) — keep in sync with the media query there. */
+const COMPACT_QUERY = "(max-width: 860px)";
 
 interface GlassBackdropProps {
   /** Selectors for big titles sitting directly on the backdrop: their glyphs
@@ -46,6 +50,19 @@ export default function GlassBackdrop({
 }: GlassBackdropProps) {
   const pageBgRef = useRef<HTMLDivElement>(null);
 
+  // On phones the glow is hidden entirely (CSS) — the JS must not keep
+  // blending on-backdrop text toward white there, or copy turns invisible
+  // over the plain white page. Tracked live so rotating a tablet recovers.
+  const [compact, setCompact] = useState(
+    () => window.matchMedia(COMPACT_QUERY).matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(COMPACT_QUERY);
+    const onChange = () => setCompact(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
   // The page-wide blue glow: parked behind the hero panels on load, then
   // snaking left and right down the page as the user scrolls, with a softer
   // trailing glow lagging behind it. Positions land in CSS vars on the fixed
@@ -53,6 +70,8 @@ export default function GlassBackdrop({
   useEffect(() => {
     const bg = pageBgRef.current;
     if (!bg) return;
+    // Glow hidden on phones — nothing to position, and no text to recolor.
+    if (compact) return;
 
     // Text that sits directly on the page background (not on a card/window)
     // goes unreadable when the vivid blue slides behind it. Rather than a
@@ -296,7 +315,7 @@ export default function GlassBackdrop({
     // Selector lists are static per page — join them so inline array literals
     // don't retrigger the effect every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gradTextSelectors.join("|"), mixTextSelectors.join("|"), wander, startAtBottom, startAtTop, wanderPath]);
+  }, [gradTextSelectors.join("|"), mixTextSelectors.join("|"), wander, startAtBottom, startAtTop, wanderPath, compact]);
 
   return (
     <div className="gl-page-bg" aria-hidden="true" ref={pageBgRef}>
