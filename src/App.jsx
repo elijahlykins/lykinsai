@@ -1,8 +1,10 @@
 import '@/lib/installAuthFetch';
 import React, { Suspense, useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
-import { QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { queryClientInstance } from '@/lib/query-client';
+import { API_BASE_URL } from '@/lib/api-config';
+import { hasAppAccess, isSubscriptionGateExempt } from '@/lib/billingAccess';
 import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
@@ -11,6 +13,7 @@ import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
 
 import Login from "./pages/Login";
+import StartTrial from "./pages/StartTrial";
 import GlassLanding from "./pages/GlassLanding";
 import LyknChat from "./pages/LyknChat";
 import Settings from "./pages/Settings";
@@ -108,8 +111,48 @@ function GuestOnly({ children, to = "/app" }) {
   return children;
 }
 
+async function fetchBillingMeForGate() {
+  const res = await fetch(`${API_BASE_URL}/api/billing/me`);
+  if (!res.ok) throw new Error(`billing/me ${res.status}`);
+  return res.json();
+}
+
+// Every signed-in user must have passed trial checkout (card on file) before
+// using the app. Marketing/legal/auth routes are exempt; everyone else gets
+// bounced to the /start-trial plan picker until the server says they have
+// access. The server enforces the same rule on metered endpoints
+// (requireAppAccess), so this is UX, not the security boundary.
+function useSubscriptionGate() {
+  const { user, loading: authLoading } = useAuth();
+  const location = useLocation();
+  const exempt = isSubscriptionGateExempt(location.pathname);
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["billing-me", user?.id || "guest"],
+    queryFn: fetchBillingMeForGate,
+    enabled: Boolean(user?.id) && !exempt,
+    staleTime: 5_000,
+    retry: 1,
+  });
+
+  if (authLoading || !user || exempt) {
+    return { redirect: null, loading: false };
+  }
+  if (isLoading) {
+    return { redirect: null, loading: true };
+  }
+  if (!isError && data && !hasAppAccess(data)) {
+    if (location.pathname === "/start-trial") {
+      return { redirect: null, loading: false };
+    }
+    return { redirect: "/start-trial", loading: false };
+  }
+  return { redirect: null, loading: false };
+}
+
 function AppShell() {
   const location = useLocation();
+  const subscriptionGate = useSubscriptionGate();
   const isMobile = useIsMobile();
   const { isEmbedded: isEmbeddedSurface } = readEmbeddedPreviewParams(
     location.search,
@@ -171,6 +214,14 @@ function AppShell() {
     !isMarketingLanding &&
     chromeHidden;
 
+  if (subscriptionGate.loading) {
+    return null;
+  }
+
+  if (subscriptionGate.redirect && location.pathname !== subscriptionGate.redirect) {
+    return <Navigate to={subscriptionGate.redirect} replace />;
+  }
+
   return (
     <>
       {!chromeHidden && !isMobile && <AppSidebar />}
@@ -186,9 +237,9 @@ function AppShell() {
         <RouteErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
-            {/* Trials were retired in favor of a free tier. Any lingering link
-                to /start-trial just drops the user into the app. */}
-            <Route path="/start-trial" element={<Navigate to="/app" replace />} />
+            {/* Post-signup paywall: every new account picks a plan here and
+                starts a card-on-file trial before entering the app. */}
+            <Route path="/start-trial" element={<StartTrial />} />
             {/* OAuth consent screen — reached via 302 from API's /oauth/authorize.
                 Intentionally NOT wrapped in ProtectedRoute: the page handles its
                 own auth-gate inline so OAuth params survive the sign-in round-trip

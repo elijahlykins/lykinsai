@@ -781,7 +781,7 @@ const stripe = process.env.STRIPE_SECRET_KEY
 // Products + Prices in the Stripe dashboard.
 const STRIPE_TRIAL_DAYS = Math.max(
   1,
-  Number(process.env.STRIPE_TRIAL_DAYS || 7) || 7,
+  Number(process.env.STRIPE_TRIAL_DAYS || 14) || 14,
 );
 
 /** Checkout copy shown on Stripe's hosted page (supports Markdown). */
@@ -791,11 +791,11 @@ function trialCheckoutCustomText(trialDays = STRIPE_TRIAL_DAYS) {
   return {
     submit: {
       message:
-        `**${dayLabel} free — $0 due today.** Start your Pro trial now; cancel anytime before it ends and you won't be charged.`,
+        `**${dayLabel} free — $0 due today.** Start your LYKN trial now; cancel anytime before it ends and you won't be charged.`,
     },
     after_submit: {
       message:
-        `Your ${dayLabel} Pro trial is active. Cancel anytime from LYKN billing settings — no charge if you cancel before the trial ends.`,
+        `Your ${dayLabel} LYKN trial is active. Cancel anytime from LYKN billing settings — no charge if you cancel before the trial ends.`,
     },
   };
 }
@@ -22318,21 +22318,44 @@ function subscriptionPeriodStillActive(row) {
   return Number.isFinite(end) && end > Date.now();
 }
 
-// Free tier: every authenticated user may open the app, regardless of billing
-// row or plan. Paid plans (Pro) unlock higher limits and frontier models via
-// PLAN_LIMITS / effective_plan_for_user, but the app itself is no longer gated
-// behind checkout. The `row` arg is retained for call-site compatibility.
+// Every account must pass trial checkout (card on file) before using the app:
+//   • Active states (trialing / active / past_due) → access.
+//   • Canceled/ended BUT still inside the paid period → access until it lapses
+//     (so a "cancel at period end" user keeps what they paid for, then loses it).
+//   • Manual / comped grants (a paid plan on file with NO Stripe subscription)
+//     stay admin-controlled and keep access — set-user-plan.mjs is the only
+//     supported way in/out of those.
 function hasAppAccessRow(row) {
-  void row;
-  return true;
+  if (!row) return false;
+  const status = String(row.status || '').toLowerCase();
+  if (!row.stripe_subscription_id) {
+    const plan = String(row.plan || 'free').toLowerCase();
+    return plan !== 'free' && Boolean(PLAN_LIMITS[plan]);
+  }
+  if (['trialing', 'active', 'past_due'].includes(status)) return true;
+  return subscriptionPeriodStillActive(row);
 }
 
-// Server-side gate for metered/generative endpoints. With the free tier, any
-// authenticated user may call these — plan-based limits (model tier, quotas)
-// are enforced separately at invoke time and via DB triggers, so there's no
-// checkout gate here. `authenticateToken`/`requireAuth` runs upstream.
+// Server-side gate for metered/generative endpoints so a user without an
+// active subscription can't bypass the frontend route gate and burn spend by
+// calling the API directly. Returns 402 with needs_trial_checkout so the
+// client can route them to /start-trial.
 async function requireAppAccess(req, res, next) {
-  return next();
+  try {
+    if (isCompedProEmail(req.user?.email)) return next();
+    const row = await loadBillingRow(req.user?.id);
+    if (hasAppAccessRow(row)) return next();
+    return res.status(402).json({
+      error: 'An active subscription is required.',
+      code: 'subscription_required',
+      needs_trial_checkout: true,
+    });
+  } catch (err) {
+    console.error('❌ requireAppAccess failed:', err?.message || err);
+    // Fail open on infra errors so a transient DB hiccup doesn't lock out
+    // paying users; the frontend gate still applies.
+    return next();
+  }
 }
 
 /** True when we already have a Stripe customer tied to a real subscription history. */
