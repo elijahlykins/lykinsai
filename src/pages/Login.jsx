@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isConnectOnboardingDone } from "@/lib/landingHandoff";
@@ -173,35 +173,54 @@ const PageShell = ({ children }) => (
 export default function Login() {
   const nav = useNavigate();
   const location = useLocation();
-  const { user, loading, authError, signInWithOAuth, signInWithEmail, signUpWithEmail } = useAuth();
+  const {
+    user,
+    loading,
+    authError,
+    signInWithOAuth,
+    signInWithEmail,
+    signUpWithEmail,
+    resetPasswordForEmail,
+    resendSignupEmail,
+  } = useAuth();
+  // "login" | "signup" | "forgot" (password-reset email request)
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const [showSuccess, setShowSuccess] = useState(false);
+  // null | "confirm" (signup confirmation sent) | "reset" (recovery link sent)
+  const [successKind, setSuccessKind] = useState(null);
+  // idle | sending | sent | error — the "Resend email" button on the
+  // check-your-email screen.
+  const [resendState, setResendState] = useState("idle");
 
   // Default post-login destination is the app, NOT the landing page.
   // `/` now renders the synthetic-intelligence onboarding prototype which
   // is a guest-only experience; signed-in users should land directly in
   // their grid. `from` is still honored so deep links into a specific
   // route (e.g. `/vault`, `/chat/<id>`) keep working through the auth gate.
-  const from = location.state?.from?.pathname || "/app";
+  // Search + hash are preserved too — dropping them breaks any deep link that
+  // carries state in the query string (worst case: /share?url=… lost its URL).
+  const fromLocation = location.state?.from;
+  const from = fromLocation?.pathname
+    ? `${fromLocation.pathname}${fromLocation.search || ""}${fromLocation.hash || ""}`
+    : "/app";
   const prefilledEmail = location.state?.email;
 
   useEffect(() => {
     if (prefilledEmail) setEmail(prefilledEmail);
   }, [prefilledEmail]);
 
-  // Post-auth routing. With the free tier there's no checkout gate — every
-  // authenticated user can use the app. NEW users (signup auto-confirmed OR
-  // landing here right after clicking the email-confirmation link) hit
-  // /onboarding/connect so they see the AI-tool cards; everyone else goes to
-  // `from` (default /app). The "new user" signal is user.created_at within the
-  // last 10 minutes, which covers both email and Google OAuth signups without a
-  // server migration. An explicit `from` (set by ProtectedRoute on a deep link)
-  // always wins so we don't hijack their intent.
+  // Post-auth routing. NEW users (signup auto-confirmed OR landing here right
+  // after clicking the email-confirmation link) hit /onboarding/connect so
+  // they see the AI-tool cards; everyone else goes to `from` (default /app).
+  // The subscription gate in App.jsx then routes anyone without trial/paid
+  // access to /start-trial. The "new user" signal is user.created_at within
+  // the last 10 minutes, which covers both email and Google OAuth signups
+  // without a server migration. An explicit `from` (set by ProtectedRoute on
+  // a deep link) always wins so we don't hijack their intent.
   useEffect(() => {
     if (loading || !user) return;
     const hasExplicitFrom = !!location.state?.from?.pathname;
@@ -216,12 +235,21 @@ export default function Login() {
     nav(from, { replace: true });
   }, [loading, nav, user, from, location.state]);
 
-  const displayError = friendlyError(error || authError);
+  // `error` state is set with already-humanized copy (validation + the catch
+  // below run it through friendlyError once). Only `authError` — the raw
+  // Supabase error surfaced by the auth context — still needs mapping here.
+  // Running `error` through friendlyError a second time used to collapse
+  // every specific message into the generic "Something went wrong" fallback.
+  const displayError = error || friendlyError(authError);
 
   const handleSubmit = async (e) => {
     e?.preventDefault();
     setError(null);
-    if (!email.trim() || !password.trim()) {
+    if (!email.trim()) {
+      setError("Email is required.");
+      return;
+    }
+    if (mode !== "forgot" && !password.trim()) {
       setError("Email and password are required.");
       return;
     }
@@ -233,6 +261,10 @@ export default function Login() {
     try {
       if (mode === "login") {
         await signInWithEmail(email.trim(), password);
+      } else if (mode === "forgot") {
+        await resetPasswordForEmail(email.trim());
+        setResendState("idle");
+        setSuccessKind("reset");
       } else {
         const data = await signUpWithEmail(email.trim(), password, { name: name.trim() });
         const u = data?.user;
@@ -246,8 +278,13 @@ export default function Login() {
           setError("An account with this email already exists. Try signing in instead.");
         } else if (!u) {
           setError("Something went wrong. Please try again.");
+        } else if (data?.session) {
+          // Email confirmation is disabled / auto-confirm: the user is signed
+          // in right now. Skip the "check your email" screen — the post-auth
+          // useEffect above handles the redirect into the app.
         } else {
-          setShowSuccess(true);
+          setResendState("idle");
+          setSuccessKind("confirm");
         }
       }
     } catch (err) {
@@ -262,13 +299,26 @@ export default function Login() {
     if (e.key === "Enter" && !submitting) handleSubmit(e);
   };
 
-  const switchMode = () => {
-    setMode(mode === "login" ? "signup" : "login");
-    setError(null);
-    setShowSuccess(false);
+  // "Resend email" on the check-your-email screen. Covers both the signup
+  // confirmation and the password-recovery link; Supabase rate-limits
+  // resends per address, so surface that case honestly.
+  const handleResend = async () => {
+    if (resendState === "sending") return;
+    setResendState("sending");
+    try {
+      if (successKind === "reset") {
+        await resetPasswordForEmail(email.trim());
+      } else {
+        await resendSignupEmail(email.trim());
+      }
+      setResendState("sent");
+    } catch (err) {
+      if (import.meta.env.DEV) console.error("Resend failed:", err);
+      setResendState("error");
+    }
   };
 
-  if (showSuccess) {
+  if (successKind) {
     return (
       <PageShell>
         <motion.div
@@ -290,16 +340,45 @@ export default function Login() {
             Check your email
           </h2>
           <p className="text-slate-600 mb-8">
-            We sent a confirmation link to{" "}
-            <span className="font-medium text-slate-800">{email}</span>. Click
-            the link to activate your account.
+            {successKind === "reset" ? (
+              <>
+                We sent a password-reset link to{" "}
+                <span className="font-medium text-slate-800">{email}</span>.
+                Click it to choose a new password.
+              </>
+            ) : (
+              <>
+                We sent a confirmation link to{" "}
+                <span className="font-medium text-slate-800">{email}</span>.
+                Click the link to activate your account.
+              </>
+            )}
           </p>
-          <button
-            onClick={() => { setShowSuccess(false); setMode("login"); }}
-            className="text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors"
-          >
-            Back to login
-          </button>
+          <div className="flex items-center gap-5">
+            <button
+              onClick={() => { setSuccessKind(null); setMode("login"); }}
+              className="text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors"
+            >
+              Back to login
+            </button>
+            <button
+              onClick={handleResend}
+              disabled={resendState === "sending" || resendState === "sent"}
+              className="text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors disabled:opacity-60"
+            >
+              {resendState === "sending"
+                ? "Sending…"
+                : resendState === "sent"
+                  ? "Email sent again"
+                  : "Resend email"}
+            </button>
+          </div>
+          {resendState === "error" && (
+            <p className="mt-3 text-xs text-red-600">
+              Couldn't resend just now — wait a minute and try again, and check
+              your spam folder.
+            </p>
+          )}
         </motion.div>
       </PageShell>
     );
@@ -326,6 +405,8 @@ export default function Login() {
                   draggable={false}
                 />
               </span>
+            ) : mode === "forgot" ? (
+              "Reset your password"
             ) : (
               "Create your account"
             )}
@@ -333,26 +414,32 @@ export default function Login() {
           <p className="text-sm text-slate-500 mb-8">
             {mode === "login"
               ? "Sign in to your intelligence layer"
-              : "Build an AI that actually knows you"}
+              : mode === "forgot"
+                ? "Enter your email and we'll send you a reset link"
+                : "Build an AI that actually knows you"}
           </p>
 
-          <button
-            type="button"
-            onClick={() => signInWithOAuth("google")}
-            className={SECONDARY_BTN_CLS}
-          >
-            <GoogleIcon />
-            Continue with Google
-          </button>
+          {mode !== "forgot" && (
+            <>
+              <button
+                type="button"
+                onClick={() => signInWithOAuth("google")}
+                className={SECONDARY_BTN_CLS}
+              >
+                <GoogleIcon />
+                Continue with Google
+              </button>
 
-          <div className="relative my-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-200" />
-            </div>
-            <div className="relative flex justify-center text-xs">
-              <span className="bg-white px-3 py-0.5 text-slate-500 font-medium">or</span>
-            </div>
-          </div>
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-slate-200" />
+                </div>
+                <div className="relative flex justify-center text-xs">
+                  <span className="bg-white px-3 py-0.5 text-slate-500 font-medium">or</span>
+                </div>
+              </div>
+            </>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-3">
             {mode === "signup" && (
@@ -379,32 +466,61 @@ export default function Login() {
               autoComplete="email"
               className={INPUT_CLS}
             />
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Password"
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-              className={INPUT_CLS}
-            />
+            {mode !== "forgot" && (
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Password"
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                className={INPUT_CLS}
+              />
+            )}
+            {mode === "login" && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => { setMode("forgot"); setError(null); }}
+                  className="text-xs font-medium text-slate-500 hover:text-blue-600 transition-colors"
+                >
+                  Forgot password?
+                </button>
+              </div>
+            )}
 
             <ErrorBanner message={displayError} />
 
             <SubmitButton
               submitting={submitting}
-              label={mode === "login" ? "Sign in" : "Create account"}
-              busyLabel={mode === "login" ? "Signing in..." : "Creating account..."}
+              label={
+                mode === "login"
+                  ? "Sign in"
+                  : mode === "forgot"
+                    ? "Send reset link"
+                    : "Create account"
+              }
+              busyLabel={
+                mode === "login"
+                  ? "Signing in..."
+                  : mode === "forgot"
+                    ? "Sending..."
+                    : "Creating account..."
+              }
             />
           </form>
         </motion.div>
       </AnimatePresence>
 
       <div className="mt-6 text-sm text-slate-600">
-        {mode === "login" ? "Don't have an account?" : "Already have an account?"}{" "}
+        {mode === "login"
+          ? "Don't have an account?"
+          : mode === "forgot"
+            ? "Remembered it?"
+            : "Already have an account?"}{" "}
         <button
           type="button"
-          onClick={switchMode}
+          onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(null); setSuccessKind(null); }}
           className="font-semibold text-blue-600 hover:text-blue-700 transition-colors"
         >
           {mode === "login" ? "Sign up" : "Sign in"}

@@ -354,13 +354,41 @@ export default function SettingsModal({ isOpen, onClose }) {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
       } else {
-        const { error } = await supabase.auth.signUp({ email, password });
+        // Mirror the main Login page's signup handling: send confirmation
+        // links back to this origin, and detect the "email already
+        // registered" shape (Supabase returns a user with empty identities,
+        // or confirmed + no session, instead of an error).
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: `${window.location.origin}/login` },
+        });
         if (error) throw error;
+        const u = data?.user;
+        const emptyIdentities = !u?.identities || u.identities.length === 0;
+        const alreadyConfirmed = !!(u?.email_confirmed_at || u?.confirmed_at);
+        if ((u && emptyIdentities) || (u && !data?.session && alreadyConfirmed)) {
+          setAuthError('An account with this email already exists. Try signing in instead.');
+          return;
+        }
+        if (u && !data?.session) {
+          setAuthError(`Check ${email} for a confirmation link to finish creating your account.`);
+          return;
+        }
       }
       setEmail('');
       setPassword('');
-    } catch {
-      setAuthError('Sign-in failed. Please check your email and password.');
+    } catch (err) {
+      const msg = String(err?.message || '').toLowerCase();
+      if (msg.includes('invalid login') || msg.includes('invalid credentials')) {
+        setAuthError('Incorrect email or password. Please try again.');
+      } else if (msg.includes('email not confirmed')) {
+        setAuthError('Please confirm your email before signing in — check your inbox.');
+      } else if (msg.includes('already registered') || msg.includes('already been registered')) {
+        setAuthError('An account with this email already exists. Try signing in instead.');
+      } else {
+        setAuthError('Sign-in failed. Please check your email and password.');
+      }
     }
   };
 

@@ -9,8 +9,9 @@
 //   node scripts/set-user-plan.mjs someone@x.io free inactive
 //
 // Notes:
-//   • Plans must be one of: free | studio | studio_pro | studio_max
-//     (matches the CHECK constraint in supabase-migrations/028_billing.sql).
+//   • Plans must be one of: free | student | studio | max | studio_pro |
+//     studio_max (matches the CHECK constraint in supabase-migrations/
+//     028_billing.sql as widened by 119_student_max_plans.sql).
 //   • Status mirrors Stripe: active | trialing | past_due | canceled |
 //     unpaid | inactive. Free users normally stay 'inactive'; paid plans
 //     need 'active' or 'trialing' for useUserPlan() to keep them unlocked.
@@ -19,7 +20,7 @@
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 
-const VALID_PLANS = new Set(['free', 'studio', 'studio_pro', 'studio_max']);
+const VALID_PLANS = new Set(['free', 'student', 'studio', 'max', 'studio_pro', 'studio_max']);
 const VALID_STATUSES = new Set([
   'active',
   'trialing',

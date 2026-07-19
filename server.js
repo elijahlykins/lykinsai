@@ -1279,11 +1279,17 @@ app.set('supabaseAdmin', supabaseAdmin);
 // middleware slaps X-Frame-Options: DENY + a `default-src 'none'` CSP on every
 // response, which would blank the preview — so the proxy route relaxes these
 // just for the file it serves.
+// CSP `frame-ancestors` can't express the tight regex our CORS layer uses for
+// Vercel previews (partial-subdomain wildcards aren't valid CSP source
+// expressions). So in PRODUCTION we drop the broad `https://*.vercel.app` — it
+// would let ANY Vercel deployment iframe served artifacts (clickjacking /
+// phishing chrome). Preview/dev builds keep it for convenience; a specific
+// preview that needs framing can set FRONTEND_BASE_URL.
 const FILE_PROXY_FRAME_ANCESTORS = [
   "'self'",
   'https://lykn.io',
   'https://*.lykn.io',
-  'https://*.vercel.app',
+  process.env.NODE_ENV === 'production' ? null : 'https://*.vercel.app',
   'http://localhost:*',
   // The Electron glass overlay (loaded via loadFile → file:// origin) embeds
   // built artifacts in an inline preview iframe (Build mode).
@@ -1394,15 +1400,22 @@ app.post('/api/artifacts/react/rebuild', requireAuth, async (req, res) => {
 // ============================================
 // ADMIN GATE — restrict /api/admin/* to allowlisted email(s)
 // ============================================
-// Configure via ADMIN_EMAILS env (comma-separated). Defaults to admin@lykn.io
-// so the dashboard works out of the box for the project owner.
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || 'admin@lykn.io')
+// Configure via ADMIN_EMAILS env (comma-separated). NO default — an empty
+// allowlist means every /api/admin/* request is denied. validateSecrets()
+// makes ADMIN_EMAILS mandatory in production, so this is only ever empty in a
+// misconfigured dev box, where failing closed is the safe behavior. (A baked-in
+// default like admin@lykn.io would grant admin to whoever registers that email.)
+const ADMIN_EMAILS = String(process.env.ADMIN_EMAILS || '')
   .split(',')
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 
 function requireAdmin(req, res, next) {
   const email = String(req.user?.email || '').toLowerCase();
+  if (ADMIN_EMAILS.length === 0) {
+    console.warn('🔒 requireAdmin: blocked — ADMIN_EMAILS not configured', { path: req.path });
+    return res.status(403).json({ error: 'Admin only' });
+  }
   if (!email || !ADMIN_EMAILS.includes(email)) {
     console.warn('🔒 requireAdmin: blocked', { email: email || '(none)', path: req.path });
     return res.status(403).json({ error: 'Admin only' });
@@ -4510,8 +4523,13 @@ const RETRYABLE_STATUSES = new Set([429, 503, 529]);
 // exhausted, spending limit, billing/permission 403s), not just transient
 // capacity errors. xAI's out-of-credits message is "used all available
 // credits or reached its monthly spending limit" (code permission-denied).
+// Auth failures (invalid/stale API key, revoked token) also count: they are
+// account-level failures on ONE provider, and another provider in the chain
+// can still answer. Without this, a bad XAI_API_KEY in the deployed env made
+// every build-mode turn die with the generic "trouble connecting" error
+// instead of falling back to Claude/GPT/Gemini.
 const isRetryableProviderError = (errMsg) =>
-  /429|rate.?limit|overloaded|529|503|too many|capacity|resource.?exhaust|quota.?exceed|credits?|spending.?limit|permission.?denied|billing|insufficient.?funds/i.test(errMsg) ||
+  /429|rate.?limit|overloaded|529|503|too many|capacity|resource.?exhaust|quota.?exceed|credits?|spending.?limit|permission.?denied|billing|insufficient.?funds|invalid.?(api.?)?key|incorrect.?api.?key|unauthorized|authentication|401|403|forbidden/i.test(errMsg) ||
   isTogetherDedicatedEndpointError(errMsg);
 
 function getFallbackModels(failedModel) {
@@ -7077,7 +7095,7 @@ const MAX_USER_INPUT_CHARS = 200_000;
 const compressConversation = (msgs, fullCount = 4, maxChars = AI_BUDGETS.conversation) =>
   compressConversationForPrompt(msgs, { fullCount, maxChars, recentMessageMax: 900, olderSnippetMax: 60 });
 
-app.post('/api/synthesis/reindex', requireAuth, synthesisLimiter, async (req, res) => {
+app.post('/api/synthesis/reindex', requireAuth, requireAppAccess, synthesisLimiter, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -7161,7 +7179,7 @@ app.post('/api/synthesis/purge', requireAuth, synthesisLimiter, async (req, res)
   }
 });
 
-app.post('/api/synthesis/refresh-profile', requireAuth, profileRefreshLimiter, async (req, res) => {
+app.post('/api/synthesis/refresh-profile', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -7200,7 +7218,7 @@ app.get('/api/synthesis/profile/status', requireAuth, async (req, res) => {
  * POST body: { answers: { role?, focus?, tools?, constraints?, thinkingStyle? }, force?: boolean }
  * Idempotent while intake_completed_at is set unless force is true.
  */
-app.post('/api/synthesis/intake', requireAuth, profileRefreshLimiter, async (req, res) => {
+app.post('/api/synthesis/intake', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -7300,7 +7318,7 @@ app.post('/api/synthesis/profile/facts/:id/feedback', requireAuth, async (req, r
 
 // Lightweight on-demand learning pass — useful for "Refresh now" button in
 // the UI and for manual debugging. Throttled by profileRefreshLimiter (8/15min).
-app.post('/api/synthesis/profile/learn-now', requireAuth, profileRefreshLimiter, async (req, res) => {
+app.post('/api/synthesis/profile/learn-now', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -7706,7 +7724,7 @@ app.delete('/api/account', requireAuth, async (req, res) => {
 // flow. It writes to the same lykn_user_model_facts table the periodic
 // learning pass uses, and reuses the same reconciler so duplicates merge
 // cleanly instead of double-spawning a node in the mind map.
-app.post('/api/learned', requireAuth, profileRefreshLimiter, async (req, res) => {
+app.post('/api/learned', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -7883,7 +7901,7 @@ NEGATIVE facts ("I procrastinate on cold outreach", "math gives me anxiety") are
 
 If unsure whether something counts as personal, lean toward emitting a fact rather than {"none":true} — false positives are recoverable, silent misses aren't.`;
 
-app.post('/api/learned/auto', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/learned/auto', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -11225,7 +11243,7 @@ Use empty arrays if unknown. Be factual; infer only from the text.`;
  * Post-save: LLM summary + signals on notes row, then re-embed vault_note for retrieval.
  * Requires migration 025 (ai_summary, ai_signals on notes).
  */
-app.post('/api/vault/enrich-note', requireAuth, synthesisLimiter, async (req, res) => {
+app.post('/api/vault/enrich-note', requireAuth, requireAppAccess, synthesisLimiter, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -12672,7 +12690,7 @@ ${t}
               anthropicContent.push({ type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } });
             }
           } else if (url.startsWith('http')) {
-            const imgRes = await fetch(url);
+            const imgRes = await safeFetch(url);
             if (imgRes.ok) {
               const buf = Buffer.from(await imgRes.arrayBuffer());
               const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
@@ -12763,7 +12781,7 @@ ${t}
             }
           } else if (url.startsWith('http')) {
             console.log(`   🖼️ Gemini: fetching remote image: ${url.slice(0, 80)}...`);
-            const imgRes = await fetch(url);
+            const imgRes = await safeFetch(url);
             if (imgRes.ok) {
               const buf = Buffer.from(await imgRes.arrayBuffer());
               const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
@@ -14970,7 +14988,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
               if (match) geminiParts.push({ inline_data: { mime_type: match[1], data: match[2] } });
             } else {
-              const imgRes = await fetch(url);
+              const imgRes = await safeFetch(url);
               if (imgRes.ok) {
                 const buf = Buffer.from(await imgRes.arrayBuffer());
                 const mime = imgRes.headers.get('content-type') || 'image/png';
@@ -15296,7 +15314,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               } else {
                 // Gemini doesn't accept arbitrary URLs in inline_data —
                 // fetch + base64 like the legacy path does. Best-effort.
-                const imgRes = await fetch(url);
+                const imgRes = await safeFetch(url);
                 if (imgRes.ok) {
                   const buf = Buffer.from(await imgRes.arrayBuffer());
                   const mime = imgRes.headers.get('content-type') || 'image/png';
@@ -15538,7 +15556,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
 // and well under any reasonable token budget.
 const VAULT_SEARCH_MAX_PROMPT_BYTES = 256 * 1024;
 
-app.post('/api/ai/vault-search', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/vault-search', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const { prompt } = req.body || {};
     if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
@@ -15798,7 +15816,7 @@ const VAULT_BACKFILL_OR_FILTER =
 //   2. gets an ai_summary via enrichVaultNoteSummary,
 //   3. is re-embedded so semantic + keyword vault search both find it.
 // Idempotent + resumable: already-described items are skipped by the filter.
-app.post('/api/vault/backfill-descriptions', requireAuth, describeLimiter, async (req, res) => {
+app.post('/api/vault/backfill-descriptions', requireAuth, requireAppAccess, describeLimiter, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -15919,7 +15937,7 @@ app.post('/api/vault/backfill-descriptions', requireAuth, describeLimiter, async
   }
 });
 
-app.post('/api/ai/describe-image', requireAuth, describeLimiter, async (req, res) => {
+app.post('/api/ai/describe-image', requireAuth, requireAppAccess, describeLimiter, async (req, res) => {
   try {
     const { imageUrl, textContent, fileType, fileName } = req.body || {};
     const url = String(imageUrl || '').trim();
@@ -16228,7 +16246,7 @@ app.post('/api/ai/meeting-chunk', requireAuth, requireAppAccess, aiLimiter, chec
 // ──────────────────────────────────────────────────
 // Conversation summarization — compress older turns to save tokens
 // ──────────────────────────────────────────────────
-app.post('/api/ai/summarize-conversation', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/summarize-conversation', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
@@ -16305,7 +16323,7 @@ app.post('/api/ai/summarize-conversation', requireAuth, aiLimiter, async (req, r
 // clean. Given the previous cleaned tail as context so it can merge a sentence
 // split across chunks and never repeat text.
 // ──────────────────────────────────────────────────
-app.post('/api/ai/clean-transcript', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/clean-transcript', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
@@ -16385,7 +16403,7 @@ app.post('/api/ai/clean-transcript', requireAuth, aiLimiter, async (req, res) =>
 // quick Serper search mid-sentence and compose the answer from real results.
 // Returns { insight: null } for most calls — silence is the default.
 // ──────────────────────────────────────────────────
-app.post('/api/ai/live-assist', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/live-assist', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
@@ -16524,7 +16542,7 @@ app.post('/api/ai/live-assist', requireAuth, aiLimiter, async (req, res) => {
 // user, "Them" = others). Called periodically while listening so the overlay can
 // show notes that build up live. Returns structured JSON.
 // ──────────────────────────────────────────────────
-app.post('/api/ai/meeting-notes', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/meeting-notes', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   const empty = {
     summary: '', keyPoints: [], actionItems: [], questionsToAsk: [], suggestions: [], topics: [],
   };
@@ -16616,7 +16634,7 @@ app.post('/api/ai/meeting-notes', requireAuth, aiLimiter, async (req, res) => {
 // best search query; we then run the existing web search for genuine URLs (never
 // model-hallucinated links). Best-effort — returns empty arrays on any failure.
 // ──────────────────────────────────────────────────
-app.post('/api/ai/suggest', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/suggest', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   const empty = { followups: [], links: [] };
   try {
     const apiKey = process.env.OPENAI_API_KEY;
@@ -16711,7 +16729,7 @@ app.post('/api/ai/suggest', requireAuth, aiLimiter, async (req, res) => {
 // ──────────────────────────────────────────────────
 // Auto-name grid — cheapest model, fire-and-forget from client
 // ──────────────────────────────────────────────────
-app.post('/api/ai/name-grid', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/name-grid', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
@@ -17170,7 +17188,7 @@ function buildBrowserPlannerMessages({ systemContent, userText, imageUrl }) {
 // configured we use its single-turn element localization — it returns a
 // dependable click-point on a 0–1000 scale. The Electron client combines this
 // point with (or falls back to) its own vision-box request.
-app.post('/api/desktop/locate-element', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/desktop/locate-element', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const imageUrl = String(req.body?.imageUrl || '');
     const target = String(req.body?.target || '').slice(0, 400).trim();
@@ -17189,7 +17207,7 @@ app.post('/api/desktop/locate-element', requireAuth, aiLimiter, async (req, res)
 // Plan browser-control steps for the desktop overlay: given the user's intent
 // and a list of interactable elements on the active tab, return a short action
 // sequence (click / type / press / scroll). Selectors must come from the scan.
-app.post('/api/desktop/browser-plan', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/desktop/browser-plan', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     if (!browserControlConfigured()) return res.status(503).json({ error: 'AI not configured' });
 
@@ -17315,7 +17333,7 @@ app.post('/api/desktop/browser-plan', requireAuth, aiLimiter, async (req, res) =
 });
 
 // Next-step planner for adaptive browser control — re-scan after each action.
-app.post('/api/desktop/browser-plan-next', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/desktop/browser-plan-next', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     if (!browserControlConfigured()) return res.status(503).json({ error: 'AI not configured' });
 
@@ -17661,7 +17679,7 @@ app.post('/api/desktop/browser-plan-next', requireAuth, aiLimiter, async (req, r
 
 
 // Turn raw browser automation results into a user-facing LYKN overlay message.
-app.post('/api/desktop/browser-report', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/desktop/browser-report', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'AI not configured' });
 
@@ -17892,7 +17910,7 @@ app.post('/api/desktop/chats/save', requireAuth, async (req, res) => {
 //   • silent no-op on any failure (returns 200 with applied:false) so
 //     a flake never breaks the chat surface
 // ──────────────────────────────────────────────────
-app.post('/api/ai/name-chat', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/name-chat', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(503).json({ error: 'LLM not configured' });
@@ -19127,7 +19145,7 @@ app.post('/api/ai/realtime/session', requireAuth, requireAppAccess, aiLimiter, c
 // it against the SAME synthesis-layer capabilities the text chat / MCP use,
 // and return JSON the client feeds back as the tool output. Secrets + DB
 // access stay server-side; the realtime model never sees them.
-app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/realtime/tool', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ ok: false, error: 'Unauthorized' });
@@ -19482,7 +19500,7 @@ app.post('/api/ai/realtime/tool', requireAuth, aiLimiter, async (req, res) => {
 // endpoint only performs the language rewrite and returns the new text plus a
 // short summary of what changed.
 const TUNE_INSTRUCTIONS_MAX_LEN = 1500;
-app.post('/api/ai/tune-instructions', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/tune-instructions', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(503).json({ ok: false, error: 'tuning_unavailable' });
@@ -19575,8 +19593,17 @@ app.post('/api/ai/tune-instructions', requireAuth, aiLimiter, async (req, res) =
 // server must be publicly reachable for the full loop (won't work on
 // localhost). The OpenAI Realtime path remains the default.
 
+// Dedicated HMAC key for voice/file-proxy session tokens. Must NOT fall back to
+// the service-role key (that would couple token-forgery blast radius to the DB
+// master key) or to a hard-coded dev string (forgeable). validateSecrets()
+// makes VOICE_SESSION_SECRET mandatory in production; the dev-only fallback
+// below is a clearly-marked random per-process value so local runs still work
+// without ever shipping a predictable secret.
 const VOICE_SESSION_SECRET =
-  process.env.VOICE_SESSION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || 'lykn-dev-voice-secret';
+  process.env.VOICE_SESSION_SECRET ||
+  (process.env.NODE_ENV === 'production'
+    ? (() => { throw new Error('VOICE_SESSION_SECRET is required in production'); })()
+    : `dev-ephemeral-${crypto.randomBytes(24).toString('hex')}`);
 const VOICE_SESSION_TTL_MS = 60 * 60 * 1000; // 1h — covers a long voice call.
 
 // Per-conversation grounding, keyed by the signed session token. Lets the
@@ -19720,7 +19747,7 @@ app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimit
 // endpoint injects it into every turn's grounding — giving voice the same
 // "sees your screen" ability the typed overlay chat has. Best-effort and
 // non-blocking; the screen is captured + described in the Electron app.
-app.post('/api/ai/realtime/screen', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/ai/realtime/screen', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const sessionToken = String(req.body?.sessionToken || '').trim();
     const text = String(req.body?.text || '').slice(0, 4000).trim();
@@ -20319,7 +20346,7 @@ app.post('/api/youtube/retranscribe-segment', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/youtube/answer', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/youtube/answer', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
     const { videoId, question, allowOcr } = req.body || {};
     if (!videoId || !question) {
@@ -20358,7 +20385,7 @@ app.post('/api/youtube/answer', requireAuth, aiLimiter, async (req, res) => {
 });
 
 // Whisper transcription endpoint for direct file uploads
-app.post('/api/whisper/transcribe', requireAuth, aiLimiter, upload.single('file'), async (req, res) => {
+app.post('/api/whisper/transcribe', requireAuth, requireAppAccess, aiLimiter, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded. Send a video/audio file as multipart "file" field.' });
@@ -20785,10 +20812,11 @@ app.get('/api/unfurl', requireAuth, async (req, res) => {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
-    const response = await fetch(url, {
+    // safeFetch re-validates every redirect hop so an allowed public URL can't
+    // 30x-redirect into an internal address after the initial isUrlSafe check.
+    const response = await safeFetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LYKNBot/1.0)' },
       signal: controller.signal,
-      redirect: 'follow',
     });
     clearTimeout(timeout);
 
@@ -22192,32 +22220,27 @@ app.get('/api/admin/security/audit', requireAuth, requireAdmin, async (req, res)
 const PLAN_IDS = new Set(['student', 'studio', 'max']);
 const BILLING_PERIODS = new Set(['monthly', 'annual']);
 
-// ---------------------------------------------------------------------------
-// Plan ordering. Used by the monotone-up rule in syncSubscriptionToBilling
-// and resolveUserPlan: once a user reaches plan tier X, no Stripe webhook
-// event or subscription-status flip is allowed to move them below X. The
-// ONLY path that can strictly decrease a user's plan is an explicit admin
-// override (scripts/set-user-plan.mjs).
-//
-// Why: refunds, chargebacks, expired cards, accidentally-canceled subs,
-// and Stripe price-id misroutes have all caused phantom downgrades in
-// the past, locking paying users out of features they'd paid for. The
-// product rule is "once upgraded, always upgraded" — payment-collection
-// belongs to Stripe + status flags, not to the access-control gate.
-// ---------------------------------------------------------------------------
-const PLAN_RANK = { free: 0, student: 1, studio: 1, studio_pro: 1, studio_max: 1, max: 2 };
-
-function planRank(plan) {
-  return PLAN_RANK[String(plan || 'free').toLowerCase()] ?? 0;
-}
+// Plan-tier write rules live in syncSubscriptionToBilling: while a
+// subscription is active/trialing/past_due, the billed Stripe price is the
+// plan (both directions, so portal upgrades AND downgrades sync). On
+// canceled/unpaid subs the plan is never written down — refunds, chargebacks,
+// and expired cards must not phantom-downgrade the tier. The only explicit
+// downgrade path is scripts/set-user-plan.mjs.
 
 function stripeConfigured() {
   return Boolean(stripe && supabaseAdmin);
 }
 
 function appUrlFromReq(req) {
-  const explicit = process.env.APP_URL || process.env.FRONTEND_URL;
+  const explicit = process.env.APP_URL || process.env.FRONTEND_URL || process.env.FRONTEND_BASE_URL;
   if (explicit) return explicit.replace(/\/$/, '');
+  // Do NOT fall back to a caller-supplied Origin in production: it flows into
+  // Stripe `success_url` / portal `return_url`, so a crafted Origin would point
+  // the post-checkout redirect at an attacker host (phishing / token capture).
+  // Require an explicit APP_URL in prod; only trust Origin in local dev.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('APP_URL (or FRONTEND_URL) must be set in production for Stripe return URLs');
+  }
   const origin = req.headers.origin;
   if (origin) return origin.replace(/\/$/, '');
   return 'http://localhost:5173';
@@ -22340,11 +22363,34 @@ function hasAppAccessRow(row) {
 // active subscription can't bypass the frontend route gate and burn spend by
 // calling the API directly. Returns 402 with needs_trial_checkout so the
 // client can route them to /start-trial.
+//
+// Last-known-good grace: every successful check records a short-lived grant so a
+// transient Supabase hiccup doesn't 503 a user we just validated. On an infra
+// error we FAIL CLOSED (503) unless that grace is still valid — we never fall
+// through to the handler, because the frontend gate is not a security control
+// and these routes cost real provider spend.
+const APP_ACCESS_GRACE_MS = 10 * 60 * 1000;
+const appAccessGrace = new Map(); // userId → expiresAt (last-known-good)
+
 async function requireAppAccess(req, res, next) {
+  const uid = req.user?.id;
   try {
     if (isCompedProEmail(req.user?.email)) return next();
-    const row = await loadBillingRow(req.user?.id);
-    if (hasAppAccessRow(row)) return next();
+    if (!supabaseAdmin) throw new Error('billing_backend_unavailable');
+    // Query inline (not loadBillingRow, which swallows errors and returns null)
+    // so a real DB error throws into the catch and is treated as infra failure
+    // rather than as "no subscription".
+    const { data, error } = await supabaseAdmin
+      .from('user_billing')
+      .select('*')
+      .eq('user_id', uid)
+      .maybeSingle();
+    if (error) throw new Error(error.message || 'billing_query_failed');
+    if (hasAppAccessRow(data || null)) {
+      if (uid) appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
+      return next();
+    }
+    if (uid) appAccessGrace.delete(uid);
     return res.status(402).json({
       error: 'An active subscription is required.',
       code: 'subscription_required',
@@ -22352,9 +22398,12 @@ async function requireAppAccess(req, res, next) {
     });
   } catch (err) {
     console.error('❌ requireAppAccess failed:', err?.message || err);
-    // Fail open on infra errors so a transient DB hiccup doesn't lock out
-    // paying users; the frontend gate still applies.
-    return next();
+    const graceUntil = uid ? appAccessGrace.get(uid) || 0 : 0;
+    if (graceUntil > Date.now()) return next();
+    return res.status(503).json({
+      error: 'Could not verify your subscription right now. Please try again.',
+      code: 'access_check_unavailable',
+    });
   }
 }
 
@@ -22441,6 +22490,61 @@ async function resolveUserEmailForStripe(user) {
   return resolveAuthUserEmail(user) || await resolveAuthUserEmailFromDb(user.id);
 }
 
+// ── Student-plan eligibility ────────────────────────────────────────────────
+// The ACCOUNT email must be a school address: .edu, .edu.<cc> (unimelb.edu.au),
+// or .ac.<cc> (ox.ac.uk). Because the email is the user's login (confirmed
+// inbox or Google account), this proves control of the school address without
+// a third-party verifier. Mirrors isStudentEmail in src/lib/pricing-config.js
+// — the client copy only drives UI gating; THIS check is the enforcement.
+//
+// STUDENT_EMAIL_DOMAINS (env, comma-separated) allowlists schools on
+// non-academic domains, e.g. "students.myschool.org,k12.ca.us". Subdomains of
+// an allowlisted domain match too.
+const STUDENT_EMAIL_EXTRA_DOMAINS = String(process.env.STUDENT_EMAIL_DOMAINS || '')
+  .split(',')
+  .map((d) => d.trim().toLowerCase())
+  .filter(Boolean);
+
+function isStudentEmail(email) {
+  const addr = String(email || '').trim().toLowerCase();
+  const at = addr.lastIndexOf('@');
+  if (at < 1 || at === addr.length - 1) return false;
+  const domain = addr.slice(at + 1);
+
+  for (const allowed of STUDENT_EMAIL_EXTRA_DOMAINS) {
+    if (domain === allowed || domain.endsWith('.' + allowed)) return true;
+  }
+
+  const labels = domain.split('.').filter(Boolean);
+  if (labels.length < 2) return false;
+  if (labels[labels.length - 1] === 'edu') return true;
+  if (labels.length >= 3) {
+    const secondLevel = labels[labels.length - 2];
+    if (secondLevel === 'edu' || secondLevel === 'ac') return true;
+  }
+  return false;
+}
+
+const STUDENT_EMAIL_REQUIRED_MESSAGE =
+  'The Student plan requires a school account email (like name@university.edu). '
+  + 'Sign up with your school email to unlock the student price, or pick another plan. '
+  + "If your school uses a different domain, contact support@lykn.io and we'll add it.";
+
+/**
+ * 403s student-plan checkouts unless the account email is a school address.
+ * Returns true when the response was already sent (caller must bail).
+ */
+async function rejectIneligibleStudentCheckout(req, res, planId) {
+  if (planId !== 'student') return false;
+  const email = await resolveUserEmailForStripe(req.user);
+  if (isStudentEmail(email)) return false;
+  res.status(403).json({
+    error: 'student_email_required',
+    message: STUDENT_EMAIL_REQUIRED_MESSAGE,
+  });
+  return true;
+}
+
 /**
  * Checkout identity params. Reuse an existing Stripe customer only after a
  * subscription has actually been created; otherwise pass customer_email so
@@ -22507,8 +22611,9 @@ async function linkBillingRowFromCheckoutSession(session, subscription) {
       { onConflict: 'user_id' },
     );
   if (error) {
-    console.error('❌ linkBillingRowFromCheckoutSession upsert failed:', error.message);
-    return false;
+    // Propagate so the webhook 500s and Stripe redelivers — acknowledging a
+    // checkout we failed to record strands the subscription.
+    throw new Error(`linkBillingRowFromCheckoutSession upsert failed: ${error.message}`);
   }
   return true;
 }
@@ -22543,11 +22648,10 @@ async function syncSubscriptionToBilling(subscription) {
     : subscription.customer?.id;
   if (!customerId) return;
 
-  // Pull the existing row(s) so we can apply the monotone-up plan rule
-  // below. A Stripe customer normally maps 1:1 to a user_billing row;
-  // we read whatever rows match the customer id and apply the rule
-  // per-row so multi-row edge cases (e.g. account-merge accidents)
-  // don't accidentally downgrade anybody.
+  // Pull the existing row(s) for this customer. A Stripe customer normally
+  // maps 1:1 to a user_billing row; we read whatever rows match the customer
+  // id and write per-row so multi-row edge cases (e.g. account-merge
+  // accidents) each get a correct update.
   const { data: existingRows } = await supabaseAdmin
     .from('user_billing')
     .select('user_id, plan')
@@ -22557,32 +22661,59 @@ async function syncSubscriptionToBilling(subscription) {
     ? existingRows
     : [];
 
-  if (!rowsToWrite.length && stripe) {
-    try {
-      const customer = await stripe.customers.retrieve(customerId);
-      const linkedUserId = String(customer.metadata?.supabase_user_id || '').trim();
-      if (linkedUserId) {
-        const existing = await loadBillingRow(linkedUserId);
-        await supabaseAdmin
-          .from('user_billing')
-          .upsert(
-            {
-              user_id: linkedUserId,
-              stripe_customer_id: customerId,
-              plan: existing?.plan || 'free',
-              status: existing?.status || 'inactive',
-            },
-            { onConflict: 'user_id' },
-          );
-        rowsToWrite = [{ user_id: linkedUserId, plan: existing?.plan || 'free' }];
+  if (!rowsToWrite.length) {
+    // Checkout writes supabase_user_id onto the SUBSCRIPTION metadata at
+    // session-creation time, but only writes it onto the CUSTOMER after
+    // checkout.session.completed. customer.subscription.created/updated can
+    // arrive first, so check subscription metadata before falling back to a
+    // customer lookup — otherwise those early events can't link the user and
+    // the activation is dropped.
+    let linkedUserId = String(subscription.metadata?.supabase_user_id || '').trim();
+    if (!linkedUserId && stripe) {
+      try {
+        const customer = await stripe.customers.retrieve(customerId);
+        linkedUserId = String(customer.metadata?.supabase_user_id || '').trim();
+      } catch (err) {
+        console.warn('⚠️ syncSubscriptionToBilling customer lookup failed:', err?.message || err);
       }
-    } catch (err) {
-      console.warn('⚠️ syncSubscriptionToBilling customer lookup failed:', err?.message || err);
+    }
+    if (linkedUserId) {
+      const existing = await loadBillingRow(linkedUserId);
+      const { error: upsertErr } = await supabaseAdmin
+        .from('user_billing')
+        .upsert(
+          {
+            user_id: linkedUserId,
+            stripe_customer_id: customerId,
+            plan: existing?.plan || 'free',
+            status: existing?.status || 'inactive',
+          },
+          { onConflict: 'user_id' },
+        );
+      if (upsertErr) {
+        throw new Error(`syncSubscriptionToBilling link upsert failed: ${upsertErr.message}`);
+      }
+      rowsToWrite = [{ user_id: linkedUserId, plan: existing?.plan || 'free' }];
     }
   }
 
   if (!rowsToWrite.length) {
-    rowsToWrite = [{ user_id: null, plan: 'free' }];
+    // No user_billing row and no metadata linking this subscription to a
+    // Supabase user. For an access-granting status, throw so the webhook
+    // 500s and Stripe retries — by the next attempt checkout.session.completed
+    // has usually landed and linked the customer. Swallowing this silently is
+    // how activations get dropped. For ended subs (canceled/expired) there is
+    // nothing to revoke on an untracked customer, so just log and move on.
+    const grantsAccess = ['active', 'trialing', 'past_due'].includes(subscription.status);
+    if (grantsAccess) {
+      throw new Error(
+        `syncSubscriptionToBilling: no user linked for customer ${customerId} (subscription ${subscription.id})`,
+      );
+    }
+    console.warn(
+      `⚠️ syncSubscriptionToBilling: unlinked ${subscription.status} subscription ${subscription.id} for customer ${customerId} — skipping`,
+    );
+    return;
   }
 
   const priceId = subscription.items?.data?.[0]?.price?.id;
@@ -22606,44 +22737,30 @@ async function syncSubscriptionToBilling(subscription) {
   let lastError = null;
   const touched = [];
   for (const existing of rowsToWrite) {
-    const currentPlan = String(existing?.plan || 'free').toLowerCase();
-    const currentRank = planRank(currentPlan);
+    if (!existing.user_id) continue;
     const updates = { ...baseUpdates };
 
-    // Monotone-up plan rule: only promote, never demote. We promote if:
-    //   • Stripe sent a recognised price (match exists), AND
-    //   • that price's plan tier is strictly higher than what the user
-    //     already has on file, AND
-    //   • the subscription is currently active / trialing / past_due
-    //     (past_due included because the user paid recently and we're
-    //     mid-retry — pulling features mid-grace would be hostile).
+    // Plan sync rule: while the subscription is active / trialing / past_due
+    // and Stripe billed a price we recognise, the billed price IS the plan —
+    // in both directions. This keeps portal plan changes (Max→Pro, Pro↔
+    // Student) honest instead of leaving stale elevated entitlements behind.
+    //
+    // What deliberately does NOT change the plan:
+    //   • canceled / unpaid / incomplete_expired subs (no else-branch writing
+    //     plan='free') — status alone signals collection problems; refunds,
+    //     chargebacks, and expired cards must never phantom-downgrade the
+    //     tier. Admin can force-down via scripts/set-user-plan.mjs.
+    //   • unrecognised price ids (match === null) — a misrouted or unknown
+    //     price keeps the plan on file rather than guessing.
     if (match && isActive) {
-      const candidateRank = planRank(match.plan);
-      if (
-        candidateRank > currentRank
-        || (subscription.status === 'trialing' && currentPlan === 'free')
-      ) {
-        updates.plan = match.plan;
-      }
+      updates.plan = match.plan;
     }
-    // Deliberately NO else-branch that writes plan='free' on
-    // canceled / unpaid / incomplete_expired. Status alone signals
-    // collection problems; access stays. Admin can force-down via
-    // scripts/set-user-plan.mjs.
 
-    // Rows without user_id are skipped — checkout.session.completed links
-    // the Stripe customer to Supabase before subscription webhooks land.
-    let writeRes;
-    if (existing.user_id) {
-      writeRes = await supabaseAdmin
-        .from('user_billing')
-        .update(updates)
-        .eq('user_id', existing.user_id)
-        .select('user_id');
-    } else {
-      // No linked user yet — checkout.session.completed should create the row.
-      continue;
-    }
+    const writeRes = await supabaseAdmin
+      .from('user_billing')
+      .update(updates)
+      .eq('user_id', existing.user_id)
+      .select('user_id');
 
     if (writeRes.error) {
       lastError = writeRes.error;
@@ -22653,8 +22770,14 @@ async function syncSubscriptionToBilling(subscription) {
     for (const r of writeRes.data || []) touched.push(r.user_id);
   }
 
-  if (lastError && touched.length === 0) return;
   for (const userId of touched) invalidateUserPlanCache(userId);
+
+  // Fail loudly if nothing was written: the caller (handleStripeEvent) lets
+  // this propagate so the webhook returns 500 and Stripe redelivers. Marking
+  // a failed sync as processed is how users end up charged-but-not-activated.
+  if (lastError && touched.length === 0) {
+    throw new Error(`syncSubscriptionToBilling: all row updates failed: ${lastError.message}`);
+  }
 }
 
 async function handleStripeEvent(event) {
@@ -22676,9 +22799,12 @@ async function handleStripeEvent(event) {
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object;
-      let subscription = null;
       if (session.mode === 'subscription' && session.subscription) {
-        subscription = await stripe.subscriptions.retrieve(session.subscription);
+        const subscription = await stripe.subscriptions.retrieve(session.subscription);
+        // linkBillingRowFromCheckoutSession throws on DB write failure (so
+        // Stripe retries) and returns false only when the session carries no
+        // user reference at all — in that case syncSubscriptionToBilling
+        // still throws if the subscription is access-granting and unlinkable.
         await linkBillingRowFromCheckoutSession(session, subscription);
         await syncSubscriptionToBilling(subscription);
       }
@@ -22690,10 +22816,19 @@ async function handleStripeEvent(event) {
       await syncSubscriptionToBilling(event.data.object);
       break;
     }
+    case 'invoice.paid':
     case 'invoice.payment_failed': {
+      // Re-sync so past_due → active recovery (invoice.paid) and dunning
+      // (payment_failed) both reflect in user_billing.status. stripe@22 API
+      // versions moved the subscription ref onto invoice.parent.
       const invoice = event.data.object;
-      if (invoice.subscription) {
-        const sub = await stripe.subscriptions.retrieve(invoice.subscription);
+      const subId = invoice.subscription
+        || invoice.parent?.subscription_details?.subscription
+        || null;
+      if (subId) {
+        const sub = await stripe.subscriptions.retrieve(
+          typeof subId === 'string' ? subId : subId.id,
+        );
         await syncSubscriptionToBilling(sub);
       }
       break;
@@ -22703,6 +22838,9 @@ async function handleStripeEvent(event) {
       break;
   }
 
+  // Only record the event AFTER the handlers above succeeded — any throw
+  // skips this insert, the route returns 500, and Stripe redelivers with the
+  // idempotency check still open.
   const { error: logErr } = await supabaseAdmin
     .from('stripe_events')
     .insert({ id: event.id, type: event.type, payload: event });
@@ -22761,6 +22899,7 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
     const { planId, period } = req.body;
     if (!PLAN_IDS.has(planId)) return res.status(400).json({ error: 'invalid_plan' });
     if (!BILLING_PERIODS.has(period)) return res.status(400).json({ error: 'invalid_period' });
+    if (await rejectIneligibleStudentCheckout(req, res, planId)) return;
 
     const priceId = STRIPE_PRICE_MAP[planId]?.[period];
     if (!priceId) {
@@ -22771,6 +22910,20 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
     }
 
     const row = await loadBillingRow(user.id);
+
+    // A user with a live subscription must change plans through the Stripe
+    // billing portal (prorated update on the EXISTING subscription). Letting
+    // them through Checkout would create a second, parallel subscription and
+    // double-charge them. 409 + use_portal tells the client to open the
+    // portal instead.
+    if (hasSubscriptionAccess(row)) {
+      return res.status(409).json({
+        error: 'already_subscribed',
+        use_portal: true,
+        message: 'You already have an active subscription. Manage your plan from the billing portal.',
+      });
+    }
+
     const checkoutIdentity = await buildStripeCheckoutIdentity(user, row);
     const appUrl = appUrlFromReq(req);
 
@@ -22816,7 +22969,7 @@ app.get('/api/billing/stripe-config', (_req, res) => {
   return res.json({ publishableKey });
 });
 
-// ── /api/billing/trial-checkout (7-day Pro trial, card required) ────────────
+// ── /api/billing/trial-checkout (free trial, card required; length = STRIPE_TRIAL_DAYS) ──
 app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
   try {
     if (!stripeConfigured()) {
@@ -22836,6 +22989,7 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
     // picker). Default to Pro/annual (the $17/mo headline rate).
     const requestedPlan = String(req.body?.plan || 'studio').toLowerCase();
     const planId = PLAN_IDS.has(requestedPlan) ? requestedPlan : 'studio';
+    if (await rejectIneligibleStudentCheckout(req, res, planId)) return;
     const requestedPeriod = String(req.body?.period || 'annual').toLowerCase();
     const period = BILLING_PERIODS.has(requestedPeriod) ? requestedPeriod : 'annual';
     const priceId = STRIPE_PRICE_MAP[planId]?.[period];

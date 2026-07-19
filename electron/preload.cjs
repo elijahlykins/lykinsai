@@ -9,10 +9,19 @@
 // the existing OCR/vision pipeline can consume. Keep the surface minimal and
 // explicit — never expose ipcRenderer directly.
 
-const { contextBridge } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
+
+// app.getVersion() via sync IPC: process.env.npm_package_version only exists
+// when launched through npm, so it was always null in the packaged app.
+let appVersion = null;
+try {
+  appVersion = ipcRenderer.sendSync("lykn:get-version") || null;
+} catch {
+  appVersion = null;
+}
 
 contextBridge.exposeInMainWorld("lykn", {
   desktop: true,
   platform: process.platform,
-  version: process.env.npm_package_version || null,
+  version: appVersion,
 });

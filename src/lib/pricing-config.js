@@ -5,8 +5,9 @@ export const BILLING_PERIODS = {
 
 // Plan IDs are used as primary keys throughout the app (DB `user_billing.plan`,
 // Stripe price map in server.js, PLAN_LIMITS below). Don't rename without a
-// migration. `free` is the default tier every account starts on — full app
-// access with capped limits, no card required (see PLAN_LIMITS.free). The paid
+// migration. `free` is the default billing-row value, but in practice every
+// account passes the card-on-file trial checkout (/start-trial) before using
+// the app — PLAN_LIMITS.free mostly applies to lapsed subscriptions. The paid
 // tiers are Student ($20/mo or $12/mo billed annually, full Pro entitlements
 // for verified students),
 // Pro ($25/mo or $17/mo billed annually), which lifts the caps and unlocks
@@ -39,9 +40,9 @@ export const PLANS = [
       { text: "All models: LYKN + frontier picks", included: true },
       { text: "All connections unlocked", included: true },
       {
-        text: "Requires a valid student email",
+        text: "Requires a school account email",
         included: true,
-        note: "Verified at checkout",
+        note: "Your LYKN login email must be a school address (.edu, .edu.xx, .ac.xx)",
       },
     ],
   },
@@ -114,13 +115,13 @@ export const FAQ_ITEMS = [
     id: "student-plan",
     question: "What is the Student plan?",
     answer:
-      "The Student plan is the full Pro experience at a student price: $20/month, or $12/month when billed annually ($144/year). You get unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection. Verify with a valid student email at checkout to unlock the student price.",
+      "The Student plan is the full Pro experience at a student price: $20/month, or $12/month when billed annually ($144/year). You get unlimited synthesis neurons, unlimited Vault cards, every model in the picker, and every connection. Your LYKN account email must be a school address to unlock the student price.",
   },
   {
     id: "student-eligibility",
     question: "Who qualifies for the Student plan?",
     answer:
-      "Anyone with a valid student email (typically a .edu or recognized school domain). You confirm eligibility during checkout. If your school email isn't accepted, reach out to support and we'll help verify you.",
+      "Anyone whose LYKN account email is a school address — .edu, or international academic domains like .edu.au and .ac.uk. Sign up (or sign in with Google) using your school email and the Student plan unlocks automatically at checkout. If your school uses a different domain, reach out to support@lykn.io and we'll add it.",
   },
   {
     id: "pro-included",
@@ -135,10 +136,10 @@ export const FAQ_ITEMS = [
       "Max is Pro with the monthly usage caps removed: unlimited LYKN Glass requests, unlimited AI image generations, and unlimited artifact builds, plus priority support and early access to new capabilities. It is $100/month on monthly billing or $75/month when billed annually ($900/year).",
   },
   {
-    id: "free-tier",
-    question: "Is there a free version?",
+    id: "free-trial",
+    question: "Is there a free trial?",
     answer:
-      "Yes. Every account starts on Free, no credit card required. You get the full app with capped limits: up to 100 synthesis neurons, 50 Vault cards, LYKN's core models in chat and voice, 50 LYKN Glass requests, 20 AI image generations, and 10 artifact builds per month. Upgrade anytime for unlimited memory and every frontier model.",
+      "Yes. Every new account starts with a two-week free trial of the plan you pick — you add a card at signup but pay nothing today, and you can cancel anytime before the trial ends without being charged. After the trial your plan renews at its normal price unless you cancel.",
   },
   {
     id: "annual-savings",
@@ -312,6 +313,43 @@ export const PLAN_LABELS = {
 
 export function planLabel(planId) {
   return PLAN_LABELS[String(planId || "free")] || "Free";
+}
+
+// ---------------------------------------------------------------------------
+// Student-plan eligibility.
+//
+// Verification model: the ACCOUNT email must be a school address. Because the
+// email is the user's login (they had to receive the confirmation link or own
+// the Google account), this proves control of the school inbox without a
+// third-party verifier. Enforced server-side in /api/billing/checkout and
+// /api/billing/trial-checkout (server.js mirrors this logic and adds a
+// STUDENT_EMAIL_DOMAINS env allowlist for schools on non-academic domains);
+// this client copy only drives UI gating on the plan pickers.
+//
+// Recognized academic domains:
+//   • .edu            (US: name@stanford.edu)
+//   • .edu.<cc>       (name@unimelb.edu.au, name@tsinghua.edu.cn)
+//   • .ac.<cc>        (name@ox.ac.uk, name@u-tokyo.ac.jp)
+// ---------------------------------------------------------------------------
+export function isStudentEmail(email, extraDomains = []) {
+  const addr = String(email || "").trim().toLowerCase();
+  const at = addr.lastIndexOf("@");
+  if (at < 1 || at === addr.length - 1) return false;
+  const domain = addr.slice(at + 1);
+
+  for (const raw of extraDomains) {
+    const allowed = String(raw || "").trim().toLowerCase();
+    if (allowed && (domain === allowed || domain.endsWith("." + allowed))) return true;
+  }
+
+  const labels = domain.split(".").filter(Boolean);
+  if (labels.length < 2) return false;
+  if (labels[labels.length - 1] === "edu") return true;
+  if (labels.length >= 3) {
+    const secondLevel = labels[labels.length - 2];
+    if (secondLevel === "edu" || secondLevel === "ac") return true;
+  }
+  return false;
 }
 
 export function getDisplayPrice(plan, period) {

@@ -42,9 +42,14 @@ export function needsTrialCheckout(billing) {
 
 // Marketing / legal / auth surfaces stay reachable without a subscription —
 // everything else redirects to /start-trial until checkout is done.
+// `/oauth/consent` must stay exempt: it arrives with client_id / redirect_uri /
+// PKCE params from an external tool (MCP, Claude, Cursor), and a Navigate to
+// /start-trial would drop them and break the connect flow entirely.
 const SUBSCRIPTION_GATE_EXACT = new Set([
   "/start-trial",
   "/login",
+  "/reset-password",
+  "/oauth/consent",
   "/privacy",
   "/terms",
   "/cookies",

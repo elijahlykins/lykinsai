@@ -82,13 +82,15 @@ function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
     const hostOk = hostHeader === "127.0.0.1" || hostHeader === "localhost" || hostHeader === "[::1]";
 
     // --- Origin gate: allow only browser-extension origins (or no Origin,
-    // which is what the extension's fetch and the /welcome tab send). Any
-    // http(s) Origin means a normal web page is calling us — reject it. ---
-    // Allow: no Origin (direct nav / some service-worker fetches), the opaque
-    // "null" origin, or an extension origin. Block anything with an http(s)
-    // web origin — that's a normal web page trying to reach the bridge.
+    // which is what the extension's service-worker fetch and the /welcome tab
+    // send). Any http(s) Origin means a normal web page is calling us. ---
+    // We deliberately do NOT accept the opaque "null" origin: sandboxed iframes
+    // (`<iframe sandbox>` without allow-same-origin), data:/blob: documents, and
+    // similar contexts send `Origin: null` and could otherwise POST poisoned
+    // page text into LYKN's AI grounding. The real extension sends an EMPTY
+    // Origin (verified against background.js), so blocking "null" costs nothing.
     const origin = String(req.headers.origin || "");
-    const originOk = origin === "" || origin === "null" || EXTENSION_ORIGIN_RE.test(origin);
+    const originOk = origin === "" || EXTENSION_ORIGIN_RE.test(origin);
 
     if (origin && originOk) {
       res.setHeader("Access-Control-Allow-Origin", origin);
@@ -129,11 +131,9 @@ function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
       return;
     }
 
-    if (req.method === "GET" && path === "/page") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(latest || {}));
-      return;
-    }
+    // NOTE: there is deliberately no HTTP `GET /page`. Captured page text is
+    // read only in-process (getExtensionPageSnapshot); exposing it over the
+    // socket let any loopback client with an empty Origin read live page text.
 
     if (req.method === "GET" && path === "/welcome") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });

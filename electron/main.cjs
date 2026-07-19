@@ -31,6 +31,8 @@ const path = require("node:path");
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
 const crypto = require("node:crypto");
+const dns = require("node:dns/promises");
+const net = require("node:net");
 const { execFile } = require("node:child_process");
 const {
   collectBrowserInteractables,
@@ -76,6 +78,105 @@ const APP_ORIGIN = (() => {
 // LYKN AI backend (the streaming chat endpoint the web app uses). Override with
 // LYKN_API_URL=http://localhost:3001 when testing against a local backend.
 const API_BASE = process.env.LYKN_API_URL || "https://api.lykn.io";
+
+// ---------------------------------------------------------------------------
+// SSRF guard for main-process fetches of renderer/AI-supplied URLs.
+// download-file / artifact-code fetch arbitrary URLs that originate from AI
+// markdown, so we must block requests that would reach loopback, private,
+// link-local, or cloud-metadata addresses. The check runs on the RESOLVED IP
+// (not the hostname string) and is re-run on every redirect hop.
+// ---------------------------------------------------------------------------
+function isPrivateIpMain(ip) {
+  if (!ip) return true;
+  const v = String(ip).toLowerCase().replace(/^\[|\]$/g, "");
+  if (net.isIPv6(v)) {
+    if (v === "::1" || v === "::") return true;
+    if (v.startsWith("fe80") || v.startsWith("fc") || v.startsWith("fd") || v.startsWith("ff")) return true;
+    const mapped = v.match(/(?:::ffff:)((?:\d{1,3}\.){3}\d{1,3})$/);
+    if (mapped) return isPrivateIpMain(mapped[1]);
+    return false;
+  }
+  if (!net.isIPv4(v)) return true; // unparseable → unsafe
+  const [a, b] = v.split(".").map((n) => parseInt(n, 10));
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 metadata
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a >= 224) return true; // multicast + reserved
+  return false;
+}
+
+async function assertPublicHttpUrl(urlStr) {
+  let parsed;
+  try {
+    parsed = new URL(String(urlStr || ""));
+  } catch {
+    return { ok: false, error: "invalid_url" };
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, error: "bad_scheme" };
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, "");
+  if (net.isIP(host)) {
+    if (isPrivateIpMain(host)) return { ok: false, error: "private_ip" };
+    return { ok: true, url: parsed.toString() };
+  }
+  let addrs;
+  try {
+    addrs = await dns.lookup(host, { all: true });
+  } catch {
+    return { ok: false, error: "dns_failed" };
+  }
+  if (!addrs || !addrs.length) return { ok: false, error: "dns_empty" };
+  for (const { address } of addrs) {
+    if (isPrivateIpMain(address)) return { ok: false, error: "private_ip" };
+  }
+  return { ok: true, url: parsed.toString() };
+}
+
+// SSRF-safe fetch: validate the URL, follow redirects manually, re-validate
+// every hop so an allowed public URL can't 30x into an internal address.
+async function safeFetchMain(url, init = {}, { maxRedirects = 5 } = {}) {
+  let current = String(url || "");
+  for (let hop = 0; hop <= maxRedirects; hop += 1) {
+    const safe = await assertPublicHttpUrl(current);
+    if (!safe.ok) {
+      const err = new Error(`ssrf_blocked:${safe.error}`);
+      err.code = "SSRF_BLOCKED";
+      throw err;
+    }
+    const res = await fetch(safe.url, { ...init, redirect: "manual" });
+    const loc = res.headers.get("location");
+    if (res.status >= 300 && res.status < 400 && loc) {
+      current = new URL(loc, safe.url).toString();
+      continue;
+    }
+    return res;
+  }
+  const err = new Error("ssrf_blocked:too_many_redirects");
+  err.code = "SSRF_BLOCKED";
+  throw err;
+}
+
+// Open a URL in the user's real browser, but only for web/mail schemes. This
+// stops an injected/open-redirect link on the app origin from handing the OS a
+// file:/smb:/custom-scheme URL via shell.openExternal (which the OS would then
+// route to a native handler). Hardcoded `x-apple.systempreferences:` deep links
+// call shell.openExternal directly since they are trusted constants.
+const OPEN_EXTERNAL_SCHEMES = new Set(["http:", "https:", "mailto:", "tel:"]);
+function openExternalSafe(url) {
+  try {
+    const proto = new URL(String(url || "")).protocol;
+    if (OPEN_EXTERNAL_SCHEMES.has(proto)) {
+      shell.openExternal(url);
+      return true;
+    }
+  } catch {
+    /* unparseable → never open */
+  }
+  return false;
+}
 
 // Friendly fallback labels for tool-call events that arrive without a server
 // status string. Mirrors the web app's voice-mode TOOL_STATUS_COPY so the
@@ -147,15 +248,28 @@ const AUTH_HOST_SUFFIXES = [
   "accounts.google.com",
   "appleid.apple.com",
   "login.microsoftonline.com",
-  "github.com",
   "supabase.co",
   "supabase.in",
 ];
 
-function isAuthOrigin(origin) {
+// GitHub needs path-level treatment: its OAuth surface must open in-app for
+// the sign-in redirect to work, but the rest of github.com must NOT — the Mac
+// release downloads live on github.com, and allowlisting the whole host let a
+// "Download for Mac" click hijack the app window into GitHub instead of
+// triggering a clean external download.
+const GITHUB_AUTH_PATH_RE = /^\/(login|sessions?)(\/|$)/;
+
+function isAuthNavigation(url) {
   try {
-    const host = new URL(origin).hostname;
-    return AUTH_HOST_SUFFIXES.some((s) => host === s || host.endsWith("." + s));
+    const parsed = new URL(url);
+    const host = parsed.hostname;
+    if (AUTH_HOST_SUFFIXES.some((s) => host === s || host.endsWith("." + s))) {
+      return true;
+    }
+    if (host === "github.com" || host === "www.github.com") {
+      return GITHUB_AUTH_PATH_RE.test(parsed.pathname);
+    }
+    return false;
   } catch {
     return false;
   }
@@ -244,6 +358,11 @@ function createMainWindow() {
       // We load a trusted first-party origin (lykn.io). Keep the renderer
       // sandboxed; any native capability is exposed explicitly via preload.
       sandbox: true,
+      // The window doubles as the overlay's auth provider: the web app's
+      // Supabase client must keep its token-refresh timer firing even when the
+      // window sits hidden/occluded for hours, or the overlay reads an expired
+      // access token from localStorage and every ask 401s.
+      backgroundThrottling: false,
     },
   });
 
@@ -260,10 +379,10 @@ function createMainWindow() {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const origin = new URL(url).origin;
-      if (origin === APP_ORIGIN || isAuthOrigin(origin)) {
+      if (origin === APP_ORIGIN || isAuthNavigation(url)) {
         return { action: "allow" };
       }
-      shell.openExternal(url);
+      openExternalSafe(url);
       return { action: "deny" };
     } catch {
       // Fail closed: a URL we can't even parse is never something we want to
@@ -288,15 +407,26 @@ function createMainWindow() {
       event.preventDefault();
       return;
     }
-    if (origin === APP_ORIGIN || isAuthOrigin(origin)) return;
+    if (origin === APP_ORIGIN || isAuthNavigation(url)) return;
     event.preventDefault();
-    shell.openExternal(url);
+    openExternalSafe(url);
   });
 
   mainWindow.on("closed", () => {
     mainWindow = null;
     // Last window gone → back to menu-bar-only mode (tray + ⌘L stay armed).
     updateDockVisibility();
+  });
+
+  // Recover from a crashed renderer (GPU reset, OOM) with a reload instead of
+  // leaving a frozen white window — this window is also the overlay's auth
+  // source, so a dead renderer would break Glass asks too.
+  mainWindow.webContents.on("render-process-gone", (_e, details) => {
+    console.warn("[main-window] renderer gone:", details?.reason || "unknown");
+    if (details?.reason === "clean-exit") return;
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload();
+    } catch (_) {}
   });
 }
 
@@ -445,6 +575,19 @@ function createOverlayWindow() {
   });
 
   overlayWindow.on("closed", () => {
+    overlayWindow = null;
+  });
+
+  // If the overlay's renderer dies (GPU reset, OOM, Chromium crash), the
+  // window object survives but paints nothing — ⌘L and the tray click then
+  // toggle an invisible zombie and the overlay looks permanently dead until
+  // the whole app restarts. Tear the window down so the next toggle recreates
+  // it fresh.
+  overlayWindow.webContents.on("render-process-gone", (_e, details) => {
+    console.warn("[overlay] renderer gone:", details?.reason || "unknown");
+    try {
+      if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy();
+    } catch (_) {}
     overlayWindow = null;
   });
 }
@@ -1350,6 +1493,12 @@ function hideScreenHighlight() {
 // time (see streamScreenAnswer) so the bar always reflects the live screen and
 // the user never sees the screenshot.
 function showOverlay() {
+  // A crashed renderer leaves a window that "shows" but paints nothing —
+  // rebuild it instead of showing a blank zombie.
+  if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.webContents.isCrashed()) {
+    try { overlayWindow.destroy(); } catch (_) {}
+    overlayWindow = null;
+  }
   if (!overlayWindow) createOverlayWindow();
   // Re-assert top-of-stack status on EVERY show. The level/ordering set at
   // creation can be lost after an app restart, a Space switch, or a full-screen
@@ -1378,7 +1527,11 @@ function showOverlay() {
 }
 
 function toggleOverlay() {
-  if (overlayWindow && overlayWindow.isVisible()) {
+  const alive =
+    overlayWindow &&
+    !overlayWindow.isDestroyed() &&
+    !overlayWindow.webContents.isCrashed();
+  if (alive && overlayWindow.isVisible()) {
     hideOverlay();
     return;
   }
@@ -1544,33 +1697,202 @@ async function fetchAiStreamCompletion(token, body, { timeoutMs = 60000 } = {}) 
   }
 }
 
-// Read the Supabase access token from the signed-in main window. The web app
-// keeps it in localStorage (sb-<ref>-auth-token) and auto-refreshes it, so a
-// live read is current. We attach it as a Bearer token exactly like the web
-// app's installAuthFetch patch does, so /api/ai/stream authorizes the request.
-async function getAuthToken() {
-  if (!mainWindow || mainWindow.isDestroyed()) return null;
+// ── Auth token access ───────────────────────────────────────────────────────
+// The web app keeps the Supabase session in localStorage (sb-<ref>-auth-token)
+// on the default Electron session and auto-refreshes it while a window running
+// lykn.io is alive. We attach it as a Bearer token exactly like the web app's
+// installAuthFetch patch does, so /api/ai/stream authorizes the request.
+//
+// LYKN deliberately runs as a menu-bar app: a login-item launch starts with NO
+// main window, and closing/⌘Q'ing the window keeps the tray + ⌘L overlay
+// armed. The token must therefore be readable WITHOUT a main window —
+// otherwise every overlay ask after a reboot fails with "Sign in to LYKN
+// first" even though the session is still on disk. Strategy:
+//   1. Live read from the main window when it exists (current behavior).
+//   2. Fall back to a short-lived in-memory cache of the last good token.
+//   3. Fall back to a hidden window that loads the app: same localStorage,
+//      and the web app's Supabase client refreshes an expired stored session
+//      on boot, so this also recovers after long sleeps/reboots.
+
+const READ_SUPABASE_TOKEN_JS = `(function () {
   try {
-    const raw = await mainWindow.webContents.executeJavaScript(
-      `(function () {
-        try {
-          for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) {
-              const v = JSON.parse(localStorage.getItem(k) || 'null');
-              const tok = v && (v.access_token || (v.currentSession && v.currentSession.access_token));
-              if (tok) return tok;
-            }
-          }
-        } catch (e) {}
-        return null;
-      })()`,
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) {
+        const v = JSON.parse(localStorage.getItem(k) || 'null');
+        const tok = v && (v.access_token || (v.currentSession && v.currentSession.access_token));
+        if (tok) return tok;
+      }
+    }
+  } catch (e) {}
+  return null;
+})()`;
+
+// Distinguishes "signed out" (no sb- key at all → give up fast) from "session
+// stored but access token stale" (keep polling while Supabase refreshes it).
+const HAS_SUPABASE_SESSION_JS = `(function () {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) return true;
+    }
+  } catch (e) {}
+  return false;
+})()`;
+
+let cachedAuthToken = null;
+let cachedAuthTokenExpMs = 0;
+/** @type {Promise<string | null> | null} */
+let hiddenAuthReadPromise = null;
+
+function jwtExpiryMs(token) {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(String(token).split(".")[1], "base64").toString("utf8"),
+    );
+    const exp = Number(payload?.exp || 0);
+    return Number.isFinite(exp) && exp > 0 ? exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function cacheAuthToken(token) {
+  cachedAuthToken = token;
+  // Unknown expiry → assume 5 minutes so we re-verify soon rather than serve
+  // a possibly-dead token for an hour.
+  cachedAuthTokenExpMs = jwtExpiryMs(token) || Date.now() + 5 * 60 * 1000;
+}
+
+async function readTokenFromWebContents(webContents) {
+  const raw = await webContents.executeJavaScript(READ_SUPABASE_TOKEN_JS, true);
+  return typeof raw === "string" && raw ? raw : null;
+}
+
+// Ask the web app's own Supabase client (installAuthFetch exposes
+// window.__lyknGetFreshToken) to refresh and hand back a valid access token.
+// This is the only reliable way to recover from an EXPIRED token in storage:
+// the renderer owns the rotating refresh token, so refreshing must happen
+// through its client, not by re-reading localStorage from out here.
+async function refreshTokenViaWebContents(webContents) {
+  try {
+    const raw = await webContents.executeJavaScript(
+      "window.__lyknGetFreshToken ? window.__lyknGetFreshToken(true) : null",
       true,
     );
     return typeof raw === "string" && raw ? raw : null;
   } catch {
     return null;
   }
+}
+
+// True when a JWT is missing its expiry or expires within `marginMs`.
+function tokenIsStale(token, marginMs = 60_000) {
+  const expMs = jwtExpiryMs(token);
+  return !expMs || expMs <= Date.now() + marginMs;
+}
+
+// Boot a hidden window on the shared default session purely to read (and let
+// the web app refresh) the stored Supabase session, then tear it down.
+// Deduplicated so parallel overlay asks share one boot.
+function readTokenViaHiddenWindow() {
+  if (hiddenAuthReadPromise) return hiddenAuthReadPromise;
+  hiddenAuthReadPromise = (async () => {
+    let win = null;
+    try {
+      win = new BrowserWindow({
+        show: false,
+        width: 800,
+        height: 600,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      });
+      await win.loadURL(APP_URL);
+
+      const hasStoredSession = await win.webContents
+        .executeJavaScript(HAS_SUPABASE_SESSION_JS, true)
+        .catch(() => false);
+      if (!hasStoredSession) return null; // genuinely signed out
+
+      // Poll while the app's Supabase client validates/refreshes the stored
+      // session. A fresh token usually lands within a second or two. Once the
+      // app's JS has booted far enough to expose the refresh hook, use it to
+      // force the refresh instead of waiting for the client's own timer.
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const token = await readTokenFromWebContents(win.webContents).catch(() => null);
+        if (token && !tokenIsStale(token)) {
+          cacheAuthToken(token);
+          return token;
+        }
+        const refreshed = await refreshTokenViaWebContents(win.webContents);
+        if (refreshed && !tokenIsStale(refreshed)) {
+          cacheAuthToken(refreshed);
+          return refreshed;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      try {
+        if (win && !win.isDestroyed()) win.destroy();
+      } catch (_) { /* teardown best-effort */ }
+      hiddenAuthReadPromise = null;
+    }
+  })();
+  return hiddenAuthReadPromise;
+}
+
+async function getAuthToken({ forceRefresh = false } = {}) {
+  // 1. Live read from the main window when it exists. An expired token in
+  //    storage is NOT good enough — after the window idles for an hour the
+  //    stored access token may be dead (this was the overlay's classic
+  //    "backend error (401) after sitting a while"), so validate expiry and
+  //    push a real refresh through the app's Supabase client when needed.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      const token = await readTokenFromWebContents(mainWindow.webContents);
+      if (token && !forceRefresh && !tokenIsStale(token)) {
+        cacheAuthToken(token);
+        return token;
+      }
+      if (token || forceRefresh) {
+        const refreshed = await refreshTokenViaWebContents(mainWindow.webContents);
+        if (refreshed && !tokenIsStale(refreshed)) {
+          cacheAuthToken(refreshed);
+          return refreshed;
+        }
+        // Refresh hook unavailable (app still booting) or refresh failed —
+        // a stale-but-present token is still worth trying over nothing.
+        if (token) {
+          cacheAuthToken(token);
+          return token;
+        }
+      }
+      // The window is alive and definitively has no session — the user signed
+      // out. Drop the cache instead of resurrecting the old token.
+      cachedAuthToken = null;
+      cachedAuthTokenExpMs = 0;
+      return null;
+    } catch {
+      // Window mid-load/navigation — fall through to the cache/hidden read.
+    }
+  }
+
+  // 2. Recent token from memory (menu-bar mode within the same app run).
+  if (!forceRefresh && cachedAuthToken && Date.now() < cachedAuthTokenExpMs - 60_000) {
+    return cachedAuthToken;
+  }
+
+  // 3. Hidden-window read (after reboot / silent login launch / token expiry).
+  //    The hidden window boots the real app, whose Supabase client refreshes
+  //    the stored session — so this path also serves forceRefresh.
+  return readTokenViaHiddenWindow();
 }
 
 // ── Overlay settings (small, synchronous JSON store) ───────────────────────
@@ -3172,6 +3494,11 @@ function humanizeStreamError(err) {
     return "Connection dropped before LYKN could finish. Usually a brief network or server hiccup. Try again.";
   }
   if (/aborted/i.test(msg)) return "Request was cancelled.";
+  // Only reached after the automatic refresh-and-retry also failed, so the
+  // session really is gone (signed out elsewhere / refresh token revoked).
+  if (/\(401\)/.test(msg)) {
+    return "Your LYKN session expired. Open the main LYKN window to sign back in, then try again.";
+  }
   return msg ? `Request failed: ${msg}` : "Request failed.";
 }
 
@@ -3790,6 +4117,8 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
 
   try {
     let lastErr = null;
+    let bearerToken = token;
+    let authRetried = false;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       if (superseded()) return;
       if (attempt > 0) {
@@ -3803,11 +4132,24 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
+            Authorization: `Bearer ${bearerToken}`,
           },
           body: JSON.stringify(body),
           signal: askSignal,
         });
+        // 401 = the token we grabbed pre-flight was already dead (revoked, or
+        // expired between read and send). Force one real refresh through the
+        // app's Supabase client and retry — this is recoverable, not an error.
+        if (res.status === 401 && !authRetried) {
+          authRetried = true;
+          const fresh = await getAuthToken({ forceRefresh: true }).catch(() => null);
+          if (superseded()) return;
+          if (fresh && fresh !== bearerToken) {
+            bearerToken = fresh;
+            attempt -= 1; // don't burn a network-retry slot on the auth retry
+            continue;
+          }
+        }
         const accumulated = await readOverlayStreamResponse(res, send, (description) => {
           // Fire-and-forget: grounding + drawing happen off the stream path,
           // and triggerScreenHighlight self-cancels if a newer ask starts.
@@ -5065,7 +5407,7 @@ function registerOverlayIpc() {
     const u = String(url || "").trim();
     if (!/^https?:\/\//i.test(u)) return { ok: false, error: "bad_url" };
     try {
-      const res = await fetch(u);
+      const res = await safeFetchMain(u);
       if (!res.ok) return { ok: false, error: `http_${res.status}` };
       const buf = Buffer.from(await res.arrayBuffer());
 
@@ -5159,7 +5501,7 @@ function registerOverlayIpc() {
     const u = String(url || "").trim();
     if (!/^https?:\/\//i.test(u)) return { ok: false, error: "bad_url" };
     try {
-      const res = await fetch(u);
+      const res = await safeFetchMain(u);
       if (!res.ok) return { ok: false, error: `http_${res.status}` };
       const html = await res.text();
       const m = /<script id="lykn-artifact-source" type="application\/json">([\s\S]*?)<\/script>/.exec(html);
@@ -5314,6 +5656,18 @@ function registerOverlayIpc() {
         error: "no_browser",
         results: [],
         message: "Missing browser name. Plan again from Control this page.",
+      };
+    }
+    // Hard allowlist: `browser` is interpolated verbatim into AppleScript
+    // (`tell application "<browser>" …`), so a renderer-supplied name containing
+    // quotes/newlines could break out and run arbitrary osascript. Only exact
+    // matches from our own detected-browser list are ever allowed.
+    if (!BROWSER_APP_NAMES.includes(browser)) {
+      return {
+        ok: false,
+        error: "unsupported_browser",
+        results: [],
+        message: "Unsupported browser. Plan again from Control this page.",
       };
     }
     const pageUrl = String(url || "").trim();
@@ -5934,6 +6288,18 @@ function registerExtensionInstallIpc() {
   });
 }
 
+// Synchronous version lookup for the preload bridge. `app.getVersion()` reads
+// the packaged app's Info.plist / package.json version — unlike
+// process.env.npm_package_version, which only exists under `npm run` and made
+// window.lykn.version null in production builds.
+ipcMain.on("lykn:get-version", (event) => {
+  try {
+    event.returnValue = app.getVersion();
+  } catch {
+    event.returnValue = null;
+  }
+});
+
 app.on("second-instance", () => {
   // Re-opening LYKN while it's already running in the background (e.g. after
   // a silent login launch) should surface the main window, not do nothing.
@@ -5958,7 +6324,9 @@ function initAutoUpdate() {
     console.log("[update] electron-updater unavailable:", e && e.message);
     return;
   }
-  autoUpdater.autoDownloadAll = true;
+  // electron-updater's property is `autoDownload` (a previous typo set the
+  // nonexistent `autoDownloadAll`, silently relying on the default).
+  autoUpdater.autoDownload = true;
   autoUpdater.on("error", (err) => {
     console.log("[update] error:", err && err.message ? err.message : err);
   });

@@ -47,11 +47,26 @@ function AppleGlyph() {
   );
 }
 
+/** Best-effort platform sniff so non-Mac visitors aren't handed a ~200 MB
+    DMG they can't open. Defaults to "mac" when unsure — the DMG link is
+    harmless on a Mac and the note below covers everyone else. */
+function isProbablyMac(): boolean {
+  if (typeof navigator === "undefined") return true;
+  const probe = `${(navigator as any).userAgentData?.platform || ""} ${navigator.platform || ""} ${navigator.userAgent || ""}`.toLowerCase();
+  if (/(windows|win32|win64|linux|android|cros)/.test(probe)) {
+    // iPadOS reports MacIntel with touch — those aren't DMG targets either,
+    // but they match the mobile regex below via userAgent in practice.
+    return false;
+  }
+  return true;
+}
+
 /** "Download LYKN for Mac" (/download) — a single poster shot: the big
     wordmark with a rotating tagline under it and one download button, over
     the shared wandering-glow glass backdrop. */
 export default function DownloadLykn() {
   const navigate = useNavigate();
+  const [onMac] = useState(isProbablyMac);
   // Current + previous word so the swap can cross-fade: the old word slides
   // up and out while the new one slides up into place.
   const [words, setWords] = useState({ cur: 0, prev: -1 });
@@ -135,6 +150,12 @@ export default function DownloadLykn() {
           <p className="dlp-meta">
             Free to start · macOS 12 and later · Apple silicon &amp; Intel
           </p>
+          {!onMac && (
+            <p className="dlp-meta" style={{ marginTop: 8 }}>
+              The desktop app is Mac-only for now — on this device, use LYKN in
+              your browser at lykn.io.
+            </p>
+          )}
         </section>
       </main>
     </div>

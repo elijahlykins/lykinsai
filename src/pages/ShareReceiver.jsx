@@ -51,7 +51,19 @@ export default function ShareReceiver() {
   useEffect(() => {
     if (loading) return;
 
-    const { url } = readSharePayload(location.search);
+    let { url } = readSharePayload(location.search);
+
+    // Fallback: a Google-OAuth sign-in round-trip (full page redirect) loses
+    // both router state and the query string, so the URL stashed before the
+    // login bounce is the only survivor. Without this read the user came back
+    // authenticated only to be told "No link was shared".
+    if (!url) {
+      try {
+        url = extractUrl(sessionStorage.getItem(PENDING_SHARE_KEY));
+      } catch {
+        /* storage may be blocked */
+      }
+    }
 
     if (!url) {
       setStatus("error");

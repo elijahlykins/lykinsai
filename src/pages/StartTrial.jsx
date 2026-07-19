@@ -16,6 +16,7 @@ import {
   BILLING_PERIODS,
   getDisplayPrice,
   getAnnualSavings,
+  isStudentEmail,
 } from "@/lib/pricing-config";
 
 const LANDING_FONT =
@@ -103,6 +104,12 @@ function checkoutErrorMessage(err) {
   if (code === "checkout_email_required") {
     return "We couldn't find an email on your account. Sign out and back in, then try again.";
   }
+  if (code === "student_email_required") {
+    return (
+      err?.message ||
+      "The Student plan requires a school account email (like name@university.edu). Sign up with your school email or pick another plan."
+    );
+  }
   if (code === "price_not_configured" || code === "stripe_not_configured") {
     return "Checkout isn't fully configured yet. Please contact support@lykn.io.";
   }
@@ -110,7 +117,7 @@ function checkoutErrorMessage(err) {
 }
 
 export default function StartTrial() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, signOut } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const checkoutResult = searchParams.get("checkout");
@@ -251,14 +258,13 @@ export default function StartTrial() {
     };
   }, [authLoading, user, checkoutResult, navigate, pollUntilActive, setSearchParams, queryClient]);
 
+  // Use the provider's signOut so the shared cleanup runs (prototype/
+  // onboarding localStorage keys, signingOut guard, hard reload) — calling
+  // supabase.auth.signOut directly here used to leak the previous user's
+  // onboarding-done flag to the next account on this browser.
   const signOutToLogin = useCallback(async () => {
-    try {
-      await supabase.auth.signOut({ scope: "local" });
-    } catch {
-      // Best-effort — still send them to the login screen.
-    }
-    window.location.assign("/login");
-  }, []);
+    await signOut({ redirectTo: "/login" });
+  }, [signOut]);
 
   if (!authLoading && !user) {
     return (
@@ -332,6 +338,10 @@ export default function StartTrial() {
   const starting = phase === "starting";
   const isAnnual = period === BILLING_PERIODS.ANNUAL;
   const daysLabel = trialLabel(trialDays);
+  // Student plan is gated on the ACCOUNT email being a school address. The
+  // server enforces this on both checkout endpoints (plus an env allowlist
+  // for schools on unusual domains); this only drives the disabled CTA state.
+  const studentEligible = isStudentEmail(user?.email);
 
   return (
     <div className={shellClass} style={{ fontFamily: LANDING_FONT }}>
@@ -387,6 +397,7 @@ export default function StartTrial() {
               const price = getDisplayPrice(plan, period);
               const savings = getAnnualSavings(plan);
               const planBusy = starting && pendingPlan === plan.id;
+              const studentLocked = plan.id === "student" && !studentEligible;
               return (
                 <div
                   key={plan.id}
@@ -444,10 +455,20 @@ export default function StartTrial() {
                         : "border border-slate-300 bg-white text-slate-900 hover:border-blue-400 hover:text-blue-700"
                     }`}
                     onClick={() => beginCheckout(plan.id)}
-                    disabled={starting}
+                    disabled={starting || studentLocked}
                   >
-                    {planBusy ? "Starting…" : "Start free trial"}
+                    {studentLocked
+                      ? "Requires a school email"
+                      : planBusy
+                        ? "Starting…"
+                        : "Start free trial"}
                   </button>
+                  {studentLocked && (
+                    <p className="mt-2 text-[11px] leading-relaxed text-slate-400 text-center">
+                      Your login email isn&apos;t a school address. Sign up with
+                      your .edu / .ac email to unlock the student price.
+                    </p>
+                  )}
                 </div>
               );
             })}

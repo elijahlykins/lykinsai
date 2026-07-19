@@ -7,6 +7,7 @@ import {
   BILLING_PERIODS,
   getDisplayPrice,
   getAnnualSavings,
+  isStudentEmail,
 } from "@/lib/pricing-config";
 import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
@@ -105,7 +106,10 @@ function PlanCard({
   busy,
   waitlistState,
   onJoinWaitlist,
+  /** When set, the CTA is disabled and this short label replaces it. */
+  lockedLabel,
 }) {
+  const isLocked = Boolean(lockedLabel);
   const isCheckoutPlan = plan.checkout !== false;
   const isCurrent =
     plan.id === currentPlan ||
@@ -181,13 +185,14 @@ function PlanCard({
             if (!hasJoinedWaitlist) onJoinWaitlist?.(plan.id);
             return;
           }
-          if (!isCheckoutPlan) return;
+          if (!isCheckoutPlan || isLocked) return;
           onCheckout(plan.id);
         }}
         disabled={
           isCurrent ||
           isBusy ||
           !isCheckoutPlan ||
+          isLocked ||
           (isWaitlistCard ? hasJoinedWaitlist || waitlistBusy : false)
         }
         className={`mt-4 w-full py-2 px-3 rounded-lg text-xs font-semibold transition-all duration-200 cursor-pointer disabled:cursor-default ${
@@ -202,6 +207,8 @@ function PlanCard({
       >
         {isCurrent
           ? "Current Plan"
+          : isLocked
+            ? lockedLabel
           : isWaitlistCard
             ? hasJoinedWaitlist
               ? "You're on the waitlist"
@@ -214,6 +221,11 @@ function PlanCard({
               ? "Redirecting…"
               : plan.cta}
       </button>
+      {isLocked && !isCurrent && (
+        <p className="mt-2 text-[10px] text-black/40 dark:text-white/45 text-center">
+          Sign up with your school email (.edu / .ac) to unlock the student price.
+        </p>
+      )}
       {isWaitlistCard && hasJoinedWaitlist && (
         <p className="mt-2 text-[10px] text-black/40 dark:text-white/45 text-center">
           We'll email you when {plan.name} goes live.
@@ -410,6 +422,30 @@ export default function Billing() {
         const { url } = await postBilling("/api/billing/checkout", { planId, period });
         if (url) window.location.href = url;
       } catch (err) {
+        if (err?.code === "student_email_required") {
+          toast({
+            variant: "destructive",
+            title: "Student plan needs a school email",
+            description:
+              err.message ||
+              "Your account email must be a school address (like name@university.edu) to get the student price.",
+          });
+          return;
+        }
+        // Existing subscribers change plans via the Stripe billing portal —
+        // the server refuses Checkout for them so we never create a second,
+        // parallel subscription. Send them straight to the portal instead.
+        if (err?.code === "already_subscribed") {
+          try {
+            const { url } = await postBilling("/api/billing/portal");
+            if (url) {
+              window.location.href = url;
+              return;
+            }
+          } catch (portalErr) {
+            console.error("[Billing] portal redirect failed:", portalErr);
+          }
+        }
         console.error("[Billing] checkout failed:", err);
         toast({ variant: "destructive", title: "Checkout failed", description: toUserFacingError(err) });
       } finally {
@@ -494,6 +530,15 @@ export default function Billing() {
                 busy={checkoutBusy}
                 waitlistState={waitlistState}
                 onJoinWaitlist={handleJoinWaitlist}
+                lockedLabel={
+                  // Student plan needs a school account email; the server
+                  // enforces this on checkout (student_email_required).
+                  plan.id === "student" &&
+                  currentPlan !== "student" &&
+                  !isStudentEmail(user?.email)
+                    ? "Requires a school email"
+                    : null
+                }
               />
             </motion.div>
           ))}

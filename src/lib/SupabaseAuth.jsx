@@ -211,7 +211,11 @@ export function SupabaseAuthProvider({ children }) {
       email,
       password,
       options: {
-        emailRedirectTo: window.location.origin,
+        // Land confirmation clicks on /login (not `/`): the login page's
+        // post-auth effect owns new-user routing (fresh accounts →
+        // /onboarding/connect), whereas `/` bounces through GuestOnly →
+        // /app and skips it.
+        emailRedirectTo: `${window.location.origin}/login`,
         ...(name ? { data: { full_name: name } } : {}),
       },
     });
@@ -227,6 +231,32 @@ export function SupabaseAuthProvider({ children }) {
     return data;
   };
 
+  // Send a password-recovery email. The link lands on /reset-password with a
+  // recovery session (detectSessionInUrl exchanges the code), where the user
+  // sets a new password via updateUser. Also works for Google-only accounts —
+  // completing recovery adds a password identity, so "I signed up with Google
+  // but want a password" self-serves through the same flow.
+  const resetPasswordForEmail = async (email) => {
+    setAuthError(null);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+    if (error) throw error;
+  };
+
+  // Re-send the signup confirmation email (for "it never arrived" cases).
+  // Supabase rate-limits this per address; surface its error so the UI can
+  // show the too-many-requests copy instead of pretending it sent.
+  const resendSignupEmail = async (email) => {
+    setAuthError(null);
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email,
+      options: { emailRedirectTo: `${window.location.origin}/login` },
+    });
+    if (error) throw error;
+  };
+
   // `everywhere: false` (default) — revoke just this device's refresh
   // token. The in-flight access token stays valid until its natural
   // ~1h TTL on Supabase. Matches the user's mental model of "sign out
@@ -238,7 +268,11 @@ export function SupabaseAuthProvider({ children }) {
   // will surface a "Sign out everywhere" button that calls this with
   // `{ everywhere: true }`; that button is intentionally not added in
   // this pass — the capability is exposed first, the UI lands later.
-  const signOut = async ({ everywhere = false } = {}) => {
+  // `redirectTo` — where the hard reload lands after cleanup. Defaults to `/`
+  // (the guest landing); pass '/login' for switch-account flows so callers
+  // don't reimplement sign-out (and skip clearPrototypeState) just to change
+  // the destination.
+  const signOut = async ({ everywhere = false, redirectTo = '/' } = {}) => {
     if (signOutTimerRef.current) {
       clearTimeout(signOutTimerRef.current);
       signOutTimerRef.current = null;
@@ -265,12 +299,12 @@ export function SupabaseAuthProvider({ children }) {
     // step pointer reset.
     clearPrototypeState();
 
-    // Hard reload to `/` so every store, query cache, and in-memory piece
-    // of user state is dropped on the floor. The Glass landing route is
-    // gated by `<GuestOnly>` so a logged-out visitor reliably lands
-    // there. SSR / test guard: only call when window exists.
+    // Hard reload so every store, query cache, and in-memory piece of user
+    // state is dropped on the floor. The default `/` is gated by
+    // `<GuestOnly>` so a logged-out visitor reliably lands on the guest
+    // landing. SSR / test guard: only call when window exists.
     if (typeof window !== 'undefined') {
-      window.location.assign('/');
+      window.location.assign(redirectTo);
     }
   };
 
@@ -283,6 +317,8 @@ export function SupabaseAuthProvider({ children }) {
       signInWithOAuth,
       signInWithEmail,
       signUpWithEmail,
+      resetPasswordForEmail,
+      resendSignupEmail,
       signOut,
     }}>
       {children}

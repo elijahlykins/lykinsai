@@ -75,8 +75,9 @@ export default function Pricing() {
         <section className="lkn-pricing-intro">
           <h1 className="lkn-section-headline">Simple, honest pricing</h1>
           <p className="lkn-section-sub">
-            Start free, no credit card required. Upgrade to Pro when you want
-            unlimited memory and every frontier model.
+            Every plan starts with a two-week free trial — cancel before it
+            ends and you won't be charged. Go Pro for unlimited memory and
+            every frontier model.
           </p>
 
           <div className="lkn-pricing-toggle" role="tablist" aria-label="Billing period">

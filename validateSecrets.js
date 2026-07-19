@@ -57,6 +57,15 @@ export const SECRET_RULES = [
   // === Connector AES key (must be 64 hex chars = 32 bytes for AES-256) ===
   ['CONNECTOR_TOKEN_KEY',       64, true,  'AES-256-GCM key for connector OAuth tokens (64 hex chars)'],
 
+  // === Admin gate + HMAC signing (prod-required, no in-code default) ===
+  // ADMIN_EMAILS: without this the /api/admin/* gate previously defaulted to
+  // admin@lykn.io — anyone who could register that address got admin. Now the
+  // default is removed and the value is mandatory in prod.
+  ['ADMIN_EMAILS',              5,  true,  'Comma-separated admin email allowlist for /api/admin/*'],
+  // VOICE_SESSION_SECRET: HMAC key for voice/file-proxy session tokens. Must be
+  // its own dedicated secret — no service-role reuse, no dev-string fallback.
+  ['VOICE_SESSION_SECRET',      32, true,  'HMAC signing key for voice/file-proxy session tokens'],
+
   // === AI provider keys (warn in prod if absent — service still boots) ===
   ['OPENAI_API_KEY',            20, false, 'OpenAI API key'],
   ['ANTHROPIC_API_KEY',         20, false, 'Anthropic API key'],

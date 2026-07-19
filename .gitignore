@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# esbuild scratch/dump files
+.esb.txt
+.esbuild-check.txt
+
 # Logs
 logs
 *.log

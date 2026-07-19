@@ -13,6 +13,7 @@ import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
 
 import Login from "./pages/Login";
+import ResetPassword from "./pages/ResetPassword";
 import StartTrial from "./pages/StartTrial";
 import GlassLanding from "./pages/GlassLanding";
 import LyknChat from "./pages/LyknChat";
@@ -159,7 +160,8 @@ function AppShell() {
   );
   const isEmbeddedRoute =
     isEmbeddedSurface && isEmbeddedSurfacePath(location.pathname);
-  const isLoginPage = location.pathname === "/login";
+  const isLoginPage =
+    location.pathname === "/login" || location.pathname === "/reset-password";
   const isStartTrialPage = location.pathname === "/start-trial";
   const isLandingPage =
     location.pathname === "/" ||
@@ -237,6 +239,9 @@ function AppShell() {
         <RouteErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
+            {/* Password-recovery landing (email link target). Handles its own
+                auth state: a recovery session means "may set a new password". */}
+            <Route path="/reset-password" element={<ResetPassword />} />
             {/* Post-signup paywall: every new account picks a plan here and
                 starts a card-on-file trial before entering the app. */}
             <Route path="/start-trial" element={<StartTrial />} />
