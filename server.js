@@ -14461,7 +14461,15 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     let stallCheck, hardKill, heartbeat;
     let streamedTextLength = 0;
     const streamChatId = req.body?.chatId || null;
-    const cleanup = () => { clearInterval(stallCheck); clearInterval(heartbeat); clearTimeout(hardKill); };
+    // Set per agent-loop attempt below. Called on every terminal path
+    // (sendDone / sendError / client disconnect) so a dead stream also
+    // cancels the in-flight provider request instead of silently burning
+    // tokens for minutes against a socket nobody is reading.
+    let abortCurrentAgentAttempt = null;
+    const cleanup = () => {
+      clearInterval(stallCheck); clearInterval(heartbeat); clearTimeout(hardKill);
+      try { abortCurrentAgentAttempt?.(); } catch { /* already settled */ }
+    };
     const _streamTextStripper = makeToolSyntaxStripper((text) => {
       if (!res.writableEnded) {
         streamActivity = Date.now();
@@ -14552,9 +14560,19 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // pauses can legitimately exceed 60s on dense prompts (long workspace
     // context + synthesis retrieval + web search). The heartbeat below
     // keeps the socket warm; this only catches truly wedged providers.
+    //
+    // Coded-artifact / video turns get 240s: grok-4.5 goes COMPLETELY silent
+    // (zero bytes on the wire) during reasoning pauses on big build prompts —
+    // measured gaps of 60-90s+ on requests that then complete successfully.
+    // At 90s the watchdog was killing healthy builds mid-reasoning ("Sorry,
+    // we're having trouble connecting") while the artifact landed ~2min later
+    // on a dead socket. The per-attempt watchdog in the agent-loop section
+    // below falls back to another provider well before this fires; this is
+    // the last resort. The 10min hardKill still bounds the whole turn.
+    const streamStallMs = codedArtifactTurn || videoRenderLikelyTurn ? 240000 : 90000;
     stallCheck = setInterval(() => {
-      if (Date.now() - streamActivity > 90000) {
-        console.error(`⏰ Stream stalled — no data for 90s+, aborting`);
+      if (Date.now() - streamActivity > streamStallMs) {
+        console.error(`⏰ Stream stalled — no data for ${Math.round(streamStallMs / 1000)}s+, aborting`);
         sendError(AI_TEMPORARY_FAILURE_TEXT);
       }
     }, 5000);
@@ -15371,7 +15389,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       }
 
       try {
-        const runAttempt = async ({ provider: attemptProvider, model: attemptModel }) => runAgentLoop({
+        const runAttempt = async ({ provider: attemptProvider, model: attemptModel }, attemptSignal) => runAgentLoop({
           provider: attemptProvider,
           model: attemptModel,
           systemPrompt: agentSys,
@@ -15469,18 +15487,54 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
                 getSubModelTask(supabaseAdmin, req.user?.id, taskId),
             };
           })(),
-          signal: undefined, // request abort wires via res.on('close') already
+          signal: attemptSignal,
           onTextChunk: (t) => sendChunk(t),
           onToolCall: (evt) => sendToolCall(evt),
           onStatus: (s) => sendStatus(s),
           onActivity: noteStreamActivity,
         });
 
+        // Per-attempt silence watchdog (coded-artifact / video builds only).
+        // grok-4.5 stops sending bytes entirely during reasoning pauses on
+        // big build prompts; most recover within ~90s, but when one runs
+        // longer we abort THIS attempt and re-run the turn on the next
+        // provider in the chain (Opus → GPT → Gemini) instead of letting
+        // the global stall watchdog kill the whole stream with an error.
+        // Not applied to other forced-tool turns (e.g. image gen): their
+        // tool execution can legitimately go quiet mid-run, and aborting
+        // there risks retrying a tool that already fired.
+        const ATTEMPT_STALL_MS = 150000;
+        const attemptWatchdogEligible =
+          forcedToolNameForTurn && agentAttempts.length > 1 &&
+          (codedArtifactTurn || videoRenderLikelyTurn);
+
         let agentResult;
         for (let ai = 0; ai < agentAttempts.length; ai++) {
           const attempt = agentAttempts[ai];
-          agentResult = await runAttempt(attempt);
+          const attemptAbort = new AbortController();
+          abortCurrentAgentAttempt = () => attemptAbort.abort();
+          let attemptStalled = false;
+          let attemptWatchdog = null;
+          if (attemptWatchdogEligible && ai + 1 < agentAttempts.length) {
+            attemptWatchdog = setInterval(() => {
+              if (Date.now() - streamActivity > ATTEMPT_STALL_MS) {
+                attemptStalled = true;
+                console.warn(`[stream] ${attempt.provider}/${attempt.model} silent for ${Math.round(ATTEMPT_STALL_MS / 1000)}s — aborting attempt to fall back`);
+                attemptAbort.abort();
+              }
+            }, 5000);
+          }
+          try {
+            agentResult = await runAttempt(attempt, attemptAbort.signal);
+          } finally {
+            if (attemptWatchdog) clearInterval(attemptWatchdog);
+            abortCurrentAgentAttempt = null;
+          }
           _ck(`agent loop ${agentResult.reason} (provider=${attempt.provider}, model=${attempt.model}, tools=${agentResult.toolCalls.length}, hadText=${agentResult.hadText})`);
+
+          // Client already gone (disconnect, global stall, hard kill) —
+          // don't waste another provider run on a dead socket.
+          if (res.writableEnded) return;
 
           // Did the forced tool actually complete? (No forced tool → n/a.)
           const forcedToolOk = !forcedToolNameForTurn || (agentResult.toolCalls || []).some(
@@ -15488,14 +15542,24 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           );
           if (agentResult.ok && forcedToolOk) break;
 
+          // Transport-level failures ("fetch failed", SSL/TLS alerts, resets)
+          // are one-provider problems just like rate limits — another provider
+          // can still complete the build. Without this, a single flaky grok
+          // connect dropped the whole turn to the legacy no-tools stream and
+          // the user got prose instead of an artifact.
+          const attemptErrMsg = String(agentResult.errorMessage || '');
+          const isNetworkFetchError =
+            /fetch failed|network|econn|etimedout|socket hang up|ssl|tls|eai_again|und_err|terminated|dns/i.test(attemptErrMsg);
           const canFallback =
             forcedToolNameForTurn && !forcedToolOk && ai + 1 < agentAttempts.length &&
-            (agentResult.reason === 'forced_tool_incomplete' ||
-             (agentResult.reason === 'error' && isRetryableProviderError(String(agentResult.errorMessage || ''))));
+            (attemptStalled ||
+             agentResult.reason === 'forced_tool_incomplete' ||
+             (agentResult.reason === 'error' &&
+              (isNetworkFetchError || isRetryableProviderError(attemptErrMsg))));
           if (!canFallback) break;
 
           const next = agentAttempts[ai + 1];
-          console.warn(`[stream] forced tool never completed on ${attempt.provider}/${attempt.model} (${agentResult.reason}) — retrying turn on ${next.provider}/${next.model}`);
+          console.warn(`[stream] forced tool never completed on ${attempt.provider}/${attempt.model} (${agentResult.reason}${attemptStalled ? ', attempt stalled' : ''}) — retrying turn on ${next.provider}/${next.model}`);
           sendStatus('Still working on it…');
         }
 
@@ -15535,6 +15599,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       // fallthrough — legacy stream below
     }
 
+    // Stream already terminated (client disconnect / stall abort) — the
+    // legacy chain would silently re-fetch a provider against a dead socket.
+    if (res.writableEnded) return;
     await tryStreamAt(0);
   } catch (error) {
     console.error('❌ Stream error:', error.message);
