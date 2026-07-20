@@ -1736,7 +1736,9 @@ function stripHiddenTags(s) {
     .replace(/<\/?(?:learned|reason|applied)>[\s\S]*?<\/(?:learned|reason|applied)>/gi, "")
     .replace(/<\/?(?:learned|reason|applied)\b[^>]*>/gi, "")
     .replace(/\[TAG_NOTES:[^\]]*\]/gi, "")
-    .replace(/\[\[\s*HIGHLIGHT\s*:[^\]]*\]\]/gi, "");
+    .replace(/\[\[\s*HIGHLIGHT\s*:[^\]]*\]\]/gi, "")
+    // Brand is always LYKN (all caps) — leave lykn.io / lykn_* alone.
+    .replace(/\b[Ll][Yy][Kk][Nn]\b(?!\.io\b)(?![_/])/g, "LYKN");
 }
 
 // Matches a COMPLETED highlight control tag and captures the element

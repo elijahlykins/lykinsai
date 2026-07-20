@@ -64,6 +64,43 @@ function safeJsonParse(s) {
 }
 
 // ---------------------------------------------------------------------------
+// Brand casing — the product name is always LYKN (all caps) in user-facing
+// text. Models sometimes emit "Lykn" / "lykn"; rewrite those before the
+// chunk reaches the client. Leave technical forms alone: lykn.io, lykn_*,
+// /lykn/..., @lykn, etc.
+// ---------------------------------------------------------------------------
+const LYKN_BRAND_RE = /\b[Ll][Yy][Kk][Nn]\b(?!\.io\b)(?![_/])/g;
+
+export function normalizeLyknBrandCasing(text) {
+  if (!text) return text;
+  return String(text).replace(LYKN_BRAND_RE, 'LYKN');
+}
+
+// Hold back a trailing 1–3 char prefix of "lykn" (any case) so a chunk that
+// ends mid-brand ("Ly" + next "kn") isn't flushed before we can normalize.
+function splitBrandHoldTail(text) {
+  const s = String(text || '');
+  if (!s) return { safe: '', hold: '' };
+  const m = s.match(/([Ll][Yy]?[Kk]?[Nn]?)$/);
+  if (!m) return { safe: s, hold: '' };
+  const tail = m[1];
+  const lower = tail.toLowerCase();
+  if (lower.length === 0 || lower.length >= 4) return { safe: s, hold: '' };
+  if (!'lykn'.startsWith(lower)) return { safe: s, hold: '' };
+  const start = s.length - tail.length;
+  if (start > 0 && /[A-Za-z0-9]/.test(s[start - 1])) return { safe: s, hold: '' };
+  return { safe: s.slice(0, start), hold: tail };
+}
+
+function emitNormalized(onTextChunk, text) {
+  if (!text) return;
+  const out = normalizeLyknBrandCasing(text);
+  if (out) {
+    try { onTextChunk?.(out); } catch { /* swallow */ }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tool-syntax stripper — sanitises model TEXT output before it streams to
 // the user. Some models (especially smaller ones) will emit literal
 // tool-call syntax as text instead of (or in addition to) actually
@@ -151,7 +188,7 @@ function applyStripPatterns(text) {
 /** Strip tool-call syntax from a complete (non-streaming) model response. */
 export function stripToolSyntaxFromText(text) {
   if (typeof text !== 'string' || !text) return text;
-  return applyStripPatterns(text);
+  return normalizeLyknBrandCasing(applyStripPatterns(text));
 }
 
 const TOOL_USE_SELF_CLOSE = /\/>/;
@@ -163,6 +200,9 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
   // (e.g. the tail of a long arguments="..." value) until we see /> or
   // </tool_use>, so a mid-tag stream split cannot leak argument debris.
   let dropUntilClose = false;
+  // Hold a 1–3 char trailing prefix of "lykn" so brand casing can normalize
+  // across chunk boundaries ("Ly" + "kn" → "LYKN", not "Ly" then "kn").
+  let brandHold = '';
   const findEarliestOpener = (text) => {
     let earliestOpener = -1;
     for (const re of STRIP_OPENERS) {
@@ -172,6 +212,18 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
       }
     }
     return earliestOpener;
+  };
+  const flushSafeText = (text, { final = false } = {}) => {
+    if (!text && !brandHold) return;
+    const combined = brandHold + (text || '');
+    brandHold = '';
+    if (final) {
+      emitNormalized(onTextChunk, combined);
+      return;
+    }
+    const { safe, hold } = splitBrandHoldTail(combined);
+    brandHold = hold;
+    emitNormalized(onTextChunk, safe);
   };
   const consumeDroppedTail = () => {
     const selfClose = buffer.search(TOOL_USE_SELF_CLOSE);
@@ -222,9 +274,7 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
           // opener entirely rather than leaking it (common with long
           // <tool_use ... arguments="..."/> echoes).
           const prefix = buffer.slice(0, earliestOpener);
-          if (prefix) {
-            try { onTextChunk?.(prefix); } catch { /* swallow */ }
-          }
+          flushSafeText(prefix);
           buffer = buffer.slice(earliestOpener);
           dropUntilClose = true;
           while (dropUntilClose && consumeDroppedTail()) { /* drain */ }
@@ -235,25 +285,21 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
       }
       if (safeLen > 0) {
         const out = buffer.slice(0, safeLen);
-        if (out) {
-          try { onTextChunk?.(out); } catch { /* swallow */ }
-        }
+        flushSafeText(out);
         buffer = buffer.slice(safeLen);
       }
     },
     flush() {
-      if (!buffer) return;
       if (dropUntilClose) {
         buffer = '';
         dropUntilClose = false;
+        brandHold = '';
         return;
       }
       buffer = applyStripPatterns(buffer);
       const earliestOpener = findEarliestOpener(buffer);
       const out = earliestOpener >= 0 ? buffer.slice(0, earliestOpener) : buffer;
-      if (out) {
-        try { onTextChunk?.(out); } catch { /* swallow */ }
-      }
+      flushSafeText(out, { final: true });
       buffer = '';
     },
   };
