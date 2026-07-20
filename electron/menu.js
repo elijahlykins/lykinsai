@@ -2,6 +2,10 @@
 // every action is forwarded to the overlay renderer (which owns the real
 // logic + state); this page only renders the list and the state badges.
 
+if (window.lyknMenu?.platform && window.lyknMenu.platform !== "darwin") {
+  document.documentElement.classList.add("no-vibrancy");
+}
+
 const menuEl = document.getElementById("menu");
 const historyListEl = document.getElementById("history-list");
 

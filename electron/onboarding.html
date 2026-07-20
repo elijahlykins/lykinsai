@@ -197,7 +197,7 @@
         <img class="logo" src="./resources/icon-rounded.png" alt="LYKN"
              onerror="this.src='./resources/icon.png'" />
         <h1>Welcome to LYKN</h1>
-        <p class="lead">Your personal AI on every screen. Press <span class="kbd">⌘ L</span> anywhere and LYKN appears over whatever you're looking at, already knowing who you are.</p>
+        <p class="lead" id="welcome-lead">Your personal AI on every screen. Press <span class="kbd" id="welcome-kbd">⌘ L</span> anywhere and LYKN appears over whatever you're looking at, already knowing who you are.</p>
         <div class="preview">
           <div class="item"><span class="n">1</span><span><b>Sign in</b>: connect your beliefs, projects &amp; vault</span></div>
           <div class="item"><span class="n">2</span><span><b>Permissions</b>: let LYKN see your screen &amp; hear you</span></div>
@@ -228,7 +228,7 @@
           <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 22h8M12 18v4"/></svg>
         </div>
         <h1>Let LYKN see your screen</h1>
-        <p class="lead">When you ask about what's in front of you, LYKN reads the screen for feedback, notes, and answers. macOS asks you to allow this <span class="tag">once</span>.</p>
+        <p class="lead" id="screen-lead">When you ask about what's in front of you, LYKN reads the screen for feedback, notes, and answers. macOS asks you to allow this <span class="tag">once</span>.</p>
         <div class="card">
           <div class="row">
             <span id="screen-badge" class="badge"><span class="dot"></span><span id="screen-text">Checking…</span></span>
@@ -236,7 +236,7 @@
             <button id="screen-open" class="primary">Allow Screen Recording</button>
             <button id="screen-recheck" class="ghost">Recheck</button>
           </div>
-          <p class="hint">Turn on <span class="tag">LYKN</span> in the list that opens. If macOS asks to quit &amp; reopen the app, do it. This walkthrough picks up where you left off.</p>
+          <p class="hint" id="screen-hint">Turn on <span class="tag">LYKN</span> in the list that opens. If macOS asks to quit &amp; reopen the app, do it. This walkthrough picks up where you left off.</p>
         </div>
       </section>
 
@@ -253,12 +253,12 @@
             <span class="spacer"></span>
             <button id="mic-request" class="primary">Enable Microphone</button>
           </div>
-          <p class="hint">You can always add this later in System Settings → Privacy &amp; Security → Microphone.</p>
+          <p class="hint" id="mic-hint">You can always add this later in System Settings → Privacy &amp; Security → Microphone.</p>
         </div>
       </section>
 
-      <!-- 5 · Browser access (optional) -->
-      <section class="step" data-step="4">
+      <!-- 5 · Browser access (optional) — macOS Apple Events / Accessibility -->
+      <section class="step" data-step="4" data-mac-only>
         <div class="glyph">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20z"/></svg>
         </div>
@@ -296,10 +296,10 @@
           <svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
         </div>
         <h1>You're set up</h1>
-        <p class="lead">LYKN lives in your menu bar and starts with your Mac. It's always one shortcut away.</p>
+        <p class="lead" id="done-lead">LYKN lives in your menu bar and starts with your Mac. It's always one shortcut away.</p>
         <div class="checklist" id="summary"></div>
         <div class="trybox" id="trybox">
-          <div class="keys"><span class="key">⌘</span><span class="key">L</span></div>
+          <div class="keys" id="try-keys"><span class="key">⌘</span><span class="key">L</span></div>
           <div class="msg" id="try-msg">Press <b>⌘ L</b> right now to summon LYKN for the first time.</div>
         </div>
       </section>
@@ -316,8 +316,42 @@
     <script>
       const api = window.lyknOnboarding;
       const $ = (id) => document.getElementById(id);
+      const IS_MAC = (api.platform || "darwin") === "darwin";
+      const IS_WIN = api.platform === "win32";
+      // Windows/Linux: always Ctrl+L (never ⌘). macOS: ⌘L.
+      const HOTKEY = IS_MAC ? "⌘L" : "Ctrl+L";
+      const HOTKEY_HTML = IS_MAC
+        ? "<b>⌘L</b>"
+        : "<b>Ctrl</b>+<b>L</b>";
+
+      // Drop macOS-only steps (Apple Events / Accessibility) on Windows.
+      if (!IS_MAC) {
+        document.querySelectorAll("[data-mac-only]").forEach((el) => el.remove());
+      }
+
       const steps = Array.from(document.querySelectorAll(".step"));
       const TOTAL = steps.length;
+      const lastIdx = TOTAL - 1;
+
+      /* ── platform copy ──────────────────────────────────────────────── */
+      $("welcome-kbd").textContent = HOTKEY;
+      if (IS_WIN) {
+        $("screen-lead").innerHTML =
+          "When you ask about what's in front of you, LYKN reads the screen for feedback, notes, and answers. Click below to <span class=\"tag\">confirm capture works</span>.";
+        $("screen-open").textContent = "Test screen capture";
+        $("screen-hint").innerHTML =
+          "Windows usually allows this automatically. If the test fails, check that no policy is blocking screen capture, then retry.";
+        $("mic-hint").textContent =
+          "You can always change this later in Settings → Privacy & security → Microphone.";
+        $("done-lead").textContent =
+          "LYKN lives in your system tray and can start with Windows. It's always one shortcut away.";
+        $("try-keys").innerHTML = '<span class="key">Ctrl</span><span class="key">L</span>';
+        $("try-msg").innerHTML =
+          "Press <b>Ctrl+L</b> right now to summon LYKN for the first time.";
+        // Windows uses a normal title bar — no need for the drag strip.
+        const tb = document.querySelector(".titlebar");
+        if (tb) tb.style.display = "none";
+      }
 
       const state = {
         step: 0,
@@ -335,6 +369,19 @@
         $(text).textContent = label;
       }
 
+      function stepKind(i) {
+        // After removing mac-only steps, indices shift — identify by remaining markup.
+        const el = steps[i];
+        if (!el) return "";
+        if (el.classList.contains("welcome")) return "welcome";
+        if (el.querySelector("#auth-badge")) return "auth";
+        if (el.querySelector("#screen-badge")) return "screen";
+        if (el.querySelector("#mic-badge")) return "mic";
+        if (el.querySelector("#ae-badge")) return "browser";
+        if (el.querySelector("#trybox")) return "done";
+        return "";
+      }
+
       /* ── polling per-capability ─────────────────────────────────────── */
       async function refreshAuth() {
         state.auth = !!(await api.authStatus().catch(() => false));
@@ -347,8 +394,14 @@
         state.screen = await api.screenStatus().catch(() => "unknown");
         if (state.screen === "granted") setBadge("screen-badge", "screen-text", "ok", "Allowed");
         else if (state.screen === "denied" || state.screen === "restricted")
-          setBadge("screen-badge", "screen-text", "err", "Not allowed");
-        else setBadge("screen-badge", "screen-text", "warn", "Needs permission");
+          setBadge("screen-badge", "screen-text", "err", IS_WIN ? "Capture failed" : "Not allowed");
+        else
+          setBadge(
+            "screen-badge",
+            "screen-text",
+            "warn",
+            IS_WIN ? "Not tested yet" : "Needs permission",
+          );
         renderNav();
       }
 
@@ -362,6 +415,7 @@
       }
 
       async function refreshAx() {
+        if (!IS_MAC || !$("ax-badge")) return;
         state.ax = await api.accessibilityStatus().catch(() => "unknown");
         if (state.ax === "granted") setBadge("ax-badge", "ax-text", "ok", "Allowed");
         else setBadge("ax-badge", "ax-text", "warn", "Off");
@@ -371,52 +425,63 @@
       $("auth-open").addEventListener("click", () => api.openSignIn());
 
       $("screen-open").addEventListener("click", async () => {
-        // Trigger the native prompt first (registers LYKN in the list), then open settings.
+        $("screen-open").disabled = true;
         await api.requestScreen();
-        api.openScreenSettings();
+        await refreshScreen();
+        // macOS: also open the privacy pane so the user can flip the toggle.
+        if (IS_MAC && state.screen !== "granted") api.openScreenSettings();
+        $("screen-open").disabled = false;
       });
-      $("screen-recheck").addEventListener("click", refreshScreen);
+      $("screen-recheck").addEventListener("click", async () => {
+        if (IS_WIN) await api.requestScreen();
+        refreshScreen();
+      });
 
       $("mic-request").addEventListener("click", async () => {
         await api.requestMic();
         refreshMic();
       });
 
-      $("ae-open").addEventListener("click", () => api.openAutomationSettings());
-      $("ae-test").addEventListener("click", async () => {
-        setBadge("ae-badge", "ae-text", "warn", "Testing…");
-        const r = await api.testAppleEvents();
-        state.ae = r.state;
-        if (r.state === "granted")
-          setBadge("ae-badge", "ae-text", "ok", "Working" + (r.browser ? " · " + r.browser : ""));
-        else if (r.state === "no-browser")
-          setBadge("ae-badge", "ae-text", "warn", "Open a browser tab, then retry");
-        else if (r.state === "denied")
-          setBadge("ae-badge", "ae-text", "err", "Turned off" + (r.browser ? " · " + r.browser : ""));
-        else setBadge("ae-badge", "ae-text", "err", r.message || "Couldn't verify");
-      });
+      if ($("ae-open")) {
+        $("ae-open").addEventListener("click", () => api.openAutomationSettings());
+        $("ae-test").addEventListener("click", async () => {
+          setBadge("ae-badge", "ae-text", "warn", "Testing…");
+          const r = await api.testAppleEvents();
+          state.ae = r.state;
+          if (r.state === "granted")
+            setBadge("ae-badge", "ae-text", "ok", "Working" + (r.browser ? " · " + r.browser : ""));
+          else if (r.state === "no-browser")
+            setBadge("ae-badge", "ae-text", "warn", "Open a browser tab, then retry");
+          else if (r.state === "denied")
+            setBadge("ae-badge", "ae-text", "err", "Turned off" + (r.browser ? " · " + r.browser : ""));
+          else setBadge("ae-badge", "ae-text", "err", r.message || "Couldn't verify");
+        });
+      }
 
-      $("ax-request").addEventListener("click", async () => {
-        await api.requestAccessibility();
-        api.openAccessibilitySettings();
-        refreshAx();
-      });
+      if ($("ax-request")) {
+        $("ax-request").addEventListener("click", async () => {
+          await api.requestAccessibility();
+          api.openAccessibilitySettings();
+          refreshAx();
+        });
+      }
 
       api.onHotkey(() => {
         state.hotkeyDone = true;
         const box = $("trybox");
         box.classList.add("done");
-        $("try-msg").innerHTML = "<b>There it is.</b> Press <b>⌘ L</b> again anytime, on any screen.";
+        $("try-msg").innerHTML =
+          "<b>There it is.</b> Press " + HOTKEY_HTML + " again anytime, on any screen.";
       });
 
       /* ── final summary ──────────────────────────────────────────────── */
       function renderSummary() {
         const rows = [
           ["Signed in", state.auth],
-          ["Screen Recording", state.screen === "granted"],
+          [IS_WIN ? "Screen capture" : "Screen Recording", state.screen === "granted"],
           ["Microphone", state.mic === "granted"],
-          ["Browser tab reading", state.ae === "granted"],
         ];
+        if (IS_MAC) rows.push(["Browser tab reading", state.ae === "granted"]);
         $("summary").innerHTML = rows
           .map(
             ([label, ok]) =>
@@ -430,41 +495,43 @@
       const dots = $("dots");
       for (let i = 0; i < TOTAL; i++) dots.appendChild(document.createElement("i"));
 
-      const NEXT_LABEL = ["Get started", "Continue", "Continue", "Continue", "Continue", "Finish"];
-      // Steps the user may skip past without completing (sign-in, mic, browser).
-      const SKIPPABLE = new Set([1, 3, 4]);
+      function nextLabel(i) {
+        if (i === 0) return "Get started";
+        if (i === lastIdx) return "Finish";
+        return "Continue";
+      }
 
       function renderNav() {
+        const kind = stepKind(state.step);
         $("back").style.visibility = state.step === 0 ? "hidden" : "visible";
-        $("next").textContent = NEXT_LABEL[state.step];
-        // Screen Recording is the one thing LYKN can't work without: gate
-        // "Continue" on it, but leave "Skip for now" as the escape hatch so
-        // nobody is ever stranded.
-        const screenGate = state.step === 2 && state.screen !== "granted";
+        $("next").textContent = nextLabel(state.step);
+        // Screen capture is the one thing LYKN can't work without: gate
+        // "Continue" on it, but leave "Skip for now" as the escape hatch.
+        const screenGate = kind === "screen" && state.screen !== "granted";
         $("next").disabled = screenGate;
-        // Once a skippable step is satisfied, "Skip" is just noise — hide it.
         const satisfied =
-          (state.step === 1 && state.auth) ||
-          (state.step === 3 && state.mic === "granted");
-        const showSkip = screenGate || (SKIPPABLE.has(state.step) && !satisfied);
+          (kind === "auth" && state.auth) ||
+          (kind === "mic" && state.mic === "granted");
+        const skippable = kind === "auth" || kind === "mic" || kind === "browser";
+        const showSkip = screenGate || (skippable && !satisfied);
         $("skip").style.display = showSkip ? "" : "none";
       }
 
       function show(n) {
-        state.step = Math.max(0, Math.min(TOTAL - 1, n));
+        state.step = Math.max(0, Math.min(lastIdx, n));
         steps.forEach((el, i) => {
           el.classList.toggle("active", i === state.step);
           el.classList.toggle("left", i < state.step);
         });
         Array.from(dots.children).forEach((d, i) => d.classList.toggle("on", i === state.step));
-        if (state.step === 5) renderSummary();
+        if (stepKind(state.step) === "done") renderSummary();
         renderNav();
       }
 
       $("back").addEventListener("click", () => show(state.step - 1));
       $("skip").addEventListener("click", () => show(state.step + 1));
       $("next").addEventListener("click", () => {
-        if (state.step === TOTAL - 1) api.finish();
+        if (state.step === lastIdx) api.finish();
         else show(state.step + 1);
       });
 
@@ -474,11 +541,11 @@
       refreshMic();
       refreshAx();
       setInterval(() => {
-        // Only poll what the visible step (or final summary) cares about.
-        if (state.step === 1 || state.step === 5) refreshAuth();
-        if (state.step === 2 || state.step === 5) refreshScreen();
-        if (state.step === 3 || state.step === 5) refreshMic();
-        if (state.step === 4) refreshAx();
+        const kind = stepKind(state.step);
+        if (kind === "auth" || kind === "done") refreshAuth();
+        if (kind === "screen" || kind === "done") refreshScreen();
+        if (kind === "mic" || kind === "done") refreshMic();
+        if (kind === "browser") refreshAx();
       }, 2500);
       show(0);
     </script>

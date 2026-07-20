@@ -1276,12 +1276,27 @@
     1px 1px 1px rgba(255, 255, 255, 0.8);
 }
 
-/* ↵ — upper-right, tilted CW. */
+/* Windows/Linux: "Ctrl" needs a wider cap and smaller type than ⌘. */
+.gl-key--ctrl {
+  width: clamp(78px, 7.2vw, 98px);
+}
+.gl-key--ctrl span {
+  font-size: clamp(15px, 1.45vw, 19px);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+/* L — upper-right, tilted CW (pairs with ⌘/Ctrl for the Glass shortcut). */
 .gl-key--ret {
   right: 0;
   top: 0;
   --rot: 8deg;
   animation-delay: 300ms;
+}
+.gl-key--ret span {
+  font-size: clamp(28px, 2.6vw, 36px);
+  font-weight: 600;
 }
 
 /* Lift on hover — both keys rise together when either is hovered. */

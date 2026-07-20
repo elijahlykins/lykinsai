@@ -46,7 +46,15 @@ import imagineFigure from "@/assets/imagine-figure.png";
 import VoiceTechOrb from "@/components/lyknChat/VoiceTechOrb";
 import { streamWakeChatPreview } from "@/lib/wake/wakeChatPreviewStream";
 import { AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
+import {
+  desktopHotkeyLabel,
+  desktopModifierAria,
+  desktopModifierKey,
+} from "@/lib/desktopHotkey";
 import "./GlassLanding.css";
+
+const HOTKEY = desktopHotkeyLabel();
+const HOTKEY_SPACED = desktopHotkeyLabel("spaced");
 
 // The production marketing landing page, focused on LYKN Glass (the desktop
 // overlay). Served at "/", "/landing", and "/glass". Uses the shared
@@ -637,7 +645,7 @@ function AnyScreenSection() {
             <span className="gl-any-title-dim">Every screen.</span>
           </h2>
           <p className="gl-any-sub gl-reveal">
-            Press ⌘L and LYKN Glass appears over whatever you're working on.
+            Press {HOTKEY} and LYKN Glass appears over whatever you're working on.
             It reads the page, snips the part you care about, and acts on it,
             with your projects and context already loaded.
           </p>
@@ -801,13 +809,13 @@ const DEMO_FOLLOWUPS = [
 // demo paths stay cheap and fast. (Free-typed prompts still stream live.)
 const DEMO_CANNED: Record<string, string> = {
   "What is LYKN Glass?":
-    "LYKN Glass is me, on top of every screen you work on. Press ⌘L over any app, doc, or browser and I appear as a floating glass bar. Once you're set up, I show up already knowing who you are and what you're working on. I can read what's on your screen when you ask, answer it, and take action, then get out of your way. It's the same overlay you're using right now.",
+    `LYKN Glass is me, on top of every screen you work on. Press ${HOTKEY} over any app, doc, or browser and I appear as a floating glass bar. Once you're set up, I show up already knowing who you are and what you're working on. I can read what's on your screen when you ask, answer it, and take action, then get out of your way. It's the same overlay you're using right now.`,
   "How does LYKN manage my projects?":
     "I can act as your project manager. Once you're signed in, I hold the full context of everything you're working on, track your projects and their tasks, know what's done and what's due, and push the next step forward, keeping every connected tool and model in sync. You could ask \"what's next on the launch?\" from any screen and I'd just know.",
   "How do you manage my projects?":
     "Think of me as a project manager who never loses context. Once you're set up, I keep your projects and their tasks, know what's done and what's still open, surface what's due, and nudge the next step forward, from whatever screen you're on. You stay in the work; I keep the plan moving.",
   "What's on this page?":
-    "You're on the LYKN landing page. Up top is the nav: Product, Pricing, Download. The hero reads \"Welcome to LYKN studio\" with the ⌘ keycap you used to open me. Below that: how I show up on any screen, an \"AI project manager\" section with live project and calendar UI, a Latest news strip, an FAQ, and a \"Put LYKN on your Mac\" download section.",
+    `You're on the LYKN landing page. Up top is the nav: Product, Pricing, Download. The hero reads "Welcome to LYKN studio" with the ${desktopModifierKey()} keycap you used to open me. Below that: how I show up on any screen, an "AI project manager" section with live project and calendar UI, a Latest news strip, an FAQ, and a download section for Mac and Windows.`,
   "How does the calendar work?":
     "Once you're set up, I manage your calendar right alongside your work. I'll know what's coming up, can schedule and reschedule, flag conflicts, and tie events back to the project they belong to, so your time and your projects stay in sync instead of living in separate apps.",
   "Can it see what's on my screen?":
@@ -815,7 +823,7 @@ const DEMO_CANNED: Record<string, string> = {
   "What models can I use?":
     "I run on one fast everyday model by default. On Pro you can switch to the frontier models, GPT, Claude, Gemini, and Grok, straight from the model menu. Whichever you pick, it's grounded in your context, so the answer is still personal to you.",
   "How do I get started?":
-    "Download LYKN for Mac from the button on this page, sign in, and press ⌘L anywhere. From there I start learning who you are and how you work, and I'm one shortcut away on every screen you're on.",
+    `Download LYKN for Mac or Windows from this page, sign in, and press ${HOTKEY} anywhere. From there I start learning who you are and how you work, and I'm one shortcut away on every screen you're on.`,
 };
 
 // Common words ignored when comparing two suggestions for similarity, so
@@ -1258,32 +1266,31 @@ function GlassDemoOverlay({
   );
 }
 
-/** Fixed bottom-right shortcut hint — two neumorphic keycaps (⌘ + ↵) that
-    drop in with a bounce and lift on hover. Clicking summons the demo. */
+/** Fixed bottom-right shortcut hint — two neumorphic keycaps (⌘/Ctrl + L)
+    that drop in with a bounce and lift on hover. Clicking summons the demo. */
 function KeycapCTA({ onTrigger }: { onTrigger?: () => void }) {
+  const mod = desktopModifierKey();
   return (
-    <div className="gl-cta" aria-label="AI on any screen at the click of a button">
+    <div className="gl-cta" aria-label={`AI on any screen — press ${HOTKEY}`}>
       <div className="gl-keys">
         <span className="gl-cta-text" role="tooltip">
-          AI on any screen at the click of a button
+          AI on any screen · {HOTKEY}
         </span>
         <button
           type="button"
-          className="gl-key gl-key--cmd"
-          aria-label="Command"
+          className={`gl-key gl-key--cmd${mod === "Ctrl" ? " gl-key--ctrl" : ""}`}
+          aria-label={desktopModifierAria()}
           onClick={onTrigger}
         >
-          <span>⌘</span>
+          <span>{mod}</span>
         </button>
         <button
           type="button"
           className="gl-key gl-key--ret"
-          aria-label="Open LYKN demo"
+          aria-label={`Open LYKN demo (${HOTKEY})`}
           onClick={onTrigger}
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M10 4v9a5 5 0 0 0 5 5" />
-          </svg>
+          <span>L</span>
         </button>
       </div>
     </div>
@@ -1869,7 +1876,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: "Which platforms is Glass available on?",
-    a: "Glass is the desktop overlay that puts LYKN on any screen with a single shortcut. Hit ⌘ + L and it is right there, wherever you are working.",
+    a: `Glass is the desktop overlay that puts LYKN on any screen with a single shortcut. On Mac it's ${desktopHotkeyLabel("spaced")}; on Windows it's Ctrl+L. Hit it and LYKN is right there, wherever you are working.`,
   },
 ];
 
@@ -1937,15 +1944,15 @@ const START_OPTIONS: {
   },
   {
     title: "Download the full LYKN experience",
-    sub: "The Mac app puts your AI on every screen.",
+    sub: "The desktop app puts your AI on every screen — Mac and Windows.",
     points: [
-      "Summon LYKN Glass anywhere with ⌘ L",
+      `Summon LYKN Glass anywhere with ${HOTKEY_SPACED}`,
       "Ask about whatever is on your screen",
       "Snip, build, and generate without switching apps",
       "Hands-free voice mode",
       "Everything from the browser, plus your desktop",
     ],
-    cta: "Download for Mac",
+    cta: "Download desktop app",
     to: "/download",
   },
 ];
@@ -2079,7 +2086,7 @@ export function SiteFooter() {
       <div className="gl-footer-bottom">
         <span>© {new Date().getFullYear()} LYKN. All rights reserved.</span>
         <span className="gl-footer-shortcut">
-          AI on any screen · <kbd>⌘</kbd> <kbd>L</kbd>
+          AI on any screen · <kbd>{desktopModifierKey()}</kbd> <kbd>L</kbd>
         </span>
       </div>
     </footer>

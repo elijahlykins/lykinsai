@@ -5,6 +5,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("lyknMenu", {
+  platform: process.platform,
   // Forward a menu action (e.g. "menu-new", "voice") to the overlay renderer.
   cmd: (name, arg) => ipcRenderer.send("lykn:menu-cmd", { name, arg }),
   close: () => ipcRenderer.send("lykn:menu-close"),

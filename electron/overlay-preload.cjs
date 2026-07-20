@@ -4,6 +4,7 @@
 const { contextBridge, ipcRenderer, clipboard } = require("electron");
 
 contextBridge.exposeInMainWorld("lyknOverlay", {
+  platform: process.platform,
   // Ask LYKN about the current screen. The main process captures the screen
   // silently and streams the answer back via onDelta/onDone/onError.
   // opts: { forceImage } — image mode armed via menu → "Create an image".

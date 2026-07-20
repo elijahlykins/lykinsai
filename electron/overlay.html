@@ -16,6 +16,16 @@
         --chat-width: 520px;
         --bar-min-h: 48px;
       }
+      /* Windows/Linux: no NSVisualEffectView — denser tint + CSS blur. */
+      html.no-vibrancy {
+        --tint: rgba(16, 18, 24, 0.82);
+        --border: rgba(255, 255, 255, 0.16);
+      }
+      html.no-vibrancy #wrap {
+        backdrop-filter: blur(28px) saturate(160%);
+        -webkit-backdrop-filter: blur(28px) saturate(160%);
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+      }
       * { box-sizing: border-box; }
       html, body {
         margin: 0;
@@ -23,7 +33,7 @@
         width: 100%;
         background: transparent;
         overflow: hidden;
-        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
         color: var(--text);
       }
       /* Two-column shell: an optional source/follow-up panel on the LEFT and the
@@ -389,6 +399,12 @@
         align-items: center;
         gap: 10px;
         padding: 2px 0 4px;
+      }
+      /* Shown under the model's description while a build/tool is still
+         running — same spinner as the initial thinking state. */
+      .building-under {
+        margin-top: 12px;
+        padding-top: 4px;
       }
       .lykn-outline-spinner {
         color: #f4f6fb;

@@ -2,6 +2,10 @@
 // the overlay renderer owns the audio streams, transcript, and notes state,
 // and pushes render snapshots here; every user action is forwarded back.
 
+if (window.lyknLive?.platform && window.lyknLive.platform !== "darwin") {
+  document.documentElement.classList.add("no-vibrancy");
+}
+
 const dotEl = document.getElementById("live-dot");
 const titleEl = document.getElementById("live-title");
 const toastEl = document.getElementById("live-saved-toast");

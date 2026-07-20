@@ -82,6 +82,24 @@
       { "x": 410, "y": 200, "type": "link", "path": "/Applications" }
     ]
   },
+  "win": {
+    "icon": "electron/resources/icon.ico",
+    "target": [
+      { "target": "nsis", "arch": ["x64"] }
+    ],
+    "artifactName": "${productName}-Setup.${ext}",
+    "executableName": "LYKN"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "LYKN",
+    "uninstallDisplayName": "LYKN",
+    "deleteAppDataOnUninstall": false
+  },
   "publish": {
     "provider": "github",
     "owner": "elijahlykins",

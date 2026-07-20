@@ -1,15 +1,12 @@
-// LYKN desktop shell (macOS) — v1 "web wrapper".
+// LYKN desktop shell (macOS + Windows) — thin native wrapper around the live
+// web app at APP_URL, plus the always-on-top glass overlay (⌘/Ctrl+L), tray
+// icon, and screen-context bridge.
 //
-// This is intentionally a thin native shell that loads the live web app from
-// APP_URL, exactly like the Capacitor iOS shell loads lykn.io. The whole
-// point of v1 is to prove the download → install → notarize → auto-update
-// pipeline end-to-end before we layer the ⌘+L screen-reading overlay on top.
-//
-// Forward-looking hooks (the Jarvis surface) are marked with TODO(jarvis) so
-// the next pass has obvious seams: a transparent always-on-top overlay window,
-// a global ⌘+L shortcut that captures the screen via desktopCapturer, and an
-// IPC bridge that pipes captured frames into the app's existing OCR/vision
-// pipeline (src/lib/ai/imageOcr.ts).
+// Platform notes:
+//   • macOS: native vibrancy panels, Accessibility/AppleScript browser act,
+//     notarized DMG.
+//   • Windows: transparent glass fallbacks, tray-resident like mac, NSIS
+//     installer. Browser-act / frontmost-doc parity lands in a later pass.
 
 const {
   app,
@@ -28,6 +25,17 @@ const {
   powerMonitor,
   nativeTheme,
 } = require("electron");
+
+const IS_MAC = process.platform === "darwin";
+const IS_WIN = process.platform === "win32";
+// Taskbar grouping + toast attribution on Windows (must match appId).
+if (IS_WIN) {
+  try {
+    app.setAppUserModelId("ai.lykn.desktop");
+  } catch (_) {
+    /* best-effort */
+  }
+}
 
 // Force dark appearance for the whole shell. The glass overlay family (bar,
 // menu, picker, side panel, live notes) uses native "hud" vibrancy, and that
@@ -222,7 +230,9 @@ const TOOL_STATUS_LABELS = {
   save_to_vault: "Saving to your vault…",
   add_to_project: "Adding it to the project…",
   generate_image: "Creating your image…",
-  build_react_artifact: "Coding it out…",
+  build_react_artifact: "Building…",
+  build_template: "Building…",
+  build_spreadsheet: "Building…",
   render_video: "Rendering your video…",
 };
 
@@ -348,6 +358,19 @@ app.on("open-url", (event, url) => {
   handleAuthDeepLink(url);
 });
 
+// Windows (and Linux) deliver lykn:// URLs via process argv — cold start and
+// second-instance. Scan an argv-like list for the first lykn: URL.
+function findLyknUrlInArgv(argv) {
+  for (const arg of argv || []) {
+    if (typeof arg === "string" && arg.startsWith("lykn:")) return arg;
+  }
+  return null;
+}
+{
+  const cold = findLyknUrlInArgv(process.argv);
+  if (cold) handleAuthDeepLink(cold);
+}
+
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
 /** @type {BrowserWindow | null} */
@@ -387,7 +410,7 @@ function quitForReal() {
 // but still alive as the auth keeper) we stay out of the Dock and the
 // ⌘-Tab switcher like any other background companion.
 function updateDockVisibility() {
-  if (process.platform !== "darwin" || !app.dock) return;
+  if (!IS_MAC || !app.dock) return;
   try {
     if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) app.dock.show();
     else app.dock.hide();
@@ -417,7 +440,7 @@ let overlayProgrammaticMove = false;
 function createMainWindow() {
   // Coming back from background (menu-bar-only) mode: restore the Dock icon
   // before the window appears so it can take focus like a normal app window.
-  if (process.platform === "darwin" && app.dock) {
+  if (IS_MAC && app.dock) {
     try { app.dock.show(); } catch (_) { /* cosmetic */ }
   }
   // Main window takes over as the auth provider — tear down the keeper so
@@ -429,7 +452,10 @@ function createMainWindow() {
     minWidth: 720,
     minHeight: 560,
     backgroundColor: "#000000",
-    titleBarStyle: "hiddenInset",
+    // macOS: hiddenInset traffic lights. Windows: standard frame so the web
+    // app doesn't need a custom drag region yet (titleBarOverlay can land later).
+    titleBarStyle: IS_MAC ? "hiddenInset" : "default",
+    autoHideMenuBar: IS_WIN,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -558,8 +584,9 @@ function installPermissionHandler() {
 
 // Enable system ("loopback") audio capture for the overlay's live-listen mode.
 // When the overlay calls navigator.mediaDevices.getDisplayMedia({audio:true}),
-// this handler hands back a screen video source plus loopback audio, which on
-// macOS 13+ is captured via ScreenCaptureKit — no virtual audio device needed.
+// this handler hands back a screen video source plus loopback audio:
+//   • Windows — Chromium loopback (supported natively)
+//   • macOS 13+ — ScreenCaptureKit path in Electron (no virtual device)
 // The overlay only uses the audio track (to transcribe meetings/conversations).
 function setupSystemAudioCapture() {
   const ses = require("electron").session.defaultSession;
@@ -612,9 +639,9 @@ function createOverlayWindow() {
     // desktop behind a transparent window. With transparent:false + roundedCorners
     // macOS clips the vibrancy material to a rounded rect, giving a clean floating
     // glass panel instead of a square blurred rectangle.
-    transparent: process.platform === "darwin" ? false : true,
+    transparent: IS_MAC ? false : true,
     backgroundColor: "#00000000",
-    ...(process.platform === "darwin"
+    ...(IS_MAC
       ? { vibrancy: "hud", visualEffectState: "active", roundedCorners: true }
       : {}),
     hasShadow: true,
@@ -633,7 +660,7 @@ function createOverlayWindow() {
     // activating the app, so summoning it never yanks the user to LYKN's Space
     // or out of the full-screen app they're in. We drop the panel type when
     // OVERLAY_ACTIVATABLE_FOR_DROPS is on so the window can accept OS file drops.
-    ...(process.platform === "darwin" && !OVERLAY_ACTIVATABLE_FOR_DROPS
+    ...(IS_MAC && !OVERLAY_ACTIVATABLE_FOR_DROPS
       ? { type: "panel" }
       : {}),
     webPreferences: {
@@ -659,11 +686,13 @@ function createOverlayWindow() {
   // level must be applied AFTER it — and setFullScreenable(false) in between
   // pins NSWindowCollectionBehaviorFullScreenAuxiliary. With the level set
   // first, whether the bar showed above a full-screen app was a coin flip.
+  // On Windows these are mostly no-ops / best-effort; always-on-top still applies.
   overlayWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
   overlayWindow.setFullScreenable(false);
+  // screen-saver level is the most reliable always-on-top tier on both platforms.
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
   overlayWindow.loadFile(path.join(__dirname, "overlay.html"));
 
@@ -813,15 +842,192 @@ async function withOverlayHiddenForClick(fn) {
   }
 }
 
-// Returns 'granted' | 'denied' | 'not-determined' | 'restricted'. On non-mac
-// platforms screen capture needs no explicit permission.
+// Windows/Linux have no Screen Recording TCC pane — we cache an onboarding
+// probe so the walkthrough can show "Test screen capture". Feature gates use
+// screenCaptureStatus() which stays allowed unless a probe explicitly failed.
+/** @type {"granted"|"denied"|null} */
+let screenProbeCache = null;
+
+// Returns 'granted' | 'denied' | 'not-determined' | 'restricted' | 'unknown'.
+// Used to gate overlay asks / live watch — on Windows defaults to allowed.
 function screenCaptureStatus() {
-  if (process.platform !== "darwin") return "granted";
-  try {
-    return systemPreferences.getMediaAccessStatus("screen");
-  } catch {
-    return "unknown";
+  if (IS_MAC) {
+    try {
+      return systemPreferences.getMediaAccessStatus("screen");
+    } catch {
+      return "unknown";
+    }
   }
+  return screenProbeCache === "denied" ? "denied" : "granted";
+}
+
+// Onboarding UI status — Windows starts as not-determined until the user tests.
+function onboardingScreenStatus() {
+  if (IS_MAC) return screenCaptureStatus();
+  return screenProbeCache || "not-determined";
+}
+
+// Microphone privacy status. Works on macOS + Windows via Chromium.
+function microphoneStatus() {
+  try {
+    if (typeof systemPreferences.getMediaAccessStatus === "function") {
+      return systemPreferences.getMediaAccessStatus("microphone");
+    }
+  } catch {
+    /* fall through */
+  }
+  // Unknown OS / API — don't block; getUserMedia will prompt if needed.
+  return IS_MAC ? "unknown" : "not-determined";
+}
+
+function openMicrophoneSettings() {
+  if (IS_MAC) {
+    shell.openExternal(
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+    );
+    return;
+  }
+  if (IS_WIN) {
+    shell.openExternal("ms-settings:privacy-microphone");
+    return;
+  }
+}
+
+function openScreenPrivacySettings() {
+  if (IS_MAC) {
+    shell.openExternal(
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+    );
+    return;
+  }
+  // Windows has no Screen Recording TCC pane like macOS; privacy hub is closest.
+  if (IS_WIN) {
+    shell.openExternal("ms-settings:privacy");
+  }
+}
+
+/** @type {BrowserWindow | null} */
+let snipWindow = null;
+/** @type {((rect: {x:number,y:number,width:number,height:number}|null) => void) | null} */
+let snipResolver = null;
+
+function closeSnipWindow() {
+  if (snipWindow && !snipWindow.isDestroyed()) {
+    try { snipWindow.close(); } catch (_) { /* ignore */ }
+  }
+  snipWindow = null;
+}
+
+// Interactive region select for Windows (and as a mac fallback). Full-screen
+// dimmed overlay → drag a rectangle → crop from a fresh primary-display capture.
+function captureInteractiveSnip() {
+  return new Promise(async (resolve) => {
+    if (snipResolver) {
+      // Only one snip at a time.
+      resolve(null);
+      return;
+    }
+    const display = screen.getPrimaryDisplay();
+    const { bounds, scaleFactor } = display;
+    const physW = Math.round(bounds.width * scaleFactor);
+    const physH = Math.round(bounds.height * scaleFactor);
+
+    let fullImage = null;
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ["screen"],
+        thumbnailSize: { width: physW, height: physH },
+      });
+      const primary =
+        sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
+      if (primary && !primary.thumbnail.isEmpty()) fullImage = primary.thumbnail;
+    } catch (e) {
+      console.error("[LYKN] snip capture failed:", e && e.message);
+    }
+    if (!fullImage) {
+      resolve(null);
+      return;
+    }
+
+    snipResolver = (rect) => {
+      const done = snipResolver;
+      snipResolver = null;
+      closeSnipWindow();
+      if (!rect || !done) {
+        resolve(null);
+        return;
+      }
+      try {
+        const size = fullImage.getSize();
+        // Map selection (physical px of the snip window) onto the bitmap.
+        const sx = size.width / physW;
+        const sy = size.height / physH;
+        const crop = {
+          x: Math.max(0, Math.round(rect.x * sx)),
+          y: Math.max(0, Math.round(rect.y * sy)),
+          width: Math.max(1, Math.round(rect.width * sx)),
+          height: Math.max(1, Math.round(rect.height * sy)),
+        };
+        if (crop.x + crop.width > size.width) crop.width = size.width - crop.x;
+        if (crop.y + crop.height > size.height) crop.height = size.height - crop.y;
+        if (crop.width < 4 || crop.height < 4) {
+          resolve(null);
+          return;
+        }
+        const cropped = fullImage.crop(crop);
+        resolve({
+          kind: "image",
+          name: "Screenshot.png",
+          dataUrl: cropped.toDataURL(),
+        });
+      } catch (e) {
+        console.error("[LYKN] snip crop failed:", e && e.message);
+        resolve(null);
+      }
+    };
+
+    snipWindow = new BrowserWindow({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      hasShadow: false,
+      focusable: true,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, "snip-preload.cjs"),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    snipWindow.setAlwaysOnTop(true, "screen-saver");
+    snipWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    snipWindow.loadFile(path.join(__dirname, "snip.html"));
+    snipWindow.once("ready-to-show", () => {
+      if (snipWindow && !snipWindow.isDestroyed()) {
+        snipWindow.show();
+        snipWindow.focus();
+      }
+    });
+    snipWindow.on("closed", () => {
+      snipWindow = null;
+      if (snipResolver) {
+        const r = snipResolver;
+        snipResolver = null;
+        r(null);
+      }
+    });
+  });
 }
 
 // Capture the primary display and return a PNG data URL. desktopCapturer fails
@@ -1678,23 +1884,25 @@ function registerGlobalHotkey() {
   });
 }
 
-// ── Menu-bar (tray) icon ────────────────────────────────────────────────────
-// Lives in the macOS menu bar for as long as the app runs (including silent
-// login launches, where there's no window at all). Click toggles the glass
-// overlay chat — same as ⌘+L; right-click opens a small utility menu.
-// The icon is a TEMPLATE image (black + alpha), so macOS recolors it to match
-// light/dark menu bars. Regenerate it from the app icon with:
+// ── Tray icon ───────────────────────────────────────────────────────────────
+// Lives in the macOS menu bar / Windows notification area for as long as the
+// app runs (including silent login launches). Click toggles the glass overlay
+// chat — same as ⌘/Ctrl+L; right-click opens a small utility menu.
+//
+// macOS: TEMPLATE image (black + alpha) so the system recolors it.
 //   node scripts/generate-tray-icon.mjs
+// Windows: colored glyph (template images aren't used in the Win tray).
+//   node scripts/generate-windows-icons.mjs
 function createTray() {
   if (tray) return;
-  // createFromPath picks up trayTemplate@2x.png automatically on Retina; the
-  // "Template" filename suffix also flags it, but set it explicitly anyway.
+  const trayFile = IS_MAC ? "trayTemplate.png" : "tray-win.png";
   const icon = nativeImage.createFromPath(
-    path.join(__dirname, "resources", "trayTemplate.png"),
+    path.join(__dirname, "resources", trayFile),
   );
-  icon.setTemplateImage(true);
+  if (IS_MAC) icon.setTemplateImage(true);
   tray = new Tray(icon);
-  tray.setToolTip("LYKN — open the chat overlay (⌘L)");
+  const hotkeyLabel = IS_MAC ? "⌘L" : "Ctrl+L";
+  tray.setToolTip(`LYKN — open the chat overlay (${hotkeyLabel})`);
 
   // Left click = the one-gesture action: toggle the overlay chat.
   tray.on("click", () => {
@@ -1704,7 +1912,8 @@ function createTray() {
   // Right-click = utility menu. Built lazily per popup so the overlay label
   // reflects current visibility. NOT set via setContextMenu — on macOS that
   // would hijack left-click into opening the menu instead of the overlay.
-  tray.on("right-click", () => {
+  // On Windows, also bind to "menu" / double-click for discoverability.
+  const popupTrayMenu = () => {
     const overlayVisible = Boolean(overlayWindow && overlayWindow.isVisible());
     const menu = Menu.buildFromTemplate([
       {
@@ -1723,10 +1932,20 @@ function createTray() {
         },
       },
       { type: "separator" },
+      {
+        label: "Set Up LYKN / Permissions…",
+        click: () => createOnboardingWindow(),
+      },
+      { type: "separator" },
       { label: "Quit LYKN Completely", click: () => quitForReal() },
     ]);
     tray.popUpContextMenu(menu);
-  });
+  };
+  tray.on("right-click", popupTrayMenu);
+  if (IS_WIN) {
+    // Windows often surfaces the context menu on this event too.
+    tray.on("double-click", () => toggleOverlay());
+  }
 }
 
 // Strip the hidden control tags the chat models emit so they never leak into
@@ -3005,7 +3224,7 @@ async function writeOverlaySessionsStore(store) {
 function overlaySessionTitle(messages) {
   const firstUser = (messages || []).find((m) => m && m.role === "user" && String(m.content || "").trim());
   if (firstUser) return String(firstUser.content).trim().slice(0, 72);
-  return "⌘L chat";
+  return IS_MAC ? "⌘L chat" : "Ctrl+L chat";
 }
 
 function overlaySessionPreview(messages) {
@@ -3337,13 +3556,28 @@ async function describeBrowserTabProblem() {
   };
 }
 
-// Two-step so the AppleScript always compiles:
-//   1) list running browsers (frontmost browser first when applicable),
-//   2) a literal `tell application "<name>"` reads its active tab's URL.
-// When LYKN's overlay has focus, Electron is frontmost — we try every running
-// browser until one has an http(s) tab (Safari in the background no longer blocks Chrome).
+// Prefer the Chrome Live Feed extension (works on macOS + Windows). Fall back
+// to AppleScript tab discovery on macOS when the extension isn't connected.
 async function getActiveBrowserTarget() {
-  if (process.platform !== "darwin") return null;
+  const ext = extensionBridge?.getSnapshot?.(12_000);
+  if (ext?.url && /^https?:/i.test(ext.url)) {
+    console.log(`[scrape] active tab via extension: ${ext.url}`);
+    return {
+      appName: "Google Chrome",
+      url: ext.url,
+      title: ext.title || "",
+      source: "extension",
+    };
+  }
+
+  if (!IS_MAC) {
+    console.log("[scrape] no extension tab (Windows needs Chrome Live Feed for live page text)");
+    return null;
+  }
+
+  // Two-step so the AppleScript always compiles:
+  //   1) list running browsers (frontmost browser first when applicable),
+  //   2) a literal `tell application "<name>"` reads its active tab's URL.
   const candidates = await listRunningBrowserApps();
   if (!candidates.length) {
     console.log("[scrape] no browser frontmost or running");
@@ -3362,12 +3596,19 @@ async function getActiveBrowserTarget() {
   return best;
 }
 
-// Read the LIVE rendered text from the user's active browser tab via AppleScript
-// JS execution. This is the most robust "scrape" — it sees exactly what the user
-// sees, bypassing bot blocks, Cloudflare, and paywalls (it's their real session).
-// Requires the browser's "Allow JavaScript from Apple Events" setting (Chrome:
-// View → Developer; Safari: Develop menu). Returns "title\n<body text>" or null.
+// Read LIVE rendered text from the active tab. Extension bridge first (cross-
+// platform); AppleScript JS injection on macOS as fallback.
+// Returns "title\n<body text>" or null.
 async function getBrowserPageText(appName) {
+  const ext = extensionBridge?.getSnapshot?.(12_000);
+  if (ext?.text && ext.text.length > 40) {
+    const title = String(ext.title || "").trim();
+    const body = String(ext.text || "").trim();
+    return title ? `${title}\n${body}` : body;
+  }
+
+  if (!IS_MAC) return null;
+
   // No double quotes or backslashes in this JS so it embeds cleanly in the
   // AppleScript double-quoted string (AppleScript treats \n etc. as escapes).
   const js =
@@ -3564,10 +3805,93 @@ async function getBrowserYouTubeTranscript(appName) {
   return null;
 }
 
+// Parse YouTube timedtext payloads — json3 (preferred) or legacy XML.
+function parseYouTubeCaptionBody(body) {
+  const raw = String(body || "").trim();
+  if (!raw) return "";
+  try {
+    const j = JSON.parse(raw);
+    if (j && Array.isArray(j.events)) {
+      const text = j.events
+        .map((e) => (e.segs || []).map((s) => s.utf8 || "").join(""))
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (text) return text;
+    }
+  } catch {
+    /* not json3 — try XML below */
+  }
+  const parts = [...raw.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map((m) =>
+    decodeHtmlEntities(m[1].replace(/<[^>]+>/g, " ")),
+  );
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+// Same backend stack the in-app chat uses (captions → Whisper). Local in-tab
+// / timedtext fetches often fail from the Electron shell (bot checks, empty
+// session-bound URLs), which used to leave Glass with only the YouTube
+// description — and the model would invent a "transcript fetch error".
+async function fetchYouTubeTranscriptViaApi(videoId, { onStatus } = {}) {
+  const token = await getAuthToken().catch(() => null);
+  if (!token) {
+    console.log("[scrape] yt api transcript skipped — no auth token");
+    return null;
+  }
+  const headers = { Authorization: `Bearer ${token}` };
+  const pull = async (qs, status) => {
+    if (status) {
+      try { onStatus?.(status); } catch { /* ignore */ }
+    }
+    const res = await fetch(
+      `${API_BASE}/api/youtube/transcript?id=${encodeURIComponent(videoId)}${qs}`,
+      { headers },
+    );
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      console.log(
+        `[scrape] yt api transcript HTTP ${res.status}:`,
+        errBody?.error || res.statusText,
+      );
+      return null;
+    }
+    return res.json().catch(() => null);
+  };
+
+  try {
+    // Fast captions-only pass first (matches in-app chat).
+    let data = await pull("&fast=1", "Reading the video transcript…");
+    let text = String(data?.transcript || "").trim();
+    let source = String(data?.source || "").toLowerCase();
+
+    // Description-only is NOT a transcript — run Whisper like the web app does.
+    if ((!text || source === "description_fallback") && source !== "whisper_full") {
+      data = await pull(
+        "&retryWhisper=1",
+        "No captions found — transcribing the video audio…",
+      );
+      text = String(data?.transcript || "").trim();
+      source = String(data?.source || "").toLowerCase();
+    }
+
+    // Still only a description → don't pretend we have spoken content.
+    if (!text || source === "description_fallback") return null;
+
+    return {
+      title: "",
+      text: text.slice(0, 16000),
+      source,
+    };
+  } catch (e) {
+    console.log("[scrape] yt api transcript error:", e?.message || e);
+    return null;
+  }
+}
+
 // Fetch a YouTube video's caption transcript. Tries the in-page method first
-// (reliable, uses the user's session), then falls back to a server-side fetch of
-// the watch page + timedtext (works for some videos / when no browser JS access).
-async function fetchYouTubeTranscript(videoId, appName) {
+// (reliable, uses the user's session), then a local timedtext fetch, then the
+// LYKN backend (captions + Whisper) — same path as in-app chat.
+async function fetchYouTubeTranscript(videoId, appName, { onStatus } = {}) {
   const inPage = await getBrowserYouTubeTranscript(appName);
   if (inPage && inPage.text) {
     console.log("[scrape] yt transcript via live tab");
@@ -3627,36 +3951,49 @@ async function fetchYouTubeTranscript(videoId, appName) {
     }
   }
 
-  if (!Array.isArray(tracks) || !tracks.length) return null;
-
-  // Prefer a manually-authored English track, then any English, then the first.
-  const pick =
-    tracks.find((t) => /^en/i.test(t.languageCode || "") && t.kind !== "asr") ||
-    tracks.find((t) => /^en/i.test(t.languageCode || "")) ||
-    tracks[0];
-  let baseUrl = pick && pick.baseUrl;
-  if (!baseUrl) return null;
-  baseUrl = baseUrl.replace(/\\u0026/g, "&");
-
-  try {
-    const res = await fetch(baseUrl, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-    });
-    const xml = await res.text();
-    const parts = [...xml.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map((m) =>
-      decodeHtmlEntities(m[1].replace(/<[^>]+>/g, " ")),
-    );
-    const text = parts.join(" ").replace(/\s+/g, " ").trim();
-    if (!text) return null;
-    return { title, text: text.slice(0, 16000) };
-  } catch {
-    return null;
+  if (Array.isArray(tracks) && tracks.length) {
+    // Prefer a manually-authored English track, then any English, then the first.
+    const pick =
+      tracks.find((t) => /^en/i.test(t.languageCode || "") && t.kind !== "asr") ||
+      tracks.find((t) => /^en/i.test(t.languageCode || "")) ||
+      tracks[0];
+    let baseUrl = pick && pick.baseUrl;
+    if (baseUrl) {
+      baseUrl = baseUrl.replace(/\\u0026/g, "&");
+      if (baseUrl.indexOf("fmt=") < 0) {
+        baseUrl += (baseUrl.indexOf("?") < 0 ? "?" : "&") + "fmt=json3";
+      }
+      try {
+        const res = await fetch(baseUrl, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+              "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+        });
+        const text = parseYouTubeCaptionBody(await res.text());
+        if (text) {
+          console.log("[scrape] yt transcript via timedtext");
+          return { title, text: text.slice(0, 16000) };
+        }
+      } catch {
+        /* fall through to API */
+      }
+    }
   }
+
+  // 3) LYKN backend — captions + Whisper. This is what makes in-app chat
+  //    reliable; Glass was missing it, so caption failures became vague
+  //    description-only answers ("transcript not accessible due to a fetch error").
+  const viaApi = await fetchYouTubeTranscriptViaApi(videoId, { onStatus });
+  if (viaApi && viaApi.text) {
+    console.log(`[scrape] yt transcript via API (${viaApi.source || "unknown"})`);
+    if (title && !viaApi.title) viaApi.title = title;
+    return viaApi;
+  }
+
+  return title ? { title, text: "" } : null;
 }
 
 let overlayAskGeneration = 0;
@@ -3939,16 +4276,20 @@ async function gatherOverlayPageContext({ send, superseded }) {
       let title = "";
       let text = "";
       let kind = "page";
+      let videoTranscriptMissing = false;
 
       // YouTube (or other video): the spoken content isn't in the page text,
-      // so fetch the caption transcript instead.
+      // so fetch the caption transcript instead (in-tab → timedtext → LYKN API
+      // with Whisper). No hard 12s race — Whisper can legitimately take longer
+      // and aborting early was leaving Glass with only the video description.
       const ytId = parseYouTubeId(target.url);
       if (ytId) {
         send("lykn:answer-status", { status: "Reading the video transcript…" });
-        const yt = await Promise.race([
-          fetchYouTubeTranscript(ytId, target.appName),
-          new Promise((resolve) => setTimeout(() => resolve(null), 12000)),
-        ]);
+        const yt = await fetchYouTubeTranscript(ytId, target.appName, {
+          onStatus: (status) => {
+            if (!superseded()) send("lykn:answer-status", { status });
+          },
+        });
         if (superseded()) return { pageContext: null, pastPageSection: "" };
         if (yt && yt.text) {
           title = yt.title || "";
@@ -3957,6 +4298,8 @@ async function gatherOverlayPageContext({ send, superseded }) {
           console.log(`[scrape] OK (yt transcript) — "${title || ytId}" (${text.length} chars)`);
         } else {
           console.log("[scrape] no transcript/captions available for video", ytId);
+          if (yt && yt.title) title = yt.title;
+          videoTranscriptMissing = true;
         }
       }
 
@@ -3970,7 +4313,7 @@ async function gatherOverlayPageContext({ send, superseded }) {
         const live = await getBrowserPageText(target.appName);
         if (live) {
           const nl = live.indexOf("\n");
-          title = nl > 0 ? live.slice(0, nl).trim() : "";
+          title = (title || (nl > 0 ? live.slice(0, nl).trim() : "")).trim();
           text = (nl > 0 ? live.slice(nl + 1) : live)
             .replace(/[ \t]+/g, " ")
             .replace(/\n{3,}/g, "\n\n")
@@ -3980,13 +4323,20 @@ async function gatherOverlayPageContext({ send, superseded }) {
           // 2) Fall back to a plain HTTP fetch (works for non-bot-blocked pages).
           const page = await scrapePageText(target.url);
           if (page && page.text) {
-            title = page.title;
+            title = title || page.title;
             text = page.text;
             console.log(`[scrape] OK (http) — "${title || "(no title)"}" (${text.length} chars)`);
           }
         }
         if (text) {
-          pageContext = { url: target.url, title, text: text.slice(0, 12000) };
+          pageContext = {
+            url: target.url,
+            title,
+            text: text.slice(0, 12000),
+            // So the prompt can say "we only have the page/description" instead
+            // of the model inventing a fake "transcript fetch error".
+            ...(videoTranscriptMissing ? { videoTranscriptMissing: true } : {}),
+          };
           send("lykn:page-source", { url: target.url, title });
         } else {
           console.log("[scrape] failed to extract text from", target.url);
@@ -4222,6 +4572,17 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
       `URL: ${pageContext.url}\n` +
       (pageContext.title ? `Video title: ${pageContext.title}\n` : "") +
       `--- VIDEO TRANSCRIPT ---\n${pageContext.text}\n--- END VIDEO TRANSCRIPT ---`;
+  } else if (pageContext && pageContext.videoTranscriptMissing) {
+    prompt +=
+      "\n\nFor context, the user is watching a YouTube video but LYKN could not " +
+      "retrieve its spoken transcript (no captions and audio transcription unavailable). " +
+      "You only have the page text / description below — NOT the spoken content. " +
+      "Do NOT invent a transcript, do NOT claim a 'fetch error', and do NOT pretend " +
+      "you watched the video. Say plainly that the transcript isn't available and " +
+      "answer from the title/description only, or ask them to try again.\n" +
+      `URL: ${pageContext.url}\n` +
+      (pageContext.title ? `Video title: ${pageContext.title}\n` : "") +
+      `--- PAGE TEXT (not a transcript) ---\n${pageContext.text}\n--- END PAGE TEXT ---`;
   } else if (pageContext) {
     // When the screenshot rides along (visual-guidance asks), the image is the
     // primary context — cap the scraped text hard so the prompt stays small
@@ -5226,52 +5587,51 @@ function registerOverlayIpc() {
     }
   });
 
-  // Snip-to-attach: let the user drag-select a region of the screen (native
-  // macOS crosshair) and return it as an image attachment — "grab what's on
-  // screen" without downloading anything. The overlay is hidden during the
-  // selection so it's never in the way (and never in the shot).
+  // Snip-to-attach: drag-select a region and return it as an image attachment.
+  // macOS uses the native screencapture crosshair; Windows (and fallback) uses
+  // our fullscreen snip overlay. The glass bar is hidden so it isn't in the shot.
   ipcMain.handle("lykn:snip-screen", async () => {
-    if (process.platform !== "darwin") {
-      // Fallback for non-macOS: capture the whole primary screen.
+    if (IS_MAC) {
+      const outPath = path.join(app.getPath("temp"), `lykn-snip-${crypto.randomUUID()}.png`);
       try {
-        const dataUrl = await capturePrimaryScreen();
-        return dataUrl ? { kind: "image", name: "Screenshot.png", dataUrl } : null;
+        await withOverlayHiddenForClick(
+          () =>
+            new Promise((resolve) => {
+              // -i: interactive region select, -x: no camera sound.
+              execFile("screencapture", ["-i", "-x", outPath], () => resolve());
+            }),
+        );
+        let buf = null;
+        try {
+          buf = await fs.readFile(outPath);
+        } catch {
+          buf = null;
+        }
+        if (!buf || !buf.length) return null;
+        return {
+          kind: "image",
+          name: "Screenshot.png",
+          dataUrl: `data:image/png;base64,${buf.toString("base64")}`,
+        };
       } catch {
         return null;
+      } finally {
+        try {
+          await fs.unlink(outPath);
+        } catch {
+          /* nothing to clean up */
+        }
       }
     }
-    const outPath = path.join(app.getPath("temp"), `lykn-snip-${crypto.randomUUID()}.png`);
-    try {
-      await withOverlayHiddenForClick(
-        () =>
-          new Promise((resolve) => {
-            // -i: interactive region select, -x: no camera sound.
-            execFile("screencapture", ["-i", "-x", outPath], () => resolve());
-          }),
-      );
-      // The file only exists if the user actually completed a selection
-      // (pressing Escape cancels and writes nothing).
-      let buf = null;
-      try {
-        buf = await fs.readFile(outPath);
-      } catch {
-        buf = null;
-      }
-      if (!buf || !buf.length) return null;
-      return {
-        kind: "image",
-        name: "Screenshot.png",
-        dataUrl: `data:image/png;base64,${buf.toString("base64")}`,
-      };
-    } catch {
-      return null;
-    } finally {
-      try {
-        await fs.unlink(outPath);
-      } catch {
-        /* nothing to clean up */
-      }
-    }
+    return withOverlayHiddenForClick(() => captureInteractiveSnip());
+  });
+
+  // Snip overlay IPC (Windows region picker).
+  ipcMain.on("lykn:snip-commit", (_e, rect) => {
+    if (typeof snipResolver === "function") snipResolver(rect || null);
+  });
+  ipcMain.on("lykn:snip-cancel", () => {
+    if (typeof snipResolver === "function") snipResolver(null);
   });
 
   // Past chats — merge ⌘L overlay sessions (local) with app chats (Supabase).
@@ -5464,15 +5824,26 @@ function registerOverlayIpc() {
     }
   });
 
-  // Make sure macOS has granted microphone access before the renderer records.
+  // Make sure the OS has granted microphone access before the renderer records.
   ipcMain.handle("lykn:ensure-mic", async () => {
-    if (process.platform !== "darwin") return true;
     try {
-      const status = systemPreferences.getMediaAccessStatus("microphone");
+      const status = microphoneStatus();
       if (status === "granted") return true;
-      return await systemPreferences.askForMediaAccess("microphone");
+      if (IS_MAC) {
+        if (status === "not-determined") {
+          return await systemPreferences.askForMediaAccess("microphone");
+        }
+        openMicrophoneSettings();
+        return false;
+      }
+      // Windows: Chromium prompts on getUserMedia; if previously denied, open Settings.
+      if (status === "denied" || status === "restricted") {
+        openMicrophoneSettings();
+        return false;
+      }
+      return true;
     } catch {
-      return false;
+      return !IS_MAC;
     }
   });
 
@@ -5722,8 +6093,30 @@ function registerOverlayIpc() {
   // Browser control for the ⌘L overlay — scan interactables + plan/execute via
   // AppleScript JavaScript in the user's active browser tab.
   ipcMain.handle("lykn:browser-capability", async () => {
-    if (process.platform !== "darwin") {
-      return { ok: false, error: "unsupported", message: "Browser control is macOS-only for now." };
+    // Click/type control still needs Apple Events (macOS). Page *reading* works
+    // on Windows via the Chrome Live Feed extension.
+    if (!IS_MAC) {
+      const target = await getActiveBrowserTarget();
+      const connected = !!extensionBridge?.isConnected?.();
+      if (target?.url) {
+        return {
+          ok: false,
+          error: "control_mac_only",
+          browser: target.appName,
+          url: target.url,
+          title: target.title || "",
+          reading: true,
+          message:
+            "LYKN can read this tab via Chrome Live Feed. Clicking and typing in the browser is macOS-only for now — ask about what's on screen instead.",
+        };
+      }
+      return {
+        ok: false,
+        error: connected ? "no_browser" : "needs_extension",
+        message: connected
+          ? "Open an https:// page in Chrome/Edge, then try again."
+          : "Install Chrome Live Feed (tray → Open LYKN, or the Live Feed button) so LYKN can read your active tab. Browser click-control is macOS-only for now.",
+      };
     }
     const target = await getActiveBrowserTarget();
     if (!target) {
@@ -5759,7 +6152,12 @@ function registerOverlayIpc() {
 
   ipcMain.handle("lykn:browser-plan", async (_e, { intent, conversationHistory } = {}) => {
     const fail = (error, extra = {}) => ({ ok: false, error, ...extra });
-    if (process.platform !== "darwin") return fail("unsupported");
+    if (!IS_MAC) {
+      return fail("control_mac_only", {
+        message:
+          "Browser click-control is macOS-only for now. Install Chrome Live Feed to let LYKN read your tab, or ask about what's on your screen.",
+      });
+    }
     const goal = String(intent || "").trim().slice(0, 500);
     if (!goal) return fail("no_intent");
     const target = await getActiveBrowserTarget();
@@ -5851,8 +6249,14 @@ function registerOverlayIpc() {
         message: "Browser control is already running. Wait for it to finish.",
       };
     }
-    if (process.platform !== "darwin") {
-      return { ok: false, error: "unsupported", results: [], message: "macOS only." };
+    if (!IS_MAC) {
+      return {
+        ok: false,
+        error: "control_mac_only",
+        results: [],
+        message:
+          "Browser click-control is macOS-only for now. LYKN can still read your tab via Chrome Live Feed — ask about the page instead.",
+      };
     }
     const browser = String(appName || "").trim();
     if (!browser) {
@@ -5878,7 +6282,7 @@ function registerOverlayIpc() {
     const pageUrl = String(url || "").trim();
     const goal = String(intent || "").trim();
 
-    if (process.platform === "darwin" && goal) {
+    if (goal) {
       const trusted = systemPreferences.isTrustedAccessibilityClient(false);
       if (!trusted) {
         systemPreferences.isTrustedAccessibilityClient(true);
@@ -6223,60 +6627,99 @@ function registerOverlayIpc() {
 }
 
 function buildAppMenu() {
-  // Keep the standard macOS edit/window menu so copy/paste, ⌘Q, and
-  // fullscreen all work; this is otherwise lost on a frameless-ish window.
-  const template = [
-    {
-      role: "appMenu",
-      submenu: [
-        { role: "about" },
-        { type: "separator" },
-        {
-          label: "Start LYKN at Login",
-          type: "checkbox",
-          checked: isLoginItemEnabled(),
-          enabled: app.isPackaged,
-          click: (item) => setLoginItemEnabled(item.checked),
-        },
-        { type: "separator" },
-        { role: "services" },
-        { type: "separator" },
-        { role: "hide" },
-        { role: "hideOthers" },
-        { role: "unhide" },
-        { type: "separator" },
-        // ⌘Q closes the windows but LYKN keeps running in the menu bar (the
-        // before-quit hook reroutes it); the labels make that explicit.
-        { role: "quit", label: "Close LYKN (Keeps Running in Menu Bar)" },
-        {
-          label: "Quit LYKN Completely",
-          accelerator: "Command+Alt+Q",
-          click: () => quitForReal(),
-        },
-      ],
-    },
-    { role: "editMenu" },
-    {
-      label: "View",
-      submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
-        { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
-        { type: "separator" },
-        { role: "togglefullscreen" },
-      ],
-    },
-    { role: "windowMenu" },
-    {
-      role: "help",
-      submenu: [
-        { label: "Set Up LYKN / Permissions…", click: () => createOnboardingWindow() },
-      ],
-    },
-  ];
+  // macOS: standard app/edit/window menu. Windows: File + Edit so Alt shortcuts
+  // and copy/paste still work with autoHideMenuBar.
+  const loginItem = {
+    label: "Start LYKN at Login",
+    type: "checkbox",
+    checked: isLoginItemEnabled(),
+    enabled: app.isPackaged,
+    click: (item) => setLoginItemEnabled(item.checked),
+  };
+  const viewMenu = {
+    label: "View",
+    submenu: [
+      { role: "reload" },
+      { role: "forceReload" },
+      { type: "separator" },
+      { role: "resetZoom" },
+      { role: "zoomIn" },
+      { role: "zoomOut" },
+      { type: "separator" },
+      { role: "togglefullscreen" },
+    ],
+  };
+  const helpMenu = {
+    role: "help",
+    submenu: [
+      { label: "Set Up LYKN / Permissions…", click: () => createOnboardingWindow() },
+    ],
+  };
+
+  /** @type {Electron.MenuItemConstructorOptions[]} */
+  let template;
+  if (IS_MAC) {
+    template = [
+      {
+        role: "appMenu",
+        submenu: [
+          { role: "about" },
+          { type: "separator" },
+          loginItem,
+          { type: "separator" },
+          { role: "services" },
+          { type: "separator" },
+          { role: "hide" },
+          { role: "hideOthers" },
+          { role: "unhide" },
+          { type: "separator" },
+          // ⌘Q closes the windows but LYKN keeps running in the menu bar (the
+          // before-quit hook reroutes it); the labels make that explicit.
+          { role: "quit", label: "Close LYKN (Keeps Running in Menu Bar)" },
+          {
+            label: "Quit LYKN Completely",
+            accelerator: "Command+Alt+Q",
+            click: () => quitForReal(),
+          },
+        ],
+      },
+      { role: "editMenu" },
+      viewMenu,
+      { role: "windowMenu" },
+      helpMenu,
+    ];
+  } else {
+    template = [
+      {
+        label: "File",
+        submenu: [
+          loginItem,
+          { type: "separator" },
+          // Alt+F4 / File→Close hides windows; tray + Ctrl+L stay armed.
+          {
+            label: "Close Window (Keeps Running in Tray)",
+            accelerator: "Alt+F4",
+            click: () => {
+              try {
+                if (overlayWindow && overlayWindow.isVisible()) hideOverlay();
+              } catch (_) { /* ignore */ }
+              try {
+                if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+              } catch (_) { /* ignore */ }
+            },
+          },
+          {
+            label: "Quit LYKN Completely",
+            accelerator: "Control+Shift+Q",
+            click: () => quitForReal(),
+          },
+        ],
+      },
+      { role: "editMenu" },
+      viewMenu,
+      helpMenu,
+    ];
+  }
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
@@ -6313,7 +6756,8 @@ function createOnboardingWindow() {
     fullscreenable: false,
     title: "Set up LYKN",
     backgroundColor: "#0b0b0f",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    titleBarStyle: IS_MAC ? "hiddenInset" : "default",
+    autoHideMenuBar: IS_WIN,
     webPreferences: {
       preload: path.join(__dirname, "onboarding-preload.cjs"),
       contextIsolation: true,
@@ -6346,60 +6790,66 @@ function registerOnboardingIpc() {
     }
   });
 
-  ipcMain.handle("lykn:onboarding-mic-status", () => {
-    if (process.platform !== "darwin") return "granted";
-    try {
-      return systemPreferences.getMediaAccessStatus("microphone");
-    } catch {
-      return "unknown";
-    }
-  });
+  ipcMain.handle("lykn:onboarding-mic-status", () => microphoneStatus());
 
   ipcMain.handle("lykn:onboarding-request-mic", async () => {
-    if (process.platform !== "darwin") return true;
     try {
-      const status = systemPreferences.getMediaAccessStatus("microphone");
+      const status = microphoneStatus();
       if (status === "granted") return true;
-      if (status === "not-determined") {
-        return await systemPreferences.askForMediaAccess("microphone");
+      if (IS_MAC) {
+        if (status === "not-determined") {
+          return await systemPreferences.askForMediaAccess("microphone");
+        }
+        openMicrophoneSettings();
+        return false;
       }
-      // Previously denied: the native prompt won't re-show, deep-link instead.
-      shell.openExternal(
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-      );
-      return false;
+      // Windows: open Settings so the user can allow LYKN; getUserMedia also
+      // prompts the first time voice/dictation runs.
+      openMicrophoneSettings();
+      return microphoneStatus() === "granted";
     } catch {
       return false;
     }
   });
 
-  ipcMain.handle("lykn:onboarding-screen-status", () => screenCaptureStatus());
+  ipcMain.on("lykn:onboarding-open-mic-settings", () => {
+    openMicrophoneSettings();
+  });
+
+  ipcMain.handle("lykn:onboarding-screen-status", () => onboardingScreenStatus());
 
   ipcMain.handle("lykn:onboarding-request-screen", async () => {
     // Attempting a capture is what makes macOS show the Screen Recording prompt
-    // and register LYKN in the privacy list.
+    // and register LYKN in the privacy list. On Windows it's a connectivity check.
     try {
-      await capturePrimaryScreen();
+      const dataUrl = await capturePrimaryScreen();
+      if (!IS_MAC) {
+        screenProbeCache = dataUrl ? "granted" : "denied";
+        return screenProbeCache;
+      }
     } catch {
       /* the prompt is the point; the capture itself may fail until granted */
+      if (!IS_MAC) {
+        screenProbeCache = "denied";
+        return "denied";
+      }
     }
     return screenCaptureStatus();
   });
 
   ipcMain.on("lykn:onboarding-open-screen-settings", () => {
-    shell.openExternal(
-      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-    );
+    openScreenPrivacySettings();
   });
 
   ipcMain.on("lykn:onboarding-open-automation-settings", () => {
+    if (!IS_MAC) return;
     shell.openExternal(
       "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
     );
   });
 
   ipcMain.handle("lykn:onboarding-accessibility-status", () => {
-    if (process.platform !== "darwin") return "granted";
+    if (!IS_MAC) return "granted";
     try {
       return systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied";
     } catch {
@@ -6408,7 +6858,7 @@ function registerOnboardingIpc() {
   });
 
   ipcMain.handle("lykn:onboarding-request-accessibility", () => {
-    if (process.platform !== "darwin") return "granted";
+    if (!IS_MAC) return "granted";
     try {
       systemPreferences.isTrustedAccessibilityClient(true);
       return systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied";
@@ -6418,13 +6868,14 @@ function registerOnboardingIpc() {
   });
 
   ipcMain.on("lykn:onboarding-open-accessibility-settings", () => {
+    if (!IS_MAC) return;
     shell.openExternal(
       "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
     );
   });
 
   ipcMain.handle("lykn:onboarding-test-apple-events", async () => {
-    if (process.platform !== "darwin") return { state: "granted", browser: null };
+    if (!IS_MAC) return { state: "granted", browser: null };
     const target = await getActiveBrowserTarget();
     if (!target) return { state: "no-browser" };
     const text = await getBrowserPageText(target.appName);
@@ -6505,7 +6956,13 @@ ipcMain.on("lykn:get-version", (event) => {
   }
 });
 
-app.on("second-instance", () => {
+app.on("second-instance", (_event, commandLine) => {
+  // Windows deep-link while already running: lykn:// arrives on argv.
+  const deepLink = findLyknUrlInArgv(commandLine);
+  if (deepLink) {
+    handleAuthDeepLink(deepLink);
+    return;
+  }
   // Re-opening LYKN while it's already running in the background (e.g. after
   // a silent login launch) should surface the main window, not do nothing.
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -6569,7 +7026,7 @@ function initAutoUpdate() {
   // Swap in the LYKN icon at runtime so dev looks like the packaged app.
   // Uses the pre-rounded variant: dock.setIcon draws the image literally
   // (no system squircle mask), so full-bleed art would show as a hard square.
-  if (!app.isPackaged && process.platform === "darwin" && app.dock) {
+  if (!app.isPackaged && IS_MAC && app.dock) {
     try {
       app.dock.setIcon(path.join(__dirname, "resources/icon-rounded.png"));
     } catch {
@@ -6584,18 +7041,27 @@ function initAutoUpdate() {
   // app may not be secure"), so Google sign-in no longer happens in-window at
   // all — see the lykn://auth deep-link flow. The clean UA stays for the other
   // in-app auth providers and general site compatibility.
-  app.userAgentFallback =
-    `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ` +
-    `(KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
+  const chromeVer = process.versions.chrome;
+  app.userAgentFallback = IS_WIN
+    ? `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ` +
+      `(KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`
+    : `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ` +
+      `(KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`;
 
   // Claim the lykn:// scheme so the browser-based Google sign-in can deep-link
-  // the session back into the app. The packaged app also declares the scheme
-  // in Info.plist (electron-builder "protocols"); this call makes it work in
-  // dev and re-asserts LYKN as the handler if another install claimed it.
+  // the session back into the app. Packaged builds also declare the scheme via
+  // electron-builder "protocols". On Windows in dev we must pass the script
+  // path so the protocol handler relaunches this project, not bare Electron.
   try {
-    app.setAsDefaultProtocolClient("lykn");
+    if (process.defaultApp && process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient("lykn", process.execPath, [
+        path.resolve(process.argv[1]),
+      ]);
+    } else {
+      app.setAsDefaultProtocolClient("lykn");
+    }
   } catch (_) {
-    /* registration is best-effort; Info.plist covers the packaged app */
+    /* registration is best-effort */
   }
 
   installPermissionHandler();
@@ -6664,10 +7130,9 @@ function initAutoUpdate() {
   });
 });
 
-// ⌘Q (and any other app.quit()) → dismiss the windows but stay resident in
-// the menu bar, so the tray icon and ⌘+L keep working "regardless of if the
-// app is open". Real exits (tray/app-menu "Quit LYKN Completely", update
-// install, OS shutdown) set allowQuit first and sail through.
+// ⌘Q / Alt+F4 / app.quit() → dismiss the windows but stay resident in the
+// tray, so the tray icon and ⌘/Ctrl+L keep working. Real exits (tray/app-menu
+// "Quit LYKN Completely", update install, OS shutdown) set allowQuit first.
 app.on("before-quit", (event) => {
   if (allowQuit) return;
   event.preventDefault();
@@ -6690,7 +7155,6 @@ app.on("will-quit", () => {
 });
 
 app.on("window-all-closed", () => {
-  // Standard macOS behaviour: stay alive until ⌘Q so the dock icon + hotkey
-  // keep working after the last window closes.
-  if (process.platform !== "darwin") app.quit();
+  // Tray app on every platform: stay alive so the hotkey + tray keep working.
+  // Real exits go through quitForReal() / allowQuit.
 });

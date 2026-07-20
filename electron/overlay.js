@@ -2,6 +2,11 @@
 // silently captures the screen, sends it to LYKN, and streams the answer back
 // here. The screenshot itself is never shown.
 
+// Windows/Linux lack native vibrancy — denser glass CSS (see overlay.html).
+if (window.lyknOverlay?.platform && window.lyknOverlay.platform !== "darwin") {
+  document.documentElement.classList.add("no-vibrancy");
+}
+
 const askEl = document.getElementById("ask");
 const sendEl = document.getElementById("send");
 const threadEl = document.getElementById("thread");
@@ -951,6 +956,8 @@ function startTurn(question) {
   currentChatEl = item;
   currentQuestion = question || "";
   currentHasText = false;
+  answerStillWorking = true;
+  lastThinkingStatus = "Thinking…";
   setThinkingStatus("Thinking…");
 
   threadEl.scrollTop = threadEl.scrollHeight;
@@ -1056,12 +1063,42 @@ async function startNewOverlayChat() {
   reportHeight();
 }
 
-// Update the shimmer status label while the spinner is showing (ignored once
-// real answer text has begun streaming in).
+// Keep the last status so we can re-attach the building spinner under the
+// description after each markdown rewrite (updateAnswer replaces innerHTML).
+let lastThinkingStatus = "Thinking…";
+let answerStillWorking = false;
+
+function ensureBuildingUnder(status) {
+  if (!currentAnswerEl || !currentHasText) return;
+  let wrap = currentAnswerEl.querySelector(".building-under");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.className = "building-under";
+    wrap.innerHTML = thinkingHTML();
+    currentAnswerEl.appendChild(wrap);
+  }
+  const el = wrap.querySelector(".thinking-text");
+  if (el) el.textContent = status || lastThinkingStatus || "Building…";
+}
+
+function clearBuildingUnder() {
+  const wrap = currentAnswerEl && currentAnswerEl.querySelector(".building-under");
+  if (wrap) wrap.remove();
+}
+
+// Update the shimmer status label. Before any answer text arrives this drives
+// the initial spinner; once the model has written a description (common in
+// build mode), keep showing the same animation UNDER that description so the
+// user can see LYKN is still building.
 function setThinkingStatus(text) {
-  if (!currentAnswerEl || currentHasText) return;
-  const el = currentAnswerEl.querySelector(".thinking-text");
-  if (el) el.textContent = text || "Thinking…";
+  if (!currentAnswerEl) return;
+  lastThinkingStatus = text || "Thinking…";
+  if (!currentHasText) {
+    const el = currentAnswerEl.querySelector(".thinking-text");
+    if (el) el.textContent = lastThinkingStatus;
+  } else if (answerStillWorking) {
+    ensureBuildingUnder(lastThinkingStatus);
+  }
   threadEl.scrollTop = threadEl.scrollHeight;
   reportHeight();
 }
@@ -1075,6 +1112,10 @@ function updateAnswer(text) {
   currentHasText = true;
   currentAnswerEl.classList.add("has-md");
   currentAnswerEl.innerHTML = renderMarkdown(trimmed);
+  // Build mode: description lands first, then the tool runs for a while with
+  // no more text — put the thinking animation under the description so it's
+  // obvious LYKN is still working.
+  if (answerStillWorking) ensureBuildingUnder(lastThinkingStatus);
   // Generated images load async — resize the panel again once pixels arrive,
   // or the bubble stays sized for text only and the image gets clipped.
   currentAnswerEl.querySelectorAll(".md-img img").forEach((img) => {
@@ -1178,6 +1219,18 @@ function browserActErrorMessage(plan) {
     return (
       "Browser control needs **Allow JavaScript from Apple Events** enabled in your browser " +
       "(Chrome: View → Developer). Then try again."
+    );
+  }
+  if (code === "needs_extension") {
+    return (
+      plan?.message ||
+      "Install **Chrome Live Feed** so LYKN can read your active tab. Browser click-control is macOS-only for now — ask about what's on screen instead."
+    );
+  }
+  if (code === "control_mac_only") {
+    return (
+      plan?.message ||
+      "Clicking and typing in the browser is macOS-only for now. LYKN can still read your tab via Chrome Live Feed — ask about the page or what's on screen."
     );
   }
   if (code === "new_tab") {
@@ -1765,9 +1818,11 @@ window.lyknOverlay.onDelta((p) => {
   updateAnswer(streamingText);
 });
 window.lyknOverlay.onDone((p) => {
+  answerStillWorking = false;
   const finalText = (p && p.text) || streamingText;
   if (finalText) {
     updateAnswer(finalText);
+    clearBuildingUnder();
     history.push({ role: "assistant", content: finalText, at: new Date().toISOString() });
     void persistCurrentSession();
     // Populate the left panel with sources, follow-ups, and options.
@@ -1777,13 +1832,17 @@ window.lyknOverlay.onDone((p) => {
     currentHasText = true;
     currentAnswerEl.textContent = "No response.";
     reportHeight();
+  } else {
+    clearBuildingUnder();
   }
   streamingText = "";
   setBusy(false);
   askEl.focus();
 });
 window.lyknOverlay.onError((p) => {
+  answerStillWorking = false;
   updateAnswer((p && p.message) || "Something went wrong.");
+  clearBuildingUnder();
   streamingText = "";
   setBusy(false);
 });
@@ -4017,8 +4076,10 @@ async function startListen() {
   } catch (_) {
     startTurn("Live notes");
     currentHasText = true;
-    currentAnswerEl.textContent =
-      "LYKN needs Screen Recording permission to capture meeting audio. Enable it in System Settings → Privacy & Security → Screen Recording, then try again.";
+    const isWin = window.lyknOverlay?.platform === "win32";
+    currentAnswerEl.textContent = isWin
+      ? "LYKN couldn't start system-audio capture. Make sure nothing is blocking screen capture, then try Live notes again."
+      : "LYKN needs Screen Recording permission to capture meeting audio. Enable it in System Settings → Privacy & Security → Screen Recording, then try again.";
     reportHeight();
     return;
   }
@@ -4027,8 +4088,10 @@ async function startListen() {
     try { display.getTracks().forEach((t) => t.stop()); } catch (_) {}
     startTurn("Live notes");
     currentHasText = true;
-    currentAnswerEl.textContent =
-      "Couldn't capture system audio. This needs macOS 13 (Ventura) or newer.";
+    const isWin = window.lyknOverlay?.platform === "win32";
+    currentAnswerEl.textContent = isWin
+      ? "Couldn't capture system audio. On Windows this uses loopback capture — try again, or restart LYKN if it still fails."
+      : "Couldn't capture system audio. This needs macOS 13 (Ventura) or newer.";
     reportHeight();
     return;
   }

@@ -2,6 +2,10 @@
 // the overlay renderer owns the side-panel views and their counts; this page
 // only renders the option list and forwards the pick.
 
+if (window.lyknPicker?.platform && window.lyknPicker.platform !== "darwin") {
+  document.documentElement.classList.add("no-vibrancy");
+}
+
 const optionsEl = document.getElementById("options");
 
 function escapeHtml(s) {

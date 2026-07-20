@@ -2,6 +2,10 @@
 // overlay renderer (which owns the data) and forwards user actions back.
 // See panel-preload.cjs for the bridge and main.cjs for window management.
 
+if (window.lyknPanel?.platform && window.lyknPanel.platform !== "darwin") {
+  document.documentElement.classList.add("no-vibrancy");
+}
+
 const titleEl = document.getElementById("title");
 const bodyEl = document.getElementById("body");
 const closeEl = document.getElementById("close");

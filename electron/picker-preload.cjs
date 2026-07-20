@@ -5,6 +5,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("lyknPicker", {
+  platform: process.platform,
   // A view was picked — main forwards it to the overlay renderer.
   select: (id) => ipcRenderer.send("lykn:picker-select", { id }),
   close: () => ipcRenderer.send("lykn:picker-close"),

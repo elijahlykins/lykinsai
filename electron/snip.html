@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>LYKN Snip</title>
+    <style>
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        cursor: crosshair;
+        background: rgba(0, 0, 0, 0.28);
+        user-select: none;
+        -webkit-user-select: none;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+      #hint {
+        position: fixed;
+        top: 28px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(16, 18, 24, 0.82);
+        color: #f4f6fb;
+        font-size: 13px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        pointer-events: none;
+        z-index: 2;
+      }
+      #hint kbd {
+        font: 600 12px ui-monospace, Consolas, monospace;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 5px;
+        padding: 1px 6px;
+      }
+      #sel {
+        position: absolute;
+        border: 1.5px solid #7c8cff;
+        background: rgba(124, 140, 255, 0.12);
+        box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+        display: none;
+        pointer-events: none;
+        z-index: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hint">Drag to select · <kbd>Esc</kbd> cancel · <kbd>Enter</kbd> capture</div>
+    <div id="sel"></div>
+    <script>
+      const api = window.lyknSnip;
+      const sel = document.getElementById("sel");
+      let originX = 0;
+      let originY = 0;
+      let dragging = false;
+      let rect = null;
+
+      function setRect(x1, y1, x2, y2) {
+        const left = Math.min(x1, x2);
+        const top = Math.min(y1, y2);
+        const width = Math.abs(x2 - x1);
+        const height = Math.abs(y2 - y1);
+        rect = { x: left, y: top, width, height };
+        if (width < 2 || height < 2) {
+          sel.style.display = "none";
+          return;
+        }
+        sel.style.display = "block";
+        sel.style.left = left + "px";
+        sel.style.top = top + "px";
+        sel.style.width = width + "px";
+        sel.style.height = height + "px";
+      }
+
+      function commit() {
+        if (!rect || rect.width < 4 || rect.height < 4) {
+          api.cancel();
+          return;
+        }
+        // Convert CSS pixels → physical pixels for the capture bitmap.
+        const scale = window.devicePixelRatio || 1;
+        api.commit({
+          x: Math.round(rect.x * scale),
+          y: Math.round(rect.y * scale),
+          width: Math.round(rect.width * scale),
+          height: Math.round(rect.height * scale),
+        });
+      }
+
+      window.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        dragging = true;
+        originX = e.clientX;
+        originY = e.clientY;
+        setRect(originX, originY, originX, originY);
+      });
+      window.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
+        setRect(originX, originY, e.clientX, e.clientY);
+      });
+      window.addEventListener("mouseup", (e) => {
+        if (!dragging || e.button !== 0) return;
+        dragging = false;
+        setRect(originX, originY, e.clientX, e.clientY);
+        commit();
+      });
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          api.cancel();
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -10,8 +10,11 @@ import {
   CapImagineDemo,
   SiteFooter,
 } from "./GlassLanding";
+import { desktopHotkeyLabel } from "@/lib/desktopHotkey";
 import "./GlassLanding.css";
 import "./CapabilityPage.css";
+
+const HOTKEY = desktopHotkeyLabel();
 
 // Text sitting directly on the backdrop: big titles get the letter-by-letter
 // gradient wash, smaller copy blends whole as the wandering glow passes.
@@ -72,7 +75,7 @@ const CAPS: Record<CapId, CapContent> = {
       {
         title: "Knows what you're looking at",
         body:
-          "Press ⌘L and LYKN Glass appears over any app, doc, or browser tab. It reads the page you summoned it on, so you never copy-paste context or re-explain what you're doing.",
+          `Press ${HOTKEY} and LYKN Glass appears over any app, doc, or browser tab. It reads the page you summoned it on, so you never copy-paste context or re-explain what you're doing.`,
       },
       {
         title: "Your context, always loaded",
@@ -87,7 +90,7 @@ const CAPS: Record<CapId, CapContent> = {
       {
         title: "One thread, everywhere",
         body:
-          "Start a conversation in the overlay, pick it up in the web app, continue on your Mac. Threads, files, and memory stay in sync across every screen.",
+          "Start a conversation in the overlay, pick it up in the web app, continue on desktop. Threads, files, and memory stay in sync across every screen.",
       },
     ],
   },
@@ -298,7 +301,7 @@ export default function CapabilityPage() {
                 className="gl-hero-cta gl-hero-cta--ghost"
                 onClick={() => navigate("/download")}
               >
-                Download for Mac
+                Download desktop app
               </button>
             </div>
 

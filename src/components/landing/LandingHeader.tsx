@@ -3,8 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { ChevronDown, Menu, X } from "lucide-react";
 import lyknLogo from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
 import lyknLogoWhite from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
+import { desktopHotkeyLabel } from "@/lib/desktopHotkey";
 
 const DEMO_VIDEO_SRC = "/videos/lykn-demo.mp4";
+const HOTKEY = desktopHotkeyLabel();
 
 /** Fullscreen lightbox playing the product demo. Closes on ✕, backdrop
     click, or Escape. */
@@ -60,7 +62,7 @@ const PRODUCT_ITEMS = [
   {
     id: "glass",
     name: "LYKN Glass",
-    desc: "The ⌘L overlay, AI on every screen you work on.",
+    desc: `The ${HOTKEY} overlay, AI on every screen you work on.`,
     to: null as string | null,
   },
   {

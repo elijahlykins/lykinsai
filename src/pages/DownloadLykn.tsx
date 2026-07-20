@@ -10,14 +10,14 @@ import "./DownloadLykn.css";
 // blue glow passes behind it (same treatment as the pricing page).
 const MIX_TEXT_SELECTORS = [".dlp-tag", ".dlp-meta"];
 
-// Direct download of the latest signed universal .dmg. electron-builder
-// publishes releases to the public releases-only repo (see
-// electron-builder.json "publish") with a version-less dmg artifact name,
-// so this "latest" URL always resolves to the newest build without the
-// site needing to know the version. Source stays private; only signed
-// binaries live in that repo.
+// Direct download of the latest signed builds. electron-builder publishes to
+// the public releases-only repo (see electron-builder.json "publish") with
+// version-less artifact names, so these "latest" URLs always resolve to the
+// newest build without the site needing to know the version.
 const MAC_DOWNLOAD_URL =
   "https://github.com/elijahlykins/lykn-releases/releases/latest/download/LYKN.dmg";
+const WIN_DOWNLOAD_URL =
+  "https://github.com/elijahlykins/lykn-releases/releases/latest/download/LYKN-Setup.exe";
 
 // The rotating tail of the tagline: "Your AI for <word>". Cycles forever.
 const ROTATE_WORDS = [
@@ -38,7 +38,19 @@ const ROTATE_WORDS = [
   "everything",
 ];
 
-/** The Apple logo glyph for the download button. */
+type PlatformGuess = "mac" | "win" | "other";
+
+function guessPlatform(): PlatformGuess {
+  if (typeof navigator === "undefined") return "mac";
+  const probe = `${(navigator as any).userAgentData?.platform || ""} ${navigator.platform || ""} ${navigator.userAgent || ""}`.toLowerCase();
+  if (/(windows|win32|win64)/.test(probe)) return "win";
+  if (/(linux|android|cros)/.test(probe)) return "other";
+  // iPadOS reports MacIntel with touch — treat as other (no DMG).
+  if (/ipad|iphone|ipod/.test(probe)) return "other";
+  return "mac";
+}
+
+/** The Apple logo glyph for the Mac download button. */
 function AppleGlyph() {
   return (
     <svg viewBox="0 0 384 512" fill="currentColor" aria-hidden="true">
@@ -47,26 +59,20 @@ function AppleGlyph() {
   );
 }
 
-/** Best-effort platform sniff so non-Mac visitors aren't handed a ~200 MB
-    DMG they can't open. Defaults to "mac" when unsure — the DMG link is
-    harmless on a Mac and the note below covers everyone else. */
-function isProbablyMac(): boolean {
-  if (typeof navigator === "undefined") return true;
-  const probe = `${(navigator as any).userAgentData?.platform || ""} ${navigator.platform || ""} ${navigator.userAgent || ""}`.toLowerCase();
-  if (/(windows|win32|win64|linux|android|cros)/.test(probe)) {
-    // iPadOS reports MacIntel with touch — those aren't DMG targets either,
-    // but they match the mobile regex below via userAgent in practice.
-    return false;
-  }
-  return true;
+/** Windows logo mark for the Windows download button. */
+function WindowsGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M3 5.5 10.5 4.4v7.1H3V5.5zm8.2-1.3L21 2.7v8.8h-9.8V4.2zM3 13.1h7.5v7.1L3 19.1v-6zm8.2 0H21v8.8l-9.8-1.4v-7.4z" />
+    </svg>
+  );
 }
 
-/** "Download LYKN for Mac" (/download) — a single poster shot: the big
-    wordmark with a rotating tagline under it and one download button, over
-    the shared wandering-glow glass backdrop. */
+/** "Download LYKN" (/download) — poster shot with OS-aware primary CTA and
+    the other desktop build as a secondary link. */
 export default function DownloadLykn() {
   const navigate = useNavigate();
-  const [onMac] = useState(isProbablyMac);
+  const [platform] = useState<PlatformGuess>(guessPlatform);
   // Current + previous word so the swap can cross-fade: the old word slides
   // up and out while the new one slides up into place.
   const [words, setWords] = useState({ cur: 0, prev: -1 });
@@ -95,6 +101,9 @@ export default function DownloadLykn() {
   useLayoutEffect(() => {
     if (wordRef.current) setWordW(wordRef.current.offsetWidth);
   }, [words.cur]);
+
+  const primaryIsWin = platform === "win";
+  const showDesktopNote = platform === "other";
 
   return (
     <div className="glass-land dlp">
@@ -143,17 +152,42 @@ export default function DownloadLykn() {
               </span>
             </span>
           </p>
-          <a className="dlp-btn" href={MAC_DOWNLOAD_URL}>
-            <AppleGlyph />
-            Download for Mac
-          </a>
+
+          <div className="dlp-actions">
+            {primaryIsWin ? (
+              <>
+                <a className="dlp-btn" href={WIN_DOWNLOAD_URL}>
+                  <WindowsGlyph />
+                  Download for Windows
+                </a>
+                <a className="dlp-btn dlp-btn--secondary" href={MAC_DOWNLOAD_URL}>
+                  <AppleGlyph />
+                  Download for Mac
+                </a>
+              </>
+            ) : (
+              <>
+                <a className="dlp-btn" href={MAC_DOWNLOAD_URL}>
+                  <AppleGlyph />
+                  Download for Mac
+                </a>
+                <a className="dlp-btn dlp-btn--secondary" href={WIN_DOWNLOAD_URL}>
+                  <WindowsGlyph />
+                  Download for Windows
+                </a>
+              </>
+            )}
+          </div>
+
           <p className="dlp-meta">
-            Free to start · macOS 12 and later · Apple silicon &amp; Intel
+            {primaryIsWin
+              ? "Free to start · Windows 10 and later · 64-bit"
+              : "Free to start · macOS 12 and later · Apple silicon & Intel"}
           </p>
-          {!onMac && (
+          {showDesktopNote && (
             <p className="dlp-meta" style={{ marginTop: 8 }}>
-              The desktop app is Mac-only for now — on this device, use LYKN in
-              your browser at lykn.io.
+              Desktop builds are for Mac and Windows — on this device, use LYKN
+              in your browser at lykn.io.
             </p>
           )}
         </section>

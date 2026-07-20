@@ -5,6 +5,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("lyknLive", {
+  platform: process.platform,
   // Forward a card action (pane switch, close, copy, save, ask) to the overlay.
   cmd: (name, arg) => ipcRenderer.send("lykn:live-cmd", { name, arg }),
   // Render snapshots pushed from the overlay renderer (via main).
