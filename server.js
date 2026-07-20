@@ -6377,7 +6377,7 @@ function detectImageIntent(message) {
 // line; the "lykn-artifact:" alt prefix marks React-artifact previews, which
 // are NOT images and must not arm this path.
 const GENERATED_IMAGE_IN_REPLY_RE =
-  /!\[(?!lykn-artifact:)[^\]]*\]\(https?:\/\/[^\s)]+\)/;
+  /!\[(?!lykn[-_]artifact:)[^\]]*\]\(https?:\/\/[^\s)]+\)/i;
 // Nouns that mean the follow-up is about some OTHER surface even though it
 // starts with a modification verb ("add that to my todo list", "make a note
 // of this") — never burn image quota on those.
@@ -13511,7 +13511,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         const m = conversation[i];
         const role = m && typeof m === 'object' ? String(m.role || '') : '';
         if (role !== 'assistant' && role !== 'model') continue;
-        const matches = [...String(m.content || '').matchAll(/!\[(?!lykn-artifact:)[^\]]*\]\((https?:\/\/[^\s)]+)\)/g)];
+        const matches = [...String(m.content || '').matchAll(/!\[(?!lykn[-_]artifact:)[^\]]*\]\((https?:\/\/[^\s)]+)\)/gi)];
         if (matches.length) imageFollowUpRefUrl = matches[matches.length - 1][1];
         break; // only the LAST assistant turn counts — older images are stale context
       }
@@ -14427,7 +14427,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         const m = conversation[i];
         const role = m && typeof m === 'object' ? String(m.role || '') : '';
         if (role !== 'assistant' && role !== 'model') continue;
-        const found = [...String(m.content || '').matchAll(/!\[(?!lykn-artifact:)[^\]]*\]\((https?:\/\/[^\s)]+)\)/g)];
+        const found = [...String(m.content || '').matchAll(/!\[(?!lykn[-_]artifact:)[^\]]*\]\((https?:\/\/[^\s)]+)\)/gi)];
         for (let j = found.length - 1; j >= 0 && genImages.length < 4; j--) {
           const url = found[j][1];
           if (!genSeen.has(url)) {

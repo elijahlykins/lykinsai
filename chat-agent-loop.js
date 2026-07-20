@@ -67,9 +67,9 @@ function safeJsonParse(s) {
 // Brand casing — the product name is always LYKN (all caps) in user-facing
 // text. Models sometimes emit "Lykn" / "lykn"; rewrite those before the
 // chunk reaches the client. Leave technical forms alone: lykn.io, lykn_*,
-// /lykn/..., @lykn, etc.
+// lykn-* (overlay markers like lykn-artifact: / lykn-video:), /lykn/..., @lykn.
 // ---------------------------------------------------------------------------
-const LYKN_BRAND_RE = /\b[Ll][Yy][Kk][Nn]\b(?!\.io\b)(?![_/])/g;
+const LYKN_BRAND_RE = /\b[Ll][Yy][Kk][Nn]\b(?!\.io\b)(?![_\-/])/g;
 
 export function normalizeLyknBrandCasing(text) {
   if (!text) return text;

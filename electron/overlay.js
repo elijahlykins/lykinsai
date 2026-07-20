@@ -103,14 +103,18 @@ function renderMarkdown(md) {
       continue;
     }
     // Standalone image line — how generated images (image mode) arrive.
-    // The "lykn-artifact:" alt prefix marks a coded React artifact (Build
-    // mode) instead: render it as a live iframe preview card, not an <img>.
+    // "lykn_artifact:" / "lykn-artifact:" (any case) marks a coded React
+    // artifact (Build mode): live iframe card, not an <img>.
     let m = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)$/.exec(line.trim());
     if (m) {
       flushPara();
       closeList();
-      if (m[1].startsWith("lykn-artifact:")) {
-        const artTitle = m[1].slice("lykn-artifact:".length).trim() || "Interactive artifact";
+      const altLower = m[1].toLowerCase();
+      // Accept lykn_artifact:, lykn-artifact:, LYKN-artifact:, etc.
+      const isArtifact = /^lykn[-_]artifact\s*:/.test(altLower);
+      const isVideo = /^lykn[-_]video\s*:/.test(altLower);
+      if (isArtifact) {
+        const artTitle = m[1].slice(m[1].indexOf(":") + 1).trim() || "Interactive artifact";
         const artFile =
           (artTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
             "artifact") + ".html";
@@ -129,9 +133,9 @@ function renderMarkdown(md) {
           `<pre></pre>` +
           `</div>` +
           `</div>`;
-      } else if (m[1].startsWith("lykn-video:")) {
+      } else if (isVideo) {
         // Remotion render (lykn_render_video): inline playable mp4 card.
-        const vidTitle = m[1].slice("lykn-video:".length).trim() || "Video";
+        const vidTitle = m[1].slice(m[1].indexOf(":") + 1).trim() || "Video";
         const vidFile =
           (vidTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
             "video") + ".mp4";
@@ -1116,18 +1120,18 @@ function updateAnswer(text) {
   // no more text — put the thinking animation under the description so it's
   // obvious LYKN is still working.
   if (answerStillWorking) ensureBuildingUnder(lastThinkingStatus);
-  // Generated images load async — resize the panel again once pixels arrive,
-  // or the bubble stays sized for text only and the image gets clipped.
+  // Generated images / artifact iframes load async — resize once they settle,
+  // or the bubble stays sized for text only and the preview gets clipped.
+  const onMediaReady = () => {
+    threadEl.scrollTop = threadEl.scrollHeight;
+    reportHeight();
+  };
   currentAnswerEl.querySelectorAll(".md-img img").forEach((img) => {
     if (img.complete) return;
-    img.addEventListener(
-      "load",
-      () => {
-        threadEl.scrollTop = threadEl.scrollHeight;
-        reportHeight();
-      },
-      { once: true },
-    );
+    img.addEventListener("load", onMediaReady, { once: true });
+  });
+  currentAnswerEl.querySelectorAll(".md-artifact iframe").forEach((frame) => {
+    frame.addEventListener("load", onMediaReady, { once: true });
   });
   threadEl.scrollTop = threadEl.scrollHeight;
   reportHeight();

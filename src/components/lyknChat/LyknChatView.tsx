@@ -448,6 +448,12 @@ type MessageItemProps = {
   onLoadInGreetingRefresh?: () => void | Promise<void>;
   /** Open an artifact in the side pullout panel (Claude-style). */
   onOpenArtifact?: (art: ChatArtifact) => void;
+  /**
+   * When set, render the thinking/building spinner under this turn's
+   * streamed description (build mode: description first, then the tool
+   * runs). Cleared when the turn finishes.
+   */
+  inlineThinkingStatus?: string;
 };
 
 /**
@@ -929,6 +935,7 @@ const MessageItem = React.memo(function MessageItem({
   handleChunkClick, getSelectedText, registerChunks,
   onLoadInGreetingRefresh,
   onOpenArtifact,
+  inlineThinkingStatus,
 }: MessageItemProps) {
   const aiResponse = msg.aiResponse || "";
   const modelLabel = resolveModelLabel((msg as any).aiModel);
@@ -1240,6 +1247,14 @@ const MessageItem = React.memo(function MessageItem({
                       ) : htmlPending ? (
                         <div className="mt-2 max-w-[min(100%,42rem)] w-full">
                           <ArtifactBuildingPlaceholder />
+                        </div>
+                      ) : null}
+                      {/* Build mode: description streams first, then the tool
+                          runs with no more text — keep the thinking animation
+                          under the description so "still building" is obvious. */}
+                      {inlineThinkingStatus && !leakedArtifact && !htmlPending ? (
+                        <div className="mt-3">
+                          <ThinkingIndicator status={inlineThinkingStatus} compact />
                         </div>
                       ) : null}
                     </div>
@@ -2143,7 +2158,18 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           <div ref={chatScrollRef} className="flex-1 w-full max-w-2xl overflow-y-auto scrollbar-hide px-4 pt-6 pb-4 flex flex-col">
             {chatMessages.length > 0 ? (
               <div className="space-y-4">
-                {chatMessages.map((msg, idx) => (
+                {chatMessages.map((msg, idx) => {
+                  // Once the in-flight turn has streamed any description text,
+                  // park the thinking/building spinner under that text (not in
+                  // a separate row below the whole thread) so build mode stays
+                  // readable: description → Building… → artifact.
+                  const isInFlightUserTurn =
+                    isChatLoading &&
+                    idx === chatMessages.length - 1 &&
+                    msg.role === "user" &&
+                    msg.kind !== "load-in-greeting" &&
+                    Boolean(String(msg.aiResponse || "").trim());
+                  return (
                   <MessageItem
                     key={msg.id || idx}
                     msg={msg}
@@ -2176,15 +2202,23 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     registerChunks={registerChunks}
                     onLoadInGreetingRefresh={onLoadInGreetingRefresh}
                     onOpenArtifact={onOpenArtifact}
+                    inlineThinkingStatus={isInFlightUserTurn ? thinkingStatus : undefined}
                   />
-                ))}
+                  );
+                })}
                 {threadFooter}
               </div>
             ) : null}
             {docketBubble ? (
               <div className={chatMessages.length > 0 ? "mt-4" : ""}>{docketBubble}</div>
             ) : null}
-            {isChatLoading && (
+            {isChatLoading &&
+              !(
+                chatMessages.length > 0 &&
+                chatMessages[chatMessages.length - 1]?.role === "user" &&
+                chatMessages[chatMessages.length - 1]?.kind !== "load-in-greeting" &&
+                Boolean(String(chatMessages[chatMessages.length - 1]?.aiResponse || "").trim())
+              ) && (
               <div className="flex justify-start">
                 <div className="max-w-[80%] py-3 text-sm leading-relaxed text-black/70 dark:text-white/60 flex items-center gap-3">
                   <ThinkingIndicator status={thinkingStatus} />

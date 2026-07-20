@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Maximize2, Minimize2 } from "lucide-react";
+import { ChevronDown, Download, ExternalLink, Maximize2, Minimize2 } from "lucide-react";
 import type { ArtifactDownload, ChatArtifact } from "@/lib/ai/chatArtifacts";
+import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 
 /** Download control that exposes every available format (png/svg/pdf/pptx/md…). */
 function ArtifactDownloads({ downloads }: { downloads: ArtifactDownload[] }) {
@@ -63,17 +64,14 @@ function ArtifactDownloads({ downloads }: { downloads: ArtifactDownload[] }) {
 /**
  * Shown while the model is still streaming a raw HTML document into the chat,
  * so the user sees a tidy "building" state instead of half-written markup.
+ * Uses the same LYKN outline spinner as the thinking indicator.
  */
 export function ArtifactBuildingPlaceholder({ className = "" }: { className?: string }) {
   return (
     <div
-      className={`flex items-center gap-2.5 rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm px-4 py-3 shadow-sm ${className}`}
+      className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm px-4 py-3 shadow-sm ${className}`}
     >
-      <LayoutPanelTop className="h-4 w-4 shrink-0 animate-pulse text-blue-600 dark:text-blue-400" />
-      <div className="min-w-0">
-        <p className="text-[13px] font-semibold text-foreground">Building preview…</p>
-        <p className="text-[11px] text-muted-foreground">Rendering the page</p>
-      </div>
+      <ThinkingIndicator status="Building…" compact />
     </div>
   );
 }

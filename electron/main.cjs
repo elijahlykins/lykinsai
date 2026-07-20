@@ -617,10 +617,14 @@ const OVERLAY_MAX_WIDTH = OVERLAY_WIDTH + OVERLAY_WATCH_SIDE_WIDTH;
 const OVERLAY_MIN_HEIGHT = 82;
 const OVERLAY_BOTTOM_MARGIN = 90;
 
+// Matches CSS border-radius on overlay #wrap / floating #card.
+const GLASS_CORNER_RADIUS = 16;
+
 // Shared chrome for the glass overlay family (bar, menu, picker, panel, live).
 // macOS: native vibrancy clipped to a rounded rect.
 // Windows: fully transparent HWND — Win11 DWM otherwise draws square corner
-// stubs / shadow outside our CSS border-radius. CSS owns the glass card.
+// stubs / shadow outside our CSS border-radius. CSS owns the glass card;
+// setShape hard-clips the HWND so those stubs can't paint.
 function floatingGlassChrome() {
   if (IS_MAC) {
     return {
@@ -644,6 +648,39 @@ function floatingGlassChrome() {
   };
 }
 
+/** Approximate a rounded rect as 1px scanlines for win.setShape (Win/Linux). */
+function roundedRectShape(width, height, radius) {
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+  const r = Math.max(0, Math.min(Math.round(radius), Math.floor(w / 2), Math.floor(h / 2)));
+  if (r <= 0) return [{ x: 0, y: 0, width: w, height: h }];
+  const rects = [];
+  for (let y = 0; y < h; y++) {
+    let inset = 0;
+    if (y < r) {
+      const dy = r - y;
+      inset = Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy)));
+    } else if (y >= h - r) {
+      const dy = y - (h - r - 1);
+      inset = Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy)));
+    }
+    const rw = w - inset * 2;
+    if (rw > 0) rects.push({ x: inset, y, width: rw, height: 1 });
+  }
+  return rects;
+}
+
+/** Clip floating glass HWND to CSS radius so Win11 can't paint square corner stubs. */
+function applyFloatingGlassShape(win, radius = GLASS_CORNER_RADIUS) {
+  if (!IS_WIN || !win || win.isDestroyed()) return;
+  if (typeof win.setShape !== "function") return;
+  try {
+    const b = win.getBounds();
+    const r = Math.min(radius, Math.floor(Math.min(b.width, b.height) / 2));
+    win.setShape(roundedRectShape(b.width, b.height, r));
+  } catch (_) { /* ignore */ }
+}
+
 /** Re-assert transparent glass chrome after create (some Win11 builds re-enable DWM). */
 function hardenFloatingGlass(win) {
   if (!IS_WIN || !win || win.isDestroyed()) return;
@@ -653,6 +690,12 @@ function hardenFloatingGlass(win) {
   try {
     if (typeof win.setBackgroundMaterial === "function") win.setBackgroundMaterial("none");
   } catch (_) { /* ignore */ }
+  applyFloatingGlassShape(win);
+  // DWM sometimes re-applies chrome on show — re-clip without stacking listeners.
+  if (!win.__lyknGlassHardened) {
+    win.__lyknGlassHardened = true;
+    win.on("show", () => hardenFloatingGlass(win));
+  }
 }
 
 /** setBounds without animation — animated resizes flicker on Win transparent HWNDs. */
@@ -663,6 +706,7 @@ function setFloatingBounds(win, bounds) {
   } catch (_) {
     try { win.setBounds(bounds); } catch (_) { /* ignore */ }
   }
+  applyFloatingGlassShape(win);
 }
 
 function overlayPosition(height) {
@@ -1987,8 +2031,12 @@ function stripHiddenTags(s) {
     .replace(/<\/?(?:learned|reason|applied)\b[^>]*>/gi, "")
     .replace(/\[TAG_NOTES:[^\]]*\]/gi, "")
     .replace(/\[\[\s*HIGHLIGHT\s*:[^\]]*\]\]/gi, "")
-    // Brand is always LYKN (all caps) — leave lykn.io / lykn_* alone.
-    .replace(/\b[Ll][Yy][Kk][Nn]\b(?!\.io\b)(?![_/])/g, "LYKN");
+    // Brand is always LYKN (all caps) — leave lykn.io / lykn_* / lykn-* alone
+    // (hyphen: overlay markers like lykn-artifact: / lykn-video:).
+    .replace(/\b[Ll][Yy][Kk][Nn]\b(?!\.io\b)(?![_\-/])/g, "LYKN")
+    // Normalize overlay markers to lykn_artifact: / lykn_video: (underscore
+    // form). Covers LYKN-artifact from older brand rewrites and hyphen forms.
+    .replace(/!\[(?:LYKN|lykn)[-_](artifact|video):/gi, (_, kind) => `![lykn_${String(kind).toLowerCase()}:`);
 }
 
 // Matches a COMPLETED highlight control tag and captures the element
@@ -4150,13 +4198,14 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
             typeof tc.result.file_url === "string" &&
             /^https?:\/\//.test(tc.result.file_url)
           ) {
-            // Build mode result: append a lykn-artifact marker line, which the
+            // Build mode result: append a lykn_artifact marker line, which the
             // overlay's renderer turns into a live iframe preview card with an
-            // "Open" affordance. Same persistence story as generated images.
+            // "Open" affordance. Underscore form survives brand capitalization
+            // (lykn_* is excluded); hyphen form is normalized in stripHiddenTags.
             const title = String(tc.result.title || "Interactive artifact")
               .replace(/[\]\n\r]/g, " ")
               .trim();
-            accumulated += `\n\n![lykn-artifact:${title}](${tc.result.file_url})\n\n`;
+            accumulated += `\n\n![lykn_artifact:${title}](${tc.result.file_url})\n\n`;
             send("lykn:answer-delta", {
               text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
             });
@@ -4167,13 +4216,13 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
             typeof tc.result.file_url === "string" &&
             /^https?:\/\//.test(tc.result.file_url)
           ) {
-            // Remotion render result: a lykn-video marker line becomes an
+            // Remotion render result: a lykn_video marker line becomes an
             // inline <video> card in the overlay's renderer (playable +
             // downloadable), persisted in the session like images/artifacts.
             const title = String(tc.result.title || "Video")
               .replace(/[\]\n\r]/g, " ")
               .trim();
-            accumulated += `\n\n![lykn-video:${title}](${tc.result.file_url})\n\n`;
+            accumulated += `\n\n![lykn_video:${title}](${tc.result.file_url})\n\n`;
             send("lykn:answer-delta", {
               text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
             });
