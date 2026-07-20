@@ -617,6 +617,54 @@ const OVERLAY_MAX_WIDTH = OVERLAY_WIDTH + OVERLAY_WATCH_SIDE_WIDTH;
 const OVERLAY_MIN_HEIGHT = 82;
 const OVERLAY_BOTTOM_MARGIN = 90;
 
+// Shared chrome for the glass overlay family (bar, menu, picker, panel, live).
+// macOS: native vibrancy clipped to a rounded rect.
+// Windows: fully transparent HWND — Win11 DWM otherwise draws square corner
+// stubs / shadow outside our CSS border-radius. CSS owns the glass card.
+function floatingGlassChrome() {
+  if (IS_MAC) {
+    return {
+      transparent: false,
+      backgroundColor: "#00000000",
+      vibrancy: "hud",
+      visualEffectState: "active",
+      roundedCorners: true,
+      hasShadow: true,
+    };
+  }
+  return {
+    transparent: true,
+    backgroundColor: "#00000000",
+    // Win11 DWM draws its own rounded frame/shadow outside CSS radius —
+    // that shows as square "corner stubs". Kill native chrome; CSS owns shape.
+    roundedCorners: false,
+    hasShadow: false,
+    thickFrame: false,
+    backgroundMaterial: "none",
+  };
+}
+
+/** Re-assert transparent glass chrome after create (some Win11 builds re-enable DWM). */
+function hardenFloatingGlass(win) {
+  if (!IS_WIN || !win || win.isDestroyed()) return;
+  try {
+    if (typeof win.setHasShadow === "function") win.setHasShadow(false);
+  } catch (_) { /* ignore */ }
+  try {
+    if (typeof win.setBackgroundMaterial === "function") win.setBackgroundMaterial("none");
+  } catch (_) { /* ignore */ }
+}
+
+/** setBounds without animation — animated resizes flicker on Win transparent HWNDs. */
+function setFloatingBounds(win, bounds) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.setBounds(bounds, false);
+  } catch (_) {
+    try { win.setBounds(bounds); } catch (_) { /* ignore */ }
+  }
+}
+
 function overlayPosition(height) {
   const { workArea } = screen.getPrimaryDisplay();
   return {
@@ -634,17 +682,7 @@ function createOverlayWindow() {
     y: pos.y,
     show: false,
     frame: false,
-    // Real background blur of the desktop behind the panel comes from native
-    // macOS vibrancy (NSVisualEffectView) — CSS backdrop-filter can't blur the
-    // desktop behind a transparent window. With transparent:false + roundedCorners
-    // macOS clips the vibrancy material to a rounded rect, giving a clean floating
-    // glass panel instead of a square blurred rectangle.
-    transparent: IS_MAC ? false : true,
-    backgroundColor: "#00000000",
-    ...(IS_MAC
-      ? { vibrancy: "hud", visualEffectState: "active", roundedCorners: true }
-      : {}),
-    hasShadow: true,
+    ...floatingGlassChrome(),
     resizable: false,
     movable: true,
     minimizable: false,
@@ -677,6 +715,7 @@ function createOverlayWindow() {
   // include it, so LYKN never "sees" its own chat window when reading the screen.
   // User-toggleable + persisted; defaults ON.
   overlayWindow.setContentProtection(isContentProtectionEnabled());
+  hardenFloatingGlass(overlayWindow);
   // canJoinAllSpaces + fullScreenAuxiliary so the panel appears on the CURRENT
   // Space (over full-screen apps too); skipTransformProcessType stops macOS
   // from switching Spaces when it shows.
@@ -764,7 +803,12 @@ function setOverlayCollapsed(collapsed) {
   }
 
   overlayProgrammaticMove = true;
-  overlayWindow.setBounds({ x: Math.round(x), y: Math.round(y), width: w, height: h });
+  setFloatingBounds(overlayWindow, {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: w,
+    height: h,
+  });
   overlayProgrammaticMove = false;
   // The floating menu/picker/live cards don't make sense next to the collapsed
   // bubble (the live card comes back when the bar expands — see lykn:collapse).
@@ -799,7 +843,12 @@ function setOverlaySize(width, height) {
   y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
 
   overlayProgrammaticMove = true;
-  overlayWindow.setBounds({ x: Math.round(clampedX), y: Math.round(y), width: w, height: h });
+  setFloatingBounds(overlayWindow, {
+    x: Math.round(clampedX),
+    y: Math.round(y),
+    width: w,
+    height: h,
+  });
   overlayProgrammaticMove = false;
   // Keep the floating menu/picker/live/panel cards glued to the bar's edges as it grows.
   positionMenuWindow();
@@ -1244,14 +1293,7 @@ function createMenuWindow() {
     height: menuHeight,
     show: false,
     frame: false,
-    // Same glass treatment as the bar: native vibrancy clipped to a rounded
-    // rect (see createOverlayWindow for the full rationale).
-    transparent: process.platform === "darwin" ? false : true,
-    backgroundColor: "#00000000",
-    ...(process.platform === "darwin"
-      ? { vibrancy: "hud", visualEffectState: "active", roundedCorners: true }
-      : {}),
-    hasShadow: true,
+    ...floatingGlassChrome(),
     resizable: false,
     movable: false,
     minimizable: false,
@@ -1263,7 +1305,7 @@ function createMenuWindow() {
     focusable: false,
     acceptFirstMouse: true,
     alwaysOnTop: true,
-    ...(process.platform === "darwin" ? { type: "panel" } : {}),
+    ...(IS_MAC ? { type: "panel" } : {}),
     webPreferences: {
       preload: path.join(__dirname, "menu-preload.cjs"),
       contextIsolation: true,
@@ -1274,6 +1316,7 @@ function createMenuWindow() {
   try {
     menuWindow.setContentProtection(isContentProtectionEnabled());
   } catch (_) {}
+  hardenFloatingGlass(menuWindow);
   // Workspaces first, level last — setVisibleOnAllWorkspaces can reset the
   // window level on macOS (see createOverlayWindow).
   menuWindow.setVisibleOnAllWorkspaces(true, {
@@ -1310,7 +1353,7 @@ function menuTargetBounds() {
 function positionMenuWindow() {
   if (!menuWindow || menuWindow.isDestroyed() || !menuWindow.isVisible()) return;
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  menuWindow.setBounds(menuTargetBounds());
+  setFloatingBounds(menuWindow, menuTargetBounds());
 }
 
 function notifyMenuVisibility(visible) {
@@ -1327,7 +1370,7 @@ function showMenuWindow() {
   if (!menuWindow || menuWindow.isDestroyed()) createMenuWindow();
   const fire = () => {
     if (!menuWindow || menuWindow.isDestroyed()) return;
-    menuWindow.setBounds(menuTargetBounds());
+    setFloatingBounds(menuWindow, menuTargetBounds());
     menuWindow.showInactive();
     menuWindow.moveTop();
     menuWindow.webContents.send("lykn:menu-shown");
@@ -1360,12 +1403,7 @@ function createPickerWindow() {
     height: pickerHeight,
     show: false,
     frame: false,
-    transparent: process.platform === "darwin" ? false : true,
-    backgroundColor: "#00000000",
-    ...(process.platform === "darwin"
-      ? { vibrancy: "hud", visualEffectState: "active", roundedCorners: true }
-      : {}),
-    hasShadow: true,
+    ...floatingGlassChrome(),
     resizable: false,
     movable: false,
     minimizable: false,
@@ -1375,7 +1413,7 @@ function createPickerWindow() {
     focusable: false,
     acceptFirstMouse: true,
     alwaysOnTop: true,
-    ...(process.platform === "darwin" ? { type: "panel" } : {}),
+    ...(IS_MAC ? { type: "panel" } : {}),
     webPreferences: {
       preload: path.join(__dirname, "picker-preload.cjs"),
       contextIsolation: true,
@@ -1386,6 +1424,7 @@ function createPickerWindow() {
   try {
     pickerWindow.setContentProtection(isContentProtectionEnabled());
   } catch (_) {}
+  hardenFloatingGlass(pickerWindow);
   // Workspaces first, level last — see createOverlayWindow.
   pickerWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
@@ -1419,7 +1458,7 @@ function pickerTargetBounds() {
 function positionPickerWindow() {
   if (!pickerWindow || pickerWindow.isDestroyed() || !pickerWindow.isVisible()) return;
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  pickerWindow.setBounds(pickerTargetBounds());
+  setFloatingBounds(pickerWindow, pickerTargetBounds());
 }
 
 function notifyPickerVisibility(visible) {
@@ -1436,7 +1475,7 @@ function showPickerWindow() {
   if (!pickerWindow || pickerWindow.isDestroyed()) createPickerWindow();
   const fire = () => {
     if (!pickerWindow || pickerWindow.isDestroyed()) return;
-    pickerWindow.setBounds(pickerTargetBounds());
+    setFloatingBounds(pickerWindow, pickerTargetBounds());
     pickerWindow.showInactive();
     pickerWindow.moveTop();
     pickerWindow.webContents.send("lykn:picker-shown");
@@ -1472,12 +1511,7 @@ function createLiveWindow() {
     height: LIVE_HEIGHT,
     show: false,
     frame: false,
-    transparent: process.platform === "darwin" ? false : true,
-    backgroundColor: "#00000000",
-    ...(process.platform === "darwin"
-      ? { vibrancy: "hud", visualEffectState: "active", roundedCorners: true }
-      : {}),
-    hasShadow: true,
+    ...floatingGlassChrome(),
     resizable: false,
     movable: false,
     minimizable: false,
@@ -1487,7 +1521,7 @@ function createLiveWindow() {
     focusable: false,
     acceptFirstMouse: true,
     alwaysOnTop: true,
-    ...(process.platform === "darwin" ? { type: "panel" } : {}),
+    ...(IS_MAC ? { type: "panel" } : {}),
     webPreferences: {
       preload: path.join(__dirname, "live-preload.cjs"),
       contextIsolation: true,
@@ -1498,6 +1532,7 @@ function createLiveWindow() {
   try {
     liveWindow.setContentProtection(isContentProtectionEnabled());
   } catch (_) {}
+  hardenFloatingGlass(liveWindow);
   // Workspaces first, level last — see createOverlayWindow.
   liveWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
@@ -1532,7 +1567,7 @@ function liveTargetBounds() {
 function positionLiveWindow() {
   if (!liveWindowVisible()) return;
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  liveWindow.setBounds(liveTargetBounds());
+  setFloatingBounds(liveWindow, liveTargetBounds());
 }
 
 function sendLiveState() {
@@ -1547,7 +1582,7 @@ function showLiveWindow() {
   if (!liveWindow || liveWindow.isDestroyed()) createLiveWindow();
   const fire = () => {
     if (!liveWindow || liveWindow.isDestroyed()) return;
-    liveWindow.setBounds(liveTargetBounds());
+    setFloatingBounds(liveWindow, liveTargetBounds());
     liveWindow.showInactive();
     liveWindow.moveTop();
     sendLiveState();
@@ -1589,12 +1624,7 @@ function createPanelWindow() {
     height: panelHeight,
     show: false,
     frame: false,
-    transparent: process.platform === "darwin" ? false : true,
-    backgroundColor: "#00000000",
-    ...(process.platform === "darwin"
-      ? { vibrancy: "hud", visualEffectState: "active", roundedCorners: true }
-      : {}),
-    hasShadow: true,
+    ...floatingGlassChrome(),
     resizable: false,
     movable: false,
     minimizable: false,
@@ -1604,7 +1634,7 @@ function createPanelWindow() {
     focusable: false,
     acceptFirstMouse: true,
     alwaysOnTop: true,
-    ...(process.platform === "darwin" ? { type: "panel" } : {}),
+    ...(IS_MAC ? { type: "panel" } : {}),
     webPreferences: {
       preload: path.join(__dirname, "panel-preload.cjs"),
       contextIsolation: true,
@@ -1615,6 +1645,7 @@ function createPanelWindow() {
   try {
     panelWindow.setContentProtection(isContentProtectionEnabled());
   } catch (_) {}
+  hardenFloatingGlass(panelWindow);
   // Workspaces first, level last — see createOverlayWindow.
   panelWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
@@ -1653,7 +1684,7 @@ function panelTargetBounds() {
 function positionPanelWindow() {
   if (!panelWindowVisible()) return;
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  panelWindow.setBounds(panelTargetBounds());
+  setFloatingBounds(panelWindow, panelTargetBounds());
 }
 
 function sendPanelState() {
@@ -1668,7 +1699,7 @@ function showPanelWindow() {
   if (!panelWindow || panelWindow.isDestroyed()) createPanelWindow();
   const fire = () => {
     if (!panelWindow || panelWindow.isDestroyed()) return;
-    panelWindow.setBounds(panelTargetBounds());
+    setFloatingBounds(panelWindow, panelTargetBounds());
     panelWindow.showInactive();
     panelWindow.moveTop();
     sendPanelState();
@@ -5499,7 +5530,7 @@ function registerOverlayIpc() {
     const nx = b.x + Math.round(dx || 0);
     const ny = b.y + Math.round(dy || 0);
     overlayProgrammaticMove = true;
-    overlayWindow.setBounds({ x: nx, y: ny, width: b.width, height: b.height });
+    setFloatingBounds(overlayWindow, { x: nx, y: ny, width: b.width, height: b.height });
     overlayProgrammaticMove = false;
     overlayUserPositioned = true;
     overlayAnchorLeft = nx;
