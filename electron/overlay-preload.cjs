@@ -94,8 +94,14 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   // Save a note (e.g. a task summary) to the user's LYKN vault.
   saveVaultNote: (payload) => ipcRenderer.invoke("lykn:save-vault-note", payload || {}),
   copyText: (text) => {
-    clipboard.writeText(String(text || ""));
-    return true;
+    try {
+      const s = String(text || "");
+      if (!s) return false;
+      clipboard.writeText(s);
+      return true;
+    } catch {
+      return false;
+    }
   },
   openVault: () => ipcRenderer.send("lykn:open-vault"),
   onBrowserProgress: (cb) => {

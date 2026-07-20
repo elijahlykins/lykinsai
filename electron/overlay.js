@@ -129,7 +129,7 @@ function renderMarkdown(md) {
           `<iframe src="${m[2]}" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" loading="lazy"></iframe>` +
           `<div class="md-artifact-code" hidden>` +
           `<div class="md-artifact-code-bar"><span>Component source (JSX)</span>` +
-          `<button class="md-dl md-code-copy" type="button">Copy</button></div>` +
+          `<button class="md-code-copy" type="button" data-url="${m[2]}" aria-label="Copy code">Copy</button></div>` +
           `<pre></pre>` +
           `</div>` +
           `</div>`;
@@ -1705,13 +1705,57 @@ threadEl.addEventListener("click", (e) => {
   const codeCopyBtn = e.target.closest(".md-code-copy");
   if (codeCopyBtn) {
     e.preventDefault();
-    const pre = codeCopyBtn.closest(".md-artifact-code")?.querySelector("pre");
-    if (pre && pre.textContent) {
-      window.lyknOverlay.copyText(pre.textContent);
-      const orig = codeCopyBtn.textContent;
-      codeCopyBtn.textContent = "Copied ✓";
-      setTimeout(() => { codeCopyBtn.textContent = orig; }, 1600);
-    }
+    e.stopPropagation();
+    if (codeCopyBtn.disabled) return;
+    const codeEl = codeCopyBtn.closest(".md-artifact-code");
+    const card = codeCopyBtn.closest(".md-artifact");
+    const pre = codeEl?.querySelector("pre");
+    const url =
+      codeCopyBtn.getAttribute("data-url") ||
+      card?.querySelector(".md-code")?.getAttribute("data-url") ||
+      "";
+    const markCopied = () => {
+      codeCopyBtn.classList.add("copied");
+      codeCopyBtn.innerHTML =
+        `<span style="display:inline-flex;align-items:center;gap:4px">` +
+        `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>` +
+        `Copied</span>`;
+      clearTimeout(codeCopyBtn._copiedTimer);
+      codeCopyBtn._copiedTimer = setTimeout(() => {
+        codeCopyBtn.classList.remove("copied");
+        codeCopyBtn.textContent = "Copy";
+      }, 1800);
+    };
+    void (async () => {
+      let text = (pre && pre.textContent) || "";
+      if (!text.trim() && url && window.lyknOverlay?.artifactCode) {
+        codeCopyBtn.disabled = true;
+        codeCopyBtn.textContent = "…";
+        try {
+          const res = await window.lyknOverlay.artifactCode(url);
+          if (res && res.ok && res.code) {
+            text = res.code;
+            if (pre) pre.textContent = text;
+          }
+        } catch (_) {}
+        codeCopyBtn.disabled = false;
+        codeCopyBtn.textContent = "Copy";
+      }
+      if (!text.trim()) return;
+      try {
+        const ok = window.lyknOverlay?.copyText?.(text);
+        if (ok === false) throw new Error("copy_failed");
+        markCopied();
+      } catch (_) {
+        try {
+          await navigator.clipboard.writeText(text);
+          markCopied();
+        } catch (_) {
+          codeCopyBtn.textContent = "Failed";
+          setTimeout(() => { codeCopyBtn.textContent = "Copy"; }, 1400);
+        }
+      }
+    })();
     return;
   }
   const codeBtn = e.target.closest(".md-code");

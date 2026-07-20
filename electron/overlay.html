@@ -335,7 +335,8 @@
       }
       /* Download / Code buttons on generated images / built artifacts. */
       .chat-a .md-dl,
-      .chat-a .md-code {
+      .chat-a .md-code,
+      .chat-a .md-code-copy {
         appearance: none;
         border: 1px solid rgba(255, 255, 255, 0.16);
         border-radius: 7px;
@@ -347,11 +348,23 @@
         line-height: 1;
         padding: 4px 9px;
         cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
       }
       .chat-a .md-dl:hover:not(:disabled),
-      .chat-a .md-code:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+      .chat-a .md-code:hover:not(:disabled),
+      .chat-a .md-code-copy:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
       .chat-a .md-dl:disabled,
-      .chat-a .md-code:disabled { opacity: 0.7; cursor: default; }
+      .chat-a .md-code:disabled,
+      .chat-a .md-code-copy:disabled { opacity: 0.7; cursor: default; }
+      .chat-a .md-code-copy.copied {
+        color: #4ade80;
+        border-color: rgba(74, 222, 128, 0.45);
+        background: rgba(74, 222, 128, 0.14);
+      }
+      .chat-a .md-code-copy.copied:hover:not(:disabled) {
+        background: rgba(74, 222, 128, 0.18);
+        color: #4ade80;
+      }
       /* Code view: the raw JSX the AI wrote, swapped in for the live preview. */
       .chat-a .md-artifact-code-bar {
         display: flex;
