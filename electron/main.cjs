@@ -376,16 +376,20 @@ let allowQuit = false;
 
 function quitForReal() {
   allowQuit = true;
+  // Real quit: tear down the auth keeper and let the main window's close
+  // handler actually destroy (allowQuit short-circuits the hide-on-close).
+  destroyAuthKeeper();
   app.quit();
 }
 
 // Menu-bar-app dock behaviour: the Dock icon appears only while the main
-// window exists; with just the tray + hotkey running we stay out of the Dock
-// and the ⌘-Tab switcher like any other background companion.
+// window is VISIBLE; with just the tray + hotkey running (main window hidden
+// but still alive as the auth keeper) we stay out of the Dock and the
+// ⌘-Tab switcher like any other background companion.
 function updateDockVisibility() {
   if (process.platform !== "darwin" || !app.dock) return;
   try {
-    if (mainWindow && !mainWindow.isDestroyed()) app.dock.show();
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) app.dock.show();
     else app.dock.hide();
   } catch (_) {
     /* cosmetic */
@@ -416,6 +420,9 @@ function createMainWindow() {
   if (process.platform === "darwin" && app.dock) {
     try { app.dock.show(); } catch (_) { /* cosmetic */ }
   }
+  // Main window takes over as the auth provider — tear down the keeper so
+  // two Supabase clients don't race the rotating refresh token.
+  destroyAuthKeeper();
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -489,10 +496,26 @@ function createMainWindow() {
     openExternalSafe(url);
   });
 
+  // Red close / ⌘W: HIDE, don't destroy. Destroying kills the Supabase client
+  // that owns the rotating refresh token, so the next ⌘L ask reads a stale
+  // access token from disk (or an empty in-memory cache) and Glass says
+  // "session expired" even though the user never signed out. Keeping the
+  // window alive (hidden, backgroundThrottling:false) is what "stay logged
+  // in" means for a menu-bar app.
+  mainWindow.on("close", (e) => {
+    if (allowQuit) return;
+    e.preventDefault();
+    try { mainWindow.hide(); } catch (_) { /* ignore */ }
+    updateDockVisibility();
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
     // Last window gone → back to menu-bar-only mode (tray + ⌘L stay armed).
+    // Spin up the lightweight auth keeper so Glass can still refresh tokens
+    // after a real destroy (crash recovery, allowQuit teardown mid-flight).
     updateDockVisibility();
+    if (!allowQuit) ensureAuthKeeper();
   });
 
   // Recover from a crashed renderer (GPU reset, OOM) with a reload instead of
@@ -1851,6 +1874,11 @@ let cachedAuthToken = null;
 let cachedAuthTokenExpMs = 0;
 /** @type {Promise<string | null> | null} */
 let hiddenAuthReadPromise = null;
+/** @type {BrowserWindow | null} */
+// Persistent hidden window that keeps the web app's Supabase client alive
+// when there's no main window (login-item launch, or main window crashed).
+// Same default session / localStorage as the main window — just never shown.
+let authKeeperWindow = null;
 
 function jwtExpiryMs(token) {
   try {
@@ -1899,25 +1927,107 @@ function tokenIsStale(token, marginMs = 60_000) {
   return !expMs || expMs <= Date.now() + marginMs;
 }
 
-// Boot a hidden window on the shared default session purely to read (and let
-// the web app refresh) the stored Supabase session, then tear it down.
-// Deduplicated so parallel overlay asks share one boot.
+// Prefer the (possibly hidden) main window; otherwise the dedicated auth
+// keeper. Both share the default session and keep backgroundThrottling off
+// so Supabase's refresh timer keeps firing.
+function liveAuthWebContents() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow.webContents;
+  if (authKeeperWindow && !authKeeperWindow.isDestroyed()) {
+    return authKeeperWindow.webContents;
+  }
+  return null;
+}
+
+// Keep a hidden lykn.io window alive whenever there's no main window, so
+// login-item launches (and crash recovery) still have a live Supabase client
+// for Glass asks. Idempotent.
+function ensureAuthKeeper() {
+  if (mainWindow && !mainWindow.isDestroyed()) return;
+  if (authKeeperWindow && !authKeeperWindow.isDestroyed()) return;
+  try {
+    authKeeperWindow = new BrowserWindow({
+      show: false,
+      width: 400,
+      height: 300,
+      skipTaskbar: true,
+      frame: false,
+      focusable: false,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        // Same reason as mainWindow: the refresh timer must keep firing.
+        backgroundThrottling: false,
+      },
+    });
+    authKeeperWindow.loadURL(APP_URL);
+    authKeeperWindow.on("closed", () => {
+      authKeeperWindow = null;
+    });
+  } catch (e) {
+    console.warn("[auth-keeper] failed to create:", e?.message || e);
+    authKeeperWindow = null;
+  }
+}
+
+function destroyAuthKeeper() {
+  try {
+    if (authKeeperWindow && !authKeeperWindow.isDestroyed()) authKeeperWindow.destroy();
+  } catch (_) { /* ignore */ }
+  authKeeperWindow = null;
+}
+
+// Read + optionally refresh through a live auth webContents. Returns null when
+// the window has no session (signed out) so the caller can drop the cache.
+async function readTokenFromLiveAuth(webContents, { forceRefresh = false } = {}) {
+  const token = await readTokenFromWebContents(webContents);
+  if (token && !forceRefresh && !tokenIsStale(token)) {
+    cacheAuthToken(token);
+    return token;
+  }
+  if (token || forceRefresh) {
+    const refreshed = await refreshTokenViaWebContents(webContents);
+    if (refreshed && !tokenIsStale(refreshed)) {
+      cacheAuthToken(refreshed);
+      return refreshed;
+    }
+    // Refresh hook unavailable (app still booting) or refresh failed —
+    // a present non-stale token is still worth trying; a known-stale one
+    // is not (it just becomes a guaranteed 401).
+    if (token && !tokenIsStale(token, 0)) {
+      cacheAuthToken(token);
+      return token;
+    }
+  }
+  // Alive window, no usable session → signed out.
+  if (!token && !forceRefresh) {
+    cachedAuthToken = null;
+    cachedAuthTokenExpMs = 0;
+    return null;
+  }
+  return null;
+}
+
+// Boot (or reuse) a hidden window on the shared default session to refresh
+// the stored Supabase session. Kept around as the auth keeper afterwards so
+// the next ask doesn't pay another cold boot. Deduplicated across parallel
+// overlay asks.
 function readTokenViaHiddenWindow() {
   if (hiddenAuthReadPromise) return hiddenAuthReadPromise;
   hiddenAuthReadPromise = (async () => {
-    let win = null;
     try {
-      win = new BrowserWindow({
-        show: false,
-        width: 800,
-        height: 600,
-        webPreferences: {
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: true,
-        },
-      });
-      await win.loadURL(APP_URL);
+      ensureAuthKeeper();
+      const win = authKeeperWindow;
+      if (!win || win.isDestroyed()) return null;
+
+      // Wait for the SPA to finish its first load if we just created it.
+      if (win.webContents.isLoading()) {
+        await new Promise((resolve) => {
+          const done = () => resolve();
+          win.webContents.once("did-finish-load", done);
+          setTimeout(done, 12_000);
+        });
+      }
 
       const hasStoredSession = await win.webContents
         .executeJavaScript(HAS_SUPABASE_SESSION_JS, true)
@@ -1925,30 +2035,30 @@ function readTokenViaHiddenWindow() {
       if (!hasStoredSession) return null; // genuinely signed out
 
       // Poll while the app's Supabase client validates/refreshes the stored
-      // session. A fresh token usually lands within a second or two. Once the
-      // app's JS has booted far enough to expose the refresh hook, use it to
-      // force the refresh instead of waiting for the client's own timer.
-      const deadline = Date.now() + 15_000;
+      // session. Wait for the refresh hook to appear, then force a refresh.
+      const deadline = Date.now() + 25_000;
       while (Date.now() < deadline) {
+        const hookReady = await win.webContents
+          .executeJavaScript("typeof window.__lyknGetFreshToken === 'function'", true)
+          .catch(() => false);
+        if (hookReady) {
+          const refreshed = await refreshTokenViaWebContents(win.webContents);
+          if (refreshed && !tokenIsStale(refreshed)) {
+            cacheAuthToken(refreshed);
+            return refreshed;
+          }
+        }
         const token = await readTokenFromWebContents(win.webContents).catch(() => null);
         if (token && !tokenIsStale(token)) {
           cacheAuthToken(token);
           return token;
         }
-        const refreshed = await refreshTokenViaWebContents(win.webContents);
-        if (refreshed && !tokenIsStale(refreshed)) {
-          cacheAuthToken(refreshed);
-          return refreshed;
-        }
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 400));
       }
       return null;
     } catch {
       return null;
     } finally {
-      try {
-        if (win && !win.isDestroyed()) win.destroy();
-      } catch (_) { /* teardown best-effort */ }
       hiddenAuthReadPromise = null;
     }
   })();
@@ -1956,36 +2066,17 @@ function readTokenViaHiddenWindow() {
 }
 
 async function getAuthToken({ forceRefresh = false } = {}) {
-  // 1. Live read from the main window when it exists. An expired token in
-  //    storage is NOT good enough — after the window idles for an hour the
-  //    stored access token may be dead (this was the overlay's classic
-  //    "backend error (401) after sitting a while"), so validate expiry and
+  // 1. Live read from the main window (even when hidden) or the auth keeper.
+  //    An expired token in storage is NOT good enough — after the window
+  //    idles the stored access token may be dead, so validate expiry and
   //    push a real refresh through the app's Supabase client when needed.
-  if (mainWindow && !mainWindow.isDestroyed()) {
+  const live = liveAuthWebContents();
+  if (live) {
     try {
-      const token = await readTokenFromWebContents(mainWindow.webContents);
-      if (token && !forceRefresh && !tokenIsStale(token)) {
-        cacheAuthToken(token);
-        return token;
-      }
-      if (token || forceRefresh) {
-        const refreshed = await refreshTokenViaWebContents(mainWindow.webContents);
-        if (refreshed && !tokenIsStale(refreshed)) {
-          cacheAuthToken(refreshed);
-          return refreshed;
-        }
-        // Refresh hook unavailable (app still booting) or refresh failed —
-        // a stale-but-present token is still worth trying over nothing.
-        if (token) {
-          cacheAuthToken(token);
-          return token;
-        }
-      }
-      // The window is alive and definitively has no session — the user signed
-      // out. Drop the cache instead of resurrecting the old token.
-      cachedAuthToken = null;
-      cachedAuthTokenExpMs = 0;
-      return null;
+      const fromLive = await readTokenFromLiveAuth(live, { forceRefresh });
+      if (fromLive) return fromLive;
+      // Live window says signed out (no token at all, not force-refreshing).
+      if (!forceRefresh) return null;
     } catch {
       // Window mid-load/navigation — fall through to the cache/hidden read.
     }
@@ -1996,9 +2087,8 @@ async function getAuthToken({ forceRefresh = false } = {}) {
     return cachedAuthToken;
   }
 
-  // 3. Hidden-window read (after reboot / silent login launch / token expiry).
-  //    The hidden window boots the real app, whose Supabase client refreshes
-  //    the stored session — so this path also serves forceRefresh.
+  // 3. Ensure an auth keeper exists and refresh through it (login-item
+  //    launch, crash recovery, or forceRefresh after a 401 with no live win).
   return readTokenViaHiddenWindow();
 }
 
@@ -4249,13 +4339,19 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
         // app's Supabase client and retry — this is recoverable, not an error.
         if (res.status === 401 && !authRetried) {
           authRetried = true;
+          // Drop the in-memory cache so forceRefresh can't hand us the same
+          // dead JWT again — we need the live Supabase client to mint a new one.
+          cachedAuthToken = null;
+          cachedAuthTokenExpMs = 0;
           const fresh = await getAuthToken({ forceRefresh: true }).catch(() => null);
           if (superseded()) return;
-          if (fresh && fresh !== bearerToken) {
+          if (fresh) {
             bearerToken = fresh;
             attempt -= 1; // don't burn a network-retry slot on the auth retry
             continue;
           }
+          // Refresh really failed (signed out / refresh token revoked).
+          throw new Error("LYKN backend error (401).");
         }
         const accumulated = await readOverlayStreamResponse(res, send, (description) => {
           // Fire-and-forget: grounding + drawing happen off the stream path,
@@ -6524,8 +6620,11 @@ function initAutoUpdate() {
 
   // When macOS starts LYKN at login, stay silent in the background: no main
   // window, just the armed ⌘+L hotkey. The dock icon / ⌘+L bring the UI up.
+  // Boot a hidden auth keeper so Glass can refresh the stored session without
+  // the user opening the main window first.
   const backgroundLaunch = launchedAtLogin();
   if (!backgroundLaunch) createMainWindow();
+  else ensureAuthKeeper();
   // Menu-bar icon: present for the whole app lifetime, on every launch mode —
   // it's the always-there affordance for pulling up the overlay chat.
   createTray();
@@ -6573,10 +6672,12 @@ app.on("before-quit", (event) => {
   try {
     if (overlayWindow && overlayWindow.isVisible()) hideOverlay();
   } catch (_) { /* keep going */ }
+  // Hide the main window — do NOT destroy it. Destroying drops the live
+  // Supabase session client and the next Glass ask 401s with "session
+  // expired" until the user reopens the window and signs in again.
   try {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
   } catch (_) { /* keep going */ }
-  mainWindow = null;
   updateDockVisibility();
 });
 
