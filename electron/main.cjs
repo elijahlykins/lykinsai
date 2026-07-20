@@ -4191,23 +4191,33 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
             send("lykn:answer-delta", {
               text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
             });
+            void saveArtifactResultToVault(tc.result, {
+              title: "Generated image",
+              filename: "generated-image.png",
+            });
           } else if (
             tc.status === "done" &&
             /build_react_artifact$/.test(String(tc.name || "")) &&
-            tc.result &&
-            typeof tc.result.file_url === "string" &&
-            /^https?:\/\//.test(tc.result.file_url)
+            tc.result
           ) {
             // Build mode result: append a lykn_artifact marker line, which the
             // overlay's renderer turns into a live iframe preview card with an
             // "Open" affordance. Underscore form survives brand capitalization
             // (lykn_* is excluded); hyphen form is normalized in stripHiddenTags.
+            // Preview-only builds (preview_html, no file_url yet) still vault.
             const title = String(tc.result.title || "Interactive artifact")
               .replace(/[\]\n\r]/g, " ")
               .trim();
-            accumulated += `\n\n![lykn_artifact:${title}](${tc.result.file_url})\n\n`;
-            send("lykn:answer-delta", {
-              text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
+            const fileUrl = pickArtifactUrl(tc.result);
+            if (fileUrl) {
+              accumulated += `\n\n![lykn_artifact:${title}](${fileUrl})\n\n`;
+              send("lykn:answer-delta", {
+                text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
+              });
+            }
+            void saveArtifactResultToVault(tc.result, {
+              title,
+              filename: `${title.replace(/[^\w\- ]+/g, "").trim() || "artifact"}.html`,
             });
           } else if (
             tc.status === "done" &&
@@ -4226,6 +4236,24 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
             send("lykn:answer-delta", {
               text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
             });
+            void saveArtifactResultToVault(tc.result, {
+              title,
+              filename: `${title.replace(/[^\w\- ]+/g, "").trim() || "video"}.mp4`,
+            });
+          } else if (
+            tc.status === "done" &&
+            tc.result &&
+            /(build_template|build_spreadsheet|generate_chart|generate_diagram|manage_file|process_image)$/.test(
+              String(tc.name || ""),
+            )
+          ) {
+            // Other capability artifacts may not get an inline preview card in
+            // the overlay yet, but still auto-save — including preview_html
+            // when no downloadable URL was persisted.
+            const title = String(tc.result.title || "Artifact")
+              .replace(/[\]\n\r]/g, " ")
+              .trim();
+            void saveArtifactResultToVault(tc.result, { title });
           }
         } else if (j.error) {
           throw new Error(String(j.error) || "Stream error.");
@@ -5346,6 +5374,138 @@ async function saveImageToVault(png, { title, fileName, width, height, token } =
   } catch {
     return false;
   }
+}
+
+// Persist raw bytes to the vault via /api/vault/save-file. Best-effort.
+async function saveBufferToVault(buf, { title, filename, mime, token } = {}) {
+  if (!buf || !buf.length) return false;
+  try {
+    const authToken = token || (await getAuthToken());
+    if (!authToken) return false;
+    let name =
+      String(filename || "")
+        .replace(/[/\\:*?"<>|]+/g, "-")
+        .replace(/^\.+/, "")
+        .slice(0, 120) || "artifact";
+    const contentType =
+      String(mime || "").split(";")[0].trim() || "application/octet-stream";
+    if (!/\.[a-z0-9]{1,8}$/i.test(name)) {
+      const ext = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/svg+xml": ".svg",
+        "text/html": ".html",
+        "application/pdf": ".pdf",
+        "text/plain": ".txt",
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+      }[contentType.toLowerCase()] || "";
+      name += ext;
+    }
+    const form = new FormData();
+    form.append("file", new Blob([buf], { type: contentType }), name);
+    form.append(
+      "title",
+      String(title || "").trim() || name.replace(/\.[a-z0-9]{1,8}$/i, ""),
+    );
+    form.append("source", "ai_artifact");
+    const vaultRes = await fetch(`${API_BASE}/api/vault/save-file`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authToken}` },
+      body: form,
+    });
+    const vaultData = await vaultRes.json().catch(() => null);
+    return !!(vaultRes.ok && vaultData && vaultData.ok);
+  } catch {
+    return false;
+  }
+}
+
+// Fetch a generated artifact URL and persist it to the vault. Used when the
+// overlay finishes an image / React build / video tool so artifacts land in
+// the vault without requiring a manual Download click. Best-effort.
+async function saveUrlToVault(url, { title, filename, token } = {}) {
+  const u = String(url || "").trim();
+  if (!/^https?:\/\//i.test(u)) return false;
+  try {
+    const authToken = token || (await getAuthToken());
+    if (!authToken) return false;
+    const res = await safeFetchMain(u);
+    if (!res.ok) return false;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf.length) return false;
+
+    let name = String(filename || "").trim();
+    if (!name) {
+      const cd = res.headers.get("content-disposition") || "";
+      const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+      if (m) {
+        try {
+          name = decodeURIComponent(m[1]);
+        } catch {
+          name = m[1];
+        }
+      }
+    }
+    if (!name) {
+      try {
+        name = decodeURIComponent(new URL(u).pathname.split("/").pop() || "");
+      } catch {
+        /* fall through */
+      }
+    }
+    const mime =
+      (res.headers.get("content-type") || "").split(";")[0].trim() ||
+      "application/octet-stream";
+    return saveBufferToVault(buf, { title, filename: name, mime, token: authToken });
+  } catch {
+    return false;
+  }
+}
+
+/** Pick the best downloadable URL from a capability tool result. */
+function pickArtifactUrl(result) {
+  if (!result || typeof result !== "object") return "";
+  for (const key of ["file_url", "image_url", "download_url", "primary_download"]) {
+    const v = result[key];
+    if (typeof v === "string" && /^https?:\/\//i.test(v)) return v;
+  }
+  if (Array.isArray(result.download_links)) {
+    for (const link of result.download_links) {
+      const v = link && link.url;
+      if (typeof v === "string" && /^https?:\/\//i.test(v)) return v;
+    }
+  }
+  return "";
+}
+
+// Auto-save a finished capability result: prefer a persisted URL, fall back to
+// inline preview_html (srcDoc / "preview mode" artifacts with no file_url yet).
+async function saveArtifactResultToVault(result, { title, filename } = {}) {
+  const safeTitle = String(title || result?.title || "Artifact")
+    .replace(/[\]\n\r]/g, " ")
+    .trim() || "Artifact";
+  const url = pickArtifactUrl(result);
+  if (url) {
+    return saveUrlToVault(url, { title: safeTitle, filename });
+  }
+  const html =
+    typeof result?.preview_html === "string" ? result.preview_html.trim() : "";
+  if (html) {
+    const base =
+      String(filename || safeTitle)
+        .replace(/[^\w\- ]+/g, "")
+        .trim() || "artifact";
+    const name = /\.html?$/i.test(base) ? base : `${base}.html`;
+    return saveBufferToVault(Buffer.from(html, "utf8"), {
+      title: safeTitle,
+      filename: name,
+      mime: "text/html;charset=utf-8",
+    });
+  }
+  return false;
 }
 
 function registerOverlayIpc() {

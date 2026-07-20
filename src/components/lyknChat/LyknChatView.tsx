@@ -395,7 +395,10 @@ export interface LyknChatViewProps {
   activeArtifact?: ChatArtifact | null;
   onActiveArtifactChange?: (artifact: ChatArtifact | null) => void;
   /** Save the open artifact (deck/doc/chart/file) to the vault. */
-  onSaveArtifact?: (artifact: ChatArtifact) => Promise<boolean> | boolean | void;
+  onSaveArtifact?: (
+    artifact: ChatArtifact,
+    opts?: { auto?: boolean },
+  ) => Promise<boolean> | boolean | void;
   /** Identifier for the currently-shown chat — switching it closes the panel. */
   chatKey?: string;
 }
@@ -1921,11 +1924,22 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   const artifactChatKeyRef = useRef<string | undefined>(undefined);
   const artifactSeededRef = useRef(false);
   useEffect(() => {
-    if (!onActiveArtifactChange) return;
+    if (!onActiveArtifactChange && !onSaveArtifact) return;
     let newest: ChatArtifact | null = null;
     for (let i = chatMessages.length - 1; i >= 0 && !newest; i--) {
-      const arts = sortArtifactsForDisplay(extractChatArtifacts(chatMessages[i]?.toolCalls));
-      if (arts.length) newest = arts[0];
+      const msg = chatMessages[i] as any;
+      const arts = sortArtifactsForDisplay(extractChatArtifacts(msg?.toolCalls));
+      if (arts.length) {
+        newest = arts[0];
+        continue;
+      }
+      // Preview-only HTML the model leaked into the reply (srcDoc card, no
+      // tool call) — still auto-open / auto-save like a real artifact.
+      // Prompt messages carry the assistant text on `aiResponse`.
+      const reply = String(msg?.aiResponse || (msg?.role !== "user" ? msg?.content : "") || "");
+      if (!reply) continue;
+      const { html } = extractLeakedHtmlDocument(reply);
+      if (html) newest = buildLeakedHtmlArtifact(msg.id, html);
     }
     const key = newest?.toolCallId || newest?.id || null;
 
@@ -1936,7 +1950,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
       artifactChatKeyRef.current = chatKey;
       artifactSeededRef.current = false;
       lastSeenArtifactRef.current = null;
-      onActiveArtifactChange(null);
+      onActiveArtifactChange?.(null);
     }
 
     // First time this chat's messages populate — establish a baseline without
@@ -1951,9 +1965,12 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
 
     if (newest && key && key !== lastSeenArtifactRef.current) {
       lastSeenArtifactRef.current = key;
-      onActiveArtifactChange(newest);
+      onActiveArtifactChange?.(newest);
+      // Auto-save every newly finished artifact to the vault (best-effort),
+      // including preview-only srcDoc / leaked HTML builds.
+      void Promise.resolve(onSaveArtifact?.(newest, { auto: true })).catch(() => {});
     }
-  }, [chatMessages, chatKey, onActiveArtifactChange]);
+  }, [chatMessages, chatKey, onActiveArtifactChange, onSaveArtifact]);
 
   const handleChunkClick = useCallback((e: React.MouseEvent, chunkKey: string, chunkText: string) => {
     chunkMapRef.current.set(chunkKey, chunkText);

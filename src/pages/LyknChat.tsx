@@ -2679,10 +2679,23 @@ export default function LyknChat() {
   // proxy URLs that still work as <a download> navigations). The bytes are
   // copied into the user's own storage so the vault note keeps a permanent,
   // re-signable copy instead of a 7-day proxy link.
-  const saveArtifactToVault = useCallback(async (artifact: ChatArtifact): Promise<boolean> => {
+  // `opts.auto` is used by the chat view when a new artifact finishes — skips
+  // sign-in prompts / failure toasts, and dedupes so refine + Save don't
+  // double-insert the same tool call.
+  const savedArtifactKeysRef = useRef<Set<string>>(new Set());
+  const saveArtifactToVault = useCallback(async (
+    artifact: ChatArtifact,
+    opts?: { auto?: boolean },
+  ): Promise<boolean> => {
     if (!artifact) return false;
-    if (!user?.id) { requireSignIn("save to the vault"); return false; }
+    if (!user?.id) {
+      if (!opts?.auto) requireSignIn("save to the vault");
+      return false;
+    }
     if (!(await checkVaultLimit())) return false;
+
+    const dedupeKey = artifact.toolCallId || artifact.id;
+    if (dedupeKey && savedArtifactKeysRef.current.has(dedupeKey)) return true;
 
     const title = (artifact.title || "Artifact").trim() || "Artifact";
     const downloads = artifact.downloads || [];
@@ -2752,7 +2765,9 @@ export default function LyknChat() {
     } catch { /* network/CORS — handled below */ }
 
     if (!blob || !blob.size) {
-      toast({ title: "Couldn't save", description: "Try the Download button instead." });
+      if (!opts?.auto) {
+        toast({ title: "Couldn't save", description: "Try the Download button instead." });
+      }
       return false;
     }
     if (!mimeType) mimeType = blob.type || "application/octet-stream";
@@ -2778,7 +2793,7 @@ export default function LyknChat() {
         .upload(storagePath, blob, { cacheControl: "3600", upsert: false, contentType: mimeType });
       if (uploadError) {
         notifyVaultCapIfApplicable(uploadError);
-        toast({ title: "Couldn't save", description: "Please try again." });
+        if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
         return false;
       }
       const { data: signedData } = await supabase.storage
@@ -2804,7 +2819,7 @@ export default function LyknChat() {
         .single();
       if (error) {
         if (notifyVaultCapIfApplicable(error)) return false;
-        toast({ title: "Couldn't save", description: "Please try again." });
+        if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
         return false;
       }
       if (ins?.id) {
@@ -2812,10 +2827,11 @@ export default function LyknChat() {
           excludeChatId: routeChatId || chatId || undefined,
         });
       }
+      if (dedupeKey) savedArtifactKeysRef.current.add(dedupeKey);
       toast({ title: "Saved to vault", description: title });
       return true;
     } catch {
-      toast({ title: "Couldn't save", description: "Please try again." });
+      if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
       return false;
     }
   }, [user?.id, routeChatId, chatId, requireSignIn, checkVaultLimit]);

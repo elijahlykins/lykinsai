@@ -2492,6 +2492,10 @@ document.getElementById("menu-new").addEventListener("click", () => {
   void startNewOverlayChat();
 });
 
+document.getElementById("bar-new-chat").addEventListener("click", () => {
+  void startNewOverlayChat();
+});
+
 document.getElementById("menu-history").addEventListener("click", () => {
   setHistoryOpen(true);
   void refreshHistoryList();

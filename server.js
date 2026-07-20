@@ -21315,6 +21315,10 @@ app.post('/api/vault/save-file', requireAuth, upload.single('file'), async (req,
 
     const title = (String(req.body?.title || '').trim() || originalName || 'Generated file').slice(0, 200);
     const folder = (String(req.body?.folder || '').trim() || 'Generated').slice(0, 80);
+    const rawSource = String(req.body?.source || '').trim().slice(0, 40);
+    const source = ['overlay_download', 'ai_artifact'].includes(rawSource)
+      ? rawSource
+      : 'overlay_download';
 
     const bucket = 'user-files';
     const fileId = crypto.randomUUID();
@@ -21353,7 +21357,7 @@ app.post('/api/vault/save-file', requireAuth, upload.single('file'), async (req,
       title,
       content,
       folder,
-      source: 'overlay_download',
+      source,
       tags: ['generated'],
       ...buildAttachmentColumns(attachment),
     };
