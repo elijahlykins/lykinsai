@@ -26,7 +26,17 @@ const {
   clipboard,
   Tray,
   powerMonitor,
+  nativeTheme,
 } = require("electron");
+
+// Force dark appearance for the whole shell. The glass overlay family (bar,
+// menu, picker, side panel, live notes) uses native "hud" vibrancy, and that
+// material follows the OS appearance: on Light-Mode Macs it rendered as pale
+// glass under our dark-tuned text/tint CSS, making the placeholder nearly
+// unreadable. Pinning dark keeps the glass identical on every machine. The
+// web app in the main window is unaffected unless the user picked "System"
+// theme — in which case they get LYKN's dark-first default, which matches.
+nativeTheme.themeSource = "dark";
 const path = require("node:path");
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");

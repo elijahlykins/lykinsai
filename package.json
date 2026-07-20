@@ -1,7 +1,7 @@
 {
   "name": "base44-app",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "LYKN — your AI that reads your screen, scrapes pages, and takes notes.",
   "author": "LYKN",
   "type": "module",
