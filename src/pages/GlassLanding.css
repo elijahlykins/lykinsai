@@ -1751,6 +1751,24 @@
   text-align: left;
 }
 
+/* Phones: keep the desktop dashboard layout and uniformly zoom it out so the
+   whole preview fits the stage — instead of reflowing into a tall, squished
+   single column. `zoom` (unlike transform) also shrinks layout size, so the
+   stage height tracks the miniature. */
+@media (max-width: 860px) {
+  .gl-pm-stage {
+    container-type: inline-size;
+    padding: 0.75rem;
+    overflow: hidden;
+  }
+  .gl-window--pm {
+    /* Design width the multi-column dashboard is authored at. */
+    width: 900px;
+    max-width: none;
+    zoom: calc(100cqi / 900px);
+  }
+}
+
 /* Calendar event/deadline dots gently pulse. */
 .gl-pm-dot {
   animation: gl-pm-dotpulse 2.4s ease-in-out infinite;

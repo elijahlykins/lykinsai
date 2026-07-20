@@ -1601,7 +1601,7 @@ function PmKanban() {
         Drop ideas in Backlog. Overnight, LYKN expands them to Ready, then
         approve to schedule the next run.
       </p>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-start">
+      <div className="grid grid-cols-3 gap-2 items-start">
         {PM_KANBAN.map((c) => (
           <div
             key={c.col}
@@ -1683,16 +1683,17 @@ function ProjectManagerSection() {
                 </span>
               </div>
 
-              {/* Stat tiles */}
-              <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {/* Stat tiles — always the desktop 4-up; phones scale the whole
+                  window down instead of squishing into a 2-col stack. */}
+              <div className="mt-4 grid grid-cols-4 gap-2.5">
                 <PmStat icon={ListTodo} label="Open tasks" value={7} />
                 <PmStat icon={CalendarClock} label="Overdue" value={1} tone="danger" />
                 <PmStat icon={CheckCircle2} label="Done · 7d" value={12} />
                 <PmStat icon={CalendarPlus} label="Events · 7d" value={4} tone="accent" />
               </div>
 
-              {/* Calendar + tasks */}
-              <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+              {/* Calendar + tasks — side-by-side like the real dashboard. */}
+              <div className="mt-3 grid grid-cols-2 gap-3 items-start">
                 <PmCalendar />
                 <PmTasks />
               </div>
