@@ -815,7 +815,7 @@ const DEMO_CANNED: Record<string, string> = {
   "How do you manage my projects?":
     "Think of me as a project manager who never loses context. Once you're set up, I keep your projects and their tasks, know what's done and what's still open, surface what's due, and nudge the next step forward, from whatever screen you're on. You stay in the work; I keep the plan moving.",
   "What's on this page?":
-    `You're on the LYKN landing page. Up top is the nav: Product, Pricing, Download. The hero reads "Welcome to LYKN studio" with the ${desktopModifierKey()} keycap you used to open me. Below that: how I show up on any screen, an "AI project manager" section with live project and calendar UI, a Latest news strip, an FAQ, and a download section for Mac and Windows.`,
+    `You're on the LYKN landing page. Up top is the nav: Product, Pricing, Download. The hero reads "Welcome to LYKN studio" with the ${desktopModifierKey()} keycap you used to open me. Below that: how I show up on any screen, an "AI project manager" section with live project and calendar UI, a Latest news strip, an FAQ, and a download section for Mac.`,
   "How does the calendar work?":
     "Once you're set up, I manage your calendar right alongside your work. I'll know what's coming up, can schedule and reschedule, flag conflicts, and tie events back to the project they belong to, so your time and your projects stay in sync instead of living in separate apps.",
   "Can it see what's on my screen?":
@@ -823,7 +823,7 @@ const DEMO_CANNED: Record<string, string> = {
   "What models can I use?":
     "I run on one fast everyday model by default. On Pro you can switch to the frontier models, GPT, Claude, Gemini, and Grok, straight from the model menu. Whichever you pick, it's grounded in your context, so the answer is still personal to you.",
   "How do I get started?":
-    `Download LYKN for Mac or Windows from this page, sign in, and press ${HOTKEY} anywhere. From there I start learning who you are and how you work, and I'm one shortcut away on every screen you're on.`,
+    `Download LYKN for Mac from this page, sign in, and press ${HOTKEY} anywhere. From there I start learning who you are and how you work, and I'm one shortcut away on every screen you're on.`,
 };
 
 // Common words ignored when comparing two suggestions for similarity, so
@@ -1876,7 +1876,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: "Which platforms is Glass available on?",
-    a: `Glass is the desktop overlay that puts LYKN on any screen with a single shortcut. On Mac it's ${desktopHotkeyLabel("spaced")}; on Windows it's Ctrl+L. Hit it and LYKN is right there, wherever you are working.`,
+    a: `Glass is the desktop overlay that puts LYKN on any screen with a single shortcut. On Mac it's ${desktopHotkeyLabel("spaced")}. Hit it and LYKN is right there, wherever you are working.`,
   },
 ];
 
@@ -1944,7 +1944,7 @@ const START_OPTIONS: {
   },
   {
     title: "Download the full LYKN experience",
-    sub: "The desktop app puts your AI on every screen — Mac and Windows.",
+    sub: "The desktop app puts your AI on every screen — available for Mac.",
     points: [
       `Summon LYKN Glass anywhere with ${HOTKEY_SPACED}`,
       "Ask about whatever is on your screen",
@@ -1952,13 +1952,13 @@ const START_OPTIONS: {
       "Hands-free voice mode",
       "Everything from the browser, plus your desktop",
     ],
-    cta: "Download desktop app",
+    cta: "Download for Mac",
     to: "/download",
   },
 ];
 
 /** "Choose how to get started" — two dark option cards above the footer:
-    the browser app and the full Mac experience. */
+    the browser app and the Mac desktop experience. */
 function GetStartedSection() {
   const navigate = useNavigate();
   return (

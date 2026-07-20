@@ -19,6 +19,9 @@ const MAC_DOWNLOAD_URL =
 const WIN_DOWNLOAD_URL =
   "https://github.com/elijahlykins/lykn-releases/releases/latest/download/LYKN-Setup.exe";
 
+// Flip on after Windows code signing ships a production-ready installer.
+const WINDOWS_DOWNLOAD_ENABLED = false;
+
 // The rotating tail of the tagline: "Your AI for <word>". Cycles forever.
 const ROTATE_WORDS = [
   "research",
@@ -102,7 +105,8 @@ export default function DownloadLykn() {
     if (wordRef.current) setWordW(wordRef.current.offsetWidth);
   }, [words.cur]);
 
-  const primaryIsWin = platform === "win";
+  const primaryIsWin = WINDOWS_DOWNLOAD_ENABLED && platform === "win";
+  const showWinComingSoon = !WINDOWS_DOWNLOAD_ENABLED && platform === "win";
   const showDesktopNote = platform === "other";
 
   return (
@@ -171,10 +175,12 @@ export default function DownloadLykn() {
                   <AppleGlyph />
                   Download for Mac
                 </a>
-                <a className="dlp-btn dlp-btn--secondary" href={WIN_DOWNLOAD_URL}>
-                  <WindowsGlyph />
-                  Download for Windows
-                </a>
+                {WINDOWS_DOWNLOAD_ENABLED ? (
+                  <a className="dlp-btn dlp-btn--secondary" href={WIN_DOWNLOAD_URL}>
+                    <WindowsGlyph />
+                    Download for Windows
+                  </a>
+                ) : null}
               </>
             )}
           </div>
@@ -184,10 +190,17 @@ export default function DownloadLykn() {
               ? "Free to start · Windows 10 and later · 64-bit"
               : "Free to start · macOS 12 and later · Apple silicon & Intel"}
           </p>
+          {showWinComingSoon && (
+            <p className="dlp-meta" style={{ marginTop: 8 }}>
+              Windows desktop is coming soon — use LYKN in your browser at
+              lykn.io for now.
+            </p>
+          )}
           {showDesktopNote && (
             <p className="dlp-meta" style={{ marginTop: 8 }}>
-              Desktop builds are for Mac and Windows — on this device, use LYKN
-              in your browser at lykn.io.
+              {WINDOWS_DOWNLOAD_ENABLED
+                ? "Desktop builds are for Mac and Windows — on this device, use LYKN in your browser at lykn.io."
+                : "The desktop app is available for Mac — on this device, use LYKN in your browser at lykn.io."}
             </p>
           )}
         </section>
