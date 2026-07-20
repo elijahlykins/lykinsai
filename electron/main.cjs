@@ -275,6 +275,69 @@ function isAuthNavigation(url) {
   }
 }
 
+// ── Deep-link sign-in (lykn://auth) ─────────────────────────────────────────
+// Google refuses OAuth inside embedded browsers ("This browser or app may not
+// be secure"), so Google sign-in runs in the user's REAL browser instead:
+// the web app's /desktop-auth page completes the Supabase OAuth round-trip
+// there, then hands the session back via lykn://auth#access_token=…&
+// refresh_token=…. We forward those tokens to the renderer, where the web
+// app calls supabase.auth.setSession(). Tokens ride in the URL fragment and
+// are never logged or persisted by the main process.
+/** @type {{access_token: string, refresh_token: string} | null} */
+let pendingAuthTokens = null;
+
+function flushPendingAuthTokens() {
+  if (!pendingAuthTokens) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const wc = mainWindow.webContents;
+  if (wc.isLoading()) return; // did-finish-load will re-flush
+  wc.send("lykn:auth-tokens", pendingAuthTokens);
+  pendingAuthTokens = null;
+}
+
+function handleAuthDeepLink(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl || ""));
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== "lykn:") return;
+  // Accept lykn://auth… — hostname parsing of custom schemes varies, so
+  // check both the host and the path form.
+  const target = parsed.hostname || parsed.pathname.replace(/^\/+/, "");
+  if (target !== "auth") return;
+  const frag = new URLSearchParams(String(parsed.hash || "").replace(/^#/, ""));
+  const access_token = frag.get("access_token") || "";
+  const refresh_token = frag.get("refresh_token") || "";
+  if (!access_token || !refresh_token) return;
+
+  pendingAuthTokens = { access_token, refresh_token };
+  // Cold start via the deep link: open-url can fire before whenReady, and
+  // BrowserWindow can't be created yet. whenReady's createMainWindow (deep-link
+  // launches are not login launches) will flush the tokens on did-finish-load.
+  if (!app.isReady()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow(); // flushes on did-finish-load
+  } else {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    flushPendingAuthTokens();
+  }
+  try {
+    app.focus({ steal: true });
+  } catch (_) {
+    /* focus is best-effort */
+  }
+}
+
+// macOS delivers custom-scheme URLs here (both cold start and while running).
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  handleAuthDeepLink(url);
+});
+
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
 /** @type {BrowserWindow | null} */
@@ -370,6 +433,10 @@ function createMainWindow() {
   mainWindow.once("ready-to-show", () => mainWindow && mainWindow.show());
 
   mainWindow.loadURL(APP_URL);
+
+  // If a lykn://auth deep link arrived before this window existed (cold start
+  // from the browser hand-off), deliver the tokens once the app has loaded.
+  mainWindow.webContents.on("did-finish-load", flushPendingAuthTokens);
 
   // New windows / target=_blank links: keep OAuth + same-origin flows inside
   // the app, but send genuinely external links (docs, third-party sites) out
@@ -544,7 +611,6 @@ function createOverlayWindow() {
     },
   });
 
-  overlayWindow.setAlwaysOnTop(true, "screen-saver");
   // Exclude the overlay itself from screen capture (NSWindowSharingNone on
   // macOS / WDA_EXCLUDEFROMCAPTURE on Windows). The user still sees the glass
   // bar, but our own screenshots — and any other screen recording/share — won't
@@ -554,10 +620,18 @@ function createOverlayWindow() {
   // canJoinAllSpaces + fullScreenAuxiliary so the panel appears on the CURRENT
   // Space (over full-screen apps too); skipTransformProcessType stops macOS
   // from switching Spaces when it shows.
+  //
+  // ORDER MATTERS (electron#10078 / #26350): setVisibleOnAllWorkspaces can
+  // reset the NSWindow level back to normal on macOS, so the always-on-top
+  // level must be applied AFTER it — and setFullScreenable(false) in between
+  // pins NSWindowCollectionBehaviorFullScreenAuxiliary. With the level set
+  // first, whether the bar showed above a full-screen app was a coin flip.
   overlayWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
+  overlayWindow.setFullScreenable(false);
+  overlayWindow.setAlwaysOnTop(true, "screen-saver");
   overlayWindow.loadFile(path.join(__dirname, "overlay.html"));
 
   // When the user drags the bar (native drag region), remember where they put
@@ -811,15 +885,18 @@ function createBurstWindow() {
 
   // Below the overlay (screen-saver) so the glass bar stays crisp on top, but
   // above everything else on screen.
-  burstWindow.setAlwaysOnTop(true, "pop-up-menu");
   // Clicks pass straight through to whatever is underneath.
   burstWindow.setIgnoreMouseEvents(true, { forward: true });
   // Keep our own screen reads from capturing the flash.
   try { burstWindow.setContentProtection(true); } catch (_) {}
+  // Workspaces first, level last — setVisibleOnAllWorkspaces can reset the
+  // window level on macOS (see createOverlayWindow).
   burstWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
+  burstWindow.setFullScreenable(false);
+  burstWindow.setAlwaysOnTop(true, "pop-up-menu");
   burstWindow.loadFile(path.join(__dirname, "burst.html"));
 
   // Warm-up: run the full burst animation ONCE while the window is parked
@@ -955,14 +1032,17 @@ function createMenuWindow() {
       sandbox: true,
     },
   });
-  menuWindow.setAlwaysOnTop(true, "screen-saver");
   try {
     menuWindow.setContentProtection(isContentProtectionEnabled());
   } catch (_) {}
+  // Workspaces first, level last — setVisibleOnAllWorkspaces can reset the
+  // window level on macOS (see createOverlayWindow).
   menuWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
+  menuWindow.setFullScreenable(false);
+  menuWindow.setAlwaysOnTop(true, "screen-saver");
   menuWindow.loadFile(path.join(__dirname, "menu.html"));
   menuWindow.on("closed", () => {
     menuWindow = null;
@@ -1064,14 +1144,16 @@ function createPickerWindow() {
       sandbox: true,
     },
   });
-  pickerWindow.setAlwaysOnTop(true, "screen-saver");
   try {
     pickerWindow.setContentProtection(isContentProtectionEnabled());
   } catch (_) {}
+  // Workspaces first, level last — see createOverlayWindow.
   pickerWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
+  pickerWindow.setFullScreenable(false);
+  pickerWindow.setAlwaysOnTop(true, "screen-saver");
   pickerWindow.loadFile(path.join(__dirname, "picker.html"));
   pickerWindow.on("closed", () => {
     pickerWindow = null;
@@ -1174,14 +1256,16 @@ function createLiveWindow() {
       sandbox: true,
     },
   });
-  liveWindow.setAlwaysOnTop(true, "screen-saver");
   try {
     liveWindow.setContentProtection(isContentProtectionEnabled());
   } catch (_) {}
+  // Workspaces first, level last — see createOverlayWindow.
   liveWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
+  liveWindow.setFullScreenable(false);
+  liveWindow.setAlwaysOnTop(true, "screen-saver");
   liveWindow.loadFile(path.join(__dirname, "live.html"));
   liveWindow.on("closed", () => {
     liveWindow = null;
@@ -1289,14 +1373,16 @@ function createPanelWindow() {
       sandbox: true,
     },
   });
-  panelWindow.setAlwaysOnTop(true, "screen-saver");
   try {
     panelWindow.setContentProtection(isContentProtectionEnabled());
   } catch (_) {}
+  // Workspaces first, level last — see createOverlayWindow.
   panelWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
+  panelWindow.setFullScreenable(false);
+  panelWindow.setAlwaysOnTop(true, "screen-saver");
   panelWindow.loadFile(path.join(__dirname, "panel.html"));
   panelWindow.on("closed", () => {
     panelWindow = null;
@@ -1400,7 +1486,6 @@ function createHighlightWindow() {
 
   // Below the overlay (screen-saver) so the glass bar stays crisp on top, but
   // above the app the user is being pointed at.
-  highlightWindow.setAlwaysOnTop(true, "pop-up-menu");
   // Clicks pass straight through — the ring must never block the very button
   // it's pointing at.
   highlightWindow.setIgnoreMouseEvents(true, { forward: true });
@@ -1408,10 +1493,13 @@ function createHighlightWindow() {
   // grounding pipeline takes fresh screenshots, and a visible ring in those
   // shots would confuse the vision model.
   try { highlightWindow.setContentProtection(true); } catch (_) {}
+  // Workspaces first, level last — see createOverlayWindow.
   highlightWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
+  highlightWindow.setFullScreenable(false);
+  highlightWindow.setAlwaysOnTop(true, "pop-up-menu");
   highlightWindow.loadFile(path.join(__dirname, "highlight.html"));
 
   highlightWindow.on("closed", () => {
@@ -1505,11 +1593,18 @@ function showOverlay() {
   // transition — which is why the panel sometimes appeared *behind* other
   // always-on-top windows (e.g. the main window) instead of coming all the way
   // forward. Re-applying the level + moveTop() forces it to the front again.
-  overlayWindow.setAlwaysOnTop(true, "screen-saver");
+  //
+  // ORDER MATTERS (electron#10078 / #26350): setVisibleOnAllWorkspaces can
+  // reset the NSWindow level on macOS, so it goes FIRST and the always-on-top
+  // level goes LAST. With the old order (level, then workspaces) the level
+  // reset raced the show and the bar intermittently stayed hidden behind
+  // full-screen apps until the user left and re-entered full screen.
   overlayWindow.setVisibleOnAllWorkspaces(true, {
     visibleOnFullScreen: true,
     skipTransformProcessType: true,
   });
+  overlayWindow.setFullScreenable(false);
+  overlayWindow.setAlwaysOnTop(true, "screen-saver");
   // Re-assert content protection on every show — like the window level, it can
   // be dropped after a restart or Space/full-screen transition.
   applyContentProtection();
@@ -1517,7 +1612,9 @@ function showOverlay() {
   // unmistakable "LYKN is on" cue for as long as the overlay is up.
   playOverlayBurst();
   overlayWindow.show();
-  // Re-assert top-of-stack so the glass bar stays above the burst flash.
+  // Re-assert the level AFTER show too — ordering a window onto a full-screen
+  // Space can drop it again — then bring it above the burst flash.
+  overlayWindow.setAlwaysOnTop(true, "screen-saver");
   overlayWindow.moveTop();
   overlayWindow.focus();
   // Restore the live meeting notes + side-panel cards if still open.
@@ -6375,9 +6472,23 @@ function initAutoUpdate() {
   // Present a clean Chrome user agent. Google (and some other providers) reject
   // OAuth sign-in from any UA advertising "Electron" with disallowed_useragent,
   // so we strip the Electron/app tokens and look like plain desktop Chrome.
+  // NOTE: Google now detects Electron beyond the UA string ("This browser or
+  // app may not be secure"), so Google sign-in no longer happens in-window at
+  // all — see the lykn://auth deep-link flow. The clean UA stays for the other
+  // in-app auth providers and general site compatibility.
   app.userAgentFallback =
     `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ` +
     `(KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
+
+  // Claim the lykn:// scheme so the browser-based Google sign-in can deep-link
+  // the session back into the app. The packaged app also declares the scheme
+  // in Info.plist (electron-builder "protocols"); this call makes it work in
+  // dev and re-asserts LYKN as the handler if another install claimed it.
+  try {
+    app.setAsDefaultProtocolClient("lykn");
+  } catch (_) {
+    /* registration is best-effort; Info.plist covers the packaged app */
+  }
 
   installPermissionHandler();
   setupSystemAudioCapture();

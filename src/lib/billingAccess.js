@@ -49,6 +49,7 @@ const SUBSCRIPTION_GATE_EXACT = new Set([
   "/start-trial",
   "/login",
   "/reset-password",
+  "/desktop-auth",
   "/oauth/consent",
   "/privacy",
   "/terms",

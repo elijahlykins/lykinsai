@@ -179,8 +179,46 @@ export function SupabaseAuthProvider({ children }) {
     };
   }, []);
 
+  // Desktop-shell sign-in hand-off: Google OAuth runs in the user's real
+  // browser (Google blocks embedded browsers) and the finished Supabase
+  // session comes back through the lykn://auth deep link → main process →
+  // preload bridge. setSession() persists it and fires SIGNED_IN, which the
+  // regular onAuthStateChange handler above turns into UI state.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const bridge = window.lykn;
+    if (!bridge?.desktop || typeof bridge.onAuthTokens !== 'function') return;
+    bridge.onAuthTokens(async (tokens) => {
+      const access_token = tokens?.access_token;
+      const refresh_token = tokens?.refresh_token;
+      if (!access_token || !refresh_token) return;
+      try {
+        const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+        if (error) throw error;
+        setAuthError(null);
+      } catch (err) {
+        if (import.meta.env.DEV) console.error('[Auth] desktop token hand-off failed:', err);
+        setAuthError('Sign-in failed. Please try again.');
+      }
+    });
+  }, []);
+
   const signInWithOAuth = async (provider, opts = {}) => {
     setAuthError(null);
+    // Inside the desktop shell, Google OAuth cannot run in-window — Google
+    // rejects embedded browsers ("This browser or app may not be secure").
+    // Hand the whole round-trip to the user's real browser via /desktop-auth,
+    // which deep-links the finished session back into the app (lykn://auth →
+    // main process → the onAuthTokens/setSession effect above).
+    if (
+      provider === 'google' &&
+      typeof window !== 'undefined' &&
+      window.lykn?.desktop &&
+      typeof window.lykn.openExternal === 'function'
+    ) {
+      window.lykn.openExternal(`${window.location.origin}/desktop-auth`);
+      return { data: null, error: null };
+    }
     // Default redirect is the current URL so mid-walkthrough sign-in on
     // /vault or /connections returns to the same surface instead of `/`
     // (which used to bounce guests through GuestOnly → /app and strand

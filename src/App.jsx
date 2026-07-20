@@ -13,6 +13,7 @@ import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
 
 import Login from "./pages/Login";
+import DesktopAuth from "./pages/DesktopAuth";
 import ResetPassword from "./pages/ResetPassword";
 import StartTrial from "./pages/StartTrial";
 import GlassLanding from "./pages/GlassLanding";
@@ -161,7 +162,9 @@ function AppShell() {
   const isEmbeddedRoute =
     isEmbeddedSurface && isEmbeddedSurfacePath(location.pathname);
   const isLoginPage =
-    location.pathname === "/login" || location.pathname === "/reset-password";
+    location.pathname === "/login" ||
+    location.pathname === "/reset-password" ||
+    location.pathname === "/desktop-auth";
   const isStartTrialPage = location.pathname === "/start-trial";
   const isLandingPage =
     location.pathname === "/" ||
@@ -239,6 +242,11 @@ function AppShell() {
         <RouteErrorBoundary>
           <Routes>
             <Route path="/login" element={<Login />} />
+            {/* Browser-side half of the Mac app's Google sign-in: runs the
+                OAuth round-trip in the real browser, then deep-links the
+                session back into the app (lykn://auth). Not protected — it
+                manages its own auth states. */}
+            <Route path="/desktop-auth" element={<DesktopAuth />} />
             {/* Password-recovery landing (email link target). Handles its own
                 auth state: a recovery session means "may set a new password". */}
             <Route path="/reset-password" element={<ResetPassword />} />

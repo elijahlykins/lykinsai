@@ -47,6 +47,12 @@
     "type": "commonjs"
   },
   "afterSign": "electron/notarize.cjs",
+  "protocols": [
+    {
+      "name": "LYKN",
+      "schemes": ["lykn"]
+    }
+  ],
   "mac": {
     "category": "public.app-category.productivity",
     "icon": "electron/resources/icon.png",
