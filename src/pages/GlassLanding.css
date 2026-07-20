@@ -1751,21 +1751,25 @@
   text-align: left;
 }
 
-/* Phones: keep the desktop dashboard layout and uniformly zoom it out so the
-   whole preview fits the stage — instead of reflowing into a tall, squished
-   single column. `zoom` (unlike transform) also shrinks layout size, so the
-   stage height tracks the miniature. */
+/* Phones: PmPreviewFit lays the desktop dashboard out at a fixed width and
+   uniformly scales it to the stage — a true miniature, not a squished reflow. */
 @media (max-width: 860px) {
   .gl-pm-stage {
-    container-type: inline-size;
     padding: 0.75rem;
     overflow: hidden;
   }
-  .gl-window--pm {
-    /* Design width the multi-column dashboard is authored at. */
-    width: 900px;
+  .gl-pm-fit {
+    position: relative;
+    width: 100%;
+    overflow: hidden;
+  }
+  .gl-pm-fit-inner {
+    transform-origin: top left;
+    will-change: transform;
+  }
+  .gl-pm-fit .gl-window--pm {
+    width: 100%;
     max-width: none;
-    zoom: calc(100cqi / 900px);
   }
 }
 

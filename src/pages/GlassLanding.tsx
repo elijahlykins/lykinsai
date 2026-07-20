@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   FolderKanban,
@@ -1644,6 +1651,86 @@ function PmKanban() {
   );
 }
 
+/** Phone breakpoint matching the landing page's mobile section treatment. */
+const GL_PHONE_QUERY = "(max-width: 860px)";
+
+/** Scale the project-manager dashboard as a uniform miniature on phones:
+    lay out at a fixed desktop width, then transform-scale to the stage width
+    so columns stay roomy instead of squishing into the narrow viewport. */
+function PmPreviewFit({
+  designWidth,
+  children,
+}: {
+  designWidth: number;
+  children: ReactNode;
+}) {
+  const [isPhone, setIsPhone] = useState(() =>
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia(GL_PHONE_QUERY).matches,
+  );
+  const outerRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0);
+  const [height, setHeight] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const mql = window.matchMedia(GL_PHONE_QUERY);
+    const update = () => setIsPhone(mql.matches);
+    update();
+    mql.addEventListener("change", update);
+    return () => mql.removeEventListener("change", update);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isPhone) {
+      setScale(0);
+      setHeight(0);
+      return;
+    }
+    const outer = outerRef.current;
+    const inner = innerRef.current;
+    if (!outer || !inner) return;
+
+    const measure = () => {
+      const nextScale = outer.clientWidth / designWidth;
+      if (nextScale <= 0) return;
+      setScale(nextScale);
+      // Transform doesn't affect layout — reserve the post-scale height.
+      setHeight(inner.scrollHeight * nextScale);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(outer);
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, [isPhone, designWidth]);
+
+  if (!isPhone) return <>{children}</>;
+
+  return (
+    <div
+      ref={outerRef}
+      className="gl-pm-fit"
+      style={height > 0 ? { height } : undefined}
+    >
+      <div
+        ref={innerRef}
+        className="gl-pm-fit-inner"
+        style={{
+          width: designWidth,
+          transform: scale > 0 ? `scale(${scale})` : undefined,
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 /** "LYKN runs your projects" — frames the ACTUAL projects + calendar dashboard
     UI (stat tiles, month calendar, tasks, Night Shift queue) inside the shared
     browser window chrome, with looping micro-animations so it feels alive. */
@@ -1654,56 +1741,58 @@ function ProjectManagerSection() {
         <h2 className="gl-pm-title gl-reveal">Your AI project manager</h2>
 
         <div className="gl-pm-stage gl-reveal">
-          <div className="gl-window gl-window--pm">
-            <div className="gl-window-bar">
-              <div className="gl-dots">
-                <span />
-                <span />
-                <span />
+          <PmPreviewFit designWidth={900}>
+            <div className="gl-window gl-window--pm">
+              <div className="gl-window-bar">
+                <div className="gl-dots">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <div className="gl-window-search">lykn.ai/projects</div>
+                <div className="gl-window-actions">
+                  <span className="gl-window-avatar" />
+                </div>
               </div>
-              <div className="gl-window-search">lykn.ai/projects</div>
-              <div className="gl-window-actions">
-                <span className="gl-window-avatar" />
+
+              <div className="gl-pm-body">
+                {/* Project header + live "managing" chip */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <FolderKanban className="w-5 h-5 text-slate-500" />
+                  <h3 className="text-xl font-semibold tracking-tight text-slate-900">
+                    Q3 Product Launch
+                  </h3>
+                  <span className="text-[0.625rem] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-600">
+                    Active
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-[0.625rem] px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-600">
+                    <Crosshair className="w-3 h-3" />
+                    AI focus
+                  </span>
+                </div>
+
+                {/* Stat tiles — always the desktop 4-up; phones scale the whole
+                    window down instead of squishing into a 2-col stack. */}
+                <div className="mt-4 grid grid-cols-4 gap-2.5">
+                  <PmStat icon={ListTodo} label="Open tasks" value={7} />
+                  <PmStat icon={CalendarClock} label="Overdue" value={1} tone="danger" />
+                  <PmStat icon={CheckCircle2} label="Done · 7d" value={12} />
+                  <PmStat icon={CalendarPlus} label="Events · 7d" value={4} tone="accent" />
+                </div>
+
+                {/* Calendar + tasks — side-by-side like the real dashboard. */}
+                <div className="mt-3 grid grid-cols-2 gap-3 items-start">
+                  <PmCalendar />
+                  <PmTasks />
+                </div>
+
+                {/* Night Shift queue */}
+                <div className="mt-3">
+                  <PmKanban />
+                </div>
               </div>
             </div>
-
-            <div className="gl-pm-body">
-              {/* Project header + live "managing" chip */}
-              <div className="flex flex-wrap items-center gap-2">
-                <FolderKanban className="w-5 h-5 text-slate-500" />
-                <h3 className="text-xl font-semibold tracking-tight text-slate-900">
-                  Q3 Product Launch
-                </h3>
-                <span className="text-[0.625rem] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-600">
-                  Active
-                </span>
-                <span className="inline-flex items-center gap-1 text-[0.625rem] px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-600">
-                  <Crosshair className="w-3 h-3" />
-                  AI focus
-                </span>
-              </div>
-
-              {/* Stat tiles — always the desktop 4-up; phones scale the whole
-                  window down instead of squishing into a 2-col stack. */}
-              <div className="mt-4 grid grid-cols-4 gap-2.5">
-                <PmStat icon={ListTodo} label="Open tasks" value={7} />
-                <PmStat icon={CalendarClock} label="Overdue" value={1} tone="danger" />
-                <PmStat icon={CheckCircle2} label="Done · 7d" value={12} />
-                <PmStat icon={CalendarPlus} label="Events · 7d" value={4} tone="accent" />
-              </div>
-
-              {/* Calendar + tasks — side-by-side like the real dashboard. */}
-              <div className="mt-3 grid grid-cols-2 gap-3 items-start">
-                <PmCalendar />
-                <PmTasks />
-              </div>
-
-              {/* Night Shift queue */}
-              <div className="mt-3">
-                <PmKanban />
-              </div>
-            </div>
-          </div>
+          </PmPreviewFit>
         </div>
       </div>
     </section>
