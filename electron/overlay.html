@@ -487,8 +487,8 @@
         align-items: center;
         justify-content: flex-start;
         gap: 8px;
-        height: 28px;
-        padding: 0 8px 0 12px;
+        height: 20px;
+        padding: 0 12px;
         cursor: grab;
       }
       .titlebar.dragging { cursor: grabbing; }
@@ -500,21 +500,6 @@
         transition: background 0.15s ease;
       }
       .titlebar:hover .grip { background: rgba(255, 255, 255, 0.32); }
-      .titlebar-spacer { flex: 1; min-width: 4px; }
-      .titlebar .bar-btn {
-        width: 20px;
-        height: 20px;
-        border-radius: 5px;
-        color: rgba(255, 255, 255, 0.62);
-        border-color: transparent;
-        background: transparent;
-      }
-      .titlebar .bar-btn:hover:not(:disabled) {
-        color: #f4f6fb;
-        background: rgba(255, 255, 255, 0.1);
-        border-color: transparent;
-      }
-      .titlebar .bar-btn svg { width: 12px; height: 12px; }
 
       /* Composer — textarea row + bottom toolbar (matches main app layout). */
       .composer {
@@ -1531,13 +1516,6 @@
       <div id="wrap">
       <div class="titlebar" id="drag" title="Drag to move">
         <span class="grip"></span>
-        <span class="titlebar-spacer" aria-hidden="true"></span>
-        <button class="bar-btn" id="bar-new-chat" type="button" title="New chat" aria-label="New chat">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
-          </svg>
-        </button>
       </div>
       <div id="night-brief" hidden>
         <div class="night-brief-head">
