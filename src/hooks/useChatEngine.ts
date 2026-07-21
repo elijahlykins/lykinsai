@@ -2191,15 +2191,26 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         /\b(?:different|brand[- ]?new|entirely new|fresh|whole new|completely new)\s+(?:game|app|build|artifact|world)\b/i.test(
           text,
         );
+      const visualOverhaulAsk =
+        /\b(?:redesign|restyle|rebrand|rebuild|overhaul|from scratch|start over|new look|full\s+rewrite|look(?:s)?\s+(?:just\s+)?like|make\s+(?:it|this|that)\s+look\s+like|just\s+like\s+the\s+actual|in\s+the\s+style\s+of|hand[- ]?painted|thick\s+outlines|chunky\s+(?:cartoon|knights?)|comic\s+ui)\b/i.test(
+          text,
+        );
       const freshWebappAsk =
         differentDeliverable ||
         (makingVerb && (webappNoun || copyOfWebapp)) ||
         (hasAttachedImage && makingVerb && referencePhrase) ||
         (hasAttachedImage && (webappNoun || copyOfWebapp) && referencePhrase);
+      // "make it look just like Castle Crashers" with an open game = full
+      // rebuild, not a surgical refine (which rejects full_rewrite and dies).
+      const openReactRebuildAsk =
+        visualOverhaulAsk &&
+        artifactBelongsHere &&
+        String(editArtifact?.toolName || "") === "lykn_build_react_artifact";
       const buildModeFresh =
         (isBuildMode && (hasAttachedImage || !looksLikeSurgicalTweak)) ||
         referenceRebuildAsk ||
-        freshWebappAsk;
+        freshWebappAsk ||
+        openReactRebuildAsk;
       const refiningOpenArtifact =
         artifactBelongsHere &&
         isEditableArtifact(editArtifact) &&

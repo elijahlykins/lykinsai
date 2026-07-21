@@ -6522,6 +6522,11 @@ const SURGICAL_EDIT_INTENT_RE =
   /\b(?:fix|change|update|tweak|adjust|rename|replace|remove|delete|insert|swap|patch|correct|typo|bug|font|typeface|typography|recolou?r|theme|accent|wire up|hook up|make (?:it|that|this|the)\b[^.!?]{0,40}\b(?:return|use|call|show|hide|say|read|write|do))\b/i;
 const REDESIGN_INTENT_RE =
   /\b(?:redesign|restyle|rebrand|rebuild|overhaul|from scratch|start over|new look|new theme|new palette|rewrite (?:the )?(?:whole|entire|all)|full\s+rewrite|exact(?:ly)?\s+clone|identical(?:\s+look)?|clone\s+(?:this|that|it))\b/i;
+// "make it look just like Castle Crashers" / "in the style of X" — full visual
+// rebuilds, not surgical patches. Without this, the open game stays in edit
+// mode, full_rewrite is rejected, and the turn dies with "That didn't work".
+const VISUAL_OVERHAUL_INTENT_RE =
+  /\b(?:look(?:s)?\s+(?:just\s+)?like|make\s+(?:it|this|that)\s+look\s+like|just\s+like\s+the\s+actual|in\s+the\s+style\s+of|same\s+(?:look|style|art)\s+as|match(?:es)?\s+the\s+(?:look|style|art)|(?:art|visual|graphic)\s+style|hand[- ]?painted\s+(?:look|style|hills?)|thick\s+outlines|chunky\s+(?:cartoon|knights?)|comic\s+ui)\b/i;
 
 // Fresh coded build even when a React artifact is already open — "build me a
 // copy of minecraft like this" must NOT stay trapped in surgical-edit mode.
@@ -13867,20 +13872,22 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // Exception: Build mode (artifactType webapp) / reference-image rebuild
     // asks are fresh coded builds — keep the builder and drop the open panel
     // so "exact clone of this image" doesn't hang on edits_required.
-    const redesignArtifactAsk = REDESIGN_INTENT_RE.test(String(text || ''));
+    const askText = String(text || '');
+    const redesignArtifactAsk =
+      REDESIGN_INTENT_RE.test(askText) || VISUAL_OVERHAUL_INTENT_RE.test(askText);
     // Narrow style asks ("make it blue", "change the font") may touch colors/
     // fonts without being a full redesign — builders allow that signature
     // churn only when this is set.
     const styleChangeArtifactAsk =
       /\b(?:font|typeface|typography|colou?r|theme|accent|palette|recolou?r|background)\b/i.test(
-        String(text || ''),
+        askText,
       );
-    const askText = String(text || '');
     const looksLikeSurgicalTweak =
       askText.trim().length < 140 &&
       /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme)\b/i.test(
         askText,
-      );
+      ) &&
+      !redesignArtifactAsk;
     const referenceRebuildAsk =
       /\b(?:exact(?:ly)?\s+clone|identical|1\s*:\s*1|recreate|clone\s+(?:this|that|it)|(?:look|make)\s+(?:it\s+)?(?:just\s+)?like\s+this|full\s+rewrite)\b/i.test(
         askText,
@@ -13893,18 +13900,24 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     const freshWebappAsk = isFreshWebappBuildAsk(askText, {
       hasImages: imageUrls.length > 0,
     });
+    // Open React game + visual overhaul / redesign → full rebuild (not edits).
+    const openReactRebuildAsk =
+      redesignArtifactAsk &&
+      activeArtifactHasSource &&
+      String(activeArtifact?.toolName || '') === 'lykn_build_react_artifact';
     const buildModeFresh =
       (forceArtifact &&
         artifactType === 'webapp' &&
         (imageUrls.length > 0 || !looksLikeSurgicalTweak)) ||
       referenceRebuildAsk ||
       imageWebappAsk ||
-      freshWebappAsk;
+      freshWebappAsk ||
+      openReactRebuildAsk;
     // Force the React builder even when Create wasn't armed and an open
     // artifact blocked the early auto-infer path.
     if (
       !artifactBuildSpec &&
-      (referenceRebuildAsk || imageWebappAsk || freshWebappAsk)
+      (referenceRebuildAsk || imageWebappAsk || freshWebappAsk || openReactRebuildAsk)
     ) {
       artifactType = 'webapp';
       artifactBuildSpec = ARTIFACT_BUILD_SPEC.webapp;
@@ -13921,11 +13934,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       artifactBuildSpec = null;
       artifactToolName = null;
       artifactAutoInferred = false;
-    } else if (buildModeFresh && activeArtifactHasSource) {
+    } else if (activeArtifactHasSource && artifactBuildSpec && (buildModeFresh || redesignArtifactAsk)) {
       console.log(
-        `🎨 Stream: Build mode fresh — keeping ${artifactToolName} (not refining open "${String(activeArtifact?.title || '').slice(0, 60)}")`,
+        `🎨 Stream: full rebuild — keeping ${artifactToolName} (not refining open "${String(activeArtifact?.title || '').slice(0, 60)}")`,
       );
-      // Don't thread the open game into ARTIFACT_OPEN / allowFullRewrite gate.
+      // Don't thread the open game into ARTIFACT_OPEN / edits_required gate.
       activeArtifact = null;
     }
     const activeArtifactEditable =
