@@ -27,7 +27,7 @@ import {
 import { searchWeb, formatSearchResultsForPrompt } from './lib/exterior/webSearch.js';
 import { fetchWebPage } from './lib/exterior/webFetch.js';
 import { assertUrlSafe, safeFetch } from './lib/exterior/ssrfGuard.js';
-import { verifyFileToken, FILE_PROXY_ROUTE, isArtifactsHost } from './lib/exterior/fileProxy.js';
+import { verifyFileToken, FILE_PROXY_ROUTE, isArtifactsHost, buildFileProxyUrl } from './lib/exterior/fileProxy.js';
 import { buildReactArtifact } from './lib/exterior/capabilities/buildReactArtifact.js';
 import { pickDesignSystem, formatDesignSystemBlock } from './lib/exterior/designSystems.js';
 import { pickDesignGuide, formatDesignGuideBlock } from './lib/exterior/designGuides.js';
@@ -16040,6 +16040,41 @@ app.post('/api/storage/signed-url', requireAuth, async (req, res) => {
     }
     res.json({ signedUrl: data.signedUrl });
   } catch (err) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Mint a branded /f/<token> URL for storage-backed HTML (and other) artifacts.
+// Vault + chat iframes need this instead of raw Supabase signed URLs: storage
+// often serves generated .html as text/plain (or with framing headers that
+// blank the preview), while the file proxy forces the right Content-Type and
+// relaxes frame-ancestors for lykn.io / Electron.
+app.post('/api/storage/file-proxy-url', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Authentication required' });
+
+    const { storagePath, bucket, filename, ttlSec } = req.body || {};
+    const path = String(storagePath || '').trim();
+    const bkt = String(bucket || 'user-files').trim();
+    if (!path) return res.status(400).json({ error: 'Missing storagePath' });
+    if (!SIGNED_URL_ALLOWED_BUCKETS.has(bkt)) {
+      return res.status(400).json({ error: 'Invalid bucket' });
+    }
+    if (!path.startsWith(`${userId}/`)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const ttl = Number(ttlSec);
+    const url = buildFileProxyUrl({
+      path,
+      bucket: bkt,
+      filename: typeof filename === 'string' && filename.trim() ? filename.trim() : undefined,
+      ttlSec: Number.isFinite(ttl) && ttl > 0 ? Math.min(Math.floor(ttl), 60 * 60 * 24 * 7) : SIGNED_URL_TTL_SECONDS,
+    });
+    res.json({ url });
+  } catch (err) {
+    console.error('file-proxy-url mint failed:', err?.message || err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -66,7 +66,10 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
     () => resolveStorageTarget(att, variantPrefer ? { prefer: variantPrefer } : undefined),
     [att, variantPrefer],
   );
-  const needsSigning = !!storageTarget && rawUrl.includes("supabase.co/storage/");
+  // Re-resolve whenever we have a storage path — saved URLs expire, and HTML
+  // artifacts need a branded file-proxy URL (correct MIME + frame-ancestors)
+  // rather than a raw Supabase signed link.
+  const needsSigning = !!storageTarget?.path && !!storageTarget?.bucket;
   const displayUrl = signedUrl || rawUrl;
 
   useEffect(() => {
@@ -74,6 +77,32 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
     let cancelled = false;
     (async () => {
       try {
+        if (type === "html") {
+          const { API_BASE_URL } = await import("@/lib/api-config");
+          const session = (await supabase.auth.getSession())?.data?.session;
+          const token = session?.access_token;
+          if (token) {
+            const resp = await fetch(`${API_BASE_URL}/api/storage/file-proxy-url`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                storagePath: storageTarget.path,
+                bucket: storageTarget.bucket,
+                filename: name || "artifact.html",
+              }),
+            });
+            if (resp.ok) {
+              const { url } = await resp.json();
+              if (!cancelled && url) {
+                setSignedUrl(url);
+                return;
+              }
+            }
+          }
+        }
         const { data } = await supabase.storage
           .from(storageTarget.bucket)
           .createSignedUrl(storageTarget.path, 60 * 60 * 24);
@@ -86,7 +115,7 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
     return () => {
       cancelled = true;
     };
-  }, [needsSigning, storageTarget]);
+  }, [needsSigning, storageTarget, type, name]);
 
   if (type === "image") {
     if (needsSigning && !signedUrl) {
@@ -215,13 +244,20 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
     );
   }
 
-  if (type === "html" && displayUrl) {
-    const safeUrl = safeExternalUrl(displayUrl);
+  if (type === "html") {
+    if (needsSigning && !signedUrl && !failed) {
+      return (
+        <div className="rounded-lg border border-black/5 dark:border-white/8 bg-[#15130f] h-[180px] flex items-center justify-center animate-pulse">
+          <span className="text-[0.625rem] text-white/45">Loading preview…</span>
+        </div>
+      );
+    }
+    const safeUrl = safeExternalUrl(signedUrl || (!needsSigning ? displayUrl : ""));
     if (safeUrl) {
       return (
-        <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8 bg-white">
+        <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8 bg-[#15130f]">
           {name ? (
-            <p className="text-[0.625rem] text-gray-500 dark:text-gray-400 px-2 py-1 truncate border-b border-black/5 dark:border-white/8">
+            <p className="text-[0.625rem] text-gray-500 dark:text-gray-400 px-2 py-1 truncate border-b border-black/5 dark:border-white/8 bg-white dark:bg-transparent">
               {name}
             </p>
           ) : null}
@@ -231,7 +267,15 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
             className={full ? "w-full h-[min(60vh,480px)] border-0" : "w-full h-[180px] border-0"}
             sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
             loading="lazy"
+            referrerPolicy="no-referrer"
           />
+        </div>
+      );
+    }
+    if (failed || needsSigning) {
+      return (
+        <div className="rounded-lg border border-black/5 dark:border-white/8 bg-[#15130f] h-[180px] flex items-center justify-center">
+          <span className="text-[0.625rem] text-white/45">Preview unavailable</span>
         </div>
       );
     }

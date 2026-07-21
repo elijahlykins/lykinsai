@@ -2804,7 +2804,37 @@ export default function LyknChat() {
       const { data: signedData } = await supabase.storage
         .from("user-files")
         .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-      const fileUrl = signedData?.signedUrl || "";
+      let fileUrl = signedData?.signedUrl || "";
+      // HTML artifacts preview in a sandboxed iframe — mint a branded
+      // file-proxy URL so Content-Type / frame-ancestors are correct
+      // (raw Supabase signed URLs often blank the vault preview).
+      if (fileType === "html") {
+        try {
+          const { API_BASE_URL } = await import("@/lib/api-config");
+          const session = (await supabase.auth.getSession())?.data?.session;
+          const token = session?.access_token;
+          if (token) {
+            const resp = await fetch(`${API_BASE_URL}/api/storage/file-proxy-url`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                storagePath,
+                bucket: "user-files",
+                filename,
+              }),
+            });
+            if (resp.ok) {
+              const { url } = await resp.json();
+              if (url) fileUrl = url;
+            }
+          }
+        } catch {
+          /* keep Supabase signed URL fallback */
+        }
+      }
 
       const attachment = [{
         type: fileType,

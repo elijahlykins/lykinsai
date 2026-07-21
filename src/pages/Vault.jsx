@@ -294,15 +294,27 @@ const SIGNED_URL_REFRESH_BUFFER_MS = 5 * 60 * 1000; // refresh 5 min early
 function parseSignedUrlExpiry(url) {
   try {
     const u = new URL(url);
+    // Supabase signed URLs embed a JWT in `?token=`.
     const token = u.searchParams.get("token");
-    if (!token) return null;
-    const parts = token.split(".");
-    if (parts.length < 2) return null;
-    let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const pad = payload.length % 4;
-    if (pad) payload += "=".repeat(4 - pad);
-    const json = JSON.parse(atob(payload));
-    if (typeof json.exp === "number") return json.exp * 1000;
+    if (token) {
+      const parts = token.split(".");
+      if (parts.length >= 2) {
+        let payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+        const pad = payload.length % 4;
+        if (pad) payload += "=".repeat(4 - pad);
+        const json = JSON.parse(atob(payload));
+        if (typeof json.exp === "number") return json.exp * 1000;
+      }
+    }
+    // Branded file-proxy links: `/f/<payloadB64>.<sig>` with unix `e` in payload.
+    const proxyMatch = u.pathname.match(/^\/f\/([A-Za-z0-9_-]+)\./);
+    if (proxyMatch) {
+      let payload = proxyMatch[1].replace(/-/g, "+").replace(/_/g, "/");
+      const pad = payload.length % 4;
+      if (pad) payload += "=".repeat(4 - pad);
+      const json = JSON.parse(atob(payload));
+      if (typeof json.e === "number") return json.e * 1000;
+    }
   } catch {
     // Malformed token / non-JWT URL — caller falls back to a default TTL.
   }
@@ -2511,6 +2523,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
         });
       }
     }
+    const isHtml = cardType === "html";
     const target = parseStorageTarget(card.attachment || {}, isImage ? "thumb" : null);
     if (!target?.path || !target?.bucket) {
       const rawUrl = String(card.attachment?.url || "").trim();
@@ -2520,7 +2533,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       setFailedImageIds((prev) => new Set(prev).add(card.id));
       return;
     }
-    const cacheKey = `${target.bucket}:${target.path}`;
+    // HTML previews use the branded file proxy (correct MIME + frame-ancestors).
+    // Cache key is distinct so we never reuse a raw Supabase signed URL for iframes.
+    const cacheKey = isHtml
+      ? `file-proxy:${target.bucket}:${target.path}`
+      : `${target.bucket}:${target.path}`;
     const commitUrl = (signedUrl) => {
       if (isImage) {
         // Image path: probe dims first so the slot reserves correctly,
@@ -2539,6 +2556,38 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       commitUrl(cachedFresh);
       return;
     }
+
+    if (isHtml) {
+      try {
+        const { API_BASE_URL } = await import("@/lib/api-config");
+        const session = (await supabase.auth.getSession())?.data?.session;
+        const token = session?.access_token;
+        if (token) {
+          const resp = await fetch(`${API_BASE_URL}/api/storage/file-proxy-url`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+              storagePath: target.path,
+              bucket: target.bucket,
+              filename: String(card.attachment?.name || "artifact.html"),
+            }),
+          });
+          if (resp.ok) {
+            const { url } = await resp.json();
+            if (url) {
+              writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, url);
+              commitUrl(url);
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        if (import.meta.env.DEV) console.warn("[Vault] File-proxy URL mint failed:", err);
+      }
+      // Fall through to a Supabase signed URL so the card still has *something*
+      // to try — better than a permanent blank shell when the proxy is down.
+    }
+
     let objectNotFound = false;
     try {
       const { data, error } = await supabase.storage
@@ -4455,6 +4504,16 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     return () => window.removeEventListener("keydown", onKey);
   }, [previewCard]);
 
+  // Opening an HTML artifact in the preview modal must mint a file-proxy URL
+  // even if the grid tile never entered the intersection observer viewport.
+  useEffect(() => {
+    if (!previewCard || previewCard.kind !== "attachment") return;
+    const t = resolveAttachmentType(previewCard.attachment || {});
+    if (t !== "html") return;
+    if (resolvedAttachmentUrls[previewCard.id] || failedImageIds.has(previewCard.id)) return;
+    void resolveSignedUrlForCard(previewCard);
+  }, [previewCard, resolvedAttachmentUrls, failedImageIds, resolveSignedUrlForCard]);
+
   // Lock body scroll while any full-screen vault overlay is up so wheel/touch
   // over the backdrop doesn't scroll the grid behind it (users otherwise close
   // the modal to find themselves at a different scroll position).
@@ -5402,7 +5461,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 
     if (type === "html") {
       const fileName = attachment.name || title || "Interactive artifact";
-      const embedUrl = safeAttachmentUrl(resolvedUrl);
+      // Prefer the freshly minted file-proxy / signed URL; never paint the
+      // iframe until resolve finishes for storage-backed HTML (stale saved
+      // URLs + CSP/MIME issues produced a permanent white blank shell).
+      const storageTarget = parseStorageTarget(attachment || {});
+      const isStorageBacked = !!(storageTarget?.bucket && storageTarget?.path);
+      const embedUrl = safeAttachmentUrl(resolvedAttachmentUrls[card.id] || (!isStorageBacked ? resolvedUrl : ""));
+      const htmlFailed = failedImageIds.has(card.id);
       return (
         <div className="rounded-2xl overflow-hidden glass-control cursor-pointer">
           <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-black/8 dark:border-white/8 pointer-events-none">
@@ -5412,20 +5477,20 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               <span className="block text-[0.625rem] text-black/45 dark:text-white/45">Interactive preview</span>
             </div>
           </div>
-          <div className={`w-full ${tileHeightClass} overflow-hidden bg-white`}>
+          <div className={`w-full ${tileHeightClass} overflow-hidden bg-[#15130f]`}>
             {embedUrl ? (
               <iframe
                 src={embedUrl}
                 title={title || "Artifact preview"}
-                className="w-full h-full border-0 opacity-0 transition-opacity duration-150 ease-out pointer-events-none"
+                className="w-full h-full border-0 pointer-events-none"
                 sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
                 loading="lazy"
+                referrerPolicy="no-referrer"
                 draggable={false}
-                onLoad={(e) => { e.currentTarget.style.opacity = "1"; }}
               />
             ) : (
-              <div className="w-full h-full flex items-center justify-center text-xs text-black/40">
-                Preview unavailable
+              <div className="w-full h-full flex items-center justify-center text-xs text-white/45">
+                {htmlFailed ? "Preview unavailable" : "Loading preview…"}
               </div>
             )}
           </div>
@@ -7959,17 +8024,27 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               />
             );
           } else if (card.kind === "attachment" && type === "html") {
-            body = safeAttachmentUrl(resolvedUrl) ? (
+            const htmlStorage = parseStorageTarget(att);
+            const htmlIsStorage = !!(htmlStorage?.bucket && htmlStorage?.path);
+            // Wait for the file-proxy mint when storage-backed — painting the
+            // stale saved URL blanks the iframe (wrong MIME / CSP).
+            const htmlEmbed = safeAttachmentUrl(
+              resolvedAttachmentUrls[card.id] || (!htmlIsStorage ? resolvedUrl : ""),
+            );
+            body = htmlEmbed ? (
               <iframe
                 title={title}
-                src={safeAttachmentUrl(resolvedUrl)}
-                className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-white"
+                src={htmlEmbed}
+                className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-[#15130f]"
                 sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+                referrerPolicy="no-referrer"
               />
             ) : (
               <div className="flex flex-col items-center gap-4 py-10 text-center">
                 <FileText className="w-14 h-14 text-black/30 dark:text-white/30" />
-                <p className="text-sm text-black/70 dark:text-white/70">Preview unavailable</p>
+                <p className="text-sm text-black/70 dark:text-white/70">
+                  {failedImageIds.has(card.id) ? "Preview unavailable" : "Loading preview…"}
+                </p>
               </div>
             );
           } else if (card.kind === "attachment" && type === "youtube") {
