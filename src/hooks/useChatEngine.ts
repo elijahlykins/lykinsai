@@ -312,10 +312,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const activeArtifactRef = useRef<ChatArtifact | null>(null);
   const setActiveArtifact = useCallback((artifact: ChatArtifact | null) => {
     const bid = String(chatId || routeChatId || "").trim();
-    // Tag + persist per board so Smash Arena in chat A never rides along on chat B.
-    const next = artifact
-      ? { ...artifact, sourceChatId: bid || artifact.sourceChatId || undefined }
-      : null;
+    // Never open/persist an unscoped panel — untagged artifacts used to leak
+    // into the next chat and force surgical-edit / "Sky Tower" narration.
+    if (artifact && !bid) return;
+    const next = artifact ? { ...artifact, sourceChatId: bid } : null;
     activeArtifactRef.current = next;
     setActiveArtifactState(next);
     if (bid) patchThreadSnapshot(bid, { activeArtifact: next });
@@ -476,9 +476,17 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
       // Restore THIS board's panel artifact (or close it on a fresh chat).
       // Do not go through setActiveArtifact — that would re-patch the snap.
-      const restored = snap?.activeArtifact ?? null;
+      // Drop untagged / wrong-chat leftovers so a new board never inherits
+      // another chat's open game.
+      const restoredRaw = snap?.activeArtifact ?? null;
+      const restoredSrc = String(restoredRaw?.sourceChatId || "").trim();
+      const restored =
+        restoredRaw && restoredSrc && restoredSrc === incoming ? restoredRaw : null;
       activeArtifactRef.current = restored;
       setActiveArtifactState(restored);
+      if (restoredRaw && !restored) {
+        patchThreadSnapshot(incoming, { activeArtifact: null });
+      }
 
       requestAnimationFrame(() => {
         hydrateActiveThreadToReact(
@@ -2156,8 +2164,14 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme)\b/i.test(
           text,
         );
+      const referenceRebuildAsk =
+        /\b(?:exact(?:ly)?\s+clone|identical|1\s*:\s*1|recreate|clone\s+(?:this|that|it)|(?:look|make)\s+(?:it\s+)?(?:just\s+)?like\s+this|full\s+rewrite)\b/i.test(
+          text,
+        ) &&
+        (hasAttachedImage || artifactBelongsHere);
       const buildModeFresh =
-        isBuildMode && (hasAttachedImage || !looksLikeSurgicalTweak);
+        (isBuildMode && (hasAttachedImage || !looksLikeSurgicalTweak)) ||
+        referenceRebuildAsk;
       const refiningOpenArtifact =
         artifactBelongsHere &&
         isEditableArtifact(editArtifact) &&

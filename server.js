@@ -6516,7 +6516,7 @@ const TOOL_GUIDANCE_MINIMAL_EDIT = [
 const SURGICAL_EDIT_INTENT_RE =
   /\b(?:fix|change|update|tweak|adjust|rename|replace|remove|delete|insert|swap|patch|correct|typo|bug|font|typeface|typography|recolou?r|theme|accent|wire up|hook up|make (?:it|that|this|the)\b[^.!?]{0,40}\b(?:return|use|call|show|hide|say|read|write|do))\b/i;
 const REDESIGN_INTENT_RE =
-  /\b(?:redesign|restyle|rebrand|rebuild|overhaul|from scratch|start over|new look|new theme|new palette|rewrite (?:the )?(?:whole|entire|all))\b/i;
+  /\b(?:redesign|restyle|rebrand|rebuild|overhaul|from scratch|start over|new look|new theme|new palette|rewrite (?:the )?(?:whole|entire|all)|full\s+rewrite|exact(?:ly)?\s+clone|identical(?:\s+look)?|clone\s+(?:this|that|it))\b/i;
 
 /**
  * Compose the tool-calling guidance for a turn: the always-on core
@@ -13707,15 +13707,35 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // "+" → Create panel PARITY: if the user didn't arm the panel (forceArtifact)
     // or image mode, but TYPED/SAID a clear "build me a <deck|chart|diagram|doc…>"
     // request, infer that kind so we force the SAME builder tool the panel would.
-    // Skipped when an artifact is already open in the side panel — that turn
-    // flows through the in-place edit path (activeArtifactEditable) instead, so
-    // "make the chart bigger" refines the open one rather than spawning a new one.
+    // Skipped when an artifact from THIS chat is open — that turn flows through
+    // the in-place edit path instead. Stale panel state from another chat must
+    // NOT block inference (that caused "Sky Tower Climb" to trap a fresh chat).
     let artifactAutoInferred = false;
-    const hasActiveArtifactBody = !!(
-      req.body?.activeArtifact
-      && typeof req.body.activeArtifact === 'object'
-      && !Array.isArray(req.body.activeArtifact)
-    );
+
+    // Resolve / sanitize activeArtifact BEFORE any inference gates. Untagged
+    // or wrong-chat panel payloads used to short-circuit "build me a game"
+    // into surgical-edit mode and then hang on rejected full_rewrite calls.
+    let activeArtifact =
+      req.body?.activeArtifact && typeof req.body.activeArtifact === 'object' && !Array.isArray(req.body.activeArtifact)
+        ? req.body.activeArtifact
+        : null;
+    const requestChatId = String(req.body?.chatId || '').trim();
+    const artifactSourceChatId = String(activeArtifact?.sourceChatId || '').trim();
+    if (activeArtifact && requestChatId) {
+      if (!artifactSourceChatId) {
+        console.log(
+          `🎨 Stream: ignoring untagged activeArtifact "${String(activeArtifact.title || '').slice(0, 60)}" — no sourceChatId (refuse cross-chat leak)`,
+        );
+        activeArtifact = null;
+      } else if (artifactSourceChatId !== requestChatId) {
+        console.log(
+          `🎨 Stream: ignoring activeArtifact "${String(activeArtifact.title || '').slice(0, 60)}" — sourceChatId ${artifactSourceChatId.slice(0, 8)}… ≠ chat ${requestChatId.slice(0, 8)}…`,
+        );
+        activeArtifact = null;
+      }
+    }
+    const hasActiveArtifactBody = !!activeArtifact;
+
     // Image parity first: "generate an image of a dog" typed into the chat
     // forces lykn_generate_image exactly like the armed "+" → Generate image
     // mode. Checked before artifact inference so an explicit image ask never
@@ -13783,29 +13803,6 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       artifactToolName = 'lykn_render_video';
       console.log('🎬 Stream: build request asks for a video file — forcing lykn_render_video instead of the React artifact builder');
     }
-    // Chat-based artifact editing: when the user has an artifact open in the
-    // side panel, the client sends its current structured source so the model
-    // can refine it in place via patches (edits / section_edits / cell_edits).
-    let activeArtifact =
-      req.body?.activeArtifact && typeof req.body.activeArtifact === 'object' && !Array.isArray(req.body.activeArtifact)
-        ? req.body.activeArtifact
-        : null;
-    // Drop panel artifacts that belong to a different chat board (defense in
-    // depth — client should already scope these, but a stale Smash Arena must
-    // never force surgical-edit mode on a fresh Build turn).
-    const requestChatId = String(req.body?.chatId || '').trim();
-    const artifactSourceChatId = String(activeArtifact?.sourceChatId || '').trim();
-    if (
-      activeArtifact &&
-      artifactSourceChatId &&
-      requestChatId &&
-      artifactSourceChatId !== requestChatId
-    ) {
-      console.log(
-        `🎨 Stream: ignoring activeArtifact "${String(activeArtifact.title || '').slice(0, 60)}" — sourceChatId ${artifactSourceChatId.slice(0, 8)}… ≠ chat ${requestChatId.slice(0, 8)}…`,
-      );
-      activeArtifact = null;
-    }
     const activeArtifactHasSource =
       !!activeArtifact &&
       (
@@ -13826,9 +13823,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // fresh [DESIGN_SYSTEM], and force a ground-up rebuild that looked
     // totally different from the open panel.
     //
-    // Exception: Build mode (artifactType webapp) is a coded fresh build —
-    // keep forceArtifact so reference-image games aren't trapped behind
-    // "close Smash Arena". Short surgical tweaks still refine in place.
+    // Exception: Build mode (artifactType webapp) / reference-image rebuild
+    // asks are fresh coded builds — keep the builder and drop the open panel
+    // so "exact clone of this image" doesn't hang on edits_required.
     const redesignArtifactAsk = REDESIGN_INTENT_RE.test(String(text || ''));
     // Narrow style asks ("make it blue", "change the font") may touch colors/
     // fonts without being a full redesign — builders allow that signature
@@ -13843,10 +13840,31 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme)\b/i.test(
         askText,
       );
+    const referenceRebuildAsk =
+      /\b(?:exact(?:ly)?\s+clone|identical|1\s*:\s*1|recreate|clone\s+(?:this|that|it)|(?:look|make)\s+(?:it\s+)?(?:just\s+)?like\s+this|full\s+rewrite)\b/i.test(
+        askText,
+      ) &&
+      (imageUrls.length > 0 || activeArtifactHasSource);
+    const imageWebappAsk =
+      imageUrls.length > 0 && detectArtifactIntent(askText) === 'webapp';
     const buildModeFresh =
-      forceArtifact &&
-      artifactType === 'webapp' &&
-      (imageUrls.length > 0 || !looksLikeSurgicalTweak);
+      (forceArtifact &&
+        artifactType === 'webapp' &&
+        (imageUrls.length > 0 || !looksLikeSurgicalTweak)) ||
+      referenceRebuildAsk ||
+      imageWebappAsk;
+    // If the user clearly asked to build a new game/app from a reference but
+    // Create wasn't armed (and an open artifact blocked auto-infer), force the
+    // React builder now — otherwise the model narrates about the open game.
+    if (!artifactBuildSpec && (referenceRebuildAsk || imageWebappAsk)) {
+      artifactType = 'webapp';
+      artifactBuildSpec = ARTIFACT_BUILD_SPEC.webapp;
+      artifactToolName = artifactBuildSpec.tool;
+      artifactAutoInferred = true;
+      console.log(
+        '🎨 Stream: reference/new-game ask — forcing lykn_build_react_artifact fresh build',
+      );
+    }
     if (activeArtifactHasSource && artifactBuildSpec && !redesignArtifactAsk && !buildModeFresh) {
       console.log(
         `🎨 Stream: open artifact present — ignoring forceArtifact/${artifactToolName} so refine stays surgical`,
@@ -13858,10 +13876,14 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       console.log(
         `🎨 Stream: Build mode fresh — keeping ${artifactToolName} (not refining open "${String(activeArtifact?.title || '').slice(0, 60)}")`,
       );
-      // Don't thread the open fighter into ARTIFACT_OPEN / allowFullRewrite gate.
+      // Don't thread the open game into ARTIFACT_OPEN / allowFullRewrite gate.
       activeArtifact = null;
     }
-    const activeArtifactEditable = Boolean(activeArtifact) && activeArtifactHasSource && !artifactBuildSpec && !buildModeFresh;
+    const activeArtifactEditable =
+      Boolean(activeArtifact) &&
+      activeArtifactHasSource &&
+      !artifactBuildSpec &&
+      !buildModeFresh;
     // Chat-bar "+" → Projects: a LYKN project the user explicitly scoped this
     // chat to. Unlike `projectId` (which can be a board-linked Omnia project),
     // this is always a `lykn_projects` row, so we load its [CURRENT_PROJECT]
@@ -14661,10 +14683,13 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       );
       const buildReferencesScreen = BUILD_SCREEN_REF_RE.test(String(text || ''));
       // Overlay auto-screenshots are NOT listed in attachments. Chat Build /
-      // Create with imageUrls is almost always a user attach — keep those
-      // pixels even if attachment metadata is missing/malformed.
+      // Create OR a typed "build me a game" + image (auto-inferred / reference
+      // rebuild) is almost always a user attach — keep those pixels even if
+      // attachment metadata is missing/malformed.
       const chatBuildWithImages =
-        forceArtifact && imageUrls.length > 0 && req.body?.overlayAsk !== true;
+        (forceArtifact || artifactAutoInferred || buildModeFresh) &&
+        imageUrls.length > 0 &&
+        req.body?.overlayAsk !== true;
       const imageMatters = userAttachedImage || buildReferencesScreen || chatBuildWithImages;
       const why = userAttachedImage
         ? 'user attached an image'
@@ -14761,9 +14786,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       const attachedImageMeta = (Array.isArray(req.body?.attachments) ? req.body.attachments : [])
         .filter((a) => a && (a.type === 'image' || Number.isInteger(a.imageIndex)));
       const referencesScreen = BUILD_SCREEN_REF_RE.test(String(text || ''));
-      // Build mode + images: always treat pixels as visible reference input.
+      // Build mode / typed game-from-image: always treat pixels as reference.
       const buildModeVision =
-        forceArtifact && imageUrls.length > 0 && req.body?.overlayAsk !== true;
+        (forceArtifact || artifactAutoInferred || buildModeFresh) &&
+        imageUrls.length > 0 &&
+        req.body?.overlayAsk !== true;
       if (codedArtifactTurn && (attachedImageMeta.length > 0 || referencesScreen || buildModeVision)) {
         prompt +=
           `\n\n[ATTACHED_VISION — ${imageUrls.length} image(s) are attached as REAL pixel input on this turn. ` +
@@ -15893,9 +15920,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
                 activeArtifactEditable && typeof activeArtifact.font === 'string'
                   ? activeArtifact.font
                   : null,
-              // Only honor full_rewrite when the user actually asked to redesign.
-              allowFullRewrite: redesignArtifactAsk,
-              allowStyleChange: redesignArtifactAsk || styleChangeArtifactAsk,
+              // Honor full_rewrite on redesign / Build-mode fresh / reference rebuild.
+              allowFullRewrite: redesignArtifactAsk || buildModeFresh,
+              allowStyleChange:
+                redesignArtifactAsk || buildModeFresh || styleChangeArtifactAsk,
             });
             // Remotion renders (lykn_render_video) run 1-4 real minutes with
             // no provider stream — ping the stall watchdog on every frame and
