@@ -6483,7 +6483,7 @@ const TOOL_GUIDANCE_MINIMAL_EDIT = [
 
 // "fix/change/update …" without an explicit redesign ask → surgical path.
 const SURGICAL_EDIT_INTENT_RE =
-  /\b(?:fix|change|update|tweak|adjust|rename|replace|remove|delete|insert|swap|patch|correct|typo|bug|wire up|hook up|make (?:it|that|this|the)\b[^.!?]{0,40}\b(?:return|use|call|show|hide|say|read|write|do))\b/i;
+  /\b(?:fix|change|update|tweak|adjust|rename|replace|remove|delete|insert|swap|patch|correct|typo|bug|font|typeface|typography|recolou?r|theme|accent|wire up|hook up|make (?:it|that|this|the)\b[^.!?]{0,40}\b(?:return|use|call|show|hide|say|read|write|do))\b/i;
 const REDESIGN_INTENT_RE =
   /\b(?:redesign|restyle|rebrand|rebuild|overhaul|from scratch|start over|new look|new theme|new palette|rewrite (?:the )?(?:whole|entire|all))\b/i;
 
@@ -14363,6 +14363,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       const a = activeArtifact;
       const tType = String(a.templateType || 'document');
       const curTheme = (typeof a.theme === 'string' && a.theme.trim()) ? a.theme.trim() : 'default (clay/orange)';
+      const curFont = (typeof a.font === 'string' && a.font.trim()) ? a.font.trim() : 'default';
       let sectionsJson = '[]';
       try {
         const secs = Array.isArray(a.sections) ? a.sections : [];
@@ -14373,9 +14374,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
         `• template_type: ${tType}\n` +
         `• current theme: ${curTheme}\n` +
+        `• current font: ${curFont}\n` +
         `• current sections (JSON): ${sectionsJson}\n` +
-        `If the user's message asks to change, fix, add to, shorten, expand, recolor, or otherwise refine THIS artifact, you MUST call lykn_build_template again with template_type "${tType}", the same title (unless they ask to rename it), and the COMPLETE updated sections array — apply ONLY their requested change and keep every other section exactly as-is (do not drop or summarize sections you weren't asked to touch). ` +
-        `To recolor it, pass the \`theme\` argument (a color name like "blue", "green", "purple", "red", "teal" or a hex). ALWAYS pass the current theme back on every rebuild so the color persists unless they ask to change it. ` +
+        `STYLE-ONLY (font / color / theme): If the user ONLY asked to change the font, typeface, accent color, or theme — call lykn_build_template with template_type "${tType}", the SAME title, and ONLY \`font\` and/or \`theme\`. OMIT \`sections\` entirely. The server keeps every slide/section byte-identical. Do NOT rewrite, rephrase, reorder, or "improve" slide copy on a font/color ask. ` +
+        `CONTENT EDITS: If they asked to change slide text/structure, pass the COMPLETE updated sections array — apply ONLY their requested change and keep every other section exactly as-is (do not drop or summarize sections you weren't asked to touch). Always pass the current theme/font back unless they asked to change them. ` +
+        `Font names: inter, georgia, playfair, space-grotesk, merriweather, mono, system. Theme: a color name (blue, green, purple…) or hex. ` +
         `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste raw HTML or markup. ` +
         `If the message is NOT about the artifact, ignore this and answer normally.]`;
     }
@@ -15647,6 +15650,21 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               activeArtifactCode:
                 activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact'
                   ? String(activeArtifact.code || '')
+                  : null,
+              // Style-only template rebuilds (font/theme) reuse these slides.
+              activeArtifactSections:
+                activeArtifactEditable && activeArtifact.toolName === 'lykn_build_template'
+                  ? (Array.isArray(activeArtifact.sections) ? activeArtifact.sections : null)
+                  : null,
+              activeArtifactTitle:
+                activeArtifactEditable ? String(activeArtifact.title || '') : null,
+              activeArtifactTheme:
+                activeArtifactEditable && typeof activeArtifact.theme === 'string'
+                  ? activeArtifact.theme
+                  : null,
+              activeArtifactFont:
+                activeArtifactEditable && typeof activeArtifact.font === 'string'
+                  ? activeArtifact.font
                   : null,
             });
             // Remotion renders (lykn_render_video) run 1-4 real minutes with

@@ -222,7 +222,9 @@ export const buildTemplateTool = {
     'Exports a PDF (the easy, universal download), plus Markdown, JSON, HTML, and PPTX (slides) when signed in.',
     'The chat UI renders HTML artifacts inline and offers the PDF/PPTX/Markdown downloads — use this for study guides, docs, and pitch decks.',
     'Pass export_formats: ["html","pptx"] for presentations. Summarise in prose after; no need to paste URLs.',
-    'Pass `theme` to set the accent color (name like "blue", "green", "purple", "red", "teal", "orange" or a hex like "#2563eb"). To recolor an existing artifact, rebuild it with the same sections and a new theme.',
+    'Pass `theme` to set the accent color (name like "blue", "green", "purple", "red", "teal", "orange" or a hex like "#2563eb").',
+    'Pass `font` to set the typeface (inter, georgia, playfair, space-grotesk, merriweather, mono, system).',
+    'STYLE-ONLY EDITS on an open deck/doc: omit `sections` entirely and pass only `theme` and/or `font` (keep the same title + template_type). The server reuses the existing slides verbatim — do NOT rewrite slide copy when the user only asked for a font or color change.',
     'Do NOT use emojis anywhere in titles, headings, body, notes, or metadata — keep generated documents, decks, and PDFs clean and professional (any emoji is stripped from the output regardless).',
   ].join('\n'),
   inputSchema: {
@@ -250,6 +252,11 @@ export const buildTemplateTool = {
       theme: {
         type: 'string',
         description: 'Accent color: a name (blue, green, purple, red, teal, indigo, rose, amber, slate, orange) or a hex like #2563eb.',
+      },
+      font: {
+        type: 'string',
+        description:
+          'Typeface for the template: inter, georgia, playfair, space-grotesk, merriweather, mono, system (or a CSS font-family string).',
       },
       export_formats: {
         type: 'array',

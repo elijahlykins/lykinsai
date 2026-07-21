@@ -470,6 +470,16 @@ export function buildChatToolCtx(req, extras = {}) {
     activeArtifactCode: typeof extras.activeArtifactCode === 'string' && extras.activeArtifactCode.trim()
       ? extras.activeArtifactCode
       : null,
+    /** Open template artifact fields — style-only rebuilds reuse sections. */
+    activeArtifactSections: Array.isArray(extras.activeArtifactSections)
+      ? extras.activeArtifactSections
+      : null,
+    activeArtifactTitle:
+      typeof extras.activeArtifactTitle === 'string' ? extras.activeArtifactTitle : null,
+    activeArtifactTheme:
+      typeof extras.activeArtifactTheme === 'string' ? extras.activeArtifactTheme : null,
+    activeArtifactFont:
+      typeof extras.activeArtifactFont === 'string' ? extras.activeArtifactFont : null,
     /**
      * Binary attachments the user dragged/pasted into THIS chat turn (image /
      * pdf / file / video / audio), as compact metadata. lykn_uploadToProject

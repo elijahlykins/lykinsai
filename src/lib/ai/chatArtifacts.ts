@@ -25,6 +25,8 @@ export type ChatArtifact = {
   content?: string;
   /** Accent color theme (name or hex) so recolors persist across edits. */
   theme?: string;
+  /** Typeface name for template artifacts (inter, georgia, playfair, …). */
+  font?: string;
   /** React component source (lykn_build_react_artifact) — the edit round-trip payload. */
   code?: string;
 };
@@ -39,6 +41,7 @@ export type ArtifactEditContext = {
   sections?: any[];
   content?: string;
   theme?: string;
+  font?: string;
   code?: string;
 };
 
@@ -63,6 +66,7 @@ export function toArtifactEditContext(a: ChatArtifact): ArtifactEditContext {
     sections: Array.isArray(a.sections) ? a.sections : undefined,
     content: typeof a.content === "string" ? a.content : undefined,
     theme: typeof a.theme === "string" ? a.theme : undefined,
+    font: typeof a.font === "string" ? a.font : undefined,
     code: typeof a.code === "string" ? a.code : undefined,
   };
 }
@@ -174,6 +178,7 @@ function extractFromBuildTemplate(toolCallId: string, result: any): ChatArtifact
           ? result.markdown
           : undefined,
     theme: typeof result.theme === "string" ? result.theme : undefined,
+    font: typeof result.font === "string" ? result.font : undefined,
   };
 
   // Collect every exported format (html, pptx, md, json…) as a download option
