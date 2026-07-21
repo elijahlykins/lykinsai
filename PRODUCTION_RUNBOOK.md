@@ -7,6 +7,7 @@ rest still work fine.
 
 **Frontend**:  `https://lykn.io`  (Vercel)
 **Backend**:   `https://lykn-ideation.onrender.com`  (Render)
+**Artifacts**: `https://artifacts.lykn.io`  (same Render service; see `docs/artifacts-domain.md`)
 
 ---
 
@@ -52,6 +53,7 @@ In Render → your backend service → **Environment**, add:
 |---|---|
 | `CONNECTOR_TOKEN_KEY` | the hex string from 0b |
 | `ALLOWED_ORIGINS` | `https://lykn.io,https://www.lykn.io` |
+| `ARTIFACTS_BASE_URL` | `https://artifacts.lykn.io` (only after DNS + TLS are live — see `docs/artifacts-domain.md`) |
 | `RSS_POLLER_ENABLED` | `true` (optional — defaults on for Render) |
 | `CONNECTOR_POLLER_ENABLED` | `true` (optional — defaults on for Render) |
 

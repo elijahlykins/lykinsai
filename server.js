@@ -27,7 +27,7 @@ import {
 import { searchWeb, formatSearchResultsForPrompt } from './lib/exterior/webSearch.js';
 import { fetchWebPage } from './lib/exterior/webFetch.js';
 import { assertUrlSafe, safeFetch } from './lib/exterior/ssrfGuard.js';
-import { verifyFileToken, FILE_PROXY_ROUTE } from './lib/exterior/fileProxy.js';
+import { verifyFileToken, FILE_PROXY_ROUTE, isArtifactsHost } from './lib/exterior/fileProxy.js';
 import { buildReactArtifact } from './lib/exterior/capabilities/buildReactArtifact.js';
 import { pickDesignSystem, formatDesignSystemBlock } from './lib/exterior/designSystems.js';
 import { pickDesignGuide, formatDesignGuideBlock } from './lib/exterior/designGuides.js';
@@ -282,6 +282,23 @@ app.disable('x-powered-by');
 // Downstream rate limiting, audit logging, and any future
 // conditional-on-HTTPS logic depend on this being correct.
 app.set('trust proxy', 1);
+
+// artifacts.lykn.io (ARTIFACTS_BASE_URL) is a second hostname on this same
+// process so shareable HTML opens on an origin isolated from the API.
+// Only GET/HEAD /f/:token is allowed on that host — everything else 404s
+// so a malicious artifact page cannot call /api/* same-origin.
+const ARTIFACTS_FILE_PATH_RE = /^\/f\/[^/]+\/?$/;
+app.use((req, res, next) => {
+  if (!isArtifactsHost(req.hostname)) return next();
+  const method = req.method;
+  if (
+    (method === 'GET' || method === 'HEAD') &&
+    ARTIFACTS_FILE_PATH_RE.test(req.path)
+  ) {
+    return next();
+  }
+  return res.status(404).type('text/plain').send('Not found');
+});
 
 // Routes that intentionally serve HTML and need looser COOP/CSP so the
 // connector OAuth-popup flow + the OAuth consent / error pages still
@@ -1270,7 +1287,9 @@ app.set('supabaseAdmin', supabaseAdmin);
 // FILE DOWNLOAD PROXY — branded download links
 // ============================================
 // Serves capability artifacts (generated images, templates, exported files…)
-// through this API origin instead of handing users a raw Supabase signed URL.
+// through a branded host instead of handing users a raw Supabase signed URL.
+// New links mint on ARTIFACTS_BASE_URL (https://artifacts.lykn.io); the API
+// hostname still serves /f/ for in-flight tokens until they expire.
 // The `:token` is an HMAC-signed handle (bucket + object path + expiry) minted
 // by lib/exterior/fileProxy.js, so the token itself is the authorization and no
 // user session is required. Mounted OUTSIDE `/api/` on purpose so links read as
@@ -1343,8 +1362,8 @@ app.get(FILE_PROXY_ROUTE, async (req, res) => {
     if (isHtml) {
       // Permissive enough for AI-generated decks (inline scripts/styles, web
       // fonts, images) while still scoping who may frame the document. The
-      // client also sandboxes this iframe, so scripts run in the API origin,
-      // never the user's lykn.io session.
+      // client also sandboxes this iframe, so scripts run on the artifacts
+      // (or legacy API) origin — never the user's lykn.io session.
       res.setHeader(
         'Content-Security-Policy',
         "default-src 'self' data: blob: https:; " +
