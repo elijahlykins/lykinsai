@@ -5053,6 +5053,14 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "- NEVER SPLIT A REPLY INTO PARTS. Deliver the COMPLETE answer in this single response. Do NOT end with \"Want me to continue?\", \"Shall I continue?\", \"Should I keep going?\", \"Let me know if you want the rest\", \"Type 'continue' for more\", \"Reply 'continue' to keep going\", \"Part 1 of N\", \"To be continued\", or any variant that asks the user to prompt again to receive the rest. The user must NEVER have to ask for a continuation. If the topic is huge, finish a complete, self-contained answer at the right scope rather than promising more later. The only acceptable closings are a real ending, a natural question that advances the conversation, or nothing.",
   "- NEVER emit a meta truncation marker. Do NOT write \"_…response truncated. Ask 'continue' for the rest._\", \"_…reply truncated for length._\", \"_…response cut off — type 'continue' to see more._\", \"[response truncated, reply continue]\", \"(response truncated)\", or any italicized / parenthetical / bracketed self-note announcing that the reply is incomplete. You are NEVER incomplete on purpose. If you find yourself wanting to write a marker like that, scope the answer down so it actually finishes instead. Write only the natural reply body — no meta status notes about the reply itself.",
   "",
+  "=== MINIMAL EDITS (CRITICAL — CHAT + GLASS) ===",
+  "When the user asks to change, fix, update, tweak, or edit EXISTING content (code in the thread, a doc/HTML/CSS/JS you already wrote, Glass-built UI, or text on screen):",
+  "- Apply ONLY the requested change. Do NOT rewrite the entire file, component, or document.",
+  "- Do NOT change colors, fonts, spacing, layout, structure, classNames, or comments unless they explicitly asked to restyle / redesign / rebuild / start over.",
+  "- Prefer a small patch or the changed section. If you must restate a larger block, keep every untouched line identical to the prior version.",
+  "- \"Add X\", \"fix the bug\", \"change this label\", \"make that function return Y\" are surgical — never a redesign.",
+  "=== END MINIMAL EDITS ===",
+  "",
   // VOICE rule lives at the TOP of this persona now (right after SYSTEM).
   // Removed from the bottom so we don't double-include it and pay the
   // tokens twice — and so it has front-of-prompt weight.
@@ -5143,6 +5151,14 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "- ALWAYS FINISH YOUR THOUGHT. The visible reply MUST end with terminal punctuation (\".\", \"!\", \"?\"). Length is flexible — running slightly long to finish a sentence is correct; cutting a sentence short to stay terse is broken. If your reply needs an extra clause to land cleanly, write it. The output cap is very generous (~9,000 words / 12K tokens) — finishing the thought is NEVER the reason you ran out of space, and you should never assume you are about to.",
   "- NEVER SPLIT A REPLY INTO PARTS. Deliver the COMPLETE answer in this single response. Do NOT end with \"Want me to continue?\", \"Shall I continue?\", \"Should I keep going?\", \"Let me know if you want the rest\", \"Type 'continue' for more\", \"Reply 'continue' to keep going\", \"Part 1 of N\", \"To be continued\", or any variant that asks the user to prompt again to receive the rest. The user must NEVER have to ask for a continuation. If the topic is huge, finish a complete, self-contained answer at the right scope rather than promising more later. The only acceptable closings are a real ending, a natural question that advances the conversation, or nothing.",
   "- NEVER emit a meta truncation marker. Do NOT write \"_…response truncated. Ask 'continue' for the rest._\", \"_…reply truncated for length._\", \"_…response cut off — type 'continue' to see more._\", \"[response truncated, reply continue]\", \"(response truncated)\", or any italicized / parenthetical / bracketed self-note announcing that the reply is incomplete. You are NEVER incomplete on purpose. If you find yourself wanting to write a marker like that, scope the answer down so it actually finishes instead. Write only the natural reply body — no meta status notes about the reply itself.",
+  "",
+  "=== MINIMAL EDITS (CRITICAL — CHAT + GLASS) ===",
+  "When the user asks to change, fix, update, tweak, or edit EXISTING content (code in the thread, a doc/HTML/CSS/JS you already wrote, Glass-built UI, or text on screen):",
+  "- Apply ONLY the requested change. Do NOT rewrite the entire file, component, or document.",
+  "- Do NOT change colors, fonts, spacing, layout, structure, classNames, or comments unless they explicitly asked to restyle / redesign / rebuild / start over.",
+  "- Prefer a small patch or the changed section. If you must restate a larger block, keep every untouched line identical to the prior version.",
+  "- \"Add X\", \"fix the bug\", \"change this label\", \"make that function return Y\" are surgical — never a redesign.",
+  "=== END MINIMAL EDITS ===",
   "",
   // VOICE rule lives at the TOP of this persona now — removed here to
   // avoid duplicate token cost and ensure single front-of-prompt anchor.
@@ -6440,14 +6456,36 @@ const TOOL_GUIDANCE_ARTIFACT_EDIT = [
   '  The user is refining an EXISTING build — not commissioning a new one.',
   '  • Do NOT invent a new look, theme, palette, layout, typography, or component structure.',
   '  • There is NO [DESIGN_SYSTEM] / [STYLE_GUIDE] on this turn on purpose. Keep the open',
-  '    artifact\'s THEME tokens, classNames, colors, spacing, and visual design byte-for-byte.',
+  '    artifact\'s THEME tokens, classNames, colors, spacing, fonts, and visual design',
+  '    byte-for-byte. Changing indigo→violet, Inter→another font, rounded-xl→rounded-2xl,',
+  '    or rewriting classNames "to clean them up" is a FAILURE unless they asked to restyle.',
   '  • Content / data / copy / logic / list-expansion changes → call lykn_build_react_artifact',
   '    with `edits` ONLY: {find, replace} patches copied verbatim from [ARTIFACT_OPEN].',
   '  • Never pass full `code` unless the user explicitly asked to restyle, rebuild, redesign,',
   '    or start over — and then set full_rewrite: true.',
-  '  • "Add more X", "expand the bank", "fix the bug", "change this label" are ALWAYS edits,',
-  '    never a redesign.',
+  '  • "Add more X", "expand the bank", "fix the bug", "change this label", "make the button',
+  '    do Y" are ALWAYS edits, never a redesign.',
 ].join('\n');
+
+// Surgical edits in chat / Glass when there may be NO open artifact panel —
+// e.g. "change this function", "fix that typo", "update the heading" against
+// code or copy already in the thread / on screen. Must NOT pull in a fresh
+// DESIGN_SYSTEM (that causes silent restyles).
+const TOOL_GUIDANCE_MINIMAL_EDIT = [
+  'MINIMAL EDIT TURN (targeted change — not a new build):',
+  '  Apply ONLY what the user asked for. Do not rewrite surrounding code or prose.',
+  '  Do not change colors, fonts, spacing, layout, structure, or naming unless they',
+  '  explicitly asked to restyle / redesign / rebuild / start over.',
+  '  If an artifact is open, use lykn_build_react_artifact with `edits` only.',
+  '  If editing code or text in the conversation (or on screen via Glass), keep every',
+  '  untouched line identical; prefer a small patch / changed section over a full file.',
+].join('\n');
+
+// "fix/change/update …" without an explicit redesign ask → surgical path.
+const SURGICAL_EDIT_INTENT_RE =
+  /\b(?:fix|change|update|tweak|adjust|rename|replace|remove|delete|insert|swap|patch|correct|typo|bug|wire up|hook up|make (?:it|that|this|the)\b[^.!?]{0,40}\b(?:return|use|call|show|hide|say|read|write|do))\b/i;
+const REDESIGN_INTENT_RE =
+  /\b(?:redesign|restyle|rebrand|rebuild|overhaul|from scratch|start over|new look|new theme|new palette|rewrite (?:the )?(?:whole|entire|all))\b/i;
 
 /**
  * Compose the tool-calling guidance for a turn: the always-on core
@@ -6461,23 +6499,34 @@ const TOOL_GUIDANCE_ARTIFACT_EDIT = [
 function buildChatToolGuidance(userMessage, opts = {}) {
   const t = String(userMessage || '').toLowerCase();
   const parts = [LYKN_CHAT_TOOL_GUIDANCE];
+  const surgicalEdit =
+    !REDESIGN_INTENT_RE.test(t) && SURGICAL_EDIT_INTENT_RE.test(t);
   // Edit turns must NOT get a fresh [DESIGN_SYSTEM] / visual "build big" brief —
   // that is the #1 cause of "add 10 hooks" turning into a whole new look.
   if (opts.editingArtifact) {
     parts.push(TOOL_GUIDANCE_ARTIFACT_EDIT);
+  } else if (surgicalEdit && !opts.forceMaking) {
+    // Glass / chat "just change X" — no design-system injection.
+    parts.push(TOOL_GUIDANCE_MINIMAL_EDIT);
   } else if (opts.forceMaking || MAKING_INTENT_RE.test(t) || MAKING_VERB_RE.test(t)) {
-    parts.push(TOOL_GUIDANCE_VISUAL, TOOL_GUIDANCE_EXTERIOR);
-    // Coded artifacts follow a named design system (DESIGN.md-style brief,
-    // format adapted from open-design). Picked from the request wording —
-    // "fun quiz" → Playful, "dashboard" → Dark Dashboard — default LYKN.
-    parts.push(formatDesignSystemBlock(pickDesignSystem(userMessage)));
-    // Plus the per-FORMAT style guide (design-guides/*.md): website section
-    // order, slide-deck mechanics, dashboard layout, document typography,
-    // app interaction craft. Only when the format is discernible.
-    const guideId = pickDesignGuide(userMessage, opts.artifactType);
-    if (guideId) {
-      const guideBlock = formatDesignGuideBlock(guideId);
-      if (guideBlock) parts.push(guideBlock);
+    // If they said "build" but the ask is clearly a surgical tweak on existing
+    // work, still prefer minimal-edit discipline over a fresh design brief.
+    if (surgicalEdit && !REDESIGN_INTENT_RE.test(t)) {
+      parts.push(TOOL_GUIDANCE_MINIMAL_EDIT);
+    } else {
+      parts.push(TOOL_GUIDANCE_VISUAL, TOOL_GUIDANCE_EXTERIOR);
+      // Coded artifacts follow a named design system (DESIGN.md-style brief,
+      // format adapted from open-design). Picked from the request wording —
+      // "fun quiz" → Playful, "dashboard" → Dark Dashboard — default LYKN.
+      parts.push(formatDesignSystemBlock(pickDesignSystem(userMessage)));
+      // Plus the per-FORMAT style guide (design-guides/*.md): website section
+      // order, slide-deck mechanics, dashboard layout, document typography,
+      // app interaction craft. Only when the format is discernible.
+      const guideId = pickDesignGuide(userMessage, opts.artifactType);
+      if (guideId) {
+        const guideBlock = formatDesignGuideBlock(guideId);
+        if (guideBlock) parts.push(guideBlock);
+      }
     }
   }
   if (MANAGED_SURFACE_INTENT.test(t)) {
@@ -14304,10 +14353,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
         `• current component source (JSX):\n\`\`\`jsx\n${codeSrc}\n\`\`\`\n` +
         `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
-        `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. ` +
+        `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, colors, radii, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. Swapping a color palette or font "while you're at it" is a FAILURE. ` +
         `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
         `DEFAULT to the \`edits\` argument — {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. Do not re-send the full code for a targeted change. ` +
-        `Pass COMPLETE \`code\` only when the user EXPLICITLY asked to restyle, rebuild, redesign, or start over — then ALSO pass full_rewrite: true, and still copy everything the request doesn't cover verbatim from the source above. The server measures your diff against the open artifact and rejects broad rewrites that aren't declared. ` +
+        `Pass COMPLETE \`code\` only when the user EXPLICITLY asked to restyle, rebuild, redesign, or start over — then ALSO pass full_rewrite: true, and still copy everything the request doesn't cover verbatim from the source above. The server measures your diff against the open artifact and rejects broad rewrites, THEME churn, and silent color/font restyles that aren't declared. ` +
         `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
         `If the message is NOT about the artifact, ignore this and answer normally.]`;
     } else if (activeArtifactEditable) {
