@@ -4618,8 +4618,10 @@ function getFallbackModels(failedModel) {
 // copy is honest about being temporary and never tells the user to manually
 // switch — the AUTOMATIC fallback chain already tried every available
 // alternative on their behalf.
-const AI_TEMPORARY_FAILURE_TEXT =
-  "Sorry, we're having trouble connecting right now.";
+// Soft copy — never "trouble connecting". That phrasing fired on stalls
+// (image gen / long builds) that were not real network failures.
+const AI_TEMPORARY_FAILURE_TEXT = "That didn't work — try again in a moment.";
+const IMAGE_GEN_FAILURE_TEXT = "Couldn't create that image — try again in a moment.";
 
 function extractPureUserMessage(text, prompt) {
   const raw = String(text || '').trim();
@@ -14838,19 +14840,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // context + synthesis retrieval + web search). The heartbeat below
     // keeps the socket warm; this only catches truly wedged providers.
     //
-    // Coded-artifact / video turns get 240s: grok-4.5 goes COMPLETELY silent
-    // (zero bytes on the wire) during reasoning pauses on big build prompts —
-    // measured gaps of 60-90s+ on requests that then complete successfully.
-    // At 90s the watchdog was killing healthy builds mid-reasoning ("Sorry,
-    // we're having trouble connecting") while the artifact landed ~2min later
-    // on a dead socket. The per-attempt watchdog in the agent-loop section
-    // below falls back to another provider well before this fires; this is
-    // the last resort. The 10min hardKill still bounds the whole turn.
-    const streamStallMs = codedArtifactTurn || videoRenderLikelyTurn ? 240000 : 90000;
+    // Long-running tool turns (artifacts, video, image gen) go quiet while
+    // the provider works — 90s was killing healthy GPT Image / Remotion /
+    // grok builds mid-flight. Give them 240s; the 10min hardKill still bounds
+    // the whole turn. Tool-batch keepalives also ping streamActivity.
+    const longToolTurn = codedArtifactTurn || videoRenderLikelyTurn || forceImage;
+    const streamStallMs = longToolTurn ? 240000 : 90000;
     stallCheck = setInterval(() => {
       if (Date.now() - streamActivity > streamStallMs) {
         console.error(`⏰ Stream stalled — no data for ${Math.round(streamStallMs / 1000)}s+, aborting`);
-        sendError(AI_TEMPORARY_FAILURE_TEXT);
+        sendError(forceImage ? IMAGE_GEN_FAILURE_TEXT : AI_TEMPORARY_FAILURE_TEXT);
       }
     }, 5000);
     // Heartbeat. SSE comments (`: keepalive\n\n`) keep proxies and
@@ -14872,11 +14871,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // Video-render turns get the same ceiling: composition streaming plus a
     // server-side Remotion render (bundle + headless-Chrome frames + encode)
     // can legitimately take several real minutes.
-    const hardKillMs = codedArtifactTurn || videoRenderLikelyTurn ? 600000 : 300000;
+    const hardKillMs = longToolTurn ? 600000 : 300000;
     hardKill = setTimeout(() => {
       if (!res.writableEnded) {
         console.error(`⏰ Hard timeout — SSE connection open > ${Math.round(hardKillMs / 60000)}min, killing`);
-        sendError(AI_TEMPORARY_FAILURE_TEXT);
+        sendError(forceImage ? IMAGE_GEN_FAILURE_TEXT : AI_TEMPORARY_FAILURE_TEXT);
       }
     }, hardKillMs);
     res.on('close', cleanup);

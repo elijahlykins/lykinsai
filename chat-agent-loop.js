@@ -367,7 +367,7 @@ function makeToolCallRecorder(onToolCall, allToolCalls) {
  *
  *   calls: [{ id, name, args }]
  */
-async function runToolBatch(calls, ctx, record, allowedToolNames) {
+async function runToolBatch(calls, ctx, record, allowedToolNames, onActivity) {
   // Drop exact duplicates (same tool, identical args) within one hop.
   // Models occasionally emit the same call twice in a parallel batch;
   // for expensive builders that means two persisted artifacts — the user
@@ -393,19 +393,31 @@ async function runToolBatch(calls, ctx, record, allowedToolNames) {
     console.warn(`[chat-agent-loop] capping tool calls at ${MAX_TOOL_CALLS_PER_HOP} (model emitted ${unique.length})`);
   }
   const toolOpts = Array.isArray(allowedToolNames) ? { allowedToolNames } : {};
-  const executed = await Promise.all(capped.map(async (call) => {
-    record({ id: call.id, name: call.name, args: call.args, status: 'running' });
-    const { payload, isError, latencyMs } = await runChatTool(call.name, call.args, ctx, toolOpts);
-    record({
-      id: call.id,
-      name: call.name,
-      args: call.args,
-      status: isError ? 'error' : 'done',
-      result: payload,
-      latencyMs,
-    });
-    return { id: call.id, name: call.name, args: call.args, payload, isError, latencyMs };
-  }));
+  // Image gen / Remotion / big builds can sit silent for minutes while the
+  // provider works. Ping the stall watchdog so the SSE stream isn't killed
+  // mid-tool with a fake "connection" error.
+  const keepAlive = setInterval(() => {
+    try { onActivity?.(); } catch { /* swallow */ }
+  }, 8000);
+  let executed;
+  try {
+    executed = await Promise.all(capped.map(async (call) => {
+      record({ id: call.id, name: call.name, args: call.args, status: 'running' });
+      const { payload, isError, latencyMs } = await runChatTool(call.name, call.args, ctx, toolOpts);
+      record({
+        id: call.id,
+        name: call.name,
+        args: call.args,
+        status: isError ? 'error' : 'done',
+        result: payload,
+        latencyMs,
+      });
+      try { onActivity?.(); } catch { /* swallow */ }
+      return { id: call.id, name: call.name, args: call.args, payload, isError, latencyMs };
+    }));
+  } finally {
+    clearInterval(keepAlive);
+  }
 
   // Every provider requires a tool result for EVERY call id it emitted —
   // answer dropped duplicates with the original call's payload (without
@@ -706,7 +718,7 @@ async function runOpenAiCompatLoop({
       name: c.function.name,
       args: safeJsonParse(c.function.arguments),
     }));
-    const results = await runToolBatch(resolved, ctx, record, chatToolNames);
+    const results = await runToolBatch(resolved, ctx, record, chatToolNames, onActivity);
     for (const r of results) {
       messages.push({
         role: 'tool',
@@ -932,7 +944,7 @@ async function runAnthropicLoop({
 
     try { onStatus?.('Running tools…'); } catch { /* swallow */ }
 
-    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames);
+    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames, onActivity);
     for (const r of results) {
       if (forceToolName && r.name === forceToolName && !r.isError && r.payload?.ok !== false) {
         forcedToolDone = true;
@@ -1138,7 +1150,7 @@ async function runGeminiLoop({
 
     try { onStatus?.('Running tools…'); } catch { /* swallow */ }
 
-    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames);
+    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames, onActivity);
     for (const r of results) {
       if (forceToolName && r.name === forceToolName && !r.isError && r.payload?.ok !== false) {
         forcedToolDone = true;

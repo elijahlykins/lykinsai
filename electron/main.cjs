@@ -4134,10 +4134,22 @@ function isRetryableStreamError(err) {
   );
 }
 
-function humanizeStreamError(err) {
+function humanizeStreamError(err, { forceImage = false } = {}) {
   const msg = String(err?.message || err || "").trim();
+  // Never surface the old "trouble connecting" / "Request failed:" framing —
+  // stalls during image gen looked like a dead network when the provider
+  // was still working.
+  if (
+    /trouble connecting|didn't work — try again|Couldn't create that image/i.test(msg)
+  ) {
+    return forceImage
+      ? "Couldn't create that image — try again in a moment."
+      : "That didn't work — try again in a moment.";
+  }
   if (/terminated|econnreset|socket hang up|broken pipe|reset by peer/i.test(msg)) {
-    return "Connection dropped before LYKN could finish. Usually a brief network or server hiccup. Try again.";
+    return forceImage
+      ? "Couldn't create that image — try again in a moment."
+      : "That didn't work — try again in a moment.";
   }
   if (/aborted/i.test(msg)) return "Request was cancelled.";
   // Only reached after the automatic refresh-and-retry also failed, so the
@@ -4145,7 +4157,8 @@ function humanizeStreamError(err) {
   if (/\(401\)/.test(msg)) {
     return "Your LYKN session expired. Open the main LYKN window to sign back in, then try again.";
   }
-  return msg ? `Request failed: ${msg}` : "Request failed.";
+  if (forceImage) return "Couldn't create that image — try again in a moment.";
+  return msg || "That didn't work — try again in a moment.";
 }
 
 async function readOverlayStreamResponse(res, send, onHighlight) {
@@ -4895,10 +4908,14 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
         console.log("[overlay-ask] retry after stream error:", e && e.message ? e.message : e);
       }
     }
-    send("lykn:answer-error", { message: humanizeStreamError(lastErr) });
+    send("lykn:answer-error", {
+      message: humanizeStreamError(lastErr, { forceImage: !!forceImage }),
+    });
   } catch (e) {
     if (superseded()) return;
-    send("lykn:answer-error", { message: humanizeStreamError(e) });
+    send("lykn:answer-error", {
+      message: humanizeStreamError(e, { forceImage: !!forceImage }),
+    });
   }
 }
 
