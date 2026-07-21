@@ -34,6 +34,7 @@ import { pickDesignGuide, formatDesignGuideBlock } from './lib/exterior/designGu
 import { mimeTypeForFilename, persistCapabilityArtifact } from './lib/exterior/capabilityStorage.js';
 import { buildAttachmentColumns } from './lib/vault/attachmentType.js';
 import { inferAttachmentKind } from './lib/vaultAttachment.js';
+import { exchangeAppleAuthorizationCode, revokeAppleToken, appleAuthConfigured } from './lib/appleAuth.js';
 import { chunkTextForSynthesis } from './synthesis-service.js';
 import { contextualizeChunks } from './lib/rag/contextualize.js';
 import {
@@ -7641,9 +7642,14 @@ app.patch('/api/steward/items/:id', requireAuth, async (req, res) => {
 //   1. Cancel the Stripe subscription (best-effort; we still proceed
 //      on failure so a user blocked by Stripe outage can still leave).
 //   2. Purge their Supabase Storage objects under user-files/{userId}/.
-//   3. Delete the auth.users row, which cascades through every
+//   3. Revoke the Sign in with Apple token if one is stored (best-effort;
+//      App Review requires the attempt, but an Apple outage must not
+//      block a user from leaving).
+//   4. Delete the auth.users row, which cascades through every
 //      ON DELETE CASCADE FK in the schema (facts, beliefs, concepts,
-//      notes, billing, preferences, MCP tokens, ...).
+//      vault items, chats, billing, preferences, MCP tokens, ...).
+//      The FKs are added by migration 113 — before it, NOTHING
+//      referenced auth.users and this delete orphaned every row.
 app.delete('/api/account', requireAuth, async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -7676,29 +7682,80 @@ app.delete('/api/account', requireAuth, async (req, res) => {
       }
     }
 
-    // Step 2: purge storage. List + bulk remove in pages of 100.
+    // Step 2: purge storage. Objects live at `<userId>/<fileId>/<file>`
+    // (plus image variants like thumb.jpg beside the original), so a
+    // single non-recursive list of `<userId>/` only returns the <fileId>
+    // folder placeholders — and Storage `remove()` targets objects, not
+    // folders, so removing those paths silently deletes nothing. Walk the
+    // tree instead: list every folder (entries with a null `id` are
+    // subfolders, non-null are objects — the same convention the iOS
+    // client relies on in SupabaseWriteQueueExecutor.performDelete),
+    // paginate past the per-list cap, then remove objects in batches.
     try {
-      const prefix = `${userId}/`;
-      // List up to ~1000 files; if a user has more this still removes
-      // the vast majority and the bucket lifecycle policy can sweep
-      // residual orphans later.
-      const { data: files } = await supabaseAdmin.storage
-        .from('user-files')
-        .list(prefix, { limit: 1000 });
-      if (Array.isArray(files) && files.length > 0) {
-        const paths = files.map((f) => `${prefix}${f.name}`);
-        for (let i = 0; i < paths.length; i += 100) {
-          const batch = paths.slice(i, i + 100);
-          await supabaseAdmin.storage.from('user-files').remove(batch).catch((e) => {
-            console.warn(`[account-delete] storage batch remove failed: ${e?.message || e}`);
+      const bucket = supabaseAdmin.storage.from('user-files');
+      const objectPaths = [];
+      const pendingFolders = [String(userId)];
+      const PAGE_SIZE = 1000;
+
+      while (pendingFolders.length > 0) {
+        const folder = pendingFolders.pop();
+        let offset = 0;
+        for (;;) {
+          const { data: entries, error: listErr } = await bucket.list(folder, {
+            limit: PAGE_SIZE,
+            offset,
           });
+          if (listErr) {
+            console.warn(`[account-delete] storage list failed for ${folder}: ${listErr.message}`);
+            break;
+          }
+          if (!Array.isArray(entries) || entries.length === 0) break;
+          for (const entry of entries) {
+            if (entry.id === null || entry.id === undefined) {
+              pendingFolders.push(`${folder}/${entry.name}`);
+            } else {
+              objectPaths.push(`${folder}/${entry.name}`);
+            }
+          }
+          if (entries.length < PAGE_SIZE) break;
+          offset += entries.length;
         }
       }
+
+      let removed = 0;
+      for (let i = 0; i < objectPaths.length; i += 100) {
+        const batch = objectPaths.slice(i, i + 100);
+        const { error: removeErr } = await bucket.remove(batch);
+        if (removeErr) {
+          console.warn(`[account-delete] storage batch remove failed: ${removeErr.message}`);
+        } else {
+          removed += batch.length;
+        }
+      }
+      console.log(`[account-delete] storage purge for ${userId}: found ${objectPaths.length} objects, removed ${removed}`);
     } catch (e) {
       console.warn(`[account-delete] storage cleanup error: ${e?.message || e}`);
     }
 
-    // Step 3: delete the auth user. Cascades through every FK.
+    // Step 3: revoke Sign in with Apple, if this user signed in natively
+    // and we captured a refresh token at sign-in (POST /api/auth/apple/
+    // token-exchange). Best-effort — Apple treats already-revoked tokens
+    // as success, and the row itself dies with the auth user below.
+    try {
+      const { data: appleRow } = await supabaseAdmin
+        .from('lykn_apple_tokens')
+        .select('refresh_token')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (appleRow?.refresh_token) {
+        const revoked = await revokeAppleToken(appleRow.refresh_token);
+        if (!revoked) console.warn(`[account-delete] apple token revoke failed for ${userId}`);
+      }
+    } catch (e) {
+      console.warn(`[account-delete] apple revoke error: ${e?.message || e}`);
+    }
+
+    // Step 4: delete the auth user. Cascades through every FK.
     const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(userId);
     if (delErr) {
       console.error(`[account-delete] auth.admin.deleteUser failed for ${userId}: ${delErr.message}`);
@@ -7710,6 +7767,73 @@ app.delete('/api/account', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('❌ DELETE /api/account:', e?.message || e);
     return res.status(500).json({ error: 'delete_failed' });
+  }
+});
+
+// ============================================
+// SIGN IN WITH APPLE — authorization-code exchange
+// ============================================
+// Native SIWA on iOS goes idToken → Supabase, which never gives the server
+// an Apple refresh token — but App Review requires revoking that token when
+// the account is deleted. The iOS app POSTs the sign-in authorizationCode
+// here immediately after session establishment; we exchange it inside
+// Apple's ~10-minute window and stash the refresh token (migration 114) for
+// DELETE /api/account to revoke later. Losing the code (crash, offline) is
+// tolerable: the next sign-in produces a fresh one.
+app.post('/api/auth/apple/token-exchange', requireAuth, authLimiter, async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+    if (!appleAuthConfigured()) return res.status(503).json({ error: 'apple_auth_not_configured' });
+
+    const authorizationCode = String(req.body?.authorizationCode || '').trim();
+    if (!authorizationCode) return res.status(400).json({ error: 'authorization_code_required' });
+
+    const exchanged = await exchangeAppleAuthorizationCode(authorizationCode);
+    if (!exchanged) return res.status(400).json({ error: 'exchange_failed' });
+
+    const { error } = await supabaseAdmin
+      .from('lykn_apple_tokens')
+      .upsert(
+        { user_id: req.user.id, refresh_token: exchanged.refreshToken, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' }
+      );
+    if (error) {
+      console.error(`[apple-auth] token store failed: ${error.message}`);
+      return res.status(500).json({ error: 'store_failed' });
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('❌ POST /api/auth/apple/token-exchange:', e?.message || e);
+    return res.status(500).json({ error: 'exchange_failed' });
+  }
+});
+
+// ============================================
+// CLIENT METRICS INGEST — MetricKit (PRD P0-34 / Decisions §31)
+// ============================================
+// The iOS MetricKitForwarder POSTs each MXMetricPayload / MXDiagnosticPayload
+// as raw JSON, once daily plus on-crash. Fire-and-forget on the client, so
+// this endpoint just validates auth + shape and lands the payload in
+// lykn_client_metrics (migration 115). Global JSON parser caps bodies at 1mb,
+// comfortably above real MetricKit payloads.
+app.post('/api/metrics/ingest', requireAuth, async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
+    const payload = req.body;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return res.status(400).json({ error: 'json_object_required' });
+    }
+    const { error } = await supabaseAdmin
+      .from('lykn_client_metrics')
+      .insert({ user_id: req.user.id, payload });
+    if (error) {
+      console.error(`[metrics-ingest] insert failed: ${error.message}`);
+      return res.status(500).json({ error: 'ingest_failed' });
+    }
+    return res.status(204).end();
+  } catch (e) {
+    console.error('❌ POST /api/metrics/ingest:', e?.message || e);
+    return res.status(500).json({ error: 'ingest_failed' });
   }
 });
 

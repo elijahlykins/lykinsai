@@ -145,6 +145,11 @@ export default function Privacy() {
             called <code>getBeliefs</code> 14 times today"), and OAuth client
             metadata for connected AI tools (client name, scopes, last-used
             timestamp). No third-party analytics, we use server logs only.
+            The iOS app additionally forwards Apple MetricKit diagnostics
+            (crash reports, hang and performance summaries — never message or
+            vault content) to our own servers, associated with your account so
+            we can investigate issues you report; these are deleted with your
+            account.
           </p>
 
           <h3 className="text-[15px] font-semibold tracking-tight mt-5 mb-1">
@@ -272,7 +277,7 @@ export default function Privacy() {
               <Row p="Render" purpose="Backend hosting (Express server, cron jobs)" region="US-East" />
               <Row p="Vercel" purpose="Frontend hosting (the lykn.io SPA)" region="Global edge" />
               <Row p="Anthropic" purpose="LLM inference for synthesis (when you opt in to Claude tiers)" region="US" />
-              <Row p="OpenAI" purpose="LLM inference for synthesis (when you opt in to GPT tiers); embeddings" region="US" />
+              <Row p="OpenAI" purpose="LLM inference for synthesis (when you opt in to GPT tiers); embeddings; Voice Mode — live microphone audio and conversation context stream to OpenAI's Realtime API during a Voice Mode session in the iOS app" region="US" />
               <Row p="Resend" purpose="Transactional email (sign-in links, account changes)" region="US" />
               <Row p="Stripe" purpose="Billing (paid plans only; we never see card numbers)" region="US" />
             </tbody>
