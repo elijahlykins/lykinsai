@@ -118,9 +118,12 @@ function GuestOnly({ children, to = "/app" }) {
     if (new URLSearchParams(location.search).get("resume") === "account") {
       return children;
     }
-    // Signed-in browser users can't enter the product while web is unplugged.
+    // Web app unplugged: keep marketing pages (/ , /pricing, …) visible for
+    // signed-in browsers. Sending them to /download trapped people who
+    // abandoned Stripe checkout (still authed) and couldn't get back home.
+    // Product routes still use ProtectedRoute → /download.
     if (!canUseWebApp()) {
-      return <Navigate to="/download" replace />;
+      return children;
     }
     return <Navigate to={to} replace />;
   }
