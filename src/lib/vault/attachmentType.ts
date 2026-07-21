@@ -10,7 +10,8 @@
  *
  *  2. `resolveRenderType` — returns the LEGACY granular render string that the
  *     existing renderers (VaultAttachment.tsx, Vault.jsx, vaultContentsForAi.ts)
- *     already switch on. Centralizing it here removes the duplicated
+ *     already switch on (bookmark, youtube, image, video, audio, pdf, html,
+ *     spreadsheet, file, …). Centralizing it here removes the duplicated
  *     `resolveAttachmentType()` copies WITHOUT changing rendering behavior.
  *
  * Keep in sync with the backend port at lib/vault/attachmentType.js.
@@ -167,12 +168,18 @@ export function resolveRenderType(attachment: AttachmentLike = {}): string {
   if (url.startsWith("data:video/")) return "video";
   if (url.startsWith("data:audio/")) return "audio";
 
+  const mime = String(attachment.mimeType || "").toLowerCase().split(";")[0].trim();
   const ext = extOf(attachment);
   if (IMAGE_EXT.includes(ext)) return "image";
   if (VIDEO_EXT.includes(ext)) return "video";
   if (AUDIO_EXT.includes(ext)) return "audio";
   if (ext === "pdf") return "pdf";
   if (["xls", "xlsx", "csv"].includes(ext) || attachment.type === "spreadsheet") return "spreadsheet";
+  // Built artifacts / saved HTML pages — iframe preview (also recovers legacy
+  // rows that were saved as type "file" with a .html name).
+  if (["html", "htm"].includes(ext) || mime === "text/html" || attachment.type === "html") {
+    return "html";
+  }
   if (["doc", "docx", "ppt", "pptx", "txt", "md"].includes(ext)) return "file";
 
   return "file";

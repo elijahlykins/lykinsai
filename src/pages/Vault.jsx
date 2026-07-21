@@ -692,7 +692,7 @@ function getAttachmentHeightClass(card) {
   // Fallback by content type when dimensions are not present.
   if (type === "image") return "h-auto";
   if (type === "video" || type === "youtube") return "h-auto";
-  if (type === "pdf") return "h-56 md:h-64 xl:h-72";
+  if (type === "pdf" || type === "html") return "h-56 md:h-64 xl:h-72";
   if (type === "bookmark") return "h-auto";
   if (type === "spreadsheet") return "h-auto";
   if (type === "doc" || type === "word" || type === "file") return "h-56 md:h-64 xl:h-72";
@@ -730,7 +730,7 @@ function estimateCardHeightUnit(card) {
       // Clamp so a freak ratio can't dominate a column's estimate.
       return Math.min(2.2, Math.max(0.4, unit)) + FOOTER;
     }
-    if (t === "pdf" || t === "doc" || t === "word" || t === "file") return 0.85 + FOOTER;
+    if (t === "pdf" || t === "html" || t === "doc" || t === "word" || t === "file") return 0.85 + FOOTER;
     if (t === "instagram" || t === "tiktok" || t === "facebook") return 1.4 + FOOTER;
     return 0.9 + FOOTER; // bookmark / link / unknown
   }
@@ -3983,7 +3983,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     if (vaultView !== "type") return [];
     const typeLabels = {
       image: "Images", video: "Videos", youtube: "YouTube", audio: "Audio",
-      pdf: "PDFs", spreadsheet: "Spreadsheets", bookmark: "Links", file: "Files",
+      pdf: "PDFs", html: "Artifacts", spreadsheet: "Spreadsheets", bookmark: "Links", file: "Files",
       instagram: "Instagram", tiktok: "TikTok", facebook: "Facebook",
       "quick-note": "Quick Notes", meeting: "Meeting notes", task: "Tasks", doc: "Notes",
       "chat-preview": "Chats",
@@ -4379,13 +4379,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
         'button, a, input, textarea, select, iframe, video, audio, [data-no-drag="true"], [data-no-preview="true"]'
       );
       if (blocked) {
-        // PDF grid tiles embed a scrollable iframe — allow click-to-expand
-        // while keeping other iframe types (e.g. YouTube) interactive in-place.
-        const isPdfTileIframe =
+        // PDF / HTML grid tiles embed a preview iframe (pointer-events often
+        // none) — allow click-to-expand. Keep YouTube iframes interactive.
+        const isPreviewTileIframe =
           card.kind === "attachment" &&
-          card.type === "pdf" &&
+          (card.type === "pdf" || card.type === "html") &&
           blocked.tagName === "IFRAME";
-        if (!isPdfTileIframe) return;
+        if (!isPreviewTileIframe) return;
       }
     }
 
@@ -5395,6 +5395,39 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               draggable={false}
               onLoad={(e) => { e.currentTarget.style.opacity = "1"; }}
             />
+          </div>
+        </div>
+      );
+    }
+
+    if (type === "html") {
+      const fileName = attachment.name || title || "Interactive artifact";
+      const embedUrl = safeAttachmentUrl(resolvedUrl);
+      return (
+        <div className="rounded-2xl overflow-hidden glass-control cursor-pointer">
+          <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-black/8 dark:border-white/8 pointer-events-none">
+            <FileText className="w-4 h-4 text-blue-500 shrink-0" />
+            <div className="min-w-0">
+              <span className="block text-sm font-medium text-black/80 dark:text-white/80 truncate">{fileName}</span>
+              <span className="block text-[0.625rem] text-black/45 dark:text-white/45">Interactive preview</span>
+            </div>
+          </div>
+          <div className={`w-full ${tileHeightClass} overflow-hidden bg-white`}>
+            {embedUrl ? (
+              <iframe
+                src={embedUrl}
+                title={title || "Artifact preview"}
+                className="w-full h-full border-0 opacity-0 transition-opacity duration-150 ease-out pointer-events-none"
+                sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+                loading="lazy"
+                draggable={false}
+                onLoad={(e) => { e.currentTarget.style.opacity = "1"; }}
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-xs text-black/40">
+                Preview unavailable
+              </div>
+            )}
           </div>
         </div>
       );
@@ -7924,6 +7957,20 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                 src={vaultPdfEmbedUrl(resolvedUrl)}
                 className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-white"
               />
+            );
+          } else if (card.kind === "attachment" && type === "html") {
+            body = safeAttachmentUrl(resolvedUrl) ? (
+              <iframe
+                title={title}
+                src={safeAttachmentUrl(resolvedUrl)}
+                className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-white"
+                sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+              />
+            ) : (
+              <div className="flex flex-col items-center gap-4 py-10 text-center">
+                <FileText className="w-14 h-14 text-black/30 dark:text-white/30" />
+                <p className="text-sm text-black/70 dark:text-white/70">Preview unavailable</p>
+              </div>
             );
           } else if (card.kind === "attachment" && type === "youtube") {
             const isMockDemoYoutube = Boolean(card.isDemo && !youtubeEmbedUrl);

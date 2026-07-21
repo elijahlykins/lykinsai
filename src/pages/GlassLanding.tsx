@@ -653,16 +653,16 @@ function AnyScreenSection() {
             <button
               type="button"
               className="gl-any-btn gl-any-btn--primary"
-              onClick={() => navigate("/login")}
+              onClick={() => navigate("/download")}
             >
-              Try LYKN
+              Download LYKN
             </button>
             <button
               type="button"
               className="gl-any-btn gl-any-btn--ghost"
               onClick={() => scrollTo("download")}
             >
-              Download
+              See how
             </button>
           </div>
           <dl className="gl-any-stats gl-reveal">
@@ -1930,42 +1930,29 @@ const START_OPTIONS: {
   solid?: boolean;
 }[] = [
   {
-    title: "Use LYKN in my browser",
-    sub: "Your full workspace on the web, nothing to install.",
-    points: [
-      "Chat, projects, vault, and your synthesis layer",
-      "Works in any modern browser",
-      "Free to start, no credit card",
-      "Same account on every device",
-    ],
-    cta: "Start in my browser",
-    to: "/login",
-    solid: true,
-  },
-  {
-    title: "Download the full LYKN experience",
+    title: "Download LYKN",
     sub: "The desktop app puts your AI on every screen — available for Mac.",
     points: [
       `Summon LYKN Glass anywhere with ${HOTKEY_SPACED}`,
       "Ask about whatever is on your screen",
       "Snip, build, and generate without switching apps",
       "Hands-free voice mode",
-      "Everything from the browser, plus your desktop",
+      "Chat, projects, vault, and your synthesis layer",
     ],
     cta: "Download for Mac",
     to: "/download",
+    solid: true,
   },
 ];
 
-/** "Choose how to get started" — two dark option cards above the footer:
-    the browser app and the Mac desktop experience. */
+/** Download CTA above the footer — desktop app is the product entry. */
 function GetStartedSection() {
   const navigate = useNavigate();
   return (
     <section className="gl-start" id="download">
       <div className="gl-start-inner">
-        <h2 className="gl-start-title gl-reveal">Choose how to get started</h2>
-        <div className="gl-start-grid gl-reveal">
+        <h2 className="gl-start-title gl-reveal">Get LYKN on your desktop</h2>
+        <div className="gl-start-grid gl-start-grid--single gl-reveal">
           {START_OPTIONS.map((opt) => (
             <article className="gl-start-card" key={opt.title}>
               <h3 className="gl-start-card-title">{opt.title}</h3>
@@ -2147,7 +2134,7 @@ const GlassLanding = () => {
     return () => io.disconnect();
   }, []);
 
-  const goToSignup = () => navigate("/login");
+  const goToSignup = () => navigate("/download");
 
   // ⌘L (or Ctrl+L) summons the live LYKN overlay demo over the landing page,
   // the same shortcut that pulls up the real Glass overlay on any screen. The
@@ -2253,9 +2240,6 @@ const GlassLanding = () => {
                 switching apps.
               </p>
               <div className="gl-hero-ctas">
-                <button type="button" className="gl-hero-cta" onClick={goToSignup}>
-                  Try LYKN
-                </button>
                 <button
                   type="button"
                   className="gl-hero-cta gl-hero-cta--blue"

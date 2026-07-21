@@ -30,11 +30,13 @@ function inferAttachmentType(att: VaultAttachmentData): string {
   if (explicit && explicit !== "file") return explicit;
   const rawUrl = String(att?.url || "").trim();
   const name = String(att?.name || att?.title || "").trim();
-  const extSource = name || rawUrl.split("/").pop() || "";
+  const mime = String((att as any)?.mimeType || "").toLowerCase().split(";")[0].trim();
+  const extSource = name || rawUrl.split("?")[0].split("/").pop() || "";
   const ext = extSource.split(".").pop()?.toLowerCase() || "";
   if (rawUrl.startsWith("data:image/")) return "image";
   if (rawUrl.startsWith("data:video/")) return "video";
   if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  if (["html", "htm"].includes(ext) || mime === "text/html") return "html";
   if (rawUrl.includes("youtube.com") || rawUrl.includes("youtu.be")) return "youtube";
   return explicit || "file";
 }
@@ -211,6 +213,28 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
         )}
       </div>
     );
+  }
+
+  if (type === "html" && displayUrl) {
+    const safeUrl = safeExternalUrl(displayUrl);
+    if (safeUrl) {
+      return (
+        <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8 bg-white">
+          {name ? (
+            <p className="text-[0.625rem] text-gray-500 dark:text-gray-400 px-2 py-1 truncate border-b border-black/5 dark:border-white/8">
+              {name}
+            </p>
+          ) : null}
+          <iframe
+            src={safeUrl}
+            title={name || "Artifact preview"}
+            className={full ? "w-full h-[min(60vh,480px)] border-0" : "w-full h-[180px] border-0"}
+            sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+            loading="lazy"
+          />
+        </div>
+      );
+    }
   }
 
   if (rawUrl) {

@@ -2773,10 +2773,15 @@ export default function LyknChat() {
     if (!mimeType) mimeType = blob.type || "application/octet-stream";
 
     // Classify the attachment so the vault renders the right card.
+    // HTML/React artifacts must be "html" (iframe preview), not generic "file".
     const m = mimeType.toLowerCase().split(";")[0].trim();
     const ext = (filename.split(".").pop() || "").toLowerCase();
-    const fileType =
-      m.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)
+    const isHtmlArtifact =
+      (["html", "htm"].includes(ext) || m === "text/html") &&
+      !["jsx", "tsx", "js", "ts"].includes(ext);
+    const fileType = isHtmlArtifact
+      ? "html"
+      : m.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)
         ? "image"
         : m === "application/pdf" || ext === "pdf"
           ? "pdf"

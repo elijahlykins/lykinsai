@@ -5,6 +5,7 @@ import { QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { queryClientInstance } from '@/lib/query-client';
 import { API_BASE_URL } from '@/lib/api-config';
 import { hasAppAccess, isSubscriptionGateExempt } from '@/lib/billingAccess';
+import { canUseWebApp } from '@/lib/webAppAccess';
 import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
@@ -61,9 +62,21 @@ import ProjectDetailPage from "./pages/ProjectDetailPage";
 
 const loadingFallback = <LoadingScreen isLoading={true} />;
 
+/** Browser users hit /download; Electron (`window.lykn.desktop`) passes through. */
+function DesktopProductOnly({ children }) {
+  if (!canUseWebApp()) {
+    return <Navigate to="/download" replace />;
+  }
+  return children;
+}
+
 function ProtectedRoute({ children }) {
   const { user, loading, signingOut } = useAuth();
   const location = useLocation();
+  // Product UI is desktop-only while the web app is unplugged.
+  if (!canUseWebApp()) {
+    return <Navigate to="/download" replace />;
+  }
   if (loading) return null;
   // During an explicit logout the user clears before the hard reload to `/`
   // (the walkthrough) completes. Render blank instead of bouncing to /login,
@@ -80,6 +93,7 @@ function ProtectedRoute({ children }) {
 // UX so non-admins don't even see the dashboard exists.
 function AdminOnly({ children }) {
   const { user, loading } = useAuth();
+  if (!canUseWebApp()) return <Navigate to="/download" replace />;
   if (loading) return null;
   const allowed = (import.meta.env.VITE_ADMIN_EMAILS || "admin@lykn.io")
     .split(",")
@@ -103,6 +117,10 @@ function GuestOnly({ children, to = "/app" }) {
     // `/?resume=account`. Keep honoring it so those links don't loop.
     if (new URLSearchParams(location.search).get("resume") === "account") {
       return children;
+    }
+    // Signed-in browser users can't enter the product while web is unplugged.
+    if (!canUseWebApp()) {
+      return <Navigate to="/download" replace />;
     }
     return <Navigate to={to} replace />;
   }
@@ -244,18 +262,34 @@ function AppShell() {
       <div className={isStandalone ? "" : "app-content"}>
         <RouteErrorBoundary>
           <Routes>
-            <Route path="/login" element={<Login />} />
+            {/* In-browser login is desktop-only while the web app is unplugged.
+                Desktop Google OAuth still uses /desktop-auth in the system browser. */}
+            <Route
+              path="/login"
+              element={
+                <DesktopProductOnly>
+                  <Login />
+                </DesktopProductOnly>
+              }
+            />
             {/* Browser-side half of the Mac app's Google sign-in: runs the
                 OAuth round-trip in the real browser, then deep-links the
                 session back into the app (lykn://auth). Not protected — it
-                manages its own auth states. */}
+                manages its own auth states. Always reachable on the website. */}
             <Route path="/desktop-auth" element={<DesktopAuth />} />
             {/* Password-recovery landing (email link target). Handles its own
                 auth state: a recovery session means "may set a new password". */}
             <Route path="/reset-password" element={<ResetPassword />} />
             {/* Post-signup paywall: every new account picks a plan here and
                 starts a card-on-file trial before entering the app. */}
-            <Route path="/start-trial" element={<StartTrial />} />
+            <Route
+              path="/start-trial"
+              element={
+                <DesktopProductOnly>
+                  <StartTrial />
+                </DesktopProductOnly>
+              }
+            />
             {/* OAuth consent screen — reached via 302 from API's /oauth/authorize.
                 Intentionally NOT wrapped in ProtectedRoute: the page handles its
                 own auth-gate inline so OAuth params survive the sign-in round-trip

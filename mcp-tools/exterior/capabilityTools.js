@@ -23,7 +23,14 @@ function withCtx(fn) {
   return async (args = {}, ctx = {}) => {
     const c = capabilityCtx({ ...ctx, logUsage: (info) => logAiUsage(info) });
     const result = await fn(args, c);
-    if (result?.ok === false && result.error) return errorContent(result.error);
+    if (result?.ok === false && result.error) {
+      // Surface `hint` so scope-guard / edit retries actually see the recovery
+      // instructions (edits path vs full_rewrite) instead of just the error code.
+      const hint = typeof result.hint === 'string' && result.hint.trim()
+        ? result.hint.trim()
+        : '';
+      return errorContent(hint ? `${result.error}: ${hint}` : result.error);
+    }
     return jsonContent(result);
   };
 }
@@ -379,19 +386,24 @@ export const buildReactArtifactTool = {
     '    comment stripping, copy rewrites, layout shuffles, or "while I\'m',
     '    here" improvements. An unrequested change is a BUG, even if you',
     '    think it makes the artifact better.',
+    '  • PRESERVE THE LOOK: keep THEME tokens, Tailwind classes, layout, and',
+    '    fonts. "Add more hooks / expand the bank / fix this copy" is a',
+    '    CONTENT edit — never an excuse to redesign the UI.',
     '  • `edits` is the DEFAULT edit mechanism: an array of {find, replace}',
     '    patches where each `find` is an EXACT, UNIQUE snippet copied from',
     '    the current source in [ARTIFACT_OPEN] (match whitespace/indentation',
     '    precisely; include enough surrounding lines to be unique; use',
     '    replace: "" to delete). Keep each `replace` MINIMAL — patch the',
     '    line(s) that must change, not a rewritten version of the whole',
-    '    surrounding block.',
+    '    surrounding block. If you also pass `code`, the server IGNORES it',
+    '    and applies `edits` against the open source.',
     '  • Full `code` on an edit turn is allowed ONLY when the user explicitly',
     '    asked for a sweeping change (full restyle, major restructure,',
     '    "start over") — you MUST then also pass full_rewrite: true, and even',
     '    then copy every part the request does not cover verbatim from the',
     '    current source. The server measures how much of the open artifact',
-    '    your code replaces and REJECTS broad rewrites that were not declared.',
+    '    your code replaces (and whether THEME changed) and REJECTS broad',
+    '    rewrites that were not declared.',
     '  • If an edit attempt errors (target not found/ambiguous), fix the',
     '    `find` snippet and retry `edits` first; full code is the last resort.',
     '',

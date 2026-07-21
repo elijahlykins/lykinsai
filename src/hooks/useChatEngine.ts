@@ -2126,10 +2126,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         text,
         promptId,
         composerMode: sendMode,
-        activeArtifact:
-          sendMode === "none" && isEditableArtifact(editArtifact)
-            ? toArtifactEditContext(editArtifact as ChatArtifact)
-            : null,
+        // Always thread the open panel artifact for surgical edits — even if
+        // Create mode is still armed. Dropping it was a common path to
+        // full redesigns ("add 10 hooks" → brand-new look).
+        activeArtifact: isEditableArtifact(editArtifact)
+          ? toArtifactEditContext(editArtifact as ChatArtifact)
+          : null,
         sentAttachments,
         brickActionData,
         // Pull conversation context from THIS board's snapshot so chats

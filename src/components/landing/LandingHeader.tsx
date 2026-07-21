@@ -105,7 +105,7 @@ export default function LandingHeader({
   // there — see the .lkn-menu-btn / .lkn-mobile-menu rules in index.css).
   const [menuOpen, setMenuOpen] = useState(false);
   const prodRef = useRef<HTMLDivElement>(null);
-  const goToSignup = () => navigate("/login");
+  const goToSignup = () => navigate("/download");
   const goHome = () => navigate("/");
 
   // Close the mobile menu on Escape and lock the page scroll behind it.
@@ -260,7 +260,7 @@ export default function LandingHeader({
               Watch Demo
             </button>
             <button type="button" className="lkn-nav-signup" onClick={goToSignup}>
-              Try for free
+              Download
             </button>
           </div>
         </nav>
@@ -332,7 +332,7 @@ export default function LandingHeader({
               className="lkn-nav-signup"
               onClick={() => menuGo(goToSignup)}
             >
-              Try for free
+              Download
             </button>
           </div>
         </nav>

@@ -6416,18 +6416,37 @@ function detectImageFollowUpIntent(message, conversation) {
   return IMAGE_FOLLOWUP_EDIT_RE.test(t);
 }
 
+const TOOL_GUIDANCE_ARTIFACT_EDIT = [
+  'ARTIFACT EDITING (an artifact is already open in the side panel):',
+  '  The user is refining an EXISTING build — not commissioning a new one.',
+  '  • Do NOT invent a new look, theme, palette, layout, typography, or component structure.',
+  '  • There is NO [DESIGN_SYSTEM] / [STYLE_GUIDE] on this turn on purpose. Keep the open',
+  '    artifact\'s THEME tokens, classNames, colors, spacing, and visual design byte-for-byte.',
+  '  • Content / data / copy / logic / list-expansion changes → call lykn_build_react_artifact',
+  '    with `edits` ONLY: {find, replace} patches copied verbatim from [ARTIFACT_OPEN].',
+  '  • Never pass full `code` unless the user explicitly asked to restyle, rebuild, redesign,',
+  '    or start over — and then set full_rewrite: true.',
+  '  • "Add more X", "expand the bank", "fix the bug", "change this label" are ALWAYS edits,',
+  '    never a redesign.',
+].join('\n');
+
 /**
  * Compose the tool-calling guidance for a turn: the always-on core
  * (LYKN_CHAT_TOOL_GUIDANCE) plus only the detail blocks whose intent matches
  * this turn. Keeps per-turn token cost down while the core's CAPABILITIES MENU
  * preserves the model's awareness of everything it can do.
  *   opts.forceMaking — image / artifact "+" actions guarantee the MAKING block
+ *   opts.editingArtifact — side-panel refine: skip fresh design briefs
  *   opts.isMainAgent — main agents always get the agents/apps/code block
  */
 function buildChatToolGuidance(userMessage, opts = {}) {
   const t = String(userMessage || '').toLowerCase();
   const parts = [LYKN_CHAT_TOOL_GUIDANCE];
-  if (opts.forceMaking || MAKING_INTENT_RE.test(t) || MAKING_VERB_RE.test(t)) {
+  // Edit turns must NOT get a fresh [DESIGN_SYSTEM] / visual "build big" brief —
+  // that is the #1 cause of "add 10 hooks" turning into a whole new look.
+  if (opts.editingArtifact) {
+    parts.push(TOOL_GUIDANCE_ARTIFACT_EDIT);
+  } else if (opts.forceMaking || MAKING_INTENT_RE.test(t) || MAKING_VERB_RE.test(t)) {
     parts.push(TOOL_GUIDANCE_VISUAL, TOOL_GUIDANCE_EXTERIOR);
     // Coded artifacts follow a named design system (DESIGN.md-style brief,
     // format adapted from open-design). Picked from the request wording —
@@ -14265,10 +14284,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `\n\n[ARTIFACT_OPEN — The user has this coded React artifact open in the side panel and may ask you to refine it:\n` +
         `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
         `• current component source (JSX):\n\`\`\`jsx\n${codeSrc}\n\`\`\`\n` +
-        `If the user's message asks to change, fix, add to, shorten, expand, restyle, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
-        `SCOPE DISCIPLINE — this is the rule users complain about most when it's broken: implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
+        `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
+        `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. ` +
+        `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
         `DEFAULT to the \`edits\` argument — {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. Do not re-send the full code for a targeted change. ` +
-        `Pass COMPLETE \`code\` only when the user explicitly asked for a sweeping change (full restyle, major restructure, "start over") — then ALSO pass full_rewrite: true, and still copy everything the request doesn't cover verbatim from the source above. The server measures your diff against the open artifact and rejects broad rewrites that aren't declared. ` +
+        `Pass COMPLETE \`code\` only when the user EXPLICITLY asked to restyle, rebuild, redesign, or start over — then ALSO pass full_rewrite: true, and still copy everything the request doesn't cover verbatim from the source above. The server measures your diff against the open artifact and rejects broad rewrites that aren't declared. ` +
         `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
         `If the message is NOT about the artifact, ignore this and answer normally.]`;
     } else if (activeArtifactEditable) {
@@ -14442,7 +14462,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // this is the policy.
     if (useTools) {
       prompt += '\n\n' + buildChatToolGuidance(streamPureUserMessage || streamSearchText, {
-        forceMaking: Boolean(forceImage || artifactToolName || activeArtifactEditable),
+        // Fresh Create / image turns get the full visual + design brief.
+        // Open-artifact refine turns must NOT — a new [DESIGN_SYSTEM] is what
+        // turns "add 10 hooks" into a whole restyle.
+        forceMaking: Boolean(forceImage || artifactToolName),
+        editingArtifact: Boolean(activeArtifactEditable),
         isMainAgent: Boolean(streamOrchestrationCtx?.isMainAgent),
         // Pins the [STYLE_GUIDE] pick for Create-menu builds that map to a
         // known format (study/document/worksheet); wording decides otherwise.

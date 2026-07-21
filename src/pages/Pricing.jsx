@@ -47,7 +47,7 @@ export default function Pricing() {
   const [period, setPeriod] = useState(BILLING_PERIODS.ANNUAL);
   const [openFaq, setOpenFaq] = useState(FAQ_ITEMS[0]?.id ?? null);
 
-  const goToSignup = () => navigate("/login");
+  const goToSignup = () => navigate("/download");
 
   // Pricing is its own page, so make sure visitors land at the top.
   useEffect(() => {

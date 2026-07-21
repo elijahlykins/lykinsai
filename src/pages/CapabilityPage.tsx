@@ -292,16 +292,9 @@ export default function CapabilityPage() {
               <button
                 type="button"
                 className="gl-hero-cta"
-                onClick={() => navigate("/login")}
-              >
-                Try for free
-              </button>
-              <button
-                type="button"
-                className="gl-hero-cta gl-hero-cta--ghost"
                 onClick={() => navigate("/download")}
               >
-                Download desktop app
+                Download LYKN
               </button>
             </div>
 
