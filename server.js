@@ -6359,7 +6359,7 @@ const ARTIFACT_INTENT_NOUNS = [
   // dashboard/game/calculator-style asks are webapp builds too — "build me a
   // dashboard" used to fall through to a free-text turn where the model
   // (grok especially) announced the build and never called the tool.
-  { type: 'webapp',    re: /(interactive (?:page|app|web ?page)|mini[- ]?app|web ?app|web ?site|landing ?page|web ?page|html (?:page|app)|prototype|wireframe|dashboards?|admin ?panel|trackers?|calculators?|games?(?! ?plan)|timers?|converters?|widgets?|simulators?|planners?|todo ?(?:list|app)|apps?|tools?)/i },
+  { type: 'webapp',    re: /(interactive (?:page|app|web ?page)|mini[- ]?app|web ?app|web ?site|landing ?page|web ?page|html (?:page|app)|prototype|wireframe|dashboards?|admin ?panel|trackers?|calculators?|games?(?! ?plan)|minecraft|voxel|sandbox(?:es)?|platformers?|first[- ]?person|3d|timers?|converters?|widgets?|simulators?|planners?|todo ?(?:list|app)|apps?|tools?|copy of)/i },
   // "doc"/"docs" (incl. "word doc"/"google doc") are the everyday way people
   // ask for a document — without them "write me a doc" fell through to a free
   // text reply, where the model often dumped raw HTML into the chat body.
@@ -6517,6 +6517,42 @@ const SURGICAL_EDIT_INTENT_RE =
   /\b(?:fix|change|update|tweak|adjust|rename|replace|remove|delete|insert|swap|patch|correct|typo|bug|font|typeface|typography|recolou?r|theme|accent|wire up|hook up|make (?:it|that|this|the)\b[^.!?]{0,40}\b(?:return|use|call|show|hide|say|read|write|do))\b/i;
 const REDESIGN_INTENT_RE =
   /\b(?:redesign|restyle|rebrand|rebuild|overhaul|from scratch|start over|new look|new theme|new palette|rewrite (?:the )?(?:whole|entire|all)|full\s+rewrite|exact(?:ly)?\s+clone|identical(?:\s+look)?|clone\s+(?:this|that|it))\b/i;
+
+// Fresh coded build even when a React artifact is already open — "build me a
+// copy of minecraft like this" must NOT stay trapped in surgical-edit mode.
+// Kept separate from detectArtifactIntent so open-panel turns still force a
+// new webapp when the ask is clearly a different deliverable.
+function isFreshWebappBuildAsk(message, { hasImages = false } = {}) {
+  const t = String(message || '').trim();
+  if (!t || t.length > 800) return false;
+  const makingVerb =
+    /\b(?:make|build|create|generate|design|code|write|whip up|mock up|put together)\b/i.test(t);
+  const webappNoun =
+    /\b(?:games?(?! ?plan)|apps?|web ?apps?|mini[- ]?apps?|sandbox(?:es)?|simulators?|minecraft|voxel|platformers?|shooters?|rpg|first[- ]?person|\b3d\b|three\.?js)\b/i.test(
+      t,
+    );
+  // "copy of minecraft" / "copy of this game" — not "copy of this document".
+  const copyOfWebapp =
+    /\bcopy of\b[^.!?\n]{0,80}\b(?:minecraft|games?(?! ?plan)|apps?|sandbox(?:es)?|voxel|platformers?|world)\b/i.test(
+      t,
+    );
+  const referencePhrase =
+    /\b(?:like this|like that|from this|based on this|from the (?:image|screenshot|picture|reference)|as shown|in the (?:image|screenshot|picture))\b/i.test(
+      t,
+    );
+  const differentDeliverable =
+    /\b(?:different|brand[- ]?new|entirely new|fresh|whole new|completely new)\s+(?:game|app|build|artifact|world)\b/i.test(
+      t,
+    ) ||
+    /\b(?:not an? edit|not (?:a |an )?(?:patch|tweak)|replace (?:the |what'?s )?open|new (?:game|app) entirely)\b/i.test(
+      t,
+    );
+  if (differentDeliverable) return true;
+  if (makingVerb && (webappNoun || copyOfWebapp)) return true;
+  if (hasImages && makingVerb && referencePhrase) return true;
+  if (hasImages && (webappNoun || copyOfWebapp) && referencePhrase) return true;
+  return false;
+}
 
 /**
  * Compose the tool-calling guidance for a turn: the always-on core
@@ -13847,22 +13883,30 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       (imageUrls.length > 0 || activeArtifactHasSource);
     const imageWebappAsk =
       imageUrls.length > 0 && detectArtifactIntent(askText) === 'webapp';
+    // Same-chat open platformer + "build me a copy of minecraft like this"
+    // must start a NEW coded artifact — not surgical edits of Super Coin Dash.
+    const freshWebappAsk = isFreshWebappBuildAsk(askText, {
+      hasImages: imageUrls.length > 0,
+    });
     const buildModeFresh =
       (forceArtifact &&
         artifactType === 'webapp' &&
         (imageUrls.length > 0 || !looksLikeSurgicalTweak)) ||
       referenceRebuildAsk ||
-      imageWebappAsk;
-    // If the user clearly asked to build a new game/app from a reference but
-    // Create wasn't armed (and an open artifact blocked auto-infer), force the
-    // React builder now — otherwise the model narrates about the open game.
-    if (!artifactBuildSpec && (referenceRebuildAsk || imageWebappAsk)) {
+      imageWebappAsk ||
+      freshWebappAsk;
+    // Force the React builder even when Create wasn't armed and an open
+    // artifact blocked the early auto-infer path.
+    if (
+      !artifactBuildSpec &&
+      (referenceRebuildAsk || imageWebappAsk || freshWebappAsk)
+    ) {
       artifactType = 'webapp';
       artifactBuildSpec = ARTIFACT_BUILD_SPEC.webapp;
       artifactToolName = artifactBuildSpec.tool;
       artifactAutoInferred = true;
       console.log(
-        '🎨 Stream: reference/new-game ask — forcing lykn_build_react_artifact fresh build',
+        '🎨 Stream: fresh webapp/game ask — forcing lykn_build_react_artifact (ignoring open panel for this turn)',
       );
     }
     if (activeArtifactHasSource && artifactBuildSpec && !redesignArtifactAsk && !buildModeFresh) {

@@ -2169,9 +2169,37 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           text,
         ) &&
         (hasAttachedImage || artifactBelongsHere);
+      // Mirror server isFreshWebappBuildAsk — open Super Coin Dash must not
+      // ride along on "build me a copy of minecraft like this".
+      const makingVerb =
+        /\b(?:make|build|create|generate|design|code|write|whip up|mock up|put together)\b/i.test(
+          text,
+        );
+      const webappNoun =
+        /\b(?:games?(?! ?plan)|apps?|web ?apps?|mini[- ]?apps?|sandbox(?:es)?|simulators?|minecraft|voxel|platformers?|shooters?|rpg|first[- ]?person|\b3d\b|three\.?js)\b/i.test(
+          text,
+        );
+      const copyOfWebapp =
+        /\bcopy of\b[^.!?\n]{0,80}\b(?:minecraft|games?(?! ?plan)|apps?|sandbox(?:es)?|voxel|platformers?|world)\b/i.test(
+          text,
+        );
+      const referencePhrase =
+        /\b(?:like this|like that|from this|based on this|from the (?:image|screenshot|picture|reference)|as shown|in the (?:image|screenshot|picture))\b/i.test(
+          text,
+        );
+      const differentDeliverable =
+        /\b(?:different|brand[- ]?new|entirely new|fresh|whole new|completely new)\s+(?:game|app|build|artifact|world)\b/i.test(
+          text,
+        );
+      const freshWebappAsk =
+        differentDeliverable ||
+        (makingVerb && (webappNoun || copyOfWebapp)) ||
+        (hasAttachedImage && makingVerb && referencePhrase) ||
+        (hasAttachedImage && (webappNoun || copyOfWebapp) && referencePhrase);
       const buildModeFresh =
         (isBuildMode && (hasAttachedImage || !looksLikeSurgicalTweak)) ||
-        referenceRebuildAsk;
+        referenceRebuildAsk ||
+        freshWebappAsk;
       const refiningOpenArtifact =
         artifactBelongsHere &&
         isEditableArtifact(editArtifact) &&
