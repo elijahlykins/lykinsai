@@ -272,13 +272,17 @@ export default function StartTrial() {
     );
   }
 
+  // Plan picker must fit the desktop window without scrolling. Checkout can
+  // scroll because Stripe's embedded form is taller than a laptop viewport.
   const shellClass =
-    "fixed inset-0 z-50 overflow-y-auto bg-white text-slate-900";
+    "fixed inset-0 z-50 bg-white text-slate-900";
+  const shellScrollClass = `${shellClass} overflow-y-auto`;
+  const shellFitClass = `${shellClass} overflow-hidden`;
 
   if (phase === "loading" || phase === "confirming") {
     return (
-      <div className={shellClass} style={{ fontFamily: LANDING_FONT }}>
-        <div className="min-h-full flex flex-col items-center justify-center gap-4">
+      <div className={shellFitClass} style={{ fontFamily: LANDING_FONT }}>
+        <div className="h-full flex flex-col items-center justify-center gap-4">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-blue-600" aria-label="Loading" />
           {phase === "confirming" && (
             <p className="text-sm text-slate-500">Activating your trial…</p>
@@ -290,12 +294,12 @@ export default function StartTrial() {
 
   if (phase === "checkout" && stripePromise && clientSecret) {
     return (
-      <div className={shellClass} style={{ fontFamily: LANDING_FONT }}>
-        <div className="min-h-full flex items-start justify-center py-10">
+      <div className={shellScrollClass} style={{ fontFamily: LANDING_FONT }}>
+        <div className="min-h-full flex items-start justify-center py-6 sm:py-8">
           <div className="w-full max-w-xl px-4">
             <button
               type="button"
-              className="mb-4 text-sm text-slate-500 hover:text-slate-800"
+              className="mb-3 text-sm text-slate-500 hover:text-slate-800"
               onClick={() => {
                 setClientSecret(null);
                 setPhase("pick");
@@ -314,8 +318,8 @@ export default function StartTrial() {
 
   if (phase === "error") {
     return (
-      <div className={shellClass} style={{ fontFamily: LANDING_FONT }}>
-        <div className="min-h-full flex items-center justify-center px-6">
+      <div className={shellFitClass} style={{ fontFamily: LANDING_FONT }}>
+        <div className="h-full flex items-center justify-center px-6">
           <div className="max-w-md text-center">
             <h1 className="text-2xl font-semibold tracking-tight">
               Could not start checkout
@@ -344,23 +348,23 @@ export default function StartTrial() {
   const studentEligible = isStudentEmail(user?.email);
 
   return (
-    <div className={shellClass} style={{ fontFamily: LANDING_FONT }}>
-      <div className="min-h-full flex flex-col items-center justify-center px-4 py-12">
-        <div className="w-full max-w-5xl text-center">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+    <div className={shellFitClass} style={{ fontFamily: LANDING_FONT }}>
+      <div className="h-full flex flex-col items-center justify-center px-3 py-3 sm:px-5 sm:py-4">
+        <div className="w-full max-w-5xl text-center min-h-0">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-[11px] font-semibold text-blue-700">
             {daysLabel} free. $0 due today.
           </span>
-          <h1 className="mt-4 text-3xl sm:text-4xl font-semibold tracking-tight">
+          <h1 className="mt-2 text-2xl sm:text-[1.75rem] font-semibold tracking-tight">
             Choose your plan to start
           </h1>
-          <p className="mt-3 text-base text-slate-500 max-w-xl mx-auto leading-relaxed">
-            Every plan starts with a {daysLabel} free trial. Add a card, use
-            everything, and cancel anytime before the trial ends to pay nothing.
+          <p className="mt-1.5 text-sm text-slate-500 max-w-lg mx-auto leading-snug">
+            Every plan starts with a {daysLabel} free trial. Add a card, cancel
+            anytime before it ends to pay nothing.
           </p>
 
           {/* Billing period toggle */}
           <div
-            className="mt-7 inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1"
+            className="mt-3 inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5"
             role="group"
             aria-label="Billing period"
           >
@@ -368,7 +372,7 @@ export default function StartTrial() {
               type="button"
               onClick={() => setPeriod(BILLING_PERIODS.MONTHLY)}
               aria-pressed={period === BILLING_PERIODS.MONTHLY}
-              className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${
+              className={`rounded-lg px-3.5 py-1 text-sm font-medium transition-colors ${
                 period === BILLING_PERIODS.MONTHLY
                   ? "bg-white text-slate-900 shadow-sm"
                   : "text-slate-500 hover:text-slate-800"
@@ -380,7 +384,7 @@ export default function StartTrial() {
               type="button"
               onClick={() => setPeriod(BILLING_PERIODS.ANNUAL)}
               aria-pressed={period === BILLING_PERIODS.ANNUAL}
-              className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${
+              className={`rounded-lg px-3.5 py-1 text-sm font-medium transition-colors ${
                 period === BILLING_PERIODS.ANNUAL
                   ? "bg-white text-slate-900 shadow-sm"
                   : "text-slate-500 hover:text-slate-800"
@@ -391,65 +395,66 @@ export default function StartTrial() {
             </button>
           </div>
 
-          {/* Plan cards */}
-          <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-left">
+          {/* Plan cards — compact so the whole picker fits a laptop Electron window */}
+          <div className="mt-3 grid gap-2.5 sm:grid-cols-3 text-left">
             {TRIAL_PLANS.map((plan) => {
               const price = getDisplayPrice(plan, period);
               const savings = getAnnualSavings(plan);
               const planBusy = starting && pendingPlan === plan.id;
               const studentLocked = plan.id === "student" && !studentEligible;
+              const features = plan.features
+                .filter((f) => f.included)
+                .slice(0, 4);
               return (
                 <div
                   key={plan.id}
-                  className={`relative flex flex-col rounded-2xl border p-6 ${
+                  className={`relative flex flex-col rounded-xl border p-3.5 sm:p-4 ${
                     plan.highlighted
-                      ? "border-blue-300 bg-blue-50/40 shadow-[0_20px_50px_-30px_rgba(37,99,235,0.5)]"
+                      ? "border-blue-300 bg-blue-50/40 shadow-[0_16px_40px_-28px_rgba(37,99,235,0.5)]"
                       : "border-slate-200 bg-white"
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold">{plan.name}</h3>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-base font-semibold">{plan.name}</h3>
                     {plan.badge && (
-                      <span className="rounded-md bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">
+                      <span className="rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                         {plan.badge}
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                  <p className="mt-0.5 text-[11px] leading-snug text-slate-500 line-clamp-2">
                     {plan.tagline}
                   </p>
 
-                  <div className="mt-4">
+                  <div className="mt-2.5">
                     <div className="flex items-baseline gap-1.5">
-                      <span className="text-3xl font-bold tracking-tight">$0</span>
-                      <span className="text-sm text-slate-500">for {daysLabel}</span>
+                      <span className="text-2xl font-bold tracking-tight">$0</span>
+                      <span className="text-xs text-slate-500">for {daysLabel}</span>
                     </div>
-                    <p className="mt-1 text-xs text-slate-500">
+                    <p className="mt-0.5 text-[11px] text-slate-500">
                       then {formatPrice(price)}/mo
                       {isAnnual ? " billed annually" : ""}
                       {isAnnual && savings > 0 ? ` · save $${savings}/yr` : ""}
                     </p>
                   </div>
 
-                  <ul className="mt-4 mb-6 flex-1 space-y-2">
-                    {plan.features
-                      .filter((f) => f.included)
-                      .map((f) => (
-                        <li
-                          key={f.text}
-                          className="flex items-start gap-2 text-sm text-slate-700"
-                        >
-                          <span aria-hidden className="mt-[2px] text-blue-600">
-                            ✓
-                          </span>
-                          <span>{f.text}</span>
-                        </li>
-                      ))}
+                  <ul className="mt-2.5 mb-3 flex-1 space-y-1">
+                    {features.map((f) => (
+                      <li
+                        key={f.text}
+                        className="flex items-start gap-1.5 text-[12px] leading-snug text-slate-700"
+                      >
+                        <span aria-hidden className="mt-px text-blue-600">
+                          ✓
+                        </span>
+                        <span className="line-clamp-1">{f.text}</span>
+                      </li>
+                    ))}
                   </ul>
 
                   <button
                     type="button"
-                    className={`w-full rounded-full px-5 py-2.5 text-sm font-semibold transition-colors disabled:opacity-60 ${
+                    className={`w-full rounded-full px-4 py-2 text-sm font-semibold transition-colors disabled:opacity-60 ${
                       plan.highlighted
                         ? "bg-blue-600 text-white hover:bg-blue-500"
                         : "border border-slate-300 bg-white text-slate-900 hover:border-blue-400 hover:text-blue-700"
@@ -464,9 +469,8 @@ export default function StartTrial() {
                         : "Start free trial"}
                   </button>
                   {studentLocked && (
-                    <p className="mt-2 text-[11px] leading-relaxed text-slate-400 text-center">
-                      Your login email isn&apos;t a school address. Sign up with
-                      your .edu / .ac email to unlock the student price.
+                    <p className="mt-1.5 text-[10px] leading-snug text-slate-400 text-center">
+                      Sign up with a school email (.edu / .ac) to unlock Student.
                     </p>
                   )}
                 </div>
@@ -474,14 +478,13 @@ export default function StartTrial() {
             })}
           </div>
 
-          <p className="mt-6 text-xs text-slate-400 max-w-xl mx-auto">
-            You&apos;ll add a card to start. Payments are processed securely by
-            Stripe. LYKN never sees your card details.
+          <p className="mt-2.5 text-[11px] text-slate-400 max-w-xl mx-auto">
+            Card required to start. Payments by Stripe — LYKN never sees your card.
           </p>
 
           <button
             type="button"
-            className="mt-5 text-xs text-slate-400 underline underline-offset-4 hover:text-slate-600"
+            className="mt-2 text-[11px] text-slate-400 underline underline-offset-4 hover:text-slate-600"
             onClick={signOutToLogin}
             disabled={starting}
           >
