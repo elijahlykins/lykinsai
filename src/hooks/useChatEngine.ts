@@ -2144,20 +2144,44 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       // panel state must not force edits or strip Build on a fresh chat.
       const artifactBelongsHere =
         !!editArtifact && !!thisChatId && artifactChatId === thisChatId;
+      const isBuildMode = sendMode === "create:webapp";
+      const hasAttachedImage = sentAttachments.some(
+        (a) => (a.type || "").toLowerCase() === "image" && !!a.url,
+      );
+      // Short tweak while Build is still armed → surgical. Otherwise Build
+      // mode is a FRESH coded artifact (reference-image games, new apps) —
+      // never strip Create or ship Smash Arena as activeArtifact.
+      const looksLikeSurgicalTweak =
+        text.trim().length < 140 &&
+        /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme)\b/i.test(
+          text,
+        );
+      const buildModeFresh =
+        isBuildMode && (hasAttachedImage || !looksLikeSurgicalTweak);
       const refiningOpenArtifact =
-        artifactBelongsHere && isEditableArtifact(editArtifact);
-      // Create mode forces a ground-up builder call + fresh design system.
-      // When THIS chat already has an editable artifact open, drop Create so
-      // the turn stays a surgical refine. New chats keep Create armed.
+        artifactBelongsHere &&
+        isEditableArtifact(editArtifact) &&
+        !buildModeFresh;
+      // Other Create kinds (deck/doc/…) still defer to surgical refine when
+      // an artifact from THIS chat is open. Build mode does not.
       const effectiveComposerMode =
-        refiningOpenArtifact && typeof sendMode === "string" && sendMode.startsWith("create:")
+        refiningOpenArtifact &&
+        typeof sendMode === "string" &&
+        sendMode.startsWith("create:") &&
+        !isBuildMode
           ? "none"
           : sendMode;
+      if (buildModeFresh && editArtifact) {
+        console.log(
+          `🧑‍💻 Build mode: starting fresh (ignoring open "${String(editArtifact.title || "").slice(0, 60)}")`,
+        );
+      }
       await orchestrateChatSend({
         text,
         promptId,
         composerMode: effectiveComposerMode,
         // Thread the open panel artifact for surgical edits — same chat only.
+        // Build-mode fresh turns send null so the server cannot force edits.
         activeArtifact: refiningOpenArtifact
           ? toArtifactEditContext(editArtifact as ChatArtifact)
           : null,

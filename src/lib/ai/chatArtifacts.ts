@@ -58,6 +58,8 @@ export type ArtifactDownload = { format: string; url: string; filename?: string 
 export type ArtifactEditContext = {
   toolName: string;
   title: string;
+  /** Board that owns this panel artifact — server drops mismatches. */
+  sourceChatId?: string;
   templateType?: string;
   sections?: any[];
   content?: string;
@@ -99,6 +101,7 @@ export function toArtifactEditContext(a: ChatArtifact): ArtifactEditContext {
   return {
     toolName: a.toolName,
     title: a.title,
+    sourceChatId: typeof a.sourceChatId === "string" ? a.sourceChatId : undefined,
     templateType: a.templateType,
     sections: Array.isArray(a.sections) ? a.sections : undefined,
     content: typeof a.content === "string" ? a.content : undefined,

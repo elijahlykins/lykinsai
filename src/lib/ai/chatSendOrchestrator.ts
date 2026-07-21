@@ -615,6 +615,8 @@ export interface ChatSendParams {
   activeArtifact?: {
     toolName: string;
     title: string;
+    /** Board that owns this artifact — ignored when it doesn't match chatId. */
+    sourceChatId?: string;
     templateType?: string;
     sections?: any[];
     content?: string;

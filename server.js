@@ -13786,10 +13786,26 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // Chat-based artifact editing: when the user has an artifact open in the
     // side panel, the client sends its current structured source so the model
     // can refine it in place via patches (edits / section_edits / cell_edits).
-    const activeArtifact =
+    let activeArtifact =
       req.body?.activeArtifact && typeof req.body.activeArtifact === 'object' && !Array.isArray(req.body.activeArtifact)
         ? req.body.activeArtifact
         : null;
+    // Drop panel artifacts that belong to a different chat board (defense in
+    // depth — client should already scope these, but a stale Smash Arena must
+    // never force surgical-edit mode on a fresh Build turn).
+    const requestChatId = String(req.body?.chatId || '').trim();
+    const artifactSourceChatId = String(activeArtifact?.sourceChatId || '').trim();
+    if (
+      activeArtifact &&
+      artifactSourceChatId &&
+      requestChatId &&
+      artifactSourceChatId !== requestChatId
+    ) {
+      console.log(
+        `🎨 Stream: ignoring activeArtifact "${String(activeArtifact.title || '').slice(0, 60)}" — sourceChatId ${artifactSourceChatId.slice(0, 8)}… ≠ chat ${requestChatId.slice(0, 8)}…`,
+      );
+      activeArtifact = null;
+    }
     const activeArtifactHasSource =
       !!activeArtifact &&
       (
@@ -13809,8 +13825,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // Leaving "+" → Create armed used to nullify the edit path, inject a
     // fresh [DESIGN_SYSTEM], and force a ground-up rebuild that looked
     // totally different from the open panel.
-    // Cross-chat leakage is handled client-side (activeArtifact is scoped
-    // per board) — do not loosen this surgical gate for "new game" wording.
+    //
+    // Exception: Build mode (artifactType webapp) is a coded fresh build —
+    // keep forceArtifact so reference-image games aren't trapped behind
+    // "close Smash Arena". Short surgical tweaks still refine in place.
     const redesignArtifactAsk = REDESIGN_INTENT_RE.test(String(text || ''));
     // Narrow style asks ("make it blue", "change the font") may touch colors/
     // fonts without being a full redesign — builders allow that signature
@@ -13819,15 +13837,31 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       /\b(?:font|typeface|typography|colou?r|theme|accent|palette|recolou?r|background)\b/i.test(
         String(text || ''),
       );
-    if (activeArtifactHasSource && artifactBuildSpec && !redesignArtifactAsk) {
+    const askText = String(text || '');
+    const looksLikeSurgicalTweak =
+      askText.trim().length < 140 &&
+      /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme)\b/i.test(
+        askText,
+      );
+    const buildModeFresh =
+      forceArtifact &&
+      artifactType === 'webapp' &&
+      (imageUrls.length > 0 || !looksLikeSurgicalTweak);
+    if (activeArtifactHasSource && artifactBuildSpec && !redesignArtifactAsk && !buildModeFresh) {
       console.log(
         `🎨 Stream: open artifact present — ignoring forceArtifact/${artifactToolName} so refine stays surgical`,
       );
       artifactBuildSpec = null;
       artifactToolName = null;
       artifactAutoInferred = false;
+    } else if (buildModeFresh && activeArtifactHasSource) {
+      console.log(
+        `🎨 Stream: Build mode fresh — keeping ${artifactToolName} (not refining open "${String(activeArtifact?.title || '').slice(0, 60)}")`,
+      );
+      // Don't thread the open fighter into ARTIFACT_OPEN / allowFullRewrite gate.
+      activeArtifact = null;
     }
-    const activeArtifactEditable = activeArtifactHasSource && !artifactBuildSpec;
+    const activeArtifactEditable = Boolean(activeArtifact) && activeArtifactHasSource && !artifactBuildSpec && !buildModeFresh;
     // Chat-bar "+" → Projects: a LYKN project the user explicitly scoped this
     // chat to. Unlike `projectId` (which can be a board-linked Omnia project),
     // this is always a `lykn_projects` row, so we load its [CURRENT_PROJECT]
@@ -14395,6 +14429,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       prompt +=
         `\n\n[BUILD_ARTIFACT — Build/Create mode is ALREADY ARMED for this message; you are building a ${artifactBuildSpec.label} (a claude.ai-style Artifact). ` +
         `Never tell the user to arm/enable/turn on Build mode or Create — it is already on. ` +
+        `Never tell the user to close, clear, or dismiss an open artifact panel — just call the tool and build. ` +
+        `Do NOT narrate a plan or describe what you would build instead of calling the tool. ` +
         `You MUST call the ${artifactBuildSpec.tool} tool on this turn to produce it` +
         (artifactBuildSpec.templateType ? ` with template_type "${artifactBuildSpec.templateType}"` : '') +
         (artifactBuildSpec.tool === 'lykn_build_spreadsheet' ? ` with output_format "xlsx" (a real downloadable spreadsheet), passing headers + rows` : '') +
