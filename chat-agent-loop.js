@@ -43,8 +43,25 @@ import {
 } from './mcp-tools/chatTools.js';
 
 const MAX_HOPS = 6;
+/** Complex coding / multi-file artifact builds get a longer tool loop. */
+const MAX_HOPS_CODING = 28;
+const MAX_HOPS_HARD_CAP = 40;
 const MAX_TOOL_CALLS_PER_HOP = 5;
+const MAX_TOOL_CALLS_PER_HOP_CODING = 8;
 const TOOL_RESULT_CAP = 16000;
+
+function resolveMaxHops(opts) {
+  const requested = Number(opts?.maxHops);
+  if (Number.isFinite(requested) && requested > 0) {
+    return Math.min(Math.max(Math.floor(requested), 1), MAX_HOPS_HARD_CAP);
+  }
+  return opts?.codingMode ? MAX_HOPS_CODING : MAX_HOPS;
+}
+
+function resolveMaxToolCallsPerHop(opts) {
+  if (opts?.codingMode) return MAX_TOOL_CALLS_PER_HOP_CODING;
+  return MAX_TOOL_CALLS_PER_HOP;
+}
 // A healthy OpenAI-style stream ALWAYS ends with a finish_reason chunk.
 // xAI in particular sometimes drops the connection mid-generation during a
 // long reasoning pause (observed: stream ends cleanly after ~40s with no
@@ -309,7 +326,7 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
 // full HTML used for an inline srcDoc preview, or the merged JSX after an
 // `edits` patch build). Stripping them keeps the model's tool-result context
 // lean and prevents the model from echoing raw markup back into the chat.
-const CLIENT_ONLY_RESULT_FIELDS = ['preview_html', 'artifact_code'];
+const CLIENT_ONLY_RESULT_FIELDS = ['preview_html', 'artifact_code', 'artifact_files'];
 
 function serialiseToolResult(payload) {
   try {
@@ -367,7 +384,7 @@ function makeToolCallRecorder(onToolCall, allToolCalls) {
  *
  *   calls: [{ id, name, args }]
  */
-async function runToolBatch(calls, ctx, record, allowedToolNames, onActivity) {
+async function runToolBatch(calls, ctx, record, allowedToolNames, onActivity, maxToolCallsPerHop = MAX_TOOL_CALLS_PER_HOP) {
   // Drop exact duplicates (same tool, identical args) within one hop.
   // Models occasionally emit the same call twice in a parallel batch;
   // for expensive builders that means two persisted artifacts — the user
@@ -388,9 +405,10 @@ async function runToolBatch(calls, ctx, record, allowedToolNames, onActivity) {
     unique.push(call);
   }
 
-  const capped = unique.slice(0, MAX_TOOL_CALLS_PER_HOP);
-  if (unique.length > MAX_TOOL_CALLS_PER_HOP) {
-    console.warn(`[chat-agent-loop] capping tool calls at ${MAX_TOOL_CALLS_PER_HOP} (model emitted ${unique.length})`);
+  const perHopCap = Math.min(Math.max(Number(maxToolCallsPerHop) || MAX_TOOL_CALLS_PER_HOP, 1), 12);
+  const capped = unique.slice(0, perHopCap);
+  if (unique.length > perHopCap) {
+    console.warn(`[chat-agent-loop] capping tool calls at ${perHopCap} (model emitted ${unique.length})`);
   }
   const toolOpts = Array.isArray(allowedToolNames) ? { allowedToolNames } : {};
   // Image gen / Remotion / big builds can sit silent for minutes while the
@@ -549,6 +567,8 @@ async function runOpenAiCompatLoop({
   providerLabel = 'openai',
   chatToolNames,
   forceToolName,                // when set, force this tool on the first hop
+  maxHops,
+  codingMode,
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: `${providerLabel} API key missing` };
@@ -557,6 +577,9 @@ async function runOpenAiCompatLoop({
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
+
+  const hopLimit = resolveMaxHops({ maxHops, codingMode });
+  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode });
 
   const messages = [];
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
@@ -576,7 +599,7 @@ async function runOpenAiCompatLoop({
   let forcedToolDone = false;
   let truncatedRetries = 0;
 
-  for (let hop = 0; hop < MAX_HOPS; hop++) {
+  for (let hop = 0; hop < hopLimit; hop++) {
     if (signal?.aborted) {
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
@@ -718,7 +741,7 @@ async function runOpenAiCompatLoop({
       name: c.function.name,
       args: safeJsonParse(c.function.arguments),
     }));
-    const results = await runToolBatch(resolved, ctx, record, chatToolNames, onActivity);
+    const results = await runToolBatch(resolved, ctx, record, chatToolNames, onActivity, toolCallsPerHop);
     for (const r of results) {
       messages.push({
         role: 'tool',
@@ -742,7 +765,7 @@ async function runOpenAiCompatLoop({
     hadText,
     toolCalls: allToolCalls,
     reason: 'hop_cap',
-    errorMessage: `Tool loop exceeded ${MAX_HOPS} hops`,
+    errorMessage: `Tool loop exceeded ${hopLimit} hops`,
   };
 }
 
@@ -781,6 +804,8 @@ async function runAnthropicLoop({
   onActivity,                   // fires on every raw upstream chunk (stall-watchdog keepalive)
   chatToolNames,
   forceToolName,                // when set, force this tool on the first hop
+  maxHops,
+  codingMode,
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'ANTHROPIC_API_KEY missing' };
@@ -789,6 +814,8 @@ async function runAnthropicLoop({
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
+  const hopLimit = resolveMaxHops({ maxHops, codingMode });
+  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode });
 
   // Anthropic messages — `system` is top-level, NOT a message turn. Build
   // the user-content blob (string or array of text/image blocks).
@@ -805,7 +832,7 @@ async function runAnthropicLoop({
   // model rebuild the (potentially huge) artifact again.
   let forcedToolDone = false;
 
-  for (let hop = 0; hop < MAX_HOPS; hop++) {
+  for (let hop = 0; hop < hopLimit; hop++) {
     if (signal?.aborted) {
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
@@ -944,7 +971,7 @@ async function runAnthropicLoop({
 
     try { onStatus?.('Running tools…'); } catch { /* swallow */ }
 
-    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames, onActivity);
+    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames, onActivity, toolCallsPerHop);
     for (const r of results) {
       if (forceToolName && r.name === forceToolName && !r.isError && r.payload?.ok !== false) {
         forcedToolDone = true;
@@ -969,7 +996,7 @@ async function runAnthropicLoop({
     hadText,
     toolCalls: allToolCalls,
     reason: 'hop_cap',
-    errorMessage: `Tool loop exceeded ${MAX_HOPS} hops`,
+    errorMessage: `Tool loop exceeded ${hopLimit} hops`,
   };
 }
 
@@ -1011,6 +1038,8 @@ async function runGeminiLoop({
   onActivity,                   // fires on every raw upstream chunk (stall-watchdog keepalive)
   chatToolNames,
   forceToolName,                // when set, force this tool on the first hop
+  maxHops,
+  codingMode,
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'GOOGLE_API_KEY missing' };
@@ -1019,6 +1048,8 @@ async function runGeminiLoop({
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
+  const hopLimit = resolveMaxHops({ maxHops, codingMode });
+  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode });
 
   // Build the contents array. Gemini uses role 'model' (not 'assistant')
   // and wraps text in { parts: [{ text }] }.
@@ -1044,7 +1075,7 @@ async function runGeminiLoop({
   // letting the model rebuild the (potentially huge) artifact again.
   let forcedToolDone = false;
 
-  for (let hop = 0; hop < MAX_HOPS; hop++) {
+  for (let hop = 0; hop < hopLimit; hop++) {
     if (signal?.aborted) {
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
@@ -1150,7 +1181,7 @@ async function runGeminiLoop({
 
     try { onStatus?.('Running tools…'); } catch { /* swallow */ }
 
-    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames, onActivity);
+    const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames, onActivity, toolCallsPerHop);
     for (const r of results) {
       if (forceToolName && r.name === forceToolName && !r.isError && r.payload?.ok !== false) {
         forcedToolDone = true;
@@ -1180,7 +1211,7 @@ async function runGeminiLoop({
     hadText,
     toolCalls: allToolCalls,
     reason: 'hop_cap',
-    errorMessage: `Tool loop exceeded ${MAX_HOPS} hops`,
+    errorMessage: `Tool loop exceeded ${hopLimit} hops`,
   };
 }
 

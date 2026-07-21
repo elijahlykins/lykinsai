@@ -64,8 +64,11 @@ export function VaultDocumentViewer({ payload, open, onClose }: VaultDocumentVie
     setFullContent(String(note?.content || ""));
   }, [note?.content]);
 
+  // Always re-fetch on open. loadNeuron may truncate mid-[ATTACHMENTS_JSON]
+  // (or omit storage fields), which leaves Pull-up with a title and no
+  // renderable iframe. Fresh row content restores the attachment marker.
   useEffect(() => {
-    if (!open || !noteId || !note?.truncated) return;
+    if (!open || !noteId) return;
     let cancelled = false;
     setLoading(true);
     (async () => {
@@ -77,7 +80,7 @@ export function VaultDocumentViewer({ payload, open, onClose }: VaultDocumentVie
           .maybeSingle();
         if (!cancelled && data?.content) setFullContent(String(data.content));
       } catch {
-        /* fall back to the truncated card content */
+        /* fall back to the card content */
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -85,7 +88,7 @@ export function VaultDocumentViewer({ payload, open, onClose }: VaultDocumentVie
     return () => {
       cancelled = true;
     };
-  }, [open, noteId, note?.truncated]);
+  }, [open, noteId]);
 
   const parsed = useMemo(() => parseVaultContent(fullContent), [fullContent]);
 

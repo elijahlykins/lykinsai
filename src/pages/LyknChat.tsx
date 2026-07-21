@@ -2679,10 +2679,27 @@ export default function LyknChat() {
   // proxy URLs that still work as <a download> navigations). The bytes are
   // copied into the user's own storage so the vault note keeps a permanent,
   // re-signable copy instead of a 7-day proxy link.
+  //
   // `opts.auto` is used by the chat view when a new artifact finishes — skips
-  // sign-in prompts / failure toasts, and dedupes so refine + Save don't
-  // double-insert the same tool call.
-  const savedArtifactKeysRef = useRef<Set<string>>(new Set());
+  // sign-in prompts / failure toasts. Refines and code edits upsert the same
+  // vault note (keyed by chat + tool + title) so only the latest version is
+  // kept instead of stacking every intermediate edit as a separate card.
+  type SavedArtifactVault = {
+    noteId: string;
+    fileId: string;
+    storagePath: string;
+    ext: string;
+    contentKey: string;
+  };
+  const savedArtifactVaultRef = useRef<Map<string, SavedArtifactVault>>(new Map());
+  const artifactVaultChatKeyRef = useRef<string>("");
+  useEffect(() => {
+    const key = chatId || routeChatId || "";
+    if (artifactVaultChatKeyRef.current === key) return;
+    artifactVaultChatKeyRef.current = key;
+    savedArtifactVaultRef.current.clear();
+  }, [chatId, routeChatId]);
+
   const saveArtifactToVault = useCallback(async (
     artifact: ChatArtifact,
     opts?: { auto?: boolean },
@@ -2692,12 +2709,15 @@ export default function LyknChat() {
       if (!opts?.auto) requireSignIn("save to the vault");
       return false;
     }
-    if (!(await checkVaultLimit())) return false;
-
-    const dedupeKey = artifact.toolCallId || artifact.id;
-    if (dedupeKey && savedArtifactKeysRef.current.has(dedupeKey)) return true;
 
     const title = (artifact.title || "Artifact").trim() || "Artifact";
+    const chatScope = chatId || routeChatId || "local";
+    const lineageKey = `${chatScope}:${artifact.toolName || "artifact"}:${title.toLowerCase()}`;
+    const existing = savedArtifactVaultRef.current.get(lineageKey);
+
+    // Cap check only for new inserts — updates replace an existing card.
+    if (!existing && !(await checkVaultLimit())) return false;
+
     const downloads = artifact.downloads || [];
     const pdf = downloads.find((d) => String(d.format).toLowerCase() === "pdf");
     const htmlDownload = downloads.find((d) => String(d.format).toLowerCase() === "html");
@@ -2772,6 +2792,17 @@ export default function LyknChat() {
     }
     if (!mimeType) mimeType = blob.type || "application/octet-stream";
 
+    // Skip no-op re-saves of the exact same bytes (e.g. StrictMode double-mount).
+    const contentKey = [
+      blob.size,
+      mimeType,
+      filename,
+      (artifact.srcDoc || artifact.code || "").length,
+      artifact.previewUrl || artifact.downloadUrl || "",
+      artifact.toolCallId || artifact.id || "",
+    ].join("|");
+    if (existing && existing.contentKey === contentKey) return true;
+
     // Classify the attachment so the vault renders the right card.
     // HTML/React artifacts must be "html" (iframe preview), not generic "file".
     const m = mimeType.toLowerCase().split(";")[0].trim();
@@ -2790,12 +2821,19 @@ export default function LyknChat() {
             : "file";
 
     try {
-      const fileId = crypto.randomUUID();
       const safeExt = ext || "bin";
-      const storagePath = `${user.id}/${fileId}/artifact.${safeExt}`;
+      const fileId = existing && existing.ext === safeExt ? existing.fileId : crypto.randomUUID();
+      const storagePath =
+        existing && existing.ext === safeExt
+          ? existing.storagePath
+          : `${user.id}/${fileId}/artifact.${safeExt}`;
       const { error: uploadError } = await supabase.storage
         .from("user-files")
-        .upload(storagePath, blob, { cacheControl: "3600", upsert: false, contentType: mimeType });
+        .upload(storagePath, blob, {
+          cacheControl: "3600",
+          upsert: Boolean(existing && existing.ext === safeExt),
+          contentType: mimeType,
+        });
       if (uploadError) {
         notifyVaultCapIfApplicable(uploadError);
         if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
@@ -2847,23 +2885,54 @@ export default function LyknChat() {
         mimeType,
       }];
       const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-      const { data: ins, error } = await supabase
-        .from("vault_items")
-        .insert({ user_id: user.id, title, content: noteContent, source: "ai_artifact", tags: [fileType, "generated"] })
-        .select("id")
-        .single();
-      if (error) {
-        if (notifyVaultCapIfApplicable(error)) return false;
-        if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
-        return false;
+
+      let noteId = existing?.noteId || "";
+      if (existing?.noteId) {
+        const { error } = await supabase
+          .from("vault_items")
+          .update({
+            title,
+            content: noteContent,
+            tags: [fileType, "generated"],
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existing.noteId)
+          .eq("user_id", user.id);
+        if (error) {
+          if (notifyVaultCapIfApplicable(error)) return false;
+          if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
+          return false;
+        }
+      } else {
+        const { data: ins, error } = await supabase
+          .from("vault_items")
+          .insert({ user_id: user.id, title, content: noteContent, source: "ai_artifact", tags: [fileType, "generated"] })
+          .select("id")
+          .single();
+        if (error) {
+          if (notifyVaultCapIfApplicable(error)) return false;
+          if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
+          return false;
+        }
+        noteId = ins?.id || "";
       }
-      if (ins?.id) {
-        afterVaultNoteSaved(user.id, ins.id, { title, content: noteContent }, {
+
+      if (noteId) {
+        savedArtifactVaultRef.current.set(lineageKey, {
+          noteId,
+          fileId,
+          storagePath,
+          ext: safeExt,
+          contentKey,
+        });
+        afterVaultNoteSaved(user.id, noteId, { title, content: noteContent }, {
           excludeChatId: routeChatId || chatId || undefined,
         });
       }
-      if (dedupeKey) savedArtifactKeysRef.current.add(dedupeKey);
-      toast({ title: "Saved to vault", description: title });
+      toast({
+        title: existing ? "Updated in vault" : "Saved to vault",
+        description: title,
+      });
       return true;
     } catch {
       if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });

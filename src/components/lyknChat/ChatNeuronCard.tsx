@@ -678,16 +678,25 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
           )}
         </div>
         {/* The body is a click target for vault items so the whole card reads
-            as "tap to open the full thing". */}
+            as "tap to open the full thing". Use a div (not <button>) — vault
+            bodies embed iframes/links and nesting those inside a button
+            blanks HTML artifact previews in some browsers. */}
         {isVault ? (
-          <button
-            type="button"
+          <div
+            role="button"
+            tabIndex={0}
             onClick={() => setViewerOpen(true)}
-            className="block w-full text-left px-3 py-2.5 hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setViewerOpen(true);
+              }
+            }}
+            className="block w-full text-left px-3 py-2.5 hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors cursor-pointer"
             title="Pull up the full document"
           >
             {bodyFor(payload)}
-          </button>
+          </div>
         ) : (
           <div className="px-3 py-2.5">{bodyFor(payload)}</div>
         )}

@@ -2533,12 +2533,16 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       setFailedImageIds((prev) => new Set(prev).add(card.id));
       return;
     }
-    // HTML previews use the branded file proxy (correct MIME + frame-ancestors).
-    // Cache key is distinct so we never reuse a raw Supabase signed URL for iframes.
+    // HTML previews MUST use the branded file proxy (correct MIME +
+    // frame-ancestors + permissive script CSP for React/Babel runners).
+    // Raw Supabase signed URLs blank the iframe (text/plain / frame deny),
+    // so never cache a storage URL under the file-proxy key — that poisoned
+    // both the grid tile and the click-to-open view mode permanently.
     const cacheKey = isHtml
       ? `file-proxy:${target.bucket}:${target.path}`
       : `${target.bucket}:${target.path}`;
-    const commitUrl = (signedUrl) => {
+    const isSupabaseStorageUrl = (u) => /supabase\.co\/storage\//i.test(String(u || ""));
+    const commitUrl = (signedUrl, { force = false } = {}) => {
       if (isImage) {
         // Image path: probe dims first so the slot reserves correctly,
         // then setState. See `resolveImageDimsAndCommit` for the full
@@ -2546,13 +2550,15 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
         resolveImageDimsAndCommit(card.id, signedUrl);
       } else {
         setResolvedAttachmentUrls((prev) => {
-          if (prev[card.id]) return prev;
+          if (!force && prev[card.id] && !isSupabaseStorageUrl(prev[card.id])) return prev;
           return { ...prev, [card.id]: signedUrl };
         });
       }
     };
     const cachedFresh = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
-    if (cachedFresh) {
+    // Ignore a poisoned cache entry that somehow stored a storage URL as
+    // a "file-proxy" result from an older build.
+    if (cachedFresh && !(isHtml && isSupabaseStorageUrl(cachedFresh))) {
       commitUrl(cachedFresh);
       return;
     }
@@ -2574,9 +2580,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
           });
           if (resp.ok) {
             const { url } = await resp.json();
-            if (url) {
+            if (url && !isSupabaseStorageUrl(url)) {
               writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, url);
-              commitUrl(url);
+              commitUrl(url, { force: true });
               return;
             }
           }
@@ -2584,8 +2590,12 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       } catch (err) {
         if (import.meta.env.DEV) console.warn("[Vault] File-proxy URL mint failed:", err);
       }
-      // Fall through to a Supabase signed URL so the card still has *something*
-      // to try — better than a permanent blank shell when the proxy is down.
+      // Do NOT fall back to a raw Supabase signed URL for HTML — it paints a
+      // permanent white blank in the iframe. Surface "unavailable" instead.
+      imageRetryCountsRef.current.set(card.id, 99);
+      setFailedImageIds((prev) => new Set(prev).add(card.id));
+      visibleCardIdsRef.current.delete(card.id);
+      return;
     }
 
     let objectNotFound = false;
@@ -4505,12 +4515,15 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   }, [previewCard]);
 
   // Opening an HTML artifact in the preview modal must mint a file-proxy URL
-  // even if the grid tile never entered the intersection observer viewport.
+  // even if the grid tile never entered the intersection observer viewport —
+  // or if the grid somehow cached a raw Supabase URL that blanks the iframe.
   useEffect(() => {
     if (!previewCard || previewCard.kind !== "attachment") return;
     const t = resolveAttachmentType(previewCard.attachment || {});
     if (t !== "html") return;
-    if (resolvedAttachmentUrls[previewCard.id] || failedImageIds.has(previewCard.id)) return;
+    if (failedImageIds.has(previewCard.id)) return;
+    const existing = resolvedAttachmentUrls[previewCard.id];
+    if (existing && !/supabase\.co\/storage\//i.test(existing)) return;
     void resolveSignedUrlForCard(previewCard);
   }, [previewCard, resolvedAttachmentUrls, failedImageIds, resolveSignedUrlForCard]);
 
@@ -5461,12 +5474,15 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 
     if (type === "html") {
       const fileName = attachment.name || title || "Interactive artifact";
-      // Prefer the freshly minted file-proxy / signed URL; never paint the
-      // iframe until resolve finishes for storage-backed HTML (stale saved
-      // URLs + CSP/MIME issues produced a permanent white blank shell).
+      // Prefer the freshly minted file-proxy URL; never paint a raw Supabase
+      // storage URL into the iframe (wrong MIME / CSP → permanent blank).
       const storageTarget = parseStorageTarget(attachment || {});
       const isStorageBacked = !!(storageTarget?.bucket && storageTarget?.path);
-      const embedUrl = safeAttachmentUrl(resolvedAttachmentUrls[card.id] || (!isStorageBacked ? resolvedUrl : ""));
+      const candidate =
+        resolvedAttachmentUrls[card.id] || (!isStorageBacked ? resolvedUrl : "");
+      const embedUrl = /supabase\.co\/storage\//i.test(candidate || "")
+        ? null
+        : safeAttachmentUrl(candidate);
       const htmlFailed = failedImageIds.has(card.id);
       return (
         <div className="rounded-2xl overflow-hidden glass-control cursor-pointer">
@@ -8026,11 +8042,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
           } else if (card.kind === "attachment" && type === "html") {
             const htmlStorage = parseStorageTarget(att);
             const htmlIsStorage = !!(htmlStorage?.bucket && htmlStorage?.path);
-            // Wait for the file-proxy mint when storage-backed — painting the
-            // stale saved URL blanks the iframe (wrong MIME / CSP).
-            const htmlEmbed = safeAttachmentUrl(
-              resolvedAttachmentUrls[card.id] || (!htmlIsStorage ? resolvedUrl : ""),
-            );
+            // Wait for the file-proxy mint when storage-backed — painting a
+            // raw Supabase signed URL blanks the iframe (wrong MIME / CSP).
+            const candidate =
+              resolvedAttachmentUrls[card.id] || (!htmlIsStorage ? resolvedUrl : "");
+            const htmlEmbed = /supabase\.co\/storage\//i.test(candidate || "")
+              ? null
+              : safeAttachmentUrl(candidate);
             body = htmlEmbed ? (
               <iframe
                 title={title}

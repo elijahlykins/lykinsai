@@ -311,9 +311,15 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   const [activeArtifact, setActiveArtifactState] = useState<ChatArtifact | null>(null);
   const activeArtifactRef = useRef<ChatArtifact | null>(null);
   const setActiveArtifact = useCallback((artifact: ChatArtifact | null) => {
-    activeArtifactRef.current = artifact;
-    setActiveArtifactState(artifact);
-  }, []);
+    const bid = String(chatId || routeChatId || "").trim();
+    // Tag + persist per board so Smash Arena in chat A never rides along on chat B.
+    const next = artifact
+      ? { ...artifact, sourceChatId: bid || artifact.sourceChatId || undefined }
+      : null;
+    activeArtifactRef.current = next;
+    setActiveArtifactState(next);
+    if (bid) patchThreadSnapshot(bid, { activeArtifact: next });
+  }, [chatId, routeChatId]);
 
   const [composerMode, setComposerModeState] = useState<ComposerMode>("none");
   const composerModeRef = useRef<ComposerMode>("none");
@@ -434,6 +440,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         chatStatusText: chatStatusText,
         chatFlowMode: chatFlowMode,
         chatInput: chatInputRef.current,
+        // Park the open panel on the outgoing board (null for closed).
+        activeArtifact: activeArtifactRef.current,
       };
       if (!outStreaming) {
         // Only persist React-side messages when they aren't a stale/empty
@@ -466,6 +474,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       setChatStatusText(snap?.chatStatusText ?? "");
       setChatFlowMode(snap?.chatFlowMode ?? "idle");
 
+      // Restore THIS board's panel artifact (or close it on a fresh chat).
+      // Do not go through setActiveArtifact — that would re-patch the snap.
+      const restored = snap?.activeArtifact ?? null;
+      activeArtifactRef.current = restored;
+      setActiveArtifactState(restored);
+
       requestAnimationFrame(() => {
         hydrateActiveThreadToReact(
           incoming,
@@ -489,6 +503,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       });
     } else {
       setActiveThreadChatId(null);
+      activeArtifactRef.current = null;
+      setActiveArtifactState(null);
     }
 
     prevChatIdRef.current = incoming;
@@ -2122,10 +2138,17 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
     try {
       const editArtifact = activeArtifactRef.current;
-      const refiningOpenArtifact = isEditableArtifact(editArtifact);
+      const artifactChatId = String(editArtifact?.sourceChatId || "").trim();
+      const thisChatId = String(streamChatId || "").trim();
+      // Only refine artifacts tagged to THIS board. Untagged / other-chat
+      // panel state must not force edits or strip Build on a fresh chat.
+      const artifactBelongsHere =
+        !!editArtifact && !!thisChatId && artifactChatId === thisChatId;
+      const refiningOpenArtifact =
+        artifactBelongsHere && isEditableArtifact(editArtifact);
       // Create mode forces a ground-up builder call + fresh design system.
-      // When the panel already has an editable artifact, drop Create so this
-      // turn stays a surgical refine (unless they re-armed Create after closing).
+      // When THIS chat already has an editable artifact open, drop Create so
+      // the turn stays a surgical refine. New chats keep Create armed.
       const effectiveComposerMode =
         refiningOpenArtifact && typeof sendMode === "string" && sendMode.startsWith("create:")
           ? "none"
@@ -2134,7 +2157,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         text,
         promptId,
         composerMode: effectiveComposerMode,
-        // Always thread the open panel artifact for surgical edits.
+        // Thread the open panel artifact for surgical edits — same chat only.
         activeArtifact: refiningOpenArtifact
           ? toArtifactEditContext(editArtifact as ChatArtifact)
           : null,

@@ -331,11 +331,23 @@ export const buildReactArtifactTool = {
   scope: 'read',
   description: [
     'Build a document, dashboard, tool, game, or any interactive deliverable by',
-    'WRITING A REACT COMPONENT — claude.ai Artifacts style. LYKN renders your',
-    'code live in a sandboxed panel next to the chat.',
+    'WRITING REACT CODE — claude.ai Artifacts style. LYKN renders it live in a',
+    'sandboxed panel next to the chat.',
     '',
-    'Pass `title` and `code`: one complete, self-contained React component with',
-    '`export default`. No imports needed — a FULL library stack is ALREADY in scope:',
+    'TWO BUILD MODES:',
+    '  1) SINGLE FILE — pass `title` + `code` (one component, export default).',
+    '     Best for docs, dashboards, small tools, simple games.',
+    '  2) MULTI-FILE PROJECT — pass `title` + `files` (array of {path, content})',
+    '     with entry App.jsx (or set `entry`). Use RELATIVE imports between your',
+    '     files: `import Player from "./game/Player.js"`. Prefer this for complex',
+    '     apps, 3D games, multi-scene tools — split systems into modules',
+    '     (game/, components/, lib/). Up to ~48 files.',
+    '  Also pass `todos` (coding plan: [{id, content, status}]) on complex builds',
+    '  and update statuses as you finish steps. Pass `assets` ([{name, url}]) to',
+    '  register hosted image/audio URLs as `import ASSETS from "./assets.js"` or',
+    '  window.__lyknAssets — use URLs from lykn_generate_image / [USER_IMAGES].',
+    '',
+    'No CDN imports needed — a FULL library stack is ALREADY in scope:',
     '  • React 18 + every hook (useState, useEffect, useMemo, useRef, …)',
     '  • Tailwind CSS classes (className="p-6 text-2xl font-bold …") with the',
     '    forms, typography (`prose`), aspect-ratio, and line-clamp plugins',
@@ -452,22 +464,17 @@ export const buildReactArtifactTool = {
     '  • PRESERVE THE LOOK: keep THEME tokens, Tailwind classes, layout, and',
     '    fonts. "Add more hooks / expand the bank / fix this copy" is a',
     '    CONTENT edit — never an excuse to redesign the UI.',
-    '  • `edits` is the DEFAULT edit mechanism: an array of {find, replace}',
-    '    patches where each `find` is an EXACT, UNIQUE snippet copied from',
-    '    the current source in [ARTIFACT_OPEN] (match whitespace/indentation',
-    '    precisely; include enough surrounding lines to be unique; use',
-    '    replace: "" to delete). Keep each `replace` MINIMAL — patch the',
-    '    line(s) that must change, not a rewritten version of the whole',
-    '    surrounding block. If you also pass `code`, the server IGNORES it',
-    '    and applies `edits` against the open source.',
-    '  • Full `code` on an edit turn is REJECTED unless the user explicitly',
-    '    asked for a sweeping change (full restyle, major restructure,',
-    '    "start over") — you MUST then also pass full_rewrite: true, and even',
-    '    then copy every part the request does not cover verbatim from the',
-    '    current source. Undeclared full-code submissions over an open',
-    '    artifact always bounce back to the edits path.',
-    '  • If an edit attempt errors (target not found/ambiguous), fix the',
-    '    `find` snippet and retry `edits` first; full code is the last resort.',
+    '  • `edits` is the DEFAULT edit mechanism: an array of {find, replace,',
+    '    path?} patches where each `find` is an EXACT, UNIQUE snippet copied',
+    '    from [ARTIFACT_OPEN] (for multi-file, set `path` to the file). Use',
+    '    replace: "" to delete. Keep each `replace` MINIMAL.',
+    '  • Multi-file also supports `file_ops`: [{op:"write"|"delete", path,',
+    '    content?}] to add/replace whole files without resubmitting the tree.',
+    '  • Full `code`/`files` on an edit turn is REJECTED unless the user',
+    '    explicitly asked for a sweeping change — then pass full_rewrite: true.',
+    '  • If [ARTIFACT_RUNTIME_ERRORS] lists preview crashes, FIX those with',
+    '    targeted edits before adding features.',
+    '  • Keep `todos` current on long builds (mark completed / in_progress).',
     '',
     'After it returns, reply with a 1-2 sentence summary. NEVER paste the code,',
     'HTML, or URLs into the chat — the panel shows the artifact automatically.',
@@ -480,16 +487,36 @@ export const buildReactArtifactTool = {
         type: 'string',
         description:
           'Complete single-file React component (JSX/TSX) with export default. ' +
-          'Required for new builds and full rewrites; omit when passing `edits`.',
+          'For complex multi-module builds prefer `files` instead.',
+      },
+      files: {
+        type: 'array',
+        description:
+          'Multi-file project sources. Each item: {path, content}. Entry defaults to App.jsx. ' +
+          'Use relative imports between files. Prefer for games/complex apps.',
+        items: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Project-relative path, e.g. App.jsx or game/Player.js' },
+            content: { type: 'string', description: 'Full file source.' },
+          },
+          required: ['path', 'content'],
+          additionalProperties: false,
+        },
+      },
+      entry: {
+        type: 'string',
+        description: 'Entry file path inside `files` (default App.jsx).',
       },
       edits: {
         type: 'array',
         description:
-          'Targeted patches to the artifact currently open in the panel (instead of `code`). ' +
-          'Applied in order; each `find` must be an exact, unique substring of the current source.',
+          'Targeted patches to the open artifact (instead of full code/files). ' +
+          'For multi-file projects include `path`.',
         items: {
           type: 'object',
           properties: {
+            path: { type: 'string', description: 'File to patch (multi-file projects).' },
             find: { type: 'string', description: 'Exact snippet copied from the current source (unique, whitespace included).' },
             replace: { type: 'string', description: 'Replacement text ("" deletes the snippet).' },
           },
@@ -497,12 +524,56 @@ export const buildReactArtifactTool = {
           additionalProperties: false,
         },
       },
+      file_ops: {
+        type: 'array',
+        description:
+          'Add/replace/delete whole files in an open multi-file project without resubmitting every file.',
+        items: {
+          type: 'object',
+          properties: {
+            op: { type: 'string', enum: ['write', 'delete'], description: 'write upserts content; delete removes the file.' },
+            path: { type: 'string' },
+            content: { type: 'string', description: 'Required for write.' },
+          },
+          required: ['op', 'path'],
+          additionalProperties: false,
+        },
+      },
+      todos: {
+        type: 'array',
+        description:
+          'Coding plan checklist for complex builds. Update statuses across turns: pending | in_progress | completed | cancelled.',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            content: { type: 'string' },
+            status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] },
+          },
+          required: ['content'],
+          additionalProperties: false,
+        },
+      },
+      assets: {
+        type: 'array',
+        description:
+          'Hosted asset URLs to inject as ./assets.js (and window.__lyknAssets). Use lykn_generate_image / user upload URLs only.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Key used in ASSETS[name].' },
+            url: { type: 'string', description: 'https URL of the asset.' },
+          },
+          required: ['name', 'url'],
+          additionalProperties: false,
+        },
+      },
       full_rewrite: {
         type: 'boolean',
         description:
-          'Set true ONLY when replacing an OPEN artifact with full `code` because the user explicitly ' +
-          'asked for a sweeping change (full restyle/restructure). Without this flag, full `code` over ' +
-          'an open artifact is always rejected — use `edits` instead.',
+          'Set true ONLY when replacing an OPEN artifact with full `code`/`files` because the user explicitly ' +
+          'asked for a sweeping change (full restyle/restructure). Without this flag, full submissions over ' +
+          'an open artifact are always rejected — use `edits` / `file_ops` instead.',
       },
     },
     required: ['title'],

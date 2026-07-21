@@ -14,7 +14,15 @@ export type ChatArtifact = {
   downloadUrl?: string;
   filename?: string;
   format?: string;
+  /** Durable storage location — remint file-proxy previewUrl when the signed link dies. */
+  storagePath?: string;
+  storageBucket?: string;
   toolName: string;
+  /**
+   * Chat board this panel artifact belongs to. Used so an open Smash Arena
+   * in chat A never leaks into a fresh Build turn on chat B.
+   */
+  sourceChatId?: string;
   /** Tool call this artifact came from (lineage key for the editor panel). */
   toolCallId?: string;
   /** Alternate downloadable formats for this same artifact (pptx, md, json…). */
@@ -29,6 +37,14 @@ export type ChatArtifact = {
   font?: string;
   /** React component source (lykn_build_react_artifact) — the edit round-trip payload. */
   code?: string;
+  /** Multi-file React project sources (path + content). */
+  files?: Array<{ path: string; content: string }>;
+  /** Entry file path for multi-file projects. */
+  entry?: string;
+  /** Coding plan todos for complex builds. */
+  todos?: Array<{ id: string; content: string; status: string }>;
+  /** Runtime / console errors captured from the preview iframe. */
+  runtimeErrors?: Array<{ message: string; kind?: string; at?: number }>;
   /** File / HTML source for lykn_manage_file surgical edits. */
   fileContent?: string;
   /** Spreadsheet edit round-trip. */
@@ -48,6 +64,10 @@ export type ArtifactEditContext = {
   theme?: string;
   font?: string;
   code?: string;
+  files?: Array<{ path: string; content: string }>;
+  entry?: string;
+  todos?: Array<{ id: string; content: string; status: string }>;
+  runtimeErrors?: Array<{ message: string; kind?: string; at?: number }>;
   fileContent?: string;
   headers?: string[];
   rows?: any[];
@@ -60,7 +80,10 @@ export function isEditableArtifact(a: ChatArtifact | null | undefined): boolean 
     return Array.isArray(a.sections) || typeof a.content === "string";
   }
   if (a.toolName === "lykn_build_react_artifact") {
-    return typeof a.code === "string" && a.code.trim().length > 0;
+    return (
+      (typeof a.code === "string" && a.code.trim().length > 0) ||
+      (Array.isArray(a.files) && a.files.length > 0)
+    );
   }
   if (a.toolName === "lykn_manage_file") {
     return typeof a.fileContent === "string" && a.fileContent.trim().length > 0;
@@ -82,6 +105,10 @@ export function toArtifactEditContext(a: ChatArtifact): ArtifactEditContext {
     theme: typeof a.theme === "string" ? a.theme : undefined,
     font: typeof a.font === "string" ? a.font : undefined,
     code: typeof a.code === "string" ? a.code : undefined,
+    files: Array.isArray(a.files) ? a.files : undefined,
+    entry: typeof a.entry === "string" ? a.entry : undefined,
+    todos: Array.isArray(a.todos) ? a.todos : undefined,
+    runtimeErrors: Array.isArray(a.runtimeErrors) ? a.runtimeErrors : undefined,
     fileContent: typeof a.fileContent === "string" ? a.fileContent : undefined,
     headers: Array.isArray(a.headers) ? a.headers : undefined,
     rows: Array.isArray(a.rows) ? a.rows : undefined,
@@ -275,7 +302,27 @@ function extractFromReactArtifact(
       : typeof result.artifact_code === "string" && result.artifact_code.trim()
         ? result.artifact_code
         : undefined;
+  const files = normalizeArtifactFiles(result.artifact_files ?? args?.files);
+  const entry =
+    typeof result.entry === "string" && result.entry.trim()
+      ? result.entry.trim()
+      : typeof args?.entry === "string" && args.entry.trim()
+        ? String(args.entry).trim()
+        : files?.length
+          ? "App.jsx"
+          : undefined;
+  const todos = normalizeArtifactTodos(result.todos ?? args?.todos);
   const fileUrl = typeof result.file_url === "string" ? result.file_url.trim() : "";
+  const storagePath =
+    typeof result.storage_path === "string" && result.storage_path.trim()
+      ? result.storage_path.trim()
+      : undefined;
+  const storageBucket =
+    typeof result.storage_bucket === "string" && result.storage_bucket.trim()
+      ? result.storage_bucket.trim()
+      : storagePath
+        ? "user-files"
+        : undefined;
   const srcDoc =
     typeof result.preview_html === "string" && isHtmlString(result.preview_html)
       ? result.preview_html
@@ -293,12 +340,57 @@ function extractFromReactArtifact(
       downloadUrl: fileUrl || undefined,
       filename: typeof result.filename === "string" ? result.filename : undefined,
       format: "html",
+      storagePath,
+      storageBucket,
       toolName: "lykn_build_react_artifact",
       toolCallId,
       downloads: downloads.length ? downloads : undefined,
-      code,
+      code: code || (files?.find((f) => f.path === entry)?.content),
+      files,
+      entry,
+      todos,
     },
   ];
+}
+
+function normalizeArtifactFiles(raw: unknown): Array<{ path: string; content: string }> | undefined {
+  if (!raw) return undefined;
+  if (Array.isArray(raw)) {
+    const out: Array<{ path: string; content: string }> = [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const path = String((row as any).path || "").trim();
+      const content = String((row as any).content ?? "");
+      if (!path) continue;
+      out.push({ path, content });
+    }
+    return out.length ? out : undefined;
+  }
+  if (typeof raw === "object") {
+    const out: Array<{ path: string; content: string }> = [];
+    for (const [path, content] of Object.entries(raw as Record<string, unknown>)) {
+      if (!path) continue;
+      out.push({ path, content: String(content ?? "") });
+    }
+    return out.length ? out : undefined;
+  }
+  return undefined;
+}
+
+function normalizeArtifactTodos(raw: unknown): Array<{ id: string; content: string; status: string }> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Array<{ id: string; content: string; status: string }> = [];
+  for (const t of raw) {
+    if (!t || typeof t !== "object") continue;
+    const content = String((t as any).content || (t as any).text || "").trim();
+    if (!content) continue;
+    out.push({
+      id: String((t as any).id || `t${out.length + 1}`),
+      content,
+      status: String((t as any).status || "pending"),
+    });
+  }
+  return out.length ? out : undefined;
 }
 
 function extractFromManageFile(toolCallId: string, result: any): ChatArtifact[] {

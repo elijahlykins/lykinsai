@@ -76,6 +76,25 @@ async function relatedConcepts(ctx, conceptId, limit = 8) {
 function maybeTruncate(text, cap) {
   const str = String(text || '');
   if (str.length <= cap) return { text: str, truncated: false };
+
+  // Prefer keeping `[ATTACHMENTS_JSON:…]` intact. A mid-marker slice makes
+  // chat Pull-up / neuron cards drop the attachment entirely (blank preview)
+  // until a full vault_items re-fetch lands.
+  const marker = '[ATTACHMENTS_JSON:';
+  const markerAt = str.indexOf(marker);
+  if (markerAt >= 0) {
+    const markerChunk = str.slice(markerAt);
+    if (markerChunk.length <= cap) {
+      const bodyBudget = Math.max(0, cap - markerChunk.length - 2);
+      const body = str.slice(0, markerAt).slice(0, bodyBudget).trimEnd();
+      return {
+        text: body ? `${body}\n\n${markerChunk}` : markerChunk,
+        truncated: true,
+        full_length: str.length,
+      };
+    }
+  }
+
   return {
     text: str.slice(0, cap),
     truncated: true,

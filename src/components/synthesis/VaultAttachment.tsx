@@ -78,6 +78,9 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
     (async () => {
       try {
         if (type === "html") {
+          // HTML artifacts need the branded file proxy (MIME + frame-ancestors
+          // + script CSP). A raw Supabase signed URL blanks the iframe — never
+          // fall through to one for html.
           const { API_BASE_URL } = await import("@/lib/api-config");
           const session = (await supabase.auth.getSession())?.data?.session;
           const token = session?.access_token;
@@ -96,12 +99,14 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
             });
             if (resp.ok) {
               const { url } = await resp.json();
-              if (!cancelled && url) {
+              if (!cancelled && url && !/supabase\.co\/storage\//i.test(url)) {
                 setSignedUrl(url);
                 return;
               }
             }
           }
+          if (!cancelled) setFailed(true);
+          return;
         }
         const { data } = await supabase.storage
           .from(storageTarget.bucket)

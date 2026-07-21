@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Code2, Copy, Download, ExternalLink, Eye, FileDown, Loader2, Bookmark, Play, Sparkles, X as XIcon } from "lucide-react";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import { API_BASE_URL } from "@/lib/api-config";
+import { supabase } from "@/lib/supabase";
 
 export type LyknChatArtifactPanelProps = {
   artifact: ChatArtifact | null;
@@ -53,7 +54,10 @@ const PRINT_CSS = `<style>@media print {
 }</style>`;
 
 function badgeFor(artifact: ChatArtifact): string {
-  if (artifact.kind === "html") return "Interactive preview";
+  if (artifact.kind === "html") {
+    const n = Array.isArray(artifact.files) ? artifact.files.length : 0;
+    return n > 1 ? `${n}-file project` : "Interactive preview";
+  }
   if (artifact.kind === "video") return `${(artifact.format || "mp4").toUpperCase()} video`;
   if (artifact.kind === "image") return (artifact.format || "image").toUpperCase();
   return (artifact.format || "file").toUpperCase();
@@ -79,25 +83,157 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
   }, [artifact]);
   const shown = artifact ?? lingering;
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
-  // Reset the save affordance whenever the panel switches to a different artifact.
-  useEffect(() => { setSaveState("idle"); }, [artifact?.id]);
+  // Reset the save affordance whenever the panel switches artifacts or a refine /
+  // code-edit lands new content — otherwise "Saved" sticks and blocks re-saving
+  // the latest version.
+  useEffect(() => {
+    setSaveState("idle");
+  }, [
+    artifact?.id,
+    artifact?.toolCallId,
+    artifact?.srcDoc,
+    artifact?.code,
+    artifact?.previewUrl,
+    artifact?.downloadUrl,
+  ]);
+
+  // Live preview URL for the iframe. Prefer a reminted file-proxy link when we
+  // have storagePath — expired / poisoned previewUrl (or srcDoc under prod CSP)
+  // is what left click-to-open panels blank after vault save.
+  const [livePreviewUrl, setLivePreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setLivePreviewUrl(null);
+    if (!artifact || artifact.kind !== "html") return;
+    const path = typeof artifact.storagePath === "string" ? artifact.storagePath.trim() : "";
+    if (!path) {
+      setLivePreviewUrl(artifact.previewUrl || null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const session = (await supabase.auth.getSession())?.data?.session;
+        const token = session?.access_token;
+        if (!token) {
+          if (!cancelled) setLivePreviewUrl(artifact.previewUrl || null);
+          return;
+        }
+        const resp = await fetch(`${API_BASE_URL}/api/storage/file-proxy-url`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            storagePath: path,
+            bucket: artifact.storageBucket || "user-files",
+            filename: artifact.filename || "artifact.html",
+          }),
+        });
+        if (resp.ok) {
+          const { url } = await resp.json();
+          if (!cancelled && url && !/supabase\.co\/storage\//i.test(url)) {
+            setLivePreviewUrl(url);
+            return;
+          }
+        }
+      } catch {
+        /* fall through */
+      }
+      if (!cancelled) setLivePreviewUrl(artifact.previewUrl || null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    artifact?.id,
+    artifact?.kind,
+    artifact?.storagePath,
+    artifact?.storageBucket,
+    artifact?.filename,
+    artifact?.previewUrl,
+  ]);
 
   // ── Code view (React artifacts only): see / hand-edit / re-run the JSX ──
-  const hasCode = !!(shown?.toolName === "lykn_build_react_artifact" && typeof shown.code === "string" && shown.code.trim());
+  const projectFiles = shown?.toolName === "lykn_build_react_artifact" && Array.isArray(shown.files)
+    ? shown.files
+    : null;
+  const isMultiFile = !!(projectFiles && projectFiles.length > 0);
+  const hasCode = !!(
+    shown?.toolName === "lykn_build_react_artifact" &&
+    ((typeof shown.code === "string" && shown.code.trim()) || isMultiFile)
+  );
   const [view, setView] = useState<"preview" | "code">("preview");
   const [draft, setDraft] = useState("");
+  const [activePath, setActivePath] = useState<string>("");
   const [applyState, setApplyState] = useState<"idle" | "applying">("idle");
   const [applyError, setApplyError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   // Sync the editor whenever the artifact's source changes from outside
   // (opening a different artifact, or an AI edit landing mid-session).
   useEffect(() => {
-    setDraft(typeof artifact?.code === "string" ? artifact.code : "");
+    const files = Array.isArray(artifact?.files) ? artifact.files : null;
+    const entry = (typeof artifact?.entry === "string" && artifact.entry) || files?.[0]?.path || "";
+    setActivePath(entry);
+    if (files?.length) {
+      const hit = files.find((f) => f.path === entry) || files[0];
+      setDraft(hit?.content || "");
+    } else {
+      setDraft(typeof artifact?.code === "string" ? artifact.code : "");
+    }
     setApplyError(null);
     setApplyState("idle");
-  }, [artifact?.id, artifact?.code]);
+  }, [artifact?.id, artifact?.code, artifact?.files, artifact?.entry]);
   useEffect(() => { setView("preview"); }, [artifact?.id]);
-  const dirty = hasCode && draft !== (shown?.code ?? "");
+
+  // Capture runtime / console errors from the sandboxed preview so the next
+  // chat turn can include them in [ARTIFACT_OPEN] for the coding agent.
+  const artifactRef = useRef(artifact);
+  artifactRef.current = artifact;
+  const onArtifactUpdateRef = useRef(onArtifactUpdate);
+  onArtifactUpdateRef.current = onArtifactUpdate;
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      const current = artifactRef.current;
+      const update = onArtifactUpdateRef.current;
+      if (!current || current.toolName !== "lykn_build_react_artifact" || !update) return;
+      const data = ev?.data;
+      if (!data || data.source !== "lykn-artifact") return;
+      if (data.type === "ready") {
+        if (current.runtimeErrors?.length) {
+          update({ ...current, runtimeErrors: [] });
+        }
+        return;
+      }
+      if (data.type !== "runtime_error" && data.type !== "console_error") return;
+      const message = String(data.message || "").trim().slice(0, 2000);
+      if (!message) return;
+      const next = {
+        message,
+        kind: String(data.kind || data.type || "error"),
+        at: typeof data.at === "number" ? data.at : Date.now(),
+      };
+      const prev = Array.isArray(current.runtimeErrors) ? current.runtimeErrors : [];
+      if (prev.some((e) => e.message === next.message)) return;
+      update({ ...current, runtimeErrors: [...prev, next].slice(-20) });
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
+  const currentFileContent = isMultiFile
+    ? (projectFiles!.find((f) => f.path === activePath)?.content ?? "")
+    : (shown?.code ?? "");
+  const dirty = hasCode && draft !== currentFileContent;
+
+  const handleSelectFile = useCallback((path: string) => {
+    if (!projectFiles || dirty) return;
+    const hit = projectFiles.find((f) => f.path === path);
+    if (!hit) return;
+    setActivePath(path);
+    setDraft(hit.content);
+    setApplyError(null);
+  }, [projectFiles, dirty]);
 
   const handleCopyCode = useCallback(async () => {
     try {
@@ -124,10 +260,20 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
     setApplyState("applying");
     setApplyError(null);
     try {
+      const multi = Array.isArray(artifact.files) && artifact.files.length > 0;
+      const nextFiles = multi
+        ? artifact.files!.map((f) =>
+            f.path === activePath ? { ...f, content: draft } : f,
+          )
+        : undefined;
       const res = await fetch(`${API_BASE_URL}/api/artifacts/react/rebuild`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: artifact.title, code: draft }),
+        body: JSON.stringify(
+          multi
+            ? { title: artifact.title, files: nextFiles, entry: artifact.entry || activePath }
+            : { title: artifact.title, code: draft },
+        ),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok || !body || body.ok === false) {
@@ -140,13 +286,17 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
             .filter((d: any) => d && typeof d.url === "string")
             .map((d: any) => ({ format: String(d.format || "file"), url: d.url, filename: d.filename }))
         : undefined;
+      const resultFiles = Array.isArray(body.artifact_files) ? body.artifact_files : nextFiles;
       onArtifactUpdate?.({
         ...artifact,
-        code: draft,
+        code: typeof body.artifact_code === "string" ? body.artifact_code : draft,
+        files: resultFiles,
+        entry: typeof body.entry === "string" ? body.entry : artifact.entry,
+        runtimeErrors: [],
         previewUrl: typeof body.file_url === "string" && body.file_url ? body.file_url : artifact.previewUrl,
         downloadUrl: typeof body.file_url === "string" && body.file_url ? body.file_url : artifact.downloadUrl,
         srcDoc: typeof body.preview_html === "string" && body.preview_html ? body.preview_html : artifact.srcDoc,
-        downloads: downloads && downloads.length ? downloads : artifact.downloads,
+        downloads: downloads && downloads.length ? downloads : undefined,
       });
       setApplyState("idle");
       setView("preview");
@@ -154,7 +304,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
       setApplyError(err?.message || "Rebuild failed");
       setApplyState("idle");
     }
-  }, [artifact, dirty, draft, applyState, onArtifactUpdate]);
+  }, [artifact, dirty, draft, applyState, onArtifactUpdate, activePath]);
 
   const handleSaveToVault = useCallback(async () => {
     if (!artifact || !onSaveToVault || saveState !== "idle") return;
@@ -411,7 +561,9 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                 <div className="flex h-full flex-col bg-[#faf9f7] dark:bg-[#151311]">
                   <div className="flex items-center justify-between gap-2 border-b border-black/8 px-3 py-2 dark:border-white/10">
                     <p className="truncate text-[11px] text-muted-foreground">
-                      {dirty ? "Edited. Run to update the preview" : "Source. Edit it, then run"}
+                      {isMultiFile
+                        ? (dirty ? `Edited ${activePath}. Run to update` : `${projectFiles!.length} files · ${activePath || "source"}`)
+                        : (dirty ? "Edited. Run to update the preview" : "Source. Edit it, then run")}
                     </p>
                     <div className="flex shrink-0 items-center gap-1.5">
                       <button
@@ -453,29 +605,48 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       {applyError}
                     </div>
                   ) : null}
-                  <textarea
-                    value={draft}
-                    onChange={(e) => { setDraft(e.target.value); setApplyError(null); }}
-                    spellCheck={false}
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    className="min-h-0 flex-1 resize-none bg-transparent p-3 font-mono text-[12px] leading-[1.55] text-foreground outline-none"
-                    style={{ tabSize: 2 }}
-                    aria-label="Artifact source code"
-                  />
+                  <div className="flex min-h-0 flex-1">
+                    {isMultiFile ? (
+                      <div className="w-[9.5rem] shrink-0 overflow-y-auto border-r border-black/8 dark:border-white/10">
+                        {projectFiles!.map((f) => (
+                          <button
+                            key={f.path}
+                            type="button"
+                            onClick={() => handleSelectFile(f.path)}
+                            disabled={dirty && f.path !== activePath}
+                            className={`block w-full truncate px-2.5 py-1.5 text-left font-mono text-[10.5px] transition-colors ${
+                              f.path === activePath
+                                ? "bg-black/[0.06] text-foreground dark:bg-white/[0.1]"
+                                : "text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.06]"
+                            } ${dirty && f.path !== activePath ? "opacity-40" : ""}`}
+                            title={dirty && f.path !== activePath ? "Run or discard edits before switching files" : f.path}
+                          >
+                            {f.path}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    <textarea
+                      value={draft}
+                      onChange={(e) => { setDraft(e.target.value); setApplyError(null); }}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      className="min-h-0 flex-1 resize-none bg-transparent p-3 font-mono text-[12px] leading-[1.55] text-foreground outline-none"
+                      style={{ tabSize: 2 }}
+                      aria-label="Artifact source code"
+                    />
+                  </div>
                 </div>
               ) : shown.kind === "html" ? (
-                // Prefer the cross-origin previewUrl over an inline srcDoc.
+                // Prefer a reminted/cross-origin file-proxy URL over srcDoc.
                 // srcdoc iframes inherit the parent page's CSP, and prod ships
-                // `script-src 'self'` (vercel.json) — that blocks the deck's
-                // inline navigation <script>, leaving every slide hidden
-                // (display:none) and the viewport blank. A cross-origin frame
-                // (signed Supabase URL) carries no such policy, so the script
-                // runs and the deck renders. srcDoc stays as the offline fallback.
-                shown.previewUrl ? (
+                // `script-src 'self'` (vercel.json) — that blocks React/Babel
+                // runners and deck navigation scripts, leaving a blank panel.
+                (livePreviewUrl || shown.previewUrl) ? (
                   <iframe
                     title={shown.title}
-                    src={shown.previewUrl}
+                    src={livePreviewUrl || shown.previewUrl}
                     className="h-full w-full border-0 bg-white"
                     sandbox={IFRAME_SANDBOX}
                     referrerPolicy="no-referrer"
@@ -513,7 +684,11 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
 
             <footer className="border-t border-black/8 px-4 py-2.5 dark:border-white/10">
               <p className="text-center text-[11.5px] text-muted-foreground">
-                Ask in chat to refine this. It updates here automatically.
+                {shown.runtimeErrors?.length
+                  ? `${shown.runtimeErrors.length} preview error${shown.runtimeErrors.length === 1 ? "" : "s"} will be sent with your next message`
+                  : isMultiFile
+                    ? `${projectFiles!.length}-file project · ask in chat to refine`
+                    : "Ask in chat to refine this. It updates here automatically."}
               </p>
             </footer>
           </>

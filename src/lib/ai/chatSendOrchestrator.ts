@@ -622,6 +622,10 @@ export interface ChatSendParams {
     font?: string;
     /** React component source (lykn_build_react_artifact edit round-trip). */
     code?: string;
+    files?: Array<{ path: string; content: string }>;
+    entry?: string;
+    todos?: Array<{ id: string; content: string; status: string }>;
+    runtimeErrors?: Array<{ message: string; kind?: string; at?: number }>;
     fileContent?: string;
     headers?: string[];
     rows?: any[];

@@ -470,6 +470,23 @@ export function buildChatToolCtx(req, extras = {}) {
     activeArtifactCode: typeof extras.activeArtifactCode === 'string' && extras.activeArtifactCode.trim()
       ? extras.activeArtifactCode
       : null,
+    /** Multi-file React project sources (from req.body.activeArtifact.files). */
+    activeArtifactFiles: Array.isArray(extras.activeArtifactFiles)
+      ? extras.activeArtifactFiles
+      : extras.activeArtifactFiles && typeof extras.activeArtifactFiles === 'object'
+        ? extras.activeArtifactFiles
+        : null,
+    activeArtifactEntry:
+      typeof extras.activeArtifactEntry === 'string' && extras.activeArtifactEntry.trim()
+        ? extras.activeArtifactEntry.trim()
+        : null,
+    activeArtifactTodos: Array.isArray(extras.activeArtifactTodos)
+      ? extras.activeArtifactTodos
+      : null,
+    /** Console/runtime errors captured from the preview iframe since last load. */
+    activeArtifactRuntimeErrors: Array.isArray(extras.activeArtifactRuntimeErrors)
+      ? extras.activeArtifactRuntimeErrors
+      : null,
     /** Open template artifact fields — style-only rebuilds reuse sections. */
     activeArtifactSections: Array.isArray(extras.activeArtifactSections)
       ? extras.activeArtifactSections

@@ -4,6 +4,7 @@
  */
 
 import type { PromptMessage } from "@/lib/ai/chatSendOrchestrator";
+import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 
 export type ChatFlowMode = "idle" | "clarifying" | "generating";
 
@@ -17,6 +18,8 @@ export type ThreadSnapshot = {
   chatFlowMode: ChatFlowMode;
   chatInput: string;
   abortController: AbortController | null;
+  /** Side-panel artifact open for THIS chat only — never shared across boards. */
+  activeArtifact: ChatArtifact | null;
   updatedAt: number;
 };
 
@@ -38,6 +41,7 @@ function emptySnapshot(): ThreadSnapshot {
     chatFlowMode: "idle",
     chatInput: "",
     abortController: null,
+    activeArtifact: null,
     updatedAt: Date.now(),
   };
 }

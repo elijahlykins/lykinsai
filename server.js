@@ -1406,8 +1406,14 @@ app.get(FILE_PROXY_ROUTE, async (req, res) => {
 app.post('/api/artifacts/react/rebuild', requireAuth, async (req, res) => {
   try {
     const result = await buildReactArtifact(
-      { title: req.body?.title, code: req.body?.code },
-      { supabaseAdmin, userId: req.user.id },
+      {
+        title: req.body?.title,
+        code: req.body?.code,
+        files: req.body?.files,
+        entry: req.body?.entry,
+        full_rewrite: true,
+      },
+      { supabaseAdmin, userId: req.user.id, allowFullRewrite: true, allowStyleChange: true },
     );
     if (result?.ok === false) return res.status(400).json(result);
     return res.json(result);
@@ -6125,22 +6131,24 @@ const TOOL_GUIDANCE_VISUAL = [
   '  dashboard, mini-app, landing page, or any visual/interactive deliverable,',
   '  BUILD IT WITH TOOLS — do not dump a long HTML/code block only in markdown.',
   '  LYKN renders tool output live in a side panel next to the chat.',
-  '  • lykn_build_react_artifact — THE DEFAULT builder. You WRITE a complete',
-  '    React component and it renders live. A big library stack is already in',
-  '    scope: Tailwind classes, all React hooks, Recharts, lucide-react,',
-  '    framer-motion (motion / AnimatePresence), d3, three.js (THREE),',
-  '    lodash (_), dayjs, mathjs (math), PapaParse (Papa), marked, Tone.js,',
-  '    canvas-confetti (confetti), html2canvas + jsPDF (jsPDF). Use for full',
+  '  • lykn_build_react_artifact — THE DEFAULT builder. You WRITE React code',
+  '    and it renders live. Simple: pass `code` (one component). Complex',
+  '    games/apps: pass multi-file `files` ([{path,content}], entry App.jsx)',
+  '    with relative imports + a `todos` plan. A big library stack is already',
+  '    in scope: Tailwind, React hooks, Recharts, lucide-react, framer-motion,',
+  '    d3, three.js (THREE), lodash (_), dayjs, mathjs (math), PapaParse,',
+  '    marked, Tone.js, canvas-confetti, html2canvas + jsPDF. Use for full',
   '    mini-apps and websites, presentations, documents, reports, study',
   '    guides, worksheets, dashboards, calculators, quizzes, games,',
   '    prototypes — anything read or interactive. MATCH COMPLEXITY: a quick',
   '    utility stays one focused screen; websites/dashboards get full',
-  '    multi-section treatment — never pad a simple ask. Real layout and',
-  '    typography, animation where it helps, no emojis in document-style',
-  '    artifacts. STYLE IT by following the [DESIGN_SYSTEM] brief included',
-  '    below — its color tokens, type scale, spacing, and component recipes —',
-  '    and, when a [STYLE_GUIDE] block is also included, follow its per-format',
-  '    structure rules (website section order, slide-deck navigation,',
+  '    multi-section treatment; games/apps get multi-file modules — never pad',
+  '    a simple ask. Real layout and typography, animation where it helps, no',
+  '    emojis in document-style artifacts. STYLE IT by following the',
+  '    [DESIGN_SYSTEM] brief included below — its color tokens, type scale,',
+  '    spacing, and component recipes — and, when a [STYLE_GUIDE] block is',
+  '    also included, follow its per-format structure rules (website section',
+  '    order, slide-deck navigation,',
   '    dashboard layout, document typography, app interaction states).',
   '    The runner loads Tailwind (forms/typography plugins) + Inter / Space',
   '    Grotesk / JetBrains Mono; never ship browser-default styling.',
@@ -6316,7 +6324,7 @@ const TOOL_GUIDANCE_EXTERIOR = [
 // the web" turns (it gates VISUAL + EXTERIOR, which are the produce/compute
 // tools). AGENTS_APPS_CODE covers other models, connected-app calls, and
 // Cursor coding builds.
-const MAKING_INTENT_RE = /\b(slideshow|slide|deck|presentation|pitch|keynote|document|doc|report|essay|memo|worksheet|handout|spreadsheet|sheet|csv|table|chart|graph|plot|diagram|flow ?chart|mind ?map|mermaid|image|picture|photo|logo|poster|icon|illustration|drawing|render|mock ?up|prototype|wireframe|landing ?page|web ?page|mini[- ]?app|webapp|html|video|mp4|animation|animate|motion graphics?|speech|audio|voice ?over|narration|podcast|transcribe|transcript|ocr|parse|pdf|translate|translation|calculate|calculation|compute|equation|solve|integral|integrate|derivative|differentiate|simplify|factor|run (?:code|this|python|js|javascript)|python|javascript|script|search (?:the )?web|web search|google (?:it|that|this)|look (?:it|that|this)? ?up|online|latest)\b/i;
+const MAKING_INTENT_RE = /\b(slideshow|slide|deck|presentation|pitch|keynote|document|doc|report|essay|memo|worksheet|handout|spreadsheet|sheet|csv|table|chart|graph|plot|diagram|flow ?chart|mind ?map|mermaid|image|picture|photo|logo|poster|icon|illustration|drawing|render|mock ?up|prototype|wireframe|landing ?page|web ?page|mini[- ]?app|webapp|html|video|mp4|animation|animate|motion graphics?|game|platformer|fighter|rpg|shooter|puzzle|speech|audio|voice ?over|narration|podcast|transcribe|transcript|ocr|parse|pdf|translate|translation|calculate|calculation|compute|equation|solve|integral|integrate|derivative|differentiate|simplify|factor|run (?:code|this|python|js|javascript)|python|javascript|script|search (?:the )?web|web search|google (?:it|that|this)|look (?:it|that|this)? ?up|online|latest)\b/i;
 const MAKING_VERB_RE = /\b(make|build|create|generate|draw|design|produce|write me|put together|turn (?:this|that|it) into|convert)\b/i;
 const AGENTS_APPS_CODE_INTENT_RE = /\b(my (?:model|models|agent|persona)|sub[- ]?agent|sub[- ]?model|delegate|main agent|custom model|models i (?:made|built|created|have)|which model|ask my|connected app|my app|apps?|api|integration|integrate with|endpoint|call (?:my|the|an)|post to|fix (?:the|this|that|a)? ?bug|pull request|open a pr|build with cursor|cursor (?:agent|build|cloud)|cloud agent|code ?base|repo|repository|implement|refactor|deploy|ship (?:it|this|the))\b/i;
 
@@ -13788,8 +13796,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         (activeArtifact.toolName === 'lykn_build_template' &&
           (Array.isArray(activeArtifact.sections) || typeof activeArtifact.content === 'string')) ||
         (activeArtifact.toolName === 'lykn_build_react_artifact' &&
-          typeof activeArtifact.code === 'string' &&
-          activeArtifact.code.trim()) ||
+          ((typeof activeArtifact.code === 'string' && activeArtifact.code.trim()) ||
+            (Array.isArray(activeArtifact.files) && activeArtifact.files.length > 0))) ||
         (activeArtifact.toolName === 'lykn_manage_file' &&
           typeof activeArtifact.fileContent === 'string' &&
           activeArtifact.fileContent.trim()) ||
@@ -13801,6 +13809,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // Leaving "+" → Create armed used to nullify the edit path, inject a
     // fresh [DESIGN_SYSTEM], and force a ground-up rebuild that looked
     // totally different from the open panel.
+    // Cross-chat leakage is handled client-side (activeArtifact is scoped
+    // per board) — do not loosen this surgical gate for "new game" wording.
     const redesignArtifactAsk = REDESIGN_INTENT_RE.test(String(text || ''));
     // Narrow style asks ("make it blue", "change the font") may touch colors/
     // fonts without being a full redesign — builders allow that signature
@@ -14389,7 +14399,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         (artifactBuildSpec.templateType ? ` with template_type "${artifactBuildSpec.templateType}"` : '') +
         (artifactBuildSpec.tool === 'lykn_build_spreadsheet' ? ` with output_format "xlsx" (a real downloadable spreadsheet), passing headers + rows` : '') +
         (artifactBuildSpec.tool === 'lykn_build_react_artifact'
-          ? `. WRITE the deliverable as one complete React component (export default, no props): Tailwind for layout/typography, React hooks for interactivity, and the in-scope library stack only when needed — Recharts/LucideReact for charts and icons, framer-motion (motion/AnimatePresence) for animation, d3, three.js (THREE) for 3D, lodash (_), dayjs, mathjs (math), Papa, marked, Tone, confetti, html2canvas + jsPDF for export buttons. STYLE IT by following the [DESIGN_SYSTEM] brief below exactly — its color tokens, type scale, spacing, and component recipes — plus the [STYLE_GUIDE] block's structure rules when one is included. MATCH COMPLEXITY: a quick utility = one focused screen; a website/dashboard/presentation = full multi-section treatment. Never pad a simple request with filler sections`
+          ? `. WRITE the deliverable in React: for simple tools/docs use a single \`code\` component (export default); for games, multi-scene apps, or anything with several systems, use multi-file \`files\` ([{path, content}], entry App.jsx) with relative imports between modules — split game/, components/, lib/. Include a \`todos\` plan on complex builds. Tailwind for layout/typography, React hooks for interactivity, and the in-scope library stack only when needed — Recharts/LucideReact for charts and icons, framer-motion (motion/AnimatePresence) for animation, d3, three.js (THREE) for 3D, lodash (_), dayjs, mathjs (math), Papa, marked, Tone, confetti, html2canvas + jsPDF for export buttons. STYLE IT by following the [DESIGN_SYSTEM] brief below exactly — its color tokens, type scale, spacing, and component recipes — plus the [STYLE_GUIDE] block's structure rules when one is included. MATCH COMPLEXITY: a quick utility = one focused screen; a website/dashboard/presentation = full multi-section treatment; a game/app = multi-file with real loops/states. Never pad a simple request with filler sections`
           : '') +
         (artifactBuildSpec.tool === 'lykn_render_video'
           ? `. WRITE the deliverable as one complete Remotion composition (export default one component; imports ONLY from "remotion" and "react"; every visual property a pure function of useCurrentFrame() via interpolate/spring; inline style objects, system fonts; <Img> from "remotion" for hosted image URLs listed in [USER_IMAGES]/[GENERATED_IMAGES] — never invented URLs; no registerRoot/<Composition>). Keep it SHORT and purposeful (default ~5s, max 30s), end with the motion resolved, and pass duration_in_frames/fps/width/height that fit the request`
@@ -14399,15 +14409,59 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     }
     if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact') {
       const a = activeArtifact;
-      const codeSrc = String(a.code || '').slice(0, 60000);
+      const multiFiles = Array.isArray(a.files) ? a.files.filter((f) => f && typeof f.path === 'string') : [];
+      const isMulti = multiFiles.length > 0;
+      let sourceBlock = '';
+      if (isMulti) {
+        const entryName = String(a.entry || 'App.jsx');
+        const listing = multiFiles.map((f) => `  - ${f.path} (${String(f.content || '').length} chars)`).join('\n');
+        // Cap total source shown — prefer entry + smaller modules first.
+        const sorted = [...multiFiles].sort((x, y) => {
+          if (x.path === entryName) return -1;
+          if (y.path === entryName) return 1;
+          return String(x.path).localeCompare(String(y.path));
+        });
+        let budget = 70000;
+        const parts = [];
+        for (const f of sorted) {
+          const body = String(f.content || '');
+          const slice = body.slice(0, Math.min(body.length, Math.max(2000, budget)));
+          budget -= slice.length;
+          parts.push(`—— ${f.path} ——\n\`\`\`jsx\n${slice}${slice.length < body.length ? '\n/* …truncated… */' : ''}\n\`\`\``);
+          if (budget <= 0) {
+            parts.push(`(/* ${sorted.length - parts.length} more files omitted — use path-scoped edits / file_ops */)`);
+            break;
+          }
+        }
+        sourceBlock =
+          `• multi-file project (entry: ${entryName}):\n${listing}\n` +
+          `• sources:\n${parts.join('\n')}\n`;
+      } else {
+        const codeSrc = String(a.code || '').slice(0, 60000);
+        sourceBlock = `• current component source (JSX):\n\`\`\`jsx\n${codeSrc}\n\`\`\`\n`;
+      }
+      const todos = Array.isArray(a.todos) ? a.todos : [];
+      const todosBlock = todos.length
+        ? `• coding plan (todos):\n${todos.map((t) => `  - [${t.status || 'pending'}] ${t.id || '?'}: ${String(t.content || '').slice(0, 200)}`).join('\n')}\n`
+        : '';
+      const runtimeErrs = Array.isArray(a.runtimeErrors) ? a.runtimeErrors.slice(0, 12) : [];
+      const runtimeBlock = runtimeErrs.length
+        ? `• RUNTIME ERRORS from the live preview (FIX THESE with targeted edits before adding features):\n` +
+          runtimeErrs.map((e) => `  - ${String(e.message || e).slice(0, 400)}`).join('\n') + '\n'
+        : '';
       prompt +=
         `\n\n[ARTIFACT_OPEN — The user has this coded React artifact open in the side panel and may ask you to refine it:\n` +
         `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
-        `• current component source (JSX):\n\`\`\`jsx\n${codeSrc}\n\`\`\`\n` +
+        sourceBlock +
+        todosBlock +
+        runtimeBlock +
         `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
         `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, colors, radii, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. Swapping a color palette or font "while you're at it" is a FAILURE. ` +
         `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
-        `REQUIRED: call with \`edits\` ONLY — {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. The server REJECTS full \`code\` and ignores full_rewrite unless the user explicitly said redesign/rebuild/start over. Never change THEME, colors, fonts, or layout on a refine. ` +
+        (isMulti
+          ? `REQUIRED: call with \`edits\` ({path, find, replace}) and/or \`file_ops\` ({op:"write"|"delete", path, content?}). The server REJECTS full \`files\`/\`code\` unless the user explicitly said redesign/rebuild/start over (then full_rewrite: true). `
+          : `REQUIRED: call with \`edits\` ONLY — {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. The server REJECTS full \`code\` and ignores full_rewrite unless the user explicitly said redesign/rebuild/start over. `) +
+        `Never change THEME, colors, fonts, or layout on a refine. Update \`todos\` statuses on longer builds. ` +
         `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
         `If the message is NOT about the artifact, ignore this and answer normally.]`;
     } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_template') {
@@ -14565,13 +14619,22 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     //     weight that would otherwise force a slower, pricier model on
     //     every overlay build.
     if (codedArtifactTurn && imageUrls.length > 0 && actualModel.includes('grok')) {
-      const userAttachedImage = (Array.isArray(req.body?.attachments) ? req.body.attachments : [])
-        .some((a) => a && a.type === 'image');
+      const attachmentsArr = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+      const userAttachedImage = attachmentsArr.some(
+        (a) => a && (a.type === 'image' || Number.isInteger(a.imageIndex)),
+      );
       const buildReferencesScreen = BUILD_SCREEN_REF_RE.test(String(text || ''));
-      const imageMatters = userAttachedImage || buildReferencesScreen;
+      // Overlay auto-screenshots are NOT listed in attachments. Chat Build /
+      // Create with imageUrls is almost always a user attach — keep those
+      // pixels even if attachment metadata is missing/malformed.
+      const chatBuildWithImages =
+        forceArtifact && imageUrls.length > 0 && req.body?.overlayAsk !== true;
+      const imageMatters = userAttachedImage || buildReferencesScreen || chatBuildWithImages;
       const why = userAttachedImage
         ? 'user attached an image'
-        : 'request references the screen';
+        : chatBuildWithImages
+          ? 'Build mode with attached image(s)'
+          : 'request references the screen';
       if (!imageMatters) {
         console.log(`🧑‍💻 Code-artifact: dropping ${imageUrls.length} screen-capture image(s) (self-contained build request) — staying on ${actualModel}`);
         imageUrls = [];
@@ -14660,11 +14723,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     //      real pixels via <img src> instead of a placeholder.
     if ((codedArtifactTurn || videoRenderLikelyTurn) && imageUrls.length > 0) {
       const attachedImageMeta = (Array.isArray(req.body?.attachments) ? req.body.attachments : [])
-        .filter((a) => a && a.type === 'image' && Number.isInteger(a.imageIndex));
+        .filter((a) => a && (a.type === 'image' || Number.isInteger(a.imageIndex)));
       const referencesScreen = BUILD_SCREEN_REF_RE.test(String(text || ''));
-      if (codedArtifactTurn && (attachedImageMeta.length > 0 || referencesScreen)) {
+      // Build mode + images: always treat pixels as visible reference input.
+      const buildModeVision =
+        forceArtifact && imageUrls.length > 0 && req.body?.overlayAsk !== true;
+      if (codedArtifactTurn && (attachedImageMeta.length > 0 || referencesScreen || buildModeVision)) {
         prompt +=
-          '\n\n[REFERENCE_BUILD — the user supplied image(s)/screen context as the REFERENCE for this build. ' +
+          `\n\n[ATTACHED_VISION — ${imageUrls.length} image(s) are attached as REAL pixel input on this turn. ` +
+          'You CAN see them in this message. Do not claim you cannot view images. Use what they show.]\n' +
+          '\n[REFERENCE_BUILD — the user supplied image(s)/screen context as the REFERENCE for this build. ' +
           'FIDELITY OVERRIDES THE DESIGN SYSTEM: recreate what the reference shows. ' +
           'WORK IN TWO PASSES. PASS 1 — TRANSCRIBE (do this mentally before writing any code): inventory the ' +
           'reference top-to-bottom — (a) every section/region in order and its internal layout (columns, grids, ' +
@@ -14681,23 +14749,39 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           'list yields wherever it conflicts with a faithful recreation. If the user asked for changes relative ' +
           'to the reference ("like this but dark"), transcribe first, then apply exactly those changes.]';
       }
-      if (attachedImageMeta.length > 0 && supabaseAdmin && req.user?.id) {
+      if ((attachedImageMeta.length > 0 || buildModeVision) && supabaseAdmin && req.user?.id) {
         const hosted = [];
-        for (const a of attachedImageMeta.slice(0, 4)) {
-          const dataUrl = imageUrls[a.imageIndex];
+        const seenHosted = new Set();
+        const pushHosted = (name, url) => {
+          const u = String(url || '').trim();
+          if (!u || seenHosted.has(u)) return;
+          seenHosted.add(u);
+          hosted.push({ name: name || `image ${hosted.length + 1}`, url: u });
+        };
+        const sources = attachedImageMeta.length
+          ? attachedImageMeta.slice(0, 4)
+          : imageUrls.slice(0, 4).map((url, i) => ({ name: `image ${i + 1}`, imageIndex: i, url }));
+        for (const a of sources) {
+          const dataUrl = Number.isInteger(a.imageIndex) ? imageUrls[a.imageIndex] : a.url;
           const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(String(dataUrl || ''));
-          if (!m) continue; // already-hosted URLs can be used as-is; only raw base64 needs persisting
-          try {
-            const ext = (m[1].split('/')[1] || 'png').replace('jpeg', 'jpg').split('+')[0];
-            const stored = await persistCapabilityArtifact(supabaseAdmin, req.user.id, {
-              buffer: Buffer.from(m[2], 'base64'),
-              filename: `${String(a.name || 'image').replace(/\.[a-z0-9]+$/i, '').slice(0, 40) || 'image'}.${ext}`,
-              mimeType: m[1],
-              category: 'user-images',
-            });
-            if (stored.ok) hosted.push({ name: a.name || `image ${hosted.length + 1}`, url: stored.file_url });
-          } catch (err) {
-            console.warn('🧑‍💻 Code-artifact: failed to host user image for embedding:', err?.message);
+          if (m) {
+            try {
+              const ext = (m[1].split('/')[1] || 'png').replace('jpeg', 'jpg').split('+')[0];
+              const stored = await persistCapabilityArtifact(supabaseAdmin, req.user.id, {
+                buffer: Buffer.from(m[2], 'base64'),
+                filename: `${String(a.name || 'image').replace(/\.[a-z0-9]+$/i, '').slice(0, 40) || 'image'}.${ext}`,
+                mimeType: m[1],
+                category: 'user-images',
+              });
+              if (stored.ok) pushHosted(a.name, stored.file_url);
+            } catch (err) {
+              console.warn('🧑‍💻 Code-artifact: failed to host user image for embedding:', err?.message);
+            }
+          } else if (/^https?:\/\//i.test(String(dataUrl || ''))) {
+            // Already a hosted/signed URL — pass through for <img> embeds.
+            pushHosted(a.name, dataUrl);
+          } else if (/^https?:\/\//i.test(String(a.url || ''))) {
+            pushHosted(a.name, a.url);
           }
         }
         if (hosted.length > 0) {
@@ -15707,6 +15791,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
             : clampForProvider(pickOutputCap({
                 hasImages: imageUrls.length > 0,
               }), attemptModel),
+          // Longer tool loops for coded artifacts (multi-file games/apps).
+          codingMode: Boolean(codedArtifactTurn),
           promptCacheKey: agentCacheKey,
           chatToolNames: streamChatToolNames,
           forceToolName: forcedToolNameForTurn,
@@ -15724,6 +15810,22 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               activeArtifactCode:
                 activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact'
                   ? String(activeArtifact.code || '')
+                  : null,
+              activeArtifactFiles:
+                activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact'
+                  ? (Array.isArray(activeArtifact.files) ? activeArtifact.files : null)
+                  : null,
+              activeArtifactEntry:
+                activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact'
+                  ? (typeof activeArtifact.entry === 'string' ? activeArtifact.entry : null)
+                  : null,
+              activeArtifactTodos:
+                activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact'
+                  ? (Array.isArray(activeArtifact.todos) ? activeArtifact.todos : null)
+                  : null,
+              activeArtifactRuntimeErrors:
+                activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact'
+                  ? (Array.isArray(activeArtifact.runtimeErrors) ? activeArtifact.runtimeErrors : null)
                   : null,
               activeArtifactSections:
                 activeArtifactEditable && activeArtifact.toolName === 'lykn_build_template'

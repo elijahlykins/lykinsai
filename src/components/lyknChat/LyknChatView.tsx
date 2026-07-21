@@ -1943,14 +1943,13 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
     }
     const key = newest?.toolCallId || newest?.id || null;
 
-    // Switched chats: close the panel (the artifact stays saved as a chip in
-    // the old chat) and re-baseline so the new chat's existing artifacts are
-    // NOT auto-opened — only artifacts the user builds from here on auto-open.
+    // Switched chats: re-baseline auto-open tracking. Panel open/close is
+    // owned by useChatEngine (per-board snapshot) so Smash Arena in chat A
+    // does not clear-and-leak into chat B — and switching back restores A.
     if (artifactChatKeyRef.current !== chatKey) {
       artifactChatKeyRef.current = chatKey;
       artifactSeededRef.current = false;
       lastSeenArtifactRef.current = null;
-      onActiveArtifactChange?.(null);
     }
 
     // First time this chat's messages populate — establish a baseline without
