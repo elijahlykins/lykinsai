@@ -44,6 +44,7 @@ export const manageFileTool = {
     'Authenticated users get a persisted download URL (file_url). Use action=load with storage_path to read back.',
     'For interactive mini-apps and custom UIs: action=create with a .html filename and full self-contained HTML.',
     'The chat UI renders .html files inline as a live preview — prefer this over pasting HTML in markdown.',
+    'EDITING an open file: pass `edits` ONLY — {find, replace} patches copied from [ARTIFACT_OPEN]. Do NOT resubmit full content unless the user asked to rebuild (then set full_rewrite: true).',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -51,6 +52,23 @@ export const manageFileTool = {
       action: { type: 'string', enum: ['create', 'edit', 'convert', 'load'] },
       filename: { type: 'string' },
       content: { type: 'string' },
+      edits: {
+        type: 'array',
+        description: 'Targeted find/replace patches against the open file (instead of full content).',
+        items: {
+          type: 'object',
+          properties: {
+            find: { type: 'string' },
+            replace: { type: 'string' },
+          },
+          required: ['find', 'replace'],
+          additionalProperties: false,
+        },
+      },
+      full_rewrite: {
+        type: 'boolean',
+        description: 'Set true ONLY when replacing an open file with full content because the user asked to rebuild.',
+      },
       storage_path: { type: 'string', description: 'For load action — path from a prior file_url response.' },
       source_format: { type: 'string' },
       target_format: { type: 'string' },
@@ -113,6 +131,7 @@ export const buildSpreadsheetTool = {
   description: [
     'Create markdown tables, CSV, or XLSX from headers and row data.',
     'Returns a download URL when the user is signed in. Include markdown_table or download link in your reply.',
+    'EDITING an open sheet: pass `cell_edits` ONLY — do NOT resubmit full headers/rows unless the user asked to rebuild (full_rewrite: true).',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -120,9 +139,20 @@ export const buildSpreadsheetTool = {
       title: { type: 'string' },
       headers: { type: 'array', items: { type: 'string' } },
       rows: { type: 'array', items: { type: 'object' } },
+      cell_edits: {
+        type: 'array',
+        description:
+          'Targeted cell/row patches against the open spreadsheet. ' +
+          'Use {row, col|column, value}, {row, values}, {insert_row, values}, or {remove_row}.',
+        items: { type: 'object' },
+      },
+      full_rewrite: {
+        type: 'boolean',
+        description: 'Set true ONLY when replacing an open sheet with full headers/rows because the user asked to rebuild.',
+      },
       output_format: { type: 'string', enum: ['markdown', 'csv', 'xlsx'] },
     },
-    required: ['rows'],
+    // rows required for new builds; open-sheet cell_edits turns omit them.
     additionalProperties: false,
   },
   handler: withCtx(buildSpreadsheet),
@@ -225,6 +255,7 @@ export const buildTemplateTool = {
     'Pass `theme` to set the accent color (name like "blue", "green", "purple", "red", "teal", "orange" or a hex like "#2563eb").',
     'Pass `font` to set the typeface (inter, georgia, playfair, space-grotesk, merriweather, mono, system).',
     'STYLE-ONLY EDITS on an open deck/doc: omit `sections` entirely and pass only `theme` and/or `font` (keep the same title + template_type). The server reuses the existing slides verbatim — do NOT rewrite slide copy when the user only asked for a font or color change.',
+    'CONTENT EDITS on an open deck/doc: pass `section_edits` ONLY (index/id field overlays, find/replace, insert_at, remove_*). Do NOT resubmit the full `sections` array unless the user asked to rebuild (then set full_rewrite: true).',
     'Do NOT use emojis anywhere in titles, headings, body, notes, or metadata — keep generated documents, decks, and PDFs clean and professional (any emoji is stripped from the output regardless).',
   ].join('\n'),
   inputSchema: {
@@ -247,6 +278,31 @@ export const buildTemplateTool = {
       },
       title: { type: 'string' },
       sections: { type: 'array', items: { type: 'object' } },
+      section_edits: {
+        type: 'array',
+        description:
+          'Targeted patches to the open template. Prefer over full sections. ' +
+          'Supports {find,replace}, {index|id, heading?, body?, notes?}, {insert_at, section}, {remove_index|remove_id}.',
+        items: { type: 'object' },
+      },
+      content_edits: {
+        type: 'array',
+        description: 'Find/replace patches against open document `content` (when not using sections).',
+        items: {
+          type: 'object',
+          properties: {
+            find: { type: 'string' },
+            replace: { type: 'string' },
+          },
+          required: ['find', 'replace'],
+          additionalProperties: false,
+        },
+      },
+      full_rewrite: {
+        type: 'boolean',
+        description:
+          'Set true ONLY when replacing an open template with full sections/content because the user asked to rebuild.',
+      },
       metadata: { type: 'object' },
       content: { type: 'string' },
       theme: {
@@ -404,13 +460,12 @@ export const buildReactArtifactTool = {
     '    line(s) that must change, not a rewritten version of the whole',
     '    surrounding block. If you also pass `code`, the server IGNORES it',
     '    and applies `edits` against the open source.',
-    '  • Full `code` on an edit turn is allowed ONLY when the user explicitly',
+    '  • Full `code` on an edit turn is REJECTED unless the user explicitly',
     '    asked for a sweeping change (full restyle, major restructure,',
     '    "start over") — you MUST then also pass full_rewrite: true, and even',
     '    then copy every part the request does not cover verbatim from the',
-    '    current source. The server measures how much of the open artifact',
-    '    your code replaces (and whether THEME changed) and REJECTS broad',
-    '    rewrites that were not declared.',
+    '    current source. Undeclared full-code submissions over an open',
+    '    artifact always bounce back to the edits path.',
     '  • If an edit attempt errors (target not found/ambiguous), fix the',
     '    `find` snippet and retry `edits` first; full code is the last resort.',
     '',
@@ -446,8 +501,8 @@ export const buildReactArtifactTool = {
         type: 'boolean',
         description:
           'Set true ONLY when replacing an OPEN artifact with full `code` because the user explicitly ' +
-          'asked for a sweeping change (full restyle/restructure). Asserts the broad diff is intentional; ' +
-          'undeclared broad rewrites over an open artifact are rejected.',
+          'asked for a sweeping change (full restyle/restructure). Without this flag, full `code` over ' +
+          'an open artifact is always rejected — use `edits` instead.',
       },
     },
     required: ['title'],

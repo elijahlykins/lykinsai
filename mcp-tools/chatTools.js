@@ -474,6 +474,16 @@ export function buildChatToolCtx(req, extras = {}) {
     activeArtifactSections: Array.isArray(extras.activeArtifactSections)
       ? extras.activeArtifactSections
       : null,
+    activeArtifactContent:
+      typeof extras.activeArtifactContent === 'string' && extras.activeArtifactContent.trim()
+        ? extras.activeArtifactContent
+        : null,
+    activeArtifactHeaders: Array.isArray(extras.activeArtifactHeaders)
+      ? extras.activeArtifactHeaders
+      : null,
+    activeArtifactRows: Array.isArray(extras.activeArtifactRows)
+      ? extras.activeArtifactRows
+      : null,
     activeArtifactTitle:
       typeof extras.activeArtifactTitle === 'string' ? extras.activeArtifactTitle : null,
     activeArtifactTheme:

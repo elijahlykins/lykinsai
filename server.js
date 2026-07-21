@@ -6456,15 +6456,16 @@ const TOOL_GUIDANCE_ARTIFACT_EDIT = [
   '  The user is refining an EXISTING build — not commissioning a new one.',
   '  • Do NOT invent a new look, theme, palette, layout, typography, or component structure.',
   '  • There is NO [DESIGN_SYSTEM] / [STYLE_GUIDE] on this turn on purpose. Keep the open',
-  '    artifact\'s THEME tokens, classNames, colors, spacing, fonts, and visual design',
-  '    byte-for-byte. Changing indigo→violet, Inter→another font, rounded-xl→rounded-2xl,',
-  '    or rewriting classNames "to clean them up" is a FAILURE unless they asked to restyle.',
-  '  • Content / data / copy / logic / list-expansion changes → call lykn_build_react_artifact',
-  '    with `edits` ONLY: {find, replace} patches copied verbatim from [ARTIFACT_OPEN].',
-  '  • Never pass full `code` unless the user explicitly asked to restyle, rebuild, redesign,',
-  '    or start over — and then set full_rewrite: true.',
+  '    artifact\'s look byte-for-byte unless they asked to restyle.',
+  '  • ALWAYS patch in place — never rebuild the whole artifact:',
+  '      React → lykn_build_react_artifact with `edits` ONLY ({find, replace}).',
+  '      Template/deck/doc → lykn_build_template with `section_edits` (or font/theme only).',
+  '      File/HTML → lykn_manage_file with `edits` ONLY.',
+  '      Spreadsheet → lykn_build_spreadsheet with `cell_edits` ONLY.',
+  '  • Never pass full code/sections/content/rows unless the user explicitly asked to restyle,',
+  '    rebuild, redesign, or start over — and then set full_rewrite: true.',
   '  • "Add more X", "expand the bank", "fix the bug", "change this label", "make the button',
-  '    do Y" are ALWAYS edits, never a redesign.',
+  '    do Y", "change the font", "update that cell" are ALWAYS edits, never a redesign.',
 ].join('\n');
 
 // Surgical edits in chat / Glass when there may be NO open artifact panel —
@@ -6476,7 +6477,7 @@ const TOOL_GUIDANCE_MINIMAL_EDIT = [
   '  Apply ONLY what the user asked for. Do not rewrite surrounding code or prose.',
   '  Do not change colors, fonts, spacing, layout, structure, or naming unless they',
   '  explicitly asked to restyle / redesign / rebuild / start over.',
-  '  If an artifact is open, use lykn_build_react_artifact with `edits` only.',
+  '  If an artifact is open, patch it (edits / section_edits / cell_edits) — never rebuild.',
   '  If editing code or text in the conversation (or on screen via Glass), keep every',
   '  untouched line identical; prefer a small patch / changed section over a full file.',
 ].join('\n');
@@ -13754,8 +13755,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     }
     // Chat-based artifact editing: when the user has an artifact open in the
     // side panel, the client sends its current structured source so the model
-    // can refine it in place (rebuild via lykn_build_template with the COMPLETE
-    // updated content). Only template builds are editable for now.
+    // can refine it in place via patches (edits / section_edits / cell_edits).
     const activeArtifact =
       req.body?.activeArtifact && typeof req.body.activeArtifact === 'object' && !Array.isArray(req.body.activeArtifact)
         ? req.body.activeArtifact
@@ -13763,8 +13763,18 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     const activeArtifactEditable =
       !!activeArtifact &&
       !artifactBuildSpec &&
-      (activeArtifact.toolName === 'lykn_build_template' ||
-        (activeArtifact.toolName === 'lykn_build_react_artifact' && typeof activeArtifact.code === 'string' && activeArtifact.code.trim()));
+      (
+        (activeArtifact.toolName === 'lykn_build_template' &&
+          (Array.isArray(activeArtifact.sections) || typeof activeArtifact.content === 'string')) ||
+        (activeArtifact.toolName === 'lykn_build_react_artifact' &&
+          typeof activeArtifact.code === 'string' &&
+          activeArtifact.code.trim()) ||
+        (activeArtifact.toolName === 'lykn_manage_file' &&
+          typeof activeArtifact.fileContent === 'string' &&
+          activeArtifact.fileContent.trim()) ||
+        (activeArtifact.toolName === 'lykn_build_spreadsheet' &&
+          (Array.isArray(activeArtifact.headers) || Array.isArray(activeArtifact.rows)))
+      );
     // Chat-bar "+" → Projects: a LYKN project the user explicitly scoped this
     // chat to. Unlike `projectId` (which can be a board-linked Omnia project),
     // this is always a `lykn_projects` row, so we load its [CURRENT_PROJECT]
@@ -13988,12 +13998,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       }
       useTools = true;
     }
-    // Artifact open in the side panel: keep the builder tool available so a
-    // plain-language edit ("make the intro shorter") can rebuild it.
+    // Artifact open in the side panel: keep the matching builder tool available
+    // so a plain-language edit can patch it in place.
     if (activeArtifactEditable) {
-      const editToolName = activeArtifact.toolName === 'lykn_build_react_artifact'
-        ? 'lykn_build_react_artifact'
-        : 'lykn_build_template';
+      const editToolName = String(activeArtifact.toolName || 'lykn_build_template');
       const names = Array.isArray(streamChatToolNames) ? [...streamChatToolNames] : undefined;
       if (names && !names.includes(editToolName)) {
         names.push(editToolName);
@@ -14355,11 +14363,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
         `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, colors, radii, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. Swapping a color palette or font "while you're at it" is a FAILURE. ` +
         `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
-        `DEFAULT to the \`edits\` argument — {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. Do not re-send the full code for a targeted change. ` +
-        `Pass COMPLETE \`code\` only when the user EXPLICITLY asked to restyle, rebuild, redesign, or start over — then ALSO pass full_rewrite: true, and still copy everything the request doesn't cover verbatim from the source above. The server measures your diff against the open artifact and rejects broad rewrites, THEME churn, and silent color/font restyles that aren't declared. ` +
+        `DEFAULT — and REQUIRED — is the \`edits\` argument: {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. Do NOT re-send full \`code\` for a targeted change — the server REJECTS undeclared full-code submissions over an open artifact. ` +
+        `Pass COMPLETE \`code\` only when the user EXPLICITLY asked to restyle, rebuild, redesign, or start over — then ALSO pass full_rewrite: true, and still copy everything the request doesn't cover verbatim from the source above. ` +
         `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
         `If the message is NOT about the artifact, ignore this and answer normally.]`;
-    } else if (activeArtifactEditable) {
+    } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_template') {
       const a = activeArtifact;
       const tType = String(a.templateType || 'document');
       const curTheme = (typeof a.theme === 'string' && a.theme.trim()) ? a.theme.trim() : 'default (clay/orange)';
@@ -14377,9 +14385,36 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `• current font: ${curFont}\n` +
         `• current sections (JSON): ${sectionsJson}\n` +
         `STYLE-ONLY (font / color / theme): If the user ONLY asked to change the font, typeface, accent color, or theme — call lykn_build_template with template_type "${tType}", the SAME title, and ONLY \`font\` and/or \`theme\`. OMIT \`sections\` entirely. The server keeps every slide/section byte-identical. Do NOT rewrite, rephrase, reorder, or "improve" slide copy on a font/color ask. ` +
-        `CONTENT EDITS: If they asked to change slide text/structure, pass the COMPLETE updated sections array — apply ONLY their requested change and keep every other section exactly as-is (do not drop or summarize sections you weren't asked to touch). Always pass the current theme/font back unless they asked to change them. ` +
+        `CONTENT EDITS: call lykn_build_template with \`section_edits\` ONLY — {find, replace}, {index|id, heading?/body?/notes?}, {insert_at, section}, or {remove_index|remove_id}. Do NOT resubmit the full \`sections\` array; the server REJECTS undeclared full-section rebuilds. Always pass the current theme/font back unless they asked to change them. ` +
+        `Full \`sections\` + full_rewrite: true ONLY when they explicitly asked to rebuild/restyle the whole artifact. ` +
         `Font names: inter, georgia, playfair, space-grotesk, merriweather, mono, system. Theme: a color name (blue, green, purple…) or hex. ` +
         `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste raw HTML or markup. ` +
+        `If the message is NOT about the artifact, ignore this and answer normally.]`;
+    } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_manage_file') {
+      const a = activeArtifact;
+      const src = String(a.fileContent || '').slice(0, 60000);
+      prompt +=
+        `\n\n[ARTIFACT_OPEN — The user has this file artifact open and may ask you to refine it:\n` +
+        `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
+        `• current file source:\n\`\`\`\n${src}\n\`\`\`\n` +
+        `If refining THIS file, call lykn_manage_file (action=edit) with \`edits\` ONLY — {find, replace} patches copied verbatim from the source above. Do NOT resubmit full \`content\` unless they explicitly asked to rebuild (then set full_rewrite: true). ` +
+        `After it returns, reply with a 1-2 sentence summary; do NOT paste the file. ` +
+        `If the message is NOT about the artifact, ignore this and answer normally.]`;
+    } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_spreadsheet') {
+      const a = activeArtifact;
+      let sheetJson = '{}';
+      try {
+        sheetJson = JSON.stringify({
+          headers: Array.isArray(a.headers) ? a.headers : [],
+          rows: Array.isArray(a.rows) ? a.rows : [],
+        }).slice(0, 14000);
+      } catch { sheetJson = '{}'; }
+      prompt +=
+        `\n\n[ARTIFACT_OPEN — The user has this spreadsheet open and may ask you to refine it:\n` +
+        `• title: ${String(a.title || 'Sheet').slice(0, 200)}\n` +
+        `• current data (JSON): ${sheetJson}\n` +
+        `If refining THIS sheet, call lykn_build_spreadsheet with \`cell_edits\` ONLY — {row, col|column, value}, {row, values}, {insert_row, values}, or {remove_row}. Do NOT resubmit full headers/rows unless they explicitly asked to rebuild (then set full_rewrite: true). ` +
+        `After it returns, reply with a 1-2 sentence summary. ` +
         `If the message is NOT about the artifact, ignore this and answer normally.]`;
     }
     if (streamBoundProjectId && req.user?.id && supabaseAdmin) {
@@ -15645,16 +15680,30 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               chatModelLabel,
               boundProjectId: streamBoundProjectId,
               boardProjectId: streamBoardProjectId,
-              // Enables the `edits` patch path on lykn_build_react_artifact
-              // when a coded artifact is open in the panel.
+              // Surgical edit paths — open artifact source for patch-in-place.
               activeArtifactCode:
                 activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact'
                   ? String(activeArtifact.code || '')
                   : null,
-              // Style-only template rebuilds (font/theme) reuse these slides.
               activeArtifactSections:
                 activeArtifactEditable && activeArtifact.toolName === 'lykn_build_template'
                   ? (Array.isArray(activeArtifact.sections) ? activeArtifact.sections : null)
+                  : null,
+              activeArtifactContent:
+                activeArtifactEditable && activeArtifact.toolName === 'lykn_manage_file'
+                  ? String(activeArtifact.fileContent || '')
+                  : activeArtifactEditable &&
+                      activeArtifact.toolName === 'lykn_build_template' &&
+                      typeof activeArtifact.content === 'string'
+                    ? activeArtifact.content
+                    : null,
+              activeArtifactHeaders:
+                activeArtifactEditable && activeArtifact.toolName === 'lykn_build_spreadsheet'
+                  ? (Array.isArray(activeArtifact.headers) ? activeArtifact.headers : null)
+                  : null,
+              activeArtifactRows:
+                activeArtifactEditable && activeArtifact.toolName === 'lykn_build_spreadsheet'
+                  ? (Array.isArray(activeArtifact.rows) ? activeArtifact.rows : null)
                   : null,
               activeArtifactTitle:
                 activeArtifactEditable ? String(activeArtifact.title || '') : null,

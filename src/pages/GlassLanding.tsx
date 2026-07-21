@@ -110,6 +110,8 @@ function GlassBar({
             />
           </svg>
           <textarea
+            id="landing-glass-ask"
+            name="landing-glass-ask"
             className="glo-ask"
             rows={1}
             placeholder="Ask LYKN about your screen…"
@@ -1179,6 +1181,8 @@ function GlassDemoOverlay({
             <LyknMark />
             <textarea
               ref={inputRef}
+              id="landing-demo-ask"
+              name="landing-demo-ask"
               className="glo-ask"
               rows={1}
               placeholder={limitReached ? "Sign up to keep talking to LYKN" : "Ask LYKN anything…"}

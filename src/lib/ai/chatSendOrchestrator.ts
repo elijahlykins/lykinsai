@@ -609,9 +609,8 @@ export interface ChatSendParams {
   /** "+" menu capability mode for this turn (image / web / research). */
   composerMode?: "none" | "image" | "web" | "research" | `create:${string}`;
   /**
-   * Artifact currently open in the side panel. When present, the server lets
-   * the model refine it in place (rebuild via lykn_build_template) instead of
-   * starting from scratch. Shape: { toolName, title, templateType, sections, content }.
+   * Artifact currently open in the side panel. When present, the server forces
+   * surgical patches (edits / section_edits / cell_edits) instead of a full rebuild.
    */
   activeArtifact?: {
     toolName: string;
@@ -620,8 +619,12 @@ export interface ChatSendParams {
     sections?: any[];
     content?: string;
     theme?: string;
+    font?: string;
     /** React component source (lykn_build_react_artifact edit round-trip). */
     code?: string;
+    fileContent?: string;
+    headers?: string[];
+    rows?: any[];
   } | null;
   sentAttachments: FocusedChatAttachment[];
   brickActionData: { imageUrl?: string; videoId?: string } | null;

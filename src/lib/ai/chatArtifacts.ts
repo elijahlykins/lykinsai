@@ -29,6 +29,11 @@ export type ChatArtifact = {
   font?: string;
   /** React component source (lykn_build_react_artifact) — the edit round-trip payload. */
   code?: string;
+  /** File / HTML source for lykn_manage_file surgical edits. */
+  fileContent?: string;
+  /** Spreadsheet edit round-trip. */
+  headers?: string[];
+  rows?: any[];
 };
 
 export type ArtifactDownload = { format: string; url: string; filename?: string };
@@ -43,9 +48,12 @@ export type ArtifactEditContext = {
   theme?: string;
   font?: string;
   code?: string;
+  fileContent?: string;
+  headers?: string[];
+  rows?: any[];
 };
 
-/** Whether an artifact can be refined via chat (template + React builds). */
+/** Whether an artifact can be refined via chat (patch-in-place, not full rebuild). */
 export function isEditableArtifact(a: ChatArtifact | null | undefined): boolean {
   if (!a) return false;
   if (a.toolName === "lykn_build_template") {
@@ -53,6 +61,12 @@ export function isEditableArtifact(a: ChatArtifact | null | undefined): boolean 
   }
   if (a.toolName === "lykn_build_react_artifact") {
     return typeof a.code === "string" && a.code.trim().length > 0;
+  }
+  if (a.toolName === "lykn_manage_file") {
+    return typeof a.fileContent === "string" && a.fileContent.trim().length > 0;
+  }
+  if (a.toolName === "lykn_build_spreadsheet") {
+    return Array.isArray(a.headers) || Array.isArray(a.rows);
   }
   return false;
 }
@@ -68,6 +82,9 @@ export function toArtifactEditContext(a: ChatArtifact): ArtifactEditContext {
     theme: typeof a.theme === "string" ? a.theme : undefined,
     font: typeof a.font === "string" ? a.font : undefined,
     code: typeof a.code === "string" ? a.code : undefined,
+    fileContent: typeof a.fileContent === "string" ? a.fileContent : undefined,
+    headers: Array.isArray(a.headers) ? a.headers : undefined,
+    rows: Array.isArray(a.rows) ? a.rows : undefined,
   };
 }
 
@@ -294,6 +311,12 @@ function extractFromManageFile(toolCallId: string, result: any): ChatArtifact[] 
       : typeof result.download_url === "string"
         ? result.download_url
         : "";
+  const fileContent =
+    typeof result.artifact_content === "string" && result.artifact_content.trim()
+      ? result.artifact_content
+      : typeof result.content === "string" && result.content.trim()
+        ? result.content
+        : undefined;
 
   if (format === "html" || title.toLowerCase().endsWith(".html")) {
     if (fileUrl) {
@@ -306,6 +329,7 @@ function extractFromManageFile(toolCallId: string, result: any): ChatArtifact[] 
         filename: title,
         format: "html",
         toolName: "lykn_manage_file",
+        fileContent,
       });
       return out;
     }
@@ -318,20 +342,23 @@ function extractFromManageFile(toolCallId: string, result: any): ChatArtifact[] 
         filename: title,
         format: "html",
         toolName: "lykn_manage_file",
+        fileContent,
       });
     }
     return out;
   }
 
-  if (fileUrl) {
+  if (fileUrl || fileContent) {
     out.push({
       id: `${toolCallId}:dl`,
-      kind: "download",
+      kind: fileUrl ? "download" : "html",
       title,
-      downloadUrl: fileUrl,
+      downloadUrl: fileUrl || undefined,
+      srcDoc: !fileUrl && fileContent ? fileContent : undefined,
       filename: title,
       format: format || undefined,
       toolName: "lykn_manage_file",
+      fileContent,
     });
   }
 
@@ -374,21 +401,33 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
           : typeof call.result.download_url === "string"
             ? call.result.download_url
             : "";
-      if (!url) return [];
       const title = String(call.result.title || "Spreadsheet").trim() || "Spreadsheet";
       const format = String(call.result.format || "").toLowerCase() || "csv";
       const filename =
         typeof call.result.filename === "string" ? call.result.filename : undefined;
+      const headers = Array.isArray(call.result.headers) ? call.result.headers : undefined;
+      const rows = Array.isArray(call.result.rows) ? call.result.rows : undefined;
+      // Prefer a download card; still keep structured source for cell_edits
+      // even when persistence failed (markdown inline).
+      if (!url && !(headers || rows)) return [];
       return [
         {
           id: `${call.id}:sheet`,
-          kind: "download",
+          kind: url ? "download" : "html",
           title,
-          downloadUrl: url,
+          downloadUrl: url || undefined,
+          srcDoc:
+            !url && typeof call.result.markdown_table === "string"
+              ? `<pre>${String(call.result.markdown_table)
+                  .replace(/&/g, "&amp;")
+                  .replace(/</g, "&lt;")}</pre>`
+              : undefined,
           filename,
           format,
           toolName: call.name,
-          downloads: [{ format, url, filename }],
+          downloads: url ? [{ format, url, filename }] : undefined,
+          headers,
+          rows,
         },
       ];
     }
