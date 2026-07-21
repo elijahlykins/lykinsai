@@ -378,23 +378,44 @@ export default function App() {
   console.log('hallucinated-icon fallback (React #130 guard) ok — rendered types:', rendered.map((t) => (typeof t === 'function' ? t.name || 'fn' : String(t))).join(', '));
 }
 
-// The runner HTML must ship every CDN dependency + the styling layer.
+// The runner ships optional CDN deps only when the source uses them — SAMPLE_LIBS
+// should pull in the heavy stack, while a bare counter stays lean (no three/Tone).
 const depHtml = buildReactRunnerHtml({ title: 'deps', code: SAMPLE_LIBS });
 for (const dep of [
-  'framer-motion@', 'd3@', 'three@', 'lodash@', 'dayjs@', 'mathjs@',
-  'papaparse@', 'marked@', 'tone@', 'canvas-confetti@', 'html2canvas@', 'jspdf@',
-  // Styling layer
+  'framer-motion@', 'd3@', 'three@', 'lodash@', 'dayjs@',
+  'papaparse@', 'marked@', 'canvas-confetti@', 'jspdf@',
+  // Always-on styling layer
   'fonts.googleapis.com/css2?family=Inter',
-  'daisyui@',
-  'animate.css@',
   'cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio,line-clamp',
   'tailwind.config',
   'Space Grotesk',
   'data-theme="light"',
+  'lykn-boot',
 ]) {
   if (!depHtml.includes(dep)) { console.error('FAIL: runner missing CDN dep:', dep); process.exit(1); }
 }
-console.log('runner CDN dependency + styling tags ok');
+// Unused heavy libs must stay out of SAMPLE_LIBS runner (first-paint win).
+for (const absent of ['mathjs@', 'tone@', 'html2canvas@', 'daisyui@', 'animate.css@']) {
+  if (depHtml.includes(absent)) {
+    console.error('FAIL: runner loaded unused CDN dep:', absent); process.exit(1);
+  }
+}
+const leanHtml = buildReactRunnerHtml({
+  title: 'lean',
+  code: 'export default function App(){ return <div className="p-4">hi</div>; }',
+});
+for (const absent of [
+  'framer-motion@', 'd3@', 'three@', 'recharts@', 'lucide-react@',
+  'lodash@', 'tone@', 'daisyui@',
+]) {
+  if (leanHtml.includes(absent)) {
+    console.error('FAIL: lean runner loaded unused CDN dep:', absent); process.exit(1);
+  }
+}
+if (!leanHtml.includes('lykn-boot') || !leanHtml.includes('cdn.tailwindcss.com')) {
+  console.error('FAIL: lean runner missing boot overlay or Tailwind'); process.exit(1);
+}
+console.log('runner CDN dependency + styling tags ok (conditional load)');
 
 // ── 4. Write the runner somewhere inspectable ────────────────────────────
 const dir = mkdtempSync(join(tmpdir(), 'lykn-react-artifact-'));

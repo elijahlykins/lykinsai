@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Download, ExternalLink, Maximize2, Minimize2 } from "lucide-react";
+import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Maximize2, Minimize2 } from "lucide-react";
 import type { ArtifactDownload, ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 
