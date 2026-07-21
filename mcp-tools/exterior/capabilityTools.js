@@ -468,6 +468,8 @@ export const buildReactArtifactTool = {
     '    path?} patches where each `find` is an EXACT, UNIQUE snippet copied',
     '    from [ARTIFACT_OPEN] (for multi-file, set `path` to the file). Use',
     '    replace: "" to delete. Keep each `replace` MINIMAL.',
+    '  • ONE CALL: put every requested change in that single `edits` array.',
+    '    Do not call this tool once per tweak — intermediate versions spam the chat.',
     '  • Multi-file also supports `file_ops`: [{op:"write"|"delete", path,',
     '    content?}] to add/replace whole files without resubmitting the tree.',
     '  • Full `code`/`files` on an edit turn is REJECTED unless the user',

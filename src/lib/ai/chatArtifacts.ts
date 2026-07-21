@@ -606,12 +606,38 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
   }
 }
 
+/**
+ * Tools that replace the open panel artifact. When the model ships several
+ * successful builds in one turn (edit loops), keep only the LAST of each
+ * tool so the chat shows one final version — not six intermediate cards.
+ */
+const COALESCE_ARTIFACT_TOOLS = new Set([
+  "lykn_build_react_artifact",
+  "lykn_build_template",
+  "lykn_build_spreadsheet",
+  "lykn_manage_file",
+]);
+
 /** Collect previewable artifacts from completed tool calls on one assistant turn. */
 export function extractChatArtifacts(toolCalls: ToolCallEvent[] | undefined): ChatArtifact[] {
   if (!Array.isArray(toolCalls) || !toolCalls.length) return [];
+  // Prefer the latest successful coalesceable builder so intermediate edits
+  // don't each render as their own card.
+  const keepIds = new Set<string>();
+  const seenToolLatest = new Set<string>();
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (!call || call.status !== "done" || !call.result || call.result.ok === false) continue;
+    if (COALESCE_ARTIFACT_TOOLS.has(call.name)) {
+      if (seenToolLatest.has(call.name)) continue;
+      seenToolLatest.add(call.name);
+      keepIds.add(call.id);
+    }
+  }
   const out: ChatArtifact[] = [];
   const seen = new Set<string>();
   for (const call of toolCalls) {
+    if (COALESCE_ARTIFACT_TOOLS.has(call.name) && !keepIds.has(call.id)) continue;
     for (const art of extractFromToolCall(call)) {
       pushUnique(out, seen, art);
     }

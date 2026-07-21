@@ -6492,6 +6492,11 @@ const TOOL_GUIDANCE_ARTIFACT_EDIT = [
   '      Template/deck/doc → lykn_build_template with `section_edits` (or font/theme only).',
   '      File/HTML → lykn_manage_file with `edits` ONLY.',
   '      Spreadsheet → lykn_build_spreadsheet with `cell_edits` ONLY.',
+  '  • ONE CALL PER TURN: put EVERY requested change into a single tool call',
+  '    (`edits` / `section_edits` / `cell_edits` as an array of all patches). Do NOT call',
+  '    the builder once per tweak — that floods the chat with intermediate versions.',
+  '    After the tool succeeds, reply with a short summary; do not rebuild again.',
+  '  • Implement EXACTLY what they asked — no drive-by fixes or unrequested changes.',
   '  • Never pass full code/sections/content/rows unless the user explicitly asked to restyle,',
   '    rebuild, redesign, or start over — and then set full_rewrite: true.',
   '  • "Add more X", "expand the bank", "fix the bug", "change this label", "make the button',
@@ -14561,8 +14566,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, colors, radii, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. Swapping a color palette or font "while you're at it" is a FAILURE. ` +
         `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
         (isMulti
-          ? `REQUIRED: call with \`edits\` ({path, find, replace}) and/or \`file_ops\` ({op:"write"|"delete", path, content?}). The server REJECTS full \`files\`/\`code\` unless the user explicitly said redesign/rebuild/start over (then full_rewrite: true). `
-          : `REQUIRED: call with \`edits\` ONLY — {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. The server REJECTS full \`code\` and ignores full_rewrite unless the user explicitly said redesign/rebuild/start over. `) +
+          ? `REQUIRED: call ONCE with \`edits\` ({path, find, replace}) and/or \`file_ops\` ({op:"write"|"delete", path, content?}) covering EVERY change in this message. The server REJECTS full \`files\`/\`code\` unless the user explicitly said redesign/rebuild/start over (then full_rewrite: true). `
+          : `REQUIRED: call ONCE with \`edits\` ONLY — an array of {find, replace} patches covering EVERY change in this message. Each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. The server REJECTS full \`code\` and ignores full_rewrite unless the user explicitly said redesign/rebuild/start over. `) +
+        `Do NOT call this tool multiple times in one turn — batch all patches into that single call, then summarize. ` +
         `Never change THEME, colors, fonts, or layout on a refine. Update \`todos\` statuses on longer builds. ` +
         `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
         `If the message is NOT about the artifact, ignore this and answer normally.]`;
@@ -15898,8 +15904,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
             : clampForProvider(pickOutputCap({
                 hasImages: imageUrls.length > 0,
               }), attemptModel),
-          // Longer tool loops for coded artifacts (multi-file games/apps).
-          codingMode: Boolean(codedArtifactTurn),
+          // Longer tool loops for fresh coded builds. Open-panel refine uses
+          // the short edit hop cap instead (one batched patch, not 28 hops).
+          codingMode: Boolean(codedArtifactTurn && !activeArtifactEditable),
           promptCacheKey: agentCacheKey,
           chatToolNames: streamChatToolNames,
           forceToolName: forcedToolNameForTurn,
@@ -15913,6 +15920,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               chatModelLabel,
               boundProjectId: streamBoundProjectId,
               boardProjectId: streamBoardProjectId,
+              // Edit turns: short hop loop + one ship — see chat-agent-loop.js.
+              editingArtifact: Boolean(activeArtifactEditable),
               // Surgical edit paths — open artifact source for patch-in-place.
               activeArtifactCode:
                 activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact'

@@ -45,22 +45,101 @@ import {
 const MAX_HOPS = 6;
 /** Complex coding / multi-file artifact builds get a longer tool loop. */
 const MAX_HOPS_CODING = 28;
+/** Open-panel refine: short loop — one batched edit, not 6 sequential rebuilds. */
+const MAX_HOPS_EDIT = 8;
 const MAX_HOPS_HARD_CAP = 40;
 const MAX_TOOL_CALLS_PER_HOP = 5;
 const MAX_TOOL_CALLS_PER_HOP_CODING = 8;
+const MAX_TOOL_CALLS_PER_HOP_EDIT = 3;
 const TOOL_RESULT_CAP = 16000;
+
+/** Tools that produce a user-visible artifact card when they succeed. */
+const ARTIFACT_SHIP_TOOLS = new Set([
+  'lykn_build_react_artifact',
+  'lykn_build_template',
+  'lykn_build_spreadsheet',
+  'lykn_manage_file',
+  'lykn_render_video',
+]);
+
+function isEditArtifactTurn(ctx) {
+  if (!ctx || typeof ctx !== 'object') return false;
+  if (ctx.editingArtifact === true) return true;
+  if (typeof ctx.activeArtifactCode === 'string' && ctx.activeArtifactCode.trim()) return true;
+  if (Array.isArray(ctx.activeArtifactFiles) && ctx.activeArtifactFiles.length > 0) return true;
+  if (
+    ctx.activeArtifactFiles &&
+    typeof ctx.activeArtifactFiles === 'object' &&
+    !Array.isArray(ctx.activeArtifactFiles) &&
+    Object.keys(ctx.activeArtifactFiles).length > 0
+  ) {
+    return true;
+  }
+  if (Array.isArray(ctx.activeArtifactSections) && ctx.activeArtifactSections.length > 0) return true;
+  if (typeof ctx.activeArtifactContent === 'string' && ctx.activeArtifactContent.trim()) return true;
+  if (Array.isArray(ctx.activeArtifactRows) && ctx.activeArtifactRows.length > 0) return true;
+  return false;
+}
 
 function resolveMaxHops(opts) {
   const requested = Number(opts?.maxHops);
   if (Number.isFinite(requested) && requested > 0) {
     return Math.min(Math.max(Math.floor(requested), 1), MAX_HOPS_HARD_CAP);
   }
+  if (opts?.editingArtifact) return MAX_HOPS_EDIT;
   return opts?.codingMode ? MAX_HOPS_CODING : MAX_HOPS;
 }
 
 function resolveMaxToolCallsPerHop(opts) {
+  if (opts?.editingArtifact) return MAX_TOOL_CALLS_PER_HOP_EDIT;
   if (opts?.codingMode) return MAX_TOOL_CALLS_PER_HOP_CODING;
   return MAX_TOOL_CALLS_PER_HOP;
+}
+
+/** Keep open-artifact ctx in sync so a rare second hop patches the latest code. */
+function refreshActiveArtifactCtx(ctx, results) {
+  if (!ctx || !Array.isArray(results)) return;
+  for (const r of results) {
+    if (!r || r.isError || !r.payload || r.payload.ok === false) continue;
+    const p = r.payload;
+    if (r.name === 'lykn_build_react_artifact') {
+      if (typeof p.artifact_code === 'string' && p.artifact_code.trim()) {
+        ctx.activeArtifactCode = p.artifact_code;
+      }
+      if (Array.isArray(p.artifact_files) && p.artifact_files.length) {
+        ctx.activeArtifactFiles = p.artifact_files;
+      }
+      if (typeof p.entry === 'string' && p.entry.trim()) {
+        ctx.activeArtifactEntry = p.entry.trim();
+      }
+      if (Array.isArray(p.todos)) ctx.activeArtifactTodos = p.todos;
+      if (typeof p.title === 'string' && p.title.trim()) {
+        ctx.activeArtifactTitle = p.title.trim();
+      }
+    } else if (r.name === 'lykn_build_template') {
+      if (Array.isArray(p.sections)) ctx.activeArtifactSections = p.sections;
+      if (typeof p.content === 'string') ctx.activeArtifactContent = p.content;
+      if (typeof p.theme === 'string') ctx.activeArtifactTheme = p.theme;
+      if (typeof p.font === 'string') ctx.activeArtifactFont = p.font;
+    } else if (r.name === 'lykn_manage_file') {
+      if (typeof p.artifact_content === 'string') ctx.activeArtifactContent = p.artifact_content;
+      else if (typeof p.content === 'string') ctx.activeArtifactContent = p.content;
+    } else if (r.name === 'lykn_build_spreadsheet') {
+      if (Array.isArray(p.headers)) ctx.activeArtifactHeaders = p.headers;
+      if (Array.isArray(p.rows)) ctx.activeArtifactRows = p.rows;
+    }
+  }
+}
+
+function artifactShippedFromResults(results) {
+  return (Array.isArray(results) ? results : []).some(
+    (r) =>
+      r &&
+      ARTIFACT_SHIP_TOOLS.has(r.name) &&
+      !r.isError &&
+      r.payload &&
+      r.payload.ok !== false,
+  );
 }
 // A healthy OpenAI-style stream ALWAYS ends with a finish_reason chunk.
 // xAI in particular sometimes drops the connection mid-generation during a
@@ -405,10 +484,30 @@ async function runToolBatch(calls, ctx, record, allowedToolNames, onActivity, ma
     unique.push(call);
   }
 
+  // Edit turns: one artifact shipper per hop. Extra builder calls become a
+  // soft bounce so the model batches find/replace into a single `edits` array
+  // instead of flooding the chat with intermediate versions.
+  const editTurn = isEditArtifactTurn(ctx);
+  const skippedExtraShip = [];
+  let shipSeen = false;
+  const dedupedForEdit = [];
+  for (const call of unique) {
+    if (editTurn && ARTIFACT_SHIP_TOOLS.has(call.name)) {
+      if (shipSeen) {
+        skippedExtraShip.push(call);
+        continue;
+      }
+      shipSeen = true;
+    }
+    dedupedForEdit.push(call);
+  }
+
   const perHopCap = Math.min(Math.max(Number(maxToolCallsPerHop) || MAX_TOOL_CALLS_PER_HOP, 1), 12);
-  const capped = unique.slice(0, perHopCap);
-  if (unique.length > perHopCap) {
-    console.warn(`[chat-agent-loop] capping tool calls at ${perHopCap} (model emitted ${unique.length})`);
+  const capped = dedupedForEdit.slice(0, perHopCap);
+  if (unique.length > perHopCap || skippedExtraShip.length) {
+    console.warn(
+      `[chat-agent-loop] capping tool calls (edit=${editTurn}, kept=${capped.length}, skippedShip=${skippedExtraShip.length}, raw=${unique.length})`,
+    );
   }
   const toolOpts = Array.isArray(allowedToolNames) ? { allowedToolNames } : {};
   // Image gen / Remotion / big builds can sit silent for minutes while the
@@ -437,6 +536,34 @@ async function runToolBatch(calls, ctx, record, allowedToolNames, onActivity, ma
     clearInterval(keepAlive);
   }
 
+  // Soft-reject extra artifact builders on edit turns (no second card).
+  for (const call of skippedExtraShip) {
+    const payload = {
+      ok: false,
+      error: 'batch_edits_required',
+      hint:
+        'Put EVERY requested change into ONE tool call — e.g. lykn_build_react_artifact with ' +
+        'an `edits` array of all {find, replace} patches (and path for multi-file). ' +
+        'Do not call the builder once per tweak; the panel already has the latest version.',
+    };
+    record({
+      id: call.id,
+      name: call.name,
+      args: call.args,
+      status: 'error',
+      result: payload,
+      latencyMs: 0,
+    });
+    executed.push({
+      id: call.id,
+      name: call.name,
+      args: call.args,
+      payload,
+      isError: true,
+      latencyMs: 0,
+    });
+  }
+
   // Every provider requires a tool result for EVERY call id it emitted —
   // answer dropped duplicates with the original call's payload (without
   // re-emitting client events, so no duplicate artifact cards).
@@ -446,7 +573,9 @@ async function runToolBatch(calls, ctx, record, allowedToolNames, onActivity, ma
     const src = byOriginalId.get(original.id);
     if (src) dupResults.push({ ...src, id: dupId });
   }
-  return executed.concat(dupResults);
+  const all = executed.concat(dupResults);
+  refreshActiveArtifactCtx(ctx, all);
+  return all;
 }
 
 /**
@@ -578,8 +707,9 @@ async function runOpenAiCompatLoop({
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
 
-  const hopLimit = resolveMaxHops({ maxHops, codingMode });
-  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode });
+  const editingArtifact = isEditArtifactTurn(ctx);
+  const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
+  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
 
   const messages = [];
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
@@ -597,6 +727,9 @@ async function runOpenAiCompatLoop({
   // again, and a few redos in a row blows straight through the route's
   // hard SSE timeout while the user watches nothing happen.
   let forcedToolDone = false;
+  // Edit turns: after the first successful artifact ship, lock tools off so
+  // we don't emit 5 more "edited versions" as separate cards in one prompt.
+  let artifactDelivered = false;
   let truncatedRetries = 0;
 
   for (let hop = 0; hop < hopLimit; hop++) {
@@ -612,14 +745,15 @@ async function runOpenAiCompatLoop({
       // to 'none' so the model must write its final reply; otherwise
       // subsequent hops go back to 'auto'.
       const forceThisHop = hop === 0 && forceToolName;
+      const toolsLocked = forcedToolDone || artifactDelivered;
       const body = {
         model,
         messages,
         tools,
         tool_choice: forceThisHop
           ? { type: 'function', function: { name: forceToolName } }
-          : (forcedToolDone ? 'none' : 'auto'),
-        parallel_tool_calls: forceThisHop ? false : true,
+          : (toolsLocked ? 'none' : 'auto'),
+        parallel_tool_calls: forceThisHop || editingArtifact ? false : true,
         max_completion_tokens: maxOutputTokens,
         stream: true,
         ...(promptCacheKey && providerLabel === 'openai' ? { prompt_cache_key: promptCacheKey } : {}),
@@ -757,6 +891,9 @@ async function runOpenAiCompatLoop({
         forcedToolDone = true;
       }
     }
+    if (editingArtifact && artifactShippedFromResults(results)) {
+      artifactDelivered = true;
+    }
   }
 
   stripper.flush();
@@ -814,8 +951,9 @@ async function runAnthropicLoop({
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
-  const hopLimit = resolveMaxHops({ maxHops, codingMode });
-  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode });
+  const editingArtifact = isEditArtifactTurn(ctx);
+  const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
+  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
 
   // Anthropic messages — `system` is top-level, NOT a message turn. Build
   // the user-content blob (string or array of text/image blocks).
@@ -831,6 +969,7 @@ async function runAnthropicLoop({
   // tool_choice 'none' forces the final text reply instead of letting the
   // model rebuild the (potentially huge) artifact again.
   let forcedToolDone = false;
+  let artifactDelivered = false;
 
   for (let hop = 0; hop < hopLimit; hop++) {
     if (signal?.aborted) {
@@ -841,6 +980,7 @@ async function runAnthropicLoop({
     let res;
     try {
       const forceThisHop = hop === 0 && forceToolName;
+      const toolsLocked = forcedToolDone || artifactDelivered;
       const body = {
         model,
         messages,
@@ -849,7 +989,7 @@ async function runAnthropicLoop({
         stream: true,
         ...(forceThisHop
           ? { tool_choice: { type: 'tool', name: forceToolName } }
-          : (forcedToolDone ? { tool_choice: { type: 'none' } } : {})),
+          : (toolsLocked ? { tool_choice: { type: 'none' } } : {})),
       };
       if (systemPrompt) {
         // Cache the system block — Anthropic charges 25% extra on the
@@ -977,6 +1117,9 @@ async function runAnthropicLoop({
         forcedToolDone = true;
       }
     }
+    if (editingArtifact && artifactShippedFromResults(results)) {
+      artifactDelivered = true;
+    }
     // Anthropic expects tool_result blocks wrapped as a SINGLE user
     // turn whose content is the array of tool_result blocks (one per
     // tool_use id from the assistant turn). Order doesn't matter as
@@ -1048,8 +1191,9 @@ async function runGeminiLoop({
   if (!tools) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'no_chat_tools_whitelisted' };
   }
-  const hopLimit = resolveMaxHops({ maxHops, codingMode });
-  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode });
+  const editingArtifact = isEditArtifactTurn(ctx);
+  const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
+  const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
 
   // Build the contents array. Gemini uses role 'model' (not 'assistant')
   // and wraps text in { parts: [{ text }] }.
@@ -1074,6 +1218,7 @@ async function runGeminiLoop({
   // functionCallingConfig NONE forces the final text reply instead of
   // letting the model rebuild the (potentially huge) artifact again.
   let forcedToolDone = false;
+  let artifactDelivered = false;
 
   for (let hop = 0; hop < hopLimit; hop++) {
     if (signal?.aborted) {
@@ -1084,6 +1229,7 @@ async function runGeminiLoop({
     let res;
     try {
       const forceThisHop = hop === 0 && forceToolName;
+      const toolsLocked = forcedToolDone || artifactDelivered;
       const body = {
         contents,
         tools,
@@ -1093,7 +1239,7 @@ async function runGeminiLoop({
         },
         ...(forceThisHop
           ? { toolConfig: { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: [forceToolName] } } }
-          : (forcedToolDone
+          : (toolsLocked
               ? { toolConfig: { functionCallingConfig: { mode: 'NONE' } } }
               : {})),
       };
@@ -1186,6 +1332,9 @@ async function runGeminiLoop({
       if (forceToolName && r.name === forceToolName && !r.isError && r.payload?.ok !== false) {
         forcedToolDone = true;
       }
+    }
+    if (editingArtifact && artifactShippedFromResults(results)) {
+      artifactDelivered = true;
     }
 
     // Gemini wants functionResponse parts in a NEW user turn. Each

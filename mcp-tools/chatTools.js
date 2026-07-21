@@ -509,6 +509,8 @@ export function buildChatToolCtx(req, extras = {}) {
       typeof extras.activeArtifactFont === 'string' ? extras.activeArtifactFont : null,
     allowFullRewrite: extras.allowFullRewrite === true,
     allowStyleChange: extras.allowStyleChange === true,
+    /** Open-panel refine — short agent loop, one artifact ship per turn. */
+    editingArtifact: extras.editingArtifact === true,
     /**
      * Binary attachments the user dragged/pasted into THIS chat turn (image /
      * pdf / file / video / audio), as compact metadata. lykn_uploadToProject
