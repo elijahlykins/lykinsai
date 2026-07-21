@@ -176,6 +176,7 @@ export default function Login() {
   const {
     user,
     loading,
+    signingOut,
     authError,
     signInWithOAuth,
     signInWithEmail,
@@ -222,8 +223,14 @@ export default function Login() {
   // without a server migration. An explicit `from` (set by ProtectedRoute on
   // a deep link) always wins so we don't hijack their intent.
   useEffect(() => {
-    if (loading || !user) return;
-    const hasExplicitFrom = !!location.state?.from?.pathname;
+    if (loading || !user || signingOut) return;
+    const fromPath = location.state?.from?.pathname || "";
+    // Ignore paywall deep-links here — bouncing /start-trial → Login →
+    // /start-trial after abandon-checkout sign-out left people stuck on a
+    // spinner. The subscription gate still sends unpaid users to the picker
+    // after a normal sign-in to /app.
+    const hasExplicitFrom =
+      !!fromPath && fromPath !== "/start-trial" && fromPath !== "/login";
     if (hasExplicitFrom) {
       nav(from, { replace: true });
       return;
@@ -232,8 +239,8 @@ export default function Login() {
       nav("/onboarding/connect", { replace: true });
       return;
     }
-    nav(from, { replace: true });
-  }, [loading, nav, user, from, location.state]);
+    nav("/app", { replace: true });
+  }, [loading, signingOut, nav, user, from, location.state]);
 
   // `error` state is set with already-humanized copy (validation + the catch
   // below run it through friendlyError once). Only `authError` — the raw

@@ -117,7 +117,7 @@ function checkoutErrorMessage(err) {
 }
 
 export default function StartTrial() {
-  const { user, loading: authLoading, signOut } = useAuth();
+  const { user, loading: authLoading, signOut, signingOut } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const checkoutResult = searchParams.get("checkout");
@@ -237,11 +237,17 @@ export default function StartTrial() {
 
     // Default: resolve existing access, then show the picker. We do NOT
     // auto-start checkout — a Stripe customer is only created when the user
-    // explicitly chooses a plan.
+    // explicitly chooses a plan. Cap wait so a hung /billing/me can't trap
+    // the user on the spinner with no Sign out control.
     let cancelled = false;
     (async () => {
       try {
-        const billing = await fetchBillingMe();
+        const billing = await Promise.race([
+          fetchBillingMe(),
+          new Promise((_, reject) =>
+            window.setTimeout(() => reject(new Error("billing_me_timeout")), 8_000),
+          ),
+        ]);
         if (cancelled) return;
         if (hasAppAccess(billing)) {
           navigate(postTrialDestination(user), { replace: true });
@@ -262,15 +268,11 @@ export default function StartTrial() {
   // onboarding localStorage keys, signingOut guard, hard reload) — calling
   // supabase.auth.signOut directly here used to leak the previous user's
   // onboarding-done flag to the next account on this browser.
+  // Land on /login with a clean history entry — do NOT pass from:/start-trial
+  // or Login will bounce a still-hydrating session right back here.
   const signOutToLogin = useCallback(async () => {
     await signOut({ redirectTo: "/login" });
   }, [signOut]);
-
-  if (!authLoading && !user) {
-    return (
-      <Navigate to="/login" replace state={{ from: { pathname: "/start-trial" } }} />
-    );
-  }
 
   // Plan picker must fit the desktop window without scrolling. Checkout can
   // scroll because Stripe's embedded form is taller than a laptop viewport.
@@ -279,14 +281,40 @@ export default function StartTrial() {
   const shellScrollClass = `${shellClass} overflow-y-auto`;
   const shellFitClass = `${shellClass} overflow-hidden`;
 
-  if (phase === "loading" || phase === "confirming") {
+  if (signingOut) {
     return (
       <div className={shellFitClass} style={{ fontFamily: LANDING_FONT }}>
         <div className="h-full flex flex-col items-center justify-center gap-4">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-blue-600" aria-label="Signing out" />
+          <p className="text-sm text-slate-500">Signing out…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authLoading && !user) {
+    // No `from: /start-trial` — that created a bounce loop when abandon-checkout
+    // users signed out (Login treated it as a deep link and sent them back).
+    return <Navigate to="/login" replace />;
+  }
+
+  if (phase === "loading" || phase === "confirming") {
+    return (
+      <div className={shellFitClass} style={{ fontFamily: LANDING_FONT }}>
+        <div className="h-full flex flex-col items-center justify-center gap-4 px-6">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-blue-600" aria-label="Loading" />
-          {phase === "confirming" && (
+          {phase === "confirming" ? (
             <p className="text-sm text-slate-500">Activating your trial…</p>
+          ) : (
+            <p className="text-sm text-slate-500">Loading plans…</p>
           )}
+          <button
+            type="button"
+            className="mt-2 text-xs text-slate-400 underline underline-offset-4 hover:text-slate-600"
+            onClick={signOutToLogin}
+          >
+            Sign out
+          </button>
         </div>
       </div>
     );
@@ -331,6 +359,13 @@ export default function StartTrial() {
               onClick={() => beginCheckout(pendingPlan)}
             >
               Try again
+            </button>
+            <button
+              type="button"
+              className="mt-4 block mx-auto text-xs text-slate-400 underline underline-offset-4 hover:text-slate-600"
+              onClick={signOutToLogin}
+            >
+              Sign out
             </button>
           </div>
         </div>
@@ -484,9 +519,8 @@ export default function StartTrial() {
 
           <button
             type="button"
-            className="mt-2 text-[11px] text-slate-400 underline underline-offset-4 hover:text-slate-600"
+            className="mt-2 text-[11px] text-slate-400 underline underline-offset-4 hover:text-slate-600 disabled:opacity-50"
             onClick={signOutToLogin}
-            disabled={starting}
           >
             Sign out
           </button>
