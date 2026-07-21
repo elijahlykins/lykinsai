@@ -1308,12 +1308,9 @@ app.set('supabaseAdmin', supabaseAdmin);
 const FILE_PROXY_FRAME_ANCESTORS = [
   "'self'",
   'https://lykn.io',
-  'https://www.lykn.io',
-  'https://app.lykn.io',
   'https://*.lykn.io',
   process.env.NODE_ENV === 'production' ? null : 'https://*.vercel.app',
   'http://localhost:*',
-  'http://127.0.0.1:*',
   // The Electron glass overlay (loaded via loadFile → file:// origin) embeds
   // built artifacts in an inline preview iframe (Build mode).
   'file:',
