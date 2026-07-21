@@ -13760,9 +13760,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       req.body?.activeArtifact && typeof req.body.activeArtifact === 'object' && !Array.isArray(req.body.activeArtifact)
         ? req.body.activeArtifact
         : null;
-    const activeArtifactEditable =
+    const activeArtifactHasSource =
       !!activeArtifact &&
-      !artifactBuildSpec &&
       (
         (activeArtifact.toolName === 'lykn_build_template' &&
           (Array.isArray(activeArtifact.sections) || typeof activeArtifact.content === 'string')) ||
@@ -13775,6 +13774,28 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         (activeArtifact.toolName === 'lykn_build_spreadsheet' &&
           (Array.isArray(activeArtifact.headers) || Array.isArray(activeArtifact.rows)))
       );
+    // Prefer surgical refine over Create/forceArtifact whenever an editable
+    // artifact is open and the user did NOT explicitly ask to redesign.
+    // Leaving "+" → Create armed used to nullify the edit path, inject a
+    // fresh [DESIGN_SYSTEM], and force a ground-up rebuild that looked
+    // totally different from the open panel.
+    const redesignArtifactAsk = REDESIGN_INTENT_RE.test(String(text || ''));
+    // Narrow style asks ("make it blue", "change the font") may touch colors/
+    // fonts without being a full redesign — builders allow that signature
+    // churn only when this is set.
+    const styleChangeArtifactAsk =
+      /\b(?:font|typeface|typography|colou?r|theme|accent|palette|recolou?r|background)\b/i.test(
+        String(text || ''),
+      );
+    if (activeArtifactHasSource && artifactBuildSpec && !redesignArtifactAsk) {
+      console.log(
+        `🎨 Stream: open artifact present — ignoring forceArtifact/${artifactToolName} so refine stays surgical`,
+      );
+      artifactBuildSpec = null;
+      artifactToolName = null;
+      artifactAutoInferred = false;
+    }
+    const activeArtifactEditable = activeArtifactHasSource && !artifactBuildSpec;
     // Chat-bar "+" → Projects: a LYKN project the user explicitly scoped this
     // chat to. Unlike `projectId` (which can be a board-linked Omnia project),
     // this is always a `lykn_projects` row, so we load its [CURRENT_PROJECT]
@@ -14363,8 +14384,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
         `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, colors, radii, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. Swapping a color palette or font "while you're at it" is a FAILURE. ` +
         `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
-        `DEFAULT — and REQUIRED — is the \`edits\` argument: {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. Do NOT re-send full \`code\` for a targeted change — the server REJECTS undeclared full-code submissions over an open artifact. ` +
-        `Pass COMPLETE \`code\` only when the user EXPLICITLY asked to restyle, rebuild, redesign, or start over — then ALSO pass full_rewrite: true, and still copy everything the request doesn't cover verbatim from the source above. ` +
+        `REQUIRED: call with \`edits\` ONLY — {find, replace} patches where each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. The server REJECTS full \`code\` and ignores full_rewrite unless the user explicitly said redesign/rebuild/start over. Never change THEME, colors, fonts, or layout on a refine. ` +
         `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
         `If the message is NOT about the artifact, ignore this and answer normally.]`;
     } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_template') {
@@ -15715,6 +15735,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
                 activeArtifactEditable && typeof activeArtifact.font === 'string'
                   ? activeArtifact.font
                   : null,
+              // Only honor full_rewrite when the user actually asked to redesign.
+              allowFullRewrite: redesignArtifactAsk,
+              allowStyleChange: redesignArtifactAsk || styleChangeArtifactAsk,
             });
             // Remotion renders (lykn_render_video) run 1-4 real minutes with
             // no provider stream — ping the stall watchdog on every frame and

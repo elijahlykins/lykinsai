@@ -256,6 +256,11 @@ function toolStatusLabel(name) {
 const OVERLAY_WEB_SEARCH_INTENT_RE =
   /\b(search\s+(?:the\s+web|online|for\s+)|browse\s+(?:the\s+web|online|for\s+)|look\s+(?:it|that|this)?\s*up(?:\s+online)?|google\s+(?:it|that|this|for|\w+)|find\s+(?:.{1,40}?)\s+online)\b/i;
 
+// Mirrors server REDESIGN_INTENT_RE — when false and we have a cached Build
+// artifact, Glass sends activeArtifact and does NOT force a ground-up rebuild.
+const OVERLAY_REDESIGN_INTENT_RE =
+  /\b(?:redesign|restyle|rebrand|rebuild|overhaul|from scratch|start over|new look|new theme|new palette|rewrite (?:the )?(?:whole|entire|all))\b/i;
+
 // Allow Cmd+Q / single-instance behaviour to feel native.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -4084,6 +4089,32 @@ let overlayAskAbort = null;
 // the project the user was just looking at, instead of landing unfiled.
 let overlayActiveProjectId = null;
 
+// Last React artifact built in this overlay session — threaded back as
+// activeArtifact so "make the button blue" patches instead of rebuilding.
+let lastOverlayReactArtifact = null; // { toolName, title, code }
+
+async function extractReactArtifactCodeFromResult(result) {
+  if (typeof result?.artifact_code === "string" && result.artifact_code.trim()) {
+    return result.artifact_code;
+  }
+  const url = pickArtifactUrl(result);
+  if (!url || !/^https?:\/\//i.test(url)) return "";
+  try {
+    const res = await safeFetchMain(url);
+    if (!res.ok) return "";
+    const html = await res.text();
+    const m =
+      /<script id="lykn-artifact-source" type="application\/json">([\s\S]*?)<\/script>/.exec(
+        html,
+      );
+    if (!m) return "";
+    const code = JSON.parse(m[1]);
+    return typeof code === "string" ? code : "";
+  } catch {
+    return "";
+  }
+}
+
 // Pull a LYKN project UUID out of a workspace URL like
 // "https://lykn.io/projects/<uuid>" or "http://localhost:5174/projects/<uuid>".
 // Returns null for any other page (vault, settings, non-LYKN sites).
@@ -4218,6 +4249,16 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
             void saveArtifactResultToVault(tc.result, {
               title,
               filename: `${title.replace(/[^\w\- ]+/g, "").trim() || "artifact"}.html`,
+            });
+            // Cache source for the next refine turn (surgical edits).
+            void extractReactArtifactCodeFromResult(tc.result).then((code) => {
+              if (code && code.trim()) {
+                lastOverlayReactArtifact = {
+                  toolName: "lykn_build_react_artifact",
+                  title,
+                  code,
+                };
+              }
             });
           } else if (
             tc.status === "done" &&
@@ -4770,10 +4811,25 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
     // lykn_generate_image tool (GPT Image 2), same as the web app's "+" →
     // Generate image. Only ever set by an explicit user toggle.
     ...(forceImage ? { forceImage: true, useTools: true } : {}),
-    // Build mode (menu → "Build mode"): the server forces the
-    // lykn_build_react_artifact tool, so the model codes out a live React
-    // artifact (landing page, dashboard, tool…) — same as Claude Artifacts.
-    ...(buildMode ? { forceArtifact: true, artifactType: "webapp", useTools: true } : {}),
+    // Build mode: force a NEW React artifact only when we don't already have
+    // one to refine, or the user explicitly asked to redesign/rebuild.
+    // Otherwise thread the last build as activeArtifact so edits stay surgical.
+    ...(() => {
+      const redesign = OVERLAY_REDESIGN_INTENT_RE.test(String(text || ""));
+      const cached =
+        lastOverlayReactArtifact &&
+        typeof lastOverlayReactArtifact.code === "string" &&
+        lastOverlayReactArtifact.code.trim()
+          ? lastOverlayReactArtifact
+          : null;
+      if (cached && !redesign) {
+        return { activeArtifact: cached, useTools: true };
+      }
+      if (buildMode) {
+        return { forceArtifact: true, artifactType: "webapp", useTools: true };
+      }
+      return {};
+    })(),
     overlayAsk: true,
     // Scope writes to the project the user is working in (sniffed from the
     // active browser tab). Lets "add this task to my project" land on the
