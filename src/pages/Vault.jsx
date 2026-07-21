@@ -2452,8 +2452,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     probe.src = signedUrl;
   }, []);
 
-  const resolveSignedUrlForCard = useCallback(async (card) => {
+  const resolveSignedUrlForCard = useCallback(async (card, opts = {}) => {
     if (!card || card.kind !== "attachment") return;
+    const forceRemint = opts?.force === true;
     // Grid cards prefer the small thumb variant for images (big bandwidth win);
     // video keeps the original (its variant is a poster, not a playable file).
     const cardType = resolveAttachmentType(card.attachment || {});
@@ -2555,12 +2556,25 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
         });
       }
     };
-    const cachedFresh = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
+    const cachedFresh = forceRemint
+      ? null
+      : readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
     // Ignore a poisoned cache entry that somehow stored a storage URL as
     // a "file-proxy" result from an older build.
     if (cachedFresh && !(isHtml && isSupabaseStorageUrl(cachedFresh))) {
       commitUrl(cachedFresh);
       return;
+    }
+    if (forceRemint && isHtml) {
+      // Drop a prior "unavailable" flag so modal open can retry the mint.
+      setFailedImageIds((prev) => {
+        if (!prev.has(card.id)) return prev;
+        const next = new Set(prev);
+        next.delete(card.id);
+        return next;
+      });
+      imageRetryCountsRef.current.delete(card.id);
+      signedUrlCacheRef.current.delete(cacheKey);
     }
 
     if (isHtml) {
@@ -4514,18 +4528,17 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     return () => window.removeEventListener("keydown", onKey);
   }, [previewCard]);
 
-  // Opening an HTML artifact in the preview modal must mint a file-proxy URL
-  // even if the grid tile never entered the intersection observer viewport —
-  // or if the grid somehow cached a raw Supabase URL that blanks the iframe.
+  // Opening an HTML artifact in the preview modal must mint a fresh file-proxy
+  // URL. Always remint on open — a stale/poisoned cache or earlier failed mint
+  // was leaving the modal as a permanent blank-white iframe.
   useEffect(() => {
     if (!previewCard || previewCard.kind !== "attachment") return;
     const t = resolveAttachmentType(previewCard.attachment || {});
     if (t !== "html") return;
-    if (failedImageIds.has(previewCard.id)) return;
-    const existing = resolvedAttachmentUrls[previewCard.id];
-    if (existing && !/supabase\.co\/storage\//i.test(existing)) return;
-    void resolveSignedUrlForCard(previewCard);
-  }, [previewCard, resolvedAttachmentUrls, failedImageIds, resolveSignedUrlForCard]);
+    void resolveSignedUrlForCard(previewCard, { force: true });
+    // Only re-run when the opened card changes — not on every URL state tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+  }, [previewCard?.id]);
 
   // Lock body scroll while any full-screen vault overlay is up so wheel/touch
   // over the backdrop doesn't scroll the grid behind it (users otherwise close
@@ -7968,7 +7981,12 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
         (() => {
           const card = previewCard;
           const att = card.attachment || {};
-          const type = card.type || card.kind;
+          // Prefer attachment-derived type so .html rows saved as type "file"
+          // still open the interactive iframe (not the generic download stub).
+          const type =
+            card.kind === "attachment"
+              ? resolveAttachmentType(att) || card.type || card.kind
+              : card.type || card.kind;
           const resolvedUrl = resolvedAttachmentUrls[card.id] || att.url || "";
           const title = card.title || att.name || (card.kind === "quick-note" ? (card.label || "Quick Note") : "Vault Item");
           const cardTags = Array.isArray(card.tags) ? card.tags : [];
@@ -8051,18 +8069,29 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               : safeAttachmentUrl(candidate);
             body = htmlEmbed ? (
               <iframe
+                key={htmlEmbed}
                 title={title}
                 src={htmlEmbed}
                 className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-[#15130f]"
                 sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
                 referrerPolicy="no-referrer"
+                allow="fullscreen"
               />
             ) : (
-              <div className="flex flex-col items-center gap-4 py-10 text-center">
-                <FileText className="w-14 h-14 text-black/30 dark:text-white/30" />
-                <p className="text-sm text-black/70 dark:text-white/70">
+              <div className="flex flex-col items-center justify-center gap-4 py-16 text-center rounded-xl bg-[#15130f] h-[50vh]">
+                <FileText className="w-14 h-14 text-white/30" />
+                <p className="text-sm text-white/70">
                   {failedImageIds.has(card.id) ? "Preview unavailable" : "Loading preview…"}
                 </p>
+                {failedImageIds.has(card.id) ? (
+                  <button
+                    type="button"
+                    onClick={() => void resolveSignedUrlForCard(card, { force: true })}
+                    className="text-xs font-medium text-blue-400 hover:text-blue-300 underline"
+                  >
+                    Retry
+                  </button>
+                ) : null}
               </div>
             );
           } else if (card.kind === "attachment" && type === "youtube") {

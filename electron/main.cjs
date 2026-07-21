@@ -1930,12 +1930,33 @@ function showOverlay() {
   // Fade in the full-screen glass behind the bar so the user gets an
   // unmistakable "LYKN is on" cue for as long as the overlay is up.
   playOverlayBurst();
+  // Prefer show() over showInactive() so the bar can take keyboard focus for
+  // typing even when another app's window is maximized.
   overlayWindow.show();
   // Re-assert the level AFTER show too — ordering a window onto a full-screen
   // Space can drop it again — then bring it above the burst flash.
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
   overlayWindow.moveTop();
-  overlayWindow.focus();
+  try {
+    overlayWindow.focus();
+  } catch (_) {
+    /* best-effort */
+  }
+  // Only steal app activation when OUR main window is the thing burying the
+  // bar (maximized / focused). Don't yank the user out of another app's
+  // full-screen Space — the panel + screen-saver level already covers that.
+  try {
+    const mainBurying =
+      mainWindow &&
+      !mainWindow.isDestroyed() &&
+      mainWindow.isVisible() &&
+      (mainWindow.isFocused() ||
+        (typeof mainWindow.isMaximized === "function" && mainWindow.isMaximized()) ||
+        (typeof mainWindow.isFullScreen === "function" && mainWindow.isFullScreen()));
+    if (mainBurying) app.focus({ steal: true });
+  } catch (_) {
+    /* best-effort */
+  }
   // Restore the live meeting notes + side-panel cards if still open.
   if (liveCardOpen && !overlayCollapsed) showLiveWindow();
   if (panelCardOpen && !overlayCollapsed) showPanelWindow();
@@ -1948,6 +1969,24 @@ function toggleOverlay() {
     !overlayWindow.isDestroyed() &&
     !overlayWindow.webContents.isCrashed();
   if (alive && overlayWindow.isVisible()) {
+    // When a maximized / full-screen window (or the LYKN main window) is
+    // covering the glass bar, isVisible() is still true — so a naïve toggle
+    // HIDES the buried bar instead of raising it. ⌘L should summon: raise if
+    // we're not already the key window, hide only when we already are.
+    const overlayFocused = (() => {
+      try {
+        return overlayWindow.isFocused();
+      } catch (_) {
+        return false;
+      }
+    })();
+    const mainFocused = Boolean(
+      mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused(),
+    );
+    if (!overlayFocused || mainFocused) {
+      showOverlay();
+      return;
+    }
     hideOverlay();
     return;
   }
