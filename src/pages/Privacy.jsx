@@ -21,7 +21,7 @@
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 
-const LAST_UPDATED = "May 11, 2026";
+const LAST_UPDATED = "July 21, 2026";
 
 export default function Privacy() {
   return (
@@ -50,10 +50,12 @@ export default function Privacy() {
             Privacy Policy
           </h1>
           <p className="mt-4 text-[14px] leading-relaxed text-black/65 dark:text-white/70">
-            LYKN is a personal synthesis layer, your beliefs, rules, facts,
-            project state, and vault, surfaced to you and to the AI tools you
-            connect. This policy explains exactly what we collect, why,
-            who else sees it, and how to make it disappear.
+            LYKN is a personal synthesis layer — your beliefs, rules, facts,
+            project state, and vault — plus <strong>LYKN Glass</strong>, the
+            desktop overlay that can see your screen, snip regions, chat,
+            build, imagine, and use voice across the apps you already work
+            in. This policy explains exactly what we collect, why, who else
+            sees it, and how to make it disappear.
           </p>
           <p className="mt-3 text-[12.5px] leading-relaxed text-black/55 dark:text-white/60">
             The data controller for the purposes of GDPR and CCPA is{" "}
@@ -93,6 +95,12 @@ export default function Privacy() {
               are stored in our database (Supabase, hosted in the US).
             </Bullet>
             <Bullet>
+              LYKN Glass only captures screen, snip, page text, or audio when
+              you use a Glass feature that needs it. Those captures are sent
+              to the AI providers powering that request — not sold, and not
+              used to train our models.
+            </Bullet>
+            <Bullet>
               We never sell your data. We do not show ads. We do not train any
               model on your content.
             </Bullet>
@@ -129,10 +137,64 @@ export default function Privacy() {
           </h3>
           <p>
             Everything you save, propose, or ratify in LYKN: vault items
-            (notes, links, files), beliefs, rules, facts, project definitions
-            and project state, conversation transcripts within the app,
-            and any AI-generated summaries derived from those. This is the
-            content the synthesis layer is.
+            (notes, links, files, HTML/artifacts you generate), beliefs,
+            rules, facts, project definitions and project state, conversation
+            transcripts within the app and Glass overlay chats, and any
+            AI-generated summaries derived from those.
+          </p>
+
+          <h3 className="text-[15px] font-semibold tracking-tight mt-5 mb-1">
+            LYKN Glass (desktop app)
+          </h3>
+          <p>
+            When you install and use the LYKN desktop app, Glass may process
+            the following — only when you invoke a feature that needs it
+            (hotkey overlay, ask-about-screen, snip, Live Watch, voice,
+            browser assist, etc.):
+          </p>
+          <ul className="space-y-2 mt-2">
+            <Bullet>
+              <strong>Screen stills and snips</strong> — short-lived images of
+              your display or a selected region, sent to our API and then to
+              the model provider for that request so Glass can answer, build,
+              or act on what you&apos;re looking at.
+            </Bullet>
+            <Bullet>
+              <strong>Page / window text</strong> — text scraped or read from
+              the active browser tab or supported apps (via OS permissions and,
+              where installed, the browser extension) so Glass can reason about
+              the page without you pasting it.
+            </Bullet>
+            <Bullet>
+              <strong>Microphone and optional system audio</strong> — for Voice
+              Mode and live listen / transcription features. Audio is streamed
+              or uploaded to the voice / speech provider for that session
+              (currently ElevenLabs and/or OpenAI-compatible speech endpoints,
+              depending on the feature).
+            </Bullet>
+            <Bullet>
+              <strong>Overlay chat history</strong> — messages and tool results
+              from Glass sessions may be stored with your account so you can
+              resume work and so synthesis can learn from what you allow.
+            </Bullet>
+            <Bullet>
+              <strong>OS permissions metadata</strong> — whether Screen
+              Recording, Microphone, Accessibility, or similar permissions are
+              granted (so we can prompt you to enable them). We do not receive
+              continuous video of your desktop when Glass is idle.
+            </Bullet>
+          </ul>
+          <p className="mt-3">
+            Glass runs as a tray-resident, always-on-top overlay. Auto-updates
+            download installer packages from our GitHub Releases feed. Local
+            preferences (hotkeys, UI state) stay on your device; see the{" "}
+            <Link
+              to="/cookies"
+              className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+            >
+              Cookie Policy
+            </Link>
+            .
           </p>
 
           <h3 className="text-[15px] font-semibold tracking-tight mt-5 mb-1">
@@ -157,15 +219,20 @@ export default function Privacy() {
           </h3>
           <ul className="space-y-2 mt-2">
             <Bullet>No advertising IDs, fingerprints, or cross-site trackers.</Bullet>
-            <Bullet>No keystroke logs, screen recordings, or session replays.</Bullet>
+            <Bullet>
+              No keystroke logging, and no always-on session-replay or continuous
+              desktop video when Glass is idle. Screen stills, snips, and page
+              text are processed only for features you trigger (see LYKN Glass
+              above).
+            </Bullet>
             <Bullet>
               No location beyond approximate IP geolocation derived from server
               logs (used for rate-limiting and abuse detection only, not stored
               against your account).
             </Bullet>
             <Bullet>
-              No payment-card numbers, Stripe holds those if billing applies
-              to your plan.
+              No payment-card numbers — Stripe holds those for trial checkout
+              and paid plans.
             </Bullet>
           </ul>
         </Section>
@@ -175,10 +242,14 @@ export default function Privacy() {
             Strictly to operate the product:
           </p>
           <ul className="space-y-2 mt-3">
-            <Bullet>Authenticate you and serve the LYKN app.</Bullet>
+            <Bullet>Authenticate you and serve LYKN on the web and in the desktop app.</Bullet>
             <Bullet>
               Power the synthesis pipeline, extracting beliefs, facts, and
               rules from your vault and conversations.
+            </Bullet>
+            <Bullet>
+              Power LYKN Glass — answering about your screen, snips, Live Watch
+              frames, voice sessions, artifact builds, and related chat.
             </Bullet>
             <Bullet>
               Surface your synthesis content to AI tools you have explicitly
@@ -189,6 +260,9 @@ export default function Privacy() {
               receipts). No marketing email without separate opt-in.
             </Bullet>
             <Bullet>Detect and prevent abuse, spam, and quota overruns.</Bullet>
+            <Bullet>
+              Process subscriptions, trials, and plan limits via Stripe.
+            </Bullet>
           </ul>
           <p className="mt-3">
             <strong>We do not</strong> train any AI model on your content. We
@@ -273,13 +347,17 @@ export default function Privacy() {
               </tr>
             </thead>
             <tbody className="text-black/65 dark:text-white/70">
-              <Row p="Supabase" purpose="Postgres database, auth, file storage" region="US-East" />
-              <Row p="Render" purpose="Backend hosting (Express server, cron jobs)" region="US-East" />
-              <Row p="Vercel" purpose="Frontend hosting (the lykn.io SPA)" region="Global edge" />
-              <Row p="Anthropic" purpose="LLM inference for synthesis (when you opt in to Claude tiers)" region="US" />
-              <Row p="OpenAI" purpose="LLM inference for synthesis (when you opt in to GPT tiers); embeddings; Voice Mode — live microphone audio and conversation context stream to OpenAI's Realtime API during a Voice Mode session in the iOS app" region="US" />
+              <Row p="Supabase" purpose="Postgres database, auth, file storage (vault, artifacts, overlay chats)" region="US-East" />
+              <Row p="Render" purpose="API / backend hosting (including Glass and billing webhooks)" region="US-East" />
+              <Row p="Vercel" purpose="Website and web app hosting (lykn.io)" region="Global edge" />
+              <Row p="Anthropic" purpose="LLM inference (Claude tiers) for chat, synthesis, Glass, and builds" region="US" />
+              <Row p="OpenAI" purpose="LLM inference (GPT tiers); embeddings; image generation; speech-to-text / TTS paths; optional Realtime voice on supported clients" region="US" />
+              <Row p="Google" purpose="LLM / vision inference (Gemini tiers) when you select those models; Google OAuth for sign-in and connectors you enable" region="US" />
+              <Row p="xAI" purpose="LLM inference (Grok tiers) when you select those models" region="US" />
+              <Row p="ElevenLabs" purpose="Voice Mode audio (desktop Glass and supported clients): mic / conversation audio streamed to ElevenLabs during a voice session" region="US" />
               <Row p="Resend" purpose="Transactional email (sign-in links, account changes)" region="US" />
-              <Row p="Stripe" purpose="Billing (paid plans only; we never see card numbers)" region="US" />
+              <Row p="Stripe" purpose="Trials, subscriptions, and invoices (we never see card numbers)" region="US" />
+              <Row p="GitHub" purpose="Desktop app release downloads and auto-update packages" region="US" />
             </tbody>
           </table>
         </Section>

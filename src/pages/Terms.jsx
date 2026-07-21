@@ -19,7 +19,7 @@
 import { Link } from "react-router-dom";
 import { ArrowLeft, ShieldAlert } from "lucide-react";
 
-const LAST_UPDATED = "May 11, 2026";
+const LAST_UPDATED = "July 21, 2026";
 
 export default function Terms() {
   return (
@@ -62,11 +62,12 @@ export default function Terms() {
 
         <Section title="The agreement" anchor="agreement">
           <p>
-            "LYKN" and "we" mean the LYKN service operated at lykn.io by{" "}
+            "LYKN" and "we" mean the LYKN service operated at lykn.io and the
+            LYKN Glass desktop application by{" "}
             <strong>Omnia Technologies LLC</strong>, a Utah limited liability
             company. "You" means the person using LYKN under their own account.
-            By creating a LYKN account or connecting LYKN to an AI tool you
-            agree to these Terms and to our{" "}
+            By creating a LYKN account, installing the desktop app, or
+            connecting LYKN to an AI tool you agree to these Terms and to our{" "}
             <Link
               to="/privacy"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
@@ -119,6 +120,10 @@ export default function Terms() {
               links, your files, content you created or were licensed.
             </Bullet>
             <Bullet>
+              Use LYKN Glass on devices you control to chat, build, imagine,
+              voice, snip, and ask about on-screen content for your own work.
+            </Bullet>
+            <Bullet>
               Connect LYKN to any AI tool that speaks MCP, OAuth, or our REST
               API and use it however you like for your own work.
             </Bullet>
@@ -135,6 +140,12 @@ export default function Terms() {
               material, or content infringing someone else's IP.
             </Bullet>
             <Bullet>
+              Use Glass to capture, record, or share screens, audio, or
+              confidential material you are not allowed to process — including
+              other people&apos;s private screens, workplaces, or regulated
+              data — without any consent or authority the law requires.
+            </Bullet>
+            <Bullet>
               Use LYKN to operate a service that resells or proxies our APIs
               to other people without our written permission. Personal use
               is fine; SaaS-on-top-of-LYKN needs a conversation first.
@@ -146,6 +157,43 @@ export default function Terms() {
             <Bullet>
               Forge OAuth client metadata to impersonate a brand you don't
               own when registering against our IdP.
+            </Bullet>
+          </ul>
+        </Section>
+
+        <Section title="LYKN Glass (desktop software)" anchor="glass">
+          <p>
+            LYKN Glass is our downloadable desktop overlay. By installing it
+            you license a non-exclusive, non-transferable right to use the
+            app with your LYKN account on devices you own or control. The
+            license ends when your account is closed or we terminate access
+            under these Terms.
+          </p>
+          <ul className="space-y-2 mt-3">
+            <Bullet>
+              <strong>Permissions.</strong> Glass may ask for Screen Recording,
+              Microphone, Accessibility, and related OS permissions. You
+              control those in system settings. Without them, some features
+              will not work.
+            </Bullet>
+            <Bullet>
+              <strong>Capture is feature-triggered.</strong> Screen stills,
+              snips, page text, mic audio, and optional system audio are
+              processed when you use a feature that needs them — not as
+              continuous surveillance while Glass sits idle in the tray.
+            </Bullet>
+            <Bullet>
+              <strong>Updates.</strong> The app may download and install
+              updates automatically from our release channel so security and
+              feature fixes ship promptly. You can quit the app to pause use;
+              uninstalling removes the local software (your cloud account data
+              remains until you delete the account).
+            </Bullet>
+            <Bullet>
+              <strong>Your responsibility.</strong> You are responsible for
+              what Glass sees and sends on your behalf, including content on
+              third-party apps and websites visible on your screen. Review AI
+              output before acting on it.
             </Bullet>
           </ul>
         </Section>
@@ -166,13 +214,14 @@ export default function Terms() {
 
         <Section title="AI-generated output" anchor="ai-output">
           <p>
-            LYKN passes your content to large language models from OpenAI,
-            Anthropic, Google, and others to power synthesis and chat. AI
-            output can be wrong, biased, or fabricated. <strong>You are
-            responsible for reviewing and verifying anything an AI tool
-            generates inside or via LYKN before relying on it</strong>,
-            especially for medical, legal, financial, or safety-critical
-            decisions.
+            LYKN passes your content (and, when using Glass, screen stills,
+            snips, page text, and voice audio) to model and voice providers
+            such as OpenAI, Anthropic, Google, xAI, and ElevenLabs, depending
+            on the feature and model you select. AI output can be wrong,
+            biased, or fabricated. <strong>You are responsible for reviewing
+            and verifying anything an AI tool generates inside or via LYKN
+            before relying on it</strong>, especially for medical, legal,
+            financial, or safety-critical decisions.
           </p>
         </Section>
 
@@ -198,23 +247,38 @@ export default function Terms() {
 
         <Section title="Plans and billing" anchor="billing">
           <p>
-            LYKN offers a free tier and one or more paid tiers. Paid plans
-            renew at the cadence shown at checkout (monthly or annual) and
-            you can cancel any time from{" "}
+            Access to LYKN (including Glass) generally requires completing
+            checkout for a plan — Student, Pro, or Max — as shown at{" "}
             <Link
-              to="/billing"
+              to="/pricing"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
             >
-              Billing
+              Pricing
             </Link>
-            . On cancellation your plan stays active until the end of the
-            current billing period; we don't pro-rate refunds.
+            . New accounts typically start with a card-required free trial
+            whose length is shown at checkout (currently on the order of
+            two weeks unless we state otherwise). If you cancel before the
+            trial ends, you should not be charged for that trial period.
+          </p>
+          <p className="mt-3">
+            Paid plans renew at the cadence shown at checkout (monthly or
+            annual). You can manage or cancel from the in-app billing /
+            customer portal. On cancellation after a paid period starts, your
+            plan stays active until the end of the current billing period; we
+            don&apos;t pro-rate refunds unless required by law or we say
+            otherwise in writing.
+          </p>
+          <p className="mt-3">
+            Student pricing requires a school-associated account email (and
+            any other eligibility checks we publish). Plan limits (for
+            example Glass requests, image generations, and artifact builds)
+            are described on Pricing and may be enforced in the product.
           </p>
           <p className="mt-3">
             Stripe processes all payments. We never see your card number.
             Prices, plan limits, and quotas may change with at least 14 days
             notice via email; existing committed terms (annual prepay) are
-            honored at the original price.
+            honored at the original price for the committed term.
           </p>
         </Section>
 

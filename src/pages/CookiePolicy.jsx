@@ -29,7 +29,7 @@
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 
-const LAST_UPDATED = "May 20, 2026";
+const LAST_UPDATED = "July 21, 2026";
 
 export default function CookiePolicy() {
   return (
@@ -58,8 +58,9 @@ export default function CookiePolicy() {
             Cookie Policy
           </h1>
           <p className="mt-4 text-[14px] leading-relaxed text-black/65 dark:text-white/70">
-            This page explains what LYKN stores in your browser, why, and what
-            you can do about it. It's a companion to our{" "}
+            This page explains what LYKN stores in your browser and in the
+            LYKN Glass desktop app, why, and what you can do about it. It&apos;s
+            a companion to our{" "}
             <Link
               to="/privacy"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
@@ -90,14 +91,20 @@ export default function CookiePolicy() {
               parties.
             </Bullet>
             <Bullet>
-              We do use your browser's <code>localStorage</code> and{" "}
+              We do use your browser&apos;s <code>localStorage</code> and{" "}
               <code>sessionStorage</code> for two things: keeping you signed
               in, and remembering your UI preferences. Both are{" "}
-              <strong>strictly necessary</strong> for the app to function.
+              <strong>strictly necessary</strong> for the web surfaces to
+              function.
             </Bullet>
             <Bullet>
-              You can clear all of it at any time from your browser's site
-              settings, or by deleting your account from{" "}
+              LYKN Glass also stores local preferences and session tokens on
+              your device (not as advertising cookies).
+            </Bullet>
+            <Bullet>
+              You can clear browser storage from your browser&apos;s site
+              settings, clear Glass preferences by signing out / resetting the
+              app, or delete your account from{" "}
               <Link
                 to="/settings"
                 className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
@@ -118,14 +125,49 @@ export default function CookiePolicy() {
             For clarity: LYKN itself doesn't set traditional HTTP cookies
             from <code>lykn.io</code>. Some of our infrastructure providers
             (Supabase, Vercel, Render) may issue a session cookie when you
-            load the app, those are strictly necessary for routing and
+            load the site; those are strictly necessary for routing and
             load balancing and contain no personal identifiers.
           </p>
           <p className="mt-3">
-            The data LYKN itself writes lives in <code>localStorage</code>,{" "}
-            <code>sessionStorage</code>, and (for cached vault thumbnails)
-            <code> IndexedDB</code>. EU ePrivacy guidance treats these the
-            same as cookies, so we disclose them here too.
+            The data LYKN itself writes in a browser lives in{" "}
+            <code>localStorage</code>, <code>sessionStorage</code>, and (for
+            cached vault thumbnails) <code>IndexedDB</code>. EU ePrivacy
+            guidance treats these the same as cookies, so we disclose them
+            here too.
+          </p>
+        </Section>
+
+        <Section title="LYKN Glass (desktop)" anchor="desktop">
+          <p>
+            The desktop app is not a website cookie jar, but it does keep
+            similar strictly necessary data on your machine so Glass can
+            stay signed in and remember your preferences:
+          </p>
+          <ul className="space-y-2 mt-3">
+            <Bullet>
+              Auth session tokens (so you don&apos;t re-sign-in every launch)
+            </Bullet>
+            <Bullet>
+              UI / hotkey / overlay preferences and local feature flags
+            </Bullet>
+            <Bullet>
+              Short-lived caches for recent chats or assets needed offline or
+              for faster reopen (never used for advertising)
+            </Bullet>
+            <Bullet>
+              Auto-updater state pointing at our GitHub Releases channel
+            </Bullet>
+          </ul>
+          <p className="mt-3">
+            Screen stills, snips, and audio processed by Glass features are
+            handled as described in the{" "}
+            <Link
+              to="/privacy#data"
+              className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+            >
+              Privacy Policy
+            </Link>
+            ; they are not advertising storage.
           </p>
         </Section>
 

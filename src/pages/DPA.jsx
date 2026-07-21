@@ -27,7 +27,7 @@
 import { Link } from "react-router-dom";
 import { ArrowLeft, ShieldAlert } from "lucide-react";
 
-const LAST_UPDATED = "May 20, 2026";
+const LAST_UPDATED = "July 21, 2026";
 
 export default function DPA() {
   return (
@@ -153,7 +153,7 @@ export default function DPA() {
             <tbody className="text-black/65 dark:text-white/70">
               <DetailRow
                 label="Subject matter"
-                value="Provision of the LYKN synthesis service: storing, retrieving, embedding, clustering, and serving Customer's vault content, beliefs, facts, project state, and conversations to AI tools Customer has explicitly connected."
+                value="Provision of the LYKN synthesis service and LYKN Glass desktop overlay: storing, retrieving, embedding, clustering, and serving Customer's vault content, beliefs, facts, project state, and conversations; processing feature-triggered screen stills, snips, page text, and voice audio; serving data to AI tools Customer has explicitly connected."
               />
               <DetailRow
                 label="Duration"
@@ -161,15 +161,15 @@ export default function DPA() {
               />
               <DetailRow
                 label="Nature and purpose"
-                value="Hosting, search, semantic embedding, LLM-assisted synthesis, OAuth token issuance, transactional email."
+                value="Hosting, search, semantic embedding, LLM-assisted synthesis and Glass features (chat, build, imagine, voice, screen-grounded assist), OAuth token issuance, billing/trial processing, transactional email, desktop auto-update distribution."
               />
               <DetailRow
                 label="Categories of Data Subject"
-                value="Customer's authorised users, plus any individual referenced in content Customer uploads (e.g. names in a saved note, email senders in an imported transcript)."
+                value="Customer's authorised users, plus any individual referenced in content Customer uploads or that appears in screen/audio captures Customer chooses to process (e.g. names in a note, faces/text on screen, voices on a call)."
               />
               <DetailRow
                 label="Categories of Personal Data"
-                value="Account identifiers (email, user id); vault content (notes, files, links, transcripts) which may contain free-text personal data; AI-derived beliefs, facts, rules, and project state; OAuth client metadata; minimal usage telemetry."
+                value="Account identifiers (email, user id); vault content (notes, files, links, transcripts, artifacts); AI-derived beliefs, facts, rules, and project state; Glass overlay chats; feature-triggered screen stills/snips/page text and voice/system audio for Voice Mode and related features; OAuth client metadata; billing customer identifiers via Stripe; minimal usage telemetry."
               />
               <DetailRow
                 label="Special-category data"
@@ -267,12 +267,16 @@ export default function DPA() {
             </thead>
             <tbody className="text-black/65 dark:text-white/70">
               <SubRow p="Supabase" purpose="Database, auth, file storage" region="US-East" />
-              <SubRow p="Render" purpose="Backend hosting (Express server, cron jobs)" region="US-East" />
-              <SubRow p="Vercel" purpose="Frontend hosting (the lykn.io SPA)" region="Global edge" />
-              <SubRow p="Anthropic" purpose="LLM inference for synthesis (Claude tiers)" region="US" />
-              <SubRow p="OpenAI" purpose="LLM inference for synthesis (GPT tiers); embeddings" region="US" />
+              <SubRow p="Render" purpose="API / backend hosting" region="US-East" />
+              <SubRow p="Vercel" purpose="Website and web app hosting (lykn.io)" region="Global edge" />
+              <SubRow p="Anthropic" purpose="LLM inference (Claude tiers)" region="US" />
+              <SubRow p="OpenAI" purpose="LLM inference (GPT tiers); embeddings; image/speech paths" region="US" />
+              <SubRow p="Google" purpose="LLM/vision (Gemini tiers); Google OAuth for connectors Customer enables" region="US" />
+              <SubRow p="xAI" purpose="LLM inference (Grok tiers)" region="US" />
+              <SubRow p="ElevenLabs" purpose="Voice Mode audio processing" region="US" />
               <SubRow p="Resend" purpose="Transactional email" region="US" />
-              <SubRow p="Stripe" purpose="Billing (paid plans only)" region="US" />
+              <SubRow p="Stripe" purpose="Trials, subscriptions, invoices" region="US" />
+              <SubRow p="GitHub" purpose="Desktop release / auto-update packages" region="US" />
             </tbody>
           </table>
           <p className="mt-4">
