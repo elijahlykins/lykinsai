@@ -26,6 +26,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { assertUrlSafe, safeFetch } from '../lib/exterior/ssrfGuard.js';
 import { saveConnectorNote } from './_save.js';
 
 const FETCH_TIMEOUT_MS = 20_000;
@@ -57,8 +58,12 @@ async function kkGet(endpoint, token, path, label, query = {}) {
   for (const [k, v] of Object.entries(query)) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
   }
+  const safe = await assertUrlSafe(url.toString());
+  if (!safe.ok) {
+    throw new Error('Karakeep URL is not allowed (private or internal addresses are blocked).');
+  }
   const res = await withTimeout(
-    fetch(url, {
+    safeFetch(safe.url, {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',

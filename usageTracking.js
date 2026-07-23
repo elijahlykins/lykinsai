@@ -418,7 +418,11 @@ async function getUserMonthlyUsage(userId) {
     query: `user_id=eq.${userId}&created_at=gte.${firstOfMonth}&select=action_type,total_tokens,cost_usd,credits_used`,
   });
 
-  if (!logs || !logs.length) {
+  // null = query failed (supabaseAdmin returns null on error). Callers that
+  // enforce quotas must treat this as fail-closed, not "zero usage".
+  if (logs === null) return null;
+
+  if (!logs.length) {
     return { total_tokens: 0, total_cost: 0, total_credits: 0, action_breakdown: {}, log_count: 0 };
   }
 

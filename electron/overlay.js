@@ -66,6 +66,31 @@ function escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
+/** Encode a URL for use inside a double-quoted HTML attribute. */
+function escapeAttr(s) {
+  return escapeHtml(s);
+}
+
+/** Only allow https artifact/image hosts we mint (artifacts / API file proxy). */
+function isAllowedMediaUrl(url) {
+  try {
+    const u = new URL(String(url || ""));
+    if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+    // Dev: localhost API file proxy.
+    if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
+    const host = u.hostname.toLowerCase();
+    return (
+      host === "artifacts.lykn.io" ||
+      host === "lykn-ideation.onrender.com" ||
+      host.endsWith(".supabase.co") ||
+      host === "lykn.io" ||
+      host === "www.lykn.io"
+    );
+  } catch {
+    return false;
+  }
+}
+
 function renderInline(s) {
   return s
     .replace(/`([^`]+)`/g, (_m, c) => `<code>${c}</code>`)
@@ -114,44 +139,63 @@ function renderMarkdown(md) {
       const isArtifact = /^lykn[-_]artifact\s*:/.test(altLower);
       const isVideo = /^lykn[-_]video\s*:/.test(altLower);
       if (isArtifact) {
+        if (!isAllowedMediaUrl(m[2])) {
+          html += `<p><a href="${escapeAttr(m[2])}" rel="noopener noreferrer">Open artifact ↗</a></p>`;
+        } else {
         const artTitle = m[1].slice(m[1].indexOf(":") + 1).trim() || "Interactive artifact";
         const artFile =
           (artTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
             "artifact") + ".html";
+        const safeUrl = escapeAttr(m[2]);
+        const safeTitle = escapeAttr(artTitle);
+        const safeFile = escapeAttr(artFile);
         html +=
           `<div class="md-artifact">` +
-          `<div class="md-artifact-head"><span>${artTitle}</span>` +
+          `<div class="md-artifact-head"><span>${safeTitle}</span>` +
           `<span class="md-artifact-actions">` +
-          `<button class="md-code" type="button" data-url="${m[2]}">Code</button>` +
-          `<button class="md-dl" type="button" data-url="${m[2]}" data-name="${artFile}" data-title="${artTitle}">Download</button>` +
-          `<a href="${m[2]}" rel="noopener noreferrer">Open ↗</a>` +
+          `<button class="md-code" type="button" data-url="${safeUrl}">Code</button>` +
+          `<button class="md-dl" type="button" data-url="${safeUrl}" data-name="${safeFile}" data-title="${safeTitle}">Download</button>` +
+          `<a href="${safeUrl}" rel="noopener noreferrer">Open ↗</a>` +
           `</span></div>` +
-          `<iframe src="${m[2]}" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" loading="lazy"></iframe>` +
+          // Host-allowlisted above; same-origin kept so in-page Babel/React
+          // artifacts can use their own origin storage. Parent is file:// so
+          // the iframe cannot touch the Glass session either way.
+          `<iframe src="${safeUrl}" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals" loading="lazy" referrerpolicy="no-referrer"></iframe>` +
           `<div class="md-artifact-code" hidden>` +
           `<div class="md-artifact-code-bar"><span>Component source (JSX)</span>` +
-          `<button class="md-code-copy" type="button" data-url="${m[2]}" aria-label="Copy code">Copy</button></div>` +
+          `<button class="md-code-copy" type="button" data-url="${safeUrl}" aria-label="Copy code">Copy</button></div>` +
           `<pre></pre>` +
           `</div>` +
           `</div>`;
+        }
       } else if (isVideo) {
         // Remotion render (lykn_render_video): inline playable mp4 card.
         const vidTitle = m[1].slice(m[1].indexOf(":") + 1).trim() || "Video";
         const vidFile =
           (vidTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
             "video") + ".mp4";
+        if (!isAllowedMediaUrl(m[2])) {
+          html += `<p><a href="${escapeAttr(m[2])}" rel="noopener noreferrer">${escapeAttr(vidTitle)} ↗</a></p>`;
+        } else {
+        const safeUrl = escapeAttr(m[2]);
+        const safeTitle = escapeAttr(vidTitle);
+        const safeFile = escapeAttr(vidFile);
         html +=
           `<div class="md-artifact md-video">` +
-          `<div class="md-artifact-head"><span>${vidTitle}</span>` +
+          `<div class="md-artifact-head"><span>${safeTitle}</span>` +
           `<span class="md-artifact-actions">` +
-          `<button class="md-dl" type="button" data-url="${m[2]}" data-name="${vidFile}" data-title="${vidTitle}">Download</button>` +
-          `<a href="${m[2]}" rel="noopener noreferrer">Open ↗</a>` +
+          `<button class="md-dl" type="button" data-url="${safeUrl}" data-name="${safeFile}" data-title="${safeTitle}">Download</button>` +
+          `<a href="${safeUrl}" rel="noopener noreferrer">Open ↗</a>` +
           `</span></div>` +
-          `<video src="${m[2]}" controls playsinline preload="metadata"></video>` +
+          `<video src="${safeUrl}" controls playsinline preload="metadata"></video>` +
           `</div>`;
-      } else {
+        }
+      } else if (isAllowedMediaUrl(m[2])) {
+        const safeUrl = escapeAttr(m[2]);
+        const safeAlt = escapeAttr(m[1]);
         html +=
-          `<div class="md-img"><img src="${m[2]}" alt="${m[1]}" loading="lazy" />` +
-          `<button class="md-dl md-img-dl" type="button" data-url="${m[2]}" data-name="" data-title="${m[1] || "Generated image"}">Download</button>` +
+          `<div class="md-img"><img src="${safeUrl}" alt="${safeAlt}" loading="lazy" />` +
+          `<button class="md-dl md-img-dl" type="button" data-url="${safeUrl}" data-name="" data-title="${safeAlt || "Generated image"}">Download</button>` +
           `</div>`;
       }
       continue;

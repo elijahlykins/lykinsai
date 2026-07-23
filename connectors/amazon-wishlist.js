@@ -24,6 +24,7 @@
 // Auth: none. RSS is unauthenticated.
 // ============================================================================
 
+import { assertUrlSafe, safeFetch } from '../lib/exterior/ssrfGuard.js';
 import { saveConnectorNote } from './_save.js';
 
 const FETCH_TIMEOUT_MS = 15_000;
@@ -58,8 +59,12 @@ function buildFeedUrl(raw) {
 }
 
 async function fetchFeed(url) {
+  const safe = await assertUrlSafe(url);
+  if (!safe.ok) {
+    throw new Error('Wishlist feed URL is not allowed (private or internal addresses are blocked).');
+  }
   const res = await withTimeout(
-    fetch(url, {
+    safeFetch(safe.url, {
       headers: {
         'User-Agent': 'LYKN-Connector/1.0 (+https://lykn.ai)',
         Accept: 'application/rss+xml, application/xml, text/xml, */*',

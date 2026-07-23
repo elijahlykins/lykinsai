@@ -2680,10 +2680,9 @@ export default function LyknChat() {
   // copied into the user's own storage so the vault note keeps a permanent,
   // re-signable copy instead of a 7-day proxy link.
   //
-  // `opts.auto` is used by the chat view when a new artifact finishes — skips
-  // sign-in prompts / failure toasts. Refines and code edits upsert the same
-  // vault note (keyed by chat + tool + title) so only the latest version is
-  // kept instead of stacking every intermediate edit as a separate card.
+  // Called only on explicit user intent (Save button). Refines and code edits
+  // upsert the same vault note (keyed by chat + tool + title) so only the
+  // latest version is kept instead of stacking every intermediate edit.
   type SavedArtifactVault = {
     noteId: string;
     fileId: string;
@@ -2929,10 +2928,12 @@ export default function LyknChat() {
           excludeChatId: routeChatId || chatId || undefined,
         });
       }
-      toast({
-        title: existing ? "Updated in vault" : "Saved to vault",
-        description: title,
-      });
+      if (!opts?.auto) {
+        toast({
+          title: existing ? "Updated in vault" : "Saved to vault",
+          description: title,
+        });
+      }
       return true;
     } catch {
       if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });

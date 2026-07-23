@@ -189,9 +189,8 @@ export const FAQ_ITEMS = [
 // `supabase-migrations/066_synthesis_neuron_cap_trigger.sql`.
 // `glassRequests`, `imageGens`, and `artifactBuilds` are the monthly usage
 // meters shown on every pricing card — keep them in sync with the PLANS
-// feature copy above. They are marketing-source-of-truth here; server-side
-// enforcement (imageGenQuota.js etc.) should read these numbers as caps get
-// wired up.
+// feature copy above. Server enforcement: `checkAiUsageLimit` in server.js
+// reads `glassRequests`; `imageGenQuota.js` covers image gens.
 export const PLAN_LIMITS = {
   free: {
     requests: Infinity,

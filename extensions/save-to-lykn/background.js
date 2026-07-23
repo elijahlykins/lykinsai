@@ -42,6 +42,43 @@ async function getBridgeSettings() {
   return { port, enabled };
 }
 
+/** Per-install token from Electron-written bridge-config.json (or options paste). */
+let cachedBridgeToken = "";
+async function getBridgeToken() {
+  if (cachedBridgeToken) return cachedBridgeToken;
+  try {
+    const res = await fetch(chrome.runtime.getURL("bridge-config.json"));
+    if (res.ok) {
+      const conf = await res.json();
+      if (conf?.token && String(conf.token).length >= 32) {
+        cachedBridgeToken = String(conf.token);
+        return cachedBridgeToken;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const { lyknBridgeToken } = await chrome.storage.local.get(["lyknBridgeToken"]);
+    if (lyknBridgeToken && String(lyknBridgeToken).length >= 32) {
+      cachedBridgeToken = String(lyknBridgeToken);
+      return cachedBridgeToken;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+function bridgeAuthHeaders(extra = {}) {
+  return (async () => {
+    const token = await getBridgeToken();
+    const headers = { ...extra };
+    if (token) headers["X-Lykn-Bridge-Token"] = token;
+    return headers;
+  })();
+}
+
 let lastBridgeSig = "";
 let bridgePushInFlight = false;
 let bridgePingTimer = null;
@@ -50,7 +87,10 @@ async function pingBridge() {
   const { port, enabled } = await getBridgeSettings();
   if (!enabled) return;
   try {
-    await fetch(`http://127.0.0.1:${port}/ping`, { method: "POST" });
+    await fetch(`http://127.0.0.1:${port}/ping`, {
+      method: "POST",
+      headers: await bridgeAuthHeaders(),
+    });
   } catch {
     /* desktop app not running */
   }
@@ -72,7 +112,7 @@ async function pushPageSnapshot(snapshot) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/page`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await bridgeAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(snapshot),
     });
     if (res.ok) lastBridgeSig = snapshot.sig || "";
@@ -196,13 +236,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       const { port } = await getBridgeSettings();
       try {
-        const res = await fetch(`http://127.0.0.1:${port}/status`);
-        const data = await res.json();
-        sendResponse({ ok: res.ok, ...data });
+        // Authenticated ping — proves token + app are wired, not just /status.
+        const res = await fetch(`http://127.0.0.1:${port}/ping`, {
+          method: "POST",
+          headers: await bridgeAuthHeaders(),
+        });
+        if (!res.ok) {
+          sendResponse({
+            ok: false,
+            error:
+              res.status === 401
+                ? "Bridge token mismatch — reinstall the extension from LYKN desktop"
+                : `HTTP ${res.status}`,
+          });
+          return;
+        }
+        sendResponse({ ok: true });
       } catch (e) {
         sendResponse({ ok: false, error: String(e?.message || e) });
       }
     })();
+    return true;
+  }
+  if (msg?.type === "setBridgeToken") {
+    cachedBridgeToken = "";
+    const token = String(msg.token || "").trim();
+    chrome.storage.local.set({ lyknBridgeToken: token }).then(() => {
+      cachedBridgeToken = token;
+      sendResponse({ ok: true });
+    });
     return true;
   }
   return false;

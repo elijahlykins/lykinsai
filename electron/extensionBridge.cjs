@@ -1,25 +1,25 @@
 // Local HTTP bridge — receives live page text from the LYKN browser extension.
 // Binds 127.0.0.1 only.
 //
-// SECURITY: binding to loopback does NOT stop other web pages from reaching
-// this server — any site the user visits can `fetch('http://127.0.0.1:PORT/…')`.
-// So we gate every request on two checks:
-//   1. Host header must be loopback (127.0.0.1 / localhost). A DNS-rebinding
-//      page connects to 127.0.0.1 but carries its own hostname in Host, so
-//      this rejects rebinding attacks.
-//   2. If an Origin header is present it must be a browser-extension origin
-//      (chrome-extension:// / moz-extension:// / safari-web-extension://).
-//      Normal http(s) web pages carry an http(s) Origin and are rejected —
-//      this stops arbitrary sites from reading captured page text or POSTing
-//      attacker-controlled text into LYKN's AI grounding.
-// CORS is reflected only back to an allowed extension origin, never `*`.
+// SECURITY: binding to loopback does NOT stop other local processes (or web
+// pages via DNS rebinding) from reaching this server. Gates:
+//   1. Host header must be loopback (anti-DNS-rebinding).
+//   2. Origin must be a browser-extension scheme (or empty for SW). Never http(s).
+//   3. POST /page and /ping require X-Lykn-Bridge-Token matching the per-install
+//      secret written into the unpacked extension as bridge-config.json.
+// Without (3), an empty Origin + Host: 127.0.0.1 lets any local curl poison
+// Glass page grounding.
 
 const http = require("node:http");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const DEFAULT_PORT = Number(process.env.LYKN_BRIDGE_PORT) || 38471;
 const EXTENSION_ORIGIN_RE = /^(chrome-extension|moz-extension|safari-web-extension):\/\//i;
-const UI_CONNECTED_MS = 120_000; // show "connected" in UI if seen in last 2 min
-const LIVE_DATA_MS = 12_000; // use extension text for live watch if seen in last 12s
+const UI_CONNECTED_MS = 120_000;
+const LIVE_DATA_MS = 12_000;
+const TOKEN_HEADER = "x-lykn-bridge-token";
 
 function bridgeWelcomeUrl(port = listenPort || DEFAULT_PORT) {
   return `http://127.0.0.1:${port}/welcome`;
@@ -45,6 +45,7 @@ let latest = null;
 let extensionLastSeenAt = 0;
 let server = null;
 let listenPort = DEFAULT_PORT;
+let bridgeToken = "";
 
 function markExtensionSeen() {
   extensionLastSeenAt = Date.now();
@@ -63,48 +64,107 @@ function getExtensionPageSnapshot(maxAgeMs = LIVE_DATA_MS) {
   return latest;
 }
 
-function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
+function getBridgeToken() {
+  return bridgeToken;
+}
+
+function timingSafeEqualStr(a, b) {
+  try {
+    const bufA = Buffer.from(String(a ?? ""), "utf8");
+    const bufB = Buffer.from(String(b ?? ""), "utf8");
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
+  } catch {
+    return false;
+  }
+}
+
+function loadOrCreateBridgeToken(userDataPath) {
+  if (!userDataPath) {
+    bridgeToken = crypto.randomBytes(32).toString("base64url");
+    return bridgeToken;
+  }
+  const tokenPath = path.join(userDataPath, "bridge-token");
+  try {
+    const existing = fs.readFileSync(tokenPath, "utf8").trim();
+    if (existing.length >= 32) {
+      bridgeToken = existing;
+      return bridgeToken;
+    }
+  } catch {
+    /* create below */
+  }
+  bridgeToken = crypto.randomBytes(32).toString("base64url");
+  try {
+    fs.mkdirSync(userDataPath, { recursive: true });
+    fs.writeFileSync(tokenPath, bridgeToken, { encoding: "utf8", mode: 0o600 });
+  } catch (err) {
+    console.warn("[extension-bridge] could not persist bridge token:", err?.message || err);
+  }
+  return bridgeToken;
+}
+
+/** Write bridge-config.json into an unpacked extension directory so the SW can auth. */
+function writeBridgeConfigToExtensionDir(extensionDir) {
+  if (!bridgeToken || !extensionDir) return false;
+  try {
+    fs.writeFileSync(
+      path.join(extensionDir, "bridge-config.json"),
+      JSON.stringify({ token: bridgeToken, port: listenPort || DEFAULT_PORT }),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    return true;
+  } catch (err) {
+    console.warn("[extension-bridge] could not write bridge-config.json:", err?.message || err);
+    return false;
+  }
+}
+
+function requestHasValidToken(req) {
+  if (!bridgeToken) return false;
+  const presented = String(req.headers[TOKEN_HEADER] || "").trim();
+  return timingSafeEqualStr(presented, bridgeToken);
+}
+
+function startExtensionBridge({ port = DEFAULT_PORT, onUpdate, userDataPath } = {}) {
   if (server) {
     return {
       port: listenPort,
       getSnapshot: getExtensionPageSnapshot,
       isConnected: isExtensionConnected,
       isLive: isExtensionLive,
+      getToken: getBridgeToken,
+      writeBridgeConfigToExtensionDir,
       stop: () => {},
     };
   }
 
+  loadOrCreateBridgeToken(userDataPath);
   listenPort = port;
 
   server = http.createServer((req, res) => {
-    // --- Anti-DNS-rebinding: require a loopback Host header. ---
     const hostHeader = String(req.headers.host || "").split(":")[0].toLowerCase();
-    const hostOk = hostHeader === "127.0.0.1" || hostHeader === "localhost" || hostHeader === "[::1]";
+    const hostOk =
+      hostHeader === "127.0.0.1" || hostHeader === "localhost" || hostHeader === "[::1]";
 
-    // --- Origin gate: allow only browser-extension origins (or no Origin,
-    // which is what the extension's service-worker fetch and the /welcome tab
-    // send). Any http(s) Origin means a normal web page is calling us. ---
-    // We deliberately do NOT accept the opaque "null" origin: sandboxed iframes
-    // (`<iframe sandbox>` without allow-same-origin), data:/blob: documents, and
-    // similar contexts send `Origin: null` and could otherwise POST poisoned
-    // page text into LYKN's AI grounding. The real extension sends an EMPTY
-    // Origin (verified against background.js), so blocking "null" costs nothing.
     const origin = String(req.headers.origin || "");
+    // Reject opaque "null" and any http(s) page. Extension SW often sends ""
+    // or chrome-extension://… — both OK only when paired with the bridge token
+    // on mutating routes.
     const originOk = origin === "" || EXTENSION_ORIGIN_RE.test(origin);
 
-    if (origin && originOk) {
+    if (origin && EXTENSION_ORIGIN_RE.test(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      `Content-Type, ${TOKEN_HEADER}, X-Lykn-Bridge-Token`,
+    );
 
-    const path = (req.url || "").split("?")[0];
-
-    // The /welcome page is a same-tab navigation (no Origin, benign HTML) and
-    // must stay reachable; everything else requires loopback Host + an allowed
-    // (extension or empty) Origin.
-    const isWelcome = req.method === "GET" && path === "/welcome";
+    const pathName = (req.url || "").split("?")[0];
+    const isWelcome = req.method === "GET" && pathName === "/welcome";
     if (!isWelcome && (!hostOk || !originOk)) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end('{"ok":false,"error":"forbidden"}');
@@ -117,7 +177,7 @@ function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
       return;
     }
 
-    if (req.method === "GET" && path === "/status") {
+    if (req.method === "GET" && pathName === "/status") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
@@ -126,22 +186,30 @@ function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
           live: isExtensionLive(),
           at: extensionLastSeenAt,
           port: listenPort,
+          // Never echo the token on this public-ish status endpoint.
+          authRequired: true,
         }),
       );
       return;
     }
 
-    // NOTE: there is deliberately no HTTP `GET /page`. Captured page text is
-    // read only in-process (getExtensionPageSnapshot); exposing it over the
-    // socket let any loopback client with an empty Origin read live page text.
-
-    if (req.method === "GET" && path === "/welcome") {
+    if (req.method === "GET" && pathName === "/welcome") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(WELCOME_HTML);
       return;
     }
 
-    if (req.method === "POST" && path === "/ping") {
+    // Mutating routes: require the per-install bridge token. Empty Origin alone
+    // is no longer enough (stops local curl poisoning).
+    if (req.method === "POST" && (pathName === "/ping" || pathName === "/page")) {
+      if (!requestHasValidToken(req)) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end('{"ok":false,"error":"unauthorized"}');
+        return;
+      }
+    }
+
+    if (req.method === "POST" && pathName === "/ping") {
       markExtensionSeen();
       onUpdate?.({ ping: true, at: extensionLastSeenAt });
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -149,7 +217,7 @@ function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
       return;
     }
 
-    if (req.method === "POST" && path === "/page") {
+    if (req.method === "POST" && pathName === "/page") {
       let body = "";
       req.on("data", (chunk) => {
         body += chunk;
@@ -162,10 +230,10 @@ function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
           if (text) {
             markExtensionSeen();
             latest = {
-              url: String(data.url || ""),
-              title: String(data.title || ""),
+              url: String(data.url || "").slice(0, 2048),
+              title: String(data.title || "").slice(0, 500),
               text: text.slice(0, 15000),
-              sig: String(data.sig || ""),
+              sig: String(data.sig || "").slice(0, 128),
               charCount: Number(data.charCount) || text.length,
               at: Date.now(),
               source: "extension",
@@ -187,7 +255,7 @@ function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
   });
 
   server.listen(listenPort, "127.0.0.1", () => {
-    console.log(`[extension-bridge] listening on 127.0.0.1:${listenPort}`);
+    console.log(`[extension-bridge] listening on 127.0.0.1:${listenPort} (token auth on)`);
   });
 
   server.on("error", (err) => {
@@ -199,6 +267,8 @@ function startExtensionBridge({ port = DEFAULT_PORT, onUpdate } = {}) {
     getSnapshot: getExtensionPageSnapshot,
     isConnected: isExtensionConnected,
     isLive: isExtensionLive,
+    getToken: getBridgeToken,
+    writeBridgeConfigToExtensionDir,
     stop: () => {
       server?.close();
       server = null;
@@ -214,4 +284,7 @@ module.exports = {
   bridgeWelcomeUrl,
   getExtensionPageSnapshot,
   isExtensionConnected,
+  loadOrCreateBridgeToken,
+  writeBridgeConfigToExtensionDir,
+  getBridgeToken,
 };

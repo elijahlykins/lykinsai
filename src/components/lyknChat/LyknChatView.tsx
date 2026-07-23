@@ -1924,7 +1924,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   const artifactChatKeyRef = useRef<string | undefined>(undefined);
   const artifactSeededRef = useRef(false);
   useEffect(() => {
-    if (!onActiveArtifactChange && !onSaveArtifact) return;
+    if (!onActiveArtifactChange) return;
     let newest: ChatArtifact | null = null;
     for (let i = chatMessages.length - 1; i >= 0 && !newest; i--) {
       const msg = chatMessages[i] as any;
@@ -1934,7 +1934,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
         continue;
       }
       // Preview-only HTML the model leaked into the reply (srcDoc card, no
-      // tool call) — still auto-open / auto-save like a real artifact.
+      // tool call) — still auto-open the panel like a real artifact.
       // Prompt messages carry the assistant text on `aiResponse`.
       const reply = String(msg?.aiResponse || (msg?.role !== "user" ? msg?.content : "") || "");
       if (!reply) continue;
@@ -1964,12 +1964,11 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
 
     if (newest && key && key !== lastSeenArtifactRef.current) {
       lastSeenArtifactRef.current = key;
+      // Open the panel only — vault persistence is explicit (Save button or
+      // the user asking the AI to save via lykn_saveFileToVault).
       onActiveArtifactChange?.(newest);
-      // Auto-save every newly finished artifact to the vault (best-effort),
-      // including preview-only srcDoc / leaked HTML builds.
-      void Promise.resolve(onSaveArtifact?.(newest, { auto: true })).catch(() => {});
     }
-  }, [chatMessages, chatKey, onActiveArtifactChange, onSaveArtifact]);
+  }, [chatMessages, chatKey, onActiveArtifactChange]);
 
   const handleChunkClick = useCallback((e: React.MouseEvent, chunkKey: string, chunkText: string) => {
     chunkMapRef.current.set(chunkKey, chunkText);

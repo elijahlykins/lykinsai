@@ -49,7 +49,7 @@ Carry-over items that need either out-of-code action or a future PR:
 | 12 | **`generationLimiter` is dead code** | Agent 04 INFO 3 | LOW | Either mount it on the next text-generation route or delete it. Handler is wired (Agent 06) so a future mount automatically gets event emission. |
 | 13 | **`xlsx` → `exceljs` migration** | Agent 05 Accepted Risk | MEDIUM | 2 HIGH CVEs in `xlsx@0.18.5` with no upstream fix. Migrate the Vault XLSX import path to `exceljs`. |
 | 14 | **`react-quill` → TipTap migration** | Agent 05 Accepted Risk | MEDIUM | 2 MODERATE CVEs (Quill XSS). LYKN already uses TipTap elsewhere — migrate remaining Quill mount points and drop the dep entirely. |
-| 15 | **Per-call 8-char floor → 32 chars** in `verifyBackfillSecret` / `verifyDiscoverIngestSecret` / `verifyAdminIngestSecret` | Agent 05 | MEDIUM | Raise the in-code check from 8 → 32 after every prod deployment has rotated to ≥32-char values per `ROTATION_RUNBOOK.md`. |
+| 15 | ~~**Per-call 8-char floor → 32 chars**~~ | Agent 05 | MEDIUM | **Done** — per-call verify* helpers now require ≥32 chars. |
 | 16 | **`VITE_ADMIN_EMAILS` information-disclosure** | Agent 05 INFO 1 | INFO | Product-owner decision: retain client-side flag (current) vs. move to a server-side `is_admin` flag returned by `/api/account/me`. |
 | 17 | **External log aggregator** | Agent 06 | (operational) | Connect Render log drain to Datadog / Better Stack / Loki / etc. Once connected, the alert thresholds in `INCIDENT_RUNBOOK.md` become actionable. |
 | 18 | **CSP `report-uri` / `report-to`** | Agent 01 + Agent 06 | LOW | Once an external endpoint is stood up, wire it into the CSP. Blocked-request telemetry currently does not exist. |

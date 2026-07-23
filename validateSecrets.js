@@ -35,11 +35,8 @@ import { z } from 'zod';
 //                     if false, missing-anywhere is a warn-only.
 //   - description: human-readable purpose (printed in error messages).
 //
-// Per Agent 02's runbook handoff, the three operator-cron secrets get a
-// 32-char floor here even though the in-code per-call check is still 8.
-// The runbook documents the rotation order: deploy this first → rotate
-// existing 8-char dev secrets to 32-char prod values → THEN raise the
-// in-code floor in a follow-up PR.
+// Operator-cron secrets get a 32-char floor here and the matching
+// per-call verify* helpers in server.js use the same 32-char floor.
 
 export const SECRET_RULES = [
   // === Supabase (database + auth) ===
@@ -80,6 +77,8 @@ export const SECRET_RULES = [
   ['META_APP_TOKEN',            20, false, 'Meta (IG/FB) oEmbed app token'],
   ['WHISPER_HOSTED_API_KEY',    20, false, 'Hosted Whisper ASR key'],
   ['TRELLO_API_KEY',            16, false, 'Trello shared API key'],
+  // Voice custom-LLM shared secret — warn if short; route also refuses <32.
+  ['ELEVENLABS_LLM_SECRET',     32, false, 'ElevenLabs custom-LLM bearer secret'],
 ];
 
 // Connector OAuth secrets — required only when the matching CLIENT_ID is set

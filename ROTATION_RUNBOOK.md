@@ -29,7 +29,7 @@ openssl rand -hex 32
 openssl rand -base64 32
 ```
 
-The `validateSecrets()` startup check enforces a **32-character minimum** for `BACKFILL_SECRET`, `DISCOVER_INGEST_SECRET`, and `ADMIN_INGEST_SECRET` in production. The per-call `verifyBackfillSecret` / `verifyDiscoverIngestSecret` / `verifyAdminIngestSecret` functions in `server.js` keep their pre-existing 8-char point-of-use floor as defense-in-depth — both checks coexist intentionally.
+The `validateSecrets()` startup check enforces a **32-character minimum** for `BACKFILL_SECRET`, `DISCOVER_INGEST_SECRET`, and `ADMIN_INGEST_SECRET` in production. The per-call `verifyBackfillSecret` / `verifyDiscoverIngestSecret` / `verifyAdminIngestSecret` functions in `server.js` use the same **32-character** point-of-use floor as defense-in-depth.
 
 ---
 

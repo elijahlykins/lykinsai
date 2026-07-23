@@ -4397,6 +4397,82 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     return null;
   }, [resolvedAttachmentUrls]);
 
+  const openUrlInSystemBrowser = useCallback((url) => {
+    const safe = safeAttachmentUrl(url) || safeExternalUrl(url);
+    if (!safe || !/^https?:\/\//i.test(safe)) return false;
+    try {
+      if (typeof window.lykn?.openExternal === "function") {
+        window.lykn.openExternal(safe);
+        return true;
+      }
+    } catch {
+      /* fall through to window.open */
+    }
+    const win = window.open(safe, "_blank", "noopener,noreferrer");
+    return !!win;
+  }, []);
+
+  // Mint (or reuse) a branded file-proxy URL so HTML artifacts render with the
+  // right MIME/CSP in an external browser tab — not a blank Supabase storage URL.
+  const resolveHtmlArtifactOpenUrl = useCallback(async (card) => {
+    if (!card || card.kind !== "attachment") return "";
+    const existing = resolvedAttachmentUrls[card.id];
+    if (existing && !/supabase\.co\/storage\//i.test(existing)) return existing;
+
+    const target = parseStorageTarget(card.attachment || {});
+    if (!target?.path || !target?.bucket) {
+      const raw = String(card.attachment?.url || "").trim();
+      if (raw && !/supabase\.co\/storage\//i.test(raw)) return raw;
+      return "";
+    }
+
+    const cacheKey = `file-proxy:${target.bucket}:${target.path}`;
+    const cachedFresh = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
+    if (cachedFresh && !/supabase\.co\/storage\//i.test(cachedFresh)) {
+      setResolvedAttachmentUrls((prev) => (
+        prev[card.id] === cachedFresh ? prev : { ...prev, [card.id]: cachedFresh }
+      ));
+      return cachedFresh;
+    }
+
+    try {
+      const { API_BASE_URL } = await import("@/lib/api-config");
+      const session = (await supabase.auth.getSession())?.data?.session;
+      const token = session?.access_token;
+      if (!token) return "";
+      const resp = await fetch(`${API_BASE_URL}/api/storage/file-proxy-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          storagePath: target.path,
+          bucket: target.bucket,
+          filename: String(card.attachment?.name || "artifact.html"),
+        }),
+      });
+      if (!resp.ok) return "";
+      const { url } = await resp.json();
+      if (!url || /supabase\.co\/storage\//i.test(url)) return "";
+      writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, url);
+      setResolvedAttachmentUrls((prev) => ({ ...prev, [card.id]: url }));
+      return url;
+    } catch (err) {
+      if (import.meta.env.DEV) console.warn("[Vault] Artifact browser URL mint failed:", err);
+      return "";
+    }
+  }, [resolvedAttachmentUrls]);
+
+  const openVaultArtifactInBrowser = useCallback(async (card) => {
+    const url = await resolveHtmlArtifactOpenUrl(card);
+    if (!url || !openUrlInSystemBrowser(url)) {
+      toast({
+        title: "Couldn't open artifact",
+        description: "Try again in a moment.",
+      });
+      return false;
+    }
+    return true;
+  }, [resolveHtmlArtifactOpenUrl, openUrlInSystemBrowser]);
+
   // Open a full-size preview/view window when a card is clicked. Interactive
   // elements (buttons, links, form fields, media controls, menus) opt-out
   // either via stopPropagation or by being covered in this selector.
@@ -4489,6 +4565,18 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       }
     }
 
+    // Saved HTML artifacts open in the system browser so their scripts don't
+    // execute inside the LYKN shell.
+    if (card.kind === "attachment") {
+      const attType = resolveAttachmentType(card.attachment || {}) || card.type;
+      if (attType === "html") {
+        setPreviewDetailsOpen(false);
+        setPreviewCard(null);
+        void openVaultArtifactInBrowser(card);
+        return;
+      }
+    }
+
     setPreviewDetailsOpen(false);
     setPreviewCard(card);
   }, [
@@ -4503,6 +4591,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     toggleNoteSelectionInPicker,
     selectedCardIds,
     clearSelection,
+    openVaultArtifactInBrowser,
   ]);
 
   useEffect(() => {
@@ -4514,19 +4603,16 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     return () => window.removeEventListener("keydown", onKey);
   }, [previewCard]);
 
-  // Opening an HTML artifact in the preview modal must mint a file-proxy URL
-  // even if the grid tile never entered the intersection observer viewport —
-  // or if the grid somehow cached a raw Supabase URL that blanks the iframe.
+  // Interactive HTML artifacts open in the system browser (see handleCardPress).
+  // If one still lands in previewCard, bounce it out instead of iframing in-app.
   useEffect(() => {
     if (!previewCard || previewCard.kind !== "attachment") return;
     const t = resolveAttachmentType(previewCard.attachment || {});
     if (t !== "html") return;
-    if (failedImageIds.has(previewCard.id)) return;
-    const existing = resolvedAttachmentUrls[previewCard.id];
-    if (existing && !/supabase\.co\/storage\//i.test(existing)) return;
-    void resolveSignedUrlForCard(previewCard);
-  }, [previewCard, resolvedAttachmentUrls, failedImageIds, resolveSignedUrlForCard]);
-
+    const card = previewCard;
+    setPreviewCard(null);
+    void openVaultArtifactInBrowser(card);
+  }, [previewCard, openVaultArtifactInBrowser]);
   // Lock body scroll while any full-screen vault overlay is up so wheel/touch
   // over the backdrop doesn't scroll the grid behind it (users otherwise close
   // the modal to find themselves at a different scroll position).

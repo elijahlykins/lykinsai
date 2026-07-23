@@ -31,10 +31,21 @@ const Spinner = () => (
   </svg>
 );
 
+function readDesktopState() {
+  if (typeof window === "undefined") return "";
+  try {
+    return new URLSearchParams(window.location.search).get("desktop_state") || "";
+  } catch {
+    return "";
+  }
+}
+
 function buildDeepLink(session) {
   const at = encodeURIComponent(session.access_token || "");
   const rt = encodeURIComponent(session.refresh_token || "");
-  return `lykn://auth#access_token=${at}&refresh_token=${rt}`;
+  const state = encodeURIComponent(readDesktopState());
+  // `state` binds this handoff to the desktop app's pending login attempt.
+  return `lykn://auth#access_token=${at}&refresh_token=${rt}&state=${state}`;
 }
 
 export default function DesktopAuth() {
@@ -63,10 +74,15 @@ export default function DesktopAuth() {
   const startOAuth = async () => {
     setErrorMsg(null);
     setPhase("starting");
-    // Strip stale error params so a retry that fails again still shows fresh.
-    window.history.replaceState({}, "", window.location.pathname);
+    // Keep desktop_state across the Google round-trip so the deep link can
+    // prove it belongs to this app's pending login (not a forged lykn://auth).
+    const desktopState = readDesktopState();
+    const returnPath = desktopState
+      ? `/desktop-auth?desktop_state=${encodeURIComponent(desktopState)}`
+      : "/desktop-auth";
+    window.history.replaceState({}, "", returnPath);
     const { error } = await signInWithOAuth("google", {
-      redirectTo: `${window.location.origin}/desktop-auth`,
+      redirectTo: `${window.location.origin}${returnPath}`,
     });
     if (error) {
       setErrorMsg("Couldn't start Google sign-in. Please try again.");
@@ -79,6 +95,13 @@ export default function DesktopAuth() {
     const session = data?.session;
     if (!session?.access_token || !session?.refresh_token) {
       setErrorMsg("Your session expired. Please sign in again.");
+      setPhase("error");
+      return;
+    }
+    if (!readDesktopState()) {
+      setErrorMsg(
+        "Open Google sign-in from the LYKN desktop app (not this browser tab alone) so the handoff can be verified.",
+      );
       setPhase("error");
       return;
     }

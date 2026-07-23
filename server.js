@@ -230,9 +230,9 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 // prints warnings and continues so partial dev configs keep working.
 //
 // SECRET_RULES (the canonical inventory) lives in validateSecrets.js and
-// is also referenced by ROTATION_RUNBOOK.md. The per-call 8-char floor
-// in verifyBackfillSecret / verifyDiscoverIngestSecret /
-// verifyAdminIngestSecret is preserved as a defense-in-depth safety net.
+// is also referenced by ROTATION_RUNBOOK.md. Per-call floors on
+// verifyBackfillSecret / verifyDiscoverIngestSecret /
+// verifyAdminIngestSecret match the boot gate (≥32 chars).
 validateSecrets();
 
 // Debug: Check if API keys are loaded (without exposing the actual keys)
@@ -705,17 +705,30 @@ async function runYouTubeSearchIfNeeded(text) {
 //      exactly what we want.
 //   5. Same-origin / no-Origin requests (curl, server-side, internal
 //      health checks) get no CORS header — they don't need one.
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// Production defaults NEVER include localhost — a page on the victim's
+// machine at http://localhost:5173 must not be a credentialed CORS caller
+// against the prod API. Dev defaults keep the Vite ports. Override either
+// via ALLOWED_ORIGINS (comma-separated).
 const STATIC_ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
-  : [
-      'http://localhost:5173',
-      'http://localhost:5174',
-      'http://localhost:5175',
-      'https://lykn.io',
-      'https://www.lykn.io',
-      'https://lykn-ideation.onrender.com',
-      'https://www.lykn-ideation.onrender.com',
-    ];
+  : IS_PROD
+    ? [
+        'https://lykn.io',
+        'https://www.lykn.io',
+        'https://lykn-ideation.onrender.com',
+        'https://www.lykn-ideation.onrender.com',
+      ]
+    : [
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'http://localhost:5175',
+        'https://lykn.io',
+        'https://www.lykn.io',
+        'https://lykn-ideation.onrender.com',
+        'https://www.lykn-ideation.onrender.com',
+      ];
 
 // Vercel preview deployments LYKN actually owns. Locked to the exact
 // `lykn-ideation-<slug>-elijahlykins-projects.vercel.app` shape Vercel
@@ -724,8 +737,6 @@ const STATIC_ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
 // caller against the API; this pattern matches our previews and nothing
 // else.
 const LYKN_VERCEL_PREVIEW_RE = /^lykn-ideation-[a-z0-9-]+-elijahlykins-projects\.vercel\.app$/;
-
-const IS_PROD = process.env.NODE_ENV === 'production';
 
 function isOriginAllowed(origin) {
   if (!origin) return false;
@@ -947,7 +958,6 @@ const IMAGE_BEARING_AI_ROUTES = new Set([
   '/api/desktop/browser-plan',
   '/api/desktop/browser-plan-next',
   '/api/desktop/browser-report',
-  '/api/desktop/locate-element',
 ]);
 app.use((req, res, next) => {
   if (IMAGE_BEARING_AI_ROUTES.has(req.path)) {
@@ -4176,9 +4186,8 @@ const aiLimiter = rateLimit({
   handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'aiLimiter'),
 });
 
-// generationLimiter is currently unmounted (Agent 04 noted it as dead
-// code — INFO 3). Keeping the handler wiring anyway so a future mount
-// will surface events without remembering to retrofit.
+// Tighter burst cap for media / session mint endpoints (TTS, Whisper,
+// realtime, ElevenLabs). Stacks on top of aiLimiter (30/min).
 const generationLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -4188,6 +4197,32 @@ const generationLimiter = rateLimit({
   validate: rlValidateOff,
   message: { error: 'Generation rate limit exceeded — try again in a minute' },
   handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'generationLimiter'),
+});
+
+// Authenticated search / scrape / YouTube helpers burn third-party quota.
+// Tighter than globalLimiter so a single user can't drain CSE/Serper.
+const searchScrapeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: userOrIpKey,
+  validate: rlValidateOff,
+  message: { error: 'Search/scrape rate limit exceeded — try again in a minute' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'searchScrapeLimiter'),
+});
+
+// ElevenLabs custom-LLM proxy — shared-secret auth, but still rate-limit so a
+// leaked ELEVENLABS_LLM_SECRET can't torch the OpenAI bill uncapped.
+const elevenLlmLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  validate: rlValidateOff,
+  message: { error: 'ElevenLabs LLM rate limit exceeded' },
+  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'elevenLlmLimiter'),
 });
 
 const describeLimiter = rateLimit({
@@ -4314,41 +4349,44 @@ const mcpDailyLimiter = rateLimit({
 
 app.use('/api/', globalLimiter);
 
-// Free tier is gated by model tier (non-thinking only), not by request count.
-// Paid plans currently have no request cap; we keep this map so future limits
-// can be reintroduced without touching call sites.
-const PLAN_REQUEST_LIMITS = {
-  free: Infinity,
-  student: Infinity,
-  studio: Infinity,
-  max: Infinity,
-  studio_pro: Infinity,
-  studio_max: Infinity,
-};
-
+// Monthly LYKN Glass request caps — sourced from PLAN_LIMITS.glassRequests
+// (pricing-config.js). Max / unlimited plans short-circuit via Infinity.
 async function checkAiUsageLimit(req, res, next) {
   try {
     const userId = req.user?.id;
     if (!userId) return next();
-    const plan = 'free';
-    const limit = PLAN_REQUEST_LIMITS[plan] ?? 30;
-    if (!isFinite(limit)) return next();
+    const { planId } = await resolveUserPlan(userId, req.user?.email);
+    const limit = PLAN_LIMITS[planId]?.glassRequests ?? PLAN_LIMITS.free.glassRequests ?? 50;
+    if (!Number.isFinite(limit)) return next();
 
     const monthly = await getUserMonthlyUsage(userId);
-    const used = monthly?.log_count || 0;
+    // Fail closed if usage tracking is unavailable — otherwise a DB blip
+    // silently bypasses the monthly glass-request cap. Local/dev without a
+    // service-role key has no usage backend; skip the quota there.
+    if (!monthly) {
+      if (!process.env.SUPABASE_SERVICE_ROLE_KEY) return next();
+      return res.status(503).json({
+        error: 'usage_check_unavailable',
+        message: 'Could not verify your usage right now. Please try again.',
+      });
+    }
+    const used = monthly.log_count || 0;
     if (used >= limit) {
       return res.status(429).json({
         error: 'ai_limit_reached',
         message: `You've used all ${limit} AI requests this month. Upgrade your plan or add a top-up to continue.`,
         used,
         limit,
-        plan,
+        plan: planId,
       });
     }
     next();
   } catch (err) {
-    console.error('⚠️ AI usage check failed, allowing request:', err.message);
-    next();
+    console.error('⚠️ AI usage check failed, refusing request:', err.message);
+    return res.status(503).json({
+      error: 'usage_check_unavailable',
+      message: 'Could not verify your usage right now. Please try again.',
+    });
   }
 }
 
@@ -10438,7 +10476,9 @@ async function fetchArticleHeroImage(url) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
-    const response = await fetch(url, {
+    // safeFetch re-validates every redirect hop so a hostile public page
+    // can't 30x into cloud metadata / private IPs.
+    const response = await safeFetch(url, {
       headers: {
         'User-Agent': DISCOVER_BROWSER_UA,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -10446,7 +10486,6 @@ async function fetchArticleHeroImage(url) {
         'Accept-Encoding': 'identity', // we read raw HTML, skip gzip handling
       },
       signal: controller.signal,
-      redirect: 'follow',
     });
     clearTimeout(timeout);
     if (!response.ok) {
@@ -11023,7 +11062,7 @@ const DISCOVER_INGEST_PRUNE_DAYS = 14;
 
 function verifyDiscoverIngestSecret(req) {
   const expected = process.env.DISCOVER_INGEST_SECRET;
-  if (!expected || String(expected).length < 8) return false;
+  if (!expected || String(expected).length < 32) return false;
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
   if (!token) return false;
@@ -11603,7 +11642,7 @@ function timingSafeEqualStr(a, b) {
 
 function verifyBackfillSecret(req) {
   const expected = process.env.BACKFILL_SECRET;
-  if (!expected || String(expected).length < 8) return false;
+  if (!expected || String(expected).length < 32) return false;
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
   if (!token) return false;
@@ -16760,7 +16799,7 @@ app.post('/api/ai/describe-image', requireAuth, requireAppAccess, describeLimite
   }
 });
 
-app.post('/api/ai/transcribe', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, upload.single('audio'), async (req, res) => {
+app.post('/api/ai/transcribe', requireAuth, requireAppAccess, aiLimiter, generationLimiter, checkAiUsageLimit, upload.single('audio'), async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({
@@ -16833,7 +16872,7 @@ app.post('/api/ai/transcribe', requireAuth, requireAppAccess, aiLimiter, checkAi
 // The desktop overlay does VAD endpointing client-side and passes fast=1, in
 // which case we return the raw ASR text immediately (the overlay polishes it
 // asynchronously via /api/ai/clean-transcript and swaps it in place).
-app.post('/api/ai/meeting-chunk', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, upload.single('audio'), async (req, res) => {
+app.post('/api/ai/meeting-chunk', requireAuth, requireAppAccess, aiLimiter, generationLimiter, checkAiUsageLimit, upload.single('audio'), async (req, res) => {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
@@ -17886,28 +17925,6 @@ function buildBrowserPlannerMessages({ systemContent, userText, imageUrl }) {
   ];
 }
 
-// Locate a described UI element on a screenshot for the desktop overlay's
-// highlight ring. GPT-class models are unreliable at precise bounding boxes,
-// so when Holo (the GUI-grounding model already used for browser clicks) is
-// configured we use its single-turn element localization — it returns a
-// dependable click-point on a 0–1000 scale. The Electron client combines this
-// point with (or falls back to) its own vision-box request.
-app.post('/api/desktop/locate-element', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
-  try {
-    const imageUrl = String(req.body?.imageUrl || '');
-    const target = String(req.body?.target || '').slice(0, 400).trim();
-    if (!imageUrl.startsWith('data:image/') || !target) {
-      return res.status(400).json({ error: 'imageUrl (data URL) and target are required' });
-    }
-    if (!process.env.HAI_API_KEY) return res.json({ ok: false, error: 'locator_unavailable' });
-    const point = await callHoloElementLocalization(imageUrl, target);
-    if (!point) return res.json({ ok: false });
-    return res.json({ ok: true, point }); // { x, y } on a 0–1000 scale
-  } catch (e) {
-    return res.status(500).json({ error: e?.message || 'locate_failed' });
-  }
-});
-
 // Plan browser-control steps for the desktop overlay: given the user's intent
 // and a list of interactable elements on the active tab, return a short action
 // sequence (click / type / press / scroll). Selectors must come from the scan.
@@ -18749,7 +18766,7 @@ app.post('/api/ai/name-chat', requireAuth, requireAppAccess, aiLimiter, async (r
 // of times an hour.
 const _ttsCache = memCache('tts-mp3', { maxSize: 64, ttlMs: 30 * 60 * 1000 });
 
-app.post('/api/ai/tts', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, async (req, res) => {
+app.post('/api/ai/tts', requireAuth, requireAppAccess, aiLimiter, generationLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured.' });
@@ -19765,7 +19782,7 @@ async function buildRealtimeSynthesisGrounding(authHeader, userId) {
   return sections.join('\n\n');
 }
 
-app.post('/api/ai/realtime/session', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, async (req, res) => {
+app.post('/api/ai/realtime/session', requireAuth, requireAppAccess, aiLimiter, generationLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'OpenAI API key not configured.' });
@@ -20354,7 +20371,7 @@ function verifyLyknVoiceToken(token) {
 // Mint an ElevenLabs signed URL for the configured agent + a signed session
 // token that binds the conversation to this LYKN user. The client passes the
 // token to startSession as the `lykn_session_token` dynamic variable.
-app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, async (req, res) => {
+app.post('/api/ai/elevenlabs/signed-url', requireAuth, requireAppAccess, aiLimiter, generationLimiter, checkAiUsageLimit, async (req, res) => {
   try {
     const apiKey = process.env.ELEVENLABS_API_KEY;
     const agentId = process.env.ELEVENLABS_AGENT_ID;
@@ -20556,7 +20573,10 @@ const elevenCustomLlmHandler = async (req, res) => {
   try {
     // Auth: ElevenLabs sends the configured custom-LLM API key as a bearer.
     const expected = process.env.ELEVENLABS_LLM_SECRET;
-    if (!expected) { customLlmStats.lastResult = 'no_secret_configured'; return res.status(503).json({ error: 'Custom LLM not configured.' }); }
+    if (!expected || String(expected).length < 32) {
+      customLlmStats.lastResult = 'no_secret_configured';
+      return res.status(503).json({ error: 'Custom LLM not configured.' });
+    }
     const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
     if (!timingSafeEqualStr(presented, expected)) {
       customLlmStats.authFails += 1;
@@ -20756,23 +20776,26 @@ const elevenCustomLlmHandler = async (req, res) => {
 // ElevenLabs may treat the configured custom-LLM URL as a BASE and append
 // "/chat/completions" itself, or use it verbatim. Mount the handler on every
 // plausible path so the agent reaches us regardless of that convention.
-app.post('/api/ai/elevenlabs/llm/chat/completions', elevenCustomLlmHandler);
-app.post('/api/ai/elevenlabs/llm', elevenCustomLlmHandler);
-app.post('/api/ai/elevenlabs/llm/chat/completions/chat/completions', elevenCustomLlmHandler);
+app.post('/api/ai/elevenlabs/llm/chat/completions', elevenLlmLimiter, elevenCustomLlmHandler);
+app.post('/api/ai/elevenlabs/llm', elevenLlmLimiter, elevenCustomLlmHandler);
+app.post('/api/ai/elevenlabs/llm/chat/completions/chat/completions', elevenLlmLimiter, elevenCustomLlmHandler);
 
 // Custom-LLM diagnostics, for remote debugging. Guarded by the same secret
 // ElevenLabs uses, so only callers with the shared secret can read it.
 let lastCustomLlmError = null;
 const customLlmStats = { hits: 0, authFails: 0, lastHitAt: null, lastResult: null, lastAuthFail: null, lastPath: null, lastRetrievalChars: null, lastTokenFound: null, lastUserIdFound: null, lastScreenChars: null, lastGroundingChars: null };
-app.get('/api/ai/elevenlabs/llm/_debug', (req, res) => {
+app.get('/api/ai/elevenlabs/llm/_debug', elevenLlmLimiter, (req, res) => {
   const expected = process.env.ELEVENLABS_LLM_SECRET;
+  if (!expected || String(expected).length < 32) {
+    return res.status(503).json({ error: 'Custom LLM not configured.' });
+  }
   const presented = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
   if (!expected || !timingSafeEqualStr(presented, expected)) return res.status(401).json({ error: 'Unauthorized' });
   return res.json({ customLlmStats, lastCustomLlmError, configuredAgentUrlHint: '/api/ai/elevenlabs/llm (base) — EL appends /chat/completions' });
 });
 
 // YouTube API endpoints
-app.get('/api/youtube/search', requireAuth, async (req, res) => {
+app.get('/api/youtube/search', requireAuth, searchScrapeLimiter, async (req, res) => {
   try {
     const { q, maxResults = 10 } = req.query;
     
@@ -20818,7 +20841,7 @@ app.get('/api/youtube/search', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/youtube/video', requireAuth, async (req, res) => {
+app.get('/api/youtube/video', requireAuth, searchScrapeLimiter, async (req, res) => {
   try {
     const { id } = req.query;
     
@@ -20935,7 +20958,7 @@ app.get('/api/youtube/video', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/youtube/transcript', requireAuth, async (req, res) => {
+app.get('/api/youtube/transcript', requireAuth, searchScrapeLimiter, async (req, res) => {
   try {
     const { id, fast, retryWhisper } = req.query;
     
@@ -20980,7 +21003,7 @@ app.get('/api/youtube/transcript', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/youtube/transcript-priority', requireAuth, async (req, res) => {
+app.get('/api/youtube/transcript-priority', requireAuth, searchScrapeLimiter, async (req, res) => {
   try {
     const { id } = req.query;
     if (!id) {
@@ -21164,7 +21187,7 @@ app.post('/api/whisper/transcribe', requireAuth, requireAppAccess, aiLimiter, up
 });
 
 // Web search endpoint (Google Custom Search)
-app.get('/api/search', requireAuth, async (req, res) => {
+app.get('/api/search', requireAuth, searchScrapeLimiter, async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
     const num = Math.min(10, Math.max(1, Number(req.query.num) || 5));
@@ -21187,12 +21210,12 @@ app.get('/api/search', requireAuth, async (req, res) => {
     res.json({ results });
   } catch (error) {
     console.error('Search error:', error.message);
-    res.status(500).json({ error: `Search failed: ${error.message}` });
+    res.status(500).json({ error: 'Search failed' });
   }
 });
 
 // Website scraping endpoint
-app.get('/api/scrape', requireAuth, async (req, res) => {
+app.get('/api/scrape', requireAuth, searchScrapeLimiter, async (req, res) => {
   try {
     const { url } = req.query;
     
@@ -22341,6 +22364,9 @@ app.get('/api/usage/me', requireAuth, async (req, res) => {
       getUserMonthlyUsage(userId),
       getUserSessions(userId, 10),
     ]);
+    if (!monthly) {
+      return res.status(503).json({ error: 'Failed to fetch usage data' });
+    }
 
     return res.json({
       month: new Date().toISOString().slice(0, 7),
@@ -24094,7 +24120,7 @@ app.post('/api/feeds/:id/refresh', requireAuth, async (req, res) => {
 // the dedicated env var yet.
 function verifyAdminIngestSecret(req) {
   const expected = process.env.ADMIN_INGEST_SECRET || process.env.DISCOVER_INGEST_SECRET;
-  if (!expected || String(expected).length < 8) return false;
+  if (!expected || String(expected).length < 32) return false;
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
   if (!token) return false;
@@ -24290,21 +24316,30 @@ app.get('/oauth/callback/:provider', async (req, res) => {
   // window.open('https://lykn-ideation.onrender.com/oauth/callback/x'))
   // would otherwise still receive the {type:'lykn:oauth', provider, ok}
   // notification — no secrets in the payload, but a confirmation signal
-  // an attacker can use to fingerprint connected providers. Falling back
-  // to '*' on a malformed CONNECTOR_FRONTEND_BASE keeps the popup flow
-  // working in misconfigured environments rather than silently breaking
-  // every connector OAuth — better to ship the message broadly than to
-  // strand the user on a stuck popup.
-  let trustedOrigin = '*';
+  // an attacker can use to fingerprint connected providers. Fail closed
+  // (skip postMessage) when CONNECTOR_FRONTEND_BASE is malformed rather
+  // than broadcasting to '*'.
+  let trustedOrigin = null;
   try {
     trustedOrigin = new URL(CONNECTOR_FRONTEND_BASE).origin;
   } catch {
-    console.warn(`[connectors] CONNECTOR_FRONTEND_BASE is not a valid URL ("${CONNECTOR_FRONTEND_BASE}") — postMessage origin falling back to "*"`);
+    console.warn(`[connectors] CONNECTOR_FRONTEND_BASE is not a valid URL ("${CONNECTOR_FRONTEND_BASE}") — skipping postMessage (fail closed)`);
   }
-  const targetOriginLiteral = JSON.stringify(trustedOrigin);
 
-  const finishHtml = (title, body, ok = true) =>
-    `<!doctype html><html><head><meta charset="utf-8"/><title>${title}</title>
+  const finishHtml = (title, body, ok = true) => {
+    const msgScript = trustedOrigin
+      ? `(function(){
+  try {
+    if (window.opener) {
+      window.opener.postMessage(${JSON.stringify({ type: 'lykn:oauth', provider, ok })}, ${JSON.stringify(trustedOrigin)});
+    }
+  } catch (e) {}
+  setTimeout(function(){ try { window.close(); } catch(e){} }, ${ok ? 600 : 2500});
+})();`
+      : `(function(){
+  setTimeout(function(){ try { window.close(); } catch(e){} }, ${ok ? 600 : 2500});
+})();`;
+    return `<!doctype html><html><head><meta charset="utf-8"/><title>${title}</title>
 <style>
   body{font-family:system-ui,-apple-system,sans-serif;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#fafafa;color:#111}
   .card{max-width:380px;padding:24px;border:1px solid #e5e7eb;border-radius:14px;background:white;text-align:center}
@@ -24317,16 +24352,10 @@ app.get('/oauth/callback/:provider', async (req, res) => {
   <p>${body}</p>
 </div>
 <script>
-(function(){
-  try {
-    if (window.opener) {
-      window.opener.postMessage(${JSON.stringify({ type: 'lykn:oauth', provider, ok })}, ${targetOriginLiteral});
-    }
-  } catch (e) {}
-  setTimeout(function(){ try { window.close(); } catch(e){} }, ${ok ? 600 : 2500});
-})();
+${msgScript}
 </script>
 </body></html>`;
+  };
 
   try {
     if (oauthError) {
@@ -24767,7 +24796,9 @@ if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, HOST, () => {
     console.log(`✅ AI server running on ${HOST}:${PORT}`);
     console.log(`→ Accepting requests from: ${frontendUrl}`);
-    console.log(`→ Also accepting from: http://localhost:5173 (development)`);
+    if (!IS_PROD) {
+      console.log(`→ Also accepting from: http://localhost:5173 (development)`);
+    }
     console.log(`→ YouTube API: ${process.env.YOUTUBE_API_KEY ? '✅ Enabled' : '❌ Disabled'}`);
     console.log(`→ Pinterest: ${process.env.PINTEREST_CLIENT_ID ? '✅ Enabled' : '❌ Disabled'}`);
     console.log(`→ Instagram: ${process.env.INSTAGRAM_CLIENT_ID ? '✅ Enabled' : '❌ Disabled'}`);

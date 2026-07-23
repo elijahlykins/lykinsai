@@ -179,7 +179,13 @@ async function ensureExtensionIcons(extDir) {
   }
 }
 
-async function prepareExtensionInstallDir({ userDataPath, packaged, resourcesPath, appDir }) {
+async function prepareExtensionInstallDir({
+  userDataPath,
+  packaged,
+  resourcesPath,
+  appDir,
+  writeBridgeConfig,
+}) {
   const bundled = getBundledExtensionDir({ packaged, resourcesPath, appDir });
   if (!(await pathExists(bundled))) {
     throw new Error("extension_not_found");
@@ -187,6 +193,12 @@ async function prepareExtensionInstallDir({ userDataPath, packaged, resourcesPat
   const dest = getUserExtensionDir(userDataPath);
   await copyExtensionTree(bundled, dest);
   await ensureExtensionIcons(dest);
+  // Per-install bridge token so localhost POST /page can't be forged by curl.
+  try {
+    writeBridgeConfig?.(dest);
+  } catch (err) {
+    console.warn("[extension-install] bridge-config write:", err?.message || err);
+  }
   return dest;
 }
 
@@ -261,11 +273,25 @@ async function launchBrowserWithExtension(picked, extPath) {
 }
 
 async function installExtensionOneClick(
-  { browser = "chrome", userDataPath, packaged, resourcesPath, appDir, shell, clipboard, dialog },
+  {
+    browser = "chrome",
+    userDataPath,
+    packaged,
+    resourcesPath,
+    appDir,
+    shell,
+    clipboard,
+    dialog,
+    writeBridgeConfig,
+  },
   { storeUrl = CHROME_EXTENSION_STORE_URL } = {},
 ) {
   if (storeUrl) {
-    await shell.openExternal(storeUrl);
+    // Store builds can't receive a per-machine bridge-config.json; users pair
+    // via the extension options token field (Electron Settings shows the value).
+    if (/^https?:\/\//i.test(String(storeUrl))) {
+      await shell.openExternal(storeUrl);
+    }
     return { ok: true, mode: "store" };
   }
 
@@ -274,6 +300,7 @@ async function installExtensionOneClick(
     packaged,
     resourcesPath,
     appDir,
+    writeBridgeConfig,
   });
   const picked = await pickInstalledBrowser(browser);
   clipboard?.writeText?.(extPath);

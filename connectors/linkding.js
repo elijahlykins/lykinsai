@@ -27,6 +27,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { assertUrlSafe, safeFetch } from '../lib/exterior/ssrfGuard.js';
 import { saveConnectorNote } from './_save.js';
 
 const FETCH_TIMEOUT_MS = 20_000;
@@ -57,8 +58,15 @@ async function ldGet(endpoint, token, path, label, query = {}) {
   for (const [k, v] of Object.entries(query)) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
   }
+  // Self-hosted endpoints must still be publicly resolvable — private/
+  // loopback/metadata targets are blocked so a connect form can't SSRF
+  // the LYKN API host into an internal network.
+  const safe = await assertUrlSafe(url.toString());
+  if (!safe.ok) {
+    throw new Error('Linkding URL is not allowed (private or internal addresses are blocked).');
+  }
   const res = await withTimeout(
-    fetch(url, {
+    safeFetch(safe.url, {
       headers: {
         // Linkding uses DRF's `Token` scheme (not Bearer). Easy to get wrong.
         Authorization: `Token ${token}`,

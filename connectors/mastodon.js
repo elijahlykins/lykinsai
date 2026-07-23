@@ -21,6 +21,7 @@
 // ============================================================================
 
 import { ConnectorAuthError } from '../connectors-service.js';
+import { assertUrlSafe, safeFetch } from '../lib/exterior/ssrfGuard.js';
 import { saveConnectorNote } from './_save.js';
 
 const FETCH_TIMEOUT_MS = 12_000;
@@ -81,8 +82,13 @@ export const mastodonAdapter = {
    */
   async prepareAuth({ prefields, redirectUri }) {
     const instanceUrl = normalizeInstanceUrl(prefields?.instance);
+    const appsUrl = `${instanceUrl}/api/v1/apps`;
+    const safe = await assertUrlSafe(appsUrl);
+    if (!safe.ok) {
+      throw new Error('Mastodon instance is not allowed (private or internal addresses are blocked).');
+    }
     const res = await withTimeout(
-      fetch(`${instanceUrl}/api/v1/apps`, {
+      safeFetch(safe.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -142,8 +148,11 @@ export const mastodonAdapter = {
       redirect_uri: redirectUri,
       scope: SCOPES.join(' '),
     });
+    const tokenUrl = `${instanceUrl}/oauth/token`;
+    const tokenSafe = await assertUrlSafe(tokenUrl);
+    if (!tokenSafe.ok) throw new Error('Mastodon instance is not allowed.');
     const res = await withTimeout(
-      fetch(`${instanceUrl}/oauth/token`, {
+      safeFetch(tokenSafe.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
@@ -160,8 +169,11 @@ export const mastodonAdapter = {
     if (!accessToken) throw new Error('Mastodon did not return access_token');
 
     // Fetch the verified credentials so we can identify the user.
+    const meUrl = `${instanceUrl}/api/v1/accounts/verify_credentials`;
+    const meSafe = await assertUrlSafe(meUrl);
+    if (!meSafe.ok) throw new Error('Mastodon instance is not allowed.');
     const meRes = await withTimeout(
-      fetch(`${instanceUrl}/api/v1/accounts/verify_credentials`, {
+      safeFetch(meSafe.url, {
         headers: { Authorization: `Bearer ${accessToken}` },
       }),
       FETCH_TIMEOUT_MS,
@@ -263,8 +275,10 @@ async function syncStream({
   if (sinceId) nextUrl.searchParams.set('since_id', sinceId);
 
   pages: for (let page = 0; page < MAX_PAGES_PER_SYNC; page++) {
+    const pageSafe = await assertUrlSafe(String(nextUrl));
+    if (!pageSafe.ok) throw new Error('Mastodon pagination URL is not allowed.');
     const res = await withTimeout(
-      fetch(nextUrl, { headers: { Authorization: `Bearer ${accessToken}` } }),
+      safeFetch(pageSafe.url, { headers: { Authorization: `Bearer ${accessToken}` } }),
       FETCH_TIMEOUT_MS,
       `mastodon-${stream}-p${page}`,
     );

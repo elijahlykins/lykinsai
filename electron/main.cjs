@@ -273,9 +273,20 @@ const AUTH_HOST_SUFFIXES = [
   "accounts.google.com",
   "appleid.apple.com",
   "login.microsoftonline.com",
-  "supabase.co",
-  "supabase.in",
 ];
+
+// Pin Supabase auth hosts to THIS project when VITE_SUPABASE_URL is known —
+// a blanket *.supabase.co allowlist let any tenant's project stay inside the
+// app chrome. Fall back to the suffix only when the env isn't baked in.
+const SUPABASE_AUTH_HOST = (() => {
+  try {
+    const raw = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
+    if (!raw) return null;
+    return new URL(raw).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+})();
 
 // GitHub needs path-level treatment: its OAuth surface must open in-app for
 // the sign-in redirect to work, but the rest of github.com must NOT — the Mac
@@ -287,8 +298,15 @@ const GITHUB_AUTH_PATH_RE = /^\/(login|sessions?)(\/|$)/;
 function isAuthNavigation(url) {
   try {
     const parsed = new URL(url);
-    const host = parsed.hostname;
+    const host = parsed.hostname.toLowerCase();
     if (AUTH_HOST_SUFFIXES.some((s) => host === s || host.endsWith("." + s))) {
+      return true;
+    }
+    if (SUPABASE_AUTH_HOST) {
+      if (host === SUPABASE_AUTH_HOST) return true;
+    } else if (host.endsWith(".supabase.co") || host.endsWith(".supabase.in")) {
+      // Dev fallback when project URL isn't in the Electron env — still
+      // prefer pinning via VITE_SUPABASE_URL in production builds.
       return true;
     }
     if (host === "github.com" || host === "www.github.com") {
@@ -308,8 +326,69 @@ function isAuthNavigation(url) {
 // refresh_token=…. We forward those tokens to the renderer, where the web
 // app calls supabase.auth.setSession(). Tokens ride in the URL fragment and
 // are never logged or persisted by the main process.
+//
+// Bound to a one-time `state` minted when the app opens /desktop-auth — without
+// it, any local process could `open lykn://auth#…` and inject a session.
 /** @type {{access_token: string, refresh_token: string} | null} */
 let pendingAuthTokens = null;
+/** @type {{ state: string, expiresAt: number } | null} */
+let pendingDesktopAuthState = null;
+const DESKTOP_AUTH_STATE_TTL_MS = 15 * 60 * 1000;
+
+function desktopAuthStatePath() {
+  return path.join(app.getPath("userData"), "pending-desktop-auth-state.json");
+}
+
+function persistDesktopAuthState(record) {
+  pendingDesktopAuthState = record;
+  try {
+    fsSync.writeFileSync(desktopAuthStatePath(), JSON.stringify(record), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
+function loadDesktopAuthState() {
+  if (pendingDesktopAuthState && pendingDesktopAuthState.expiresAt > Date.now()) {
+    return pendingDesktopAuthState;
+  }
+  try {
+    const raw = fsSync.readFileSync(desktopAuthStatePath(), "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed?.state && parsed.expiresAt > Date.now()) {
+      pendingDesktopAuthState = parsed;
+      return parsed;
+    }
+  } catch {
+    /* none */
+  }
+  pendingDesktopAuthState = null;
+  return null;
+}
+
+function clearDesktopAuthState() {
+  pendingDesktopAuthState = null;
+  try {
+    fsSync.unlinkSync(desktopAuthStatePath());
+  } catch {
+    /* ignore */
+  }
+}
+
+function mintDesktopAuthUrl(baseUrl) {
+  const state = crypto.randomBytes(24).toString("base64url");
+  persistDesktopAuthState({ state, expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS });
+  try {
+    const u = new URL(baseUrl);
+    u.searchParams.set("desktop_state", state);
+    return u.toString();
+  } catch {
+    return baseUrl;
+  }
+}
 
 function flushPendingAuthTokens() {
   if (!pendingAuthTokens) return;
@@ -335,7 +414,15 @@ function handleAuthDeepLink(rawUrl) {
   const frag = new URLSearchParams(String(parsed.hash || "").replace(/^#/, ""));
   const access_token = frag.get("access_token") || "";
   const refresh_token = frag.get("refresh_token") || "";
+  const state = frag.get("state") || "";
   if (!access_token || !refresh_token) return;
+
+  const expected = loadDesktopAuthState();
+  if (!expected?.state || !state || expected.state !== state) {
+    console.warn("[auth] lykn://auth rejected — missing or mismatched desktop_state");
+    return;
+  }
+  clearDesktopAuthState();
 
   pendingAuthTokens = { access_token, refresh_token };
   // Cold start via the deep link: open-url can fire before whenReady, and
@@ -424,9 +511,6 @@ function updateDockVisibility() {
   }
 }
 /** @type {BrowserWindow | null} */
-let highlightWindow = null;
-let highlightHideTimer = null;
-let highlightAutoHideTimer = null;
 let browserExecuteInFlight = false;
 /** @type {BrowserWindow | null} */
 let onboardingWindow = null;
@@ -597,8 +681,18 @@ function setupSystemAudioCapture() {
   const ses = require("electron").session.defaultSession;
   if (typeof ses.setDisplayMediaRequestHandler !== "function") return;
   ses.setDisplayMediaRequestHandler(
-    async (_request, callback) => {
+    async (request, callback) => {
       try {
+        // Only Glass (file:// overlay) may take silent full-screen + loopback.
+        // Deny http(s) origins so XSS on lykn.io can't capture without a picker.
+        const origin = String(request?.securityOrigin || "");
+        if (/^https?:/i.test(origin) || origin === APP_ORIGIN) {
+          console.warn("[display-media] denied for web origin:", origin);
+          return callback({});
+        }
+        if (!overlayWindow || overlayWindow.isDestroyed()) {
+          return callback({});
+        }
         const sources = await desktopCapturer.getSources({ types: ["screen"] });
         if (!sources.length) return callback({});
         callback({ video: sources[0], audio: "loopback" });
@@ -910,8 +1004,6 @@ function hideOverlay() {
   if (overlayWindow && overlayWindow.isVisible()) overlayWindow.hide();
   // Tear down the full-screen "LYKN is on" glass alongside the bar.
   hideOverlayGlass();
-  // And any lingering "look here" glow ring.
-  hideScreenHighlight();
   // And the floating three-dot menu + picker + live notes + side-panel cards.
   hideMenuWindow();
   hidePickerWindow();
@@ -1765,137 +1857,6 @@ function hidePanelWindow() {
   positionMenuWindow();
 }
 
-// ── Screen highlight ("look here" glow ring) ────────────────────────────
-// When the AI's answer points the user at a specific on-screen element
-// ("click the blue Submit button"), instead of clicking for them we draw a
-// pulsing glow ring around that element on a full-screen, click-through,
-// content-protected window — so the user can find it themselves.
-const HIGHLIGHT_AUTO_HIDE_MS = 8000;
-
-function createHighlightWindow() {
-  const { bounds } = screen.getPrimaryDisplay();
-  highlightWindow = new BrowserWindow({
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-    show: false,
-    frame: false,
-    transparent: true,
-    backgroundColor: "#00000000",
-    hasShadow: false,
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    focusable: false,
-    skipTaskbar: true,
-    alwaysOnTop: true,
-    // Same panel treatment as the overlay/burst so it floats over full-screen
-    // apps and Spaces without yanking focus.
-    ...(process.platform === "darwin" ? { type: "panel" } : {}),
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      backgroundThrottling: false,
-    },
-  });
-
-  // Below the overlay (screen-saver) so the glass bar stays crisp on top, but
-  // above the app the user is being pointed at.
-  // Clicks pass straight through — the ring must never block the very button
-  // it's pointing at.
-  highlightWindow.setIgnoreMouseEvents(true, { forward: true });
-  // ALWAYS capture-protected (regardless of the user's overlay setting): the
-  // grounding pipeline takes fresh screenshots, and a visible ring in those
-  // shots would confuse the vision model.
-  try { highlightWindow.setContentProtection(true); } catch (_) {}
-  // Workspaces first, level last — see createOverlayWindow.
-  highlightWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  });
-  highlightWindow.setFullScreenable(false);
-  highlightWindow.setAlwaysOnTop(true, "pop-up-menu");
-  highlightWindow.loadFile(path.join(__dirname, "highlight.html"));
-
-  highlightWindow.on("closed", () => {
-    highlightWindow = null;
-  });
-}
-
-// Show the glow orb centered at an ABSOLUTE screen point (DIP coords on the
-// primary display). Re-arms the auto-hide timer on every call.
-function showScreenHighlight(pos) {
-  try {
-    if (!highlightWindow || highlightWindow.isDestroyed()) createHighlightWindow();
-    if (highlightHideTimer) {
-      clearTimeout(highlightHideTimer);
-      highlightHideTimer = null;
-    }
-    // Re-cover the (possibly changed) primary display each time.
-    const { bounds } = screen.getPrimaryDisplay();
-    highlightWindow.setBounds(bounds);
-    highlightWindow.setIgnoreMouseEvents(true, { forward: true });
-    highlightWindow.showInactive();
-    const fire = () => {
-      if (!highlightWindow || highlightWindow.isDestroyed()) return;
-      // macOS can refuse parts of the requested bounds (e.g. keep a panel
-      // below the menu bar), silently shifting the window — which shifted
-      // every orb DOWN by that amount. Convert the absolute point using the
-      // window's ACTUAL position so any constraint is compensated exactly.
-      const wb = highlightWindow.getBounds();
-      if (wb.x !== bounds.x || wb.y !== bounds.y) {
-        console.log(
-          `[highlight] window constrained: requested ${bounds.x},${bounds.y} got ${wb.x},${wb.y} — compensating`,
-        );
-      }
-      const local = { x: pos.x - wb.x, y: pos.y - wb.y };
-      highlightWindow.webContents
-        .executeJavaScript(
-          `window.__lyknHighlight && window.__lyknHighlight(${JSON.stringify(local)});`,
-          true,
-        )
-        .catch(() => {});
-    };
-    if (highlightWindow.webContents.isLoading()) {
-      highlightWindow.webContents.once("did-finish-load", fire);
-    } else {
-      fire();
-    }
-    if (highlightAutoHideTimer) clearTimeout(highlightAutoHideTimer);
-    highlightAutoHideTimer = setTimeout(() => {
-      highlightAutoHideTimer = null;
-      hideScreenHighlight();
-    }, HIGHLIGHT_AUTO_HIDE_MS);
-  } catch (_) {
-    /* purely cosmetic — never let the highlight break an answer */
-  }
-}
-
-// Fade the ring out, then hide its window once the CSS transition finishes.
-function hideScreenHighlight() {
-  try {
-    if (highlightAutoHideTimer) {
-      clearTimeout(highlightAutoHideTimer);
-      highlightAutoHideTimer = null;
-    }
-    if (!highlightWindow || highlightWindow.isDestroyed()) return;
-    highlightWindow.webContents
-      .executeJavaScript("window.__lyknHighlightOff && window.__lyknHighlightOff();", true)
-      .catch(() => {});
-    if (highlightHideTimer) clearTimeout(highlightHideTimer);
-    highlightHideTimer = setTimeout(() => {
-      highlightHideTimer = null;
-      if (highlightWindow && !highlightWindow.isDestroyed()) highlightWindow.hide();
-    }, 320);
-  } catch (_) {
-    /* purely cosmetic */
-  }
-}
-
 // ⌘+L: toggle the floating glass bar. Screen capture happens silently at ask
 // time (see streamScreenAnswer) so the bar always reflects the live screen and
 // the user never sees the screenshot.
@@ -2035,6 +1996,8 @@ function stripHiddenTags(s) {
     .replace(/<\/?(?:learned|reason|applied)>[\s\S]*?<\/(?:learned|reason|applied)>/gi, "")
     .replace(/<\/?(?:learned|reason|applied)\b[^>]*>/gi, "")
     .replace(/\[TAG_NOTES:[^\]]*\]/gi, "")
+    // Legacy [[HIGHLIGHT: …]] tags (screen glow feature removed) — strip if
+    // an older model or cached prompt still emits them.
     .replace(/\[\[\s*HIGHLIGHT\s*:[^\]]*\]\]/gi, "")
     // Brand is always LYKN (all caps) — leave lykn.io / lykn_* / lykn-* alone
     // (hyphen: overlay markers like lykn-artifact: / lykn-video:).
@@ -2044,16 +2007,9 @@ function stripHiddenTags(s) {
     .replace(/!\[(?:LYKN|lykn)[-_](artifact|video):/gi, (_, kind) => `![lykn_${String(kind).toLowerCase()}:`);
 }
 
-// Matches a COMPLETED highlight control tag and captures the element
-// description. Used both to fire the on-screen glow mid-stream and (via
-// stripHiddenTags above) to keep the tag out of the chat bubble.
-const HIGHLIGHT_TAG_RE = /\[\[\s*HIGHLIGHT\s*:\s*([^\]]+?)\s*\]\]/i;
-
-// While streaming, a highlight tag can arrive split across deltas. Trim any
-// unfinished "[[..." tail (and a bare trailing "[", which may be the tag's
-// first character) so the raw tag never flashes in the bubble before
-// stripHiddenTags can remove the completed form.
-function trimPartialHighlightTail(s) {
+// While streaming, a control tag can arrive split across deltas. Trim any
+// unfinished "[[..." tail so raw markup never flashes in the bubble.
+function trimPartialControlTagTail(s) {
   return String(s || "")
     .replace(/\[\[(?![\s\S]*\]\])[\s\S]*$/, "")
     .replace(/\[$/, "");
@@ -3752,9 +3708,9 @@ async function scrapePageText(url) {
     const timer = setTimeout(() => ctrl.abort(), 9000);
     let res;
     try {
-      res = await fetch(url, {
+      // SSRF-safe: DNS + private-IP deny, re-check every redirect hop.
+      res = await safeFetchMain(url, {
         signal: ctrl.signal,
-        redirect: "follow",
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
@@ -4161,29 +4117,15 @@ function humanizeStreamError(err, { forceImage = false } = {}) {
   return msg || "That didn't work — try again in a moment.";
 }
 
-async function readOverlayStreamResponse(res, send, onHighlight) {
+async function readOverlayStreamResponse(res, send) {
   const ctype = res.headers.get("content-type") || "";
   if (!res.ok || !res.body) {
     throw new Error(`LYKN backend error (${res.status}).`);
   }
 
-  // The model emits at most one [[HIGHLIGHT: ...]] per answer; fire it exactly
-  // once, the moment the tag completes in the accumulated text, so the glow
-  // appears while the model is still talking.
-  let highlightFired = false;
-  const maybeFireHighlight = (text) => {
-    if (highlightFired || typeof onHighlight !== "function") return;
-    const m = HIGHLIGHT_TAG_RE.exec(text);
-    if (m && m[1]) {
-      highlightFired = true;
-      onHighlight(m[1].trim());
-    }
-  };
-
   if (!ctype.includes("text/event-stream")) {
     const data = await res.json().catch(() => null);
     const raw = data?.response || data?.answer || data?.text || "";
-    maybeFireHighlight(raw);
     const answer = stripHiddenTags(raw);
     if (answer.trim()) send("lykn:answer-delta", { text: answer });
     return answer;
@@ -4208,11 +4150,10 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
         const j = JSON.parse(payload);
         if (typeof j.t === "string") {
           accumulated += j.t;
-          maybeFireHighlight(accumulated);
           // Trim any unfinished "[[..." tail so a half-received tag never
           // flashes in the bubble (stripHiddenTags handles completed tags).
           send("lykn:answer-delta", {
-            text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
+            text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
           });
         } else if (typeof j.status === "string" && j.status.trim()) {
           send("lykn:answer-status", { status: j.status.trim() });
@@ -4233,12 +4174,9 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
             // the saved session like any other answer text.
             accumulated += `\n\n![Generated image](${tc.result.image_url})\n\n`;
             send("lykn:answer-delta", {
-              text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
+              text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
             });
-            void saveArtifactResultToVault(tc.result, {
-              title: "Generated image",
-              filename: "generated-image.png",
-            });
+            // Do not auto-vault — user must Save or ask the AI to keep it.
           } else if (
             tc.status === "done" &&
             /build_react_artifact$/.test(String(tc.name || "")) &&
@@ -4248,7 +4186,6 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
             // overlay's renderer turns into a live iframe preview card with an
             // "Open" affordance. Underscore form survives brand capitalization
             // (lykn_* is excluded); hyphen form is normalized in stripHiddenTags.
-            // Preview-only builds (preview_html, no file_url yet) still vault.
             const title = String(tc.result.title || "Interactive artifact")
               .replace(/[\]\n\r]/g, " ")
               .trim();
@@ -4256,13 +4193,10 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
             if (fileUrl) {
               accumulated += `\n\n![lykn_artifact:${title}](${fileUrl})\n\n`;
               send("lykn:answer-delta", {
-                text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
+                text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
               });
             }
-            void saveArtifactResultToVault(tc.result, {
-              title,
-              filename: `${title.replace(/[^\w\- ]+/g, "").trim() || "artifact"}.html`,
-            });
+            // Do not auto-vault — user must Save or ask the AI to keep it.
             // Cache source for the next refine turn (surgical edits).
             void extractReactArtifactCodeFromResult(tc.result).then((code) => {
               if (code && code.trim()) {
@@ -4288,12 +4222,9 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
               .trim();
             accumulated += `\n\n![lykn_video:${title}](${tc.result.file_url})\n\n`;
             send("lykn:answer-delta", {
-              text: trimPartialHighlightTail(stripHiddenTags(accumulated)),
+              text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
             });
-            void saveArtifactResultToVault(tc.result, {
-              title,
-              filename: `${title.replace(/[^\w\- ]+/g, "").trim() || "video"}.mp4`,
-            });
+            // Do not auto-vault — user must Save or ask the AI to keep it.
           } else if (
             tc.status === "done" &&
             tc.result &&
@@ -4302,12 +4233,7 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
             )
           ) {
             // Other capability artifacts may not get an inline preview card in
-            // the overlay yet, but still auto-save — including preview_html
-            // when no downloadable URL was persisted.
-            const title = String(tc.result.title || "Artifact")
-              .replace(/[\]\n\r]/g, " ")
-              .trim();
-            void saveArtifactResultToVault(tc.result, { title });
+            // the overlay yet. Vault persistence is explicit (Save / ask AI).
           }
         } else if (j.error) {
           throw new Error(String(j.error) || "Stream error.");
@@ -4319,8 +4245,8 @@ async function readOverlayStreamResponse(res, send, onHighlight) {
     }
   }
   // Also trim from the final text: if the stream died mid-tag, the unfinished
-  // "[[HIGHLIGHT..." fragment must not persist in the saved answer.
-  return trimPartialHighlightTail(stripHiddenTags(accumulated));
+  // "[[..." fragment must not persist in the saved answer.
+  return trimPartialControlTagTail(stripHiddenTags(accumulated));
 }
 
 function overlayMessageLooksScreenRelated(text) {
@@ -4337,7 +4263,7 @@ function overlayMessageLooksScreenRelated(text) {
 // can see, or asking to be pointed at / walked through something in the UI
 // in front of them. Used to force the screenshot back on for text-rich pages,
 // which otherwise go text-only for speed — without a screenshot the model
-// can't answer visual questions or drive the highlight ring.
+// can't answer visual / layout questions.
 function overlayMessageWantsVisualGuidance(text) {
   const t = String(text || "").trim().toLowerCase();
   if (!t) return false;
@@ -4530,9 +4456,6 @@ async function gatherOverlayPageContext({ send, superseded }) {
 async function streamScreenAnswer(event, { text, history, attachments, forceImage, buildMode }) {
   const wc = event.sender;
   const askGen = ++overlayAskGeneration;
-  // A new question starts a new guidance context — drop any lingering glow
-  // from the previous answer.
-  hideScreenHighlight();
   if (overlayAskAbort) {
     try {
       overlayAskAbort.abort();
@@ -4619,8 +4542,7 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
     (pageContext.text?.length || 0) >= RICH_PAGE_TEXT_CHARS;
   // A message that clearly wants VISUAL help ("do you see this?", "how do I
   // run this?", "where do I click?") must keep the pixels even when the page
-  // is text-rich — the text-only fast path leaves the model blind to layout
-  // and unable to fire the highlight ring, so it answers generically.
+  // is text-rich — the text-only fast path leaves the model blind to layout.
   const wantsVisualGuidance =
     !skipScreenContext && overlayMessageWantsVisualGuidance(text);
   // Live Watch already ran a recent vision pass — skip the screenshot upload when
@@ -4696,26 +4618,13 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
       "connecting external tools for it — just search.";
   }
   if (attachScreenshot) {
-    // Screen-highlight guidance: instead of clicking for the user, LYKN can
-    // glow the spot they need. The model emits a hidden control tag naming the
-    // element; the main process grounds it visually and draws the ring
-    // (see triggerScreenHighlight). Stripped from the bubble before render.
+    // Describe UI locations in words only — do NOT claim to highlight, glow,
+    // or light up anything on the user's screen (that feature was removed).
     prompt +=
-      "\n\nYou can LIGHT UP a spot on the user's screen. When your answer tells " +
-      "the user to click, press, select, or open ONE specific UI element visible " +
-      "in the screenshot (a button, link, tab, menu item, field, or icon), OR the " +
-      "user asks where something is / says they can't find it and you CAN see it " +
-      "in the screenshot, emit this hidden control tag as the VERY FIRST line of " +
-      "your answer (before any prose, so the glow appears immediately): " +
-      "[[HIGHLIGHT: <short visual description of the element and where it is on screen>]] " +
-      '— for example: [[HIGHLIGHT: the green "Run" button at the bottom right of the SQL editor]]. ' +
-      "LYKN draws a glowing ring around that spot so the user can find it — for " +
-      "'where is X' questions this tag IS the answer, so emitting it is REQUIRED " +
-      "whenever the element is visible. Look carefully at the screenshot before " +
-      "claiming something isn't there. Use AT MOST one tag per answer, and only " +
-      "for an element you can actually see in the screenshot. Never mention the " +
-      "tag itself in your prose — it is invisible to the user (you may say " +
-      "things like 'I've highlighted it on your screen').";
+      "\n\nWhen the user asks where something is on screen, describe its location " +
+      "in plain language (e.g. 'top-right of the toolbar, blue button labeled Run'). " +
+      "Do NOT say you have highlighted, lit up, glowed, or ringed anything on their " +
+      "screen, and do NOT emit [[HIGHLIGHT: …]] tags.";
   }
   if (textAtts.length) {
     prompt +=
@@ -4893,11 +4802,7 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
           // Refresh really failed (signed out / refresh token revoked).
           throw new Error("LYKN backend error (401).");
         }
-        const accumulated = await readOverlayStreamResponse(res, send, (description) => {
-          // Fire-and-forget: grounding + drawing happen off the stream path,
-          // and triggerScreenHighlight self-cancels if a newer ask starts.
-          if (!superseded()) triggerScreenHighlight(description).catch(() => {});
-        });
+        const accumulated = await readOverlayStreamResponse(res, send);
         if (superseded()) return;
         send("lykn:answer-done", { text: accumulated });
         return;
@@ -5158,163 +5063,6 @@ function parseRegionBox(text, geminiOrder) {
   return null;
 }
 
-// Ask the server's Holo GUI-grounding model where the described element is.
-// Returns fractional { x, y } (element center) or null. Holo is trained
-// specifically for element localization, so its point is far more reliable
-// than a GPT-class bounding box — we use it as the anchor of truth.
-async function requestHoloElementPoint(dataURL, description, token) {
-  try {
-    const res = await fetch(`${API_BASE}/api/desktop/locate-element`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ imageUrl: dataURL, target: String(description || "").slice(0, 400) }),
-    });
-    const data = await res.json().catch(() => null);
-    const p = res.ok && data?.ok ? data.point : null;
-    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
-      return { x: Math.max(0, Math.min(1, p.x / 1000)), y: Math.max(0, Math.min(1, p.y / 1000)) };
-    }
-  } catch {
-    /* locator is best-effort */
-  }
-  return null;
-}
-
-// Crop the candidate region (plus context margin) out of the screenshot and
-// ask a vision model whether the described element is actually inside it.
-// This is the arbiter for grounding: both Holo and the vision-box model
-// miss sometimes, but a "is X in this crop?" check is a much easier visual
-// task and reliably rejects wrong candidates. Returns true/false.
-async function verifyRegionContainsElement(image, frac, desc, token) {
-  try {
-    const { width: imgW, height: imgH } = image.getSize();
-    // Expand ~60% each side so the model sees surrounding context.
-    const ex = frac.width * 0.6;
-    const ey = frac.height * 0.6;
-    const x = Math.max(0, frac.x - ex);
-    const y = Math.max(0, frac.y - ey);
-    const w = Math.min(1 - x, frac.width + ex * 2);
-    const h = Math.min(1 - y, frac.height + ey * 2);
-    const rect = {
-      x: Math.round(x * imgW),
-      y: Math.round(y * imgH),
-      width: Math.max(1, Math.round(w * imgW)),
-      height: Math.max(1, Math.round(h * imgH)),
-    };
-    const crop = image.crop(rect);
-    if (!crop || crop.isEmpty()) return false;
-    const cropURL = `data:image/png;base64,${crop.toPNG().toString("base64")}`;
-    const body = {
-      model: "lykn",
-      // Non-chat intent — skips the server's heavy LYKN enrichment (see
-      // requestScreenRegionBox for the full rationale).
-      intent: "vision_box",
-      text: "Verify crop.",
-      prompt:
-        "You are a precise visual verifier. The attached image is a small crop " +
-        "from a screenshot of the user's screen. Question: does this crop " +
-        `clearly contain ${desc.slice(0, 300)}? ` +
-        "Respond with ONLY the word YES or NO.",
-      imageUrls: [cropURL],
-      useTools: false,
-      skipWebSearch: true,
-    };
-    const out = await postAiStreamText(body, token);
-    return /^\s*yes\b/i.test(String(out || ""));
-  } catch {
-    return false;
-  }
-}
-
-// The [[HIGHLIGHT: ...]] pipeline: take a FRESH screenshot (the screen may have
-// changed since the ask's capture), ground the described element, map to
-// display coordinates, and glow it. Grounding runs TWO passes in parallel —
-// Holo gives a center POINT, the vision model gives a BOX. When they agree the
-// box wins immediately; when they disagree BOTH candidates are verified with a
-// crop check and only a candidate that passes gets shown. No verified
-// candidate → no glow (better nothing than a ring on the wrong spot).
-// Fire-and-forget by design — any failure is a silent no-op.
-async function triggerScreenHighlight(description) {
-  const desc = String(description || "").trim();
-  if (!desc) return;
-  if (screenCaptureStatus() !== "granted") return;
-  // If a newer ask starts while we're grounding, drop this highlight — it
-  // belongs to a superseded answer.
-  const gen = overlayAskGeneration;
-
-  let dataURL = null;
-  try {
-    dataURL = await capturePrimaryScreen({ maxWidth: 1536, format: "jpeg", quality: 82 });
-  } catch {
-    dataURL = null;
-  }
-  if (!dataURL || gen !== overlayAskGeneration) return;
-
-  const token = await getAuthToken().catch(() => null);
-  if (!token || gen !== overlayAskGeneration) return;
-
-  console.log(`[highlight] grounding "${desc.slice(0, 80)}"`);
-  const image = nativeImage.createFromDataURL(dataURL);
-  const regionAroundPoint = (p) => ({
-    x: p.x - 0.06,
-    y: p.y - 0.025,
-    width: 0.12,
-    height: 0.05,
-  });
-  const showAt = (center) => {
-    // Fractions are scale-invariant, so mapping straight onto the display's
-    // DIP bounds needs no Retina special-casing.
-    const cx = Math.max(0, Math.min(1, center.x));
-    const cy = Math.max(0, Math.min(1, center.y));
-    const { bounds } = screen.getPrimaryDisplay();
-    showScreenHighlight({
-      x: Math.round(bounds.x + cx * bounds.width),
-      y: Math.round(bounds.y + cy * bounds.height),
-    });
-  };
-
-  // FAST PATH first: Holo (click-trained, quick) + one crop verification.
-  // The vision-box request is kicked off in parallel but only awaited if the
-  // fast path fails — previously the orb always waited for the box (the slow
-  // call, ~5s) just to cross-check, which is why it took so long to appear.
-  const boxPromise = requestScreenRegionBox(dataURL, desc, token, "lykn").catch(() => null);
-  const point = await requestHoloElementPoint(dataURL, desc, token);
-  if (gen !== overlayAskGeneration) return;
-  if (point) {
-    const ok = await verifyRegionContainsElement(image, regionAroundPoint(point), desc, token);
-    if (gen !== overlayAskGeneration) return;
-    console.log(
-      `[highlight] holo=${point.x.toFixed(3)},${point.y.toFixed(3)} verify=${ok ? "YES" : "no"}`,
-    );
-    if (ok) {
-      showAt(point);
-      return;
-    }
-  } else {
-    console.log("[highlight] holo=miss");
-  }
-
-  // Fallback: the vision box (already in flight), sanity-filtered + verified.
-  const rawBox = await boxPromise;
-  if (gen !== overlayAskGeneration) return;
-  let box = rawBox && !rawBox.full ? rawBox : null;
-  if (box && (box.width * box.height > 0.35 || box.width > 0.9 || box.height > 0.9)) box = null;
-  if (!box) {
-    console.log("[highlight] box=miss — skipping glow");
-    return;
-  }
-  const boxOk = await verifyRegionContainsElement(image, box, desc, token);
-  if (gen !== overlayAskGeneration) return;
-  console.log(
-    `[highlight] box=${box.x.toFixed(3)},${box.y.toFixed(3)} ${box.width.toFixed(3)}x${box.height.toFixed(3)} verify=${boxOk ? "YES" : "no"}`,
-  );
-  if (!boxOk) {
-    console.log("[highlight] no verified region — skipping glow");
-    return;
-  }
-  showAt({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
-}
-
 // Capture the screen, let the AI pick the region the user described, crop to it
 // (full screen if unsure), then save the PNG to Downloads and copy it to the
 // clipboard. The "drag from screen" replacement: LYKN grabs the region for you.
@@ -5552,33 +5300,6 @@ function pickArtifactUrl(result) {
     }
   }
   return "";
-}
-
-// Auto-save a finished capability result: prefer a persisted URL, fall back to
-// inline preview_html (srcDoc / "preview mode" artifacts with no file_url yet).
-async function saveArtifactResultToVault(result, { title, filename } = {}) {
-  const safeTitle = String(title || result?.title || "Artifact")
-    .replace(/[\]\n\r]/g, " ")
-    .trim() || "Artifact";
-  const url = pickArtifactUrl(result);
-  if (url) {
-    return saveUrlToVault(url, { title: safeTitle, filename });
-  }
-  const html =
-    typeof result?.preview_html === "string" ? result.preview_html.trim() : "";
-  if (html) {
-    const base =
-      String(filename || safeTitle)
-        .replace(/[^\w\- ]+/g, "")
-        .trim() || "artifact";
-    const name = /\.html?$/i.test(base) ? base : `${base}.html`;
-    return saveBufferToVault(Buffer.from(html, "utf8"), {
-      title: safeTitle,
-      filename: name,
-      mime: "text/html;charset=utf-8",
-    });
-  }
-  return false;
 }
 
 function registerOverlayIpc() {
@@ -6283,7 +6004,21 @@ function registerOverlayIpc() {
   // links). Never navigate the overlay window itself.
   ipcMain.on("lykn:open-url", (_e, url) => {
     const u = String(url || "").trim();
-    if (/^https?:\/\//i.test(u)) shell.openExternal(u);
+    // Mint a one-time state when opening desktop-auth so lykn://auth can't
+    // inject an unbound session from another local app.
+    let target = u;
+    try {
+      const parsed = new URL(u);
+      if (
+        (parsed.pathname === "/desktop-auth" || parsed.pathname.endsWith("/desktop-auth")) &&
+        (parsed.origin === APP_ORIGIN || parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")
+      ) {
+        target = mintDesktopAuthUrl(parsed.toString());
+      }
+    } catch {
+      /* open as-is through the scheme allowlist */
+    }
+    openExternalSafe(target);
   });
 
   // Download a generated file (image mode picture, Build-mode artifact) into
@@ -7233,6 +6968,7 @@ function registerExtensionInstallIpc() {
           shell,
           clipboard,
           dialog,
+          writeBridgeConfig: (dir) => extensionBridge?.writeBridgeConfigToExtensionDir?.(dir),
         },
       );
     } catch (e) {
@@ -7248,6 +6984,8 @@ function registerExtensionInstallIpc() {
       connected,
       live: !!extensionBridge?.isLive?.(),
       port: extensionBridge?.port || 38471,
+      // Shown in install UI so store-installed extensions can be paired manually.
+      token: extensionBridge?.getToken?.() || "",
     };
   });
   ipcMain.on("lykn:extension-install-close", () => {
@@ -7384,6 +7122,7 @@ function initAutoUpdate() {
   registerOnboardingIpc();
   registerExtensionInstallIpc();
   extensionBridge = startExtensionBridge({
+    userDataPath: app.getPath("userData"),
     onUpdate: () => {
       liveWatchState.extensionConnected = !!extensionBridge?.isConnected?.();
       writeOverlaySettings({ chromeLiveFeedLinked: true });
@@ -7397,6 +7136,14 @@ function initAutoUpdate() {
       }
     },
   });
+  // Keep the unpacked extension copy's bridge-config.json in sync on every boot
+  // so Live Feed auth works after token rotation / first launch.
+  try {
+    const extDir = getUserExtensionDir(app.getPath("userData"));
+    extensionBridge?.writeBridgeConfigToExtensionDir?.(extDir);
+  } catch (_) {
+    /* best-effort */
+  }
   setupLaunchAtLogin();
 
   // When macOS starts LYKN at login, stay silent in the background: no main
