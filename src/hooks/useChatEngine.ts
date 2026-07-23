@@ -2211,22 +2211,46 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         referenceRebuildAsk ||
         freshWebappAsk ||
         openReactRebuildAsk;
+      // Map "+" → Create kinds to their builder tools (must stay aligned with
+      // server ARTIFACT_BUILD_SPEC). An open game must not swallow Create → Deck.
+      const CREATE_TOOL_BY_KIND: Record<string, string> = {
+        deck: "lykn_build_template",
+        study: "lykn_build_react_artifact",
+        document: "lykn_build_react_artifact",
+        worksheet: "lykn_build_react_artifact",
+        spreadsheet: "lykn_build_spreadsheet",
+        chart: "lykn_generate_chart",
+        diagram: "lykn_generate_diagram",
+        webapp: "lykn_build_react_artifact",
+        video: "lykn_render_video",
+      };
+      const createKind =
+        typeof sendMode === "string" && sendMode.startsWith("create:")
+          ? sendMode.slice("create:".length)
+          : "";
+      const createToolName = CREATE_TOOL_BY_KIND[createKind] || "";
+      const openToolName = String(editArtifact?.toolName || "");
+      const sameCreateBuilder =
+        !!createToolName && !!openToolName && createToolName === openToolName;
+      // Surgical refine only for short same-builder tweaks. Create → Deck with
+      // an open React game (or a new deck ask over an old deck) stays armed.
       const refiningOpenArtifact =
         artifactBelongsHere &&
         isEditableArtifact(editArtifact) &&
-        !buildModeFresh;
-      // Other Create kinds (deck/doc/…) still defer to surgical refine when
-      // an artifact from THIS chat is open. Build mode does not.
+        !buildModeFresh &&
+        !openReactRebuildAsk &&
+        (!createToolName || (sameCreateBuilder && looksLikeSurgicalTweak));
       const effectiveComposerMode =
         refiningOpenArtifact &&
         typeof sendMode === "string" &&
         sendMode.startsWith("create:") &&
-        !isBuildMode
+        sameCreateBuilder &&
+        looksLikeSurgicalTweak
           ? "none"
           : sendMode;
-      if (buildModeFresh && editArtifact) {
+      if ((buildModeFresh || (createToolName && !refiningOpenArtifact)) && editArtifact) {
         console.log(
-          `🧑‍💻 Build mode: starting fresh (ignoring open "${String(editArtifact.title || "").slice(0, 60)}")`,
+          `🧑‍💻 Create/Build: starting fresh (ignoring open "${String(editArtifact.title || "").slice(0, 60)}")`,
         );
       }
       await orchestrateChatSend({

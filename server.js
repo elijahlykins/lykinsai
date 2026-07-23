@@ -6369,9 +6369,11 @@ const ARTIFACT_BUILD_VERB_RE = /\b(?:make|build|create|generate|design|draft|pro
 const ARTIFACT_ANALYSIS_LEAD_RE = /^(?:can you|could you|would you|please|hey|ok|okay|so|now|then|and)?[,\s]*(?:summari[sz]e|explain|describe|analy[sz]e|review|read|improve|fix|edit|update|revise|shorten|expand|lengthen|critique|proofread|rewrite|reword)\b/i;
 
 function detectArtifactIntent(message) {
-  const t = String(message || '').trim();
-  // Guard length so we only classify a focused ask, not a pasted essay.
-  if (!t || t.length > 600) return null;
+  const raw = String(message || '').trim();
+  if (!raw) return null;
+  // Classify from the leading ask even when the user pasted a long article
+  // after "build me a deck about …". A hard 600-char reject used to miss those.
+  const t = raw.length > 600 ? raw.slice(0, 600) : raw;
   // Bail when the turn LEADS with an analysis/edit verb — the user is acting on
   // something that already exists, not asking us to build a new artifact.
   if (ARTIFACT_ANALYSIS_LEAD_RE.test(t)) return null;
@@ -13927,19 +13929,58 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         '🎨 Stream: fresh webapp/game ask — forcing lykn_build_react_artifact (ignoring open panel for this turn)',
       );
     }
-    if (activeArtifactHasSource && artifactBuildSpec && !redesignArtifactAsk && !buildModeFresh) {
+    // Only defer Create/Build → surgical refine when the OPEN artifact is the
+    // SAME builder AND the ask is a short tweak. Otherwise an open React game
+    // used to strip Create → Deck: the model narrated "Done. Built an 11-slide
+    // deck…" without ever calling lykn_build_template (phantom build).
+    const openBuilderTool = String(activeArtifact?.toolName || '');
+    const sameBuilderOpen =
+      activeArtifactHasSource &&
+      !!artifactToolName &&
+      openBuilderTool === artifactToolName;
+    const preferSurgicalRefine =
+      sameBuilderOpen &&
+      !redesignArtifactAsk &&
+      !buildModeFresh &&
+      looksLikeSurgicalTweak;
+    if (preferSurgicalRefine && artifactBuildSpec) {
       console.log(
-        `🎨 Stream: open artifact present — ignoring forceArtifact/${artifactToolName} so refine stays surgical`,
+        `🎨 Stream: same-kind open artifact + surgical tweak — ignoring forceArtifact/${artifactToolName}`,
       );
       artifactBuildSpec = null;
       artifactToolName = null;
       artifactAutoInferred = false;
-    } else if (activeArtifactHasSource && artifactBuildSpec && (buildModeFresh || redesignArtifactAsk)) {
+    } else if (activeArtifactHasSource && artifactBuildSpec) {
       console.log(
-        `🎨 Stream: full rebuild — keeping ${artifactToolName} (not refining open "${String(activeArtifact?.title || '').slice(0, 60)}")`,
+        `🎨 Stream: Create/Build deliverable — keeping ${artifactToolName} (not refining open "${String(activeArtifact?.title || '').slice(0, 60)}" / ${openBuilderTool || 'none'})`,
       );
-      // Don't thread the open game into ARTIFACT_OPEN / edits_required gate.
+      // Don't thread a different (or stale) open artifact into ARTIFACT_OPEN.
       activeArtifact = null;
+    }
+    // Typed "build me a pitch deck" while a game/doc is open (Create disarmed
+    // after a clarifying turn) — early infer was blocked by hasActiveArtifactBody.
+    // Same-kind non-tweaks ("build another deck about X" over an open deck) also
+    // force a fresh builder call so we don't only narrate success.
+    if (!artifactBuildSpec && !forceImage && activeArtifactHasSource && activeArtifact) {
+      const inferredKind = detectArtifactIntent(askText);
+      const inferredSpec = inferredKind ? ARTIFACT_BUILD_SPEC[inferredKind] : null;
+      const openToolNow = String(activeArtifact.toolName || '');
+      const differentBuilder =
+        !!inferredSpec?.tool && inferredSpec.tool !== openToolNow;
+      const sameBuilderNewDeliverable =
+        !!inferredSpec?.tool &&
+        inferredSpec.tool === openToolNow &&
+        !looksLikeSurgicalTweak;
+      if (inferredSpec && (differentBuilder || sameBuilderNewDeliverable)) {
+        artifactType = inferredKind;
+        artifactBuildSpec = inferredSpec;
+        artifactToolName = inferredSpec.tool;
+        artifactAutoInferred = true;
+        activeArtifact = null;
+        console.log(
+          `🎨 Stream: typed ${inferredKind} intent over open ${openToolNow || 'artifact'} — forcing ${inferredSpec.tool}`,
+        );
+      }
     }
     const activeArtifactEditable =
       Boolean(activeArtifact) &&
