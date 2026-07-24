@@ -230,8 +230,34 @@ test('buildRateLimitHandler: returns a function that emits + responds with the c
   // visible side: a row was queued for insertion.
   assert.equal(calls.length, 1);
   assert.equal(calls[0].row.event_type, 'ratelimit.auth_endpoint');
+  // target_table is NOT NULL in lykn_security_audit — app-layer events
+  // without an explicit table must land a non-null sentinel.
+  assert.equal(calls[0].row.target_table, 'request');
   assert.equal(calls[0].row.metadata.limiter, 'authLimiter');
   assert.equal(calls[0].row.metadata.endpoint, '/oauth/token');
+});
+
+test('logSecurityEvent: defaults target_table to "request" when omitted', async () => {
+  const { admin, calls } = makeFakeAdmin();
+  setSecurityLoggerSink(admin);
+
+  await captureConsoleError(async () => {
+    await logSecurityEvent(SecurityEvent.RATE_LIMIT_HIT, {
+      limiter: 'aiLimiter',
+      endpoint: '/api/ai/meeting-chunk',
+    }, {
+      userId: 'user-uuid-rl',
+      ip: '203.0.113.50',
+      path: '/api/ai/meeting-chunk',
+      method: 'POST',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].row.event_type, 'ratelimit.hit');
+  assert.equal(calls[0].row.target_table, 'request');
+  assert.equal(calls[0].row.target_id, null);
 });
 
 test('logSecurityEvent: ctx.req shorthand pulls ip/path/method/userId off the request', async () => {

@@ -160,6 +160,9 @@ function safeIso(d) {
  *                              beyond userId. Optional fields used by the
  *                              audit row directly:
  *                                payload.targetTable → audit.target_table
+ *                                  (defaults to 'request' when omitted —
+ *                                  the DB column is NOT NULL; app-layer
+ *                                  events like ratelimit.hit have no table)
  *                                payload.targetId    → audit.target_id
  *                              Everything else is folded into audit.metadata.
  * @param {object} [ctx]      - request / actor context. Recognised keys:
@@ -191,7 +194,13 @@ export async function logSecurityEvent(eventType, payload = {}, ctx = {}) {
 
     // Pull audit-column hints out of payload so the table columns are
     // populated when possible; whatever is left goes into metadata.
+    // target_table is NOT NULL in lykn_security_audit (migration 065) —
+    // app-layer events (rate limits, auth failures, etc.) have no DB row
+    // to point at, so default to the sentinel 'request'.
     const { targetTable = null, targetId = null, ...rest } = payload || {};
+    const resolvedTargetTable = (typeof targetTable === 'string' && targetTable.length > 0)
+      ? targetTable.slice(0, 128)
+      : 'request';
 
     // 1) Structured console line — picked up by Render's log drain.
     //    Single JSON line per event for easy ingestion.
@@ -228,7 +237,7 @@ export async function logSecurityEvent(eventType, payload = {}, ctx = {}) {
     if (_supabaseAdmin) {
       const row = {
         event_type: String(eventType).slice(0, 128),
-        target_table: targetTable,
+        target_table: resolvedTargetTable,
         target_id: targetId !== null && targetId !== undefined
           ? String(targetId).slice(0, 256)
           : null,

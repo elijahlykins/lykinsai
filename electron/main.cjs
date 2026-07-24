@@ -248,13 +248,13 @@ function toolStatusLabel(name) {
   return TOOL_STATUS_LABELS[key] || "Working on it…";
 }
 
-// Mirrors the backend's EXPLICIT_WEB_SEARCH_INTENT (server.js). When the user
-// explicitly asks the overlay to search/browse/look something up online, we
-// send forceWebSearch so the server pre-fetches Serper results into the
-// prompt — same as the web app's "+" → Web search mode — instead of relying
-// on the model to decide to call the lykn_web_search tool.
-const OVERLAY_WEB_SEARCH_INTENT_RE =
-  /\b(search\s+(?:the\s+web|online|for\s+)|browse\s+(?:the\s+web|online|for\s+)|look\s+(?:it|that|this)?\s*up(?:\s+online)?|google\s+(?:it|that|this|for|\w+)|find\s+(?:.{1,40}?)\s+online)\b/i;
+// Shared with server.js via lib/webSearchIntent.cjs — explicit "search the
+// web" OR live-freshness asks (latest models / news / prices / …). Arms
+// forceWebSearch so Serper is pre-fetched instead of relying on nano's
+// June 2024 cutoff + optional tool call.
+const {
+  shouldForceWebSearch: overlayShouldForceWebSearch,
+} = require("../lib/webSearchIntent.cjs");
 
 // Mirrors server REDESIGN_INTENT_RE — when false and we have a cached Build
 // artifact, Glass sends activeArtifact and does NOT force a ground-up rebuild.
@@ -2046,7 +2046,8 @@ async function fetchAiStreamCompletion(token, body, { timeoutMs = 60000 } = {}) 
       signal: controller.signal,
     });
   if (!res.ok) {
-    return { error: `LYKN backend error (${res.status})` };
+    const err = await errorFromAiResponse(res);
+    return { error: humanizeStreamError(err) };
   }
   const ctype = res.headers.get("content-type") || "";
   if (!ctype.includes("text/event-stream") || !res.body) {
@@ -4113,14 +4114,51 @@ function humanizeStreamError(err, { forceImage = false } = {}) {
   if (/\(401\)/.test(msg)) {
     return "Your LYKN session expired. Open the main LYKN window to sign back in, then try again.";
   }
+  // Monthly plan quota (checkAiUsageLimit) — keep the server's wording when
+  // present; otherwise fall back to a clear upgrade nudge.
+  if (/ai_limit_reached|used all .+ (AI )?requests this month/i.test(msg)) {
+    if (/used all .+ requests this month/i.test(msg)) return msg;
+    return "You've used all your LYKN AI requests this month. Upgrade your plan or add a top-up to continue.";
+  }
+  // Burst / provider / express-rate-limit 429 — not "you spammed us", just
+  // temporarily unavailable. Don't retry-spam the same window.
+  if (/\(429\)|rate limit|too many requests|temporarily unavailable/i.test(msg)) {
+    return "LYKN is temporarily unavailable. Please wait a moment and try again.";
+  }
   if (forceImage) return "Couldn't create that image — try again in a moment.";
   return msg || "That didn't work — try again in a moment.";
+}
+
+/** Turn a non-OK /api/ai/* response into an Error with a useful message. */
+async function errorFromAiResponse(res) {
+  let body = null;
+  try {
+    body = await res.clone().json();
+  } catch {
+    /* ignore parse errors */
+  }
+  if (res.status === 429) {
+    if (body?.error === "ai_limit_reached") {
+      return new Error(
+        body.message ||
+          "You've used all your LYKN AI requests this month. Upgrade your plan or add a top-up to continue.",
+      );
+    }
+    return new Error("LYKN backend error (429).");
+  }
+  if (body?.message && typeof body.message === "string" && body.message.trim()) {
+    return new Error(body.message.trim());
+  }
+  if (body?.error && typeof body.error === "string" && body.error.trim()) {
+    return new Error(body.error.trim());
+  }
+  return new Error(`LYKN backend error (${res.status}).`);
 }
 
 async function readOverlayStreamResponse(res, send) {
   const ctype = res.headers.get("content-type") || "";
   if (!res.ok || !res.body) {
-    throw new Error(`LYKN backend error (${res.status}).`);
+    throw await errorFromAiResponse(res);
   }
 
   if (!ctype.includes("text/event-stream")) {
@@ -4227,8 +4265,51 @@ async function readOverlayStreamResponse(res, send) {
             // Do not auto-vault — user must Save or ask the AI to keep it.
           } else if (
             tc.status === "done" &&
+            /generate_chart$/.test(String(tc.name || "")) &&
             tc.result &&
-            /(build_template|build_spreadsheet|generate_chart|generate_diagram|manage_file|process_image)$/.test(
+            typeof tc.result.chart_url === "string" &&
+            /^https?:\/\//.test(tc.result.chart_url)
+          ) {
+            // Standalone chart tool (not Build mode): inject a clean markdown
+            // image so Glass renders it — models often mangle the huge
+            // QuickChart URL when pasting it themselves.
+            const title = String(tc.result.title || "Chart")
+              .replace(/[\]\n\r]/g, " ")
+              .trim() || "Chart";
+            accumulated = accumulated
+              .replace(/\n*!\[([^\]]*)\]\(https?:\/\/(?:www\.)?quickchart\.io[^\s)]+\)\n*/gi, "\n")
+              .replace(/^!.*(?:quickchart\.io|%22%2C%22data|bkg=white).*$/gim, "");
+            accumulated += `\n\n![${title}](${tc.result.chart_url})\n\n`;
+            send("lykn:answer-delta", {
+              text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
+            });
+          } else if (
+            tc.status === "done" &&
+            /generate_diagram$/.test(String(tc.name || "")) &&
+            tc.result
+          ) {
+            // Mermaid fences don't render in Glass — show the Kroki preview
+            // image instead (same pattern as main-chat diagram cards).
+            const preview =
+              (typeof tc.result.preview_url === "string" && tc.result.preview_url) ||
+              (typeof tc.result.kroki_url === "string" && tc.result.kroki_url) ||
+              "";
+            if (/^https?:\/\//.test(preview)) {
+              const title = String(tc.result.title || "Diagram")
+                .replace(/[\]\n\r]/g, " ")
+                .trim() || "Diagram";
+              accumulated = accumulated
+                .replace(/\n*!\[([^\]]*)\]\(https?:\/\/(?:[\w.-]+\.)?kroki\.io[^\s)]+\)\n*/gi, "\n")
+                .replace(/```mermaid[\s\S]*?```/gi, "");
+              accumulated += `\n\n![${title}](${preview})\n\n`;
+              send("lykn:answer-delta", {
+                text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
+              });
+            }
+          } else if (
+            tc.status === "done" &&
+            tc.result &&
+            /(build_template|build_spreadsheet|manage_file|process_image)$/.test(
               String(tc.name || ""),
             )
           ) {
@@ -4605,17 +4686,23 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
     "\n\nFormat your answer in clean Markdown: use short ## headers to group " +
     "sections when helpful, '- ' bullet points for lists, **bold** for key terms, " +
     "and `code` for code/identifiers. Keep it scannable — don't write one long " +
-    "paragraph when bullets or headers would read better.";
+    "paragraph when bullets or headers would read better." +
+    "\n\nSimple formatting does NOT need Build mode: for a standalone chart or " +
+    "graph, call lykn_generate_chart (Glass shows the image automatically — do " +
+    "NOT invent or paste QuickChart URLs). For a flowchart/diagram, call " +
+    "lykn_generate_diagram. Lists, headers, and bold are just Markdown in your " +
+    "reply. Reserve Build mode for live coded apps / dashboards / interactive tools.";
   if (!hasVideoTranscript) {
     // Tools are on for this turn (see useTools below), which includes live web
     // search. Without this note the screen-first framing above makes the model
     // claim it "can't browse the web" instead of just calling the tool.
     prompt +=
       "\n\nYou CAN search the live web: when the user asks about current events, " +
-      "news, prices, scores, weather, or anything requiring up-to-date information " +
-      "beyond their screen, call the lykn_web_search tool (and lykn_web_fetch to " +
-      "read a specific page). Never say you can't browse the web or suggest " +
-      "connecting external tools for it — just search.";
+      "news, prices, scores, weather, latest AI/LLM models, model comparisons, " +
+      "or anything requiring up-to-date information beyond their screen, call " +
+      "lykn_web_search (and lykn_web_fetch to read a specific page) BEFORE " +
+      "answering — never invent a stale model landscape from memory. Never say " +
+      "you can't browse the web or suggest connecting external tools for it.";
   }
   if (attachScreenshot) {
     // Describe UI locations in words only — do NOT claim to highlight, glow,
@@ -4721,12 +4808,11 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
     // done") silently no-op while the model claims success. The backend's
     // casual-turn gate still turns tools off for pure chit-chat.
     useTools: !hasVideoTranscript,
-    // Web search: explicit asks ("search the web for…", "look it up online",
-    // "google it") arm the server's Serper pre-fetch, same as the web app's
-    // "+" → Web search mode. Everything else stays skipWebSearch: true for
-    // latency — the model can still call lykn_web_search via the agent loop
-    // when it decides live data is needed.
-    ...(OVERLAY_WEB_SEARCH_INTENT_RE.test(String(text || ""))
+    // Web search: explicit asks OR live-freshness (latest models / news /
+    // prices / landscape charts) arm Serper pre-fetch. Everything else stays
+    // skipWebSearch: true for latency — the model can still call
+    // lykn_web_search via the agent loop when needed.
+    ...(overlayShouldForceWebSearch(String(text || ""))
       ? { skipWebSearch: false, forceWebSearch: true }
       : { skipWebSearch: true }),
     // Image mode (menu → "Create an image"): the server forces the
@@ -7051,14 +7137,15 @@ function initAutoUpdate() {
   });
   autoUpdater.on("update-downloaded", async (info) => {
     console.log("[update] downloaded:", info && info.version);
+    const ver = info && info.version ? ` (${info.version})` : "";
     const { response } = await dialog.showMessageBox({
       type: "info",
-      buttons: ["Restart now", "Later"],
+      buttons: ["Restart", "Later"],
       defaultId: 0,
       cancelId: 1,
       title: "Update ready",
-      message: `LYKN ${info && info.version ? info.version : ""} is ready to install.`,
-      detail: "Restart LYKN to apply the update.",
+      message: "Restart to update LYKN.",
+      detail: `A new version${ver} is ready. Restart the app to install it.`,
     });
     if (response === 0) {
       // Installing an update is a legitimate exit — don't reroute it to

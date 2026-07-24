@@ -71,10 +71,20 @@ function escapeAttr(s) {
   return escapeHtml(s);
 }
 
-/** Only allow https artifact/image hosts we mint (artifacts / API file proxy). */
+/** Undo escapeHtml so media URLs with &query= params stay valid in src/href. */
+function unescapeHtml(s) {
+  return String(s || "")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+/** Only allow https artifact/image hosts we mint, plus chart/diagram previews. */
 function isAllowedMediaUrl(url) {
   try {
-    const u = new URL(String(url || ""));
+    const u = new URL(unescapeHtml(String(url || "")));
     if (u.protocol !== "https:" && u.protocol !== "http:") return false;
     // Dev: localhost API file proxy.
     if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
@@ -84,7 +94,12 @@ function isAllowedMediaUrl(url) {
       host === "lykn-ideation.onrender.com" ||
       host.endsWith(".supabase.co") ||
       host === "lykn.io" ||
-      host === "www.lykn.io"
+      host === "www.lykn.io" ||
+      // Standalone chart / diagram tools (not Build mode).
+      host === "quickchart.io" ||
+      host === "www.quickchart.io" ||
+      host === "kroki.io" ||
+      host.endsWith(".kroki.io")
     );
   } catch {
     return false;
@@ -134,19 +149,23 @@ function renderMarkdown(md) {
     if (m) {
       flushPara();
       closeList();
-      const altLower = m[1].toLowerCase();
+      // Lines are escapeHtml'd above — decode before URL checks / src attrs
+      // so query strings (&w=, signed tokens, QuickChart c=) stay intact.
+      const altText = unescapeHtml(m[1]);
+      const mediaUrl = unescapeHtml(m[2]);
+      const altLower = altText.toLowerCase();
       // Accept lykn_artifact:, lykn-artifact:, LYKN-artifact:, etc.
       const isArtifact = /^lykn[-_]artifact\s*:/.test(altLower);
       const isVideo = /^lykn[-_]video\s*:/.test(altLower);
       if (isArtifact) {
-        if (!isAllowedMediaUrl(m[2])) {
-          html += `<p><a href="${escapeAttr(m[2])}" rel="noopener noreferrer">Open artifact ↗</a></p>`;
+        if (!isAllowedMediaUrl(mediaUrl)) {
+          html += `<p><a href="${escapeAttr(mediaUrl)}" rel="noopener noreferrer">Open artifact ↗</a></p>`;
         } else {
-        const artTitle = m[1].slice(m[1].indexOf(":") + 1).trim() || "Interactive artifact";
+        const artTitle = altText.slice(altText.indexOf(":") + 1).trim() || "Interactive artifact";
         const artFile =
           (artTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
             "artifact") + ".html";
-        const safeUrl = escapeAttr(m[2]);
+        const safeUrl = escapeAttr(mediaUrl);
         const safeTitle = escapeAttr(artTitle);
         const safeFile = escapeAttr(artFile);
         html +=
@@ -170,14 +189,14 @@ function renderMarkdown(md) {
         }
       } else if (isVideo) {
         // Remotion render (lykn_render_video): inline playable mp4 card.
-        const vidTitle = m[1].slice(m[1].indexOf(":") + 1).trim() || "Video";
+        const vidTitle = altText.slice(altText.indexOf(":") + 1).trim() || "Video";
         const vidFile =
           (vidTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
             "video") + ".mp4";
-        if (!isAllowedMediaUrl(m[2])) {
-          html += `<p><a href="${escapeAttr(m[2])}" rel="noopener noreferrer">${escapeAttr(vidTitle)} ↗</a></p>`;
+        if (!isAllowedMediaUrl(mediaUrl)) {
+          html += `<p><a href="${escapeAttr(mediaUrl)}" rel="noopener noreferrer">${escapeAttr(vidTitle)} ↗</a></p>`;
         } else {
-        const safeUrl = escapeAttr(m[2]);
+        const safeUrl = escapeAttr(mediaUrl);
         const safeTitle = escapeAttr(vidTitle);
         const safeFile = escapeAttr(vidFile);
         html +=
@@ -190,14 +209,29 @@ function renderMarkdown(md) {
           `<video src="${safeUrl}" controls playsinline preload="metadata"></video>` +
           `</div>`;
         }
-      } else if (isAllowedMediaUrl(m[2])) {
-        const safeUrl = escapeAttr(m[2]);
-        const safeAlt = escapeAttr(m[1]);
+      } else if (isAllowedMediaUrl(mediaUrl)) {
+        const safeUrl = escapeAttr(mediaUrl);
+        const safeAlt = escapeAttr(altText);
         html +=
           `<div class="md-img"><img src="${safeUrl}" alt="${safeAlt}" loading="lazy" />` +
           `<button class="md-dl md-img-dl" type="button" data-url="${safeUrl}" data-name="" data-title="${safeAlt || "Generated image"}">Download</button>` +
           `</div>`;
+      } else {
+        // Unknown host — show a link instead of dropping the line (avoids
+        // silent chart/image loss when a new preview host is introduced).
+        const safeUrl = escapeAttr(mediaUrl);
+        const safeAlt = escapeAttr(altText || "Open media");
+        html += `<p><a href="${safeUrl}" rel="noopener noreferrer">${safeAlt} ↗</a></p>`;
       }
+      continue;
+    }
+    // Mangled chart dumps (model truncated ![alt](https://quickchart…) mid-URL)
+    // look like "!Title…%22%2C%22data…&bkg=white)" — hide them; the shell
+    // injects a clean markdown image from the tool result when available.
+    if (
+      /^!/.test(line.trim()) &&
+      /(quickchart\.io|kroki\.io|%22%2C%22data|&amp;w=\d|&amp;bkg=white|bkg=white\))/i.test(line)
+    ) {
       continue;
     }
     m = /^(#{1,6})\s+(.*)$/.exec(line);
