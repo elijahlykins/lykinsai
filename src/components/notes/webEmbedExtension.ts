@@ -70,8 +70,10 @@ export const WebEmbed = Node.create({
           height: "360",
           loading: "lazy",
           referrerpolicy: "no-referrer-when-downgrade",
+          // No allow-popups-to-escape-sandbox — popups stay constrained to the
+          // iframe's sandbox so a hostile embed can't open an unsandboxed window.
           sandbox:
-            "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms allow-presentation",
+            "allow-scripts allow-same-origin allow-popups allow-forms allow-presentation",
           allowfullscreen: "true",
           class: "w-full h-[min(360px,56.25vw)] min-h-[200px] block bg-white dark:bg-black/20",
         }),

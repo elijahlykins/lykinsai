@@ -10,6 +10,7 @@
   "files": [
     "electron/**/*",
     "lib/browserScreen.cjs",
+    "lib/webSearchIntent.cjs",
     "package.json",
     "!**/node_modules/**",
     "node_modules/electron-updater/**",

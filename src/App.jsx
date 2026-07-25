@@ -151,7 +151,7 @@ function useSubscriptionGate() {
   const location = useLocation();
   const exempt = isSubscriptionGateExempt(location.pathname);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["billing-me", user?.id || "guest"],
     queryFn: fetchBillingMeForGate,
     enabled: Boolean(user?.id) && !exempt,
@@ -160,18 +160,31 @@ function useSubscriptionGate() {
   });
 
   if (authLoading || !user || exempt) {
-    return { redirect: null, loading: false };
+    return { redirect: null, loading: false, error: false, retry: null };
   }
   if (isLoading) {
-    return { redirect: null, loading: true };
+    return { redirect: null, loading: true, error: false, retry: null };
   }
-  if (!isError && data && !hasAppAccess(data)) {
+  // Fail closed on billing errors — never admit unpaid users when we can't
+  // verify access. Paid users see a retry screen instead of a silent open.
+  if (isError) {
+    return {
+      redirect: null,
+      loading: false,
+      error: true,
+      retry: () => {
+        void refetch();
+      },
+      retrying: isFetching,
+    };
+  }
+  if (data && !hasAppAccess(data)) {
     if (location.pathname === "/start-trial") {
-      return { redirect: null, loading: false };
+      return { redirect: null, loading: false, error: false, retry: null };
     }
-    return { redirect: "/start-trial", loading: false };
+    return { redirect: "/start-trial", loading: false, error: false, retry: null };
   }
-  return { redirect: null, loading: false };
+  return { redirect: null, loading: false, error: false, retry: null };
 }
 
 function AppShell() {
@@ -244,7 +257,30 @@ function AppShell() {
     chromeHidden;
 
   if (subscriptionGate.loading) {
-    return null;
+    return loadingFallback;
+  }
+
+  if (subscriptionGate.error) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white px-6">
+        <div className="w-full max-w-sm text-center">
+          <p className="text-base font-semibold text-slate-900">
+            Couldn&apos;t verify your subscription
+          </p>
+          <p className="mt-2 text-sm text-slate-500">
+            Check your connection and try again. LYKN won&apos;t open until billing status is confirmed.
+          </p>
+          <button
+            type="button"
+            onClick={() => subscriptionGate.retry?.()}
+            disabled={subscriptionGate.retrying}
+            className="mt-5 inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {subscriptionGate.retrying ? "Retrying…" : "Retry"}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (subscriptionGate.redirect && location.pathname !== subscriptionGate.redirect) {
@@ -265,16 +301,12 @@ function AppShell() {
       <div className={isStandalone ? "" : "app-content"}>
         <RouteErrorBoundary>
           <Routes>
-            {/* In-browser login is desktop-only while the web app is unplugged.
-                Desktop Google OAuth still uses /desktop-auth in the system browser. */}
-            <Route
-              path="/login"
-              element={
-                <DesktopProductOnly>
-                  <Login />
-                </DesktopProductOnly>
-              }
-            />
+            {/* Login stays available on the website for share-target / email
+                confirm / password flows. Product routes remain desktop-gated;
+                Login's post-auth router sends web users to /download (or
+                /share when that was the intent). Desktop Google OAuth still
+                uses /desktop-auth in the system browser. */}
+            <Route path="/login" element={<Login />} />
             {/* Browser-side half of the Mac app's Google sign-in: runs the
                 OAuth round-trip in the real browser, then deep-links the
                 session back into the app (lykn://auth). Not protected — it

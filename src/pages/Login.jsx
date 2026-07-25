@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isConnectOnboardingDone } from "@/lib/landingHandoff";
+import { resolvePostAuthPath } from "@/lib/webAppAccess";
 import { motion, AnimatePresence } from "framer-motion";
 import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-web.png";
 
@@ -231,15 +232,28 @@ export default function Login() {
     // after a normal sign-in to /app.
     const hasExplicitFrom =
       !!fromPath && fromPath !== "/start-trial" && fromPath !== "/login";
+    // OAuth round-trips drop React router state — recover a pending PWA /
+    // extension share so /share can finish saving after Google sign-in.
+    let pendingShareDest = "";
+    try {
+      const pending = String(sessionStorage.getItem("lykn:pendingShare") || "").trim();
+      if (pending && /^https?:\/\//i.test(pending)) {
+        pendingShareDest = `/share?url=${encodeURIComponent(pending)}`;
+      }
+    } catch {
+      /* storage may be blocked */
+    }
+    let dest = "/app";
     if (hasExplicitFrom) {
-      nav(from, { replace: true });
-      return;
+      dest = from;
+    } else if (pendingShareDest) {
+      dest = pendingShareDest;
+    } else if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
+      dest = "/onboarding/connect";
     }
-    if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
-      nav("/onboarding/connect", { replace: true });
-      return;
-    }
-    nav("/app", { replace: true });
+    // Website keeps /login + /share reachable; product routes still resolve
+    // to /download when the web app is unplugged (session stays for desktop).
+    nav(resolvePostAuthPath(dest), { replace: true });
   }, [loading, signingOut, nav, user, from, location.state]);
 
   // `error` state is set with already-humanized copy (validation + the catch

@@ -7,7 +7,7 @@ import {
   type VaultAttachment as VaultAttachmentData,
 } from "@/lib/vaultContent";
 import LinkPreview from "@/components/LinkPreview";
-import { safeExternalUrl } from "@/lib/safeExternalUrl";
+import { safeExternalUrl, safeHtmlPreviewUrl } from "@/lib/safeExternalUrl";
 
 // Renders a single Vault attachment in whatever shape best fits its
 // `type` field: image / video / YouTube embed / bookmark / spreadsheet
@@ -257,8 +257,8 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
         </div>
       );
     }
-    const safeUrl = safeExternalUrl(signedUrl || (!needsSigning ? displayUrl : ""));
-    if (safeUrl) {
+    const htmlPreview = safeHtmlPreviewUrl(signedUrl || (!needsSigning ? displayUrl : ""));
+    if (htmlPreview) {
       return (
         <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8 bg-[#15130f]">
           {name ? (
@@ -267,10 +267,10 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
             </p>
           ) : null}
           <iframe
-            src={safeUrl}
+            src={htmlPreview.url}
             title={name || "Artifact preview"}
             className={full ? "w-full h-[min(60vh,480px)] border-0" : "w-full h-[180px] border-0"}
-            sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+            sandbox={htmlPreview.sandbox}
             loading="lazy"
             referrerPolicy="no-referrer"
           />

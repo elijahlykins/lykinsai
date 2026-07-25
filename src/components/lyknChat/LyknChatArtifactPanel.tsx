@@ -3,6 +3,12 @@ import { Check, ChevronDown, Code2, Copy, Download, ExternalLink, Eye, FileDown,
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
+import {
+  isTrustedHtmlPreviewHost,
+  safeAttachmentUrl,
+  safeExternalUrl,
+  safeHtmlPreviewUrl,
+} from "@/lib/safeExternalUrl";
 
 export type LyknChatArtifactPanelProps = {
   artifact: ChatArtifact | null;
@@ -24,14 +30,45 @@ export type LyknChatArtifactPanelProps = {
 /** Desktop split-view width — kept in sync with the chat's right inset. */
 export const ARTIFACT_PANEL_WIDTH = "min(760px, 50vw)";
 
-const IFRAME_SANDBOX =
-  "allow-scripts allow-same-origin allow-popups allow-forms allow-presentation";
 // Inline (srcDoc) HTML is same-origin with the app; dropping allow-same-origin
 // runs AI-generated scripts in a null origin so they can't reach our DOM or the
 // Supabase session in localStorage. Cross-origin previewUrl frames keep
-// allow-same-origin (they're isolated by their own origin).
+// allow-same-origin (they're isolated by their own origin) via safeHtmlPreviewUrl.
 const IFRAME_SANDBOX_SRCDOC =
   "allow-scripts allow-popups allow-forms allow-presentation";
+
+/**
+ * Accept runtime/console errors only from this artifact's iframe — not from
+ * arbitrary tabs posting `{ source: "lykn-artifact" }`.
+ * For sandboxed srcDoc (`origin === "null"`), require event.source to match
+ * our preview iframe's contentWindow so any other null-origin frame can't spoof.
+ */
+function isTrustedArtifactMessage(
+  ev: MessageEvent,
+  previewUrl: string | null | undefined,
+  iframe: HTMLIFrameElement | null,
+): boolean {
+  if (iframe?.contentWindow && ev.source === iframe.contentWindow) {
+    return true;
+  }
+  const origin = String(ev.origin || "");
+  // Never trust bare "null" without a contentWindow match above.
+  if (origin === "null") return false;
+  if (typeof window !== "undefined" && origin === window.location.origin) return true;
+  try {
+    if (previewUrl) {
+      const previewOrigin = new URL(previewUrl).origin;
+      if (origin === previewOrigin) return true;
+    }
+  } catch {
+    /* ignore bad preview URL */
+  }
+  try {
+    return isTrustedHtmlPreviewHost(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
 
 // Print stylesheet injected into a throwaway iframe so "Save as PDF" matches
 // the on-screen preview exactly (the browser's own engine renders it). It also
@@ -190,8 +227,11 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
   // chat turn can include them in [ARTIFACT_OPEN] for the coding agent.
   const artifactRef = useRef(artifact);
   artifactRef.current = artifact;
+  const livePreviewUrlRef = useRef(livePreviewUrl);
+  livePreviewUrlRef.current = livePreviewUrl;
   const onArtifactUpdateRef = useRef(onArtifactUpdate);
   onArtifactUpdateRef.current = onArtifactUpdate;
+  const previewIframeRef = useRef<HTMLIFrameElement | null>(null);
   useEffect(() => {
     const onMsg = (ev: MessageEvent) => {
       const current = artifactRef.current;
@@ -199,6 +239,11 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
       if (!current || current.toolName !== "lykn_build_react_artifact" || !update) return;
       const data = ev?.data;
       if (!data || data.source !== "lykn-artifact") return;
+      const previewForTrust =
+        livePreviewUrlRef.current || current.previewUrl || current.downloadUrl || null;
+      if (!isTrustedArtifactMessage(ev, previewForTrust, previewIframeRef.current)) {
+        return;
+      }
       if (data.type === "ready") {
         if (current.runtimeErrors?.length) {
           update({ ...current, runtimeErrors: [] });
@@ -316,7 +361,9 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
       setSaveState("idle");
     }
   }, [artifact, onSaveToVault, saveState]);
-  const openUrl = shown?.previewUrl || shown?.downloadUrl;
+  const openUrl =
+    safeAttachmentUrl(shown?.previewUrl || shown?.downloadUrl) ||
+    safeExternalUrl(shown?.previewUrl || shown?.downloadUrl);
   const downloads = shown?.downloads && shown.downloads.length
     ? shown.downloads
     : shown?.downloadUrl
@@ -493,9 +540,9 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     PDF
                   </button>
                 ) : null}
-                {downloads.length === 1 ? (
+                {downloads.length === 1 && safeAttachmentUrl(downloads[0].url) ? (
                   <a
-                    href={downloads[0].url}
+                    href={safeAttachmentUrl(downloads[0].url)!}
                     download={downloads[0].filename}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -519,21 +566,25 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     </button>
                     {dlMenuOpen ? (
                       <div className="absolute right-0 top-full z-10 mt-1 min-w-[10rem] overflow-hidden rounded-xl border border-black/10 bg-white py-1 shadow-lg dark:border-white/12 dark:bg-[#221f1c]">
-                        {downloads.map((d, i) => (
-                          <a
-                            key={`${d.url}:${i}`}
-                            href={d.url}
-                            download={d.filename}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={() => setDlMenuOpen(false)}
-                            className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-foreground transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
-                          >
-                            <Download className="h-3.5 w-3.5 opacity-60" />
-                            <span className="truncate">{d.filename || `${(d.format || "file").toUpperCase()} file`}</span>
-                            <span className="ml-auto text-[10px] uppercase text-muted-foreground">{d.format}</span>
-                          </a>
-                        ))}
+                        {downloads.map((d, i) => {
+                          const href = safeAttachmentUrl(d.url);
+                          if (!href) return null;
+                          return (
+                            <a
+                              key={`${d.url}:${i}`}
+                              href={href}
+                              download={d.filename}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={() => setDlMenuOpen(false)}
+                              className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-foreground transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+                            >
+                              <Download className="h-3.5 w-3.5 opacity-60" />
+                              <span className="truncate">{d.filename || `${(d.format || "file").toUpperCase()} file`}</span>
+                              <span className="ml-auto text-[10px] uppercase text-muted-foreground">{d.format}</span>
+                            </a>
+                          );
+                        })}
                       </div>
                     ) : null}
                   </div>
@@ -643,23 +694,35 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                 // srcdoc iframes inherit the parent page's CSP, and prod ships
                 // `script-src 'self'` (vercel.json) — that blocks React/Babel
                 // runners and deck navigation scripts, leaving a blank panel.
-                (livePreviewUrl || shown.previewUrl) ? (
-                  <iframe
-                    title={shown.title}
-                    src={livePreviewUrl || shown.previewUrl}
-                    className="h-full w-full border-0 bg-white"
-                    sandbox={IFRAME_SANDBOX}
-                    referrerPolicy="no-referrer"
-                  />
-                ) : shown.srcDoc ? (
-                  <iframe
-                    title={shown.title}
-                    srcDoc={shown.srcDoc}
-                    className="h-full w-full border-0 bg-white"
-                    sandbox={IFRAME_SANDBOX_SRCDOC}
-                    referrerPolicy="no-referrer"
-                  />
-                ) : null
+                (() => {
+                  const previewSrc = livePreviewUrl || shown.previewUrl || "";
+                  const htmlPreview = previewSrc ? safeHtmlPreviewUrl(previewSrc) : null;
+                  if (htmlPreview) {
+                    return (
+                      <iframe
+                        ref={previewIframeRef}
+                        title={shown.title}
+                        src={htmlPreview.url}
+                        className="h-full w-full border-0 bg-white"
+                        sandbox={htmlPreview.sandbox}
+                        referrerPolicy="no-referrer"
+                      />
+                    );
+                  }
+                  if (shown.srcDoc) {
+                    return (
+                      <iframe
+                        ref={previewIframeRef}
+                        title={shown.title}
+                        srcDoc={shown.srcDoc}
+                        className="h-full w-full border-0 bg-white"
+                        sandbox={IFRAME_SANDBOX_SRCDOC}
+                        referrerPolicy="no-referrer"
+                      />
+                    );
+                  }
+                  return null;
+                })()
               ) : shown.kind === "video" && shown.previewUrl ? (
                 <div className="flex h-full w-full items-center justify-center bg-black">
                   <video

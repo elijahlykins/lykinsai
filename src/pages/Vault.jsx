@@ -42,7 +42,7 @@ import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import VaultNewNoteChooser from "@/components/vault/VaultNewNoteChooser";
 import DragDropFileUpload from "@/components/files/DragDropFileUpload";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
-import { safeExternalUrl, safeAttachmentUrl } from "@/lib/safeExternalUrl";
+import { safeExternalUrl, safeAttachmentUrl, safeHtmlPreviewUrl } from "@/lib/safeExternalUrl";
 import { describeVaultItemInBackground } from "@/lib/vault/describeVaultItem";
 import { useVaultUploadStore } from "@/store/vaultUploadStore";
 import { useUsageGate } from "@/lib/useUsageGate";
@@ -5566,9 +5566,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       const isStorageBacked = !!(storageTarget?.bucket && storageTarget?.path);
       const candidate =
         resolvedAttachmentUrls[card.id] || (!isStorageBacked ? resolvedUrl : "");
-      const embedUrl = /supabase\.co\/storage\//i.test(candidate || "")
+      const htmlPreview = /supabase\.co\/storage\//i.test(candidate || "")
         ? null
-        : safeAttachmentUrl(candidate);
+        : safeHtmlPreviewUrl(candidate);
       const htmlFailed = failedImageIds.has(card.id);
       return (
         <div className="rounded-2xl overflow-hidden glass-control cursor-pointer">
@@ -5580,12 +5580,12 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             </div>
           </div>
           <div className={`w-full ${tileHeightClass} overflow-hidden bg-[#15130f]`}>
-            {embedUrl ? (
+            {htmlPreview ? (
               <iframe
-                src={embedUrl}
+                src={htmlPreview.url}
                 title={title || "Artifact preview"}
                 className="w-full h-full border-0 pointer-events-none"
-                sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+                sandbox={htmlPreview.sandbox}
                 loading="lazy"
                 referrerPolicy="no-referrer"
                 draggable={false}
@@ -8134,13 +8134,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               resolvedAttachmentUrls[card.id] || (!htmlIsStorage ? resolvedUrl : "");
             const htmlEmbed = /supabase\.co\/storage\//i.test(candidate || "")
               ? null
-              : safeAttachmentUrl(candidate);
+              : safeHtmlPreviewUrl(candidate);
             body = htmlEmbed ? (
               <iframe
                 title={title}
-                src={htmlEmbed}
+                src={htmlEmbed.url}
                 className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-[#15130f]"
-                sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+                sandbox={htmlEmbed.sandbox}
                 referrerPolicy="no-referrer"
               />
             ) : (

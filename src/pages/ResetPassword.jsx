@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
+import { canUseWebApp, resolvePostAuthPath } from "@/lib/webAppAccess";
 
 // Landing page for Supabase password-recovery links
 // (SupabaseAuth.resetPasswordForEmail redirects here). detectSessionInUrl
@@ -62,8 +63,11 @@ export default function ResetPassword() {
       const { error: updateErr } = await supabase.auth.updateUser({ password });
       if (updateErr) throw updateErr;
       setDone(true);
-      // Recovery leaves the user signed in — drop them into the app.
-      setTimeout(() => nav("/app", { replace: true }), 1200);
+      // Recovery leaves the user signed in. On desktop/web-enabled clients
+      // open the product; on the public website land on /download (session
+      // is already saved for the Mac app).
+      const dest = resolvePostAuthPath("/app");
+      setTimeout(() => nav(dest, { replace: true }), 1200);
     } catch (err) {
       if (import.meta.env.DEV) console.error("[ResetPassword]", err);
       const msg = String(err?.message || "").toLowerCase();
@@ -111,12 +115,25 @@ export default function ResetPassword() {
   }
 
   if (done) {
+    const webOk = canUseWebApp();
     return (
       <Shell>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900 mb-2">
           Password updated
         </h1>
-        <p className="text-sm text-slate-500">Taking you into LYKN…</p>
+        <p className="text-sm text-slate-500">
+          {webOk
+            ? "Taking you into LYKN…"
+            : "Open the LYKN desktop app to continue — you're signed in."}
+        </p>
+        {!webOk && (
+          <Link
+            to="/download"
+            className="mt-6 inline-flex text-sm font-semibold text-blue-600 hover:text-blue-700"
+          >
+            Get the desktop app
+          </Link>
+        )}
       </Shell>
     );
   }

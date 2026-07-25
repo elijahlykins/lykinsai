@@ -5,6 +5,8 @@
 // user-pasted or model-generated, so every href built from them must pass
 // through here.
 
+import { API_BASE_URL } from "@/lib/api-config";
+
 const SAFE_SCHEME_RE = /^(https?|mailto|tel):/i;
 
 /**
@@ -23,6 +25,11 @@ export function safeExternalUrl(raw: unknown): string | null {
 
   if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
     return SAFE_SCHEME_RE.test(trimmed) ? trimmed : null;
+  }
+
+  // Protocol-relative (`//evil.com`) — treat as https, never as an SPA path.
+  if (trimmed.startsWith("//")) {
+    return SAFE_SCHEME_RE.test(`https:${trimmed}`) ? `https:${trimmed}` : null;
   }
 
   // Scheme-less — assume https only when it looks like a host, never blindly
@@ -62,4 +69,108 @@ export function safeAttachmentUrl(raw: unknown): string | null {
       : null;
   }
   return null;
+}
+
+/**
+ * Same-app path for react-router navigation. Rejects protocol-relative
+ * (`//evil.com`), backslash tricks, and any absolute URL — those must go
+ * through safeExternalUrl and open externally.
+ */
+export function safeInternalPath(raw: unknown): string | null {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return null;
+  if (/[\u0000-\u001f]/.test(trimmed)) return null;
+  // Path-absolute only — never protocol-relative.
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return null;
+  if (trimmed.includes("\\")) return null;
+  try {
+    const u = new URL(trimmed, "https://lykn.local");
+    // Guard against weird parses that escape our fake origin.
+    if (u.origin !== "https://lykn.local") return null;
+    return `${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return null;
+  }
+}
+
+export type SafeNavHref =
+  | { kind: "internal"; href: string }
+  | { kind: "external"; href: string };
+
+/** Resolve a model/user href to either an SPA path or a safe external URL. */
+export function safeNavHref(raw: unknown): SafeNavHref | null {
+  const internal = safeInternalPath(raw);
+  if (internal) return { kind: "internal", href: internal };
+  const external = safeExternalUrl(raw);
+  if (external) return { kind: "external", href: external };
+  return null;
+}
+
+/** Hosts allowed to host HTML artifact / vault interactive previews. */
+export function isTrustedHtmlPreviewHost(hostname: string): boolean {
+  const host = String(hostname || "").toLowerCase();
+  if (
+    host === "artifacts.lykn.io" ||
+    host === "api.lykn.io" ||
+    host === "lykn-ideation.onrender.com" ||
+    host === "lykn.io" ||
+    host === "www.lykn.io" ||
+    host.endsWith(".supabase.co") ||
+    host === "localhost" ||
+    host === "127.0.0.1"
+  ) {
+    return true;
+  }
+  // Dev / env-configured API host (e.g. custom Render URL).
+  try {
+    if (API_BASE_URL) {
+      const apiHost = new URL(API_BASE_URL).hostname.toLowerCase();
+      if (apiHost && host === apiHost) return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+const HTML_SANDBOX_CROSS_ORIGIN =
+  "allow-scripts allow-same-origin allow-popups allow-forms allow-modals allow-presentation";
+const HTML_SANDBOX_OPAQUE =
+  "allow-scripts allow-popups allow-forms allow-modals allow-presentation";
+
+/**
+ * URL + sandbox for HTML preview iframes. Blocks arbitrary https hosts and
+ * never pairs `blob:` / same-origin frames with `allow-same-origin` (that
+ * combo would let sandboxed scripts reach the app's storage).
+ */
+export function safeHtmlPreviewUrl(
+  raw: unknown,
+): { url: string; sandbox: string } | null {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return null;
+  if (/[\u0000-\u001f]/.test(trimmed)) return null;
+
+  if (/^blob:/i.test(trimmed)) {
+    return { url: trimmed, sandbox: HTML_SANDBOX_OPAQUE };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+
+  const isLocalHttp =
+    url.protocol === "http:" &&
+    (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+  if (url.protocol !== "https:" && !isLocalHttp) return null;
+  if (!isTrustedHtmlPreviewHost(url.hostname)) return null;
+
+  const sameOrigin =
+    typeof window !== "undefined" && url.origin === window.location.origin;
+  return {
+    url: trimmed,
+    sandbox: sameOrigin ? HTML_SANDBOX_OPAQUE : HTML_SANDBOX_CROSS_ORIGIN,
+  };
 }

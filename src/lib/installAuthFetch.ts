@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { API_BASE_URL } from '@/lib/api-config';
+import { isDesktopShell } from '@/lib/webAppAccess';
 
 const _originalFetch = window.fetch.bind(window);
 
@@ -64,8 +65,11 @@ async function getToken(forceRefresh = false): Promise<string | null> {
 // expired after the window sits occluded/throttled for an hour. This lets the
 // shell drive a real refresh through THIS Supabase client (the one that owns
 // the rotating refresh token) instead of guessing from storage.
-(window as unknown as Record<string, unknown>).__lyknGetFreshToken = (force = true) =>
-  getToken(Boolean(force));
+// Browser tabs must not expose this — any XSS would mint fresh JWTs via it.
+if (isDesktopShell()) {
+  (window as unknown as Record<string, unknown>).__lyknGetFreshToken = (force = true) =>
+    getToken(Boolean(force));
+}
 
 /** True when the request can be safely re-sent (body isn't a one-shot stream). */
 function isRetriable(input: RequestInfo | URL, init?: RequestInit): boolean {

@@ -71,7 +71,7 @@ import {
   customModelSelectValue,
   parseCustomModelSelectValue,
 } from "@/lib/modelBuilder/customModelSelect";
-import { toChatModelKey } from "@/lib/lyknChat/chatModelKey";
+import { fromChatModelKey, toChatModelKey } from "@/lib/lyknChat/chatModelKey";
 import { patchThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
 import LyknChatPlusMenu from "@/components/lyknChat/LyknChatPlusMenu";
 import LyknChatProjectPicker, { type LyknChatScopedProject } from "@/components/lyknChat/LyknChatProjectPicker";
@@ -875,6 +875,9 @@ export default function LyknChat() {
       loadActiveCustomModelId(),
     ),
   );
+  // When true, ignore global settings → picker sync so a hydrated board key
+  // isn't immediately overwritten by localStorage / cross-tab events.
+  const applyingChatModelKeyRef = useRef(false);
   const [publishedCustomModels, setPublishedCustomModels] = useState<
     { id: string; name: string; baseModelId?: string }[]
   >([]);
@@ -1359,6 +1362,7 @@ export default function LyknChat() {
     savedMediaUrls,
     savedYouTubeIds,
     chatModelKeyRef,
+    onChatModelKeyHydrated,
   });
 
   const {
@@ -1779,13 +1783,36 @@ export default function LyknChat() {
   /*  Chat engine hook                                                    */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
-    const sync = () => setActiveCustomModelId(loadActiveCustomModelId());
+    const sync = () => {
+      if (applyingChatModelKeyRef.current) return;
+      setActiveCustomModelId(loadActiveCustomModelId());
+    };
     window.addEventListener("lykn_active_custom_model_changed", sync);
     return () => window.removeEventListener("lykn_active_custom_model_changed", sync);
   }, []);
   useEffect(() => {
+    if (applyingChatModelKeyRef.current) return;
     chatModelKeyRef.current = toChatModelKey(selectedModel, activeCustomModelId);
   }, [selectedModel, activeCustomModelId]);
+
+  const onChatModelKeyHydrated = useCallback((key: string | null) => {
+    if (!key) return;
+    const { selectedModel: nextModel, customModelId } = fromChatModelKey(key);
+    applyingChatModelKeyRef.current = true;
+    chatModelKeyRef.current = key;
+    if (customModelId) {
+      setActiveCustomModelId(customModelId);
+      setSelectedModel(nextModel || "lykn");
+    } else {
+      setActiveCustomModelId(null);
+      setSelectedModel(nextModel || "lykn");
+    }
+    // Release after paint so the selectedModel effect doesn't clobber the
+    // hydrated key, and later user/settings changes resume normal sync.
+    requestAnimationFrame(() => {
+      applyingChatModelKeyRef.current = false;
+    });
+  }, []);
   // Chat "+" → Projects: when the user scopes the chat to a specific LYKN
   // project, it overrides the board-derived Omnia project id so the server
   // loads that project's neurons / working memory / activity for the chat.
@@ -2230,8 +2257,10 @@ export default function LyknChat() {
 
 
   // Sync model picker with settings changes (same-tab + cross-tab), like the old Create panel.
+  // Skip while applying a per-chat hydrated key so reopen doesn't snap back to global.
   useEffect(() => {
     const sync = () => {
+      if (applyingChatModelKeyRef.current) return;
       try {
         const saved = localStorage.getItem("lykinsai_settings");
         if (!saved) return;

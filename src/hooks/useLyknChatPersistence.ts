@@ -94,6 +94,8 @@ export interface UseLyknChatPersistenceParams {
   savedMediaUrls: Set<string>;
   savedYouTubeIds: Set<string>;
   chatModelKeyRef?: MutableRefObject<string | null>;
+  /** Apply the board's saved model key to the picker when a chat hydrates. */
+  onChatModelKeyHydrated?: (key: string | null) => void;
 }
 
 export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
@@ -105,7 +107,10 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
     onCanvasChange, onDraftEffectCleanup,
     savedMediaUrls, savedYouTubeIds,
     chatModelKeyRef,
+    onChatModelKeyHydrated,
   } = params;
+  const onChatModelKeyHydratedRef = useRef(onChatModelKeyHydrated);
+  onChatModelKeyHydratedRef.current = onChatModelKeyHydrated;
 
   /* ------------------------------------------------------------------ */
   /*  State                                                              */
@@ -296,6 +301,11 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
           ? snapshot.chatModelKey.trim()
           : null;
       if (chatModelKeyRef) chatModelKeyRef.current = hydratedModelKey;
+      try {
+        onChatModelKeyHydratedRef.current?.(hydratedModelKey);
+      } catch {
+        /* picker sync must not block hydration */
+      }
 
       (async () => {
         const innerSt = useLyknChatStore.getState();

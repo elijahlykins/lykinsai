@@ -25,6 +25,7 @@ import type { FactNeuron } from "@/lib/ai/learnedTag";
 import { labelForModelId } from "@/lib/ai/conversationFormat";
 import { KNOWN_MODEL_IDS } from "@/lib/modelCatalog";
 import { supabase } from "@/lib/supabase";
+import { safeNavHref } from "@/lib/safeExternalUrl";
 
 // Resolve a user-facing model name for the AI Response pill. The server
 // reports the REAL resolved backend in `served_model` — but LYKN is a
@@ -534,8 +535,9 @@ const LoadInBubble: React.FC<{
         <div className="overflow-hidden min-h-0">
           <div className="px-2 pb-2 pt-1 space-y-1 border-t border-white/30 dark:border-white/5">
             {group.items.map((it) => {
-              const hasHref = typeof it.href === "string" && it.href.length > 0;
-              const isInternal = hasHref && it.href!.startsWith("/");
+              const navHref = typeof it.href === "string" ? safeNavHref(it.href) : null;
+              const hasHref = !!navHref;
+              const isInternal = navHref?.kind === "internal";
               // Optional grounding chips ("Grounded in: <Notion page>,
               // <Calendar event>, ...") rendered under the item's
               // subtitle. Older cached briefings won't carry the
@@ -561,24 +563,24 @@ const LoadInBubble: React.FC<{
                           Grounded in
                         </span>
                         {provenance.slice(0, 3).map((chip) => {
-                          const chipHasHref = typeof chip.href === "string" && chip.href.length > 0;
-                          const chipInternal = chipHasHref && chip.href!.startsWith("/");
+                          const chipNav = typeof chip.href === "string" ? safeNavHref(chip.href) : null;
+                          const chipInternal = chipNav?.kind === "internal";
                           const onChipClick = (e: React.MouseEvent) => {
                             // Stop the parent row's anchor click from
                             // double-navigating when the chip lives
                             // inside an outer <a>.
                             e.stopPropagation();
-                            if (!chipInternal || !chipHasHref) return;
+                            if (!chipInternal || !chipNav) return;
                             if (e.metaKey || e.ctrlKey || e.shiftKey || (e as unknown as { button?: number }).button === 1) return;
                             e.preventDefault();
-                            navigate(chip.href!);
+                            navigate(chipNav.href);
                           };
                           const chipFace = (
                             <span className="inline-flex max-w-[180px] items-center rounded-full border border-black/[0.08] dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.04] px-1.5 py-[1px] text-[10.5px] font-medium text-black/70 dark:text-white/70 truncate">
                               {chip.label}
                             </span>
                           );
-                          if (!chipHasHref) {
+                          if (!chipNav) {
                             return (
                               <span key={chip.id}>{chipFace}</span>
                             );
@@ -586,7 +588,7 @@ const LoadInBubble: React.FC<{
                           return (
                             <a
                               key={chip.id}
-                              href={chip.href}
+                              href={chipNav.href}
                               onClick={onChipClick}
                               target={chipInternal ? undefined : "_blank"}
                               rel={chipInternal ? undefined : "noopener noreferrer"}
@@ -605,7 +607,7 @@ const LoadInBubble: React.FC<{
                   ) : null}
                 </div>
               );
-              if (!hasHref) {
+              if (!navHref) {
                 return <div key={`${msgId}-${group.id}-${it.id}`}>{inner}</div>;
               }
               // Internal hrefs route via react-router so we don't
@@ -616,12 +618,12 @@ const LoadInBubble: React.FC<{
                 if (!isInternal) return;
                 if (e.metaKey || e.ctrlKey || e.shiftKey || (e as any).button === 1) return;
                 e.preventDefault();
-                navigate(it.href!);
+                navigate(navHref.href);
               };
               return (
                 <a
                   key={`${msgId}-${group.id}-${it.id}`}
-                  href={it.href}
+                  href={navHref.href}
                   onClick={onClick}
                   target={isInternal ? undefined : "_blank"}
                   rel={isInternal ? undefined : "noopener noreferrer"}
@@ -1353,7 +1355,29 @@ const MessageItem = React.memo(function MessageItem({
                           // grid auto-scrolls and highlights.
                           <div className="flex flex-wrap gap-2 pt-1">
                             {sec.chips.map((chip) => {
-                              const isInternal = chip.href.startsWith("/");
+                              const chipNav = safeNavHref(chip.href);
+                              if (!chipNav) {
+                                return (
+                                  <div
+                                    key={`${msg.id}-${sec.id}-chip-${chip.id}`}
+                                    title={`Connect ${chip.label}`}
+                                    aria-label={`Connect ${chip.label}`}
+                                    className="group/chip flex flex-col items-center gap-1 w-[68px] py-2 px-1 rounded-xl border border-white/40 dark:border-white/10 bg-white/45 dark:bg-white/[0.04] backdrop-blur-sm"
+                                  >
+                                    <div className="w-10 h-10 rounded-lg bg-white dark:bg-white/95 ring-1 ring-black/[0.06] dark:ring-white/10 shadow-sm flex items-center justify-center overflow-hidden">
+                                      <img
+                                        src={chip.iconUrl}
+                                        alt=""
+                                        className="w-7 h-7 object-contain"
+                                      />
+                                    </div>
+                                    <span className="text-[10px] font-medium text-black/70 dark:text-white/70 truncate w-full text-center">
+                                      {chip.label}
+                                    </span>
+                                  </div>
+                                );
+                              }
+                              const isInternal = chipNav.kind === "internal";
                               const onChipClick = (e: React.MouseEvent) => {
                                 if (!isInternal) return;
                                 if (
@@ -1364,12 +1388,12 @@ const MessageItem = React.memo(function MessageItem({
                                 )
                                   return;
                                 e.preventDefault();
-                                navigate(chip.href);
+                                navigate(chipNav.href);
                               };
                               return (
                                 <a
                                   key={`${msg.id}-${sec.id}-chip-${chip.id}`}
-                                  href={chip.href}
+                                  href={chipNav.href}
                                   onClick={onChipClick}
                                   target={isInternal ? undefined : "_blank"}
                                   rel={isInternal ? undefined : "noopener noreferrer"}
@@ -1534,14 +1558,16 @@ const MessageItem = React.memo(function MessageItem({
                               : tone === "fuchsia"
                                 ? "border-fuchsia-400/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-200"
                                 : "border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/5 hover:bg-white/55 dark:hover:bg-white/10 text-black/75 dark:text-white/80";
-                      const isInternal = act.href.startsWith("/");
+                      const actNav = safeNavHref(act.href);
+                      if (!actNav) return null;
+                      const isInternal = actNav.kind === "internal";
                       const onClick = (e: React.MouseEvent) => {
                         if (!isInternal) return; // let the anchor handle external nav
                         // Allow modifier-clicks (cmd/ctrl/middle) to keep
                         // their browser-native "open in new tab" behavior.
                         if (e.metaKey || e.ctrlKey || e.shiftKey || (e as any).button === 1) return;
                         e.preventDefault();
-                        navigate(act.href);
+                        navigate(actNav.href);
                       };
                       // Glyph: prefer the platform's brand favicon
                       // (used by the "Connect <Platform>" prompts) so
@@ -1552,7 +1578,7 @@ const MessageItem = React.memo(function MessageItem({
                       return (
                         <a
                           key={`${msg.id}-act-${ai}`}
-                          href={act.href}
+                          href={actNav.href}
                           onClick={onClick}
                           target={isInternal ? undefined : "_blank"}
                           rel={isInternal ? undefined : "noopener noreferrer"}

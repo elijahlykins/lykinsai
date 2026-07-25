@@ -50,6 +50,7 @@ export const WEB_PUBLIC_PATHS = new Set([
   "/dpa",
   "/news",
   "/desktop-auth",
+  "/login",
   "/reset-password",
   "/oauth/consent",
   "/share",
@@ -63,4 +64,47 @@ export function isWebPublicPath(pathname: string): boolean {
   if (pathname.startsWith("/product/")) return true;
   if (pathname.startsWith("/apps/")) return true;
   return false;
+}
+
+/**
+ * After browser auth (login / email confirm / password reset), send the user
+ * somewhere the website can actually render. Product routes stay desktop-only
+ * when the web app is unplugged; public paths like /share keep working.
+ *
+ * Always requires a same-app relative path — never `//evil.com` or absolute
+ * URLs, even when the web app is enabled (open-redirect hardening).
+ */
+export function resolvePostAuthPath(dest: string): string {
+  const raw = String(dest || "").trim() || "/app";
+  // Inline the internal-path check (avoid coupling marketing gate to URL utils
+  // in a way that surprises tests). Same rules as safeInternalPath.
+  const trimmed = raw;
+  const isInternal =
+    trimmed.startsWith("/") &&
+    !trimmed.startsWith("//") &&
+    !trimmed.includes("\\") &&
+    !/[\u0000-\u001f]/.test(trimmed);
+  if (!isInternal) return canUseWebApp() ? "/app" : "/download";
+
+  let pathWithQuery = trimmed;
+  try {
+    const url = new URL(trimmed, "https://lykn.local");
+    if (url.origin !== "https://lykn.local") {
+      return canUseWebApp() ? "/app" : "/download";
+    }
+    pathWithQuery = `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return canUseWebApp() ? "/app" : "/download";
+  }
+
+  if (canUseWebApp()) return pathWithQuery;
+  try {
+    const url = new URL(pathWithQuery, "https://lykn.local");
+    if (isWebPublicPath(url.pathname)) {
+      return `${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch {
+    /* fall through */
+  }
+  return "/download";
 }
