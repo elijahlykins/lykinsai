@@ -878,6 +878,26 @@ export default function LyknChat() {
   // When true, ignore global settings → picker sync so a hydrated board key
   // isn't immediately overwritten by localStorage / cross-tab events.
   const applyingChatModelKeyRef = useRef(false);
+  // Must be declared BEFORE useLyknChatPersistence — passing it in the
+  // persistence args below would hit the const TDZ and crash /app for everyone.
+  const onChatModelKeyHydrated = useCallback((key: string | null) => {
+    if (!key) return;
+    const { selectedModel: nextModel, customModelId } = fromChatModelKey(key);
+    applyingChatModelKeyRef.current = true;
+    chatModelKeyRef.current = key;
+    if (customModelId) {
+      setActiveCustomModelId(customModelId);
+      setSelectedModel(nextModel || "lykn");
+    } else {
+      setActiveCustomModelId(null);
+      setSelectedModel(nextModel || "lykn");
+    }
+    // Release after paint so the selectedModel effect doesn't clobber the
+    // hydrated key, and later user/settings changes resume normal sync.
+    requestAnimationFrame(() => {
+      applyingChatModelKeyRef.current = false;
+    });
+  }, []);
   const [publishedCustomModels, setPublishedCustomModels] = useState<
     { id: string; name: string; baseModelId?: string }[]
   >([]);
@@ -1795,24 +1815,6 @@ export default function LyknChat() {
     chatModelKeyRef.current = toChatModelKey(selectedModel, activeCustomModelId);
   }, [selectedModel, activeCustomModelId]);
 
-  const onChatModelKeyHydrated = useCallback((key: string | null) => {
-    if (!key) return;
-    const { selectedModel: nextModel, customModelId } = fromChatModelKey(key);
-    applyingChatModelKeyRef.current = true;
-    chatModelKeyRef.current = key;
-    if (customModelId) {
-      setActiveCustomModelId(customModelId);
-      setSelectedModel(nextModel || "lykn");
-    } else {
-      setActiveCustomModelId(null);
-      setSelectedModel(nextModel || "lykn");
-    }
-    // Release after paint so the selectedModel effect doesn't clobber the
-    // hydrated key, and later user/settings changes resume normal sync.
-    requestAnimationFrame(() => {
-      applyingChatModelKeyRef.current = false;
-    });
-  }, []);
   // Chat "+" → Projects: when the user scopes the chat to a specific LYKN
   // project, it overrides the board-derived Omnia project id so the server
   // loads that project's neurons / working memory / activity for the chat.
