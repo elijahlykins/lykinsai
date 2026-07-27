@@ -1669,8 +1669,9 @@ async function runSaveScreen(q) {
           : places[0];
       msg = `Saved ${what} to ${dest}.`;
     } else if (res && res.error === "no_permission") {
-      msg =
-        "LYKN needs Screen Recording permission to do that. Enable it in System Settings → Privacy & Security → Screen Recording, then try again.";
+      msg = res.needsSettings
+        ? "LYKN needs Screen Recording permission. Open System Settings → Privacy & Security → Screen Recording, turn on LYKN, then quit and reopen LYKN."
+        : "macOS should be asking for Screen Recording permission — click Allow, then try again. If no dialog appears, enable LYKN under System Settings → Privacy & Security → Screen Recording, then quit and reopen LYKN.";
     } else {
       msg = `Couldn't save the screen${res && res.error ? ` (${res.error})` : ""}. Try again in a moment.`;
     }
@@ -3019,12 +3020,15 @@ if (liveWatchBtn) {
     try {
       const next = await window.lyknOverlay.setLiveWatch(!current);
       if (next?.error === "no_permission") {
-        askEl.placeholder = "Enable Screen Recording in System Settings first";
+        askEl.placeholder = next.needsSettings
+          ? "Enable Screen Recording in System Settings, then reopen LYKN"
+          : "Click Allow on the macOS Screen Recording dialog, then try again";
+        const ph = askEl.placeholder;
         setTimeout(() => {
-          if (askEl.placeholder === "Enable Screen Recording in System Settings first") {
+          if (askEl.placeholder === ph) {
             askEl.placeholder = COMPOSER_MODES[composerMode].placeholder;
           }
-        }, 4000);
+        }, 5000);
       }
       renderLiveWatchState(next);
     } catch (_) {}

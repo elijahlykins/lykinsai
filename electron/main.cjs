@@ -1156,6 +1156,78 @@ function openScreenPrivacySettings() {
   }
 }
 
+/**
+ * Make sure Screen Recording is available before Glass / capture features run.
+ *
+ * macOS only shows the "Allow LYKN to record this computer's screen?" dialog when
+ * we actually attempt a capture (or call the TCC prompt via getSources). There is
+ * no askForMediaAccess("screen"). Previously Glass failed fast with a Settings
+ * message whenever status !== granted — so users who skipped onboarding (or whose
+ * older Mac never showed the dialog) never got the system prompt.
+ *
+ * @returns {Promise<{ok:boolean,status:string,prompted?:boolean,needsSettings?:boolean}>}
+ */
+async function ensureScreenRecordingAccess() {
+  if (!IS_MAC) {
+    const st = screenCaptureStatus();
+    return { ok: st !== "denied", status: st };
+  }
+
+  let status = screenCaptureStatus();
+  if (status === "granted") return { ok: true, status };
+
+  // Already denied/restricted — macOS will not show the dialog again.
+  if (status === "denied" || status === "restricted") {
+    openScreenPrivacySettings();
+    return { ok: false, status, needsSettings: true };
+  }
+
+  // not-determined / unknown — attempt a tiny capture to surface the system dialog.
+  try {
+    await Promise.race([
+      capturePrimaryScreen({ maxWidth: 320, format: "jpeg", quality: 40 }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("screen-permission-prompt-timeout")), 10000),
+      ),
+    ]);
+  } catch (e) {
+    // Expected until the user allows; timeout avoids hanging forever on some OS/Electron builds.
+    if (!String(e?.message || e).includes("screen-permission-prompt-timeout")) {
+      console.log("[screen] permission probe:", e?.message || e);
+    }
+  }
+
+  status = screenCaptureStatus();
+  if (status === "granted") return { ok: true, status, prompted: true };
+  if (status === "denied" || status === "restricted") {
+    openScreenPrivacySettings();
+    return { ok: false, status, needsSettings: true, prompted: true };
+  }
+
+  // Still not determined — dialog may be on screen, or this Mac failed to present it.
+  return { ok: false, status, prompted: true };
+}
+
+function screenRecordingDeniedMessage({ needsSettings, prompted } = {}) {
+  if (needsSettings) {
+    return (
+      "LYKN needs Screen Recording permission. Open System Settings → Privacy & Security → " +
+      "Screen Recording, turn on LYKN, then quit and reopen LYKN."
+    );
+  }
+  if (prompted) {
+    return (
+      "macOS should be asking for Screen Recording permission — click Allow in that dialog, " +
+      "then send your message again. If you don’t see a dialog, open System Settings → " +
+      "Privacy & Security → Screen Recording, enable LYKN, then quit and reopen LYKN."
+    );
+  }
+  return (
+    "LYKN needs Screen Recording permission. Enable it in System Settings → Privacy & Security → " +
+    "Screen Recording, then quit and reopen LYKN."
+  );
+}
+
 /** @type {BrowserWindow | null} */
 let snipWindow = null;
 /** @type {((rect: {x:number,y:number,width:number,height:number}|null) => void) | null} */
@@ -3265,9 +3337,10 @@ function stopLiveWatch() {
   notifyLiveWatchUpdate();
 }
 
-function startLiveWatch() {
-  if (screenCaptureStatus() !== "granted") {
-    return { ok: false, error: "no_permission" };
+async function startLiveWatch() {
+  const access = await ensureScreenRecordingAccess();
+  if (!access.ok) {
+    return { ok: false, error: "no_permission", ...access };
   }
   liveWatchState.enabled = true;
   liveWatchForceVision = true;
@@ -3281,10 +3354,10 @@ function startLiveWatch() {
   return { ok: true, ...getLiveWatchStatus() };
 }
 
-function setLiveWatchEnabled(on) {
+async function setLiveWatchEnabled(on) {
   const enabled = !!on;
   if (enabled) {
-    const result = startLiveWatch();
+    const result = await startLiveWatch();
     if (!result.ok) return result;
     writeOverlaySettings({ liveWatch: true });
     return { ...result, needsExtension: !extensionBridge?.isConnected?.() };
@@ -5164,14 +5237,17 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
     conversationFollowUp && imageAtts.length === 0 && textAtts.length === 0;
   const liveWatchSummary = !skipScreenContext ? getFreshLiveWatchSummary(4000) : "";
 
-  // Fail fast on missing permission before kicking off any work.
+  // Screen Recording: trigger the macOS Allow dialog when still not-determined
+  // instead of only telling the user to dig through Privacy settings.
   const needScreen = !skipScreenContext && imageAtts.length === 0;
-  if (needScreen && screenCaptureStatus() !== "granted") {
-    send("lykn:answer-error", {
-      message:
-        "LYKN needs Screen Recording permission. Enable it in System Settings → Privacy & Security → Screen Recording, then reopen LYKN.",
-    });
-    return;
+  if (needScreen) {
+    const access = await ensureScreenRecordingAccess();
+    if (!access.ok) {
+      send("lykn:answer-error", {
+        message: screenRecordingDeniedMessage(access),
+      });
+      return;
+    }
   }
 
   // Gather everything the backend needs CONCURRENTLY. The screenshot, the page
@@ -5532,9 +5608,9 @@ async function captureScreenDescription() {
   const liveSummary = getFreshLiveWatchSummary(8000);
   if (liveSummary) return { text: liveSummary, source: "live_watch" };
 
-  const status = screenCaptureStatus();
-  console.log("[screen-context] capture status:", status);
-  if (status !== "granted") return { error: "no_permission" };
+  const access = await ensureScreenRecordingAccess();
+  console.log("[screen-context] capture status:", access.status);
+  if (!access.ok) return { error: "no_permission", ...access };
   let dataURL = null;
   try {
     dataURL = await capturePrimaryScreen();
@@ -5767,7 +5843,8 @@ function parseRegionBox(text, geminiOrder) {
 // (full screen if unsure), then save the PNG to Downloads and copy it to the
 // clipboard. The "drag from screen" replacement: LYKN grabs the region for you.
 async function saveScreenRegion(description) {
-  if (screenCaptureStatus() !== "granted") return { ok: false, error: "no_permission" };
+  const access = await ensureScreenRecordingAccess();
+  if (!access.ok) return { ok: false, error: "no_permission", ...access };
   let dataURL = null;
   try {
     dataURL = await capturePrimaryScreen();
@@ -7643,20 +7720,18 @@ function registerOnboardingIpc() {
   ipcMain.handle("lykn:onboarding-request-screen", async () => {
     // Attempting a capture is what makes macOS show the Screen Recording prompt
     // and register LYKN in the privacy list. On Windows it's a connectivity check.
+    if (IS_MAC) {
+      const access = await ensureScreenRecordingAccess();
+      return access.status;
+    }
     try {
       const dataUrl = await capturePrimaryScreen();
-      if (!IS_MAC) {
-        screenProbeCache = dataUrl ? "granted" : "denied";
-        return screenProbeCache;
-      }
+      screenProbeCache = dataUrl ? "granted" : "denied";
+      return screenProbeCache;
     } catch {
-      /* the prompt is the point; the capture itself may fail until granted */
-      if (!IS_MAC) {
-        screenProbeCache = "denied";
-        return "denied";
-      }
+      screenProbeCache = "denied";
+      return "denied";
     }
-    return screenCaptureStatus();
   });
 
   ipcMain.on("lykn:onboarding-open-screen-settings", () => {
@@ -7876,11 +7951,11 @@ function initAutoUpdate() {
     console.warn("[overlay-vault] lykn-artifact protocol:", e?.message || e);
   }
 
-  // Dev runs use the bare Electron binary, which shows Electron's dock icon.
-  // Swap in the LYKN icon at runtime so dev looks like the packaged app.
-  // Uses the pre-rounded variant: dock.setIcon draws the image literally
-  // (no system squircle mask), so full-bleed art would show as a hard square.
-  if (!app.isPackaged && IS_MAC && app.dock) {
+  // Dock icon: dock.setIcon draws the image literally (no system squircle
+  // mask), so we always use the pre-rounded asset. Packaged builds also set
+  // this so Finder/Dock never show the full-bleed square from a bad cache or
+  // Electron path. electron-builder mac.icon is icon-rounded.png for the same reason.
+  if (IS_MAC && app.dock) {
     try {
       app.dock.setIcon(path.join(__dirname, "resources/icon-rounded.png"));
     } catch {
@@ -7965,11 +8040,13 @@ function initAutoUpdate() {
   createBurstWindow();
   registerGlobalHotkey();
   initAutoUpdate();
-  if (isLiveWatchEnabled()) startLiveWatch();
+  if (isLiveWatchEnabled()) void startLiveWatch();
 
   // First launch goes straight to the web app's login screen — no automatic
   // permissions walkthrough. It stays reachable from the tray menu
   // ("Set Up LYKN / Permissions…") for when the user is ready.
+  // Glass asks trigger ensureScreenRecordingAccess() so the macOS Allow dialog
+  // still appears the first time they need the screen, even if they skipped setup.
 
   // Menu-bar-app mode: no main window (silent login launch, or the user
   // closed it) → no Dock icon. The tray + ⌘L are the way back in.

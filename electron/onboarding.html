@@ -428,8 +428,15 @@
         $("screen-open").disabled = true;
         await api.requestScreen();
         await refreshScreen();
-        // macOS: also open the privacy pane so the user can flip the toggle.
-        if (IS_MAC && state.screen !== "granted") api.openScreenSettings();
+        // Only jump to Settings when macOS has already denied/restricted us.
+        // Opening Settings while status is still not-determined steals focus from
+        // the system "Allow Screen Recording" dialog (especially on older Macs).
+        if (
+          IS_MAC &&
+          (state.screen === "denied" || state.screen === "restricted")
+        ) {
+          api.openScreenSettings();
+        }
         $("screen-open").disabled = false;
       });
       $("screen-recheck").addEventListener("click", async () => {

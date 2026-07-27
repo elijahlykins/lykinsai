@@ -56,7 +56,7 @@
   ],
   "mac": {
     "category": "public.app-category.productivity",
-    "icon": "electron/resources/icon.png",
+    "icon": "electron/resources/icon-rounded.png",
     "target": [
       { "target": "dmg", "arch": ["universal"] },
       { "target": "zip", "arch": ["universal"] }
@@ -75,7 +75,7 @@
   "dmg": {
     "title": "LYKN ${version}",
     "artifactName": "${productName}.dmg",
-    "icon": "electron/resources/icon.png",
+    "icon": "electron/resources/icon-rounded.png",
     "background": "electron/resources/dmgBackground.tiff",
     "iconSize": 110,
     "window": { "width": 540, "height": 380 },
