@@ -1,4 +1,5 @@
--- One-time email verification codes for password signup (5-minute OTP).
+-- One-time email verification codes for password signup and password reset
+-- (5-minute OTP). purpose: 'signup' | 'password_reset'.
 -- Service-role only — no client RLS policies.
 
 create table if not exists public.email_verification_codes (

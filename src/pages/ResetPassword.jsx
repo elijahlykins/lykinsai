@@ -5,12 +5,10 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
 import { canUseWebApp, resolvePostAuthPath } from "@/lib/webAppAccess";
 
-// Landing page for Supabase password-recovery links
-// (SupabaseAuth.resetPasswordForEmail redirects here). detectSessionInUrl
-// exchanges the ?code from the email link into a recovery session before this
-// renders, so "signed in" here means "allowed to set a new password". Also
-// serves Google-only accounts that want a password: completing recovery adds
-// an email/password identity to the account.
+// Legacy landing for old Supabase recovery links. New resets use a 6-digit
+// code emailed via Resend and complete on /login. Kept so in-flight links
+// still work: detectSessionInUrl exchanges ?code into a recovery session,
+// then updateUser sets the password.
 
 const LANDING_FONT =
   '"Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif';
@@ -100,15 +98,14 @@ export default function ResetPassword() {
           Reset link expired
         </h1>
         <p className="text-sm text-slate-500 mb-6 leading-relaxed">
-          This password-reset link is no longer valid. Links expire after a
-          short time and can only be used once — request a new one and try
-          again.
+          This password-reset link is no longer valid. Request a new reset
+          from login — we’ll email you a 6-digit code instead.
         </p>
         <Link
           to="/login"
           className="text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors"
         >
-          Back to login
+          Request a new reset
         </Link>
       </Shell>
     );
