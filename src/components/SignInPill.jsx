@@ -233,7 +233,7 @@ export default function SignInPill({ className = "", compact = false }) {
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                     aria-label={showPassword ? "Hide password" : "Show password"}
                   >
-                    {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                    {showPassword ? <EyeIcon /> : <EyeOffIcon />}
                   </button>
                 </div>
 
@@ -254,7 +254,7 @@ export default function SignInPill({ className = "", compact = false }) {
                       className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                       aria-label={showConfirmPassword ? "Hide password" : "Show password"}
                     >
-                      {showConfirmPassword ? <EyeOffIcon /> : <EyeIcon />}
+                      {showConfirmPassword ? <EyeIcon /> : <EyeOffIcon />}
                     </button>
                   </div>
                 )}

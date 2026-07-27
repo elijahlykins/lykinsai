@@ -129,7 +129,8 @@ function PasswordField({
         aria-label={show ? "Hide password" : "Show password"}
         tabIndex={0}
       >
-        {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+        {/* Eye = password currently visible; EyeOff = currently hidden */}
+        {show ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
       </button>
     </div>
   );
