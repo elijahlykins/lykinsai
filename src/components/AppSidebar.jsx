@@ -97,17 +97,33 @@ export default function AppSidebar({
 
   const queryClient = useQueryClient();
   const [menuChatId, setMenuChatId] = useState(null);
+  const [menuChatTitle, setMenuChatTitle] = useState("New Chat");
   const [menuChatPinned, setMenuChatPinned] = useState(false);
+  const [menuConfirmDelete, setMenuConfirmDelete] = useState(false);
+  const [menuRenaming, setMenuRenaming] = useState(false);
+  const [menuRenameValue, setMenuRenameValue] = useState("");
+  const [menuRenameBusy, setMenuRenameBusy] = useState(false);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
+  const renameInputRef = useRef(null);
 
   const closeChatMenu = () => {
     setMenuChatId(null);
+    setMenuChatTitle("New Chat");
     setMenuChatPinned(false);
+    setMenuConfirmDelete(false);
+    setMenuRenaming(false);
+    setMenuRenameValue("");
+    setMenuRenameBusy(false);
   };
 
-  const openChatMenu = ({ id, pinned, top, left }) => {
+  const openChatMenu = ({ id, title, pinned, top, left }) => {
     setMenuChatId(id);
+    setMenuChatTitle(title || "New Chat");
     setMenuChatPinned(Boolean(pinned));
+    setMenuConfirmDelete(false);
+    setMenuRenaming(false);
+    setMenuRenameValue("");
+    setMenuRenameBusy(false);
     setMenuPos({ top, left });
   };
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -204,6 +220,14 @@ export default function AppSidebar({
   }, [menuChatId]);
 
   useEffect(() => {
+    if (!menuRenaming) return;
+    const input = renameInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [menuRenaming]);
+
+  useEffect(() => {
     if (!userMenuOpen) return;
     placeUserMenu();
     const onClick = (e) => {
@@ -225,9 +249,24 @@ export default function AppSidebar({
 
   useEffect(() => { setUserMenuOpen(false); }, [open]);
 
+  const pickNextChatId = (deletedId) => {
+    const pages = queryClient.getQueryData(["sidebar-boards-paged", user?.id]);
+    const fromPages = (pages?.pages || [])
+      .flatMap((p) => p.rows || [])
+      .find((row) => row?.id && row.id !== deletedId);
+    if (fromPages?.id) return fromPages.id;
+    const boards = queryClient.getQueryData(["boards", user?.id]);
+    const fromBoards = Array.isArray(boards)
+      ? boards.find((row) => row?.id && row.id !== deletedId)
+      : null;
+    if (fromBoards?.id) return fromBoards.id;
+    return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  };
+
   const deleteBoard = async (chatId) => {
     if (!user?.id) return;
-    if (!window.confirm("Delete this chat? This cannot be undone.")) return;
     closeChatMenu();
     // Optimistic remove + block route-merge resurrection so the row doesn't
     // flash as a duplicate while the DB delete / navigation catch up.
@@ -236,7 +275,14 @@ export default function AppSidebar({
     if (localStorage.getItem("lyknchat_active_id") === chatId) {
       localStorage.removeItem("lyknchat_active_id");
     }
-    if (location.pathname === `/chat/${chatId}`) nav("/app", { replace: true });
+    // Stay on a real /chat/:id route. Bouncing through /app + native
+    // window.confirm has been hiding the Electron main window on macOS
+    // (tray-only mode), which looks like the whole app vanished.
+    if (location.pathname === `/chat/${chatId}`) {
+      const nextId = pickNextChatId(chatId);
+      addOpenThread(nextId);
+      nav(`/chat/${nextId}`, { replace: true });
+    }
 
     const [, chatRes] = await Promise.all([
       supabase.from("lykn_chat_states").delete().eq("chat_id", chatId),
@@ -249,28 +295,30 @@ export default function AppSidebar({
     window.dispatchEvent(new Event("lykinsai_chats_changed"));
   };
 
-  const renameBoard = async (chatId) => {
-    if (!user?.id) return;
-    let currentTitle = "New Chat";
-    try {
-      const { data } = await supabase
-        .from("lykn_chats")
-        .select("title")
-        .eq("id", chatId)
-        .eq("user_id", user.id)
-        .maybeSingle();
-      if (data?.title) currentTitle = data.title;
-    } catch { /* fall back to default title */ }
-    const next = window.prompt("Rename chat", currentTitle);
-    if (next === null) return;
-    const name = next.trim() || "New Chat";
-    await supabase
+  const beginRenameBoard = () => {
+    setMenuConfirmDelete(false);
+    setMenuRenaming(true);
+    setMenuRenameValue(menuChatTitle || "New Chat");
+  };
+
+  const commitRenameBoard = async () => {
+    if (!user?.id || !menuChatId || menuRenameBusy) return;
+    const name = menuRenameValue.trim() || "New Chat";
+    setMenuRenameBusy(true);
+    const { error } = await supabase
       .from("lykn_chats")
       .update({ title: name, updated_at: new Date().toISOString() })
-      .eq("id", chatId)
+      .eq("id", menuChatId)
       .eq("user_id", user.id);
+    setMenuRenameBusy(false);
+    if (error) return;
+    const chatId = menuChatId;
     closeChatMenu();
+    invalidateLyknChatListQueries(queryClient, user.id);
     window.dispatchEvent(new Event("lykinsai_chats_changed"));
+    window.dispatchEvent(
+      new CustomEvent("lyknchat_renamed", { detail: { chatId, title: name } }),
+    );
   };
 
   const togglePinBoard = async (chatId, currentlyPinned) => {
@@ -384,7 +432,7 @@ export default function AppSidebar({
 
       {/* ── Collapsed icon rail (cross-fades in over the panel as it collapses) ── */}
       <div
-        className={`fixed top-0 left-0 z-[72] h-[100svh] w-14 bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] pt-16 pb-3 flex flex-col items-center transition-opacity duration-200 ease-out ${
+        className={`fixed top-0 left-0 z-[72] h-[100svh] w-14 bg-panel pt-16 pb-3 flex flex-col items-center transition-opacity duration-200 ease-out ${
           open ? "opacity-0 pointer-events-none" : "opacity-100"
         }`}
         aria-hidden={open}
@@ -462,7 +510,7 @@ export default function AppSidebar({
       </div>
 
       <div
-        className={`fixed top-0 left-0 z-[70] h-[100svh] overflow-hidden bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] ${
+        className={`fixed top-0 left-0 z-[70] h-[100svh] overflow-hidden bg-panel transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] ${
           open ? "w-[12rem]" : "w-0"
         } ${isLocked ? "lykn-sidebar-locked" : ""}`}
       >
@@ -608,35 +656,106 @@ export default function AppSidebar({
       {menuChatId && ReactDOM.createPortal(
         <div
           ref={menuRef}
-          className="fixed z-[9999] w-40 rounded-lg border border-black/10 dark:border-white/12 bg-white dark:bg-[hsl(0_0%_16%)] shadow-lg p-1 text-[0.6875rem] text-black/85 dark:text-white/90"
+          className={`fixed z-[9999] rounded-lg border border-black/10 dark:border-white/12 bg-panel shadow-lg p-1 text-[0.6875rem] text-black/85 dark:text-white/90 ${
+            menuRenaming ? "w-56" : "w-40"
+          }`}
           style={{
             // Clamp so the menu never renders past the viewport edge (rows near
             // the bottom of the chat list would otherwise push Delete off-screen).
-            top: Math.max(8, Math.min(menuPos.top, window.innerHeight - 120)),
-            left: Math.max(8, Math.min(menuPos.left, window.innerWidth - 168)),
+            top: Math.max(8, Math.min(menuPos.top, window.innerHeight - (menuRenaming ? 140 : 120))),
+            left: Math.max(
+              8,
+              Math.min(menuPos.left, window.innerWidth - (menuRenaming ? 232 : 168)),
+            ),
           }}
         >
-          <button
-            type="button"
-            className="w-full text-left rounded-md px-2.5 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
-            onClick={() => renameBoard(menuChatId)}
-          >
-            Rename
-          </button>
-          <button
-            type="button"
-            className="w-full text-left rounded-md px-2.5 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
-            onClick={() => togglePinBoard(menuChatId, menuChatPinned)}
-          >
-            {menuChatPinned ? "Unpin chat" : "Pin chat"}
-          </button>
-          <button
-            type="button"
-            className="w-full text-left rounded-md px-2.5 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
-            onClick={() => deleteBoard(menuChatId)}
-          >
-            Delete chat
-          </button>
+          {menuConfirmDelete ? (
+            <>
+              <div className="px-2.5 py-1.5 text-[0.6875rem] text-black/55 dark:text-white/55">
+                Delete this chat?
+              </div>
+              <button
+                type="button"
+                className="w-full text-left rounded-md px-2.5 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
+                onClick={() => void deleteBoard(menuChatId)}
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                className="w-full text-left rounded-md px-2.5 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
+                onClick={() => setMenuConfirmDelete(false)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : menuRenaming ? (
+            <>
+              <div className="px-2.5 pt-1.5 pb-1 text-[0.6875rem] text-black/55 dark:text-white/55">
+                Rename chat
+              </div>
+              <form
+                className="px-1 pb-1 space-y-1"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void commitRenameBoard();
+                }}
+              >
+                <input
+                  ref={renameInputRef}
+                  type="text"
+                  value={menuRenameValue}
+                  onChange={(e) => setMenuRenameValue(e.target.value)}
+                  disabled={menuRenameBusy}
+                  className="w-full rounded-md border border-black/10 dark:border-white/12 bg-black/[0.03] dark:bg-white/[0.04] px-2 py-1.5 text-[0.6875rem] outline-none focus:border-blue-500/50"
+                />
+                <div className="flex gap-1">
+                  <button
+                    type="submit"
+                    disabled={menuRenameBusy}
+                    className="flex-1 rounded-md px-2.5 py-1.5 bg-blue-500/15 text-blue-700 dark:text-blue-300 hover:bg-blue-500/25 disabled:opacity-60 transition-colors"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    disabled={menuRenameBusy}
+                    className="flex-1 rounded-md px-2.5 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/10 disabled:opacity-60 transition-colors"
+                    onClick={() => {
+                      setMenuRenaming(false);
+                      setMenuRenameValue("");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="w-full text-left rounded-md px-2.5 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
+                onClick={beginRenameBoard}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                className="w-full text-left rounded-md px-2.5 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
+                onClick={() => togglePinBoard(menuChatId, menuChatPinned)}
+              >
+                {menuChatPinned ? "Unpin chat" : "Pin chat"}
+              </button>
+              <button
+                type="button"
+                className="w-full text-left rounded-md px-2.5 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
+                onClick={() => setMenuConfirmDelete(true)}
+              >
+                Delete chat
+              </button>
+            </>
+          )}
         </div>,
         document.body
       )}
@@ -646,7 +765,7 @@ export default function AppSidebar({
         <div
           ref={userMenuRef}
           data-user-menu
-          className="fixed z-[9999] rounded-2xl border border-black/10 dark:border-white/12 bg-white dark:bg-[hsl(0_0%_16%)] shadow-lg p-1.5 text-[0.6875rem] text-black/85 dark:text-white/90"
+          className="fixed z-[9999] rounded-2xl border border-black/10 dark:border-white/12 bg-panel shadow-lg p-1.5 text-[0.6875rem] text-black/85 dark:text-white/90"
           style={{
             bottom: userMenuPos.bottom,
             left: userMenuPos.left,

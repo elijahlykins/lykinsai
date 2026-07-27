@@ -173,7 +173,7 @@ export function VaultDocumentViewer({ payload, open, onClose }: VaultDocumentVie
 
         {/* Details dropdown — everything tied to the item lives here. */}
         {detailsOpen && hasDetails ? (
-          <div className="mb-2 rounded-2xl border border-black/10 dark:border-white/12 bg-white/95 dark:bg-[#15161a]/95 backdrop-blur-xl shadow-[0_16px_50px_rgba(0,0,0,0.3)] px-4 py-3.5 max-h-[42vh] overflow-y-auto space-y-3">
+          <div className="mb-2 rounded-2xl border border-black/10 dark:border-white/12 bg-panel backdrop-blur-xl shadow-[0_16px_50px_rgba(0,0,0,0.3)] px-4 py-3.5 max-h-[42vh] overflow-y-auto space-y-3">
             {noteId ? (
               <button
                 type="button"
@@ -216,7 +216,7 @@ export function VaultDocumentViewer({ payload, open, onClose }: VaultDocumentVie
               ))}
             </div>
           ) : bodyMarkdown ? (
-            <div className="rounded-2xl border border-black/10 dark:border-white/12 bg-white/95 dark:bg-[#15161a]/95 backdrop-blur-xl shadow-[0_24px_80px_rgba(0,0,0,0.35)] px-5 sm:px-6 py-5">
+            <div className="rounded-2xl border border-black/10 dark:border-white/12 bg-panel backdrop-blur-xl shadow-[0_24px_80px_rgba(0,0,0,0.35)] px-5 sm:px-6 py-5">
               {bodyMarkdown}
             </div>
           ) : !loading ? (

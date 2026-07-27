@@ -69,7 +69,7 @@ export default function DraggableQuickNote({
         animate={{ x: 0, y: 0, opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         transition={{ type: "spring", stiffness: 260, damping: 26 }}
-        className={`pointer-events-auto flex flex-col rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] shadow-2xl overflow-hidden ${
+        className={`pointer-events-auto flex flex-col rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-panel shadow-2xl overflow-hidden ${
           contained
             ? "w-[min(94%,300px)] min-h-[220px] max-h-[72%]"
             : "w-[380px] max-w-[92vw] min-h-[360px] max-h-[86vh]"

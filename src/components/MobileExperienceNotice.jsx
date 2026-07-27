@@ -53,7 +53,7 @@ export default function MobileExperienceNotice() {
         onClick={dismiss}
       />
       <div
-        className="relative w-full rounded-t-2xl bg-white dark:bg-[#1c1c1e] border-t border-black/10 dark:border-white/10 shadow-2xl"
+        className="relative w-full rounded-t-2xl bg-panel border-t border-black/10 dark:border-white/10 shadow-2xl"
         style={{ paddingBottom: "max(env(safe-area-inset-bottom, 0px), 16px)" }}
       >
         <div className="flex justify-center pt-2 pb-1">

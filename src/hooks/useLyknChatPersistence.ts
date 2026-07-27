@@ -14,6 +14,47 @@ import { isDemoLyknChatId, getDemoLyknChatSnapshot } from "@/lib/demoLyknChats";
 
 const SNAPSHOT_VERSION = 2;
 
+/**
+ * Score a chat transcript for hydration. Vault-pulled cards live on
+ * `aiNeurons` / `toolCalls` and often land after the debounced
+ * `lyknchat_chat_*` write — so a stale cache can have the same message
+ * count but be missing those attachments. Prefer the richer source.
+ */
+function scoreChatMessages(msgs: unknown): number {
+  if (!Array.isArray(msgs) || msgs.length === 0) return 0;
+  let score = msgs.length * 10_000;
+  for (const raw of msgs) {
+    if (!raw || typeof raw !== "object") continue;
+    const m = raw as Record<string, unknown>;
+    const neurons = Array.isArray(m.aiNeurons) ? m.aiNeurons.length : 0;
+    const tools = Array.isArray(m.toolCalls) ? m.toolCalls.length : 0;
+    score += neurons * 100 + tools * 10;
+    if (typeof m.aiResponse === "string") {
+      score += Math.min(m.aiResponse.length, 20_000);
+    }
+  }
+  return score;
+}
+
+/** Prefer `b` (usually draft/DB) on a tie — it's the durable save path. */
+function pickRicherChatMessages(
+  a: unknown,
+  b: unknown,
+): any[] {
+  const aa = Array.isArray(a) ? a : [];
+  const bb = Array.isArray(b) ? b : [];
+  if (!aa.length) return bb;
+  if (!bb.length) return aa;
+  return scoreChatMessages(bb) >= scoreChatMessages(aa) ? bb : aa;
+}
+
+function pickRicherAiThread(a: unknown, b: unknown): any[] {
+  const aa = Array.isArray(a) ? a : [];
+  const bb = Array.isArray(b) ? b : [];
+  if (bb.length >= aa.length && bb.length > 0) return bb;
+  return aa.length > 0 ? aa : bb;
+}
+
 export const EMPTY_NOTES_TIPTAP_DOC: { type: string; content: unknown[] } = {
   type: "doc",
   content: [{ type: "paragraph" }],
@@ -338,34 +379,34 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         const chatChatId = hydrateChatId ?? chatId;
       if (chatChatId) {
         const boardChatKey = `lyknchat_chat_${chatChatId}`;
-        let chatLoaded = false;
-        let loadedChatMessages: any[] = [];
+        let cachedMessages: any[] = [];
+        let cachedThread: any[] = [];
 
         try {
           const chatRaw = localStorage.getItem(boardChatKey);
           if (chatRaw) {
             const chatData = JSON.parse(chatRaw);
-            if (Array.isArray(chatData.chatMessages) && chatData.chatMessages.length > 0) {
-              setChatMessages(chatData.chatMessages);
-              loadedChatMessages = chatData.chatMessages;
-              setChatRailOpen(true);
-              setChatRailVisible(true);
-              chatLoaded = true;
-            }
-            if (Array.isArray(chatData.aiThread) && chatData.aiThread.length > 0) {
-              aiThreadRef.current = chatData.aiThread;
-            }
+            if (Array.isArray(chatData.chatMessages)) cachedMessages = chatData.chatMessages;
+            if (Array.isArray(chatData.aiThread)) cachedThread = chatData.aiThread;
           }
         } catch { /* ignore corrupt localStorage */ }
 
-        if (!chatLoaded && Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) {
-          setChatMessages(snapshot.chatMessages);
-          loadedChatMessages = snapshot.chatMessages;
+        // Never blindly prefer the chat cache — its 1.5s debounce is cancelled
+        // on leave, and quota failures leave a pre-pull transcript that would
+        // hide vault-pulled aiNeurons still present in the draft/DB snapshot.
+        const loadedChatMessages = pickRicherChatMessages(
+          cachedMessages,
+          snapshot.chatMessages,
+        );
+        const loadedThread = pickRicherAiThread(cachedThread, snapshot.aiThread);
+
+        if (loadedChatMessages.length > 0) {
+          setChatMessages(loadedChatMessages);
           setChatRailOpen(true);
           setChatRailVisible(true);
-          if (Array.isArray(snapshot.aiThread) && snapshot.aiThread.length > 0) {
-            aiThreadRef.current = snapshot.aiThread;
-          }
+        }
+        if (loadedThread.length > 0) {
+          aiThreadRef.current = loadedThread;
         }
 
         // Pass the just-loaded messages directly: chatMessagesRef hasn't been
@@ -1053,20 +1094,20 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         // If this board has a live (or just-finished) in-memory stream,
         // it is newer than anything on disk — prefer it so returning to a
         // chat that was thinking shows the response instead of a bare prompt.
-        // Compare against the chat that actually came off disk this load
-        // (localStorage chat cache wins in applySnapshot, else the snapshot).
-        let loadedChatForCompare: any[] = Array.isArray(snapshotForChat?.chatMessages)
-          ? snapshotForChat.chatMessages
-          : [];
+        // Compare against the richer of draft/DB vs local chat cache (same
+        // rule as applySnapshot — cache alone can miss late aiNeurons).
+        let cachedForCompare: any[] = [];
         try {
           const cachedRaw = localStorage.getItem(`lyknchat_chat_${id}`);
           if (cachedRaw) {
             const cached = JSON.parse(cachedRaw);
-            if (Array.isArray(cached?.chatMessages) && cached.chatMessages.length > 0) {
-              loadedChatForCompare = cached.chatMessages;
-            }
+            if (Array.isArray(cached?.chatMessages)) cachedForCompare = cached.chatMessages;
           }
         } catch { /* ignore */ }
+        const loadedChatForCompare = pickRicherChatMessages(
+          cachedForCompare,
+          snapshotForChat?.chatMessages,
+        );
         restorePreferredRuntimeChat(id, loadedChatForCompare);
 
         try { localStorage.removeItem(`lyknchat_draft_${id}`); } catch { /* ignore */ }
@@ -1169,39 +1210,47 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
   /* ------------------------------------------------------------------ */
   /*  Chat localStorage persist effect                                   */
   /* ------------------------------------------------------------------ */
+  const writeChatCacheSync = useCallback((id: string, messages: any[]) => {
+    if (!id || isDemoLyknChatId(id)) return;
+    try {
+      const MAX_LOCAL_CHAT = 30;
+      const SIGNED_URL_RE = /supabase\.co\/storage\//;
+      const trimmed = (Array.isArray(messages) ? messages : []).slice(-MAX_LOCAL_CHAT).map((m: any) => {
+        const cleaned = { ...m };
+        if (Array.isArray(cleaned.attachments)) {
+          cleaned.attachments = cleaned.attachments.map((a: any) => {
+            const c = { ...a };
+            if (
+              typeof c.url === "string" &&
+              (SIGNED_URL_RE.test(c.url) ||
+                c.url.startsWith("blob:") ||
+                (c.storagePath && c.url.startsWith("data:")))
+            ) {
+              c.url = "";
+            }
+            delete c.transcript;
+            return c;
+          });
+        }
+        return cleaned;
+      });
+      const thread = (aiThreadRef.current || []).slice(-MAX_LOCAL_CHAT);
+      localStorage.setItem(
+        `lyknchat_chat_${id}`,
+        JSON.stringify({ chatMessages: trimmed, aiThread: thread }),
+      );
+    } catch { /* quota */ }
+  }, []);
+
   useEffect(() => {
     if (!chatId) return;
     if (isDemoLyknChatId(chatId)) return; // demo grids stay fresh across visits
     const timer = setTimeout(() => {
-      try {
-        const MAX_LOCAL_CHAT = 30;
-        const SIGNED_URL_RE = /supabase\.co\/storage\//;
-        const trimmed = chatMessages.slice(-MAX_LOCAL_CHAT).map((m: any) => {
-          const cleaned = { ...m };
-          if (Array.isArray(cleaned.attachments)) {
-            cleaned.attachments = cleaned.attachments.map((a: any) => {
-              const c = { ...a };
-              if (
-                typeof c.url === "string" &&
-                (SIGNED_URL_RE.test(c.url) ||
-                  c.url.startsWith("blob:") ||
-                  (c.storagePath && c.url.startsWith("data:")))
-              ) {
-                c.url = "";
-              }
-              delete c.transcript;
-              return c;
-            });
-          }
-          return cleaned;
-        });
-        const thread = (aiThreadRef.current || []).slice(-MAX_LOCAL_CHAT);
-        localStorage.setItem(`lyknchat_chat_${chatId}`, JSON.stringify({ chatMessages: trimmed, aiThread: thread }));
-      } catch { /* quota */ }
+      writeChatCacheSync(chatId, chatMessages);
     }, 1500);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, chatMessages]);
+  }, [chatId, chatMessages, writeChatCacheSync]);
 
   /* ------------------------------------------------------------------ */
   /*  Vault saved sets persist effect                                    */
@@ -1233,6 +1282,9 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         (snapshot as any)._savedAt = lastSaveTimeRef.current || new Date().toISOString();
         localStorage.setItem(`lyknchat_draft_${chatId}`, JSON.stringify(snapshot));
       } catch { /* quota */ }
+      // Keep the chat cache in lockstep with the draft so leave/re-enter
+      // doesn't restore a pre-pull transcript that is missing aiNeurons.
+      writeChatCacheSync(chatId, chatMessagesRef.current || []);
     };
     const onBeforeUnload = () => {
       writeDraftSync();
@@ -1300,10 +1352,11 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
     if (!chatId || !userId) return;
     if (isDemoLyknChatId(chatId)) return;
     return () => {
+      writeChatCacheSync(chatId, chatMessagesRef.current || []);
       savingRef.current = false;
       saveSnapshotRef.current({ isFinal: true });
     };
-  }, [chatId, userId]);
+  }, [chatId, userId, writeChatCacheSync]);
 
   /* ------------------------------------------------------------------ */
   /*  Seed removal effect                                                */

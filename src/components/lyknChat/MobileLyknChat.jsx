@@ -46,8 +46,11 @@ export default function MobileLyknChat() {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [actionFor, setActionFor] = useState(null); // { id, title, pinned }
+  const [actionFor, setActionFor] = useState(null); // { id, title, pinned, confirmDelete?, renaming? }
+  const [renameValue, setRenameValue] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
   const actionSheetRef = useRef(null);
+  const renameInputRef = useRef(null);
 
   const { data: boards = [] } = useQuery({
     queryKey: ["boards", user?.id],
@@ -107,22 +110,28 @@ export default function MobileLyknChat() {
     }
   };
 
-  const renameGrid = async (chatId, currentTitle) => {
-    if (!user?.id) return;
-    if (isDemoLyknChatId(chatId)) return;
-    const next = window.prompt("Rename chat", currentTitle || "New Chat");
-    if (next === null) return;
-    const name = next.trim() || "New Chat";
+  const beginRenameGrid = () => {
+    if (!actionFor || isDemoLyknChatId(actionFor.id)) return;
+    setRenameValue(actionFor.title || "New Chat");
+    setRenameBusy(false);
+    setActionFor((prev) => (prev ? { ...prev, confirmDelete: false, renaming: true } : null));
+  };
+
+  const commitRenameGrid = async () => {
+    if (!user?.id || !actionFor?.id || renameBusy) return;
+    if (isDemoLyknChatId(actionFor.id)) return;
+    const chatId = actionFor.id;
+    const name = renameValue.trim() || "New Chat";
+    setRenameBusy(true);
     const { error } = await supabase
       .from("lykn_chats")
       .update({ title: name, updated_at: new Date().toISOString() })
       .eq("id", chatId)
       .eq("user_id", user.id);
+    setRenameBusy(false);
     setActionFor(null);
-    if (error) {
-      window.alert("Couldn't rename chat. " + toUserFacingError());
-      return;
-    }
+    if (error) return;
+    invalidateLyknChatListQueries(queryClient, user.id);
     window.dispatchEvent(new Event("lykinsai_chats_changed"));
     // Tell LyknChat (and anyone else mounted) so the in-memory title
     // for the active grid stays in sync — otherwise the next autosave
@@ -132,11 +141,17 @@ export default function MobileLyknChat() {
     );
   };
 
+  useEffect(() => {
+    if (!actionFor?.renaming) return;
+    const input = renameInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [actionFor?.renaming]);
+
   const deleteGrid = async (chatId) => {
     if (!user?.id) return;
     if (isDemoLyknChatId(chatId)) return;
-    const ok = window.confirm("Delete this chat? This cannot be undone.");
-    if (!ok) return;
     setActionFor(null);
     markLyknChatDeleted(chatId);
     removeLyknChatFromListQueries(queryClient, user.id, chatId);
@@ -147,7 +162,14 @@ export default function MobileLyknChat() {
       String(routeChatId || "") === String(chatId) || location.pathname === `/chat/${chatId}`;
     if (wasActive) {
       setOpen(false);
-      flushAndNavigate(nav, "/app");
+      const next = (boards || []).find((b) => b?.id && b.id !== chatId);
+      const nextId =
+        next?.id ||
+        (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+      addOpenThread(nextId);
+      flushAndNavigate(nav, `/chat/${nextId}`);
     }
 
     const [, chatRes] = await Promise.all([
@@ -206,7 +228,7 @@ export default function MobileLyknChat() {
             onClick={() => setOpen(false)}
           />
           <div
-            className="relative mt-auto w-full max-h-[85vh] flex flex-col rounded-t-2xl bg-white dark:bg-[#1c1c1e] border-t border-black/10 dark:border-white/10 shadow-2xl"
+            className="relative mt-auto w-full max-h-[85vh] flex flex-col rounded-t-2xl bg-panel border-t border-black/10 dark:border-white/10 shadow-2xl"
             style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
           >
             <div className="flex justify-center pt-2 pb-1">
@@ -345,48 +367,110 @@ export default function MobileLyknChat() {
               <div className="absolute inset-0 bg-black/30" />
               <div
                 ref={actionSheetRef}
-                className="relative w-full mx-2 mb-2 rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md overflow-hidden"
+                className="relative w-full mx-2 mb-2 rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg overflow-hidden"
                 style={{ marginBottom: "max(env(safe-area-inset-bottom, 0px), 8px)" }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="px-4 pt-3 pb-2 border-b border-black/5 dark:border-white/5">
                   <p className="text-[0.6875rem] uppercase tracking-wider text-black/45 dark:text-white/45 font-semibold">
-                    Chat options
+                    {actionFor.confirmDelete
+                      ? "Confirm delete"
+                      : actionFor.renaming
+                        ? "Rename chat"
+                        : "Chat options"}
                   </p>
                   <p className="text-sm text-black/85 dark:text-white/85 truncate mt-0.5">
                     {actionFor.title}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => renameGrid(actionFor.id, actionFor.title)}
-                  className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-black/85 dark:text-white/85 hover:bg-black/[0.04] dark:hover:bg-white/5 active:bg-black/[0.08] dark:active:bg-white/10 transition-colors"
-                >
-                  <Edit2 className="w-4 h-4 opacity-70" />
-                  Rename chat
-                </button>
-                <button
-                  type="button"
-                  onClick={() => togglePinGrid(actionFor.id, actionFor.pinned)}
-                  className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-black/85 dark:text-white/85 hover:bg-black/[0.04] dark:hover:bg-white/5 active:bg-black/[0.08] dark:active:bg-white/10 transition-colors border-t border-black/5 dark:border-white/5"
-                >
-                  {actionFor.pinned ? "Unpin chat" : "Pin chat"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => deleteGrid(actionFor.id)}
-                  className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-red-600 dark:text-red-400 hover:bg-red-500/5 active:bg-red-500/10 transition-colors border-t border-black/5 dark:border-white/5"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  Delete chat
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActionFor(null)}
-                  className="w-full flex items-center justify-center px-4 py-3.5 text-sm font-medium text-black/70 dark:text-white/70 border-t border-black/5 dark:border-white/5 hover:bg-black/[0.04] dark:hover:bg-white/5 transition-colors"
-                >
-                  Cancel
-                </button>
+                {actionFor.confirmDelete ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void deleteGrid(actionFor.id)}
+                      className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-red-600 dark:text-red-400 hover:bg-red-500/5 active:bg-red-500/10 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete permanently
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActionFor((prev) => (prev ? { ...prev, confirmDelete: false } : null))}
+                      className="w-full flex items-center justify-center px-4 py-3.5 text-sm font-medium text-black/70 dark:text-white/70 border-t border-black/5 dark:border-white/5 hover:bg-black/[0.04] dark:hover:bg-white/5 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : actionFor.renaming ? (
+                  <form
+                    className="px-4 py-3 space-y-3"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void commitRenameGrid();
+                    }}
+                  >
+                    <input
+                      ref={renameInputRef}
+                      type="text"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      disabled={renameBusy}
+                      className="w-full rounded-xl border border-black/10 dark:border-white/12 bg-black/[0.03] dark:bg-white/[0.04] px-3 py-2.5 text-sm outline-none focus:border-blue-500/50"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="submit"
+                        disabled={renameBusy}
+                        className="flex-1 rounded-xl px-3 py-2.5 text-sm font-medium bg-blue-500/15 text-blue-700 dark:text-blue-300 hover:bg-blue-500/25 disabled:opacity-60 transition-colors"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        disabled={renameBusy}
+                        onClick={() =>
+                          setActionFor((prev) => (prev ? { ...prev, renaming: false } : null))
+                        }
+                        className="flex-1 rounded-xl px-3 py-2.5 text-sm font-medium text-black/70 dark:text-white/70 hover:bg-black/[0.04] dark:hover:bg-white/5 disabled:opacity-60 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={beginRenameGrid}
+                      className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-black/85 dark:text-white/85 hover:bg-black/[0.04] dark:hover:bg-white/5 active:bg-black/[0.08] dark:active:bg-white/10 transition-colors"
+                    >
+                      <Edit2 className="w-4 h-4 opacity-70" />
+                      Rename chat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => togglePinGrid(actionFor.id, actionFor.pinned)}
+                      className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-black/85 dark:text-white/85 hover:bg-black/[0.04] dark:hover:bg-white/5 active:bg-black/[0.08] dark:active:bg-white/10 transition-colors border-t border-black/5 dark:border-white/5"
+                    >
+                      {actionFor.pinned ? "Unpin chat" : "Pin chat"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActionFor((prev) => (prev ? { ...prev, confirmDelete: true } : null))}
+                      className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-red-600 dark:text-red-400 hover:bg-red-500/5 active:bg-red-500/10 transition-colors border-t border-black/5 dark:border-white/5"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete chat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActionFor(null)}
+                      className="w-full flex items-center justify-center px-4 py-3.5 text-sm font-medium text-black/70 dark:text-white/70 border-t border-black/5 dark:border-white/5 hover:bg-black/[0.04] dark:hover:bg-white/5 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}

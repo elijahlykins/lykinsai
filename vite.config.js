@@ -5,6 +5,13 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   server: {
+    // Bind IPv4 explicitly. Default Vite-on-mac can listen only on ::1, and
+    // Electron's load of http://localhost:5173 often hits 127.0.0.1 first →
+    // ERR_CONNECTION_REFUSED / black window. strictPort keeps LYKN_APP_URL
+    // honest so a leftover process can't silently shove us onto 5174.
+    host: "127.0.0.1",
+    port: 5173,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://localhost:3001',

@@ -437,7 +437,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
 
   return (
     <aside
-      className={`fixed right-0 top-0 z-[200] flex h-full flex-col border-l border-black/10 bg-[#f5f4f1] shadow-2xl transition-transform duration-300 ease-out dark:border-white/10 dark:bg-[#1a1816] ${
+      className={`fixed right-0 top-0 z-[200] flex h-full flex-col border-l border-black/10 bg-panel shadow-2xl transition-transform duration-300 ease-out dark:border-white/10 ${
         open ? "translate-x-0" : "translate-x-full"
       }`}
       style={{ width: fullWidth ? "100vw" : ARTIFACT_PANEL_WIDTH }}
@@ -565,7 +565,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       <ChevronDown className="h-3 w-3 opacity-60" />
                     </button>
                     {dlMenuOpen ? (
-                      <div className="absolute right-0 top-full z-10 mt-1 min-w-[10rem] overflow-hidden rounded-xl border border-black/10 bg-white py-1 shadow-lg dark:border-white/12 dark:bg-[#221f1c]">
+                      <div className="absolute right-0 top-full z-10 mt-1 min-w-[10rem] overflow-hidden rounded-xl border border-black/10 bg-panel py-1 shadow-lg dark:border-white/12">
                         {downloads.map((d, i) => {
                           const href = safeAttachmentUrl(d.url);
                           if (!href) return null;
@@ -609,7 +609,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                 </div>
               ) : null}
               {hasCode && view === "code" ? (
-                <div className="flex h-full flex-col bg-[#faf9f7] dark:bg-[#151311]">
+                <div className="flex h-full flex-col bg-panel">
                   <div className="flex items-center justify-between gap-2 border-b border-black/8 px-3 py-2 dark:border-white/10">
                     <p className="truncate text-[11px] text-muted-foreground">
                       {isMultiFile

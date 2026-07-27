@@ -180,10 +180,47 @@ function relativeAge(iso?: string | null): string {
 
 function VaultBody({ payload }: { payload: ChatNeuronVaultPayload }) {
   const note = payload.note;
-  const parsed = useMemo(
-    () => parseVaultContent(String(note?.content || "")),
-    [note?.content],
-  );
+  const noteId = note?.id ? String(note.id) : "";
+  const seedContent = String(note?.content || "");
+  const [liveContent, setLiveContent] = useState(seedContent);
+
+  useEffect(() => {
+    setLiveContent(seedContent);
+  }, [seedContent, noteId]);
+
+  // loadNeuron can truncate mid-[ATTACHMENTS_JSON], so a restored card may
+  // keep its title but lose the image/file. Re-fetch when truncated, when
+  // the marker is present but unparseable, or when the card looks like a
+  // media-only item (no body, no attachments). Skip ordinary text notes.
+  useEffect(() => {
+    if (!noteId) return;
+    const seedParsed = parseVaultContent(seedContent);
+    const hasMarker = seedContent.includes("[ATTACHMENTS_JSON:");
+    const looksMediaOnly = !String(seedParsed.body || "").trim() && seedParsed.attachments.length === 0;
+    const needsRefresh =
+      Boolean(note?.truncated) ||
+      (hasMarker && seedParsed.attachments.length === 0) ||
+      looksMediaOnly;
+    if (!needsRefresh) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from("vault_items")
+          .select("content")
+          .eq("id", noteId)
+          .maybeSingle();
+        if (!cancelled && data?.content) setLiveContent(String(data.content));
+      } catch {
+        /* keep seed content */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [noteId, seedContent, note?.truncated]);
+
+  const parsed = useMemo(() => parseVaultContent(liveContent), [liveContent]);
   if (!note) return null;
 
   return (
@@ -209,7 +246,7 @@ function VaultBody({ payload }: { payload: ChatNeuronVaultPayload }) {
           ) : null}
         </div>
       ) : null}
-      {note.truncated ? (
+      {note.truncated && parsed.attachments.length === 0 ? (
         <p className="text-[0.625rem] italic text-black/40 dark:text-white/40">
           Showing the start. Full note is {note.full_length} characters.
         </p>

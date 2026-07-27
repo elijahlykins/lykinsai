@@ -23,8 +23,10 @@ html {
     --background: 0 0% 100%;
     --foreground: 0 0% 3.9%;
 
-    /* Sidebar surface (light mode only) — warm off-white/beige, distinct from body */
-    --sidebar-surface: 40 31% 94.3%;
+    /* Shared chrome surface for sidebar, menus, modals, popovers, sheets.
+       Match the light-mode chat bar (#f6f6f6 → #f0f0f0) as a solid midtone. */
+    --panel: 0 0% 95.3%;
+    --sidebar-surface: 0 0% 95.3%;
 
     /* Responsive header height — used by fixed chrome offsets */
     --header-height: 4.9rem;
@@ -44,7 +46,7 @@ html {
     --card-fg: 0 0% 3.9%;
     --card-glass-opacity: 0.32;
 
-    --popover: 0 0% 100%;
+    --popover: 0 0% 95.3%;
     --popover-foreground: 0 0% 3.9%;
 
     --primary: 0 0% 9%;
@@ -108,6 +110,10 @@ html {
     /* App background (customizable) */
     --app-background: hsl(var(--background));
 
+    /* Same chrome family as light — one solid dark panel everywhere. */
+    --panel: 0 0% 16%;
+    --sidebar-surface: 0 0% 16%;
+
     --border: 0 0% 20%;
     --input: 0 0% 20%;
     --ring: 0 0% 83.1%;
@@ -116,7 +122,7 @@ html {
     --card-fg: 0 0% 98%;
     --card-glass-opacity: 0.24;
 
-    --popover: 0 0% 12%;
+    --popover: 0 0% 16%;
     --popover-foreground: 0 0% 98%;
 
     --primary: 0 0% 98%;
@@ -436,7 +442,14 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
    UTILITIES — reflective glass controls (same style as text boxes)
    ========================================================= */
 @layer utilities {
-  /* Same reflective/grey glass, but radius-agnostic for pills, buttons, etc. */
+  /* Shared chrome panel fill (sidebar / menus / modals / popovers). */
+  .lykn-panel {
+    background-color: hsl(var(--panel));
+  }
+
+  /* Same reflective/grey glass, but radius-agnostic for pills, buttons, etc.
+     Floating chrome that used glass-control as a "panel" should prefer
+     `bg-panel` / `.lykn-panel` so light/dark surfaces stay one color. */
   .glass-control {
     background:
       linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04)),

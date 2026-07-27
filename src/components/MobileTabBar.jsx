@@ -107,7 +107,7 @@ export default function MobileTabBar() {
             onClick={() => setMoreOpen(false)}
           >
             <div
-              className="w-full rounded-t-2xl bg-white dark:bg-[#1c1c1e] border-t border-black/8 dark:border-white/10 shadow-2xl pb-safe"
+              className="w-full rounded-t-2xl bg-panel border-t border-black/8 dark:border-white/10 shadow-2xl pb-safe"
               style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
               onClick={(e) => e.stopPropagation()}
             >

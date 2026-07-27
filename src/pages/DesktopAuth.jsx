@@ -145,6 +145,15 @@ async function establishSessionFromUrl() {
   return waitForSession();
 }
 
+function readHandoffPort() {
+  if (typeof window === "undefined") return "";
+  try {
+    return new URLSearchParams(window.location.search).get("handoff_port") || "";
+  } catch {
+    return "";
+  }
+}
+
 function buildDeepLink(session) {
   const at = encodeURIComponent(session.access_token || "");
   const rt = encodeURIComponent(session.refresh_token || "");
@@ -168,6 +177,33 @@ function navigateToDeepLink(url) {
   window.location.href = url;
 }
 
+/**
+ * Local unpackaged Electron can't safely own lykn:// (that opens the installed
+ * LYKN.app). When the Mac app minted `handoff_port`, POST tokens to the
+ * loopback handoff server instead.
+ */
+async function handoffSessionToApp(session) {
+  const port = readHandoffPort();
+  if (port && /^\d+$/.test(port)) {
+    const res = await fetch(`http://127.0.0.1:${port}/auth-handoff`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        state: readDesktopState(),
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data?.error || `handoff_failed_${res.status}`);
+    }
+    return { mode: "http" };
+  }
+  navigateToDeepLink(buildDeepLink(session));
+  return { mode: "protocol" };
+}
+
 export default function DesktopAuth() {
   const { user, loading, signInWithOAuth } = useAuth();
   // 'boot' → auth still resolving; 'starting' → bouncing to Google / finishing
@@ -175,7 +211,9 @@ export default function DesktopAuth() {
   const [phase, setPhase] = useState("boot");
   const [errorMsg, setErrorMsg] = useState(null);
   const [finishing, setFinishing] = useState(false);
+  const [httpHandoffDone, setHttpHandoffDone] = useState(false);
   const startedRef = useRef(false);
+  const httpHandoffAttemptedRef = useRef(false);
 
   const oauthError = (() => {
     if (typeof window === "undefined") return null;
@@ -194,10 +232,15 @@ export default function DesktopAuth() {
     setFinishing(false);
     setPhase("starting");
     const desktopState = readDesktopState();
-    const returnPath = desktopState
-      ? `/desktop-auth?desktop_state=${encodeURIComponent(desktopState)}`
-      : "/desktop-auth";
-    // Keep desktop_state; drop any leftover OAuth params before leaving.
+    const handoffPort = readHandoffPort();
+    const returnParams = new URLSearchParams();
+    if (desktopState) returnParams.set("desktop_state", desktopState);
+    // Must survive the Google → Supabase → /desktop-auth round-trip or local
+    // Electron falls back to lykn:// and opens the installed production app.
+    if (handoffPort) returnParams.set("handoff_port", handoffPort);
+    const qs = returnParams.toString();
+    const returnPath = qs ? `/desktop-auth?${qs}` : "/desktop-auth";
+    // Keep desktop_state / handoff_port; drop any leftover OAuth params.
     window.history.replaceState({}, "", returnPath);
     if (desktopState) writeBootMarker(desktopState);
     const { data, error } = await signInWithOAuth("google", {
@@ -236,8 +279,27 @@ export default function DesktopAuth() {
       return;
     }
     clearAutoRetry();
-    navigateToDeepLink(buildDeepLink(session));
+    try {
+      const result = await handoffSessionToApp(session);
+      if (result.mode === "http") setHttpHandoffDone(true);
+    } catch {
+      setErrorMsg(
+        "Couldn't reach the local LYKN window. Make sure `npm run dev:overlay` is still running, then try Open LYKN again.",
+      );
+      setPhase("error");
+    }
   };
+
+  // Local-dev HTTP handoff: auto-send tokens so we never open lykn:// into the
+  // installed production app.
+  useEffect(() => {
+    if (phase !== "handoff") return;
+    if (!readHandoffPort()) return;
+    if (httpHandoffAttemptedRef.current) return;
+    httpHandoffAttemptedRef.current = true;
+    void openApp();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   const switchAccount = async () => {
     startedRef.current = true;
@@ -412,16 +474,35 @@ export default function DesktopAuth() {
                   You&apos;re signed in{user?.email ? ` as ${user.email}` : ""}
                 </h1>
                 <p className="mt-2 text-sm text-slate-500">
-                  Click <span className="font-medium text-slate-700">Open LYKN</span> to
-                  return to the Mac app you signed in from. You can close this tab afterwards.
+                  {httpHandoffDone || readHandoffPort()
+                    ? httpHandoffDone
+                      ? "Signed in to your local LYKN window. You can close this tab."
+                      : "Sending your session to the local LYKN window…"
+                    : (
+                      <>
+                        Click <span className="font-medium text-slate-700">Open LYKN</span> to
+                        return to the Mac app you signed in from. You can close this tab afterwards.
+                      </>
+                    )}
                 </p>
-                <button
-                  type="button"
-                  onClick={openApp}
-                  className="mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white transition-colors duration-200 bg-gradient-to-b from-[#6ea8ff] to-[#2563eb] shadow-[0_12px_26px_-10px_rgba(37,99,235,0.65),inset_0_1px_0_rgba(255,255,255,0.45)] hover:from-[#5b9bff] hover:to-[#1e40af]"
-                >
-                  Open LYKN
-                </button>
+                {!readHandoffPort() && (
+                  <button
+                    type="button"
+                    onClick={openApp}
+                    className="mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white transition-colors duration-200 bg-gradient-to-b from-[#6ea8ff] to-[#2563eb] shadow-[0_12px_26px_-10px_rgba(37,99,235,0.65),inset_0_1px_0_rgba(255,255,255,0.45)] hover:from-[#5b9bff] hover:to-[#1e40af]"
+                  >
+                    Open LYKN
+                  </button>
+                )}
+                {readHandoffPort() && !httpHandoffDone && (
+                  <button
+                    type="button"
+                    onClick={openApp}
+                    className="mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white transition-colors duration-200 bg-gradient-to-b from-[#6ea8ff] to-[#2563eb] shadow-[0_12px_26px_-10px_rgba(37,99,235,0.65),inset_0_1px_0_rgba(255,255,255,0.45)] hover:from-[#5b9bff] hover:to-[#1e40af]"
+                  >
+                    Retry local handoff
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={switchAccount}

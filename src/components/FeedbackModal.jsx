@@ -67,7 +67,7 @@ export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" 
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md">
+      <DialogContent className="bg-panel border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md">
         <DialogHeader>
           <DialogTitle className="text-black dark:text-white">Feedback</DialogTitle>
           <DialogDescription className="sr-only">

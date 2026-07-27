@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
@@ -38,7 +38,6 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { lazyBackfillCardVariants } from "@/lib/vault/lazyVariantBackfill";
 import {
   addNeuronsToProject,
-  createUserProject,
   listUserProjects,
   removeNeuronFromProject,
 } from "@/lib/userProjects";
@@ -87,6 +86,8 @@ import {
   appendWakeVaultPreviewComment,
   applyWakePreviewCommentsToCard,
   readWakeVaultPreviewComments,
+  readWakeVaultPreviewDeletedComments,
+  removeWakeVaultPreviewComment,
 } from "@/lib/wake/wakeVaultPreviewComments";
 import { purgeVaultNoteEmbeddings } from "@/lib/synthesis/queueReindex";
 import { motion } from "framer-motion";
@@ -856,6 +857,44 @@ function VaultLoadMoreSkeleton({ masonry = false, embedded = false, count = 10 }
 }
 
 /**
+ * Keep wheel/trackpad gestures inside a floating vault popover from scrolling
+ * the page behind it. Without this, hovering a non-scroll region (or
+ * overscrolling past the list end) scrolls the grid and the scroll-dismiss
+ * handler closes the menu.
+ */
+function trapPopoverWheel(event) {
+  const root = event.currentTarget;
+  if (!(root instanceof Element)) return;
+  event.stopPropagation();
+
+  const delta = event.deltaY;
+  if (!delta) {
+    event.preventDefault();
+    return;
+  }
+
+  let el = event.target instanceof Element ? event.target : null;
+  while (el && root.contains(el)) {
+    if (el instanceof HTMLElement) {
+      const { overflowY } = window.getComputedStyle(el);
+      const canScrollY =
+        (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+        el.scrollHeight > el.clientHeight + 1;
+      if (canScrollY) {
+        const atTop = el.scrollTop <= 0;
+        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+        // This container (or an outer one still in the popover) can absorb the
+        // gesture — let the browser scroll it. Only block when nothing left.
+        if ((delta < 0 && !atTop) || (delta > 0 && !atBottom)) return;
+      }
+    }
+    el = el.parentElement;
+  }
+  // No in-popover scroller can move further (or none under the cursor).
+  event.preventDefault();
+}
+
+/**
  * Phase 4 "why" editor — the single, scalar reason the user saved a vault
  * item (distinct from the comments thread). Self-contained so it owns its
  * draft state; the parent only supplies the initial value + a save handler.
@@ -1027,6 +1066,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   );
   const [wakePreviewCardComments, setWakePreviewCardComments] = useState(() =>
     wakePreview ? readWakeVaultPreviewComments() : {},
+  );
+  const [wakePreviewDeletedComments, setWakePreviewDeletedComments] = useState(() =>
+    wakePreview ? readWakeVaultPreviewDeletedComments() : {},
   );
   const [orderByPage, setOrderByPage] = useState({ everything: [] });
   const [draggedCardId, setDraggedCardId] = useState(null);
@@ -1550,27 +1592,35 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     }
   }, [notesQuery, hasMoreNotes, isLoadingMoreNotes, isLoadingNotes, user?.id]);
 
+  const closeAllVaultPopovers = useCallback(() => {
+    setOpenCardMenuId(null);
+    setOpenCardMenuRect(null);
+    setOpenAttachmentNotesCardId(null);
+    setOpenAttachmentNotesRect(null);
+    setAttachmentNoteDraft("");
+    setTagPickerCardId(null);
+    setTagPickerPosition(null);
+    setNewTagInput("");
+    setShowEmbeddedTagDropdown(false);
+    setShowVaultViewDropdown(false);
+  }, []);
+
   useEffect(() => {
-    const onPointerDown = (event) => {
-      if (cardMenuRef.current && !cardMenuRef.current.contains(event.target)) {
-        setOpenCardMenuId(null);
-      }
-      if (noteComposerRef.current && !noteComposerRef.current.contains(event.target)) {
-        setOpenAttachmentNotesCardId(null);
-        setOpenAttachmentNotesRect(null);
-        setAttachmentNoteDraft("");
-      }
-      if (tagPickerRef.current && !tagPickerRef.current.contains(event.target)) {
-        setTagPickerCardId(null);
-        setTagPickerPosition(null);
-        setNewTagInput("");
-      }
-      if (embeddedTagDropdownRef.current && !embeddedTagDropdownRef.current.contains(event.target)) {
-        setShowEmbeddedTagDropdown(false);
-      }
-      if (vaultViewDropdownRef.current && !vaultViewDropdownRef.current.contains(event.target)) {
-        setShowVaultViewDropdown(false);
-      }
+    // Capture-phase pointerdown so click-away still wins when card/menu
+    // buttons call stopPropagation (bubble-only window listeners never saw
+    // those outside clicks, so tags/comments/⋯ stayed open).
+    const onPointerDownCapture = (event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      // Clicks inside an open popover keep it alive.
+      if (cardMenuRef.current?.contains(target)) return;
+      if (noteComposerRef.current?.contains(target)) return;
+      if (tagPickerRef.current?.contains(target)) return;
+      if (embeddedTagDropdownRef.current?.contains(target)) return;
+      if (vaultViewDropdownRef.current?.contains(target)) return;
+      // Toggle triggers manage open/close themselves — don't fight them.
+      if (target instanceof Element && target.closest("[data-vault-popover-trigger]")) return;
+      closeAllVaultPopovers();
     };
     const onBlur = () => {
       setShowEmbeddedTagDropdown(false);
@@ -1582,14 +1632,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     // outside, which mobile users especially missed.
     const onKeyDown = (event) => {
       if (event.key !== "Escape") return;
-      setOpenCardMenuId(null);
-      setOpenAttachmentNotesCardId(null);
-      setAttachmentNoteDraft("");
-      setTagPickerCardId(null);
-      setTagPickerPosition(null);
-      setNewTagInput("");
-      setShowEmbeddedTagDropdown(false);
-      setShowVaultViewDropdown(false);
+      closeAllVaultPopovers();
       // Escape should also dismiss the Save Link dialog and the new-note
       // chooser — previously they were backdrop-click/X only.
       setShowSaveLink(false);
@@ -1597,25 +1640,47 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       setSaveLinkPreview(null);
       setShowNewNoteChooser(false);
     };
-    window.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDownCapture, true);
     window.addEventListener("blur", onBlur);
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("pointerdown", onPointerDownCapture, true);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, []);
+  }, [closeAllVaultPopovers]);
 
   useEffect(() => {
     if (!openCardMenuId) return;
-    const close = () => setOpenCardMenuId(null);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
+    // Close when the vault grid scrolls underneath so the fixed menu doesn't
+    // float detached — but ignore scrolls that originate inside the menu, or
+    // while the pointer is still hovering it (wheel over non-scroll regions /
+    // overscroll at the list end used to scroll the page and dismiss the menu).
+    const onScroll = (event) => {
+      const menu = cardMenuRef.current;
+      if (menu?.matches?.(":hover")) return;
+      const target = event?.target;
+      if (target instanceof Node && menu?.contains(target)) return;
+      if (target instanceof Element && target.closest("[data-vault-popover]")) return;
+      setOpenCardMenuId(null);
     };
+    const onResize = () => setOpenCardMenuId(null);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [openCardMenuId]);
+
+  // Non-passive wheel trap: React's onWheel can't preventDefault, so wheel
+  // over menu chrome / list end would still scroll the grid and dismiss.
+  useLayoutEffect(() => {
+    if (!openCardMenuId) return;
+    const menu = cardMenuRef.current;
+    if (!menu) return;
+    menu.addEventListener("wheel", trapPopoverWheel, { passive: false });
+    return () => menu.removeEventListener("wheel", trapPopoverWheel);
   }, [openCardMenuId]);
 
   // The comment composer and tag picker are position:fixed popovers anchored
@@ -1624,10 +1689,17 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   useEffect(() => {
     if (!openAttachmentNotesCardId && !tagPickerCardId) return;
     const close = (event) => {
-      // Ignore scrolls that originate inside the popovers themselves
-      // (e.g. scrolling the comment list or the tag list).
       const target = event?.target;
-      if (target instanceof Element && target.closest("[data-vault-popover]")) return;
+      if (target instanceof Element) {
+        const pop = target.closest("[data-vault-popover]");
+        if (pop) return;
+      }
+      if (
+        noteComposerRef.current?.matches?.(":hover") ||
+        tagPickerRef.current?.matches?.(":hover")
+      ) {
+        return;
+      }
       setOpenAttachmentNotesCardId(null);
       setTagPickerCardId(null);
       setTagPickerPosition(null);
@@ -1637,6 +1709,18 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     return () => {
       window.removeEventListener("scroll", close, true);
       window.removeEventListener("resize", close);
+    };
+  }, [openAttachmentNotesCardId, tagPickerCardId]);
+
+  useLayoutEffect(() => {
+    if (!openAttachmentNotesCardId && !tagPickerCardId) return;
+    const noteEl = noteComposerRef.current;
+    const tagEl = tagPickerRef.current;
+    if (noteEl) noteEl.addEventListener("wheel", trapPopoverWheel, { passive: false });
+    if (tagEl) tagEl.addEventListener("wheel", trapPopoverWheel, { passive: false });
+    return () => {
+      if (noteEl) noteEl.removeEventListener("wheel", trapPopoverWheel);
+      if (tagEl) tagEl.removeEventListener("wheel", trapPopoverWheel);
     };
   }, [openAttachmentNotesCardId, tagPickerCardId]);
 
@@ -2026,7 +2110,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     });
 
     const cardsWithPreviewComments = isWakePreview
-      ? cards.map((card) => applyWakePreviewCommentsToCard(card, wakePreviewCardComments))
+      ? cards.map((card) =>
+          applyWakePreviewCommentsToCard(card, wakePreviewCardComments, wakePreviewDeletedComments),
+        )
       : cards;
 
     const seen = new Set();
@@ -2055,7 +2141,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       }
       return true;
     });
-  }, [notes, ghostCards, wakeDemoCards, wakePreviewUserQuickNoteCards, isWakePreview, wakePreviewCardComments]);
+  }, [notes, ghostCards, wakeDemoCards, wakePreviewUserQuickNoteCards, isWakePreview, wakePreviewCardComments, wakePreviewDeletedComments]);
 
   // Keep the ref in sync so handlers that fire from raw DOM events
   // (drag-end, etc.) can read the current grid without going through
@@ -3816,6 +3902,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         {parseAttachmentNotes(card.attachment).length > 0 && (
                           <button
                             type="button"
+                            data-vault-popover-trigger=""
                             data-no-drag="true"
                             draggable={false}
                             onPointerDown={(e) => e.stopPropagation()}
@@ -3851,6 +3938,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                           <div className="relative">
                             <button
                               type="button"
+                              data-vault-popover-trigger=""
                               data-no-drag="true"
                               draggable={false}
                               onPointerDown={(e) => e.stopPropagation()}
@@ -3936,6 +4024,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                           {(card.comments?.length || 0) > 0 && (
                             <button
                               type="button"
+                              data-vault-popover-trigger=""
                               data-no-drag="true"
                               draggable={false}
                               onPointerDown={(e) => e.stopPropagation()}
@@ -3959,6 +4048,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                           <div className="relative">
                             <button
                               type="button"
+                              data-vault-popover-trigger=""
                               data-no-drag="true"
                               draggable={false}
                               onPointerDown={(e) => e.stopPropagation()}
@@ -4501,8 +4591,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     // Connector folder tiles aren't previewable — they're a navigation
     // affordance into a per-connector subview of the grid.
     if (card.kind === "source-folder") {
-      setOpenCardMenuId(null);
-      setOpenAttachmentNotesCardId(null);
+      closeAllVaultPopovers();
       setPreviewCard(null);
       setOpenSourceFolder(card.source);
       return;
@@ -4517,8 +4606,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       if (!isSelectableCard(card)) return;
       e?.preventDefault?.();
       e?.stopPropagation?.();
-      setOpenCardMenuId(null);
-      setOpenAttachmentNotesCardId(null);
+      closeAllVaultPopovers();
       setPreviewCard(null);
       const shift = !!e?.shiftKey;
       const toggle = !!(e?.metaKey || e?.ctrlKey);
@@ -4552,8 +4640,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     const toggle = !!(e?.metaKey || e?.ctrlKey);
     if ((shift || toggle) && isSelectableCard(card)) {
       e?.preventDefault?.();
-      setOpenCardMenuId(null);
-      setOpenAttachmentNotesCardId(null);
+      closeAllVaultPopovers();
       setPreviewCard(null);
       if (shift) selectRangeTo(card);
       else toggleCardSelection(card);
@@ -4561,8 +4648,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     }
     if (selectedCardIds.size > 0) clearSelection();
 
-    setOpenCardMenuId(null);
-    setOpenAttachmentNotesCardId(null);
+    closeAllVaultPopovers();
 
     // Embedded (non-picker) = the Omnia chat "Pull from vault" sidebar. A
     // plain click should ADD the item to the chat (same logic as drag), not
@@ -4611,6 +4697,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     selectedCardIds,
     clearSelection,
     openVaultArtifactInBrowser,
+    closeAllVaultPopovers,
   ]);
 
   useEffect(() => {
@@ -5590,13 +5677,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       const htmlFailed = failedImageIds.has(card.id);
       return (
         <div className="rounded-2xl overflow-hidden glass-control cursor-pointer">
-          <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-black/8 dark:border-white/8 pointer-events-none">
-            <FileText className="w-4 h-4 text-blue-500 shrink-0" />
-            <div className="min-w-0">
-              <span className="block text-sm font-medium text-black/80 dark:text-white/80 truncate">{fileName}</span>
-              <span className="block text-[0.625rem] text-black/45 dark:text-white/45">Interactive preview</span>
-            </div>
-          </div>
           <div className={`w-full ${tileHeightClass} overflow-hidden bg-[#15130f]`}>
             {htmlPreview ? (
               <iframe
@@ -5613,6 +5693,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                 {htmlFailed ? "Preview unavailable" : "Loading preview…"}
               </div>
             )}
+          </div>
+          <div className="flex items-center gap-2 px-3.5 py-2.5 border-t border-black/8 dark:border-white/8 pointer-events-none">
+            <FileText className="w-4 h-4 text-blue-500 shrink-0" />
+            <div className="min-w-0">
+              <span className="block text-sm font-medium text-black/80 dark:text-white/80 truncate">{fileName}</span>
+              <span className="block text-[0.625rem] text-black/45 dark:text-white/45">Interactive preview</span>
+            </div>
           </div>
         </div>
       );
@@ -6055,52 +6142,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     }
   }, [invalidateVaultProjects, projects, user?.id, vaultMemberFromCard]);
 
-  const createProjectFromCard = useCallback(async (card) => {
-    if (!user?.id || !card) return;
-    const member = vaultMemberFromCard(card);
-    if (!member) {
-      toast({
-        title: "Couldn't create project",
-        description: "This item isn't linked to a vault note yet.",
-        variant: "destructive",
-      });
-      return;
-    }
-    setIsCardActionBusy(true);
-    try {
-      const projectNameBase = String(card.title || "New Project").trim() || "New Project";
-      const projectName = projectNameBase.length > 60 ? `${projectNameBase.slice(0, 60)}...` : projectNameBase;
-      const project = await createUserProject(user.id, {
-        name: projectName,
-        members: [member],
-      });
-      if (!project?.id) {
-        toast({
-          title: "Couldn't create project",
-          description: "Something went wrong. Please try again.",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      invalidateVaultProjects();
-      setOpenCardMenuId(null);
-      toast({
-        title: "Project created",
-        description: `Added this item to "${project.name}".`,
-      });
-    } catch (err) {
-      if (import.meta.env.DEV) console.error("[Vault] create project failed:", err);
-      toast({
-        title: "Couldn't create project",
-        description: "Something went wrong. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsCardActionBusy(false);
-    }
-  }, [invalidateVaultProjects, user?.id, vaultMemberFromCard]);
-
   const addAttachmentNote = useCallback(async (card, textInput) => {
     if (!user?.id || !card?.noteId) return false;
     const text = String(textInput || "").trim();
@@ -6233,6 +6274,106 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     return true;
   }, []);
 
+  const removeAttachmentNote = useCallback(async (card, commentId) => {
+    if (!user?.id || !card?.noteId || !commentId) return false;
+    setIsCardActionBusy(true);
+    try {
+      const note = notes.find((n) => String(n?.id) === String(card.noteId));
+      if (!note) return false;
+      const attachments = parseAttachmentsFromNote(note);
+      const idx = Number(card.attachmentIndex);
+      if (!Number.isFinite(idx) || idx < 0 || idx >= attachments.length) return false;
+
+      const target = attachments[idx] || {};
+      const existingNotes = parseAttachmentNotes(target);
+      const nextAttachmentNotes = existingNotes.filter((entry) => entry.id !== commentId);
+      if (nextAttachmentNotes.length === existingNotes.length) return false;
+      const nextAttachments = attachments.slice();
+      nextAttachments[idx] = { ...target, notes: nextAttachmentNotes };
+      const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
+
+      const { error: updateError } = await supabase
+        .from("vault_items")
+        .update({
+          content: nextContent,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", card.noteId)
+        .eq("user_id", user.id);
+
+      if (!updateError) {
+        setNotes((prev) =>
+          prev.map((n) =>
+            String(n?.id) === String(card.noteId)
+              ? { ...n, content: nextContent, updated_at: new Date().toISOString() }
+              : n
+          )
+        );
+        return true;
+      }
+      return false;
+    } finally {
+      setIsCardActionBusy(false);
+    }
+  }, [notes, user?.id]);
+
+  const removeQuickNoteComment = useCallback(async (card, commentId) => {
+    if (!user?.id || !card?.noteId || !commentId) return false;
+    setIsCardActionBusy(true);
+    try {
+      const note = notes.find((n) => String(n?.id) === String(card.noteId));
+      if (!note) return false;
+      const existing = parseQuickNoteComments(note);
+      const nextComments = existing.filter((entry) => entry.id !== commentId);
+      if (nextComments.length === existing.length) return false;
+
+      const { error: updateError } = await supabase
+        .from("vault_items")
+        .update({
+          comments: nextComments,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", card.noteId)
+        .eq("user_id", user.id);
+
+      if (updateError) {
+        if (updateError.code === "PGRST204" || updateError.message?.toLowerCase().includes("does not exist")) {
+          console.warn("notes.comments column missing — run migration 041_notes_comments_column.sql", updateError);
+        }
+        return false;
+      }
+
+      setNotes((prev) =>
+        prev.map((n) =>
+          String(n?.id) === String(card.noteId)
+            ? { ...n, comments: nextComments, updated_at: new Date().toISOString() }
+            : n
+        )
+      );
+      return true;
+    } finally {
+      setIsCardActionBusy(false);
+    }
+  }, [notes, user?.id]);
+
+  const removeWakePreviewCardComment = useCallback((card, commentId) => {
+    if (!card?.id || !commentId) return false;
+    removeWakeVaultPreviewComment(card.id, commentId);
+    setWakePreviewCardComments((prev) => {
+      const nextForCard = (prev[card.id] || []).filter((entry) => entry.id !== commentId);
+      if (nextForCard.length === 0) {
+        const next = { ...prev };
+        delete next[card.id];
+        return next;
+      }
+      return { ...prev, [card.id]: nextForCard };
+    });
+    setWakePreviewDeletedComments((prev) => ({
+      ...prev,
+      [card.id]: Array.from(new Set([...(prev[card.id] || []), commentId])),
+    }));
+    return true;
+  }, []);
 
   const confirmAndDeleteAttachment = useCallback((card) => {
     if (!card) return;
@@ -6384,6 +6525,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   const openAttachmentNotesForAnchor = useCallback((cardId, anchorEl) => {
     if (!isWakePreview && requireSignInForAction()) return;
     const rect = anchorEl?.getBoundingClientRect?.();
+    setOpenCardMenuId(null);
+    setOpenCardMenuRect(null);
+    setTagPickerCardId(null);
+    setTagPickerPosition(null);
+    setNewTagInput("");
     setOpenAttachmentNotesRect(
       rect
         ? { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width, height: rect.height }
@@ -6408,6 +6554,12 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 
     const menuEstimatedHeight = 320;
     const rect = anchorEl?.getBoundingClientRect?.();
+    setOpenAttachmentNotesCardId(null);
+    setOpenAttachmentNotesRect(null);
+    setAttachmentNoteDraft("");
+    setTagPickerCardId(null);
+    setTagPickerPosition(null);
+    setNewTagInput("");
     if (!rect) {
       setOpenCardMenuPlacement("down");
       setOpenCardMenuRect(null);
@@ -6470,7 +6622,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             className={`fixed right-6 z-[70] w-12 h-12 rounded-full border shadow-lg flex items-center justify-center transition touch-manipulation ${
               showQuickNote || showNewNoteChooser
                 ? "bg-blue-500/15 text-blue-600 border-blue-500/30 hover:bg-blue-500/25 dark:bg-blue-400/20 dark:text-blue-400 dark:hover:bg-blue-400/30"
-                : "border-black/[0.08] bg-[hsl(var(--sidebar-surface))] text-black/80 hover:brightness-95 dark:border-white/[0.08] dark:bg-[hsl(0_0%_16%)] dark:text-white/90 dark:hover:brightness-125"
+                : "border-black/[0.08] bg-panel text-black/80 hover:brightness-95 dark:border-white/[0.08] dark:text-white/90 dark:hover:brightness-125"
             }`}
             // Clear the mobile tab bar — without this the tab bar (z-[75])
             // paints over most of the FAB on phones, making it untappable.
@@ -6554,7 +6706,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         <ChevronDown className={`w-3 h-3 transition-transform ${showVaultViewDropdown ? "rotate-180" : ""}`} />
                       </button>
                       {showVaultViewDropdown && (
-                        <div className="absolute top-full left-0 mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1">
+                        <div className="absolute top-full left-0 mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-panel backdrop-blur-md shadow-md z-[400] py-1">
                           {VAULT_VIEW_OPTIONS.map((v) => {
                             const Icon = v.icon;
                             const active = vaultView === v.id;
@@ -6604,7 +6756,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                     </button>
                   )}
                   {showEmbeddedTagDropdown && (
-                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide">
+                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-panel backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide">
                       {(() => {
                         const untaggedActive = selectedFilterTags.includes("__untagged__");
                         return (
@@ -6729,7 +6881,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         <ChevronDown className={`w-3 h-3 transition-transform ${showVaultViewDropdown ? "rotate-180" : ""}`} />
                       </button>
                       {showVaultViewDropdown && (
-                        <div className={`absolute top-full mt-1 w-44 max-w-[calc(100vw-1.5rem)] rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
+                        <div className={`absolute top-full mt-1 w-44 max-w-[calc(100vw-1.5rem)] rounded-xl border border-black/10 dark:border-white/10 bg-panel backdrop-blur-md shadow-md z-[400] py-1 ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
                           {VAULT_VIEW_OPTIONS.map((v) => {
                             const Icon = v.icon;
                             const active = vaultView === v.id;
@@ -6781,7 +6933,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                       )}
                     </div>
                     {showEmbeddedTagDropdown && (
-                      <div className={`absolute top-full mt-1 w-56 md:w-64 max-w-[calc(100vw-1.5rem)] max-h-72 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#1c1c1c]/80 backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
+                      <div className={`absolute top-full mt-1 w-56 md:w-64 max-w-[calc(100vw-1.5rem)] max-h-72 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-panel backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
                         {(() => {
                           const untaggedActive = selectedFilterTags.includes("__untagged__");
                           return (
@@ -7038,6 +7190,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                               <div className="mt-1 flex justify-end px-1">
                                 <button
                                   type="button"
+                              data-vault-popover-trigger=""
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setOpenAttachmentNotesCardId(null);
@@ -7072,6 +7225,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                               <div className="mt-1 flex justify-end px-1">
                                 <button
                                   type="button"
+                              data-vault-popover-trigger=""
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setOpenAttachmentNotesCardId(null);
@@ -7094,6 +7248,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                               <div className="mt-1 flex justify-end px-1">
                                 <button
                                   type="button"
+                              data-vault-popover-trigger=""
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setOpenAttachmentNotesCardId(null);
@@ -7186,6 +7341,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                                 <div className="mt-1 flex justify-end px-1">
                                   <button
                                     type="button"
+                              data-vault-popover-trigger=""
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setOpenAttachmentNotesCardId(null);
@@ -7220,6 +7376,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                                 <div className="mt-1 flex justify-end px-1">
                                   <button
                                     type="button"
+                              data-vault-popover-trigger=""
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setOpenAttachmentNotesCardId(null);
@@ -7242,6 +7399,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                                 <div className="mt-1 flex justify-end px-1">
                                   <button
                                     type="button"
+                              data-vault-popover-trigger=""
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setOpenAttachmentNotesCardId(null);
@@ -7317,6 +7475,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                             <div className="mt-2 flex justify-end px-1" data-no-drag="true">
                               <button
                                 type="button"
+                                data-vault-popover-trigger=""
                                 data-no-drag="true"
                                 draggable={false}
                                 onPointerDown={(e) => e.stopPropagation()}
@@ -7609,7 +7768,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
           return (
             <div
               ref={cardMenuRef}
-              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] shadow-lg text-black/80 dark:text-white/90 p-1.5 flex flex-col overflow-hidden"
+              data-vault-popover=""
+              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-panel shadow-lg text-black/80 dark:text-white/90 p-1.5 flex flex-col overflow-hidden overscroll-contain"
               style={{
                 position: previewRoot ? "absolute" : "fixed",
                 width: menuW,
@@ -7625,6 +7785,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                 zIndex: 9999,
               }}
               onMouseDown={(e) => e.stopPropagation()}
+              onWheel={trapPopoverWheel}
             >
               {/*
                 Tall cards (notably drag-dropped YouTube embeds) anchor the
@@ -7637,19 +7798,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               <div className="min-h-0 flex-1 overflow-y-auto scrollbar-hide">
                 <div className="px-2 py-1 text-[0.6875rem] font-medium text-black/60 dark:text-white/60">Add to project</div>
                 <div className="space-y-1">
-                  <button
-                    type="button"
-                    disabled={isCardActionBusy}
-                    onClick={() => {
-                      if (blockWakePreviewVaultMutation(menuCard)) return;
-                      void createProjectFromCard(menuCard);
-                    }}
-                    className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    New project
-                  </button>
-                  <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
                   <div className="max-h-44 overflow-y-auto scrollbar-hide space-y-1">
                     {projects.length === 0 ? (
                       <div className="px-2 py-1.5 text-[0.6875rem] text-black/55 dark:text-white/55">No projects found.</div>
@@ -7705,8 +7853,15 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                       type="button"
                       onClick={() => {
                         const rect = openCardMenuRect;
+                        setOpenAttachmentNotesCardId(null);
+                        setOpenAttachmentNotesRect(null);
+                        setAttachmentNoteDraft("");
                         setTagPickerCardId(menuCard.id);
-                        setTagPickerPosition({ left: rect.left, top: rect.bottom + 8 });
+                        setTagPickerPosition(
+                          rect
+                            ? { left: rect.left, top: rect.bottom + 8 }
+                            : { left: 16, top: 16 },
+                        );
                         setOpenCardMenuId(null);
                       }}
                       className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2"
@@ -7772,6 +7927,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             ? parseAttachmentNotes(card.attachment)
             : (card.comments || []);
           const onSave = isAttachment ? addAttachmentNote : addQuickNoteComment;
+          const onDelete = isAttachment ? removeAttachmentNote : removeQuickNoteComment;
           const placeholder = isAttachment
             ? "Write a comment about this file…"
             : "Write a comment on this quick note…";
@@ -7785,6 +7941,15 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             if (blockWakePreviewVaultMutation(card)) return;
             void onSave(card, attachmentNoteDraft);
             closeAttachmentNotes();
+          };
+          const tryDeleteComment = (commentId) => {
+            if (!commentId || isCardActionBusy) return;
+            if (isWakePreview) {
+              removeWakePreviewCardComment(card, commentId);
+              return;
+            }
+            if (blockWakePreviewVaultMutation(card)) return;
+            void onDelete(card, commentId);
           };
 
           const COMP_W = Math.min(288, window.innerWidth - 16);
@@ -7864,10 +8029,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             <div
               ref={noteComposerRef}
               data-vault-popover=""
-              className="rounded-2xl border border-white/30 dark:border-white/10 bg-white/90 dark:bg-[#171515]/90 backdrop-blur-md shadow-xl p-3 overflow-y-auto scrollbar-hide"
+              className="rounded-2xl border border-white/30 dark:border-white/10 bg-panel backdrop-blur-md shadow-xl p-3 overflow-y-auto scrollbar-hide overscroll-contain"
               style={positionStyle}
               onMouseDown={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
+              onWheel={trapPopoverWheel}
             >
               <div className="text-[0.6875rem] font-medium text-black/60 dark:text-white/60 mb-2">
                 Add a comment
@@ -7910,10 +8076,23 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               {existingComments.length > 0 && (
                 <div className="mt-3 border-t border-black/10 dark:border-white/10 pt-2 max-h-40 overflow-y-auto scrollbar-hide space-y-1.5">
                   {existingComments.map((entry) => (
-                    <div key={entry.id} className="rounded-md bg-black/5 dark:bg-white/5 px-2 py-1.5">
-                      <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">
+                    <div
+                      key={entry.id}
+                      className="group flex items-start gap-1.5 rounded-md bg-black/5 dark:bg-white/5 px-2 py-1.5"
+                    >
+                      <p className="flex-1 min-w-0 text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">
                         {entry.text}
                       </p>
+                      <button
+                        type="button"
+                        onClick={() => tryDeleteComment(entry.id)}
+                        disabled={isCardActionBusy}
+                        className="shrink-0 p-0.5 rounded text-black/35 dark:text-white/35 hover:text-red-600 dark:hover:text-red-400 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-40 transition-colors"
+                        title="Delete comment"
+                        aria-label="Delete comment"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -7947,9 +8126,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             <div
               ref={tagPickerRef}
               data-vault-popover=""
-              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] shadow-lg text-black/80 dark:text-white/90 p-1.5 overflow-hidden"
+              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-panel shadow-lg text-black/80 dark:text-white/90 p-1.5 overflow-hidden overscroll-contain"
               style={{ position: "fixed", width: menuW, left, top, zIndex: 10000 }}
               onMouseDown={(e) => e.stopPropagation()}
+              onWheel={trapPopoverWheel}
             >
               <div className="flex items-center gap-2 mb-2">
                 <Tag className="w-3.5 h-3.5 text-black/50 dark:text-white/50" />
@@ -7968,7 +8148,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                     }
                   }}
                   placeholder="Search or create tag..."
-                  className="w-full h-8 rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-[#1f1d1d]/60 px-2.5 text-xs outline-none placeholder:text-black/35 dark:placeholder:text-white/35 focus:border-blue-400/50"
+                  className="w-full h-8 rounded-lg border border-black/10 dark:border-white/10 bg-black/[0.04] dark:bg-white/[0.06] px-2.5 text-xs outline-none placeholder:text-black/35 dark:placeholder:text-white/35 focus:border-blue-400/50"
                   autoFocus
                 />
               </div>
@@ -8035,7 +8215,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       )}
       {previewCard && createPortal(
         (() => {
-          const card = previewCard;
+          // Prefer the live vaultCards entry so comment deletes (and other
+          // in-place edits) reflect immediately without reopening preview.
+          const card =
+            vaultCards.find((c) => c.id === previewCard.id) || previewCard;
           const att = card.attachment || {};
           const type = card.type || card.kind;
           const resolvedUrl = resolvedAttachmentUrls[card.id] || att.url || "";
@@ -8352,7 +8535,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 
                 {/* Details — description, why, notes, tags, date. */}
                 {previewDetailsOpen && hasDetails && (
-                  <div className="mb-3 bg-white dark:bg-[#1e1e1e] border border-black/10 dark:border-white/10 px-4 py-3.5 max-h-[42vh] overflow-y-auto space-y-4">
+                  <div className="mb-3 bg-panel border border-black/10 dark:border-white/10 px-4 py-3.5 max-h-[42vh] overflow-y-auto space-y-4">
                     {card.dateLabel && (
                       <p className="text-xs text-black/45 dark:text-white/45">{card.dateLabel}</p>
                     )}
@@ -8378,9 +8561,33 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                       <div className="space-y-2">
                         <p className="text-xs text-black/45 dark:text-white/45">Notes</p>
                         {allComments.map((n) => (
-                          <p key={n.id} className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">
-                            {n.text}
-                          </p>
+                          <div key={n.id} className="flex items-start gap-2">
+                            <p className="flex-1 min-w-0 text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">
+                              {n.text}
+                            </p>
+                            {(isWakePreview || canEditWhy) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (isWakePreview) {
+                                    removeWakePreviewCardComment(card, n.id);
+                                    return;
+                                  }
+                                  if (blockWakePreviewVaultMutation(card)) return;
+                                  const onDelete = card.kind === "attachment"
+                                    ? removeAttachmentNote
+                                    : removeQuickNoteComment;
+                                  void onDelete(card, n.id);
+                                }}
+                                disabled={isCardActionBusy}
+                                className="shrink-0 p-0.5 rounded text-black/35 dark:text-white/35 hover:text-red-600 dark:hover:text-red-400 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-40 transition-colors"
+                                title="Delete comment"
+                                aria-label="Delete comment"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
                         ))}
                       </div>
                     )}

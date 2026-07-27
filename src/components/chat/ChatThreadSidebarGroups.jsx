@@ -94,6 +94,7 @@ function ChatRow({ board, isActive, loading, onOpen, menuChatId, onMenuOpen, onM
             const rect = e.currentTarget.getBoundingClientRect();
             onMenuOpen({
               id: board.id,
+              title: board.title || "New Chat",
               pinned: Boolean(board.pinned_at),
               top: rect.bottom + 4,
               left: rect.right,

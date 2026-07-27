@@ -24,7 +24,7 @@ interface WakeModelMenuPreviewProps {
 
 // Mirrors `dropdownCls` from LyknChatBarToolbar so the panel matches 1:1.
 const PANEL_CLS =
-  "rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5";
+  "rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg p-1.5";
 // Light-surface variant: white panel with a subtle black hairline + soft shadow.
 const PANEL_CLS_LIGHT =
   "rounded-2xl border border-black/[0.08] bg-white shadow-lg p-1.5";

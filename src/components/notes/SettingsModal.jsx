@@ -3,6 +3,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import {
   LogOut,
   User,
@@ -15,6 +17,7 @@ import {
   Sparkles,
   Upload,
   Plug,
+  Loader2,
 } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 
@@ -62,11 +65,11 @@ function MenuRow({ icon: Icon, title, onClick, danger = false, trailing = null, 
 // ---------------------------------------------------------------------
 function SubViewHeader({ title, onBack }) {
   return (
-    <div className="flex items-center gap-2 mb-4">
+    <div className="flex items-center gap-1 mb-4">
       <button
         type="button"
         onClick={onBack}
-        className="-ml-2 p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+        className="p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
         aria-label="Back to settings"
       >
         <ChevronLeft className="w-4 h-4" />
@@ -500,7 +503,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   if (loading) {
     return (
       <Dialog open={isOpen} onOpenChange={onClose}>
-        <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md">
+        <DialogContent className="bg-panel border-black/10 dark:border-transparent text-black dark:text-white max-w-md backdrop-blur-md">
           <DialogTitle className="sr-only">Settings</DialogTitle>
           <div className="flex items-center justify-center p-8">
             <div className="w-6 h-6 border-4 border-slate-200 border-t-slate-800 dark:border-white/15 dark:border-t-white/70 rounded-full animate-spin" />
@@ -594,16 +597,22 @@ export default function SettingsModal({ isOpen, onClose }) {
             </div>
           </div>
 
-          <div className="pt-4 mt-2 border-t border-black/[0.06] dark:border-white/[0.06] space-y-2">
+          <div className="pt-4 mt-4 border-t border-black/[0.06] dark:border-white/[0.06] space-y-2">
             <Label className="text-xs text-gray-600 dark:text-gray-400">Security</Label>
-            <button
+            <Button
               type="button"
               onClick={handleSignOutEverywhere}
               disabled={signOutEverywhereBusy}
-              className="text-left text-sm font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50 transition-colors"
+              variant="outline"
+              className="w-full !bg-transparent border-red-300 dark:border-red-900/60 text-red-600 dark:text-red-400 !shadow-none hover:!bg-red-500/[0.06] dark:hover:!bg-red-500/[0.08] hover:text-red-700 dark:hover:text-red-300 flex items-center justify-center gap-2 disabled:opacity-50"
             >
+              {signOutEverywhereBusy ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <LogOut className="w-4 h-4" />
+              )}
               {signOutEverywhereBusy ? 'Signing out everywhere…' : 'Sign out of all devices'}
-            </button>
+            </Button>
             <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-snug">
               Revokes every active session on your account. Use this if you suspect someone else has access.
             </p>
@@ -701,24 +710,13 @@ export default function SettingsModal({ isOpen, onClose }) {
                   Work on your projects overnight and leave a morning brief.
                 </p>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={nightShiftEnabled}
+              <Switch
+                checked={nightShiftEnabled}
                 disabled={nightShiftLoading || nightShiftSaving}
-                onClick={() => void toggleNightShift()}
-                className={`text-sm font-medium transition-colors disabled:opacity-50 ${
-                  nightShiftEnabled
-                    ? 'text-black dark:text-white'
-                    : 'text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white'
-                }`}
-              >
-                {nightShiftLoading || nightShiftSaving
-                  ? '…'
-                  : nightShiftEnabled
-                    ? 'On'
-                    : 'Off'}
-              </button>
+                onCheckedChange={() => void toggleNightShift()}
+                aria-label="Night Shift"
+                className="mt-0.5"
+              />
             </div>
             {nightShiftEnabled ? (
               <div className="space-y-1.5">
@@ -731,7 +729,7 @@ export default function SettingsModal({ isOpen, onClose }) {
                   <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+                  <SelectContent className="bg-panel border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
                     <SelectItem value="brief">Brief</SelectItem>
                     <SelectItem value="research">Research</SelectItem>
                     <SelectItem value="delegate">Delegate</SelectItem>
@@ -782,7 +780,7 @@ export default function SettingsModal({ isOpen, onClose }) {
           <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+          <SelectContent className="bg-panel border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
             <SelectItem value="light">Light</SelectItem>
             <SelectItem value="dark">Dark</SelectItem>
             <SelectItem value="system">System</SelectItem>
@@ -813,7 +811,7 @@ export default function SettingsModal({ isOpen, onClose }) {
             <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+            <SelectContent className="bg-panel border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
               <ModelSelectOptions modelTier={modelTier} />
             </SelectContent>
           </Select>
@@ -870,7 +868,7 @@ export default function SettingsModal({ isOpen, onClose }) {
               <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+              <SelectContent className="bg-panel border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
                 <SelectItem value="concise">Concise</SelectItem>
                 <SelectItem value="medium">Balanced</SelectItem>
                 <SelectItem value="detailed">Detailed</SelectItem>
@@ -1130,7 +1128,7 @@ export default function SettingsModal({ isOpen, onClose }) {
         // flex column with an inner scroll area (not a scrolling DialogContent)
         // so the "Settings" header and the ✕ stay pinned while long views
         // (AI Personalization, Connections) scroll underneath.
-        className={`bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white backdrop-blur-md max-h-[90vh] flex flex-col overflow-hidden ${
+        className={`bg-panel border-black/10 dark:border-transparent text-black dark:text-white backdrop-blur-md max-h-[90vh] flex flex-col overflow-hidden ${
           view === 'connections' ? 'max-w-2xl' : 'max-w-md'
         }`}
       >
@@ -1138,7 +1136,11 @@ export default function SettingsModal({ isOpen, onClose }) {
           <DialogTitle className="text-black dark:text-white">Settings</DialogTitle>
         </DialogHeader>
 
-        <div className="min-w-0 py-2 flex-1 overflow-y-auto overflow-x-hidden">
+        <div
+          className={`min-w-0 py-2 flex-1 overflow-y-auto overflow-x-hidden ${
+            view === 'aiPersonalization' ? 'scrollbar-hide' : ''
+          }`}
+        >
           {renderView()}
         </div>
       </DialogContent>

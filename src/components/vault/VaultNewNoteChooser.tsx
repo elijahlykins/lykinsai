@@ -107,7 +107,7 @@ export default function VaultNewNoteChooser({
       }}
     >
       <div
-        className="w-[380px] max-w-[92vw] rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] text-black/80 dark:text-white/90 shadow-lg p-5 space-y-4"
+        className="w-[380px] max-w-[92vw] rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-panel text-black/80 dark:text-white/90 shadow-lg p-5 space-y-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">

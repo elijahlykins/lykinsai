@@ -42,7 +42,7 @@ function ArtifactDownloads({ downloads }: { downloads: ArtifactDownload[] }) {
         <ChevronDown className="h-3 w-3 opacity-60" />
       </button>
       {open ? (
-        <div className="absolute right-0 top-full z-20 mt-1 min-w-[10rem] overflow-hidden rounded-xl border border-black/10 bg-white py-1 shadow-lg dark:border-white/12 dark:bg-[#221f1c]">
+        <div className="absolute right-0 top-full z-20 mt-1 min-w-[10rem] overflow-hidden rounded-xl border border-black/10 bg-panel py-1 shadow-lg dark:border-white/12">
           {downloads.map((d, i) => {
             const href = safeAttachmentUrl(d.url);
             if (!href) return null;

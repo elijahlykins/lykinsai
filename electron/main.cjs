@@ -69,6 +69,7 @@ const fsSync = require("node:fs");
 const crypto = require("node:crypto");
 const dns = require("node:dns/promises");
 const net = require("node:net");
+const http = require("node:http");
 const { execFile } = require("node:child_process");
 const {
   collectBrowserInteractables,
@@ -440,12 +441,132 @@ function clearDesktopAuthState() {
   }
 }
 
+function isLocalAppUrl() {
+  try {
+    const host = new URL(APP_URL).hostname;
+    return host === "localhost" || host === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+
+// Unpackaged Electron must not steal lykn:// from the installed LYKN.app
+// (Launch Services would relaunch Electron.app with no main script). For local
+// Vite shells we hand tokens back over a loopback HTTP POST instead.
+const DEV_AUTH_HANDOFF_PORT = Number(process.env.LYKN_DEV_AUTH_PORT || 38472);
+/** @type {import('node:http').Server | null} */
+let authHandoffServer = null;
+
+function shouldUseHttpAuthHandoff() {
+  return !app.isPackaged && isLocalAppUrl();
+}
+
+function acceptAuthHandoffPayload(body) {
+  const access_token = String(body?.access_token || "");
+  const refresh_token = String(body?.refresh_token || "");
+  const state = String(body?.state || "");
+  if (!access_token || !refresh_token) {
+    return { ok: false, error: "missing_tokens" };
+  }
+  const expected = loadDesktopAuthState();
+  if (!expected?.state || !state || expected.state !== state) {
+    console.warn("[auth] localhost handoff rejected — missing or mismatched desktop_state");
+    return { ok: false, error: "bad_state" };
+  }
+  pendingAuthTokens = { access_token, refresh_token };
+  if (!app.isReady()) return { ok: true };
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow();
+  } else {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    flushPendingAuthTokens();
+  }
+  try {
+    app.focus({ steal: true });
+  } catch (_) {
+    /* best-effort */
+  }
+  return { ok: true };
+}
+
+function startDevAuthHandoffServer() {
+  if (!shouldUseHttpAuthHandoff() || authHandoffServer) return;
+  try {
+    authHandoffServer = http.createServer((req, res) => {
+      const origin = String(req.headers.origin || "");
+      const allowOrigin =
+        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin) ? origin : "";
+      if (allowOrigin) {
+        res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+        res.setHeader("Vary", "Origin");
+      }
+      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      let pathname = "/";
+      try {
+        pathname = new URL(req.url || "/", "http://127.0.0.1").pathname;
+      } catch {
+        /* keep / */
+      }
+      if (req.method !== "POST" || pathname !== "/auth-handoff") {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("not found");
+        return;
+      }
+
+      const chunks = [];
+      req.on("data", (c) => {
+        chunks.push(c);
+        if (Buffer.concat(chunks).length > 64 * 1024) req.destroy();
+      });
+      req.on("end", () => {
+        let body = {};
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "bad_json" }));
+          return;
+        }
+        const result = acceptAuthHandoffPayload(body);
+        res.writeHead(result.ok ? 200 : 403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      });
+    });
+    authHandoffServer.on("error", (err) => {
+      console.warn("[auth] localhost handoff server error:", err?.message || err);
+      authHandoffServer = null;
+    });
+    authHandoffServer.listen(DEV_AUTH_HANDOFF_PORT, "127.0.0.1", () => {
+      console.log(
+        `[auth] localhost handoff listening on http://127.0.0.1:${DEV_AUTH_HANDOFF_PORT}/auth-handoff`,
+      );
+    });
+  } catch (err) {
+    console.warn("[auth] failed to start localhost handoff server:", err?.message || err);
+    authHandoffServer = null;
+  }
+}
+
 function mintDesktopAuthUrl(baseUrl) {
   const state = crypto.randomBytes(24).toString("base64url");
   persistDesktopAuthState({ state, expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS });
   try {
     const u = new URL(baseUrl);
     u.searchParams.set("desktop_state", state);
+    // Tell /desktop-auth to POST tokens back to this unpackaged shell instead
+    // of opening lykn:// (which always launches the installed LYKN.app).
+    if (shouldUseHttpAuthHandoff()) {
+      u.searchParams.set("handoff_port", String(DEV_AUTH_HANDOFF_PORT));
+    }
     return u.toString();
   } catch {
     return baseUrl;
@@ -725,7 +846,23 @@ function createMainWindow() {
   // Avoid a white flash before the remote app paints.
   mainWindow.once("ready-to-show", () => mainWindow && mainWindow.show());
 
-  mainWindow.loadURL(APP_URL);
+  // Local Vite can lag Electron on boot (or briefly refuse while restarting).
+  // Retry instead of leaving the black backgroundColor window stuck empty.
+  const loadAppUrl = (attempt = 0) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    void mainWindow.loadURL(APP_URL).catch((err) => {
+      const msg = String(err?.message || err || "");
+      const isLocal =
+        /localhost|127\.0\.0\.1/i.test(APP_URL) ||
+        msg.includes("ERR_CONNECTION_REFUSED");
+      if (isLocal && attempt < 40) {
+        setTimeout(() => loadAppUrl(attempt + 1), 250);
+        return;
+      }
+      console.error("[main-window] failed to load", APP_URL, msg);
+    });
+  };
+  loadAppUrl();
 
   // If a lykn://auth deep link arrived before this window existed (cold start
   // from the browser hand-off), deliver the tokens once the app has loaded.
@@ -8104,6 +8241,7 @@ function initAutoUpdate() {
       `(KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`;
 
   claimLyknProtocol();
+  startDevAuthHandoffServer();
 
   installPermissionHandler();
   setupSystemAudioCapture();

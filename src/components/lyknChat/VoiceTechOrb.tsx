@@ -8,8 +8,8 @@ interface VoiceTechOrbProps {
   /** Rendered size in CSS pixels (square). */
   size?: number;
   /**
-   * Dot palette. "auto" (default) follows the app theme (white on dark, blue
-   * on light). Force "dark"/"light" when the orb sits on a surface whose
+   * Dot palette. "auto" (default) follows the app theme (white on dark, dark
+   * grey on light). Force "dark"/"light" when the orb sits on a surface whose
    * background is fixed regardless of theme — e.g. the always-dark voice
    * preview card on the landing page, which must always use the white dots.
    */
@@ -35,8 +35,8 @@ interface Neuron {
  * A cloud of tiny "neurons" arranged on a sphere. Each ball bobs gently
  * in and out, the whole sphere rotates slowly and glows. While the user talks
  * the sphere pulses and the balls drift around a little more energetically.
- * Dots are WHITE in dark mode and BLUE in light mode (read live each frame);
- * only motion/brightness react to the voice state.
+ * Dots are WHITE in dark mode and dark grey in light mode (read live each
+ * frame); only motion/brightness react to the voice state.
  */
 export default function VoiceTechOrb({ state, micLevel = 0, size = 320, appearance = "auto" }: VoiceTechOrbProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -134,17 +134,16 @@ export default function VoiceTechOrb({ state, micLevel = 0, size = 320, appearan
 
       // Theme-aware, read live each frame so the orb flips instantly when the
       // user toggles light/dark. Dark mode: WHITE dots with additive "lighter"
-      // blending (glow). Light mode: BLUE dots with "multiply" so overlapping
-      // dots accumulate into a dense, saturated cloud (additive is invisible on
-      // white, and plain source-over lets the faint back dots wash out — which
-      // made the orb read sparse in light mode).
+      // blending (glow). Light mode: dark grey with "multiply" so overlapping
+      // dots accumulate into a dense cloud (additive is invisible on white,
+      // and plain source-over lets the faint back dots wash out).
       const appr = appearanceRef.current;
       const isDark = appr === "dark"
         ? true
         : appr === "light"
           ? false
           : document.documentElement.classList.contains("dark");
-      const dotRgb = isDark ? "255,255,255" : "37,99,235";
+      const dotRgb = isDark ? "255,255,255" : "28,28,28";
 
       ctx.clearRect(0, 0, size, size);
       ctx.globalCompositeOperation = isDark ? "lighter" : "multiply";
@@ -177,7 +176,7 @@ export default function VoiceTechOrb({ state, micLevel = 0, size = 320, appearan
         const py = cy - y2 * Reff;
 
         // Depth shade: front balls bright, back balls faint. Light mode keeps a
-        // higher floor so back-of-sphere blue dots don't wash out to white.
+        // higher floor so back-of-sphere dots don't wash out to white.
         const depth = (z2 + 1) / 2; // 0 back .. 1 front
         const aFloor = isDark ? 0.18 : 0.34;
         const aSpan = isDark ? 0.82 : 0.66;

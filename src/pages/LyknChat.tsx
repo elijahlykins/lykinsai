@@ -635,7 +635,7 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
     : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
   const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
   const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
-  const dropdownCls = "rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5";
+  const dropdownCls = "rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg p-1.5";
 
   const blurModelTrigger = React.useCallback(() => {
     requestAnimationFrame(() => {

@@ -652,7 +652,7 @@ export default function NotesPanel({ open, onOpenChange, pages, activePageId, on
       {/* Sliding notes panel — opens full viewport; drag handle down to resize / dismiss */}
       <div
         data-lykn-chat-notes-root=""
-        className={`fixed inset-x-0 bottom-0 flex flex-col bg-white/80 dark:bg-[#1e1e1e]/90 backdrop-blur-md border-black/8 dark:border-white/8 shadow-lg ${
+        className={`fixed inset-x-0 bottom-0 flex flex-col bg-panel backdrop-blur-md border-black/8 dark:border-white/8 shadow-lg ${
           isFullBleed ? "rounded-none border-t-0" : "rounded-t-2xl border-t"
         } ${open ? "z-[220]" : "z-[68]"} ${
           dragActive ? "" : "transition-[transform,height] duration-300 ease-out"

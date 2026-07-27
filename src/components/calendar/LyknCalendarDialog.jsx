@@ -655,11 +655,11 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
   };
 
   const inputCls =
-    "w-full px-3 py-2 text-sm bg-white dark:bg-[#1f1d1d] border border-gray-200 dark:border-gray-700 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20";
+    "w-full px-3 py-2 text-sm bg-panel border border-black/10 dark:border-white/10 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20";
 
   return (
     <Dialog open={open} onOpenChange={(next) => { onOpenChange(next); if (!next) setView("month"); }}>
-      <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-2xl backdrop-blur-md">
+      <DialogContent className="bg-panel border-white/15 dark:border-gray-700 text-black dark:text-white max-w-2xl backdrop-blur-md">
         {(panel === "todos" || view === "month") && (
           <div className="flex items-center justify-center pb-1">
             <PanelToggle panel={panel} onChange={setPanel} />
@@ -740,7 +740,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                     type="button"
                     key={day.toISOString()}
                     onClick={() => openDayView(day)}
-                    className={`relative min-h-[4.5rem] text-left p-1 bg-white dark:bg-[#1e1e1e] transition-colors hover:bg-blue-500/5 ${
+                    className={`relative min-h-[4.5rem] text-left p-1 bg-panel transition-colors hover:bg-blue-500/5 ${
                       inMonth ? "" : "opacity-40"
                     }`}
                   >
@@ -846,7 +846,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                         key={ev.id}
                         type="button"
                         onClick={() => openEditForm(ev, "day")}
-                        className="w-full text-left flex items-start gap-3 rounded-lg border border-black/5 dark:border-white/5 bg-white dark:bg-[#1f1d1d] p-3 hover:bg-blue-500/5 transition-colors"
+                        className="w-full text-left flex items-start gap-3 rounded-lg border border-black/5 dark:border-white/5 bg-panel p-3 hover:bg-blue-500/5 transition-colors"
                       >
                         <div className="w-16 flex-shrink-0 text-xs text-black/60 dark:text-white/60 pt-0.5">
                           {ev.all_day ? (
@@ -913,7 +913,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
 
             <div className="flex flex-col gap-3">
               {/* Google Calendar */}
-              <div className="rounded-xl border border-black/5 dark:border-white/10 bg-white dark:bg-[#1f1d1d] p-3">
+              <div className="rounded-xl border border-black/5 dark:border-white/10 bg-panel p-3">
                 <div className="flex items-center gap-2">
                   <GoogleCalendarIcon />
                   <div className="min-w-0 flex-1">
@@ -947,7 +947,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
               </div>
 
               {/* Apple Calendar */}
-              <div className="rounded-xl border border-black/5 dark:border-white/10 bg-white dark:bg-[#1f1d1d] p-3">
+              <div className="rounded-xl border border-black/5 dark:border-white/10 bg-panel p-3">
                 <div className="flex items-center gap-2">
                   <AppleCalendarIcon />
                   <div className="min-w-0 flex-1">
