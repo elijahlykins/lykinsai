@@ -83,8 +83,10 @@ const { screenDiffRatio, textSimilarity } = require("../lib/browserScreen.cjs");
 const { startExtensionBridge } = require("./extensionBridge.cjs");
 const {
   installExtensionOneClick,
+  revealExtensionInstallFolder,
   getExtensionInstallMode,
   getUserExtensionDir,
+  prepareExtensionInstallDir,
 } = require("./extensionInstaller.cjs");
 
 const IMAGE_MIME_BY_EXT = {
@@ -3502,8 +3504,8 @@ function createExtensionInstallWindow() {
   if (overlayVisibleBeforeExtensionInstall) hideOverlay();
 
   extensionInstallWindow = new BrowserWindow({
-    width: 400,
-    height: 520,
+    width: 440,
+    height: 640,
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -7921,6 +7923,31 @@ function registerExtensionInstallIpc() {
       );
     } catch (e) {
       console.warn("[extension-install]", e?.message || e);
+      return { ok: false, error: String(e?.message || e) };
+    }
+  });
+  ipcMain.handle("lykn:reveal-extension-folder", async (_e, { reveal = true } = {}) => {
+    try {
+      const extPath = await prepareExtensionInstallDir({
+        userDataPath: app.getPath("userData"),
+        packaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        appDir: __dirname,
+        writeBridgeConfig: (dir) => extensionBridge?.writeBridgeConfigToExtensionDir?.(dir),
+      });
+      clipboard.writeText(extPath);
+      if (!reveal) {
+        return { ok: true, path: extPath, folderName: path.basename(extPath) };
+      }
+      const revealed = await revealExtensionInstallFolder(shell, extPath);
+      return {
+        ok: !!revealed?.ok,
+        path: extPath,
+        folderName: path.basename(extPath),
+        error: revealed?.error,
+      };
+    } catch (e) {
+      console.warn("[extension-install] reveal:", e?.message || e);
       return { ok: false, error: String(e?.message || e) };
     }
   });

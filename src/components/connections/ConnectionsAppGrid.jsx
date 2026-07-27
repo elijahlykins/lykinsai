@@ -555,6 +555,7 @@ export default function ConnectionsAppGrid({
             return (
               <AppTile
                 key={tile.key}
+                plain={embedded}
                 anchorId={`preset-${p.id}`}
                 logoDomain={p.domain}
                 logoUrl={undefined}
@@ -589,6 +590,7 @@ export default function ConnectionsAppGrid({
             return (
               <AppTile
                 key={tile.key}
+                plain={embedded}
                 anchorId={tile.key.replace(":", "-")}
                 iconNode={tile.iconNode}
                 iconAccentClass={tile.accentClass}
@@ -625,6 +627,7 @@ export default function ConnectionsAppGrid({
             return (
               <AppTile
                 key={tile.key}
+                plain={embedded}
                 anchorId={target.clientKind || target.id}
                 logoDomain={target.domain}
                 logoUrl={undefined}
@@ -736,6 +739,7 @@ export default function ConnectionsAppGrid({
             return (
               <AppTile
                 key={tile.key}
+                plain={embedded}
                 anchorId={connector.id}
                 logoDomain={connector.domain}
                 logoUrl={connector.iconUrl}
@@ -868,8 +872,11 @@ export default function ConnectionsAppGrid({
           <h3 className="text-sm font-semibold text-black/85 dark:text-white/90">Connections</h3>
         </div>
       )}
-      <div className="flex flex-col divide-y divide-black/[0.07] dark:divide-white/[0.08] rounded-xl border border-black/[0.07] dark:border-white/[0.08]">
+      <div className={`flex flex-col divide-y divide-black/[0.07] dark:divide-white/[0.08] ${
+        embedded ? "" : "rounded-xl border border-black/[0.07] dark:border-white/[0.08]"
+      }`}>
         <LauncherRow
+          plain={embedded}
           title="Connect via API"
           description="Connect Google, Slack, Notion, Stripe and more with a sign-in or API key."
           ctaLabel="Browse apps"
@@ -879,6 +886,7 @@ export default function ConnectionsAppGrid({
           }}
         />
         <LauncherRow
+          plain={embedded}
           title="Connect via MCP"
           description="Use LYKN inside Claude, Cursor, ChatGPT and any other MCP-aware client."
           ctaLabel="Browse tools"
@@ -888,6 +896,7 @@ export default function ConnectionsAppGrid({
           }}
         />
         <LauncherRow
+          plain={embedded}
           title="Build with the LYKN API"
           description="Mint a token and wire LYKN into your own code, agents or automations."
           ctaLabel="Get a token"
@@ -928,7 +937,9 @@ export default function ConnectionsAppGrid({
                 : "Pick a tool to use LYKN inside. We'll walk you through the setup."}
             </p>
             <div className="relative mb-3">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
+              {embedded ? null : (
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
+              )}
               <input
                 type="search"
                 value={pickerQuery}
@@ -936,7 +947,11 @@ export default function ConnectionsAppGrid({
                 placeholder={picker === "api" ? "Search apps…" : "Search tools…"}
                 aria-label="Search"
                 autoFocus
-                className="w-full h-10 rounded-xl glass-control pl-10 pr-3 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
+                className={
+                  embedded
+                    ? "w-full h-9 bg-transparent border-0 border-b border-black/10 dark:border-white/15 px-0 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35 focus:border-black/30 dark:focus:border-white/30"
+                    : "w-full h-10 rounded-xl glass-control pl-10 pr-3 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
+                }
               />
             </div>
             {pickerBody}
@@ -1054,9 +1069,9 @@ export default function ConnectionsAppGrid({
 // the left and a button on the right — no icon, no card chrome. Clicking the
 // button opens the picker (API / MCP) or the build dialog.
 
-function LauncherRow({ title, description, ctaLabel, onClick }) {
+function LauncherRow({ title, description, ctaLabel, onClick, plain = false }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+    <div className={`flex items-center justify-between gap-4 py-3 ${plain ? "px-0" : "px-3.5"}`}>
       <div className="min-w-0">
         <h2 className="text-[13.5px] font-semibold text-black/85 dark:text-white/90">{title}</h2>
         {description && (
@@ -1068,7 +1083,11 @@ function LauncherRow({ title, description, ctaLabel, onClick }) {
       <button
         type="button"
         onClick={onClick}
-        className="flex-shrink-0 inline-flex items-center gap-1 rounded-lg bg-black text-white dark:bg-white dark:text-black px-3 py-1.5 text-[12px] font-medium hover:opacity-90 transition-opacity"
+        className={
+          plain
+            ? "flex-shrink-0 text-[12px] font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
+            : "flex-shrink-0 inline-flex items-center gap-1 rounded-lg bg-black text-white dark:bg-white dark:text-black px-3 py-1.5 text-[12px] font-medium hover:opacity-90 transition-opacity"
+        }
       >
         {ctaLabel}
       </button>
@@ -1091,6 +1110,7 @@ function AppTile({
   ctaLabel,
   ctaVariant = "ghost",
   onClick,
+  plain = false,
 }) {
   // Lets the load-in greeting's "Connect Google Calendar" prompt (and
   // other deep links of the form /connections#<connector-id>) scroll
@@ -1116,6 +1136,73 @@ function AppTile({
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, [anchorId]);
+
+  if (plain) {
+    return (
+      <div
+        ref={ref}
+        id={anchorId}
+        className={`group relative flex flex-col gap-1 py-3 scroll-mt-24 border-b border-black/[0.06] dark:border-white/[0.08] last:border-b-0 ${
+          highlight ? "bg-black/[0.02] dark:bg-white/[0.03]" : ""
+        }`}
+      >
+        <div className="flex items-start gap-2.5">
+          {iconNode ? (
+            <div className="h-6 w-6 flex items-center justify-center flex-shrink-0 text-black/55 dark:text-white/55">
+              {(() => {
+                const Icon = iconNode;
+                return <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />;
+              })()}
+            </div>
+          ) : (
+            <div className="h-6 w-6 flex items-center justify-center flex-shrink-0 overflow-hidden">
+              <AppFavicon domain={logoDomain} iconUrl={logoUrl} name={name} />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="text-[13px] font-medium text-black/85 dark:text-white/90 truncate">
+                {name}
+                {badge?.label ? (
+                  <span className="ml-2 text-[11px] font-normal text-black/45 dark:text-white/45">
+                    {badge.label}
+                  </span>
+                ) : null}
+              </h3>
+              <button
+                type="button"
+                onClick={onClick}
+                className="flex-shrink-0 text-[12px] font-medium text-black/65 dark:text-white/65 hover:text-black dark:hover:text-white transition-colors"
+              >
+                {ctaLabel}
+              </button>
+            </div>
+            <p className="mt-0.5 text-[11.5px] leading-snug text-black/55 dark:text-white/55 line-clamp-2">
+              {description}
+            </p>
+            {chips && chips.length > 0 && (
+              <div className="mt-1.5 flex items-center gap-3 flex-wrap" aria-label={`${name} synthesis impact`}>
+                {chips.map((chip) => (
+                  <button
+                    key={chip.key}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      chip.onClick?.();
+                    }}
+                    className="text-[11px] text-black/55 dark:text-white/55 hover:text-black dark:hover:text-white transition-colors"
+                    title={`Open ${chip.label}`}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <motion.div

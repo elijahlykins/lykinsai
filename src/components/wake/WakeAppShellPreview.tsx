@@ -3,7 +3,7 @@ import {
   Brain,
   CalendarDays,
   MessageCircle,
-  Plug,
+  Lock,
   SquarePen,
 } from "lucide-react";
 import lyknIcon from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-web.png";
@@ -18,7 +18,7 @@ import WakeChatTourPreview from "@/components/wake/WakeChatTourPreview";
 const RAIL_ITEMS = [
   { icon: SquarePen, label: "New chat", active: false },
   { icon: MessageCircle, label: "Chat", active: true },
-  { icon: Plug, label: "Vault", active: false },
+  { icon: Lock, label: "Vault", active: false },
   { icon: CalendarDays, label: "Calendar / To-do", active: false },
   { icon: Brain, label: "Synthesis Layer", active: false },
   { icon: Blocks, label: "Model builder", active: false },

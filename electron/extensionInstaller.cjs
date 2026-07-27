@@ -272,6 +272,34 @@ async function launchBrowserWithExtension(picked, extPath) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Reveal the unpacked extension folder and bring the file manager forward. */
+async function revealExtensionInstallFolder(shell, extPath) {
+  if (!extPath) return { ok: false, error: "missing_path" };
+  const manifest = path.join(extPath, "manifest.json");
+  try {
+    shell.showItemInFolder(manifest);
+  } catch (e) {
+    console.warn("[extension-install] showItemInFolder:", e?.message || e);
+    return { ok: false, error: String(e?.message || e), path: extPath };
+  }
+  if (IS_MAC) {
+    try {
+      // showItemInFolder often leaves Finder behind Chrome — pull it forward.
+      await execFileAsync("osascript", [
+        "-e",
+        'tell application "Finder" to activate',
+      ]);
+    } catch (e) {
+      console.warn("[extension-install] activate Finder:", e?.message || e);
+    }
+  }
+  return { ok: true, path: extPath, folderName: path.basename(extPath) };
+}
+
 async function installExtensionOneClick(
   {
     browser = "chrome",
@@ -305,6 +333,12 @@ async function installExtensionOneClick(
   const picked = await pickInstalledBrowser(browser);
   clipboard?.writeText?.(extPath);
 
+  // Reveal the folder FIRST so users see what to pick before Chrome covers it.
+  await revealExtensionInstallFolder(shell, extPath);
+  await sleep(700);
+
+  // Soft-load for this Chrome session (not permanent). Permanent install still
+  // needs Load unpacked in chrome://extensions.
   if (IS_MAC && picked.name) {
     try {
       await execFileAsync("open", ["-a", picked.name, "--args", `--load-extension=${extPath}`]);
@@ -315,17 +349,19 @@ async function installExtensionOneClick(
     await launchBrowserWithExtension(picked, extPath);
   }
 
-  // Open Chrome's Extensions page + reveal the folder. Guided steps live in
-  // the LYKN install window — a second OS dialog here felt like a random
-  // "weird screen" on top of chrome://extensions.
   await openExtensionsPage(picked);
-  try {
-    shell.showItemInFolder(path.join(extPath, "manifest.json"));
-  } catch (e) {
-    console.warn("[extension-install] showItemInFolder:", e?.message || e);
-  }
 
-  return { ok: true, mode: "manual", path: extPath, browser: picked.name };
+  // After Chrome steals focus, nudge Finder forward again so the folder is visible.
+  await sleep(400);
+  await revealExtensionInstallFolder(shell, extPath);
+
+  return {
+    ok: true,
+    mode: "manual",
+    path: extPath,
+    folderName: path.basename(extPath),
+    browser: picked.name,
+  };
 }
 
 function getExtensionInstallMode(storeUrl = CHROME_EXTENSION_STORE_URL) {
@@ -338,6 +374,7 @@ function getExtensionInstallMode(storeUrl = CHROME_EXTENSION_STORE_URL) {
 
 module.exports = {
   installExtensionOneClick,
+  revealExtensionInstallFolder,
   getExtensionInstallMode,
   getBundledExtensionDir,
   getUserExtensionDir,

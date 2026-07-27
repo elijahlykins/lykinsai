@@ -51,6 +51,9 @@ export function useUserPlan() {
       isGuest: true,
       isActive: false,
       hasStripeCustomer: false,
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: null,
       loading: authLoading,
     };
   }
@@ -83,6 +86,9 @@ export function useUserPlan() {
     // lets the UI offer "Manage subscription" so the user can update
     // payment without starting a fresh checkout.
     hasStripeCustomer: Boolean(data?.has_stripe_customer),
+    hasActiveSubscription: Boolean(data?.has_active_subscription),
+    cancelAtPeriodEnd: Boolean(data?.cancel_at_period_end),
+    currentPeriodEnd: data?.current_period_end || null,
     loading: isLoading || authLoading,
   };
 }

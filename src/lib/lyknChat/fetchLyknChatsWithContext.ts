@@ -7,14 +7,108 @@ const BOARD_LIST_SELECT_BASE =
   "id, title, updated_at, created_at, lykn_chat_states(state)";
 const BOARD_LIST_SELECT_WITH_MODEL =
   "id, title, updated_at, created_at, chat_model_key, lykn_chat_states(state)";
+const BOARD_LIST_SELECT_WITH_MODEL_AND_PIN =
+  "id, title, updated_at, created_at, chat_model_key, pinned_at, lykn_chat_states(state)";
 
-function isMissingChatModelKeyColumn(error: { message?: string; code?: string } | null) {
+function isMissingColumnError(
+  error: { message?: string; code?: string } | null,
+  column: string,
+) {
   const msg = String(error?.message || "").toLowerCase();
   return (
     error?.code === "42703" ||
-    msg.includes("chat_model_key") ||
+    msg.includes(column.toLowerCase()) ||
     (msg.includes("column") && msg.includes("does not exist"))
   );
+}
+
+function isMissingChatModelKeyColumn(error: { message?: string; code?: string } | null) {
+  return isMissingColumnError(error, "chat_model_key");
+}
+
+function isMissingPinnedAtColumn(error: { message?: string; code?: string } | null) {
+  return isMissingColumnError(error, "pinned_at");
+}
+
+/** Prevents mergeActiveRoute from resurrecting a chat mid-delete. */
+const recentlyDeletedChatIds = new Set<string>();
+
+export function markLyknChatDeleted(chatId: string) {
+  if (!chatId) return;
+  recentlyDeletedChatIds.add(chatId);
+  globalThis.setTimeout?.(() => recentlyDeletedChatIds.delete(chatId), 30_000);
+}
+
+/** Optimistically drop a chat from every sidebar list cache. */
+export function removeLyknChatFromListQueries(
+  queryClient: QueryClient,
+  userId: string | undefined,
+  chatId: string,
+) {
+  if (!userId || !chatId) return;
+  queryClient.setQueriesData(
+    { queryKey: ["sidebar-boards-paged", userId] },
+    (old: { pages?: LyknChatPage[]; pageParams?: unknown[] } | undefined) => {
+      if (!old?.pages) return old;
+      return {
+        ...old,
+        pages: old.pages.map((page) => ({
+          ...page,
+          rows: (page.rows || []).filter((row) => row.id !== chatId),
+        })),
+      };
+    },
+  );
+  queryClient.setQueriesData(
+    { queryKey: ["sidebar-boards-search", userId] },
+    (old: LyknChatListRow[] | undefined) =>
+      Array.isArray(old) ? old.filter((row) => row.id !== chatId) : old,
+  );
+  for (const key of ["boards", "sidebar-chats", "thread-chats", "mindmap_boards"] as const) {
+    queryClient.setQueriesData(
+      { queryKey: [key, userId] },
+      (old: LyknChatListRow[] | undefined) =>
+        Array.isArray(old) ? old.filter((row) => row.id !== chatId) : old,
+    );
+  }
+}
+
+/** Optimistically toggle pinned_at in sidebar list caches. */
+export function patchLyknChatPinnedInListQueries(
+  queryClient: QueryClient,
+  userId: string | undefined,
+  chatId: string,
+  pinnedAt: string | null,
+) {
+  if (!userId || !chatId) return;
+  const patchRow = <T extends LyknChatListRow>(row: T): T =>
+    row.id === chatId ? { ...row, pinned_at: pinnedAt } : row;
+
+  queryClient.setQueriesData(
+    { queryKey: ["sidebar-boards-paged", userId] },
+    (old: { pages?: LyknChatPage[]; pageParams?: unknown[] } | undefined) => {
+      if (!old?.pages) return old;
+      return {
+        ...old,
+        pages: old.pages.map((page) => ({
+          ...page,
+          rows: (page.rows || []).map(patchRow),
+        })),
+      };
+    },
+  );
+  queryClient.setQueriesData(
+    { queryKey: ["sidebar-boards-search", userId] },
+    (old: LyknChatListRow[] | undefined) =>
+      Array.isArray(old) ? old.map(patchRow) : old,
+  );
+  for (const key of ["boards", "sidebar-chats", "thread-chats", "mindmap_boards"] as const) {
+    queryClient.setQueriesData(
+      { queryKey: [key, userId] },
+      (old: LyknChatListRow[] | undefined) =>
+        Array.isArray(old) ? old.map(patchRow) : old,
+    );
+  }
 }
 
 type BoardListQuery = ReturnType<ReturnType<typeof supabase.from>["select"]>;
@@ -37,16 +131,27 @@ async function runBoardListQuery(
         .order("updated_at", { ascending: false }) as unknown as BoardListQuery,
     );
 
-  const withModel = await build(BOARD_LIST_SELECT_WITH_MODEL);
-  if (!withModel.error) return (withModel.data || []) as LyknChatListRow[];
+  const withModelAndPin = await build(BOARD_LIST_SELECT_WITH_MODEL_AND_PIN);
+  if (!withModelAndPin.error) return (withModelAndPin.data || []) as LyknChatListRow[];
 
-  if (isMissingChatModelKeyColumn(withModel.error)) {
+  if (isMissingPinnedAtColumn(withModelAndPin.error)) {
+    const withModel = await build(BOARD_LIST_SELECT_WITH_MODEL);
+    if (!withModel.error) return (withModel.data || []) as LyknChatListRow[];
+    if (isMissingChatModelKeyColumn(withModel.error)) {
+      const fallback = await build(BOARD_LIST_SELECT_BASE);
+      if (fallback.error) throw fallback.error;
+      return (fallback.data || []) as LyknChatListRow[];
+    }
+    throw withModel.error;
+  }
+
+  if (isMissingChatModelKeyColumn(withModelAndPin.error)) {
     const fallback = await build(BOARD_LIST_SELECT_BASE);
     if (fallback.error) throw fallback.error;
     return (fallback.data || []) as LyknChatListRow[];
   }
 
-  throw withModel.error;
+  throw withModelAndPin.error;
 }
 
 async function fetchBoardListRows(
@@ -159,7 +264,7 @@ export function invalidateLyknChatListQueries(
   queryClient.invalidateQueries({ queryKey: ["mindmap_boards", userId] });
 }
 
-/** Pin the active /grid/:id chat to the top of sidebar lists. */
+/** Keep the active /chat/:id row visible in sidebar lists while open. */
 export function mergeActiveRouteLyknChat<T extends LyknChatListRow>(
   boards: T[],
   pathname: string,
@@ -168,6 +273,11 @@ export function mergeActiveRouteLyknChat<T extends LyknChatListRow>(
   if (!match) return boards;
   const id = match[1];
   if (isDemoLyknChatId(id) || id.startsWith("__prototype")) return boards;
+  // Don't resurrect a chat the user just deleted — that caused a brief
+  // duplicate ghost row while navigation/refetch caught up.
+  if (recentlyDeletedChatIds.has(id)) {
+    return boards.filter((b) => b.id !== id);
+  }
   const existing = boards.find((b) => b.id === id);
   const active: T =
     existing ?? ({ id, title: "New Chat", updated_at: new Date().toISOString() } as T);

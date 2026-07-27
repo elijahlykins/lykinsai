@@ -16,7 +16,14 @@ import { supabase } from "@/lib/supabase";
 import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
-import { fetchLyknChatsWithContext, invalidateLyknChatListQueries, mergeActiveRouteLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
+import {
+  fetchLyknChatsWithContext,
+  invalidateLyknChatListQueries,
+  markLyknChatDeleted,
+  mergeActiveRouteLyknChat,
+  patchLyknChatPinnedInListQueries,
+  removeLyknChatFromListQueries,
+} from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isDemoLyknChatId } from "@/lib/demoLyknChats";
 const flushAndNavigate = (nav, path) => {
@@ -39,7 +46,7 @@ export default function MobileLyknChat() {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [actionFor, setActionFor] = useState(null); // { id, title }
+  const [actionFor, setActionFor] = useState(null); // { id, title, pinned }
   const actionSheetRef = useRef(null);
 
   const { data: boards = [] } = useQuery({
@@ -130,28 +137,48 @@ export default function MobileLyknChat() {
     if (isDemoLyknChatId(chatId)) return;
     const ok = window.confirm("Delete this chat? This cannot be undone.");
     if (!ok) return;
-    await supabase.from("lykn_chat_states").delete().eq("chat_id", chatId);
-    const { error } = await supabase
-      .from("lykn_chats")
-      .delete()
-      .eq("id", chatId)
-      .eq("user_id", user.id);
     setActionFor(null);
-    if (error) {
-      window.alert("Couldn't delete chat. " + toUserFacingError());
-      return;
-    }
+    markLyknChatDeleted(chatId);
+    removeLyknChatFromListQueries(queryClient, user.id, chatId);
     if (localStorage.getItem("lyknchat_active_id") === chatId) {
       localStorage.removeItem("lyknchat_active_id");
     }
-    window.dispatchEvent(new Event("lykinsai_chats_changed"));
-    // If the user just nuked the grid they were sitting on, kick them
-    // back to "/app" so LyknChat mounts a fresh board instead of trying
-    // to load the one we just deleted.
-    if (String(routeChatId || "") === String(chatId) || location.pathname === `/chat/${chatId}`) {
+    const wasActive =
+      String(routeChatId || "") === String(chatId) || location.pathname === `/chat/${chatId}`;
+    if (wasActive) {
       setOpen(false);
       flushAndNavigate(nav, "/app");
     }
+
+    const [, chatRes] = await Promise.all([
+      supabase.from("lykn_chat_states").delete().eq("chat_id", chatId),
+      supabase.from("lykn_chats").delete().eq("id", chatId).eq("user_id", user.id),
+    ]);
+    if (chatRes?.error) {
+      invalidateLyknChatListQueries(queryClient, user.id);
+      window.alert("Couldn't delete chat. " + toUserFacingError());
+      return;
+    }
+    window.dispatchEvent(new Event("lykinsai_chats_changed"));
+  };
+
+  const togglePinGrid = async (chatId, currentlyPinned) => {
+    if (!user?.id) return;
+    if (isDemoLyknChatId(chatId)) return;
+    setActionFor(null);
+    const nextPinnedAt = currentlyPinned ? null : new Date().toISOString();
+    patchLyknChatPinnedInListQueries(queryClient, user.id, chatId, nextPinnedAt);
+    const { error } = await supabase
+      .from("lykn_chats")
+      .update({ pinned_at: nextPinnedAt })
+      .eq("id", chatId)
+      .eq("user_id", user.id);
+    if (error) {
+      invalidateLyknChatListQueries(queryClient, user.id);
+      window.alert("Couldn't update pin. " + toUserFacingError());
+      return;
+    }
+    window.dispatchEvent(new Event("lykinsai_chats_changed"));
   };
 
   return (
@@ -288,7 +315,11 @@ export default function MobileLyknChat() {
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setActionFor({ id: b.id, title: b.title || "New Chat" });
+                                setActionFor({
+                                  id: b.id,
+                                  title: b.title || "New Chat",
+                                  pinned: Boolean(b.pinned_at),
+                                });
                               }}
                               className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-black/55 dark:text-white/55 hover:bg-black/[0.05] dark:hover:bg-white/8 active:scale-95 transition-all"
                               aria-label={`More options for ${b.title || "New Chat"}`}
@@ -333,6 +364,13 @@ export default function MobileLyknChat() {
                 >
                   <Edit2 className="w-4 h-4 opacity-70" />
                   Rename chat
+                </button>
+                <button
+                  type="button"
+                  onClick={() => togglePinGrid(actionFor.id, actionFor.pinned)}
+                  className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-sm text-black/85 dark:text-white/85 hover:bg-black/[0.04] dark:hover:bg-white/5 active:bg-black/[0.08] dark:active:bg-white/10 transition-colors border-t border-black/5 dark:border-white/5"
+                >
+                  {actionFor.pinned ? "Unpin chat" : "Pin chat"}
                 </button>
                 <button
                   type="button"

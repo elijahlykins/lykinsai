@@ -312,7 +312,13 @@ export default function Billing() {
   const [period, setPeriod] = useState(BILLING_PERIODS.ANNUAL);
   const [openFaq, setOpenFaq] = useState(null);
   const [currentPlan, setCurrentPlan] = useState("free");
+  const [billingMeta, setBillingMeta] = useState({
+    hasActiveSubscription: false,
+    cancelAtPeriodEnd: false,
+    currentPeriodEnd: null,
+  });
   const [checkoutBusy, setCheckoutBusy] = useState(null);
+  const [portalBusy, setPortalBusy] = useState(false);
   const [waitlistState, setWaitlistState] = useState({ joined: false, busy: false });
 
   useEffect(() => {
@@ -337,6 +343,11 @@ export default function Billing() {
       if (cancelled) return;
       if (billingData) {
         setCurrentPlan(billingData.plan || "free");
+        setBillingMeta({
+          hasActiveSubscription: Boolean(billingData.has_active_subscription),
+          cancelAtPeriodEnd: Boolean(billingData.cancel_at_period_end),
+          currentPeriodEnd: billingData.current_period_end || null,
+        });
       }
       if (waitlistData) {
         setWaitlistState((prev) => ({
@@ -469,10 +480,35 @@ export default function Billing() {
     }
   }, [user?.email, waitlistState.joined, waitlistState.busy]);
 
+  const handleCancelSubscription = useCallback(async () => {
+    if (portalBusy) return;
+    setPortalBusy(true);
+    try {
+      const { url } = await postBilling("/api/billing/portal", { flow: "cancel" });
+      if (url) window.location.href = url;
+    } catch (err) {
+      console.error("[Billing] cancel portal failed:", err);
+      toast({
+        variant: "destructive",
+        title: "Couldn't open cancel flow",
+        description: toUserFacingError(err),
+      });
+      setPortalBusy(false);
+    }
+  }, [portalBusy]);
+
   const toggleFaq = useCallback(
     (idx) => setOpenFaq((prev) => (prev === idx ? null : idx)),
     []
   );
+
+  const periodEndLabel = billingMeta.currentPeriodEnd
+    ? new Date(billingMeta.currentPeriodEnd).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
 
   return (
     <div className="min-h-screen bg-transparent text-black dark:text-white">
@@ -504,6 +540,39 @@ export default function Billing() {
               <span className="flex-shrink-0 text-xs font-medium text-black/45 dark:text-white/55">
                 Upgrade for unlimited everything →
               </span>
+            </div>
+          </div>
+        )}
+
+        {billingMeta.hasActiveSubscription && (
+          <div className="max-w-3xl mx-auto mb-6">
+            <div className="flex flex-col gap-3 rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-black/[0.02] dark:bg-white/[0.04] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm text-black/70 dark:text-white/75">
+                  {billingMeta.cancelAtPeriodEnd ? (
+                    <>
+                      Your subscription is set to cancel
+                      {periodEndLabel ? <> on <span className="font-semibold text-black/90 dark:text-white">{periodEndLabel}</span></> : null}.
+                      You'll keep access until then.
+                    </>
+                  ) : (
+                    <>
+                      Need to leave? Cancel anytime — you'll keep access through the
+                      end of your current billing period.
+                    </>
+                  )}
+                </p>
+              </div>
+              {!billingMeta.cancelAtPeriodEnd && (
+                <button
+                  type="button"
+                  onClick={handleCancelSubscription}
+                  disabled={portalBusy}
+                  className="flex-shrink-0 text-sm font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50 transition-colors"
+                >
+                  {portalBusy ? "Opening…" : "Cancel subscription"}
+                </button>
+              )}
             </div>
           </div>
         )}

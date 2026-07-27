@@ -3,7 +3,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Button } from '@/components/ui/button';
 import {
   LogOut,
   User,
@@ -13,21 +12,11 @@ import {
   HelpCircle,
   ChevronLeft,
   ChevronRight,
-  Globe,
   Sparkles,
   Upload,
-  FileArchive,
   Plug,
-  X,
-  Loader2,
-  Check,
-  Mail,
-  ExternalLink,
-  MessageCircle,
-  AudioLines,
-  Pencil,
 } from 'lucide-react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import ConnectionsAppGrid from '@/components/connections/ConnectionsAppGrid';
 import ModelSelectOptions from '@/components/ModelSelectOptions';
@@ -35,7 +24,6 @@ import VoicePicker from '@/components/notes/VoicePicker';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/components/ui/use-toast';
-import { useNavigate } from 'react-router-dom';
 import { useUserPlan } from '@/lib/useUserPlan';
 import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from '@/lib/modelTiers';
 import { planLabel } from '@/lib/pricing-config';
@@ -90,7 +78,14 @@ function SubViewHeader({ title, onBack }) {
 
 export default function SettingsModal({ isOpen, onClose }) {
   const { user, loading, signInWithOAuth, signOut } = useAuth();
-  const { planId, modelTier, hasStripeCustomer } = useUserPlan();
+  const {
+    planId,
+    modelTier,
+    hasStripeCustomer,
+    hasActiveSubscription,
+    cancelAtPeriodEnd,
+    currentPeriodEnd,
+  } = useUserPlan();
   const nav = useNavigate();
   const location = useLocation();
   const [portalBusy, setPortalBusy] = useState(false);
@@ -237,13 +232,14 @@ export default function SettingsModal({ isOpen, onClose }) {
     if (wantsConnections) setView('connections');
   }, [isOpen, location.hash, location.search]);
 
-  const handleManageSubscription = useCallback(async () => {
+  const openBillingPortal = useCallback(async (flow) => {
     if (portalBusy) return;
     setPortalBusy(true);
     try {
       const res = await fetch(`${API_BASE_URL}/api/billing/portal`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(flow ? { flow } : {}),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json?.url) {
@@ -254,12 +250,22 @@ export default function SettingsModal({ isOpen, onClose }) {
       if (import.meta.env.DEV) console.error('[Settings] portal failed:', err);
       toast({
         variant: 'destructive',
-        title: 'Billing portal unavailable',
+        title: flow === 'cancel' ? "Couldn't open cancel flow" : 'Billing portal unavailable',
         description: err?.message || 'Could not open the billing portal.',
       });
       setPortalBusy(false);
     }
   }, [portalBusy]);
+
+  const handleManageSubscription = useCallback(
+    () => openBillingPortal(),
+    [openBillingPortal],
+  );
+
+  const handleCancelSubscription = useCallback(
+    () => openBillingPortal('cancel'),
+    [openBillingPortal],
+  );
 
   // ---- Local visual settings (theme/model) — still localStorage ----
   const [settings, setSettings] = useState({
@@ -571,50 +577,42 @@ export default function SettingsModal({ isOpen, onClose }) {
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="Your name"
-                className="flex-1 px-3 py-2 text-sm bg-white dark:bg-[#1f1d1d] border border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20"
+                className="flex-1 px-0 py-1.5 text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-none focus:outline-none focus:border-black/40 dark:focus:border-white/40"
               />
-              <Button
+              <button
+                type="button"
                 onClick={handleSaveDisplayName}
                 disabled={displayNameStatus === 'saving' || displayName.trim() === initialDisplayName.trim()}
-                variant="outline"
-                className="border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] min-w-[80px]"
+                className="text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white disabled:opacity-40 transition-colors"
               >
-                {displayNameStatus === 'saving' ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : displayNameStatus === 'saved' ? (
-                  <Check className="w-3.5 h-3.5" />
-                ) : (
-                  'Save'
-                )}
-              </Button>
+                {displayNameStatus === 'saving'
+                  ? 'Saving…'
+                  : displayNameStatus === 'saved'
+                    ? 'Saved'
+                    : 'Save'}
+              </button>
             </div>
           </div>
 
-          <div className="pt-4 mt-4 border-t border-black/[0.06] dark:border-white/[0.06] space-y-2">
+          <div className="pt-4 mt-2 border-t border-black/[0.06] dark:border-white/[0.06] space-y-2">
             <Label className="text-xs text-gray-600 dark:text-gray-400">Security</Label>
-            <Button
+            <button
               type="button"
               onClick={handleSignOutEverywhere}
               disabled={signOutEverywhereBusy}
-              variant="outline"
-              className="w-full !bg-transparent border-red-300 dark:border-red-900/60 text-red-600 dark:text-red-400 !shadow-none hover:!bg-red-500/[0.06] dark:hover:!bg-red-500/[0.08] hover:text-red-700 dark:hover:text-red-300 flex items-center justify-center gap-2 disabled:opacity-50"
+              className="text-left text-sm font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50 transition-colors"
             >
-              {signOutEverywhereBusy ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <LogOut className="w-4 h-4" />
-              )}
               {signOutEverywhereBusy ? 'Signing out everywhere…' : 'Sign out of all devices'}
-            </Button>
+            </button>
             <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-snug">
               Revokes every active session on your account. Use this if you suspect someone else has access.
             </p>
           </div>
-
         </div>
       ) : (
-        <div className="space-y-3">
-          <Button
+        <div className="space-y-4">
+          <button
+            type="button"
             onClick={async () => {
               try {
                 setAuthError('');
@@ -628,21 +626,12 @@ export default function SettingsModal({ isOpen, onClose }) {
                 if (import.meta.env.DEV) console.error('Google OAuth exception:', error);
               }
             }}
-            variant="outline"
-            className="w-full border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515] flex items-center justify-center gap-2"
+            className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
           >
-            <Globe className="w-4 h-4" />
-            Google
-          </Button>
+            Continue with Google
+          </button>
 
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-200 dark:border-gray-700" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-white dark:bg-[#1e1e1e] px-2 text-gray-500 dark:text-gray-400">Or continue with email</span>
-            </div>
-          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400">Or continue with email</p>
 
           <form onSubmit={handleAuth} className="space-y-3">
             {authError && <p className="text-sm text-red-500">{authError}</p>}
@@ -651,7 +640,7 @@ export default function SettingsModal({ isOpen, onClose }) {
               placeholder="Email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-3 py-2 bg-white dark:bg-[#1f1d1d] border border-gray-300 dark:border-gray-600 text-black dark:text-white rounded"
+              className="w-full px-0 py-1.5 text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-none focus:outline-none focus:border-black/40 dark:focus:border-white/40"
               required
             />
             <input
@@ -659,24 +648,23 @@ export default function SettingsModal({ isOpen, onClose }) {
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 bg-white dark:bg-[#1f1d1d] border border-gray-300 dark:border-gray-600 text-black dark:text-white rounded"
+              className="w-full px-0 py-1.5 text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-none focus:outline-none focus:border-black/40 dark:focus:border-white/40"
               required
             />
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-                variant="outline"
-                className="flex-1 border-gray-300 dark:border-gray-600 text-black dark:text-white hover:bg-gray-100 dark:hover:bg-[#171515]"
-              >
-                {authMode === 'login' ? 'Sign Up' : 'Sign In'}
-              </Button>
-              <Button
+            <div className="flex items-center gap-4 pt-1">
+              <button
                 type="submit"
-                className="flex-1 bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90"
+                className="text-sm font-medium text-black dark:text-white hover:opacity-70 transition-opacity"
               >
                 {authMode === 'login' ? 'Sign In' : 'Create Account'}
-              </Button>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+                className="text-sm text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white transition-colors"
+              >
+                {authMode === 'login' ? 'Sign Up' : 'Sign In'}
+              </button>
             </div>
           </form>
         </div>
@@ -703,14 +691,10 @@ export default function SettingsModal({ isOpen, onClose }) {
   const renderPrivacy = () => (
     <div>
       <SubViewHeader title="Privacy" onBack={() => setView('menu')} />
-      <div className="space-y-4">
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          Review LYKN&apos;s privacy commitments.
-        </p>
-
+      <div className="space-y-5">
         {user && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-black dark:text-white">Night Shift</p>
                 <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">
@@ -723,64 +707,55 @@ export default function SettingsModal({ isOpen, onClose }) {
                 aria-checked={nightShiftEnabled}
                 disabled={nightShiftLoading || nightShiftSaving}
                 onClick={() => void toggleNightShift()}
-                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border transition-colors ${
+                className={`text-sm font-medium transition-colors disabled:opacity-50 ${
                   nightShiftEnabled
-                    ? 'bg-sky-500 border-sky-500'
-                    : 'bg-gray-200 dark:bg-gray-700 border-gray-300 dark:border-gray-600'
-                } ${nightShiftLoading || nightShiftSaving ? 'opacity-60 cursor-wait' : ''}`}
+                    ? 'text-black dark:text-white'
+                    : 'text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white'
+                }`}
               >
-                <span
-                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-0.5 ${
-                    nightShiftEnabled ? 'translate-x-5' : 'translate-x-0.5'
-                  }`}
-                />
+                {nightShiftLoading || nightShiftSaving
+                  ? '…'
+                  : nightShiftEnabled
+                    ? 'On'
+                    : 'Off'}
               </button>
             </div>
             {nightShiftEnabled ? (
-              <div className="flex rounded-lg border border-gray-200 dark:border-gray-700/60 overflow-hidden">
-                {[
-                  { tier: 'brief', label: 'Brief' },
-                  { tier: 'research', label: 'Research' },
-                  { tier: 'delegate', label: 'Delegate' },
-                ].map(({ tier, label }, i) => (
-                  <button
-                    key={tier}
-                    type="button"
-                    disabled={nightShiftSaving}
-                    onClick={() => void setNightShiftTierPref(tier)}
-                    className={`flex-1 px-2 py-1.5 text-xs transition-colors ${
-                      i > 0 ? 'border-l border-gray-200 dark:border-gray-700/60' : ''
-                    } ${
-                      nightShiftTier === tier
-                        ? 'bg-black/[0.05] dark:bg-white/[0.08] font-medium text-black dark:text-white'
-                        : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
+              <div className="space-y-1.5">
+                <Label className="text-xs text-gray-600 dark:text-gray-400">Depth</Label>
+                <Select
+                  value={nightShiftTier}
+                  onValueChange={(value) => void setNightShiftTierPref(value)}
+                  disabled={nightShiftSaving}
+                >
+                  <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+                    <SelectItem value="brief">Brief</SelectItem>
+                    <SelectItem value="research">Research</SelectItem>
+                    <SelectItem value="delegate">Delegate</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             ) : null}
           </div>
         )}
 
-        <div className="flex flex-col rounded-lg border border-gray-200 dark:border-gray-700/60 overflow-hidden">
+        <div className="flex flex-col">
           {[
             { to: '/privacy', label: 'Privacy Policy' },
             { to: '/cookies', label: 'Cookie Policy' },
             { to: '/dpa', label: 'Data Processing Addendum' },
             { to: '/terms', label: 'Terms of Service' },
-          ].map((row, i, arr) => (
+          ].map((row) => (
             <Link
               key={row.to}
               to={row.to}
               onClick={onClose}
-              className={`flex items-center justify-between px-3 py-2.5 text-sm text-black dark:text-white hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors ${
-                i < arr.length - 1 ? 'border-b border-gray-200 dark:border-gray-700/60' : ''
-              }`}
+              className="px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
             >
-              <span>{row.label}</span>
-              <ExternalLink className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500" />
+              {row.label}
             </Link>
           ))}
         </div>
@@ -794,30 +769,25 @@ export default function SettingsModal({ isOpen, onClose }) {
   const renderDisplay = () => (
     <div>
       <SubViewHeader title="Display" onBack={() => setView('menu')} />
-      <div className="space-y-4">
-        <div className="space-y-2">
-          <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5">
-            <Monitor className="w-3 h-3" />
-            Theme
-          </Label>
-          <Select
-            value={settings.theme || 'dark'}
-            onValueChange={(value) => {
-              const updated = { ...settings, theme: value };
-              setSettings(updated);
-              persistSettings(updated);
-            }}
-          >
-            <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-1 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
-              <SelectItem value="light">Light</SelectItem>
-              <SelectItem value="dark">Dark</SelectItem>
-              <SelectItem value="system">System</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+      <div className="space-y-2">
+        <Label className="text-xs text-gray-600 dark:text-gray-400">Theme</Label>
+        <Select
+          value={settings.theme || 'dark'}
+          onValueChange={(value) => {
+            const updated = { ...settings, theme: value };
+            setSettings(updated);
+            persistSettings(updated);
+          }}
+        >
+          <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+            <SelectItem value="light">Light</SelectItem>
+            <SelectItem value="dark">Dark</SelectItem>
+            <SelectItem value="system">System</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
     </div>
   );
@@ -828,12 +798,9 @@ export default function SettingsModal({ isOpen, onClose }) {
   const renderAiPersonalization = () => (
     <div>
       <SubViewHeader title="AI Personalization" onBack={() => setView('menu')} />
-      <div className="space-y-4">
-        <div className="space-y-2">
-          <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5">
-            <Sparkles className="w-3 h-3" />
-            Default AI model
-          </Label>
+      <div className="space-y-5">
+        <div className="space-y-1.5">
+          <Label className="text-xs text-gray-600 dark:text-gray-400">Default AI model</Label>
           <Select
             value={settings.aiModel}
             onValueChange={(value) => {
@@ -843,7 +810,7 @@ export default function SettingsModal({ isOpen, onClose }) {
               persistSettings(updated);
             }}
           >
-            <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-1 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
+            <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
@@ -852,38 +819,27 @@ export default function SettingsModal({ isOpen, onClose }) {
           </Select>
         </div>
 
-        <div className="space-y-2 pt-2 border-t border-gray-200 dark:border-gray-700/60">
-          <Label className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-1.5 pt-2">
-            <Pencil className="w-3 h-3" />
-            Assistant name
-          </Label>
+        <div className="space-y-1.5">
+          <Label className="text-xs text-gray-600 dark:text-gray-400">Assistant name</Label>
           <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
             Give your assistant its own name. It will refer to itself by this name in chat and voice instead of &ldquo;LYKN&rdquo;.
           </p>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={settings.aiName || ''}
-              maxLength={40}
-              onChange={(e) => setSettings((prev) => ({ ...prev, aiName: e.target.value }))}
-              onBlur={persistCurrentSettings}
-              placeholder="LYKN"
-              className="flex-1 px-3 py-2 text-sm bg-white dark:bg-[#1f1d1d] border border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20"
-            />
-          </div>
+          <input
+            type="text"
+            value={settings.aiName || ''}
+            maxLength={40}
+            onChange={(e) => setSettings((prev) => ({ ...prev, aiName: e.target.value }))}
+            onBlur={persistCurrentSettings}
+            placeholder="LYKN"
+            className="w-full px-0 py-1.5 text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-none focus:outline-none focus:border-black/40 dark:focus:border-white/40"
+          />
         </div>
 
-        {/* ── Chat preferences ── */}
-        <div className="space-y-4 pt-3 border-t border-gray-200 dark:border-gray-700/60">
-          <p className="text-xs font-semibold text-black dark:text-white flex items-center gap-1.5">
-            <MessageCircle className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" />
-            Chat
-          </p>
+        <div className="space-y-4 pt-1 border-t border-black/[0.06] dark:border-white/[0.06]">
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 pt-3">Chat</p>
 
-          <div className="space-y-2">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">
-              Custom instructions
-            </Label>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-gray-600 dark:text-gray-400">Custom instructions</Label>
             <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
               Tell your assistant how to respond in chat: tone, format, the overall feel, things to always or never do. Applied to every chat.
             </p>
@@ -894,17 +850,15 @@ export default function SettingsModal({ isOpen, onClose }) {
               maxLength={1500}
               rows={4}
               placeholder="e.g. Be concise and direct. Use bullet points. Skip the preamble."
-              className="resize-none text-sm bg-black/[0.02] dark:bg-white/[0.04] border-gray-200 dark:border-white/10"
+              className="resize-none text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 rounded-none px-0 shadow-none focus-visible:ring-0"
             />
             <div className="text-right text-[10px] text-gray-400 dark:text-gray-600">
               {(settings.userPrompt || '').length}/1500
             </div>
           </div>
 
-          <div className="space-y-2">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">
-              Response length
-            </Label>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-gray-600 dark:text-gray-400">Response length</Label>
             <Select
               value={settings.responseLength || 'medium'}
               onValueChange={(value) => {
@@ -913,7 +867,7 @@ export default function SettingsModal({ isOpen, onClose }) {
                 persistSettings(updated);
               }}
             >
-              <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-1 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
+              <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="bg-white dark:bg-[#1a1818] border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
@@ -925,17 +879,11 @@ export default function SettingsModal({ isOpen, onClose }) {
           </div>
         </div>
 
-        {/* ── Voice preferences ── */}
-        <div className="space-y-2 pt-3 border-t border-gray-200 dark:border-gray-700/60">
-          <p className="text-xs font-semibold text-black dark:text-white flex items-center gap-1.5">
-            <AudioLines className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" />
-            Voice
-          </p>
+        <div className="space-y-4 pt-1 border-t border-black/[0.06] dark:border-white/[0.06]">
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 pt-3">Voice</p>
 
-          <div className="space-y-2">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">
-              Assistant voice
-            </Label>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-gray-600 dark:text-gray-400">Assistant voice</Label>
             <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
               Pick the voice your assistant speaks with in voice conversations. Tap a voice to preview it, then select your favorite.
             </p>
@@ -949,43 +897,37 @@ export default function SettingsModal({ isOpen, onClose }) {
             />
           </div>
 
-          <Label className="text-xs text-gray-600 dark:text-gray-400 pt-1">
-            Voice instructions
-          </Label>
-          <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
-            How you want your assistant to sound and behave in live voice conversations: pace, warmth, formality, the overall feel.
-          </p>
-          <Textarea
-            value={settings.voicePrompt || ''}
-            onChange={(e) => setSettings((prev) => ({ ...prev, voicePrompt: e.target.value }))}
-            onBlur={persistCurrentSettings}
-            maxLength={1500}
-            rows={4}
-            placeholder="e.g. Speak warmly and casually, like a close friend. Keep replies short. Don't over-explain."
-            className="resize-none text-sm bg-black/[0.02] dark:bg-white/[0.04] border-gray-200 dark:border-white/10"
-          />
-          <div className="text-right text-[10px] text-gray-400 dark:text-gray-600">
-            {(settings.voicePrompt || '').length}/1500
+          <div className="space-y-1.5">
+            <Label className="text-xs text-gray-600 dark:text-gray-400">Voice instructions</Label>
+            <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
+              How you want your assistant to sound and behave in live voice conversations: pace, warmth, formality, the overall feel.
+            </p>
+            <Textarea
+              value={settings.voicePrompt || ''}
+              onChange={(e) => setSettings((prev) => ({ ...prev, voicePrompt: e.target.value }))}
+              onBlur={persistCurrentSettings}
+              maxLength={1500}
+              rows={4}
+              placeholder="e.g. Speak warmly and casually, like a close friend. Keep replies short. Don't over-explain."
+              className="resize-none text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 rounded-none px-0 shadow-none focus-visible:ring-0"
+            />
+            <div className="text-right text-[10px] text-gray-400 dark:text-gray-600">
+              {(settings.voicePrompt || '').length}/1500
+            </div>
           </div>
         </div>
 
-        <div className="pt-4 mt-1 border-t border-gray-200 dark:border-gray-700/60">
-          <Button
+        <div className="pt-2">
+          <button
+            type="button"
             onClick={() => {
               persistCurrentSettings();
               setAiPersonalizationSaveStatus('saved');
             }}
-            className="w-full bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 flex items-center justify-center gap-2"
+            className="text-sm font-medium text-black dark:text-white hover:opacity-70 transition-opacity"
           >
-            {aiPersonalizationSaveStatus === 'saved' ? (
-              <>
-                <Check className="w-4 h-4" />
-                Saved
-              </>
-            ) : (
-              'Save'
-            )}
-          </Button>
+            {aiPersonalizationSaveStatus === 'saved' ? 'Saved' : 'Save'}
+          </button>
         </div>
       </div>
     </div>
@@ -999,7 +941,7 @@ export default function SettingsModal({ isOpen, onClose }) {
       <SubViewHeader title="Import" onBack={() => setView('menu')} />
       <div className="space-y-4">
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          Upload a <code className="px-1 py-0.5 text-xs bg-black/5 dark:bg-white/10 rounded">.zip</code> export from ChatGPT, Claude, or another assistant. LYKN will read every conversation and extract beliefs, preferences, and projects.
+          Upload a .zip export from ChatGPT, Claude, or another assistant. LYKN will read every conversation and extract beliefs, preferences, and projects.
         </p>
 
         {!importFile ? (
@@ -1007,14 +949,14 @@ export default function SettingsModal({ isOpen, onClose }) {
             onDragOver={(e) => { e.preventDefault(); setIsDraggingImport(true); }}
             onDragLeave={() => setIsDraggingImport(false)}
             onDrop={handleImportDrop}
-            className={`flex flex-col items-center justify-center px-4 py-8 rounded-xl border-2 border-dashed cursor-pointer transition-colors
-              ${isDraggingImport
-                ? 'border-black/40 dark:border-white/40 bg-black/[0.03] dark:bg-white/[0.04]'
-                : 'border-gray-300 dark:border-gray-700 hover:bg-black/[0.02] dark:hover:bg-white/[0.03]'}`}
+            className={`block px-0 py-4 cursor-pointer transition-colors border-b ${
+              isDraggingImport
+                ? 'border-black/40 dark:border-white/40'
+                : 'border-gray-200 dark:border-gray-700'
+            }`}
           >
-            <Upload className="w-5 h-5 text-gray-400 dark:text-gray-500 mb-2" />
-            <p className="text-sm text-black dark:text-white">
-              Drop your <span className="font-medium">.zip</span> here or click to choose
+            <p className="text-sm text-black/70 dark:text-white/70">
+              Drop your .zip here or click to choose
             </p>
             <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-1">
               ChatGPT and Claude exports supported · up to 500 MB
@@ -1027,9 +969,8 @@ export default function SettingsModal({ isOpen, onClose }) {
             />
           </label>
         ) : (
-          <div className="flex items-center gap-3 px-3 py-3 rounded-lg border border-gray-200 dark:border-gray-700/60 bg-white/40 dark:bg-white/[0.02]">
-            <FileArchive className="w-5 h-5 text-gray-500 dark:text-gray-400 shrink-0" />
-            <div className="flex-1 min-w-0">
+          <div className="flex items-baseline justify-between gap-3 py-2 border-b border-gray-200 dark:border-gray-700">
+            <div className="min-w-0">
               <p className="text-sm font-medium text-black dark:text-white truncate">{importFile.name}</p>
               <p className="text-[11px] text-gray-500 dark:text-gray-400">
                 {(importFile.size / (1024 * 1024)).toFixed(2)} MB
@@ -1043,10 +984,9 @@ export default function SettingsModal({ isOpen, onClose }) {
                 setImportError('');
               }}
               disabled={importStatus === 'uploading'}
-              className="p-1 rounded-md text-gray-400 hover:text-black dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors disabled:opacity-40"
-              aria-label="Remove file"
+              className="text-sm text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
             >
-              <X className="w-4 h-4" />
+              Remove
             </button>
           </div>
         )}
@@ -1054,28 +994,18 @@ export default function SettingsModal({ isOpen, onClose }) {
         {importError && <p className="text-xs text-red-500">{importError}</p>}
 
         {importFile && (
-          <Button
+          <button
+            type="button"
             onClick={handleImportUpload}
             disabled={importStatus === 'uploading' || importStatus === 'done'}
-            className="w-full bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 flex items-center justify-center gap-2"
+            className="text-sm font-medium text-black dark:text-white hover:opacity-70 transition-opacity disabled:opacity-40"
           >
-            {importStatus === 'uploading' ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Uploading…
-              </>
-            ) : importStatus === 'done' ? (
-              <>
-                <Check className="w-4 h-4" />
-                Uploaded
-              </>
-            ) : (
-              <>
-                <Upload className="w-4 h-4" />
-                Start import
-              </>
-            )}
-          </Button>
+            {importStatus === 'uploading'
+              ? 'Uploading…'
+              : importStatus === 'done'
+                ? 'Uploaded'
+                : 'Start import'}
+          </button>
         )}
       </div>
     </div>
@@ -1084,14 +1014,27 @@ export default function SettingsModal({ isOpen, onClose }) {
   // ===========================================================
   // PAYMENT
   // ===========================================================
+  const periodEndLabel = currentPeriodEnd
+    ? new Date(currentPeriodEnd).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    : null;
+
   const renderPayment = () => (
     <div>
       <SubViewHeader title="Payment" onBack={() => setView('menu')} />
       {user ? (
-        <div className="space-y-4">
-          <div className="rounded-lg border border-gray-200 dark:border-gray-700/60 p-3">
+        <div className="space-y-5">
+          <div className="space-y-1">
             <p className="text-xs text-gray-500 dark:text-gray-400">Current plan</p>
             <p className="text-sm font-medium text-black dark:text-white">{planLabel(planId)}</p>
+            {cancelAtPeriodEnd && periodEndLabel && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Cancels on {periodEndLabel}. You'll keep access until then.
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col">
@@ -1100,7 +1043,7 @@ export default function SettingsModal({ isOpen, onClose }) {
                 type="button"
                 onClick={handleManageSubscription}
                 disabled={portalBusy}
-                className="w-full text-left px-1 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors disabled:opacity-50"
+                className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors disabled:opacity-50"
               >
                 {portalBusy ? 'Opening…' : 'Manage subscription'}
               </button>
@@ -1108,7 +1051,7 @@ export default function SettingsModal({ isOpen, onClose }) {
               <button
                 type="button"
                 onClick={() => { onClose(); nav('/billing'); }}
-                className="w-full text-left px-1 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
+                className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
               >
                 Upgrade plan
               </button>
@@ -1116,14 +1059,24 @@ export default function SettingsModal({ isOpen, onClose }) {
             <button
               type="button"
               onClick={() => { onClose(); nav('/billing'); }}
-              className="w-full text-left px-1 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
+              className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
             >
               {hasStripeCustomer ? 'Change plan' : 'View plans'}
             </button>
+            {hasActiveSubscription && !cancelAtPeriodEnd && (
+              <button
+                type="button"
+                onClick={handleCancelSubscription}
+                disabled={portalBusy}
+                className="w-full text-left px-0 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors disabled:opacity-50"
+              >
+                {portalBusy ? 'Opening…' : 'Cancel subscription'}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => { onClose(); nav('/billing#faq'); }}
-              className="w-full text-left px-1 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
+              className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
             >
               Billing FAQ
             </button>
@@ -1149,13 +1102,9 @@ export default function SettingsModal({ isOpen, onClose }) {
         </p>
         <a
           href="mailto:support@lykn.ai"
-          className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-gray-200 dark:border-gray-700/60 text-sm text-black dark:text-white hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"
+          className="block text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
         >
-          <span className="flex items-center gap-2">
-            <Mail className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-            Email support
-          </span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">support@lykn.ai</span>
+          support@lykn.ai
         </a>
       </div>
     </div>

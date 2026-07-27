@@ -20,6 +20,7 @@ import {
   FolderKanban,
   GitBranch,
   Lightbulb,
+  Lock,
   Pencil,
   Plug,
   Plus,
@@ -93,7 +94,7 @@ export function formatPushClientLabel(raw) {
 }
 
 export const KIND_META = {
-  vault: { title: "Vault items", icon: Plug, color: "#3b82f6" },
+  vault: { title: "Vault items", icon: Lock, color: "#3b82f6" },
   concept: { title: "Concepts", icon: Lightbulb, color: "#a855f7" },
   belief: { title: "Beliefs", icon: Brain, color: "#22c55e" },
   fact: { title: "Facts", icon: Sparkles, color: "#f59e0b" },

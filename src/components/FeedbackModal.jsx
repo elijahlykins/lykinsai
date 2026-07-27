@@ -7,13 +7,12 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { API_BASE_URL } from "@/lib/api-config";
 import { useAuth } from "@/lib/SupabaseAuth";
 
 const CATEGORIES = {
-  bug: { label: "Report a bug", placeholder: "Describe what happened and what you expected…" },
-  suggestion: { label: "Suggestion", placeholder: "Tell us your idea or how we can improve…" },
+  bug: { label: "Report a bug", placeholder: "What happened, and what did you expect?" },
+  suggestion: { label: "Suggestion", placeholder: "What should we improve or add?" },
 };
 
 export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" }) {
@@ -68,17 +67,15 @@ export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" 
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md backdrop-blur-md">
+      <DialogContent className="bg-white dark:bg-[#1e1e1e] border-white/15 dark:border-gray-700 text-black dark:text-white max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-black dark:text-white">
-            {cat.label}
-          </DialogTitle>
-          <DialogDescription className="text-xs text-gray-500 dark:text-gray-400">
-            We read every submission. Thank you for helping us improve.
+          <DialogTitle className="text-black dark:text-white">Feedback</DialogTitle>
+          <DialogDescription className="sr-only">
+            Send a bug report or suggestion.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex gap-4 pt-1">
+        <div className="flex gap-4">
           {Object.entries(CATEGORIES).map(([key, { label }]) => (
             <button
               key={key}
@@ -87,7 +84,7 @@ export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" 
               className={`text-sm font-medium transition-colors ${
                 type === key
                   ? "text-black dark:text-white"
-                  : "text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white"
+                  : "text-black/45 dark:text-white/45 hover:text-black dark:hover:text-white"
               }`}
             >
               {label}
@@ -96,48 +93,39 @@ export default function FeedbackModal({ open, onOpenChange, defaultType = "bug" 
         </div>
 
         {status === "success" ? (
-          <div className="flex flex-col items-center justify-center py-8 gap-2">
-            <CheckCircle className="w-6 h-6 text-gray-500 dark:text-gray-400" />
-            <p className="text-sm font-medium text-black dark:text-white">Sent. Thanks for your feedback.</p>
-          </div>
+          <p className="py-6 text-sm text-black/70 dark:text-white/70">
+            Sent. Thanks for the feedback.
+          </p>
         ) : (
-          <form onSubmit={handleSubmit} className="flex flex-col gap-3 pt-2">
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4 pt-1">
             <input
               type="text"
               placeholder="Subject (optional)"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-white dark:bg-[#1f1d1d] border border-gray-200 dark:border-gray-700 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20"
+              className="w-full px-0 py-1.5 text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-none focus:outline-none focus:border-black/40 dark:focus:border-white/40"
             />
             <Textarea
               placeholder={cat.placeholder}
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={5}
-              className="resize-none bg-white dark:bg-[#1f1d1d] border-gray-200 dark:border-gray-700 text-sm text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus-visible:ring-1 focus-visible:ring-black/20 dark:focus-visible:ring-white/20 focus-visible:ring-offset-0"
+              className="resize-none bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 rounded-none px-0 shadow-none text-sm text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:border-black/40 dark:focus-visible:border-white/40"
               required
             />
 
             {status === "error" && (
-              <div className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
-                <AlertCircle className="w-3.5 h-3.5" />
+              <p className="text-xs text-red-600 dark:text-red-400">
                 Something went wrong. Please try again.
-              </div>
+              </p>
             )}
 
             <button
               type="submit"
               disabled={!body.trim() || status === "sending"}
-              className="self-end inline-flex items-center justify-center gap-2 rounded-lg bg-black text-white hover:bg-black/90 dark:bg-white dark:text-black dark:hover:bg-white/90 px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="self-start text-sm font-medium text-black dark:text-white hover:opacity-70 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {status === "sending" ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Sending…
-                </>
-              ) : (
-                "Send"
-              )}
+              {status === "sending" ? "Sending…" : "Send"}
             </button>
           </form>
         )}

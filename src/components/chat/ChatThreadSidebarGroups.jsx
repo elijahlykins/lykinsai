@@ -10,8 +10,6 @@ import {
   mergeActiveRouteLyknChat,
   SIDEBAR_PAGE_SIZE,
 } from "@/lib/lyknChat/fetchLyknChatsWithContext";
-import { filterLyknChatsByChatModel } from "@/lib/lyknChat/chatModelKey";
-
 const COLLAPSED_GROUP_SIZE = 5;
 
 function normalizeSearch(q) {
@@ -43,53 +41,66 @@ function bucketForTime(time, now) {
   return "older";
 }
 
-function groupBoardsByTime(boards) {
-  const now = Date.now();
-  const buckets = new Map(TIME_GROUPS.map((g) => [g.key, []]));
-  for (const board of boards) {
-    buckets.get(bucketForTime(boardTime(board), now)).push(board);
-  }
-  return TIME_GROUPS.map((g) => ({ ...g, boards: buckets.get(g.key) })).filter(
-    (g) => g.boards.length > 0,
-  );
+function pinTime(board) {
+  return new Date(board.pinned_at || 0).getTime();
 }
 
-function ChatRow({ board, isActive, loading, onOpen, menuChatId, onMenuChatId, onMenuPos }) {
+function groupBoardsByTime(boards) {
+  const now = Date.now();
+  const pinned = [];
+  const buckets = new Map(TIME_GROUPS.map((g) => [g.key, []]));
+  for (const board of boards) {
+    if (board.pinned_at) {
+      pinned.push(board);
+      continue;
+    }
+    buckets.get(bucketForTime(boardTime(board), now)).push(board);
+  }
+  pinned.sort((a, b) => pinTime(b) - pinTime(a));
+  const groups = [];
+  if (pinned.length) groups.push({ key: "pinned", label: "Pinned", boards: pinned });
+  for (const g of TIME_GROUPS) {
+    const list = buckets.get(g.key);
+    if (list?.length) groups.push({ ...g, boards: list });
+  }
+  return groups;
+}
+
+function ChatRow({ board, isActive, loading, onOpen, menuChatId, onMenuOpen, onMenuClose }) {
   return (
     <div className="group relative flex items-center">
       <button
         type="button"
         onClick={() => onOpen(board.id)}
         className={cn(
-          "flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1 rounded-md flex items-center gap-2 transition-colors",
+          "flex-1 min-w-0 text-left text-[0.6875rem] pl-2.5 pr-7 py-1 rounded-md transition-colors",
           isActive ? "bg-blue-500/15" : "hover:bg-blue-500/10",
         )}
       >
-        {loading ? (
-          <Loader2 className="h-3 w-3 shrink-0 animate-spin text-blue-500" />
-        ) : (
-          <span
-            className={cn(
-              "inline-block h-1.5 w-1.5 rounded-full flex-shrink-0",
-              isActive ? "bg-blue-500" : "bg-black/30 dark:bg-white/30",
-            )}
-          />
-        )}
-        <span className="truncate">{board.title || "New Chat"}</span>
+        <span className="flex items-center gap-1.5 min-w-0">
+          {loading ? (
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-black/40 dark:text-white/40" />
+          ) : null}
+          <span className="truncate">{board.title || "New Chat"}</span>
+        </span>
       </button>
       <button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
           if (menuChatId === board.id) {
-            onMenuChatId(null);
+            onMenuClose();
           } else {
             const rect = e.currentTarget.getBoundingClientRect();
-            onMenuPos({ top: rect.bottom + 4, left: rect.right });
-            onMenuChatId(board.id);
+            onMenuOpen({
+              id: board.id,
+              pinned: Boolean(board.pinned_at),
+              top: rect.bottom + 4,
+              left: rect.right,
+            });
           }
         }}
-        className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-blue-500/15 transition-opacity"
+        className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-opacity"
       >
         <MoreHorizontal className="w-3 h-3 text-black/50 dark:text-white/50" />
       </button>
@@ -99,12 +110,11 @@ function ChatRow({ board, isActive, loading, onOpen, menuChatId, onMenuChatId, o
 
 export default function ChatThreadSidebarGroups({
   userId,
-  modelFilter,
   searchQuery,
   onOpenChat,
   menuChatId,
-  onMenuChatId,
-  onMenuPos,
+  onMenuOpen,
+  onMenuClose,
 }) {
   const location = useLocation();
   const needle = normalizeSearch(searchQuery);
@@ -197,20 +207,11 @@ export default function ChatThreadSidebarGroups({
   }, [needle, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const filteredBoards = useMemo(() => {
-    // Always keep the chat that's currently open in the list — without
-    // passing activeChatId, a model filter can hide the very conversation
-    // the user is looking at.
-    const activeChatId = location.pathname.startsWith("/chat/")
-      ? location.pathname.slice("/chat/".length)
-      : null;
-    let list = filterLyknChatsByChatModel(visibleBoards, modelFilter, { activeChatId });
-    if (needle) {
-      list = list.filter((b) =>
-        String(b.title || "New Chat").toLowerCase().includes(needle),
-      );
-    }
-    return list;
-  }, [visibleBoards, modelFilter, needle, location.pathname]);
+    if (!needle) return visibleBoards;
+    return visibleBoards.filter((b) =>
+      String(b.title || "New Chat").toLowerCase().includes(needle),
+    );
+  }, [visibleBoards, needle]);
 
   const groupedBoards = useMemo(
     () => groupBoardsByTime(filteredBoards),
@@ -236,9 +237,9 @@ export default function ChatThreadSidebarGroups({
 
   if (!filteredBoards.length) {
     // In list mode there may be more pages whose rows were all filtered out
-    // (empty shells, or chats from another model). Keep the sentinel mounted so
-    // auto-load (or the manual button) can pull deeper pages instead of dead-
-    // ending on a misleading "No chats yet".
+    // (e.g. empty shells). Keep the sentinel mounted so auto-load (or the
+    // manual button) can pull deeper pages instead of dead-ending on a
+    // misleading "No chats yet".
     if (!needle && (hasNextPage || isFetchingNextPage)) {
       return (
         <div className="flex flex-col gap-2">
@@ -262,7 +263,7 @@ export default function ChatThreadSidebarGroups({
     }
     return (
       <div className="text-[0.6875rem] text-black/40 dark:text-white/40 px-2.5 py-1">
-        {needle || modelFilter !== "all" ? "No matches" : "No chats yet"}
+        {needle ? "No matches" : "No chats yet"}
       </div>
     );
   }
@@ -291,8 +292,8 @@ export default function ChatThreadSidebarGroups({
                 loading={isThreadLoading(board.id)}
                 onOpen={onOpenChat}
                 menuChatId={menuChatId}
-                onMenuChatId={onMenuChatId}
-                onMenuPos={onMenuPos}
+                onMenuOpen={onMenuOpen}
+                onMenuClose={onMenuClose}
               />
             ))}
             {hasOverflow && (

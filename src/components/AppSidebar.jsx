@@ -5,18 +5,16 @@ import {
   Brain,
   CalendarDays,
   CreditCard,
-  Edit2,
   Bug,
   FolderKanban,
   LogOut,
   MessageCircle,
   PanelLeftClose,
   PanelLeftOpen,
-  Plug,
+  Lock,
   SquarePen,
   Search as SearchIcon,
   Settings as SettingsIcon,
-  Trash2,
 } from "lucide-react";
 import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
 import lyknIconBlueUrl from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-BLUE-master.png";
@@ -28,11 +26,14 @@ import { supabase } from "@/lib/supabase";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import ChatThreadSidebarGroups from "@/components/chat/ChatThreadSidebarGroups";
-import { invalidateLyknChatListQueries } from "@/lib/lyknChat/fetchLyknChatsWithContext";
-import { fetchPublishedCustomModels } from "@/lib/modelBuilder/customModelsClient";
-import ChatModelFilterSelect from "@/components/chat/ChatModelFilterSelect";
+import {
+  invalidateLyknChatListQueries,
+  markLyknChatDeleted,
+  patchLyknChatPinnedInListQueries,
+  removeLyknChatFromListQueries,
+} from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import SignInPill from "@/components/SignInPill";
 
 // LYKN icon mark — blue in light mode, neutral (near-white) in dark mode.
@@ -96,42 +97,62 @@ export default function AppSidebar({
 
   const queryClient = useQueryClient();
   const [menuChatId, setMenuChatId] = useState(null);
+  const [menuChatPinned, setMenuChatPinned] = useState(false);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
+
+  const closeChatMenu = () => {
+    setMenuChatId(null);
+    setMenuChatPinned(false);
+  };
+
+  const openChatMenu = ({ id, pinned, top, left }) => {
+    setMenuChatId(id);
+    setMenuChatPinned(Boolean(pinned));
+    setMenuPos({ top, left });
+  };
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState("bug");
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [calendarPanel, setCalendarPanel] = useState("calendar"); // "calendar" | "todos"
   const [searchQuery, setSearchQuery] = useState("");
-  const [modelFilter, setModelFilter] = useState("all");
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [userMenuPos, setUserMenuPos] = useState({ bottom: 8, left: 8, width: 176 });
   const menuRef = useRef(null);
+  const userMenuRef = useRef(null);
+  const userBtnCollapsedRef = useRef(null);
+  const userBtnExpandedRef = useRef(null);
 
-  const { data: customModels = [] } = useQuery({
-    queryKey: ["published-custom-models", user?.id],
-    queryFn: async () => {
-      if (!user?.id) return [];
-      return fetchPublishedCustomModels();
-    },
-    enabled: !!user?.id,
-  });
+  const placeUserMenu = () => {
+    const btn = open ? userBtnExpandedRef.current : userBtnCollapsedRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    if (open) {
+      // Expanded sidebar: menu opens upward above the account row.
+      const width = Math.max(176, rect.width);
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+      const bottom = Math.max(8, window.innerHeight - rect.top + 8);
+      setUserMenuPos({ bottom, left, width });
+    } else {
+      // Collapsed rail: menu opens to the right, bottom-aligned with the avatar.
+      const width = 176;
+      const left = Math.max(8, Math.min(rect.right + 8, window.innerWidth - width - 8));
+      const bottom = Math.max(8, window.innerHeight - rect.bottom);
+      setUserMenuPos({ bottom, left, width });
+    }
+  };
 
   // Sidebar search — passed to thread groups
   const normalizedQuery = searchQuery.trim();
 
   useEffect(() => {
     const onBoardsChanged = () => invalidateLyknChatListQueries(queryClient, user?.id);
-    const onModelsChanged = () => {
-      queryClient.invalidateQueries({ queryKey: ["published-custom-models", user?.id] });
-    };
     const onOpenCalendar = () => { setCalendarPanel("calendar"); setCalendarOpen(true); };
     const onOpenTodos = () => { setCalendarPanel("todos"); setCalendarOpen(true); };
     window.addEventListener("lykinsai_chats_changed", onBoardsChanged);
-    window.addEventListener("lykn_custom_models_changed", onModelsChanged);
     window.addEventListener("lykn_open_calendar", onOpenCalendar);
     window.addEventListener("lykn_open_todos", onOpenTodos);
     return () => {
       window.removeEventListener("lykinsai_chats_changed", onBoardsChanged);
-      window.removeEventListener("lykn_custom_models_changed", onModelsChanged);
       window.removeEventListener("lykn_open_calendar", onOpenCalendar);
       window.removeEventListener("lykn_open_todos", onOpenTodos);
     };
@@ -166,13 +187,13 @@ export default function AppSidebar({
     if (!menuChatId) return;
     const onClick = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setMenuChatId(null);
+        closeChatMenu();
       }
     };
     document.addEventListener("mousedown", onClick);
     // Close on any scroll so the fixed-position menu doesn't float detached
     // from its chat row when the sidebar list scrolls.
-    const onScroll = () => setMenuChatId(null);
+    const onScroll = () => closeChatMenu();
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onScroll);
     return () => {
@@ -184,24 +205,48 @@ export default function AppSidebar({
 
   useEffect(() => {
     if (!userMenuOpen) return;
+    placeUserMenu();
     const onClick = (e) => {
-      if (!e.target?.closest?.("[data-user-menu]")) setUserMenuOpen(false);
+      if (e.target?.closest?.("[data-user-menu]")) return;
+      if (userMenuRef.current?.contains(e.target)) return;
+      setUserMenuOpen(false);
     };
+    const onReposition = () => placeUserMenu();
     document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, [userMenuOpen]);
+    window.addEventListener("resize", onReposition);
+    window.addEventListener("scroll", onReposition, true);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userMenuOpen, open]);
 
   useEffect(() => { setUserMenuOpen(false); }, [open]);
 
   const deleteBoard = async (chatId) => {
     if (!user?.id) return;
     if (!window.confirm("Delete this chat? This cannot be undone.")) return;
-    await supabase.from("lykn_chat_states").delete().eq("chat_id", chatId);
-    await supabase.from("lykn_chats").delete().eq("id", chatId).eq("user_id", user.id);
-    setMenuChatId(null);
-    if (localStorage.getItem("lyknchat_active_id") === chatId) localStorage.removeItem("lyknchat_active_id");
+    closeChatMenu();
+    // Optimistic remove + block route-merge resurrection so the row doesn't
+    // flash as a duplicate while the DB delete / navigation catch up.
+    markLyknChatDeleted(chatId);
+    removeLyknChatFromListQueries(queryClient, user.id, chatId);
+    if (localStorage.getItem("lyknchat_active_id") === chatId) {
+      localStorage.removeItem("lyknchat_active_id");
+    }
+    if (location.pathname === `/chat/${chatId}`) nav("/app", { replace: true });
+
+    const [, chatRes] = await Promise.all([
+      supabase.from("lykn_chat_states").delete().eq("chat_id", chatId),
+      supabase.from("lykn_chats").delete().eq("id", chatId).eq("user_id", user.id),
+    ]);
+    if (chatRes?.error) {
+      invalidateLyknChatListQueries(queryClient, user.id);
+      return;
+    }
     window.dispatchEvent(new Event("lykinsai_chats_changed"));
-    if (location.pathname === `/chat/${chatId}`) nav("/app");
   };
 
   const renameBoard = async (chatId) => {
@@ -224,7 +269,24 @@ export default function AppSidebar({
       .update({ title: name, updated_at: new Date().toISOString() })
       .eq("id", chatId)
       .eq("user_id", user.id);
-    setMenuChatId(null);
+    closeChatMenu();
+    window.dispatchEvent(new Event("lykinsai_chats_changed"));
+  };
+
+  const togglePinBoard = async (chatId, currentlyPinned) => {
+    if (!user?.id) return;
+    closeChatMenu();
+    const nextPinnedAt = currentlyPinned ? null : new Date().toISOString();
+    patchLyknChatPinnedInListQueries(queryClient, user.id, chatId, nextPinnedAt);
+    const { error } = await supabase
+      .from("lykn_chats")
+      .update({ pinned_at: nextPinnedAt })
+      .eq("id", chatId)
+      .eq("user_id", user.id);
+    if (error) {
+      invalidateLyknChatListQueries(queryClient, user.id);
+      return;
+    }
     window.dispatchEvent(new Event("lykinsai_chats_changed"));
   };
 
@@ -354,7 +416,7 @@ export default function AppSidebar({
             }`}
             title="Vault"
           >
-            <Plug className="w-4 h-4 text-black/60 dark:text-white/60" />
+            <Lock className="w-4 h-4 text-black/60 dark:text-white/60" />
           </button>
           <button
             type="button"
@@ -381,12 +443,8 @@ export default function AppSidebar({
         <div className="flex-shrink-0 flex flex-col items-center pt-2 border-t border-black/5 dark:border-white/5 w-9">
           {user ? (
             <div className="relative" data-user-menu>
-              {userMenuOpen && !open && (
-                <div className="absolute bottom-0 left-full ml-2 w-44 rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 text-[0.6875rem] text-black/85 dark:text-white/90">
-                  {userMenuItems}
-                </div>
-              )}
               <button
+                ref={userBtnCollapsedRef}
                 type="button"
                 onClick={() => setUserMenuOpen((v) => !v)}
                 className="w-9 h-9 rounded-lg hover:bg-blue-500/15 transition-colors flex items-center justify-center"
@@ -468,7 +526,7 @@ export default function AppSidebar({
                 location.pathname === "/vault" || location.pathname.startsWith("/vault/") ? "bg-blue-500/10" : ""
               }`}
             >
-              <Plug className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
+              <Lock className="w-3.5 h-3.5 text-black/60 dark:text-white/60" />
               Vault
             </button>
             <button
@@ -500,25 +558,17 @@ export default function AppSidebar({
           <div className="flex-shrink-0 flex items-center justify-between px-2 py-0.5">
             <span className="text-[0.625rem] font-semibold uppercase tracking-wider text-black/50 dark:text-white/50">Chats</span>
           </div>
-          {user?.id ? (
-            <ChatModelFilterSelect
-              customModels={customModels}
-              value={modelFilter}
-              onChange={setModelFilter}
-            />
-          ) : null}
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
             <ChatThreadSidebarGroups
               userId={user?.id}
-              modelFilter={modelFilter}
               searchQuery={normalizedQuery}
               onOpenChat={(chatId) => {
                 addOpenThread(chatId);
                 goTo(`/chat/${chatId}`);
               }}
               menuChatId={menuChatId}
-              onMenuChatId={setMenuChatId}
-              onMenuPos={setMenuPos}
+              onMenuOpen={openChatMenu}
+              onMenuClose={closeChatMenu}
             />
           </div>
         </div>
@@ -527,12 +577,8 @@ export default function AppSidebar({
         <div className="flex-shrink-0 pt-2 border-t border-black/5 dark:border-white/5 mt-1">
           {user ? (
             <div className="relative" data-user-menu>
-              {userMenuOpen && open && (
-                <div className="absolute bottom-full left-0 right-0 mb-2 rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 text-[0.6875rem] text-black/85 dark:text-white/90">
-                  {userMenuItems}
-                </div>
-              )}
               <button
+                ref={userBtnExpandedRef}
                 type="button"
                 onClick={() => setUserMenuOpen((v) => !v)}
                 className="w-full flex items-center gap-2 rounded-xl px-2 py-1.5 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors"
@@ -562,30 +608,52 @@ export default function AppSidebar({
       {menuChatId && ReactDOM.createPortal(
         <div
           ref={menuRef}
-          className="fixed z-[9999] w-44 rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 text-[0.6875rem] text-black/85 dark:text-white/90"
+          className="fixed z-[9999] w-40 rounded-lg border border-black/10 dark:border-white/12 bg-white dark:bg-[hsl(0_0%_16%)] shadow-lg p-1 text-[0.6875rem] text-black/85 dark:text-white/90"
           style={{
             // Clamp so the menu never renders past the viewport edge (rows near
             // the bottom of the chat list would otherwise push Delete off-screen).
-            top: Math.max(8, Math.min(menuPos.top, window.innerHeight - 96)),
-            left: Math.max(8, Math.min(menuPos.left, window.innerWidth - 184)),
+            top: Math.max(8, Math.min(menuPos.top, window.innerHeight - 120)),
+            left: Math.max(8, Math.min(menuPos.left, window.innerWidth - 168)),
           }}
         >
           <button
             type="button"
-            className="w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
+            className="w-full text-left rounded-md px-2.5 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
             onClick={() => renameBoard(menuChatId)}
           >
-            <Edit2 className="w-3 h-3 text-black/50 dark:text-white/50" />
             Rename
           </button>
           <button
             type="button"
-            className="w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-red-500/10 text-red-600 dark:text-red-400 transition-colors"
+            className="w-full text-left rounded-md px-2.5 py-1.5 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors"
+            onClick={() => togglePinBoard(menuChatId, menuChatPinned)}
+          >
+            {menuChatPinned ? "Unpin chat" : "Pin chat"}
+          </button>
+          <button
+            type="button"
+            className="w-full text-left rounded-md px-2.5 py-1.5 text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
             onClick={() => deleteBoard(menuChatId)}
           >
-            <Trash2 className="w-3 h-3" />
             Delete chat
           </button>
+        </div>,
+        document.body
+      )}
+
+      {/* Account menu portaled above vault trash (z-200) — opaque so trash can't bleed through. */}
+      {userMenuOpen && user && ReactDOM.createPortal(
+        <div
+          ref={userMenuRef}
+          data-user-menu
+          className="fixed z-[9999] rounded-2xl border border-black/10 dark:border-white/12 bg-white dark:bg-[hsl(0_0%_16%)] shadow-lg p-1.5 text-[0.6875rem] text-black/85 dark:text-white/90"
+          style={{
+            bottom: userMenuPos.bottom,
+            left: userMenuPos.left,
+            width: userMenuPos.width,
+          }}
+        >
+          {userMenuItems}
         </div>,
         document.body
       )}

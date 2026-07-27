@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Loader2, Pause, Play, RefreshCw } from 'lucide-react';
+import { Pause, Play } from 'lucide-react';
 import { API_BASE_URL } from '@/lib/api-config';
 import { supabase } from '@/lib/supabase';
 
@@ -89,16 +89,15 @@ export default function VoicePicker({ selectedVoiceId, onSelect }) {
 
   if (status === 'loading' || status === 'idle') {
     return (
-      <div className="flex items-center gap-2 px-1 py-3 text-xs text-gray-500 dark:text-gray-400">
-        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+      <p className="py-2 text-xs text-gray-500 dark:text-gray-400">
         Loading voices…
-      </div>
+      </p>
     );
   }
 
   if (status === 'unavailable') {
     return (
-      <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed px-1">
+      <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
         Custom voices aren&apos;t available right now. Your assistant will use its default voice.
       </p>
     );
@@ -106,14 +105,13 @@ export default function VoicePicker({ selectedVoiceId, onSelect }) {
 
   if (status === 'error') {
     return (
-      <div className="space-y-2 px-1">
+      <div className="space-y-2">
         <p className="text-xs text-red-500">{error}</p>
         <button
           type="button"
           onClick={load}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
+          className="text-xs font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
         >
-          <RefreshCw className="w-3 h-3" />
           Try again
         </button>
       </div>
@@ -122,29 +120,29 @@ export default function VoicePicker({ selectedVoiceId, onSelect }) {
 
   if (!voices.length) {
     return (
-      <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed px-1">
+      <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
         No voices found in your library.
       </p>
     );
   }
 
   return (
-    <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700/60 divide-y divide-gray-200 dark:divide-gray-700/60">
+    <div className="max-h-64 overflow-y-auto divide-y divide-gray-200 dark:divide-gray-700/60">
       {voices.map((voice) => {
         const isSelected = selectedVoiceId === voice.id;
         const isPlaying = playingId === voice.id;
         return (
           <div
             key={voice.id}
-            className={`flex items-center gap-2.5 px-2.5 py-2 transition-colors ${
-              isSelected ? 'bg-black/[0.04] dark:bg-white/[0.06]' : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.03]'
+            className={`flex items-center gap-3 px-0 py-2.5 transition-colors ${
+              isSelected ? 'opacity-100' : 'opacity-80 hover:opacity-100'
             }`}
           >
             <button
               type="button"
               onClick={() => togglePreview(voice)}
               disabled={!voice.previewUrl}
-              className="shrink-0 grid place-items-center w-7 h-7 rounded-full text-gray-600 dark:text-gray-300 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] transition-colors disabled:opacity-30"
+              className="shrink-0 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white transition-colors disabled:opacity-30"
               aria-label={isPlaying ? `Stop ${voice.name} preview` : `Play ${voice.name} preview`}
               title={voice.previewUrl ? 'Preview' : 'No preview available'}
             >
@@ -156,13 +154,21 @@ export default function VoicePicker({ selectedVoiceId, onSelect }) {
               onClick={() => onSelect?.(voice.id, voice.name)}
               className="flex-1 min-w-0 text-left"
             >
-              <p className="text-sm font-medium text-black dark:text-white truncate">{voice.name}</p>
+              <p className={`text-sm truncate ${
+                isSelected
+                  ? 'font-medium text-black dark:text-white'
+                  : 'font-medium text-black/70 dark:text-white/70'
+              }`}>
+                {voice.name}
+              </p>
               {voice.descriptor && (
                 <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate capitalize">{voice.descriptor}</p>
               )}
             </button>
 
-            {isSelected && <Check className="w-4 h-4 shrink-0 text-emerald-500" />}
+            {isSelected && (
+              <span className="shrink-0 text-[11px] text-gray-500 dark:text-gray-400">Selected</span>
+            )}
           </div>
         );
       })}

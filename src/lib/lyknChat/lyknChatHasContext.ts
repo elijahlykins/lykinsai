@@ -103,6 +103,7 @@ export type LyknChatListRow = {
   updated_at?: string | null;
   created_at?: string | null;
   chat_model_key?: string | null;
+  pinned_at?: string | null;
   thread_id?: string | null;
 };
 

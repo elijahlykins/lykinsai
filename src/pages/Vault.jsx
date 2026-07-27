@@ -6,7 +6,6 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
-  Info,
   Clock,
   ExternalLink,
   FileText,
@@ -16,7 +15,7 @@ import {
   LayoutGrid,
   Link as LinkIcon,
   Loader2,
-  MessageSquare,
+  MessageCircle,
   Mic,
   MoreHorizontal,
   Music,
@@ -37,6 +36,13 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { lazyBackfillCardVariants } from "@/lib/vault/lazyVariantBackfill";
+import {
+  addNeuronsToProject,
+  createUserProject,
+  listUserProjects,
+  removeNeuronFromProject,
+} from "@/lib/userProjects";
+import { emitProjectsChanged } from "@/lib/synthesis/projectLiveSync";
 import { useQuery, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import VaultNewNoteChooser from "@/components/vault/VaultNewNoteChooser";
@@ -632,11 +638,13 @@ function vaultPdfEmbedUrl(url = "") {
 function renderConnectorListCard(attachment, title, { expanded = false, compact = false } = {}) {
   const items = Array.isArray(attachment?.listItems) ? attachment.listItems : [];
   const siteLabel = attachment?.siteName || title || "Connected app";
-  const maxItems = expanded ? items.length : compact ? 3 : 5;
+  // Compact = grid / tags / type tiles: keep the list short so it fits a
+  // square card instead of stretching the whole row.
+  const maxItems = expanded ? items.length : compact ? 2 : 5;
 
   return (
-    <div className={`rounded-2xl overflow-hidden glass-control ${expanded ? "" : "cursor-pointer"}`}>
-      <div className={`flex items-center gap-2 border-b border-black/8 dark:border-white/8 ${compact ? "px-3 py-2" : "px-3.5 py-2.5"}`}>
+    <div className={`rounded-2xl overflow-hidden glass-control h-full ${expanded ? "" : "cursor-pointer"}`}>
+      <div className={`flex items-center gap-2 border-b border-black/8 dark:border-white/8 ${compact ? "px-2.5 py-1.5" : "px-3.5 py-2.5"}`}>
         {attachment?.favicon ? (
           <img
             src={attachment.favicon}
@@ -649,21 +657,28 @@ function renderConnectorListCard(attachment, title, { expanded = false, compact 
         )}
         <span className={`${compact ? "text-xs" : "text-sm"} font-medium text-black/80 dark:text-white/80 truncate`}>{siteLabel}</span>
         <span className={`ml-auto shrink-0 ${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} text-black/45 dark:text-white/45`}>
-          {items.length} items
+          {items.length}
         </span>
       </div>
-      <ul className={`divide-y divide-black/6 dark:divide-white/6 ${expanded ? "max-h-[70vh] overflow-y-auto scrollbar-hide" : ""}`}>
+      <ul className={`divide-y divide-black/6 dark:divide-white/6 ${expanded ? "max-h-[70vh] overflow-y-auto scrollbar-hide" : "overflow-hidden"}`}>
         {items.slice(0, maxItems).map((item, index) => (
-          <li key={`${item.label}-${index}`} className={compact ? "px-3 py-1.5" : "px-3.5 py-2.5"}>
+          <li key={`${item.label}-${index}`} className={compact ? "px-2.5 py-1" : "px-3.5 py-2.5"}>
             <div className={`${compact ? "text-[0.6875rem]" : "text-xs"} font-medium text-black/80 dark:text-white/80 truncate`}>{item.label}</div>
-            {item.meta ? (
-              <div className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} text-black/50 dark:text-white/50 truncate mt-0.5`}>{item.meta}</div>
+            {!compact && item.meta ? (
+              <div className="text-[0.6875rem] text-black/50 dark:text-white/50 truncate mt-0.5">{item.meta}</div>
             ) : null}
           </li>
         ))}
       </ul>
     </div>
   );
+}
+
+/** Fixed-size tile class for grid / tags / type (not collage). */
+function isUniformVaultTileClass(tileHeightClass) {
+  const raw = String(tileHeightClass || "").trim();
+  if (!raw) return false;
+  return /^h-\d+$/.test(raw) || raw.includes("aspect-square");
 }
 
 function getAttachmentHeightClass(card) {
@@ -871,18 +886,18 @@ function WhyEditor({ initialValue = "", onSave, busy = false }) {
 
   if (!editing && trimmed) {
     return (
-      <div className="rounded-xl bg-amber-500/[0.07] dark:bg-amber-400/[0.08] border border-amber-500/20 dark:border-amber-400/15 px-4 py-3">
-        <div className="flex items-center justify-between mb-1">
-          <div className="text-[0.625rem] uppercase tracking-wide text-amber-700/70 dark:text-amber-300/70">Why I saved this</div>
+      <div className="space-y-1">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-xs text-black/45 dark:text-white/45">Why I saved this</p>
           <button
             type="button"
             onClick={() => setEditing(true)}
-            className="text-[0.625rem] font-medium text-amber-700/80 dark:text-amber-300/80 hover:underline"
+            className="text-xs text-black/45 dark:text-white/45 hover:text-black/70 dark:hover:text-white/70 transition-colors"
           >
             Edit
           </button>
         </div>
-        <p className="text-sm text-black/80 dark:text-white/85 whitespace-pre-wrap break-words">{trimmed}</p>
+        <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{trimmed}</p>
       </div>
     );
   }
@@ -892,16 +907,16 @@ function WhyEditor({ initialValue = "", onSave, busy = false }) {
       <button
         type="button"
         onClick={() => setEditing(true)}
-        className="w-full text-left rounded-xl border border-dashed border-black/15 dark:border-white/15 px-4 py-2.5 text-[0.8125rem] text-black/45 dark:text-white/45 hover:border-amber-500/40 hover:text-amber-700/80 dark:hover:text-amber-300/80 transition-colors"
+        className="text-left text-sm text-black/45 dark:text-white/45 hover:text-black/70 dark:hover:text-white/70 transition-colors"
       >
-        + Add why you saved this
+        Add why you saved this
       </button>
     );
   }
 
   return (
-    <div className="rounded-xl bg-white/40 dark:bg-white/5 border border-amber-500/30 dark:border-amber-400/20 px-4 py-3">
-      <div className="text-[0.625rem] uppercase tracking-wide text-amber-700/70 dark:text-amber-300/70 mb-1.5">Why I saved this</div>
+    <div className="space-y-2">
+      <p className="text-xs text-black/45 dark:text-white/45">Why I saved this</p>
       <textarea
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
@@ -909,23 +924,23 @@ function WhyEditor({ initialValue = "", onSave, busy = false }) {
         rows={3}
         maxLength={2000}
         placeholder="A short note on why this matters to you…"
-        className="w-full resize-y rounded-lg bg-white/70 dark:bg-black/30 border border-black/10 dark:border-white/10 px-3 py-2 text-sm text-black/85 dark:text-white/85 outline-none focus:border-amber-500/50"
+        className="w-full resize-y bg-transparent border-0 border-b border-black/15 dark:border-white/15 px-0 py-1.5 text-sm text-black/85 dark:text-white/85 outline-none focus:border-black/40 dark:focus:border-white/40"
       />
-      <div className="flex items-center justify-end gap-2 mt-2">
-        <button
-          type="button"
-          onClick={() => { setDraft(initialValue); setEditing(false); }}
-          className="text-xs font-medium text-black/55 dark:text-white/55 hover:text-black/80 dark:hover:text-white/80 px-2 py-1"
-        >
-          Cancel
-        </button>
+      <div className="flex items-center gap-4">
         <button
           type="button"
           onClick={handleSave}
           disabled={saving || busy || !dirty}
-          className="text-xs font-medium text-white bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-full px-3.5 py-1.5 transition-colors"
+          className="text-sm font-medium text-black dark:text-white hover:opacity-70 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
         >
           {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          onClick={() => { setDraft(initialValue); setEditing(false); }}
+          className="text-sm text-black/45 dark:text-white/45 hover:text-black/70 dark:hover:text-white/70 transition-colors"
+        >
+          Cancel
         </button>
       </div>
     </div>
@@ -1503,20 +1518,21 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     }
   }, [notesQuery.isError, notesQuery.isSuccess]);
 
+  // Same synthesis projects the /projects page uses (`lykn_projects` +
+  // `lykn_project_neurons`). The old vault menu still queried
+  // `lykn_chat_projects` + localStorage `project:<id>` file trees, which
+  // no longer backs the Projects UI.
   const { data: projects = [] } = useQuery({
-    queryKey: ["projects", user?.id],
-    queryFn: async () => {
-      if (!user?.id) return [];
-      const { data } = await supabase
-        .from("lykn_chat_projects")
-        .select("id, name, updated_at")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false })
-        .limit(50);
-      return Array.isArray(data) ? data : [];
-    },
+    queryKey: ["lykn_projects", user?.id || "guest"],
+    queryFn: () => listUserProjects(user?.id),
     enabled: !!user?.id && !loading,
+    staleTime: 60 * 1000,
   });
+
+  const invalidateVaultProjects = useCallback(() => {
+    vaultQueryClient.invalidateQueries({ queryKey: ["lykn_projects", user?.id || "guest"] });
+    emitProjectsChanged({ userId: user?.id || null });
+  }, [user?.id, vaultQueryClient]);
 
   const loadMoreNotes = useCallback(async () => {
     if (!user?.id || isLoadingNotes || isLoadingMoreNotes || !hasMoreNotes) return;
@@ -3789,11 +3805,14 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                     {card.kind === "source-folder" ? (
                       <SourceFolderTile
                         card={card}
-                        heightClass={vaultView === "grid" ? "h-44" : "h-44"}
+                        heightClass={vaultView === "grid" ? "aspect-square w-full" : "h-44"}
                       />
                     ) : card.kind === "attachment" ? (
                       <>
-                        {renderAttachmentCard(card, vaultView === "grid" ? "h-44" : getAttachmentHeightClass(card))}
+                        {renderAttachmentCard(
+                          card,
+                          vaultView === "grid" ? "aspect-square w-full" : getAttachmentHeightClass(card),
+                        )}
                         {parseAttachmentNotes(card.attachment).length > 0 && (
                           <button
                             type="button"
@@ -3815,7 +3834,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                             } h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm`}
                             title="View comments"
                           >
-                            <MessageSquare className="w-3 h-3 text-black" />
+                            <MessageCircle className="w-3 h-3 text-black" />
                             <span>{parseAttachmentNotes(card.attachment).length}</span>
                           </button>
                         )}
@@ -3853,7 +3872,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         </div>
                       </>
                     ) : card.kind === "chat-preview" ? (
-                      <div className={`p-4 space-y-3 ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
+                      <div className={`p-4 space-y-3 ${vaultView === "grid" ? "aspect-square w-full overflow-hidden" : ""}`}>
                         <div className="flex items-center justify-between">
                           <h2 className="text-sm font-semibold text-black/90 dark:text-white/90 truncate">{card.title}</h2>
                           <span className="text-[0.6875rem] text-black/60 dark:text-white/60">{card.turnsCount} turns</span>
@@ -3884,7 +3903,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                       </div>
                     ) : (
                       <>
-                        <div className={`glass-control rounded-2xl p-4 relative ${vaultView === "grid" ? "h-44 overflow-hidden" : ""}`}>
+                        <div className={`glass-control rounded-2xl p-4 relative ${vaultView === "grid" ? "aspect-square w-full overflow-hidden" : ""}`}>
                           <div className="flex items-center gap-2 text-black/70 dark:text-white/70 mb-2">
                             {card.noteStyle === "meeting" ? (
                               <CalendarDays className="w-4 h-4" />
@@ -3931,7 +3950,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                               className="absolute top-2 right-2 h-6 min-w-6 px-1.5 rounded-full bg-white/45 backdrop-blur-sm border border-white/30 text-[0.6875rem] font-semibold text-black flex items-center justify-center gap-1 z-[125] shadow-sm"
                               title="View comments"
                             >
-                              <MessageSquare className="w-3 h-3 text-black" />
+                              <MessageCircle className="w-3 h-3 text-black" />
                               <span>{card.comments.length}</span>
                             </button>
                           )}
@@ -5059,13 +5078,12 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     const resolvedUrl = resolvedAttachmentUrls[card.id] || attachment.url;
     const wakeDemoCard = isWakePreview && card.isDemo;
     const stableTileHeight = resolveStableTileHeight(card, tileHeightClass);
-    // Grid/tags/type views pass a single fixed height class (e.g. "h-44") and
-    // expect uniform tiles. The collage passes responsive bucketed classes.
-    // When the tile is uniform, keep the fixed height instead of switching to
-    // the media's real aspect-ratio — otherwise a portrait image stretches its
-    // whole grid row and leaves large gaps under shorter neighbors.
-    const uniformTile =
-      typeof tileHeightClass === "string" && /^h-\d+$/.test(tileHeightClass.trim());
+    // Grid/tags/type views pass a single fixed / square class and expect
+    // uniform tiles. The collage passes responsive bucketed classes.
+    // When the tile is uniform, keep that size instead of switching to the
+    // media's real aspect-ratio — otherwise a portrait image (or a long
+    // connector bookmark card) stretches its whole grid row.
+    const uniformTile = isUniformVaultTileClass(tileHeightClass);
 
     // Ghost cards represent uploads still in flight. We render the local
     // blob preview directly — no signed-URL resolver, no retry logic —
@@ -5708,11 +5726,21 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 
     if (type === "bookmark") {
       if (attachment.connectorList && Array.isArray(attachment.listItems)) {
-        return renderConnectorListCard(attachment, title, { compact: isWakePreview });
+        const listCard = renderConnectorListCard(attachment, title, {
+          compact: isWakePreview || uniformTile,
+        });
+        if (uniformTile) {
+          return (
+            <div className={`w-full ${tileHeightClass} overflow-hidden rounded-2xl`}>
+              {listCard}
+            </div>
+          );
+        }
+        return listCard;
       }
       const linkUrl = attachment.url || resolvedUrl || "";
-      return (
-        <div className={isPickerMode ? "pointer-events-none" : undefined}>
+      const preview = (
+        <div className={isPickerMode ? "pointer-events-none h-full" : "h-full"}>
           <LinkPreview
             url={linkUrl}
             title={attachment.title || title || ""}
@@ -5727,6 +5755,14 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
           />
         </div>
       );
+      if (uniformTile) {
+        return (
+          <div className={`w-full ${tileHeightClass} overflow-hidden rounded-2xl`}>
+            {preview}
+          </div>
+        );
+      }
+      return preview;
     }
 
     if (type === "spreadsheet") {
@@ -5736,7 +5772,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       const hasData = totalRows > 0 && totalCols > 0 && Object.keys(cells).length > 0;
       const fileName = attachment.name || title || "Spreadsheet";
       return (
-        <div className="rounded-2xl overflow-hidden glass-control">
+        <div className={`rounded-2xl overflow-hidden glass-control ${uniformTile ? `w-full ${tileHeightClass}` : ""}`}>
           <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-black/8 dark:border-white/8">
             <Table2 className="w-4 h-4 text-green-600 shrink-0" />
             <span className="text-sm font-medium text-black/80 dark:text-white/80 truncate">{fileName}</span>
@@ -5815,31 +5851,32 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     );
   };
 
-  const removeCardFromProjects = useCallback((card) => {
-    const storageTarget = parseStorageTarget(card?.attachment || {});
-    const storagePath = storageTarget?.path || "";
-    const cardUrl = card?.attachment?.url || "";
-    if (!storagePath && !cardUrl) return;
-
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (!key || !key.startsWith("project:")) continue;
-      try {
-        const parsed = JSON.parse(localStorage.getItem(key));
-        const files = Array.isArray(parsed?.files) ? parsed.files : [];
-        const filtered = files.filter((f) => {
-          if (storagePath && (f.path === storagePath || f.url?.includes(storagePath))) return false;
-          if (cardUrl && f.url === cardUrl) return false;
-          return true;
-        });
-        if (filtered.length !== files.length) {
-          localStorage.setItem(key, JSON.stringify({ ...parsed, files: filtered }));
-        }
-      } catch {
-        // ignore malformed project data
-      }
-    }
+  const vaultMemberFromCard = useCallback((card) => {
+    const noteId = card?.noteId;
+    if (!noteId) return null;
+    return {
+      nodeId: `vault_${noteId}`,
+      label: String(card.title || (card.kind === "quick-note" ? "Quick Note" : "Vault item")).trim() || "Vault item",
+      kind: "vault",
+    };
   }, []);
+
+  const removeCardFromProjects = useCallback(async (card) => {
+    const member = vaultMemberFromCard(card);
+    if (!member) return;
+    const userId = user?.id || null;
+    const list = Array.isArray(projects) && projects.length > 0
+      ? projects
+      : await listUserProjects(userId);
+    const containing = list.filter(
+      (p) => Array.isArray(p.members) && p.members.some((m) => m.nodeId === member.nodeId)
+    );
+    if (containing.length === 0) return;
+    await Promise.all(
+      containing.map((p) => removeNeuronFromProject(userId, p.id, member.nodeId))
+    );
+    invalidateVaultProjects();
+  }, [invalidateVaultProjects, projects, user?.id, vaultMemberFromCard]);
 
   const removeAttachmentFromNote = useCallback(async (card) => {
     if (!user?.id || !card?.noteId) return;
@@ -5986,137 +6023,83 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 
   const addCardToProject = useCallback(async (card, projectId) => {
     if (!card || !projectId) return;
+    const member = vaultMemberFromCard(card);
+    if (!member) {
+      toast({
+        title: "Couldn't add to project",
+        description: "This item isn't linked to a vault note yet.",
+        variant: "destructive",
+      });
+      return;
+    }
     setIsCardActionBusy(true);
     try {
       const project = projects.find((p) => String(p.id) === String(projectId));
       if (!project) return;
-
-      const storageTarget = parseStorageTarget(card.attachment || {});
-      let fileUrl =
-        card.kind === "quick-note"
-          ? `data:text/plain;charset=utf-8,${encodeURIComponent(String(card.excerpt || card.title || "Quick Note"))}`
-          : resolvedAttachmentUrls[card.id] || card.attachment?.url || "";
-      if (card.kind !== "quick-note" && storageTarget?.bucket && storageTarget?.path) {
-        const { data } = await supabase.storage
-          .from(storageTarget.bucket)
-          .createSignedUrl(storageTarget.path, 60 * 60 * 24 * 7);
-        if (data?.signedUrl) fileUrl = data.signedUrl;
-      }
-
-      const kindByType = {
-        image: "image",
-        video: "video",
-        pdf: "pdf",
-        youtube: "link",
-        instagram: "link",
-        tiktok: "link",
-        facebook: "link",
-        "quick-note": "text",
-      };
-      const kind = kindByType[card.type || card.kind] || "file";
-      let parsed = {};
-      try {
-        const raw = localStorage.getItem(`project:${projectId}`);
-        parsed = raw ? JSON.parse(raw) : {};
-      } catch {
-        parsed = {};
-      }
-      const existingFolders = Array.isArray(parsed?.folders) ? parsed.folders : [];
-      const existingFiles = Array.isArray(parsed?.files) ? parsed.files : [];
-      const newFile = {
-        id: crypto.randomUUID(),
-        name: card.title || (card.kind === "quick-note" ? "Quick Note" : "Vault File"),
-        path: storageTarget?.path || fileUrl,
-        folderId: null,
-        kind,
-        url: fileUrl,
-        tags: Array.isArray(card.tags) ? card.tags : [],
-      };
-      const nextFiles = [newFile, ...existingFiles];
-      localStorage.setItem(
-        `project:${projectId}`,
-        JSON.stringify({
-          folders: existingFolders,
-          files: nextFiles,
-          activeFolderId: parsed?.activeFolderId ?? null,
-        })
-      );
+      await addNeuronsToProject(user?.id || null, projectId, [member]);
+      invalidateVaultProjects();
       setOpenCardMenuId(null);
-      // Replaced blocking `window.alert` with a toast — alerts pause the
-      // event loop, can't be dismissed by Esc consistently across browsers,
-      // and look nothing like the rest of the app.
       toast({
         title: "Added to project",
         description: project.name,
       });
+    } catch (err) {
+      if (import.meta.env.DEV) console.error("[Vault] add to project failed:", err);
+      toast({
+        title: "Couldn't add to project",
+        description: "Something went wrong. Please try again.",
+        variant: "destructive",
+      });
     } finally {
       setIsCardActionBusy(false);
     }
-  }, [projects, resolvedAttachmentUrls]);
+  }, [invalidateVaultProjects, projects, user?.id, vaultMemberFromCard]);
 
   const createProjectFromCard = useCallback(async (card) => {
     if (!user?.id || !card) return;
+    const member = vaultMemberFromCard(card);
+    if (!member) {
+      toast({
+        title: "Couldn't create project",
+        description: "This item isn't linked to a vault note yet.",
+        variant: "destructive",
+      });
+      return;
+    }
     setIsCardActionBusy(true);
     try {
       const projectNameBase = String(card.title || "New Project").trim() || "New Project";
       const projectName = projectNameBase.length > 60 ? `${projectNameBase.slice(0, 60)}...` : projectNameBase;
-      const { data: project, error: projectError } = await supabase
-        .from("lykn_chat_projects")
-        .insert({ user_id: user.id, name: projectName })
-        .select("id, name, updated_at")
-        .single();
-      if (projectError || !project?.id) return;
-
-      const storageTarget = parseStorageTarget(card.attachment || {});
-      let fileUrl =
-        card.kind === "quick-note"
-          ? `data:text/plain;charset=utf-8,${encodeURIComponent(String(card.excerpt || card.title || "Quick Note"))}`
-          : resolvedAttachmentUrls[card.id] || card.attachment?.url || "";
-      if (card.kind !== "quick-note" && storageTarget?.bucket && storageTarget?.path) {
-        const { data } = await supabase.storage
-          .from(storageTarget.bucket)
-          .createSignedUrl(storageTarget.path, 60 * 60 * 24 * 7);
-        if (data?.signedUrl) fileUrl = data.signedUrl;
+      const project = await createUserProject(user.id, {
+        name: projectName,
+        members: [member],
+      });
+      if (!project?.id) {
+        toast({
+          title: "Couldn't create project",
+          description: "Something went wrong. Please try again.",
+          variant: "destructive",
+        });
+        return;
       }
 
-      const kindByType = {
-        image: "image",
-        video: "video",
-        pdf: "pdf",
-        youtube: "link",
-        instagram: "link",
-        tiktok: "link",
-        facebook: "link",
-        "quick-note": "text",
-      };
-      const kind = kindByType[card.type || card.kind] || "file";
-      const newFile = {
-        id: crypto.randomUUID(),
-        name: card.title || (card.kind === "quick-note" ? "Quick Note" : "Vault File"),
-        path: storageTarget?.path || fileUrl,
-        folderId: null,
-        kind,
-        url: fileUrl,
-      };
-      localStorage.setItem(
-        `project:${project.id}`,
-        JSON.stringify({
-          folders: [],
-          files: [newFile],
-          activeFolderId: null,
-        })
-      );
-
-      vaultQueryClient.invalidateQueries({ queryKey: ["projects", user?.id] });
+      invalidateVaultProjects();
       setOpenCardMenuId(null);
       toast({
         title: "Project created",
         description: `Added this item to "${project.name}".`,
       });
+    } catch (err) {
+      if (import.meta.env.DEV) console.error("[Vault] create project failed:", err);
+      toast({
+        title: "Couldn't create project",
+        description: "Something went wrong. Please try again.",
+        variant: "destructive",
+      });
     } finally {
       setIsCardActionBusy(false);
     }
-  }, [resolvedAttachmentUrls, user?.id]);
+  }, [invalidateVaultProjects, user?.id, vaultMemberFromCard]);
 
   const addAttachmentNote = useCallback(async (card, textInput) => {
     if (!user?.id || !card?.noteId) return false;
@@ -7041,10 +7024,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                             </span>
                           )}
                           {card.kind === "source-folder" ? (
-                            <SourceFolderTile card={card} heightClass="h-40" />
+                            <SourceFolderTile card={card} heightClass="aspect-square w-full" />
                           ) : card.kind === "attachment" ? (
                             <>
-                              {renderAttachmentCard(card, "h-40")}
+                              {renderAttachmentCard(card, "aspect-square w-full")}
                               {card.tags?.length > 0 && (
                                 <div className="mt-1 flex flex-wrap gap-1 px-1">
                                   {card.tags.map((t) => (
@@ -7070,7 +7053,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                             </>
                           ) : card.kind === "quick-note" ? (
                             <>
-                              <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
+                              <div className="glass-control rounded-2xl p-3 aspect-square w-full overflow-hidden">
                                 <div className="flex items-center gap-1.5 text-black/60 dark:text-white/60 mb-1.5">
                                   {card.noteStyle === "meeting" ? (
                                     <CalendarDays className="w-3.5 h-3.5" />
@@ -7104,7 +7087,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                             </>
                           ) : (
                             <>
-                              <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
+                              <div className="glass-control rounded-2xl p-3 aspect-square w-full overflow-hidden">
                                 <h3 className="text-xs font-semibold text-black/80 dark:text-white/80 truncate mb-1">{card.title}</h3>
                                 {card.question && <p className="text-[0.6875rem] text-black/60 dark:text-white/60 line-clamp-3">{card.question}</p>}
                               </div>
@@ -7199,7 +7182,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                             )}
                             {card.kind === "attachment" ? (
                               <>
-                                {renderAttachmentCard(card, "h-40")}
+                                {renderAttachmentCard(card, "aspect-square w-full")}
                                 <div className="mt-1 flex justify-end px-1">
                                   <button
                                     type="button"
@@ -7218,7 +7201,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                               </>
                             ) : card.kind === "quick-note" ? (
                               <>
-                                <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
+                                <div className="glass-control rounded-2xl p-3 aspect-square w-full overflow-hidden">
                                   <div className="flex items-center gap-1.5 text-black/60 dark:text-white/60 mb-1.5">
                                     {card.noteStyle === "meeting" ? (
                                       <CalendarDays className="w-3.5 h-3.5" />
@@ -7252,7 +7235,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                               </>
                             ) : (
                               <>
-                                <div className="glass-control rounded-2xl p-3 h-40 overflow-hidden">
+                                <div className="glass-control rounded-2xl p-3 aspect-square w-full overflow-hidden">
                                   <h3 className="text-xs font-semibold text-black/80 dark:text-white/80 truncate mb-1">{card.title}</h3>
                                   {card.question && <p className="text-[0.6875rem] text-black/60 dark:text-white/60 line-clamp-3">{card.question}</p>}
                                 </div>
@@ -7710,7 +7693,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                       }}
                       className="w-full text-left rounded-md px-2 py-2 text-xs hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 flex items-center gap-2"
                     >
-                      <MessageSquare className="w-3.5 h-3.5" />
+                      <MessageCircle className="w-3.5 h-3.5" />
                       Comment
                     </button>
                   </>
@@ -7964,7 +7947,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             <div
               ref={tagPickerRef}
               data-vault-popover=""
-              className="rounded-2xl glass-control border border-white/16 dark:border-white/8 bg-white/22 dark:bg-white/8 backdrop-blur-md shadow-md p-1.5 overflow-hidden"
+              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-[hsl(var(--sidebar-surface))] dark:bg-[hsl(0_0%_16%)] shadow-lg text-black/80 dark:text-white/90 p-1.5 overflow-hidden"
               style={{ position: "fixed", width: menuW, left, top, zIndex: 10000 }}
               onMouseDown={(e) => e.stopPropagation()}
             >
@@ -8342,40 +8325,36 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                 className="relative w-[min(1100px,96vw)] max-h-[90vh] flex flex-col"
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* Minimal floating controls: one Details dropdown + a little X. */}
-                <div className="flex items-center justify-between gap-2 mb-2">
+                {/* Minimal floating controls: one Details toggle + close. */}
+                <div className="flex items-center justify-between gap-3 mb-2">
                   {hasDetails ? (
                     <button
                       type="button"
                       onClick={() => setPreviewDetailsOpen((v) => !v)}
                       aria-expanded={previewDetailsOpen}
-                      className="inline-flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-full bg-white/90 dark:bg-white/10 backdrop-blur border border-black/10 dark:border-white/15 text-[0.75rem] font-medium text-black/65 dark:text-white/75 hover:bg-white dark:hover:bg-white/15 shadow-sm transition-colors"
+                      className="inline-flex items-center gap-1.5 text-sm font-medium text-white/85 hover:text-white transition-colors max-w-[min(20rem,70vw)]"
                     >
-                      <Info className="w-3.5 h-3.5" />
-                      <span className="max-w-[16rem] truncate">{title}</span>
-                      <ChevronDown className={`w-3.5 h-3.5 transition-transform ${previewDetailsOpen ? "rotate-180" : ""}`} />
+                      <span className="truncate">{title}</span>
+                      <ChevronDown className={`w-3.5 h-3.5 shrink-0 opacity-70 transition-transform ${previewDetailsOpen ? "rotate-180" : ""}`} />
                     </button>
                   ) : (
-                    <span className="text-[0.78rem] font-medium text-white/85 px-1 max-w-[18rem] truncate drop-shadow">{title}</span>
+                    <span className="text-sm font-medium text-white/85 px-0 max-w-[18rem] truncate drop-shadow">{title}</span>
                   )}
                   <button
                     type="button"
                     onClick={() => setPreviewCard(null)}
-                    className="rounded-full w-9 h-9 flex items-center justify-center bg-white/90 dark:bg-white/10 backdrop-blur border border-black/10 dark:border-white/15 text-black/60 dark:text-white/70 hover:bg-white dark:hover:bg-white/15 shadow-sm transition-colors"
+                    className="text-sm font-medium text-white/70 hover:text-white transition-colors"
                     title="Close (Esc)"
                   >
-                    <X className="w-4 h-4" />
+                    Close
                   </button>
                 </div>
 
-                {/* Details dropdown — description, notes/comments, tags, date. */}
+                {/* Details — description, why, notes, tags, date. */}
                 {previewDetailsOpen && hasDetails && (
-                  <div className="mb-2 rounded-2xl border border-white/30 dark:border-white/10 bg-white/90 dark:bg-neutral-900/95 backdrop-blur-md shadow-2xl px-4 py-3.5 max-h-[42vh] overflow-y-auto space-y-3">
+                  <div className="mb-3 bg-white dark:bg-[#1e1e1e] border border-black/10 dark:border-white/10 px-4 py-3.5 max-h-[42vh] overflow-y-auto space-y-4">
                     {card.dateLabel && (
-                      <div className="flex items-center gap-1 text-[0.6875rem] text-black/50 dark:text-white/50">
-                        <Clock className="w-3 h-3" />
-                        <span>{card.dateLabel}</span>
-                      </div>
+                      <p className="text-xs text-black/45 dark:text-white/45">{card.dateLabel}</p>
                     )}
                     {canEditWhy ? (
                       <WhyEditor
@@ -8384,38 +8363,31 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         onSave={(value) => saveCardWhy(card, value)}
                       />
                     ) : previewWhy ? (
-                      <div className="rounded-xl bg-amber-500/[0.07] dark:bg-amber-400/[0.08] border border-amber-500/20 dark:border-amber-400/15 px-4 py-3">
-                        <div className="text-[0.625rem] uppercase tracking-wide text-amber-700/70 dark:text-amber-300/70 mb-1">Why I saved this</div>
-                        <p className="text-sm text-black/80 dark:text-white/85 whitespace-pre-wrap break-words">{previewWhy}</p>
+                      <div className="space-y-1">
+                        <p className="text-xs text-black/45 dark:text-white/45">Why I saved this</p>
+                        <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{previewWhy}</p>
                       </div>
                     ) : null}
                     {previewDescription && (
-                      <div className="rounded-xl bg-white/40 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3">
-                        <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45 mb-1">Description</div>
+                      <div className="space-y-1">
+                        <p className="text-xs text-black/45 dark:text-white/45">Description</p>
                         <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{String(previewDescription)}</p>
                       </div>
                     )}
                     {allComments.length > 0 && (
                       <div className="space-y-2">
-                        <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45">Notes</div>
+                        <p className="text-xs text-black/45 dark:text-white/45">Notes</p>
                         {allComments.map((n) => (
-                          <div key={n.id} className="rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2">
-                            <p className="text-xs text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{n.text}</p>
-                          </div>
+                          <p key={n.id} className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">
+                            {n.text}
+                          </p>
                         ))}
                       </div>
                     )}
                     {cardTags.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {cardTags.map((t) => (
-                          <span
-                            key={t}
-                            className="inline-flex items-center rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-300 text-[0.6875rem] leading-none px-2.5 py-1 font-medium"
-                          >
-                            {t}
-                          </span>
-                        ))}
-                      </div>
+                      <p className="text-xs text-black/45 dark:text-white/45">
+                        {cardTags.join(" · ")}
+                      </p>
                     )}
                   </div>
                 )}
@@ -8550,7 +8522,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 // centered, name underneath, item count badge in the corner — so the user
 // recognizes it at a glance rather than parsing it as a Finder-style
 // folder. Tapping it opens a per-connector subview of the vault grid.
-function SourceFolderTile({ card, heightClass = "h-44" }) {
+function SourceFolderTile({ card, heightClass = "aspect-square w-full" }) {
   const itemLabel = card.count === 1 ? "1 item" : `${card.count} items`;
   return (
     <div

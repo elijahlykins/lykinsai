@@ -24301,6 +24301,10 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
 });
 
 // ── /api/billing/portal (manage subscription / cards / invoices) ────────────
+// Optional body.flow:
+//   • 'cancel' — deep-link into Stripe's subscription_cancel portal flow so
+//     Settings / Billing "Cancel subscription" lands on the cancel confirm
+//     screen instead of the generic portal home.
 app.post('/api/billing/portal', requireAuth, async (req, res) => {
   try {
     if (!stripeConfigured()) return res.status(503).json({ error: 'Stripe not configured' });
@@ -24309,10 +24313,26 @@ app.post('/api/billing/portal', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'no_customer', message: 'No Stripe customer yet.' });
     }
     const appUrl = appUrlFromReq(req);
-    const portal = await stripe.billingPortal.sessions.create({
+    const flow = String(req.body?.flow || '').toLowerCase();
+    const sessionParams = {
       customer: row.stripe_customer_id,
       return_url: `${appUrl}/billing`,
-    });
+    };
+    if (flow === 'cancel') {
+      if (!row.stripe_subscription_id || !hasSubscriptionAccess(row)) {
+        return res.status(400).json({
+          error: 'no_active_subscription',
+          message: 'No active subscription to cancel.',
+        });
+      }
+      sessionParams.flow_data = {
+        type: 'subscription_cancel',
+        subscription_cancel: {
+          subscription: row.stripe_subscription_id,
+        },
+      };
+    }
+    const portal = await stripe.billingPortal.sessions.create(sessionParams);
     return res.json({ url: portal.url });
   } catch (err) {
     console.error('❌ /api/billing/portal error:', err);

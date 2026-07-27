@@ -14,6 +14,7 @@
         --card: rgba(255, 255, 255, 0.05);
         --border: rgba(255, 255, 255, 0.12);
         --ok: #6ee7b7;
+        --warn: #fbbf24;
       }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; }
@@ -22,16 +23,17 @@
         color: var(--text);
         font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         -webkit-font-smoothing: antialiased;
-        padding: 28px 24px 24px;
+        padding: 22px 22px 20px;
         display: flex;
         flex-direction: column;
         align-items: stretch;
         user-select: none;
+        overflow: auto;
       }
-      .brand { text-align: center; margin-bottom: 16px; }
+      .brand { text-align: center; margin-bottom: 12px; }
       .logo {
         display: block;
-        width: 140px;
+        width: 128px;
         height: auto;
         margin: 0 auto;
       }
@@ -43,7 +45,7 @@
         text-align: center;
       }
       .tagline {
-        margin: 0 0 18px;
+        margin: 0 0 14px;
         font-size: 12.5px;
         line-height: 1.5;
         color: var(--muted);
@@ -84,9 +86,16 @@
         cursor: pointer;
       }
       button.secondary:hover { color: var(--text); background: var(--card); }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .row button.secondary { margin-top: 0; }
       .steps {
         display: none;
-        margin-top: 16px;
+        margin-top: 14px;
         text-align: left;
         border: 1px solid var(--border);
         background: var(--card);
@@ -108,18 +117,45 @@
         color: var(--text);
       }
       .steps li {
-        margin: 0 0 7px;
+        margin: 0 0 8px;
         font-size: 12.5px;
-        line-height: 1.4;
+        line-height: 1.45;
       }
       .steps li:last-child { margin-bottom: 0; }
-      .path {
+      .callout {
         margin-top: 10px;
+        padding: 9px 10px;
+        border-radius: 10px;
+        border: 1px solid rgba(251, 191, 36, 0.35);
+        background: rgba(251, 191, 36, 0.08);
+        color: var(--warn);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .callout strong { color: #fde68a; }
+      .path-box {
+        margin-top: 10px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.35);
+      }
+      .path-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .path {
         font-size: 10.5px;
         line-height: 1.35;
-        color: var(--muted);
+        color: var(--text);
         word-break: break-all;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        user-select: text;
+        cursor: text;
       }
       .status {
         margin-top: 12px;
@@ -144,40 +180,58 @@
         class="logo"
         src="./resources/lykn-logo-primary-blue.png"
         alt="LYKN"
-        width="140"
-        height="42"
+        width="128"
+        height="38"
       />
     </div>
 
     <h1>Chrome Live Feed</h1>
     <p class="tagline" id="intro">
-      Lets LYKN read your active Chrome tab when Live Screen Watch is on.
-      <strong>You stay in control — nothing streams until you turn watch on.</strong>
+      One-time setup so LYKN can read text from your <strong>active Chrome tab</strong>
+      while Live Screen Watch is on. Nothing streams until watch is on.
     </p>
 
     <button id="install" class="install" type="button">Add Chrome Live Feed</button>
-    <button id="reveal" class="secondary" type="button" hidden>Show extension folder again</button>
 
     <div class="steps" id="steps">
       <div class="steps-title">Finish in Chrome (one time)</div>
       <ol>
-        <li>Chrome opened to <strong>Extensions</strong> — that’s the page with your installed add-ons.</li>
-        <li>Turn on <strong>Developer mode</strong> (top-right toggle).</li>
+        <li>In Chrome, turn on <strong>Developer mode</strong> (top-right).</li>
         <li>Click <strong>Load unpacked</strong>.</li>
-        <li>Select the folder we opened in Finder (path below — already copied).</li>
+        <li>
+          In the file picker press <strong>⌘⇧G</strong> (Go to Folder), paste
+          (<strong>⌘V</strong>), press Return, then choose the
+          <strong>save-to-lykn</strong> folder and click <strong>Select</strong>.
+        </li>
+        <li>You should see <strong>LYKN Chrome Live Feed</strong> in your extensions list.</li>
       </ol>
-      <div class="path" id="path"></div>
+      <div class="callout">
+        The folder is <strong>not</strong> on your Desktop — it’s in a hidden
+        Application Support directory. Use ⌘⇧G + paste, or click
+        <strong>Show folder in Finder</strong> below.
+      </div>
+      <div class="path-box">
+        <div class="path-label">Folder to select (copied)</div>
+        <div class="path" id="path"></div>
+      </div>
+      <div class="row">
+        <button id="reveal" class="secondary" type="button">Show folder in Finder</button>
+        <button id="copy" class="secondary" type="button">Copy path again</button>
+      </div>
+      <button id="reopen" class="secondary" type="button">Open Chrome Extensions again</button>
     </div>
 
     <div class="status" id="status"></div>
     <p class="hint" id="hint" hidden>
-      When it’s loaded, leave this window open — it closes automatically once LYKN sees the feed.
+      Leave this window open — it closes automatically once LYKN sees the feed.
     </p>
 
     <script>
       const api = window.lyknExtensionInstall;
       const installBtn = document.getElementById("install");
       const revealBtn = document.getElementById("reveal");
+      const copyBtn = document.getElementById("copy");
+      const reopenBtn = document.getElementById("reopen");
       const stepsEl = document.getElementById("steps");
       const pathEl = document.getElementById("path");
       const statusEl = document.getElementById("status");
@@ -190,7 +244,6 @@
         if (lastPath) {
           pathEl.textContent = lastPath;
           stepsEl.classList.add("show");
-          revealBtn.hidden = false;
           hintEl.hidden = false;
         }
         const browser = browserName || "Chrome";
@@ -215,7 +268,7 @@
         installing = true;
         installBtn.disabled = true;
         statusEl.className = "status";
-        statusEl.textContent = "Preparing extension…";
+        statusEl.textContent = "Preparing extension + opening Finder…";
         try {
           const result = await api.installOneClick("chrome");
           if (result?.ok && result.mode === "store") {
@@ -239,9 +292,37 @@
       }
 
       installBtn.addEventListener("click", runInstall);
-      revealBtn.addEventListener("click", () => {
-        // Re-run install: re-copies, re-opens Extensions + Finder with the same path.
-        void runInstall();
+      reopenBtn.addEventListener("click", () => { void runInstall(); });
+      revealBtn.addEventListener("click", async () => {
+        statusEl.className = "status";
+        statusEl.textContent = "Opening Finder…";
+        try {
+          const result = await api.revealFolder();
+          if (result?.path) {
+            lastPath = result.path;
+            pathEl.textContent = lastPath;
+            stepsEl.classList.add("show");
+            hintEl.hidden = false;
+          }
+          statusEl.textContent = result?.ok
+            ? "Finder opened on save-to-lykn — select that folder in Chrome."
+            : (result?.error || "Couldn’t open Finder.");
+        } catch (_) {
+          statusEl.textContent = "Couldn’t open Finder.";
+        }
+      });
+      copyBtn.addEventListener("click", async () => {
+        try {
+          const result = await api.copyPath();
+          if (result?.path) {
+            lastPath = result.path;
+            pathEl.textContent = lastPath;
+            statusEl.className = "status";
+            statusEl.textContent = "Path copied — in Chrome’s picker press ⌘⇧G, then ⌘V.";
+          }
+        } catch (_) {
+          statusEl.textContent = "Couldn’t copy path.";
+        }
       });
       setInterval(refreshConn, 2000);
       refreshConn();
