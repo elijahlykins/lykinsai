@@ -457,6 +457,9 @@ function flushPendingAuthTokens() {
   if (wc.isLoading()) return; // did-finish-load will re-flush
   wc.send("lykn:auth-tokens", pendingAuthTokens);
   pendingAuthTokens = null;
+  // Tokens reached the renderer — consume the one-time desktop_state so a
+  // later unrelated lykn://auth can't replay the handoff.
+  clearDesktopAuthState();
 }
 
 function handleAuthDeepLink(rawUrl) {
@@ -480,10 +483,17 @@ function handleAuthDeepLink(rawUrl) {
   const expected = loadDesktopAuthState();
   if (!expected?.state || !state || expected.state !== state) {
     console.warn("[auth] lykn://auth rejected — missing or mismatched desktop_state");
+    // Still raise the app so the user isn't left staring at a dead browser tab
+    // when Launch Services delivered the link to us but state was already used.
+    if (app.isReady() && mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
     return;
   }
-  clearDesktopAuthState();
-
+  // Keep desktop_state until tokens are delivered to the renderer so a second
+  // "Open LYKN" click still works if the browser swallowed the first navigation.
   pendingAuthTokens = { access_token, refresh_token };
   // Cold start via the deep link: open-url can fire before whenReady, and
   // BrowserWindow can't be created yet. whenReady's createMainWindow (deep-link
@@ -493,13 +503,6 @@ function handleAuthDeepLink(rawUrl) {
     createMainWindow(); // flushes on did-finish-load
   } else {
     if (mainWindow.isMinimized()) mainWindow.restore();
-    if (typeof mainWindow.moveTop === "function") {
-      try {
-        mainWindow.moveTop();
-      } catch (_) {
-        /* best-effort */
-      }
-    }
     mainWindow.show();
     mainWindow.focus();
     flushPendingAuthTokens();
@@ -509,9 +512,6 @@ function handleAuthDeepLink(rawUrl) {
   } catch (_) {
     /* focus is best-effort */
   }
-  // Keep claiming the scheme after a successful handoff so the next
-  // "Open LYKN" still targets this install.
-  claimLyknProtocol();
 }
 
 // macOS delivers custom-scheme URLs here (both cold start and while running).
@@ -569,17 +569,14 @@ function preferPackagedLyknUrlHandler() {
     /* best-effort */
   }
   // setAsDefaultProtocolClient only binds the *current* process bundle, so from
-  // unpackaged Electron we set ai.lykn.desktop via a tiny Swift helper.
-  const helper = path.join(__dirname, "set-url-handler.swift");
+  // unpackaged Electron we must set ai.lykn.desktop explicitly.
+  const swift = [
+    "import CoreServices",
+    `let s = LSSetDefaultHandlerForURLScheme("${LYKN_PROTOCOL}" as CFString, "${LYKN_BUNDLE_ID}" as CFString)`,
+    "exit(s == noErr ? 0 : 1)",
+  ].join("\n");
   try {
-    if (fsSync.existsSync(helper)) {
-      execFile(
-        "swift",
-        [helper, LYKN_PROTOCOL, LYKN_BUNDLE_ID],
-        { timeout: 30000 },
-        () => {},
-      );
-    }
+    execFile("swift", ["-e", swift], { timeout: 20000 }, () => {});
   } catch {
     /* best-effort — lsregister alone may still be enough */
   }
@@ -6904,10 +6901,6 @@ function registerOverlayIpc() {
         (parsed.pathname === "/desktop-auth" || parsed.pathname.endsWith("/desktop-auth")) &&
         (parsed.origin === APP_ORIGIN || parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")
       ) {
-        // Re-claim lykn:// so "Open LYKN" returns to THIS running install
-        // (the one that minted desktop_state), not a stale Launch Services
-        // binding from an older/side-by-side copy.
-        claimLyknProtocol();
         target = mintDesktopAuthUrl(parsed.toString());
       }
     } catch {

@@ -90,7 +90,6 @@ export default function DesktopAuth() {
   const [phase, setPhase] = useState("boot");
   const [errorMsg, setErrorMsg] = useState(null);
   const startedRef = useRef(false);
-  const handedOffRef = useRef(false);
 
   const oauthError = (() => {
     if (typeof window === "undefined") return null;
@@ -126,6 +125,7 @@ export default function DesktopAuth() {
   };
 
   const openApp = async () => {
+    setErrorMsg(null);
     const { data } = await supabase.auth.getSession();
     const session = data?.session;
     if (!session?.access_token || !session?.refresh_token) {
@@ -135,17 +135,18 @@ export default function DesktopAuth() {
     }
     if (!readDesktopState()) {
       setErrorMsg(
-        "Open Google sign-in from the LYKN desktop app (not this browser tab alone) so the handoff can be verified.",
+        "Open Google sign-in from the LYKN Mac app (Continue with Google there), then use Open LYKN here.",
       );
       setPhase("error");
       return;
     }
+    // Must run from a real click — browsers block lykn:// without a user gesture,
+    // which is why auto-handoff looked like "works the second time".
     navigateToDeepLink(buildDeepLink(session));
   };
 
   const switchAccount = async () => {
     startedRef.current = true;
-    handedOffRef.current = false;
     setPhase("starting");
     const desktopState = readDesktopState();
     // New boot marker so the post-Google return is treated as a fresh OAuth
@@ -170,13 +171,8 @@ export default function DesktopAuth() {
 
     if (startedRef.current) {
       // Effect re-ran after signOut cleared `user` mid-boot — wait for OAuth return.
-      if (user) {
-        setPhase("handoff");
-        if (!handedOffRef.current) {
-          handedOffRef.current = true;
-          openApp();
-        }
-      }
+      // Do NOT auto-open lykn:// here; wait for the Open LYKN click.
+      if (user) setPhase("handoff");
       return;
     }
     startedRef.current = true;
@@ -192,11 +188,18 @@ export default function DesktopAuth() {
       if (returningFromGoogle) {
         if (user) {
           setPhase("handoff");
-          if (!handedOffRef.current) {
-            handedOffRef.current = true;
-            openApp();
-          }
           return;
+        }
+        // Session can lag a tick behind INITIAL_SESSION on some browsers —
+        // confirm with getSession before declaring failure.
+        try {
+          const { data } = await supabase.auth.getSession();
+          if (data?.session?.user) {
+            setPhase("handoff");
+            return;
+          }
+        } catch {
+          /* fall through */
         }
         // Marker set but auth finished with no session — offer retry instead
         // of silently clearing again (that caused the "second try" loop).
@@ -262,8 +265,8 @@ export default function DesktopAuth() {
                   You&apos;re signed in{user?.email ? ` as ${user.email}` : ""}
                 </h1>
                 <p className="mt-2 text-sm text-slate-500">
-                  Click below to finish in the LYKN Mac app you started from.
-                  You can close this tab afterwards.
+                  Click <span className="font-medium text-slate-700">Open LYKN</span> to
+                  return to the Mac app you signed in from. You can close this tab afterwards.
                 </p>
                 <button
                   type="button"
