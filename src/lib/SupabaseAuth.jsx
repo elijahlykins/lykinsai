@@ -227,9 +227,19 @@ export function SupabaseAuthProvider({ children }) {
     const redirectTo =
       opts.redirectTo ||
       (typeof window !== 'undefined' ? window.location.href : window.location?.origin ?? '');
+    // `queryParams.prompt=select_account` forces Google's account chooser —
+    // required for desktop switch-account (browser SSO otherwise silently
+    // re-auths the previous Google user after Mac-app sign-out).
+    const queryParams =
+      opts.queryParams && typeof opts.queryParams === 'object'
+        ? opts.queryParams
+        : undefined;
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider,
-      options: { redirectTo },
+      options: {
+        redirectTo,
+        ...(queryParams ? { queryParams } : {}),
+      },
     });
     if (error) {
       setAuthError("Sign-in failed. Please try again later.");

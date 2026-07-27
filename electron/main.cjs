@@ -493,6 +493,13 @@ function handleAuthDeepLink(rawUrl) {
     createMainWindow(); // flushes on did-finish-load
   } else {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    if (typeof mainWindow.moveTop === "function") {
+      try {
+        mainWindow.moveTop();
+      } catch (_) {
+        /* best-effort */
+      }
+    }
     mainWindow.show();
     mainWindow.focus();
     flushPendingAuthTokens();
@@ -502,9 +509,14 @@ function handleAuthDeepLink(rawUrl) {
   } catch (_) {
     /* focus is best-effort */
   }
+  // Keep claiming the scheme after a successful handoff so the next
+  // "Open LYKN" still targets this install.
+  claimLyknProtocol();
 }
 
 // macOS delivers custom-scheme URLs here (both cold start and while running).
+// Register synchronously at startup (not inside whenReady) so cold-start
+// lykn://auth opens aren't missed.
 app.on("open-url", (event, url) => {
   event.preventDefault();
   handleAuthDeepLink(url);
@@ -521,6 +533,96 @@ function findLyknUrlInArgv(argv) {
 {
   const cold = findLyknUrlInArgv(process.argv);
   if (cold) handleAuthDeepLink(cold);
+}
+
+const LYKN_PROTOCOL = "lykn";
+const LYKN_BUNDLE_ID = "ai.lykn.desktop";
+
+function findPackagedLyknApp() {
+  const candidates = [
+    "/Applications/LYKN.app",
+    path.join(__dirname, "../release/mac-universal/LYKN.app"),
+    path.join(__dirname, "../release/mac/LYKN.app"),
+    path.join(__dirname, "../release/mac-arm64/LYKN.app"),
+    path.join(__dirname, "../release/mac-x64/LYKN.app"),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fsSync.existsSync(p)) return p;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+/** Best-effort: make Launch Services prefer LYKN.app for lykn:// (macOS). */
+function preferPackagedLyknUrlHandler() {
+  if (!IS_MAC) return;
+  const packaged = findPackagedLyknApp();
+  if (!packaged) return;
+  const lsregister =
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+  try {
+    execFile(lsregister, ["-f", packaged], { timeout: 10000 }, () => {});
+  } catch {
+    /* best-effort */
+  }
+  // setAsDefaultProtocolClient only binds the *current* process bundle, so from
+  // unpackaged Electron we set ai.lykn.desktop via a tiny Swift helper.
+  const helper = path.join(__dirname, "set-url-handler.swift");
+  try {
+    if (fsSync.existsSync(helper)) {
+      execFile(
+        "swift",
+        [helper, LYKN_PROTOCOL, LYKN_BUNDLE_ID],
+        { timeout: 30000 },
+        () => {},
+      );
+    }
+  } catch {
+    /* best-effort — lsregister alone may still be enough */
+  }
+}
+
+// Claim lykn:// for desktop OAuth return. Packaged builds also declare the
+// scheme via electron-builder "protocols".
+//
+// CRITICAL (macOS + unpackaged): never call setAsDefaultProtocolClient here.
+// It registers node_modules Electron.app (com.github.Electron), Launch Services
+// relaunches that binary with no main script, and the user sees Electron's
+// default "path-to-app" page instead of LYKN. Same reason we refuse to register
+// login items while unpackaged.
+function claimLyknProtocol() {
+  try {
+    if (app.isPackaged) {
+      app.setAsDefaultProtocolClient(LYKN_PROTOCOL);
+      return;
+    }
+
+    if (IS_MAC) {
+      try {
+        if (app.isDefaultProtocolClient(LYKN_PROTOCOL)) {
+          app.removeAsDefaultProtocolClient(LYKN_PROTOCOL);
+        }
+      } catch {
+        /* ignore */
+      }
+      preferPackagedLyknUrlHandler();
+      return;
+    }
+
+    // Windows/Linux honor execPath + argv, so deep links relaunch this project.
+    if (process.defaultApp && process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(LYKN_PROTOCOL, process.execPath, [
+        path.resolve(process.argv[1]),
+      ]);
+      return;
+    }
+    app.setAsDefaultProtocolClient(LYKN_PROTOCOL);
+  } catch {
+    /* registration is best-effort */
+  }
 }
 
 /** @type {BrowserWindow | null} */
@@ -6802,6 +6904,10 @@ function registerOverlayIpc() {
         (parsed.pathname === "/desktop-auth" || parsed.pathname.endsWith("/desktop-auth")) &&
         (parsed.origin === APP_ORIGIN || parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")
       ) {
+        // Re-claim lykn:// so "Open LYKN" returns to THIS running install
+        // (the one that minted desktop_state), not a stale Launch Services
+        // binding from an older/side-by-side copy.
+        claimLyknProtocol();
         target = mintDesktopAuthUrl(parsed.toString());
       }
     } catch {
@@ -7977,21 +8083,7 @@ function initAutoUpdate() {
     : `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ` +
       `(KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`;
 
-  // Claim the lykn:// scheme so the browser-based Google sign-in can deep-link
-  // the session back into the app. Packaged builds also declare the scheme via
-  // electron-builder "protocols". On Windows in dev we must pass the script
-  // path so the protocol handler relaunches this project, not bare Electron.
-  try {
-    if (process.defaultApp && process.argv.length >= 2) {
-      app.setAsDefaultProtocolClient("lykn", process.execPath, [
-        path.resolve(process.argv[1]),
-      ]);
-    } else {
-      app.setAsDefaultProtocolClient("lykn");
-    }
-  } catch (_) {
-    /* registration is best-effort */
-  }
+  claimLyknProtocol();
 
   installPermissionHandler();
   setupSystemAudioCapture();

@@ -139,7 +139,10 @@ export default function OAuthConsent() {
     try {
       const returnTo = window.location.href;
       await supabase.auth.signOut();
-      signInWithOAuth?.("google", { redirectTo: returnTo });
+      signInWithOAuth?.("google", {
+        redirectTo: returnTo,
+        queryParams: { prompt: "select_account" },
+      });
     } catch (err) {
       setError(toUserFacingError(err));
       setSwitching(false);

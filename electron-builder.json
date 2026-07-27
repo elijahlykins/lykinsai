@@ -69,7 +69,8 @@
     "extendInfo": {
       "NSMicrophoneUsageDescription": "LYKN uses your microphone for voice conversations.",
       "NSCameraUsageDescription": "LYKN may use your camera for visual context.",
-      "NSScreenCaptureUsageDescription": "LYKN reads what's on your screen when you ask it to, so it can give feedback and take notes."
+      "NSScreenCaptureUsageDescription": "LYKN reads what's on your screen when you ask it to, so it can give feedback and take notes.",
+      "LSMultipleInstancesProhibited": true
     }
   },
   "dmg": {
