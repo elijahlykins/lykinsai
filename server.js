@@ -16,6 +16,7 @@ import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
 import Stripe from 'stripe';
+import { createEmailSignupHandlers } from './lib/auth/emailSignup.js';
 import {
   answerVideoQuestion,
   clearCacheForVideo,
@@ -22631,6 +22632,72 @@ async function findAuthUserByEmail(email) {
   }
   return null;
 }
+
+// ============================================
+// EMAIL / PASSWORD SIGNUP — 6-digit code verify
+// ============================================
+// Replaces Supabase's default confirmation-link email for password signup.
+// Creates an unconfirmed auth user, emails a 5-minute code via Resend, and
+// confirms the account when the Mac app /login screen verifies the code.
+const emailSignupHandlers = createEmailSignupHandlers({
+  supabaseAdmin,
+  resendClient,
+  findAuthUserByEmail,
+  fromAddress: process.env.RESEND_FROM_EMAIL || 'LYKN <feedback@lykn.io>',
+});
+
+const signupStartSchema = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(6).max(200),
+  name: z.string().max(120).optional(),
+});
+const signupEmailOnlySchema = z.object({
+  email: z.string().email().max(320),
+});
+const signupVerifySchema = z.object({
+  email: z.string().email().max(320),
+  code: z.string().min(4).max(12),
+});
+
+app.post('/api/auth/signup-start', authLimiter, validate(signupStartSchema), async (req, res) => {
+  try {
+    const result = await emailSignupHandlers.startSignup({
+      email: req.body.email,
+      password: req.body.password,
+      name: req.body.name,
+    });
+    if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error });
+    return res.json({ ok: true, email: result.email, expiresAt: result.expiresAt });
+  } catch (err) {
+    console.error('❌ signup-start:', err?.message || err);
+    return res.status(500).json({ ok: false, error: 'Could not start signup.' });
+  }
+});
+
+app.post('/api/auth/signup-resend', authLimiter, validate(signupEmailOnlySchema), async (req, res) => {
+  try {
+    const result = await emailSignupHandlers.resendSignupCode({ email: req.body.email });
+    if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error });
+    return res.json({ ok: true, email: result.email, expiresAt: result.expiresAt });
+  } catch (err) {
+    console.error('❌ signup-resend:', err?.message || err);
+    return res.status(500).json({ ok: false, error: 'Could not resend code.' });
+  }
+});
+
+app.post('/api/auth/signup-verify', authLimiter, validate(signupVerifySchema), async (req, res) => {
+  try {
+    const result = await emailSignupHandlers.verifySignupCode({
+      email: req.body.email,
+      code: req.body.code,
+    });
+    if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error });
+    return res.json({ ok: true, email: result.email });
+  } catch (err) {
+    console.error('❌ signup-verify:', err?.message || err);
+    return res.status(500).json({ ok: false, error: 'Could not verify code.' });
+  }
+});
 
 const projectInviteSchema = z.object({
   project_id: z.string().uuid(),

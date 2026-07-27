@@ -315,23 +315,14 @@ async function installExtensionOneClick(
     await launchBrowserWithExtension(picked, extPath);
   }
 
+  // Open Chrome's Extensions page + reveal the folder. Guided steps live in
+  // the LYKN install window — a second OS dialog here felt like a random
+  // "weird screen" on top of chrome://extensions.
   await openExtensionsPage(picked);
-  shell.showItemInFolder(path.join(extPath, "manifest.json"));
-
-  if (dialog) {
-    const folderLabel = IS_WIN ? "File Explorer" : IS_MAC ? "Finder" : "your file manager";
-    await dialog.showMessageBox({
-      type: "info",
-      buttons: ["OK"],
-      defaultId: 0,
-      title: "Load LYKN Chrome Live Feed",
-      message: `In ${picked.name}, load the extension folder from ${folderLabel}.`,
-      detail:
-        `1. Turn on Developer mode (top-right on Extensions)\n` +
-        `2. Click Load unpacked\n` +
-        `3. Select the folder that opened in ${folderLabel}\n\n` +
-        `Folder path (copied to clipboard):\n${extPath}`,
-    });
+  try {
+    shell.showItemInFolder(path.join(extPath, "manifest.json"));
+  } catch (e) {
+    console.warn("[extension-install] showItemInFolder:", e?.message || e);
   }
 
   return { ok: true, mode: "manual", path: extPath, browser: picked.name };

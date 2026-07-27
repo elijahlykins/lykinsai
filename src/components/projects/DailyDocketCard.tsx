@@ -217,12 +217,12 @@ export default function DailyDocketCard({
                           key={`ev-${ev.id}`}
                           type="button"
                           onClick={openCalendar}
-                          className="group w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.03] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors"
+                          className="group w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.03] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors text-black/85 dark:text-white/90"
                         >
                           <CalendarClock className="w-3.5 h-3.5 shrink-0 text-blue-500 dark:text-blue-400" />
                           <div className="min-w-0 flex-1">
-                            <div className="text-[0.8rem] text-black/85 dark:text-white/88 truncate">{ev.title}</div>
-                            <div className="text-[0.65rem] text-black/45 dark:text-white/45 flex items-center gap-1 truncate">
+                            <div className="text-[0.8rem] truncate">{ev.title}</div>
+                            <div className="text-[0.65rem] text-black/45 dark:text-white/55 flex items-center gap-1 truncate">
                               <span className="tabular-nums">{eventTime(ev.startsAt, ev.allDay)}</span>
                               {ev.location && (
                                 <>
@@ -239,7 +239,7 @@ export default function DailyDocketCard({
                               )}
                             </div>
                           </div>
-                          <ChevronRight className="w-3.5 h-3.5 shrink-0 text-black/20 dark:text-white/20 group-hover:text-black/40 dark:group-hover:text-white/40" />
+                          <ChevronRight className="w-3.5 h-3.5 shrink-0 text-black/20 dark:text-white/35 group-hover:text-black/40 dark:group-hover:text-white/60" />
                         </button>
                       );
                     })}
@@ -251,17 +251,23 @@ export default function DailyDocketCard({
                           key={`od-${t.id}`}
                           type="button"
                           onClick={() => go(t.projectId)}
-                          className="group w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.03] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors"
+                          className="group w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.03] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors text-black/85 dark:text-white/90"
                         >
                           <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-red-500" />
                           <div className="min-w-0 flex-1">
-                            <div className="text-[0.8rem] text-black/85 dark:text-white/88 truncate">{t.title}</div>
-                            <div className="text-[0.65rem] text-red-600/80 dark:text-red-400/80 truncate">
-                              Overdue{dueLabel(t.dueAt) ? ` · was due ${dueLabel(t.dueAt)}` : ""}
-                              {proj ? ` · ${proj}` : ""}
+                            <div className="text-[0.8rem] truncate">{t.title}</div>
+                            <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
+                              <span className="inline-flex items-center shrink-0 rounded-full px-1.5 py-0.5 text-[0.6rem] font-semibold tracking-wide bg-red-500/15 text-red-700 dark:bg-red-400/20 dark:text-red-100">
+                                Overdue
+                              </span>
+                              <span className="text-[0.65rem] text-black/45 dark:text-white/55 truncate">
+                                {[dueLabel(t.dueAt) ? `was due ${dueLabel(t.dueAt)}` : null, proj]
+                                  .filter(Boolean)
+                                  .join(" · ")}
+                              </span>
                             </div>
                           </div>
-                          <ChevronRight className="w-3.5 h-3.5 shrink-0 text-black/20 dark:text-white/20 group-hover:text-black/40 dark:group-hover:text-white/40" />
+                          <ChevronRight className="w-3.5 h-3.5 shrink-0 text-black/20 dark:text-white/35 group-hover:text-black/40 dark:group-hover:text-white/60" />
                         </button>
                       );
                     })}
@@ -273,18 +279,25 @@ export default function DailyDocketCard({
                           key={`dt-${t.id}`}
                           type="button"
                           onClick={() => go(t.projectId)}
-                          className="group w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.03] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors"
+                          className="group w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.03] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors text-black/85 dark:text-white/90"
                         >
-                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-black/25 dark:text-white/25" />
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-black/25 dark:text-white/40" />
                           <div className="min-w-0 flex-1">
-                            <div className="text-[0.8rem] text-black/85 dark:text-white/88 truncate">{t.title}</div>
-                            <div className="text-[0.65rem] text-black/45 dark:text-white/45 truncate">
-                              Due today
-                              {t.priority === "high" ? " · High priority" : ""}
-                              {proj ? ` · ${proj}` : ""}
+                            <div className="text-[0.8rem] truncate">{t.title}</div>
+                            <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
+                              <span className="inline-flex items-center shrink-0 rounded-full px-1.5 py-0.5 text-[0.6rem] font-semibold tracking-wide bg-amber-500/15 text-amber-800 dark:bg-amber-400/20 dark:text-amber-100">
+                                Due today
+                              </span>
+                              {(t.priority === "high" || proj) && (
+                                <span className="text-[0.65rem] text-black/45 dark:text-white/55 truncate">
+                                  {[t.priority === "high" ? "High priority" : null, proj]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                </span>
+                              )}
                             </div>
                           </div>
-                          <ChevronRight className="w-3.5 h-3.5 shrink-0 text-black/20 dark:text-white/20 group-hover:text-black/40 dark:group-hover:text-white/40" />
+                          <ChevronRight className="w-3.5 h-3.5 shrink-0 text-black/20 dark:text-white/35 group-hover:text-black/40 dark:group-hover:text-white/60" />
                         </button>
                       );
                     })}

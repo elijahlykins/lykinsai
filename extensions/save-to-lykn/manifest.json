@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LYKN Chrome Live Feed",
   "short_name": "LYKN Live Feed",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Save pages to LYKN Vault and stream live page text to the desktop app for cheaper screen watch.",
   "permissions": ["activeTab", "contextMenus", "storage", "scripting"],
   "host_permissions": ["<all_urls>", "http://127.0.0.1/*"],

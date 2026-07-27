@@ -1376,7 +1376,10 @@ async function runGeminiLoop({
 // the model searched the vault but never loaded the results, we load the top
 // hits ourselves and emit the tool_call events so the cards appear.
 
-const AUTO_LOAD_MAX = 6;
+// Keep this small: auto-load is a repair for "model forgot to surface", not
+// a dump of the whole search page. Six unrelated cards under a careful reply
+// is worse than under-surfacing.
+const AUTO_LOAD_MAX = 3;
 
 // View verbs alone are NOT enough ("show me how X works", "I see", "bring
 // it together"). Require an explicit saved/vault cue, or a short yes after
@@ -1389,6 +1392,13 @@ const VAULT_AFFIRMATION_RE =
   /^(?:\s*(?:yes|yep|yeah|yup|ya|sure|ok|okay|k|please|do\s*it|go(?:\s*ahead)?|go\s*for\s*it|sounds?\s*good|that\s*one|those|them|all\s*(?:of\s*)?(?:them|those))\b[\s.,!]*)+$/i;
 const VAULT_SURFACE_OFFER_RE =
   /\b(pull\s*(?:them|those|it|up|in)|bring\s*(?:them|those|it|up|in)|show\s*(?:you|them|those|it)|want\s*me\s*to\s*(?:pull|show|bring|open|load)|i\s*(?:can|could)\s*(?:pull|show|bring)|in\s*(?:your\s*)?vault|saved\s*(?:note|notes|item|items|image|images|file|files))\b/i;
+
+// When the model already listed hits and is WAITING for the user to pick
+// ("let me know which…", "want me to pull any in?"), auto-loading the raw
+// search page dumps unrelated vault cards under an otherwise-correct reply.
+// Skip the repair; the next "yes / the porsche ones" turn still surfaces.
+const ASSISTANT_DEFERRED_SURFACE_RE =
+  /\b(?:let\s+me\s+know\s+if\s+you\s+(?:want|would)|(?:do\s+you\s+want|would\s+you\s+like)\s+me\s+to\s+(?:pull|bring|show|open|load)|want\s+me\s+to\s+(?:pull|bring|show|open|load)|if\s+you(?:'d|\s+would)?\s+like\s+(?:me\s+to\s+)?(?:pull|bring|show|open|load|see)|specify\s+which|which\s+one(?:s)?\s+you\s+(?:want|would|like)|just\s+(?:say|tell)\s+(?:the\s+word|me\s+which)|i\s+(?:can|could)\s+(?:pull|bring|show)\s+(?:them|those|it|any|one))\b/i;
 
 // Words to strip when deriving a search topic from the user's message: the
 // view verbs themselves plus pronouns / filler / vault-domain nouns that
@@ -1464,6 +1474,73 @@ function collectVaultNodeIds(searchHits, into = [], seen = new Set()) {
   return into;
 }
 
+function assistantDeferredVaultSurface(assistantText) {
+  return ASSISTANT_DEFERRED_SURFACE_RE.test(String(assistantText || ''));
+}
+
+function userAskedForImages(userText) {
+  return /\b(?:pics?|pictures?|photos?|images?|imgs?)\b/i.test(String(userText || ''));
+}
+
+/** true / false / null (unknown) — search hits don't carry a media type. */
+function looksLikeImageHit(hit) {
+  const blob = `${hit?.title || ''} ${hit?.snippet || ''} ${hit?.source || ''}`.toLowerCase();
+  if (
+    /\b(image|photo|picture|png|jpe?g|webp|gif|heic|pexels|unsplash|generated image)\b/.test(blob)
+    || /\.(png|jpe?g|webp|gif|heic)\b/.test(blob)
+  ) {
+    return true;
+  }
+  if (/\b(from:|subject:|replied to your post|mailto:)\b/.test(blob)) return false;
+  return null;
+}
+
+/**
+ * Pick which search hits to auto-load.
+ *   1) Prefer hits whose titles the model already named in its reply.
+ *   2) For pic/image asks, drop clear non-images (emails, etc.).
+ *   3) Cap at `max`.
+ */
+function selectAutoLoadHits(hits, { assistantText = '', userText = '', max = AUTO_LOAD_MAX } = {}) {
+  const list = Array.isArray(hits) ? hits.filter((h) => typeof h?.node_id === 'string' && h.node_id.startsWith('vault_')) : [];
+  if (!list.length) return [];
+
+  const text = String(assistantText || '').toLowerCase();
+  const mentioned = [];
+  const rest = [];
+  for (const h of list) {
+    const title = String(h?.title || '').trim();
+    if (!title) {
+      rest.push(h);
+      continue;
+    }
+    // Models usually echo the vault title (or a long filename prefix) when
+    // narrating hits. Match a stable prefix so we only auto-load what they
+    // actually talked about — not the rest of a noisy search page.
+    const needle = title.toLowerCase().slice(0, Math.min(title.length, 48));
+    if (needle.length >= 6 && text.includes(needle)) mentioned.push(h);
+    else rest.push(h);
+  }
+
+  let pool = mentioned.length > 0 ? mentioned : rest;
+
+  if (userAskedForImages(userText)) {
+    const images = pool.filter((h) => looksLikeImageHit(h) === true);
+    const unknown = pool.filter((h) => looksLikeImageHit(h) == null);
+    // When the model named specific titles, keep those even if the heuristic
+    // is unsure; only drop clear non-images from the unmentioned fallback.
+    if (mentioned.length > 0) {
+      pool = pool.filter((h) => looksLikeImageHit(h) !== false);
+    } else if (images.length > 0) {
+      pool = [...images, ...unknown];
+    } else {
+      pool = unknown.length ? unknown : pool;
+    }
+  }
+
+  return pool.slice(0, Math.max(1, max));
+}
+
 /**
  * Make "show me / pull in my saved X" actually render the items as cards,
  * deterministically — independent of whether the model remembered to call
@@ -1477,7 +1554,7 @@ function collectVaultNodeIds(searchHits, into = [], seen = new Set()) {
  * loadNeurons the top hits and emit the tool_call events so the cards appear.
  * Mutates `result.toolCalls`. Best-effort: failures are swallowed.
  */
-async function autoLoadVaultNeuronsIfMissed(opts, result) {
+async function autoLoadVaultNeuronsIfMissed(opts, result, assistantText = '') {
   if (!result || result.reason !== 'stop') return; // only on a clean finish
   if (!opts?.ctx?.userId) return;
 
@@ -1485,6 +1562,11 @@ async function autoLoadVaultNeuronsIfMissed(opts, result) {
   // Critical: do NOT fire on generic "show/see/pull" chat — only when the
   // user clearly wants saved Vault items on screen.
   if (!userAskedToViewSavedItems(userText, opts.priorTurns)) return;
+
+  // Model already asked the user which items to pull in — don't second-guess
+  // with a raw dump of search hits (that's how unrelated Vault cards appear
+  // under an otherwise-correct "here's what I found" reply).
+  if (assistantDeferredVaultSurface(assistantText)) return;
 
   const calls = Array.isArray(result.toolCalls) ? result.toolCalls : [];
   // The model already brought items into view this turn → nothing to repair.
@@ -1496,28 +1578,49 @@ async function autoLoadVaultNeuronsIfMissed(opts, result) {
   if (allowedToolNames && !allowedToolNames.includes('lykn_loadNeurons')) return;
   const toolOpts = allowedToolNames ? { allowedToolNames } : {};
 
-  // 1) Prefer node_ids from a searchVault the model already ran this turn.
-  //    searchVault orders keyword hits first, then semantic by similarity,
-  //    so the natural order is the best order to surface.
-  const nodeIds = [];
-  const seen = new Set();
+  // 1) Prefer hits from a searchVault the model already ran this turn, then
+  //    narrow to titles it narrated (or image-like hits for pic asks).
+  const rawHits = [];
+  const seenHit = new Set();
   for (const c of calls) {
     if (c.name !== 'lykn_searchVault' || c.status !== 'done') continue;
-    collectVaultNodeIds(c.result?.hits, nodeIds, seen);
-    if (nodeIds.length >= AUTO_LOAD_MAX) break;
+    for (const h of c.result?.hits || []) {
+      const id = typeof h?.node_id === 'string' ? h.node_id : '';
+      if (!id.startsWith('vault_') || seenHit.has(id)) continue;
+      seenHit.add(id);
+      rawHits.push(h);
+    }
   }
 
   // 2) The model answered from the injected vault dossier without searching.
   //    Run our own search on the topic in the user's message so the cards
   //    still render. Skip if there's no searchable topic (bare anaphora like
   //    "pull them in" — the prompt guidance handles re-search in that case).
-  if (nodeIds.length === 0) {
+  if (rawHits.length === 0) {
     if (allowedToolNames && !allowedToolNames.includes('lykn_searchVault')) return;
     const query = deriveVaultQuery(userText);
     if (!query) return;
-    const sv = await runChatTool('lykn_searchVault', { query, limit: AUTO_LOAD_MAX }, opts.ctx, toolOpts);
-    collectVaultNodeIds(sv?.payload?.hits, nodeIds, seen);
+    const sv = await runChatTool(
+      'lykn_searchVault',
+      { query, limit: Math.max(AUTO_LOAD_MAX, 8) },
+      opts.ctx,
+      toolOpts,
+    );
+    for (const h of sv?.payload?.hits || []) {
+      const id = typeof h?.node_id === 'string' ? h.node_id : '';
+      if (!id.startsWith('vault_') || seenHit.has(id)) continue;
+      seenHit.add(id);
+      rawHits.push(h);
+    }
   }
+
+  const selected = selectAutoLoadHits(rawHits, {
+    assistantText,
+    userText,
+    max: AUTO_LOAD_MAX,
+  });
+  const nodeIds = [];
+  collectVaultNodeIds(selected, nodeIds);
 
   if (nodeIds.length === 0) return;
 
@@ -1580,11 +1683,28 @@ async function autoLoadVaultNeuronsIfMissed(opts, result) {
  */
 export async function runAgentLoop(opts) {
   const provider = String(opts?.provider || '').toLowerCase();
+  // Capture the streamed assistant prose so the vault auto-load net can
+  // tell "model forgot to surface" apart from "model listed hits and is
+  // waiting for the user to pick which ones".
+  let assistantText = '';
+  const origOnTextChunk = opts?.onTextChunk;
+  const optsWithCapture = {
+    ...opts,
+    onTextChunk: (chunk) => {
+      if (typeof chunk === 'string' && chunk) assistantText += chunk;
+      try {
+        return origOnTextChunk?.(chunk);
+      } catch {
+        /* swallow — same contract as emitNormalized */
+      }
+    },
+  };
+
   let result;
   switch (provider) {
     case 'openai':
       result = await runOpenAiCompatLoop({
-        ...opts,
+        ...optsWithCapture,
         apiKey: opts.env?.OPENAI_API_KEY,
         baseUrl: 'https://api.openai.com/v1',
         providerLabel: 'openai',
@@ -1592,7 +1712,7 @@ export async function runAgentLoop(opts) {
       break;
     case 'grok':
       result = await runOpenAiCompatLoop({
-        ...opts,
+        ...optsWithCapture,
         apiKey: opts.env?.XAI_API_KEY,
         baseUrl: 'https://api.x.ai/v1',
         providerLabel: 'grok',
@@ -1600,13 +1720,13 @@ export async function runAgentLoop(opts) {
       break;
     case 'anthropic':
       result = await runAnthropicLoop({
-        ...opts,
+        ...optsWithCapture,
         apiKey: opts.env?.ANTHROPIC_API_KEY,
       });
       break;
     case 'gemini':
       result = await runGeminiLoop({
-        ...opts,
+        ...optsWithCapture,
         apiKey: opts.env?.GOOGLE_API_KEY,
       });
       break;
@@ -1625,7 +1745,7 @@ export async function runAgentLoop(opts) {
   // now so the cards actually render in the chat. Runs before the caller
   // closes the SSE stream, so the emitted tool_call events reach the client.
   try {
-    await autoLoadVaultNeuronsIfMissed(opts, result);
+    await autoLoadVaultNeuronsIfMissed(optsWithCapture, result, assistantText);
   } catch (err) {
     console.warn('[chat-agent-loop] auto-load vault neurons failed:', err?.message || err);
   }

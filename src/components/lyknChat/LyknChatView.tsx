@@ -1315,7 +1315,7 @@ const MessageItem = React.memo(function MessageItem({
                           ) : null}
                         </div>
                         {sec.intro ? (
-                          <div className="text-[13px] opacity-70 -mt-1">
+                          <div className="text-[13px] text-black/55 dark:text-white/55 -mt-1">
                             {sec.intro}
                           </div>
                         ) : null}
@@ -1428,14 +1428,14 @@ const MessageItem = React.memo(function MessageItem({
                             const btnToneCls = !act
                               ? ""
                               : tone === "primary"
-                                ? "border-blue-400/40 bg-blue-500/10 hover:bg-blue-500/15 text-blue-700 dark:text-blue-200"
+                                ? "border-blue-400/40 bg-blue-500/10 hover:bg-blue-500/15 text-blue-700 dark:text-blue-100"
                                 : tone === "amber"
-                                  ? "border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/15 text-amber-700 dark:text-amber-200"
+                                  ? "border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/15 text-amber-800 dark:text-amber-100"
                                   : tone === "emerald"
-                                    ? "border-emerald-400/40 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+                                    ? "border-emerald-400/40 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-700 dark:text-emerald-100"
                                     : tone === "fuchsia"
-                                      ? "border-fuchsia-400/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-200"
-                                      : "border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/5 hover:bg-white/55 dark:hover:bg-white/10 text-black/75 dark:text-white/80";
+                                      ? "border-fuchsia-400/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-100"
+                                      : "border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/5 hover:bg-white/55 dark:hover:bg-white/10 text-black/75 dark:text-white/90";
                             const isInternal = act?.href.startsWith("/") ?? false;
                             const onActClick = (e: React.MouseEvent) => {
                               if (!act) return;
@@ -1450,10 +1450,13 @@ const MessageItem = React.memo(function MessageItem({
                             const hasItemIcon =
                               typeof item?.iconUrl === "string" &&
                               item.iconUrl.length > 0;
+                            const isOverdueSubtitle =
+                              typeof item.subtitle === "string" &&
+                              /^Overdue\b/i.test(item.subtitle);
                             return (
                               <div
                                 key={`${msg.id}-sec-${sec.id}-row-${ii}`}
-                                className="flex items-start gap-3 rounded-lg border border-white/10 dark:border-white/5 bg-white/30 dark:bg-white/[0.03] px-3 py-2"
+                                className="flex items-start gap-3 rounded-lg border border-white/10 dark:border-white/5 bg-white/30 dark:bg-white/[0.03] px-3 py-2 text-black/85 dark:text-white/90"
                               >
                                 {hasItemIcon ? (
                                   <div className="w-7 h-7 rounded-md bg-white dark:bg-white/95 ring-1 ring-black/[0.06] dark:ring-white/10 shadow-sm overflow-hidden flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -1470,13 +1473,26 @@ const MessageItem = React.memo(function MessageItem({
                                   </div>
                                 ) : null}
                                 <div className="flex-1 min-w-0 leading-tight">
-                                  <div className="text-[12.5px] font-medium text-black/85 dark:text-white/90 truncate">
+                                  <div className="text-[12.5px] font-medium truncate">
                                     {item.title}
                                   </div>
                                   {item.subtitle ? (
-                                    <div className="text-[11px] opacity-70 mt-0.5 truncate">
-                                      {item.subtitle}
-                                    </div>
+                                    isOverdueSubtitle ? (
+                                      <div className="mt-1 flex items-center gap-1.5 min-w-0">
+                                        <span className="inline-flex items-center shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold tracking-wide bg-red-500/15 text-red-700 dark:bg-red-400/20 dark:text-red-100">
+                                          Overdue
+                                        </span>
+                                        {item.subtitle.replace(/^Overdue\s*(?:·\s*)?/i, "").trim() ? (
+                                          <span className="text-[11px] text-black/55 dark:text-white/55 truncate">
+                                            {item.subtitle.replace(/^Overdue\s*(?:·\s*)?/i, "").trim()}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    ) : (
+                                      <div className="text-[11px] text-black/55 dark:text-white/55 mt-0.5 truncate">
+                                        {item.subtitle}
+                                      </div>
+                                    )
                                   ) : null}
                                 </div>
                                 {act ? (
@@ -1550,14 +1566,14 @@ const MessageItem = React.memo(function MessageItem({
                       const tone = act.tone || "neutral";
                       const toneCls =
                         tone === "primary"
-                          ? "border-blue-400/40 bg-blue-500/10 hover:bg-blue-500/15 text-blue-700 dark:text-blue-200"
+                          ? "border-blue-400/40 bg-blue-500/10 hover:bg-blue-500/15 text-blue-700 dark:text-blue-100"
                           : tone === "amber"
-                            ? "border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/15 text-amber-700 dark:text-amber-200"
+                            ? "border-amber-400/40 bg-amber-500/10 hover:bg-amber-500/15 text-amber-800 dark:text-amber-100"
                             : tone === "emerald"
-                              ? "border-emerald-400/40 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-700 dark:text-emerald-200"
+                              ? "border-emerald-400/40 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-700 dark:text-emerald-100"
                               : tone === "fuchsia"
-                                ? "border-fuchsia-400/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-200"
-                                : "border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/5 hover:bg-white/55 dark:hover:bg-white/10 text-black/75 dark:text-white/80";
+                                ? "border-fuchsia-400/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-100"
+                                : "border-white/25 dark:border-white/10 bg-white/35 dark:bg-white/5 hover:bg-white/55 dark:hover:bg-white/10 text-black/75 dark:text-white/90";
                       const actNav = safeNavHref(act.href);
                       if (!actNav) return null;
                       const isInternal = actNav.kind === "internal";

@@ -3403,8 +3403,8 @@ function createExtensionInstallWindow() {
   if (overlayVisibleBeforeExtensionInstall) hideOverlay();
 
   extensionInstallWindow = new BrowserWindow({
-    width: 360,
-    height: 340,
+    width: 400,
+    height: 520,
     resizable: false,
     minimizable: false,
     maximizable: false,

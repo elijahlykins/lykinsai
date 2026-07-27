@@ -19,6 +19,20 @@ const GoogleIcon = () => (
   </svg>
 );
 
+const EyeIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+const EyeOffIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24" />
+    <line x1="1" y1="1" x2="23" y2="23" />
+  </svg>
+);
+
 function friendlyError(raw) {
   if (!raw) return null;
   const lower = raw.toLowerCase();
@@ -45,19 +59,23 @@ export default function SignInPill({ className = "", compact = false }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [name, setName] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const [showSuccess, setShowSuccess] = useState(false);
 
   const resetForm = () => {
     setMode("login");
     setEmail("");
     setPassword("");
+    setConfirmPassword("");
     setName("");
+    setShowPassword(false);
+    setShowConfirmPassword(false);
     setError(null);
     setSubmitting(false);
-    setShowSuccess(false);
   };
 
   const handlePillClick = () => {
@@ -73,7 +91,9 @@ export default function SignInPill({ className = "", compact = false }) {
   const switchMode = () => {
     setMode((m) => (m === "login" ? "signup" : "login"));
     setError(null);
-    setShowSuccess(false);
+    setConfirmPassword("");
+    setShowPassword(false);
+    setShowConfirmPassword(false);
   };
 
   const handleSubmit = async (e) => {
@@ -87,6 +107,10 @@ export default function SignInPill({ className = "", compact = false }) {
       setError("Password must be at least 6 characters.");
       return;
     }
+    if (mode === "signup" && password !== confirmPassword) {
+      setError("Passwords don’t match.");
+      return;
+    }
     setSubmitting(true);
     try {
       if (mode === "login") {
@@ -94,24 +118,23 @@ export default function SignInPill({ className = "", compact = false }) {
         // Auth state change drives routing (GuestOnly / subscription gate).
         setOpen(false);
       } else {
+        // Password signup emails a 6-digit code — finish on /login verify screen.
         const data = await signUpWithEmail(email.trim(), password, { name: name.trim() });
-        const u = data?.user;
-        const emptyIdentities = !u?.identities || u.identities.length === 0;
-        const alreadyConfirmed = !!(u?.email_confirmed_at || u?.confirmed_at);
-        const noSession = !data?.session;
-
-        if (u && emptyIdentities) {
-          setError("An account with this email already exists. Try signing in instead.");
-        } else if (u && noSession && alreadyConfirmed) {
-          setError("An account with this email already exists. Try signing in instead.");
-        } else if (!u) {
-          setError("Something went wrong. Please try again.");
-        } else if (data?.session) {
-          // Auto-confirmed signup with an active session — go straight in.
-          setOpen(false);
-        } else {
-          setShowSuccess(true);
+        try {
+          sessionStorage.setItem(
+            "lykn:pendingSignupVerify",
+            JSON.stringify({
+              email: email.trim(),
+              password,
+              name: name.trim(),
+              expiresAt: data?.expiresAt || null,
+            }),
+          );
+        } catch {
+          /* ignore */
         }
+        setOpen(false);
+        window.location.assign("/login");
       }
     } catch (err) {
       if (import.meta.env.DEV) console.error("Auth error:", err);
@@ -146,26 +169,7 @@ export default function SignInPill({ className = "", compact = false }) {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-[420px]">
-          {showSuccess ? (
-            <div className="text-center py-2">
-              <DialogHeader>
-                <DialogTitle className="text-center">Check your email</DialogTitle>
-                <DialogDescription className="text-center">
-                  We sent a confirmation link to{" "}
-                  <span className="font-medium text-foreground">{email}</span>. Click the
-                  link to activate your account.
-                </DialogDescription>
-              </DialogHeader>
-              <button
-                type="button"
-                onClick={() => { setShowSuccess(false); setMode("login"); }}
-                className="mt-6 text-sm font-medium underline underline-offset-4 hover:opacity-70 transition-opacity"
-              >
-                Back to sign in
-              </button>
-            </div>
-          ) : (
-            <>
+          <>
               <DialogHeader>
                 <DialogTitle>
                   {mode === "login" ? "Welcome to personal AI" : "Create your account"}
@@ -213,14 +217,47 @@ export default function SignInPill({ className = "", compact = false }) {
                   placeholder="Email address"
                   autoComplete="email"
                 />
-                <Input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Password"
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                />
+                <div className="relative">
+                  <Input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Password"
+                    autoComplete={mode === "login" ? "current-password" : "new-password"}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                  </button>
+                </div>
+
+                {mode === "signup" && (
+                  <div className="relative">
+                    <Input
+                      type={showConfirmPassword ? "text" : "password"}
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="Confirm password"
+                      autoComplete="new-password"
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                      aria-label={showConfirmPassword ? "Hide password" : "Show password"}
+                    >
+                      {showConfirmPassword ? <EyeOffIcon /> : <EyeIcon />}
+                    </button>
+                  </div>
+                )}
 
                 {error && (
                   <div className="flex items-center gap-2 rounded-lg bg-red-500/10 border border-red-500/25 px-3 py-2.5">
@@ -245,8 +282,7 @@ export default function SignInPill({ className = "", compact = false }) {
                   {mode === "login" ? "Sign up" : "Sign in"}
                 </button>
               </div>
-            </>
-          )}
+          </>
         </DialogContent>
       </Dialog>
     </>

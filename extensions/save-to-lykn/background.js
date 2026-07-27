@@ -123,28 +123,32 @@ async function pushPageSnapshot(snapshot) {
   }
 }
 
+async function ensureContextMenus() {
+  // removeAll first — re-create on update/reload throws "duplicate id" and
+  // lights the red Errors badge on chrome://extensions.
+  try {
+    await chrome.contextMenus.removeAll();
+  } catch {
+    /* ignore */
+  }
+  const menus = [
+    { id: CONTEXT_MENU_PAGE_ID, title: "Save this page to LYKN", contexts: ["page"] },
+    { id: CONTEXT_MENU_LINK_ID, title: "Save link to LYKN", contexts: ["link"] },
+    { id: CONTEXT_MENU_IMAGE_ID, title: "Save image to LYKN", contexts: ["image"] },
+    { id: CONTEXT_MENU_VIDEO_ID, title: "Save video to LYKN", contexts: ["video"] },
+  ];
+  for (const m of menus) {
+    try {
+      await chrome.contextMenus.create(m);
+    } catch (e) {
+      console.warn("[LYKN] contextMenus.create", m.id, e?.message || e);
+    }
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   startBridgePing();
-  chrome.contextMenus.create({
-    id: CONTEXT_MENU_PAGE_ID,
-    title: "Save this page to LYKN",
-    contexts: ["page"],
-  });
-  chrome.contextMenus.create({
-    id: CONTEXT_MENU_LINK_ID,
-    title: "Save link to LYKN",
-    contexts: ["link"],
-  });
-  chrome.contextMenus.create({
-    id: CONTEXT_MENU_IMAGE_ID,
-    title: "Save image to LYKN",
-    contexts: ["image"],
-  });
-  chrome.contextMenus.create({
-    id: CONTEXT_MENU_VIDEO_ID,
-    title: "Save video to LYKN",
-    contexts: ["video"],
-  });
+  void ensureContextMenus();
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {

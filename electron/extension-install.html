@@ -11,39 +11,45 @@
         --muted: rgba(244, 244, 246, 0.55);
         --blue: #2563eb;
         --blue-hover: #1d4ed8;
+        --card: rgba(255, 255, 255, 0.05);
+        --border: rgba(255, 255, 255, 0.12);
+        --ok: #6ee7b7;
       }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; }
       body {
         background: radial-gradient(900px 500px at 50% -30%, #16161f 0%, var(--bg) 70%);
         color: var(--text);
-        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         -webkit-font-smoothing: antialiased;
-        padding: 36px 32px 32px;
+        padding: 28px 24px 24px;
         display: flex;
         flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
+        align-items: stretch;
         user-select: none;
       }
-      .brand { margin-bottom: 24px; }
+      .brand { text-align: center; margin-bottom: 16px; }
       .logo {
         display: block;
-        width: 160px;
+        width: 140px;
         height: auto;
         margin: 0 auto;
       }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 16px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        text-align: center;
+      }
       .tagline {
-        margin: 0 0 28px;
-        font-size: 14px;
-        line-height: 1.55;
+        margin: 0 0 18px;
+        font-size: 12.5px;
+        line-height: 1.5;
         color: var(--muted);
-        max-width: 300px;
+        text-align: center;
       }
       .tagline strong {
-        display: block;
-        margin-top: 10px;
         color: var(--text);
         font-weight: 600;
       }
@@ -51,18 +57,85 @@
         appearance: none;
         border: none;
         border-radius: 12px;
-        padding: 14px 24px;
+        padding: 12px 20px;
         font: inherit;
-        font-size: 14px;
+        font-size: 13.5px;
         font-weight: 600;
         color: #fff;
         cursor: pointer;
         background: var(--blue);
         box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
-        min-width: 240px;
+        width: 100%;
       }
       button.install:hover { background: var(--blue-hover); }
       button.install:disabled { opacity: 0.55; cursor: wait; }
+      button.secondary {
+        appearance: none;
+        margin-top: 8px;
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-size: 12.5px;
+        font-weight: 500;
+        padding: 9px 12px;
+        cursor: pointer;
+      }
+      button.secondary:hover { color: var(--text); background: var(--card); }
+      .steps {
+        display: none;
+        margin-top: 16px;
+        text-align: left;
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 12px;
+        padding: 12px 14px;
+      }
+      .steps.show { display: block; }
+      .steps-title {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .steps ol {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--text);
+      }
+      .steps li {
+        margin: 0 0 7px;
+        font-size: 12.5px;
+        line-height: 1.4;
+      }
+      .steps li:last-child { margin-bottom: 0; }
+      .path {
+        margin-top: 10px;
+        font-size: 10.5px;
+        line-height: 1.35;
+        color: var(--muted);
+        word-break: break-all;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .status {
+        margin-top: 12px;
+        text-align: center;
+        font-size: 12px;
+        color: var(--muted);
+        min-height: 1.2em;
+      }
+      .status.ok { color: var(--ok); font-weight: 600; }
+      .hint {
+        margin-top: 10px;
+        font-size: 11.5px;
+        color: var(--muted);
+        text-align: center;
+        line-height: 1.4;
+      }
     </style>
   </head>
   <body>
@@ -71,45 +144,107 @@
         class="logo"
         src="./resources/lykn-logo-primary-blue.png"
         alt="LYKN"
-        width="160"
-        height="48"
+        width="140"
+        height="42"
       />
     </div>
 
-    <p class="tagline">
-      Allow LYKN to have live feed when you turn it on.
-      <strong>You stay in control.</strong>
+    <h1>Chrome Live Feed</h1>
+    <p class="tagline" id="intro">
+      Lets LYKN read your active Chrome tab when Live Screen Watch is on.
+      <strong>You stay in control — nothing streams until you turn watch on.</strong>
     </p>
 
     <button id="install" class="install" type="button">Add Chrome Live Feed</button>
+    <button id="reveal" class="secondary" type="button" hidden>Show extension folder again</button>
+
+    <div class="steps" id="steps">
+      <div class="steps-title">Finish in Chrome (one time)</div>
+      <ol>
+        <li>Chrome opened to <strong>Extensions</strong> — that’s the page with your installed add-ons.</li>
+        <li>Turn on <strong>Developer mode</strong> (top-right toggle).</li>
+        <li>Click <strong>Load unpacked</strong>.</li>
+        <li>Select the folder we opened in Finder (path below — already copied).</li>
+      </ol>
+      <div class="path" id="path"></div>
+    </div>
+
+    <div class="status" id="status"></div>
+    <p class="hint" id="hint" hidden>
+      When it’s loaded, leave this window open — it closes automatically once LYKN sees the feed.
+    </p>
 
     <script>
       const api = window.lyknExtensionInstall;
       const installBtn = document.getElementById("install");
+      const revealBtn = document.getElementById("reveal");
+      const stepsEl = document.getElementById("steps");
+      const pathEl = document.getElementById("path");
+      const statusEl = document.getElementById("status");
+      const hintEl = document.getElementById("hint");
       let installing = false;
+      let lastPath = "";
+
+      function showManualSteps(extPath, browserName) {
+        lastPath = extPath || lastPath;
+        if (lastPath) {
+          pathEl.textContent = lastPath;
+          stepsEl.classList.add("show");
+          revealBtn.hidden = false;
+          hintEl.hidden = false;
+        }
+        const browser = browserName || "Chrome";
+        statusEl.className = "status";
+        statusEl.textContent = `Waiting for Live Feed in ${browser}…`;
+        installBtn.textContent = "Open Chrome Extensions again";
+      }
 
       async function refreshConn() {
-        const s = await api.bridgeStatus();
-        if (s.connected) setTimeout(() => api.close(), 600);
+        try {
+          const s = await api.bridgeStatus();
+          if (s?.connected) {
+            statusEl.className = "status ok";
+            statusEl.textContent = "Connected — you’re set.";
+            setTimeout(() => api.close(), 700);
+          }
+        } catch (_) {}
       }
 
       async function runInstall() {
         if (installing) return;
         installing = true;
         installBtn.disabled = true;
+        statusEl.className = "status";
+        statusEl.textContent = "Preparing extension…";
         try {
-          await api.installOneClick("chrome");
-        } catch (_) {}
-        finally {
+          const result = await api.installOneClick("chrome");
+          if (result?.ok && result.mode === "store") {
+            statusEl.textContent = "Opened the Chrome Web Store — click Add to Chrome there.";
+          } else if (result?.ok) {
+            showManualSteps(result.path, result.browser);
+          } else {
+            statusEl.textContent = result?.error
+              ? `Couldn’t start install: ${result.error}`
+              : "Couldn’t start install. Try again.";
+            installBtn.textContent = "Try again";
+          }
+        } catch (_) {
+          statusEl.textContent = "Couldn’t start install. Try again.";
+          installBtn.textContent = "Try again";
+        } finally {
           installing = false;
           installBtn.disabled = false;
-          installBtn.textContent = "Try again";
         }
         refreshConn();
       }
 
       installBtn.addEventListener("click", runInstall);
+      revealBtn.addEventListener("click", () => {
+        // Re-run install: re-copies, re-opens Extensions + Finder with the same path.
+        void runInstall();
+      });
       setInterval(refreshConn, 2000);
+      refreshConn();
     </script>
   </body>
 </html>

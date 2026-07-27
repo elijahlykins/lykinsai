@@ -4,6 +4,7 @@ import { useAuth } from "@/lib/SupabaseAuth";
 import { isConnectOnboardingDone } from "@/lib/landingHandoff";
 import { resolvePostAuthPath } from "@/lib/webAppAccess";
 import { motion, AnimatePresence } from "framer-motion";
+import { Eye, EyeOff } from "lucide-react";
 import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-web.png";
 
 const GoogleIcon = () => (
@@ -15,14 +16,9 @@ const GoogleIcon = () => (
   </svg>
 );
 
-// The same Inter stack the Glass landing uses (.glass-land), so type renders
-// identically across the two pages.
 const LANDING_FONT =
   '"Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif';
 
-// Full-bleed backdrop: the landing's blue burst anchored to the right edge
-// with frosted glass panels running edge to edge across the whole viewport.
-// Pure decoration.
 const PANEL_COUNT = 12;
 const PanelArt = () => (
   <div className="pointer-events-none absolute inset-0" aria-hidden>
@@ -33,9 +29,6 @@ const PanelArt = () => (
         bottom: "-12%",
         right: 0,
         left: 0,
-        /* A full-width blue sweep (pale at the left, deep brand blue at the
-           right) so the frosted panels are visible across the WHOLE screen,
-           not just where the old right-edge burst sat. */
         background:
           "linear-gradient(90deg, #dfe9fb 0%, #b7cdf6 30%, #6d9bf3 62%, #0e6fff 100%)",
         filter: "blur(18px)",
@@ -58,8 +51,6 @@ const PanelArt = () => (
   </div>
 );
 
-// Shared styling for every text input and primary submit button in the form,
-// tuned for the plain white stage (crisp borders instead of glass).
 const INPUT_CLS =
   "w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all duration-200";
 const SUBMIT_CLS =
@@ -111,6 +102,39 @@ const SubmitButton = ({ submitting, label, busyLabel }) => (
   </motion.button>
 );
 
+function PasswordField({
+  value,
+  onChange,
+  onKeyDown = undefined,
+  placeholder,
+  autoComplete,
+  show,
+  onToggleShow,
+}) {
+  return (
+    <div className="relative">
+      <input
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={onChange}
+        {...(onKeyDown ? { onKeyDown } : {})}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        className={`${INPUT_CLS} pr-11`}
+      />
+      <button
+        type="button"
+        onClick={onToggleShow}
+        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-md text-slate-400 hover:text-slate-700 transition-colors"
+        aria-label={show ? "Hide password" : "Show password"}
+        tabIndex={0}
+      >
+        {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+      </button>
+    </div>
+  );
+}
+
 function friendlyError(raw) {
   if (!raw) return null;
   const lower = raw.toLowerCase();
@@ -119,24 +143,24 @@ function friendlyError(raw) {
   if (lower.includes("invalid login") || lower.includes("invalid credentials"))
     return "Incorrect email or password. Please try again.";
   if (lower.includes("email not confirmed"))
-    return "Please check your inbox and confirm your email before signing in.";
-  if (lower.includes("user already registered") || lower.includes("already been registered"))
+    return "Please enter the confirmation code from your email before signing in.";
+  if (lower.includes("user already registered") || lower.includes("already been registered") || lower.includes("already exists"))
     return "An account with this email already exists. Try signing in instead.";
-  if (lower.includes("rate limit") || lower.includes("too many requests"))
+  if (lower.includes("rate limit") || lower.includes("too many"))
     return "Too many attempts. Please wait a moment and try again.";
   if (lower.includes("network") || lower.includes("fetch"))
     return "Connection error. Please check your internet and try again.";
   if (lower.includes("password") && lower.includes("characters"))
     return "Password must be at least 6 characters.";
+  if (lower.includes("expired"))
+    return "Code expired. Request a new one.";
+  if (lower.includes("incorrect code"))
+    return "Incorrect code. Try again.";
+  // Prefer the server's own humanized message when it's already clean.
+  if (raw.length < 120 && !lower.includes("error:") && !lower.includes("exception")) return raw;
   return "Something went wrong. Please try again.";
 }
 
-// 10-minute window — long enough to cover a slow email-confirmation
-// click (open the inbox tab, find the email, click the link) but
-// short enough that returning users a day later don't accidentally
-// get re-routed through onboarding. Both Supabase email signups and
-// Google-OAuth signups populate user.created_at the moment the
-// account is provisioned, so a single check covers both paths.
 const NEW_USER_WINDOW_MS = 10 * 60 * 1000;
 
 function isFreshlyCreatedUser(user) {
@@ -146,8 +170,13 @@ function isFreshlyCreatedUser(user) {
   return Date.now() - createdMs < NEW_USER_WINDOW_MS;
 }
 
-// The page shell shared by the form and the "check your email" state: the
-// full-bleed panel backdrop with a single centered card holding the content.
+function formatCountdown(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 const PageShell = ({ children }) => (
   <div
     className="fixed inset-0 z-50 overflow-hidden bg-white"
@@ -155,8 +184,6 @@ const PageShell = ({ children }) => (
   >
     <PanelArt />
     <div className="relative h-full flex flex-col px-5 py-4">
-      {/* The card centers via m-auto (not items-center) so that on windows
-          shorter than the card the top edge stays reachable when scrolling. */}
       <div className="flex-1 flex overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, y: 24 }}
@@ -182,29 +209,27 @@ export default function Login() {
     signInWithOAuth,
     signInWithEmail,
     signUpWithEmail,
+    verifySignupEmailCode,
     resetPasswordForEmail,
     resendSignupEmail,
   } = useAuth();
-  // "login" | "signup" | "forgot" (password-reset email request)
+  // "login" | "signup" | "forgot"
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [name, setName] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  // null | "confirm" (signup confirmation sent) | "reset" (recovery link sent)
+  // null | "verify" (signup code) | "reset" (recovery link sent)
   const [successKind, setSuccessKind] = useState(null);
-  // idle | sending | sent | error — the "Resend email" button on the
-  // check-your-email screen.
+  const [verifyCode, setVerifyCode] = useState("");
+  const [expiresAt, setExpiresAt] = useState(null);
+  const [remainingMs, setRemainingMs] = useState(0);
   const [resendState, setResendState] = useState("idle");
 
-  // Default post-login destination is the app, NOT the landing page.
-  // `/` now renders the synthetic-intelligence onboarding prototype which
-  // is a guest-only experience; signed-in users should land directly in
-  // their grid. `from` is still honored so deep links into a specific
-  // route (e.g. `/vault`, `/chat/<id>`) keep working through the auth gate.
-  // Search + hash are preserved too — dropping them breaks any deep link that
-  // carries state in the query string (worst case: /share?url=… lost its URL).
   const fromLocation = location.state?.from;
   const from = fromLocation?.pathname
     ? `${fromLocation.pathname}${fromLocation.search || ""}${fromLocation.hash || ""}`
@@ -215,25 +240,44 @@ export default function Login() {
     if (prefilledEmail) setEmail(prefilledEmail);
   }, [prefilledEmail]);
 
-  // Post-auth routing. NEW users (signup auto-confirmed OR landing here right
-  // after clicking the email-confirmation link) hit /onboarding/connect so
-  // they see the AI-tool cards; everyone else goes to `from` (default /app).
-  // The subscription gate in App.jsx then routes anyone without trial/paid
-  // access to /start-trial. The "new user" signal is user.created_at within
-  // the last 10 minutes, which covers both email and Google OAuth signups
-  // without a server migration. An explicit `from` (set by ProtectedRoute on
-  // a deep link) always wins so we don't hijack their intent.
+  // Resume code-verify after signup started from SignInPill (or similar).
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("lykn:pendingSignupVerify");
+      if (!raw) return;
+      sessionStorage.removeItem("lykn:pendingSignupVerify");
+      const pending = JSON.parse(raw);
+      if (!pending?.email || !pending?.password) return;
+      setEmail(String(pending.email));
+      setPassword(String(pending.password));
+      setName(String(pending.name || ""));
+      setExpiresAt(
+        pending.expiresAt || new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      );
+      setSuccessKind("verify");
+      setMode("signup");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Live countdown for the 5-minute signup code.
+  useEffect(() => {
+    if (successKind !== "verify" || !expiresAt) return undefined;
+    const tick = () => {
+      const left = Math.max(0, Date.parse(expiresAt) - Date.now());
+      setRemainingMs(left);
+    };
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [successKind, expiresAt]);
+
   useEffect(() => {
     if (loading || !user || signingOut) return;
     const fromPath = location.state?.from?.pathname || "";
-    // Ignore paywall deep-links here — bouncing /start-trial → Login →
-    // /start-trial after abandon-checkout sign-out left people stuck on a
-    // spinner. The subscription gate still sends unpaid users to the picker
-    // after a normal sign-in to /app.
     const hasExplicitFrom =
       !!fromPath && fromPath !== "/start-trial" && fromPath !== "/login";
-    // OAuth round-trips drop React router state — recover a pending PWA /
-    // extension share so /share can finish saving after Google sign-in.
     let pendingShareDest = "";
     try {
       const pending = String(sessionStorage.getItem("lykn:pendingShare") || "").trim();
@@ -251,17 +295,24 @@ export default function Login() {
     } else if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
       dest = "/onboarding/connect";
     }
-    // Website keeps /login + /share reachable; product routes still resolve
-    // to /download when the web app is unplugged (session stays for desktop).
     nav(resolvePostAuthPath(dest), { replace: true });
   }, [loading, signingOut, nav, user, from, location.state]);
 
-  // `error` state is set with already-humanized copy (validation + the catch
-  // below run it through friendlyError once). Only `authError` — the raw
-  // Supabase error surfaced by the auth context — still needs mapping here.
-  // Running `error` through friendlyError a second time used to collapse
-  // every specific message into the generic "Something went wrong" fallback.
   const displayError = error || friendlyError(authError);
+
+  const resetToLogin = () => {
+    setSuccessKind(null);
+    setMode("login");
+    setError(null);
+    setPassword("");
+    setConfirmPassword("");
+    setVerifyCode("");
+    setExpiresAt(null);
+    setRemainingMs(0);
+    setResendState("idle");
+    setShowPassword(false);
+    setShowConfirmPassword(false);
+  };
 
   const handleSubmit = async (e) => {
     e?.preventDefault();
@@ -278,6 +329,10 @@ export default function Login() {
       setError("Password must be at least 6 characters.");
       return;
     }
+    if (mode === "signup" && password !== confirmPassword) {
+      setError("Passwords don’t match.");
+      return;
+    }
     setSubmitting(true);
     try {
       if (mode === "login") {
@@ -288,58 +343,150 @@ export default function Login() {
         setSuccessKind("reset");
       } else {
         const data = await signUpWithEmail(email.trim(), password, { name: name.trim() });
-        const u = data?.user;
-        const emptyIdentities = !u?.identities || u.identities.length === 0;
-        const alreadyConfirmed = !!(u?.email_confirmed_at || u?.confirmed_at);
-        const noSession = !data?.session;
-
-        if (u && emptyIdentities) {
-          setError("An account with this email already exists. Try signing in instead.");
-        } else if (u && noSession && alreadyConfirmed) {
-          setError("An account with this email already exists. Try signing in instead.");
-        } else if (!u) {
-          setError("Something went wrong. Please try again.");
-        } else if (data?.session) {
-          // Email confirmation is disabled / auto-confirm: the user is signed
-          // in right now. Skip the "check your email" screen — the post-auth
-          // useEffect above handles the redirect into the app.
-        } else {
-          setResendState("idle");
-          setSuccessKind("confirm");
-        }
+        setResendState("idle");
+        setVerifyCode("");
+        setExpiresAt(data?.expiresAt || new Date(Date.now() + 5 * 60 * 1000).toISOString());
+        setSuccessKind("verify");
       }
     } catch (err) {
-      if (import.meta.env.DEV) console.error('Auth error:', err);
+      if (import.meta.env.DEV) console.error("Auth error:", err);
       setError(friendlyError(err?.message) || "Authentication failed. Please try again.");
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter" && !submitting) handleSubmit(e);
-  };
-
-  // "Resend email" on the check-your-email screen. Covers both the signup
-  // confirmation and the password-recovery link; Supabase rate-limits
-  // resends per address, so surface that case honestly.
-  const handleResend = async () => {
-    if (resendState === "sending") return;
-    setResendState("sending");
+  const handleVerify = async (e) => {
+    e?.preventDefault();
+    setError(null);
+    if (remainingMs <= 0) {
+      setError("Code expired. Request a new one.");
+      return;
+    }
+    const code = verifyCode.replace(/\s+/g, "");
+    if (!/^\d{6}$/.test(code)) {
+      setError("Enter the 6-digit code from your email.");
+      return;
+    }
+    setSubmitting(true);
     try {
-      if (successKind === "reset") {
-        await resetPasswordForEmail(email.trim());
-      } else {
-        await resendSignupEmail(email.trim());
-      }
-      setResendState("sent");
+      await verifySignupEmailCode(email.trim(), code);
+      // Account is confirmed — sign in with the password from the signup form.
+      await signInWithEmail(email.trim(), password);
+      // Post-auth effect → paywall / onboarding as usual.
     } catch (err) {
-      if (import.meta.env.DEV) console.error("Resend failed:", err);
-      setResendState("error");
+      if (import.meta.env.DEV) console.error("Verify error:", err);
+      setError(friendlyError(err?.message) || "Could not verify code.");
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  if (successKind) {
+  const handleResend = async () => {
+    if (resendState === "sending") return;
+    setResendState("sending");
+    setError(null);
+    try {
+      if (successKind === "reset") {
+        await resetPasswordForEmail(email.trim());
+        setResendState("sent");
+      } else {
+        const data = await resendSignupEmail(email.trim());
+        setExpiresAt(data?.expiresAt || new Date(Date.now() + 5 * 60 * 1000).toISOString());
+        setVerifyCode("");
+        setResendState("sent");
+      }
+    } catch (err) {
+      if (import.meta.env.DEV) console.error("Resend failed:", err);
+      setResendState("error");
+      setError(friendlyError(err?.message));
+    }
+  };
+
+  if (successKind === "verify") {
+    const expired = remainingMs <= 0;
+    return (
+      <PageShell>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.45 }}
+        >
+          <div className="w-14 h-14 mb-5 rounded-2xl bg-blue-500/15 ring-1 ring-blue-300/50 flex items-center justify-center">
+            <svg className="w-7 h-7 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <h2 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">
+            Enter confirmation code
+          </h2>
+          <p className="text-slate-600 mb-6 text-sm leading-relaxed">
+            We sent a 6-digit code to{" "}
+            <span className="font-medium text-slate-800">{email}</span>.
+            Paste it below to activate your account.
+          </p>
+
+          <form onSubmit={handleVerify} className="space-y-3">
+            <input
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              value={verifyCode}
+              onChange={(e) => setVerifyCode(e.target.value.replace(/[^\d\s]/g, "").slice(0, 8))}
+              placeholder="6-digit code"
+              className={`${INPUT_CLS} tracking-[0.35em] text-center text-base font-semibold`}
+              autoFocus
+            />
+            <div className="flex items-center justify-between text-xs">
+              <span className={expired ? "text-red-600 font-medium" : "text-slate-500"}>
+                {expired ? "Code expired" : `Expires in ${formatCountdown(remainingMs)}`}
+              </span>
+              <button
+                type="button"
+                onClick={handleResend}
+                disabled={resendState === "sending"}
+                className="font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50"
+              >
+                {resendState === "sending"
+                  ? "Sending…"
+                  : resendState === "sent"
+                    ? "Code sent again"
+                    : "Resend code"}
+              </button>
+            </div>
+            <ErrorBanner message={displayError} />
+            <motion.button
+              type="submit"
+              disabled={submitting || expired}
+              whileHover={expired ? undefined : { y: -1 }}
+              whileTap={expired ? undefined : { scale: 0.99 }}
+              className={SUBMIT_CLS}
+            >
+              {submitting ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Spinner />
+                  Verifying…
+                </span>
+              ) : expired ? (
+                "Code expired — resend"
+              ) : (
+                "Verify and continue"
+              )}
+            </motion.button>
+          </form>
+
+          <button
+            type="button"
+            onClick={resetToLogin}
+            className="mt-5 text-sm font-semibold text-slate-500 hover:text-slate-800 transition-colors"
+          >
+            Back to login
+          </button>
+        </motion.div>
+      </PageShell>
+    );
+  }
+
+  if (successKind === "reset") {
     return (
       <PageShell>
         <motion.div
@@ -347,42 +494,29 @@ export default function Login() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
         >
-          <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            transition={{ type: "spring", delay: 0.15 }}
-            className="w-16 h-16 mb-6 rounded-2xl bg-blue-500/15 ring-1 ring-blue-300/50 flex items-center justify-center"
-          >
+          <div className="w-16 h-16 mb-6 rounded-2xl bg-blue-500/15 ring-1 ring-blue-300/50 flex items-center justify-center">
             <svg className="w-8 h-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
-          </motion.div>
+          </div>
           <h2 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">
             Check your email
           </h2>
           <p className="text-slate-600 mb-8">
-            {successKind === "reset" ? (
-              <>
-                We sent a password-reset link to{" "}
-                <span className="font-medium text-slate-800">{email}</span>.
-                Click it to choose a new password.
-              </>
-            ) : (
-              <>
-                We sent a confirmation link to{" "}
-                <span className="font-medium text-slate-800">{email}</span>.
-                Click the link to activate your account.
-              </>
-            )}
+            We sent a password-reset link to{" "}
+            <span className="font-medium text-slate-800">{email}</span>.
+            Click it to choose a new password.
           </p>
           <div className="flex items-center gap-5">
             <button
-              onClick={() => { setSuccessKind(null); setMode("login"); }}
+              type="button"
+              onClick={resetToLogin}
               className="text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors"
             >
               Back to login
             </button>
             <button
+              type="button"
               onClick={handleResend}
               disabled={resendState === "sending" || resendState === "sent"}
               className="text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors disabled:opacity-60"
@@ -394,12 +528,6 @@ export default function Login() {
                   : "Resend email"}
             </button>
           </div>
-          {resendState === "error" && (
-            <p className="mt-3 text-xs text-red-600">
-              Couldn't resend just now — wait a minute and try again, and check
-              your spam folder.
-            </p>
-          )}
         </motion.div>
       </PageShell>
     );
@@ -482,20 +610,28 @@ export default function Login() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={handleKeyDown}
               placeholder="Email address"
               autoComplete="email"
               className={INPUT_CLS}
             />
             {mode !== "forgot" && (
-              <input
-                type="password"
+              <PasswordField
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={handleKeyDown}
                 placeholder="Password"
                 autoComplete={mode === "login" ? "current-password" : "new-password"}
-                className={INPUT_CLS}
+                show={showPassword}
+                onToggleShow={() => setShowPassword((v) => !v)}
+              />
+            )}
+            {mode === "signup" && (
+              <PasswordField
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirm password"
+                autoComplete="new-password"
+                show={showConfirmPassword}
+                onToggleShow={() => setShowConfirmPassword((v) => !v)}
               />
             )}
             {mode === "login" && (
@@ -541,7 +677,14 @@ export default function Login() {
             : "Already have an account?"}{" "}
         <button
           type="button"
-          onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(null); setSuccessKind(null); }}
+          onClick={() => {
+            if (mode === "login") {
+              setMode("signup");
+              setError(null);
+            } else {
+              resetToLogin();
+            }
+          }}
           className="font-semibold text-blue-600 hover:text-blue-700 transition-colors"
         >
           {mode === "login" ? "Sign up" : "Sign in"}
@@ -549,7 +692,7 @@ export default function Login() {
       </div>
 
       <p className="mt-6 pt-5 border-t border-slate-200 text-[11px] leading-relaxed text-slate-500">
-        By continuing, you agree to LYKN's{" "}
+        By continuing, you agree to LYKN&apos;s{" "}
         <Link to="/terms" className="text-slate-600 underline underline-offset-2 hover:text-blue-600">
           Terms of Service
         </Link>

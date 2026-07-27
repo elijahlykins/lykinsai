@@ -243,28 +243,43 @@ export function SupabaseAuthProvider({ children }) {
     if (error) throw error;
   };
 
+  // Password signup goes through our API so we can email a 6-digit code
+  // (5-minute TTL) instead of Supabase's confirmation link. The user then
+  // pastes the code on /login; verifySignupEmailCode confirms the auth user
+  // and the client signs in with the password still held in form state.
   const signUpWithEmail = async (email, password, { name } = {}) => {
     setAuthError(null);
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        // Land confirmation clicks on /login (not `/`): the login page's
-        // post-auth effect owns new-user routing (fresh accounts →
-        // /onboarding/connect), whereas `/` bounces through GuestOnly →
-        // /app and skips it.
-        emailRedirectTo: `${window.location.origin}/login`,
-        ...(name ? { data: { full_name: name } } : {}),
-      },
+    const { API_BASE_URL } = await import("@/lib/api-config");
+    const res = await fetch(`${API_BASE_URL}/api/auth/signup-start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: String(email || "").trim(),
+        password: String(password || ""),
+        ...(name ? { name: String(name).trim() } : {}),
+      }),
     });
-    if (error) throw error;
-    if (import.meta.env.DEV) {
-      console.log('[signUp response]', JSON.stringify({
-        hasUser: !!data?.user,
-        hasSession: !!data?.session,
-        identities: data?.user?.identities?.length ?? 'none',
-        confirmed: data?.user?.email_confirmed_at || data?.user?.confirmed_at || null,
-      }));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || "Could not create account.");
+    }
+    return data;
+  };
+
+  const verifySignupEmailCode = async (email, code) => {
+    setAuthError(null);
+    const { API_BASE_URL } = await import("@/lib/api-config");
+    const res = await fetch(`${API_BASE_URL}/api/auth/signup-verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: String(email || "").trim(),
+        code: String(code || "").trim(),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || "Could not verify code.");
     }
     return data;
   };
@@ -282,17 +297,20 @@ export function SupabaseAuthProvider({ children }) {
     if (error) throw error;
   };
 
-  // Re-send the signup confirmation email (for "it never arrived" cases).
-  // Supabase rate-limits this per address; surface its error so the UI can
-  // show the too-many-requests copy instead of pretending it sent.
+  // Re-send a fresh 5-minute signup code.
   const resendSignupEmail = async (email) => {
     setAuthError(null);
-    const { error } = await supabase.auth.resend({
-      type: 'signup',
-      email,
-      options: { emailRedirectTo: `${window.location.origin}/login` },
+    const { API_BASE_URL } = await import("@/lib/api-config");
+    const res = await fetch(`${API_BASE_URL}/api/auth/signup-resend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: String(email || "").trim() }),
     });
-    if (error) throw error;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || "Could not resend code.");
+    }
+    return data;
   };
 
   // `everywhere: false` (default) — revoke just this device's refresh
@@ -355,6 +373,7 @@ export function SupabaseAuthProvider({ children }) {
       signInWithOAuth,
       signInWithEmail,
       signUpWithEmail,
+      verifySignupEmailCode,
       resetPasswordForEmail,
       resendSignupEmail,
       signOut,
