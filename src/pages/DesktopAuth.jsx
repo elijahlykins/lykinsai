@@ -18,21 +18,20 @@ import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-w
 //   3. The app's main process forwards the tokens to the renderer, which calls
 //      supabase.auth.setSession() — signed in, no embedded Google page ever.
 //
-// sessionStorage key `lykn:desktop-auth-boot` records that we already cleared
-// + bounced to Google for this desktop_state, so the post-Google reload does
-// NOT wipe the new session.
-//
-// Important: after Google redirects back with ?code=, Supabase's PKCE exchange
-// can finish a beat after INITIAL_SESSION(null). We poll for the session
-// instead of immediately showing "didn't complete" (that was the every-first-
-// attempt failure that cleared on Try again).
+// Machine-specific "works on the second Try again" was usually:
+//   • Double navigation (Supabase redirect + our backup assign) racing PKCE
+//   • INITIAL_SESSION(null) before ?code= exchange finished
+//   • Boot marker set but landing without ?code= treated as hard failure
+// We now single-redirect, explicitly exchange the code, and auto-resume OAuth
+// once when the return has no session yet.
 
 const LANDING_FONT =
   '"Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif';
 
 const BOOT_KEY = "lykn:desktop-auth-boot";
-const SESSION_WAIT_MS = 12_000;
-const SESSION_POLL_MS = 200;
+const AUTORETRY_KEY = "lykn:desktop-auth-autoretry";
+const SESSION_WAIT_MS = 10_000;
+const SESSION_POLL_MS = 150;
 
 const Spinner = () => (
   <svg className="w-5 h-5 animate-spin text-blue-600" viewBox="0 0 24 24" fill="none">
@@ -67,6 +66,30 @@ function writeBootMarker(state) {
   }
 }
 
+function readAutoRetry() {
+  try {
+    return Number(sessionStorage.getItem(AUTORETRY_KEY) || "0") || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function bumpAutoRetry() {
+  try {
+    sessionStorage.setItem(AUTORETRY_KEY, String(readAutoRetry() + 1));
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearAutoRetry() {
+  try {
+    sessionStorage.removeItem(AUTORETRY_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** True when this load is the OAuth redirect back from Google/Supabase. */
 function hasOAuthCallbackParams() {
   if (typeof window === "undefined") return false;
@@ -80,6 +103,14 @@ function hasOAuthCallbackParams() {
     );
   } catch {
     return false;
+  }
+}
+
+function readAuthCode() {
+  try {
+    return new URLSearchParams(window.location.search).get("code") || "";
+  } catch {
+    return "";
   }
 }
 
@@ -97,6 +128,21 @@ async function waitForSession(timeoutMs = SESSION_WAIT_MS) {
     await new Promise((r) => setTimeout(r, SESSION_POLL_MS));
   }
   return null;
+}
+
+/** Prefer explicit PKCE exchange; fall back to polling getSession. */
+async function establishSessionFromUrl() {
+  const code = readAuthCode();
+  if (code) {
+    try {
+      const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+      if (!error && data?.session?.access_token) return data.session;
+      // "Already used" / race with detectSessionInUrl — session may still land.
+    } catch {
+      /* fall through to poll */
+    }
+  }
+  return waitForSession();
 }
 
 function buildDeepLink(session) {
@@ -128,8 +174,8 @@ export default function DesktopAuth() {
   // exchange; 'handoff' → signed in; 'error' → OAuth failed.
   const [phase, setPhase] = useState("boot");
   const [errorMsg, setErrorMsg] = useState(null);
+  const [finishing, setFinishing] = useState(false);
   const startedRef = useRef(false);
-  const waitingRef = useRef(false);
 
   const oauthError = (() => {
     if (typeof window === "undefined") return null;
@@ -145,6 +191,7 @@ export default function DesktopAuth() {
 
   const startOAuth = async () => {
     setErrorMsg(null);
+    setFinishing(false);
     setPhase("starting");
     const desktopState = readDesktopState();
     const returnPath = desktopState
@@ -155,21 +202,21 @@ export default function DesktopAuth() {
     if (desktopState) writeBootMarker(desktopState);
     const { data, error } = await signInWithOAuth("google", {
       redirectTo: `${window.location.origin}${returnPath}`,
-      // Force Google's account chooser so Mac sign-out → different Google
-      // account works on the first try (SSO otherwise reuses the last user).
       queryParams: { prompt: "select_account" },
+      // One navigation only — see SupabaseAuth comment on skipBrowserRedirect.
+      skipBrowserRedirect: true,
     });
     if (error) {
       setErrorMsg("Couldn't start Google sign-in. Please try again.");
       setPhase("error");
       return;
     }
-    // Backup redirect — supabase usually navigates itself; if it doesn't
-    // (some browsers / ad blockers), follow the URL so we don't sit here
-    // with a boot marker and look "broken" on refresh.
-    if (data?.url && typeof window !== "undefined") {
+    if (data?.url) {
       window.location.assign(data.url);
+      return;
     }
+    setErrorMsg("Couldn't start Google sign-in. Please try again.");
+    setPhase("error");
   };
 
   const openApp = async () => {
@@ -188,14 +235,15 @@ export default function DesktopAuth() {
       setPhase("error");
       return;
     }
-    // Must run from a real click — browsers block lykn:// without a user gesture.
+    clearAutoRetry();
     navigateToDeepLink(buildDeepLink(session));
   };
 
   const switchAccount = async () => {
     startedRef.current = true;
-    waitingRef.current = false;
+    setFinishing(false);
     setPhase("starting");
+    clearAutoRetry();
     const desktopState = readDesktopState();
     if (desktopState) writeBootMarker(desktopState);
     try {
@@ -206,24 +254,16 @@ export default function DesktopAuth() {
     await startOAuth();
   };
 
-  // If auth state catches up after a slow PKCE exchange (or we briefly showed
-  // an error), move to handoff. Do NOT do this during a fresh outbound bounce
-  // to Google — that would cancel account switching.
+  // Late session arrival after a slow exchange → handoff (never stay on error).
   useEffect(() => {
     if (!user) return;
-    if (phase === "error") {
+    if (phase === "error" || finishing) {
+      clearAutoRetry();
       setErrorMsg(null);
-      setPhase("handoff");
-      return;
-    }
-    if (
-      (phase === "boot" || phase === "starting") &&
-      (hasOAuthCallbackParams() || waitingRef.current)
-    ) {
-      setErrorMsg(null);
+      setFinishing(false);
       setPhase("handoff");
     }
-  }, [user, phase]);
+  }, [user, phase, finishing]);
 
   useEffect(() => {
     if (loading) return;
@@ -234,10 +274,11 @@ export default function DesktopAuth() {
       return;
     }
 
-    // Already in flight: wait for user / session; don't re-enter boot logic.
     if (startedRef.current) {
       if (user) {
+        clearAutoRetry();
         setErrorMsg(null);
+        setFinishing(false);
         setPhase("handoff");
       }
       return;
@@ -247,35 +288,67 @@ export default function DesktopAuth() {
     const desktopState = readDesktopState();
     const bootMarker = readBootMarker();
     const oauthCallback = hasOAuthCallbackParams();
-    const returningFromGoogle = Boolean(
-      oauthCallback || (desktopState && bootMarker && bootMarker === desktopState),
-    );
 
     (async () => {
-      // Post-Google reload (or any load that still has ?code= / tokens).
-      if (returningFromGoogle) {
+      // Ensure the auth client finished init before we signOut / exchange.
+      try {
+        await supabase.auth.getSession();
+      } catch {
+        /* continue */
+      }
+
+      // Real OAuth return (has ?code= or hash tokens).
+      if (oauthCallback) {
         if (user) {
+          clearAutoRetry();
           setPhase("handoff");
           return;
         }
-        waitingRef.current = true;
+        setFinishing(true);
         setPhase("starting");
-        const session = await waitForSession();
-        waitingRef.current = false;
-        if (session?.user || (await supabase.auth.getSession()).data?.session?.user) {
+        const session = await establishSessionFromUrl();
+        if (session?.access_token) {
+          clearAutoRetry();
+          setFinishing(false);
           setErrorMsg(null);
           setPhase("handoff");
           return;
         }
-        // Only fail after a real wait — first paint with null session is normal.
+        setFinishing(false);
+        // One silent resume — same as the manual "Try again" that always worked
+        // on the affected laptop.
+        if (readAutoRetry() < 1) {
+          bumpAutoRetry();
+          await startOAuth();
+          return;
+        }
+        setErrorMsg("Google sign-in didn't complete. Please try again.");
+        setPhase("error");
+        return;
+      }
+
+      // Boot marker matches but no callback params: mid-flight reload / cancelled
+      // Google / stripped URL. Don't hard-fail — resume OAuth once.
+      if (desktopState && bootMarker && bootMarker === desktopState) {
+        const existing = await waitForSession(2_500);
+        if (existing?.access_token) {
+          clearAutoRetry();
+          setPhase("handoff");
+          return;
+        }
+        if (readAutoRetry() < 1) {
+          bumpAutoRetry();
+          await startOAuth();
+          return;
+        }
         setErrorMsg("Google sign-in didn't complete. Please try again.");
         setPhase("error");
         return;
       }
 
       if (desktopState) {
-        // Fresh mint from the Mac app. Drop any leftover browser session so we
-        // don't auto-handoff the previous Google account after Mac sign-out.
+        // Fresh mint from the Mac app.
+        clearAutoRetry();
         writeBootMarker(desktopState);
         try {
           await supabase.auth.signOut({ scope: "local" });
@@ -286,8 +359,8 @@ export default function DesktopAuth() {
         return;
       }
 
-      // No desktop_state (opened in a plain browser tab).
       if (user) {
+        clearAutoRetry();
         setPhase("handoff");
         return;
       }
@@ -296,7 +369,7 @@ export default function DesktopAuth() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, user]);
 
-  const waitingCopy = hasOAuthCallbackParams() || waitingRef.current
+  const waitingCopy = finishing || hasOAuthCallbackParams()
     ? {
         title: "Finishing sign-in…",
         body: "Confirming your Google account, then you can open the LYKN Mac app.",
@@ -369,7 +442,10 @@ export default function DesktopAuth() {
                 </p>
                 <button
                   type="button"
-                  onClick={startOAuth}
+                  onClick={() => {
+                    clearAutoRetry();
+                    startOAuth();
+                  }}
                   className="mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white transition-colors duration-200 bg-gradient-to-b from-[#6ea8ff] to-[#2563eb] shadow-[0_12px_26px_-10px_rgba(37,99,235,0.65),inset_0_1px_0_rgba(255,255,255,0.45)] hover:from-[#5b9bff] hover:to-[#1e40af]"
                 >
                   Try again

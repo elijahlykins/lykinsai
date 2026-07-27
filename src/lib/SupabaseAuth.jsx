@@ -234,6 +234,10 @@ export function SupabaseAuthProvider({ children }) {
       provider,
       options: {
         redirectTo,
+        // DesktopAuth does a single window.location.assign — avoid Supabase
+        // ALSO navigating (double-redirect can drop the PKCE verifier on some
+        // browsers / machines and force a second Google attempt).
+        ...(opts.skipBrowserRedirect ? { skipBrowserRedirect: true } : {}),
         ...(opts.queryParams ? { queryParams: opts.queryParams } : {}),
         ...(opts.scopes ? { scopes: opts.scopes } : {}),
       },
