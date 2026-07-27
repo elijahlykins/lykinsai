@@ -1378,11 +1378,17 @@ async function runGeminiLoop({
 
 const AUTO_LOAD_MAX = 6;
 
-// View intent = the user wants to LOOK at the thing, not just discuss it or
-// hear a list of titles. Existence/list questions ("do I have any porsche
-// images?", "what notes do I have on X?") deliberately don't match — those
-// should get a normal answer, not a stack of cards.
-const VIEW_INTENT_RE = /\b(show|see|view|open|display|render|pull|bring|drop|load)\b/i;
+// View verbs alone are NOT enough ("show me how X works", "I see", "bring
+// it together"). Require an explicit saved/vault cue, or a short yes after
+// the assistant offered to pull saved items up.
+const VIEW_INTENT_RE =
+  /\b(show|see|view|open|display|render|pull\s*(?:up|in)|bring\s*(?:up|in)|drop\s+in|load)\b/i;
+const SAVED_CONTEXT_RE =
+  /\b(?:vault|saved|artifact|artifacts|my\s+(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|documents?|links?|articles?|bookmarks?|artifacts?|stuff)|from\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise)|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved)\b/i;
+const VAULT_AFFIRMATION_RE =
+  /^(?:\s*(?:yes|yep|yeah|yup|ya|sure|ok|okay|k|please|do\s*it|go(?:\s*ahead)?|go\s*for\s*it|sounds?\s*good|that\s*one|those|them|all\s*(?:of\s*)?(?:them|those))\b[\s.,!]*)+$/i;
+const VAULT_SURFACE_OFFER_RE =
+  /\b(pull\s*(?:them|those|it|up|in)|bring\s*(?:them|those|it|up|in)|show\s*(?:you|them|those|it)|want\s*me\s*to\s*(?:pull|show|bring|open|load)|i\s*(?:can|could)\s*(?:pull|show|bring)|in\s*(?:your\s*)?vault|saved\s*(?:note|notes|item|items|image|images|file|files))\b/i;
 
 // Words to strip when deriving a search topic from the user's message: the
 // view verbs themselves plus pronouns / filler / vault-domain nouns that
@@ -1411,6 +1417,29 @@ function extractUserText(userContent) {
       .join(' ');
   }
   return '';
+}
+
+/** True only when the user asked to SEE saved vault items this turn. */
+function userAskedToViewSavedItems(userText, priorTurns) {
+  const t = String(userText || '').trim();
+  if (!t) return false;
+  if (VIEW_INTENT_RE.test(t) && SAVED_CONTEXT_RE.test(t)) return true;
+  // "pull up my porsche pics" / "show me the note on X"
+  if (
+    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|vault|saved|links?|articles?|artifacts?)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (VAULT_AFFIRMATION_RE.test(t) && Array.isArray(priorTurns)) {
+    for (let i = priorTurns.length - 1; i >= 0; i--) {
+      const m = priorTurns[i];
+      if (m?.role !== 'assistant') continue;
+      return VAULT_SURFACE_OFFER_RE.test(String(m.content || ''));
+    }
+  }
+  return false;
 }
 
 // Reduce the user's message to its topic words so we can run a vault search
@@ -1453,7 +1482,9 @@ async function autoLoadVaultNeuronsIfMissed(opts, result) {
   if (!opts?.ctx?.userId) return;
 
   const userText = extractUserText(opts.userContent);
-  if (!userText || !VIEW_INTENT_RE.test(userText)) return;
+  // Critical: do NOT fire on generic "show/see/pull" chat — only when the
+  // user clearly wants saved Vault items on screen.
+  if (!userAskedToViewSavedItems(userText, opts.priorTurns)) return;
 
   const calls = Array.isArray(result.toolCalls) ? result.toolCalls : [];
   // The model already brought items into view this turn → nothing to repair.

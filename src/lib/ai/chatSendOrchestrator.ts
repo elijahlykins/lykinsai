@@ -237,8 +237,13 @@ const LOAD_NEURON_KINDS = new Set(["vault", "belief", "fact", "concept"]);
 // topical question like "how do I price my SaaS?" matches none of these).
 // Missing a real ask is the worse failure (the card silently never shows),
 // so we err toward catching every natural surfacing verb.
+// View / place verbs — alone these are NOT enough (normal chat uses "show",
+// "see", "find" constantly). Must pair with SAVED_CONTEXT or an offer yes.
 const VAULT_SURFACE_REQUEST_RE =
   /\b(show|see|view|look|open|pull|bring|load|display|render|embed|attach|surface|reveal|include|drop|put|add|insert|place|share|grab|find|lemme)\b/i;
+
+const VAULT_SAVED_CONTEXT_RE =
+  /\b(?:vault|saved|artifact|artifacts|my\s+(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|documents?|links?|articles?|bookmarks?|artifacts?|stuff)|from\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise)|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved)\b/i;
 
 // Placement phrases that mean "into the conversation" even without a verb
 // from the list above ("I want that in the chat", "put it here").
@@ -258,8 +263,8 @@ const VAULT_SURFACE_OFFER_RE =
 
 /**
  * True when the user has asked, THIS turn, to bring a saved vault item into
- * the chat — either by using a surfacing verb directly, or by affirming a
- * surfacing offer the assistant made on the immediately preceding turn.
+ * the chat — either by using a surfacing verb + saved/vault cue, or by
+ * affirming a surfacing offer the assistant made on the preceding turn.
  */
 function userRequestedVaultSurface(
   userText: string,
@@ -267,7 +272,15 @@ function userRequestedVaultSurface(
 ): boolean {
   const t = String(userText || "").trim();
   if (!t) return false;
-  if (VAULT_SURFACE_REQUEST_RE.test(t) || VAULT_SURFACE_PLACEMENT_RE.test(t)) return true;
+  const hasView = VAULT_SURFACE_REQUEST_RE.test(t) || VAULT_SURFACE_PLACEMENT_RE.test(t);
+  if (hasView && VAULT_SAVED_CONTEXT_RE.test(t)) return true;
+  if (
+    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|vault|saved|links?|articles?|artifacts?)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
   if (VAULT_AFFIRMATION_RE.test(t)) {
     for (let i = aiThread.length - 1; i >= 0; i--) {
       const m = aiThread[i];

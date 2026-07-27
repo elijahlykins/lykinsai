@@ -128,6 +128,19 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       try { onDisplayDocumentRef.current?.(display); } catch { /* ignore */ }
       try { delete (output as { display?: unknown }).display; } catch { /* ignore */ }
     }
+    // Voice project writes bypass the chat SSE path — refresh Synthesis lists.
+    if (
+      (name === "create_project" || name === "set_active_project" || name === "add_to_project")
+      && (output as { ok?: boolean })?.ok !== false
+    ) {
+      const project = (output as { project?: { id?: string } })?.project;
+      try {
+        const { emitProjectsChanged } = await import("@/lib/synthesis/projectLiveSync");
+        emitProjectsChanged({
+          projectId: typeof project?.id === "string" ? project.id : null,
+        });
+      } catch { /* ignore */ }
+    }
     const dc = dcRef.current;
     if (!dc || dc.readyState !== "open") return;
     try {

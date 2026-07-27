@@ -10,6 +10,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderKanban, Plus } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
+import { supabase } from "@/lib/supabase";
 import { toast } from "@/components/ui/use-toast";
 import {
   createUserProject,
@@ -47,11 +48,34 @@ export default function ProjectsPage() {
     queryClient.invalidateQueries({ queryKey: ["lykn_active_project", userId || "guest"] });
   };
 
-  // Stay in sync with MCP-side project writes from connected AI clients.
+  // Stay in sync with in-app chat/voice CustomEvents, Electron overlay IPC
+  // (bridged to the same event), and direct DB writes via Realtime.
   useEffect(() => {
     const onChange = () => refetch();
     window.addEventListener(PROJECTS_CHANGED_EVENT, onChange);
-    return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onChange);
+
+    if (!userId || !supabase) {
+      return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onChange);
+    }
+
+    const channel = supabase
+      .channel(`projects-page:${userId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "lykn_projects", filter: `user_id=eq.${userId}` },
+        onChange,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "lykn_project_neurons", filter: `user_id=eq.${userId}` },
+        onChange,
+      )
+      .subscribe();
+
+    return () => {
+      window.removeEventListener(PROJECTS_CHANGED_EVENT, onChange);
+      void supabase.removeChannel(channel);
+    };
   }, [userId]);
 
   const handleCreate = async (e) => {

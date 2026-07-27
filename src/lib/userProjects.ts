@@ -182,22 +182,25 @@ export async function listUserProjects(userId: string | null | undefined): Promi
     let membersByProject = new Map<string, UserProjectMember[]>();
     let pushCountByProject = new Map<string, number>();
     if (ids.length > 0) {
+      // Don't let a members/state lookup failure hide the project rows
+      // themselves (AI-created projects would vanish behind localStorage).
       const { data: members, error: memErr } = await supabase
         .from("lykn_project_neurons")
         .select("project_id, node_id, node_label, node_kind, created_at")
         .eq("user_id", userId)
         .in("project_id", ids)
         .order("created_at", { ascending: true });
-      if (memErr) throw memErr;
-      for (const m of members || []) {
-        const pid = m.project_id as string;
-        const arr = membersByProject.get(pid) || [];
-        arr.push({
-          nodeId: m.node_id as string,
-          label: (m.node_label as string | null) ?? null,
-          kind: (m.node_kind as string | null) ?? null,
-        });
-        membersByProject.set(pid, arr);
+      if (!memErr) {
+        for (const m of members || []) {
+          const pid = m.project_id as string;
+          const arr = membersByProject.get(pid) || [];
+          arr.push({
+            nodeId: m.node_id as string,
+            label: (m.node_label as string | null) ?? null,
+            kind: (m.node_kind as string | null) ?? null,
+          });
+          membersByProject.set(pid, arr);
+        }
       }
 
       // Push counts — one row per `lykn_pushProjectState` call, ever.

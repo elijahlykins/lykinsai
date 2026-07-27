@@ -333,10 +333,12 @@
         font-weight: 500;
         text-decoration: none;
       }
-      /* Download / Code buttons on generated images / built artifacts. */
+      /* Download / Code / Edit buttons on generated images / built artifacts. */
       .chat-a .md-dl,
       .chat-a .md-code,
-      .chat-a .md-code-copy {
+      .chat-a .md-code-copy,
+      .chat-a .md-edit-build,
+      .chat-a .md-edit-image {
         appearance: none;
         border: 1px solid rgba(255, 255, 255, 0.16);
         border-radius: 7px;
@@ -352,10 +354,24 @@
       }
       .chat-a .md-dl:hover:not(:disabled),
       .chat-a .md-code:hover:not(:disabled),
-      .chat-a .md-code-copy:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+      .chat-a .md-code-copy:hover:not(:disabled),
+      .chat-a .md-edit-build:hover:not(:disabled),
+      .chat-a .md-edit-image:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
       .chat-a .md-dl:disabled,
       .chat-a .md-code:disabled,
-      .chat-a .md-code-copy:disabled { opacity: 0.7; cursor: default; }
+      .chat-a .md-code-copy:disabled,
+      .chat-a .md-edit-build:disabled,
+      .chat-a .md-edit-image:disabled { opacity: 0.7; cursor: default; }
+      .chat-a .md-edit-build,
+      .chat-a .md-edit-image {
+        border-color: rgba(59, 120, 255, 0.45);
+        background: rgba(59, 120, 255, 0.18);
+        color: rgba(220, 230, 255, 0.95);
+      }
+      .chat-a .md-edit-build:hover:not(:disabled),
+      .chat-a .md-edit-image:hover:not(:disabled) {
+        background: rgba(59, 120, 255, 0.3);
+      }
       .chat-a .md-code-copy.copied {
         color: #4ade80;
         border-color: rgba(74, 222, 128, 0.45);
@@ -387,18 +403,25 @@
         -webkit-user-select: text;
         user-select: text;
       }
-      /* Image download: hover-reveal pill in the image's top-right corner. */
-      .chat-a .md-img-dl {
+      /* Image Edit / Download: hover-reveal pills in the image's top-right. */
+      .chat-a .md-img-actions {
         position: absolute;
         top: 8px;
         right: 8px;
-        background: rgba(17, 17, 20, 0.72);
+        display: flex;
+        gap: 6px;
         opacity: 0;
         transition: opacity 0.15s ease;
       }
-      .chat-a .md-img:hover .md-img-dl,
-      .chat-a .md-img-dl:disabled { opacity: 1; }
-      .chat-a .md-img-dl:hover:not(:disabled) { background: rgba(17, 17, 20, 0.9); }
+      .chat-a .md-img:hover .md-img-actions { opacity: 1; }
+      .chat-a .md-img-actions .md-dl,
+      .chat-a .md-img-actions .md-edit-image {
+        background: rgba(17, 17, 20, 0.72);
+      }
+      .chat-a .md-img-actions .md-dl:hover:not(:disabled),
+      .chat-a .md-img-actions .md-edit-image:hover:not(:disabled) {
+        background: rgba(17, 17, 20, 0.9);
+      }
       .chat-a .md-artifact iframe {
         display: block;
         width: 100%;
@@ -412,6 +435,66 @@
         width: 100%;
         max-height: 320px;
         background: #000;
+      }
+      /* Vault / neuron pull-up card (lykn_loadNeuron → Open in app). */
+      .chat-a .md-vault {
+        margin: 8px 0;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.05);
+        padding: 10px 12px;
+        cursor: pointer;
+      }
+      .chat-a .md-vault:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.18);
+      }
+      .chat-a .md-vault-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 4px;
+      }
+      .chat-a .md-vault-kind {
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(186, 200, 255, 0.85);
+      }
+      .chat-a .md-vault-open {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.9);
+        font: inherit;
+        font-size: 11.5px;
+        font-weight: 500;
+        line-height: 1;
+        padding: 4px 9px;
+        cursor: pointer;
+      }
+      .chat-a .md-vault-open:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .chat-a .md-vault-title {
+        font-size: 13.5px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.92);
+        line-height: 1.35;
+        word-break: break-word;
+      }
+      .chat-a .md-vault-preview {
+        margin-top: 6px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.55);
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
       }
 
       /* Loading state: the LYKN icon outline drawing on a loop + a shimmer

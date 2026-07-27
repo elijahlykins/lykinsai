@@ -24,6 +24,7 @@ const {
   Tray,
   powerMonitor,
   nativeTheme,
+  protocol,
 } = require("electron");
 
 const IS_MAC = process.platform === "darwin";
@@ -36,6 +37,23 @@ if (IS_WIN) {
     /* best-effort */
   }
 }
+
+// Vault HTML artifacts in Glass: served from an in-memory cache via
+// lykn-artifact:// so the overlay iframe never depends on localhost file-proxy
+// (SSRF-blocked + private-network iframe failures → "fetch failed").
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "lykn-artifact",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+      bypassCSP: true,
+    },
+  },
+]);
 
 // Force dark appearance for the whole shell. The glass overlay family (bar,
 // menu, picker, side panel, live notes) uses native "hud" vibrancy, and that
@@ -200,18 +218,18 @@ function openExternalSafe(url) {
 // status string. Mirrors the web app's voice-mode TOOL_STATUS_COPY so the
 // overlay's thinking indicator reads the same as the rest of LYKN.
 const TOOL_STATUS_LABELS = {
-  search_vault: "Searching your vault…",
+  search_vault: "Checking what’s in your stuff…",
   read_document: "Reading the document…",
   display_document: "Pulling that up…",
   web_search: "Searching the web…",
   web_fetch: "Reading the page…",
   find_connections: "Finding connections…",
-  get_beliefs: "Reviewing your beliefs…",
+  get_beliefs: "Remembering who you are…",
   get_rules: "Checking your rules…",
-  get_facts: "Recalling what it knows…",
+  get_facts: "Recalling your preferences…",
   propose_fact: "Making a note of that…",
-  list_projects: "Looking through your projects…",
-  get_project_state: "Checking the project…",
+  list_projects: "Connecting this to your projects…",
+  get_project_state: "Checking what you’re on…",
   set_active_project: "Switching projects…",
   create_project: "Starting a new project…",
   update_project_state: "Updating the project…",
@@ -246,6 +264,48 @@ function toolStatusLabel(name) {
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toLowerCase();
   return TOOL_STATUS_LABELS[key] || "Working on it…";
+}
+
+// Overlay chat/voice run in a separate BrowserWindow from the main app.
+// When those paths create/update projects, the main /projects page never
+// hears the in-renderer CustomEvent — bridge it over IPC instead.
+const OVERLAY_PROJECT_WRITE_TOOLS = new Set([
+  "lykn_createProject",
+  "lykn_setActiveProject",
+  "lykn_pushProjectState",
+  "lykn_updateProject",
+  "lykn_deleteProject",
+  "lykn_mergeProjects",
+  "lykn_addProjectNeurons",
+  "lykn_removeProjectNeurons",
+  "lykn_uploadToProject",
+  "create_project",
+  "set_active_project",
+  "add_to_project",
+  "update_project_state",
+]);
+
+function notifyMainProjectsChanged(detail = {}) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("lykn:projects-changed", detail);
+    }
+  } catch {
+    /* main window may be closed */
+  }
+}
+
+function maybeNotifyProjectsChangedFromTool(name, status, result) {
+  if (status !== "done") return;
+  if (!OVERLAY_PROJECT_WRITE_TOOLS.has(String(name || ""))) return;
+  if (result && typeof result === "object" && result.ok === false) return;
+  const project =
+    result && typeof result === "object"
+      ? result.project || result.target || null
+      : null;
+  const projectId =
+    project && typeof project.id === "string" && project.id ? project.id : null;
+  notifyMainProjectsChanged({ projectId });
 }
 
 // Shared with server.js via lib/webSearchIntent.cjs — explicit "search the
@@ -2002,9 +2062,438 @@ function stripHiddenTags(s) {
     // Brand is always LYKN (all caps) — leave lykn.io / lykn_* / lykn-* alone
     // (hyphen: overlay markers like lykn-artifact: / lykn-video:).
     .replace(/\b[Ll][Yy][Kk][Nn]\b(?!\.io\b)(?![_\-/])/g, "LYKN")
-    // Normalize overlay markers to lykn_artifact: / lykn_video: (underscore
-    // form). Covers LYKN-artifact from older brand rewrites and hyphen forms.
-    .replace(/!\[(?:LYKN|lykn)[-_](artifact|video):/gi, (_, kind) => `![lykn_${String(kind).toLowerCase()}:`);
+    // Normalize overlay markers to lykn_artifact: / lykn_video: / lykn_vault:
+    // (underscore form). Covers LYKN-artifact from older brand rewrites and hyphen forms.
+    .replace(/!\[(?:LYKN|lykn)[-_](artifact|video|vault):/gi, (_, kind) => `![lykn_${String(kind).toLowerCase()}:`);
+}
+
+// Overlay session seeds for vault pull-ups → Build / Image edit.
+// Declared above the vault marker helpers that write them.
+let lastOverlayReactArtifact = null; // { toolName, title, code }
+let lastOverlayVaultImage = null; // { url, title }
+
+/**
+ * Parse `[ATTACHMENTS_JSON:…]` from vault note content (CJS twin of
+ * lib/vault/attachmentsMarker.js — main cannot import that ESM module).
+ */
+function parseVaultAttachmentsFromContent(content) {
+  const MARKER = "[ATTACHMENTS_JSON:";
+  const raw = String(content || "");
+  const start = raw.indexOf(MARKER);
+  if (start === -1) return [];
+  const jsonStart = start + MARKER.length;
+  if (raw[jsonStart] !== "[") return [];
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let jsonEnd = -1;
+  for (let i = jsonStart; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "[") depth += 1;
+    else if (ch === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        jsonEnd = i + 1;
+        break;
+      }
+    }
+  }
+  if (jsonEnd === -1) return [];
+  try {
+    const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function stripVaultAttachmentsMarker(content) {
+  const MARKER = "[ATTACHMENTS_JSON:";
+  const raw = String(content || "");
+  const start = raw.indexOf(MARKER);
+  if (start === -1) return raw.trim();
+  // Cheap strip: drop from marker to matching close (same scanner as parse).
+  const atts = parseVaultAttachmentsFromContent(raw);
+  if (!atts.length && start >= 0) {
+    // Malformed marker — cut from marker to end of first line-ish chunk.
+    return raw.slice(0, start).replace(/\n{3,}/g, "\n\n").trim();
+  }
+  const spanStart = start;
+  // Re-scan for markerEnd including trailing ].
+  const jsonStart = start + MARKER.length;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let jsonEnd = -1;
+  for (let i = jsonStart; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "[") depth += 1;
+    else if (ch === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        jsonEnd = i + 1;
+        break;
+      }
+    }
+  }
+  let markerEnd = jsonEnd > 0 ? jsonEnd : raw.length;
+  if (raw[markerEnd] === "]") markerEnd += 1;
+  return `${raw.slice(0, spanStart)}${raw.slice(markerEnd)}`
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Classify a vault attachment for Glass view mode (image / html / video / other). */
+function classifyVaultAttachmentForOverlay(att) {
+  if (!att || typeof att !== "object") return "other";
+  // Match VaultAttachment: explicit non-"file" type wins; "file" falls through
+  // to mime/extension so saved React artifacts still preview as HTML.
+  const type = String(att.type || "").toLowerCase();
+  if (type === "image" || type === "html" || type === "video") return type;
+  const mime = String(att.mimeType || att.mime_type || "")
+    .toLowerCase()
+    .split(";")[0]
+    .trim();
+  if (mime.startsWith("image/")) return "image";
+  if (mime === "text/html") return "html";
+  if (mime.startsWith("video/")) return "video";
+  const src = String(att.name || att.url || att.storagePath || att.storage_path || "")
+    .split("?")[0]
+    .toLowerCase();
+  if (/\.(jpe?g|png|gif|webp|svg|bmp|heic|heif|tiff)$/i.test(src)) return "image";
+  if (/\.html?$/i.test(src)) return "html";
+  if (/\.(mp4|webm|mov|m4v)$/i.test(src)) return "video";
+  if (/^data:image\//i.test(String(att.url || ""))) return "image";
+  if (type && type !== "file" && type !== "other") return type;
+  return "other";
+}
+
+/** In-memory HTML for lykn-artifact:// iframe previews in Glass. */
+const artifactHtmlCache = new Map(); // key -> html string
+
+function cacheArtifactHtmlForOverlay(html) {
+  const body = String(html || "");
+  if (!body.trim()) return "";
+  const key = crypto.randomUUID().replace(/-/g, "");
+  artifactHtmlCache.set(key, body);
+  while (artifactHtmlCache.size > 40) {
+    const oldest = artifactHtmlCache.keys().next().value;
+    artifactHtmlCache.delete(oldest);
+  }
+  return `lykn-artifact://${key}`;
+}
+
+function isOverlayFirstPartyHost(hostname) {
+  const host = String(hostname || "")
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  if (!host) return false;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+  if (host === "artifacts.lykn.io" || host === "api.lykn.io" || host === "lykn.io") return true;
+  try {
+    const apiHost = new URL(API_BASE).hostname.toLowerCase();
+    if (host === apiHost) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+/** Fetch media bytes; allow our own API/localhost (file-proxy in dev). */
+async function fetchOverlayMedia(url) {
+  const u = String(url || "").trim();
+  if (!u) return null;
+  let host = "";
+  try {
+    host = new URL(u).hostname;
+  } catch {
+    return null;
+  }
+  try {
+    if (isOverlayFirstPartyHost(host)) {
+      return await fetch(u);
+    }
+    return await safeFetchMain(u);
+  } catch (e) {
+    console.warn("[overlay-vault] media fetch failed:", e?.message || e);
+    return null;
+  }
+}
+
+async function mintStorageSignedUrl(storagePath, bucket, token) {
+  const res = await fetch(`${API_BASE}/api/storage/signed-url`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ storagePath, bucket }),
+  });
+  if (!res.ok) return "";
+  const data = await res.json().catch(() => null);
+  return String(data?.signedUrl || "").trim();
+}
+
+/**
+ * HTML artifacts must NOT use raw Supabase signed URLs in an iframe (wrong
+ * MIME / frame-ancestors → blank). Prefer a public file-proxy URL; in local
+ * API / private-proxy cases, fetch the HTML in main and serve via lykn-artifact://.
+ */
+async function resolveVaultHtmlDisplayUrl(att, token) {
+  const storagePath = String(att.storagePath || att.storage_path || "").trim();
+  const bucket = String(att.storageBucket || att.storage_bucket || "user-files").trim();
+  const filename = String(att.name || "").trim() || "artifact.html";
+
+  const materializeFromUrl = async (url) => {
+    const res = await fetchOverlayMedia(url);
+    if (!res || !res.ok) return "";
+    const html = await res.text().catch(() => "");
+    return cacheArtifactHtmlForOverlay(html);
+  };
+
+  if (storagePath && token) {
+    try {
+      const res = await fetch(`${API_BASE}/api/storage/file-proxy-url`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ storagePath, bucket, filename }),
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        const proxyUrl = String(data?.url || "").trim();
+        if (/^https?:\/\//i.test(proxyUrl) && !/supabase\.co\/storage\//i.test(proxyUrl)) {
+          const pub = await assertPublicHttpUrl(proxyUrl);
+          if (pub.ok) return proxyUrl;
+          // localhost / private API file-proxy — pull bytes into local scheme.
+          const local = await materializeFromUrl(proxyUrl);
+          if (local) return local;
+        }
+      } else {
+        console.warn("[overlay-vault] file-proxy-url", res.status);
+      }
+    } catch (e) {
+      console.warn("[overlay-vault] file-proxy mint failed:", e?.message || e);
+    }
+
+    try {
+      const signed = await mintStorageSignedUrl(storagePath, bucket, token);
+      if (signed) {
+        const local = await materializeFromUrl(signed);
+        if (local) return local;
+      }
+    } catch (e) {
+      console.warn("[overlay-vault] signed html materialize failed:", e?.message || e);
+    }
+  }
+
+  const fallback = String(att.url || "").trim();
+  if (/^https?:\/\//i.test(fallback) && !/supabase\.co\/storage\//i.test(fallback)) {
+    const pub = await assertPublicHttpUrl(fallback);
+    if (pub.ok) return fallback;
+    const local = await materializeFromUrl(fallback);
+    if (local) return local;
+  }
+  // Last resort: supabase URL as bytes → local scheme (never as iframe src).
+  if (/^https?:\/\//i.test(fallback) && /supabase\.co\/storage\//i.test(fallback)) {
+    const local = await materializeFromUrl(fallback);
+    if (local) return local;
+  }
+  return "";
+}
+
+/** Fresh signed / file-proxy URL so Glass can iframe/img vault media. */
+async function resolveVaultAttachmentDisplayUrl(att, token) {
+  if (!att || typeof att !== "object") return "";
+  const kind = classifyVaultAttachmentForOverlay(att);
+  if (kind === "html") return resolveVaultHtmlDisplayUrl(att, token);
+
+  const storagePath = String(att.storagePath || att.storage_path || "").trim();
+  const bucket = String(att.storageBucket || att.storage_bucket || "user-files").trim();
+  if (storagePath && token) {
+    try {
+      const signed = await mintStorageSignedUrl(storagePath, bucket, token);
+      if (/^https?:\/\//i.test(signed)) return signed;
+    } catch {
+      /* fall through */
+    }
+  }
+  const fallback = String(att.url || "").trim();
+  return /^https?:\/\//i.test(fallback) || /^data:image\//i.test(fallback) ? fallback : "";
+}
+
+function vaultOpenCardMarkdown(kind, id, title, subtitle) {
+  const safeTitle = String(title || "Saved item").replace(/[\]\n\r]/g, " ").slice(0, 100) || "Saved item";
+  const safeSub = String(subtitle || "")
+    .replace(/["\n\r]/g, " ")
+    .slice(0, 160);
+  const href = `lykn-vault://${encodeURIComponent(kind)}/${encodeURIComponent(id)}`;
+  return safeSub
+    ? `![lykn_vault:${safeTitle}](${href} "${safeSub}")`
+    : `![lykn_vault:${safeTitle}](${href})`;
+}
+
+/**
+ * Build Glass view-mode markers from lykn_loadNeuron / lykn_loadNeurons.
+ * Vault images → md-img, HTML → lykn_artifact iframe, else Open card.
+ * Also seeds lastOverlayReactArtifact when an editable React source is found.
+ */
+async function overlayVaultMarkersFromToolResult(toolName, result) {
+  const name = String(toolName || "");
+  const entries = [];
+  if (!result || typeof result !== "object") return "";
+
+  if (/loadNeurons$/i.test(name) && Array.isArray(result.results)) {
+    for (const entry of result.results) {
+      if (entry && entry.ok === true) entries.push(entry);
+    }
+  } else if (result.ok === true) {
+    entries.push(result);
+  }
+
+  const lines = [];
+  const seen = new Set();
+  let token = null;
+  const ensureToken = async () => {
+    if (token !== null) return token;
+    try {
+      token = (await getAuthToken()) || "";
+    } catch {
+      token = "";
+    }
+    return token;
+  };
+
+  for (const entry of entries) {
+    const kind = String(entry.kind || "").toLowerCase();
+    let id = "";
+    let title = "";
+    let subtitle = "";
+    if (kind === "vault") {
+      id =
+        String(entry.note?.id || "").trim() ||
+        String(entry.node_id || "")
+          .replace(/^vault_/i, "")
+          .trim();
+      title = String(entry.note?.title || entry.display || "Vault item")
+        .replace(/\s+/g, " ")
+        .trim();
+      const body = stripVaultAttachmentsMarker(String(entry.note?.content || ""))
+        .replace(/\s+/g, " ")
+        .trim();
+      subtitle = body.slice(0, 140);
+    } else if (kind === "belief") {
+      id =
+        String(entry.belief?.id || "").trim() ||
+        String(entry.node_id || "")
+          .replace(/^belief_/i, "")
+          .trim();
+      title = String(entry.belief?.text || entry.display || "Belief")
+        .replace(/\s+/g, " ")
+        .trim();
+      subtitle = "Core belief";
+    } else if (kind === "fact") {
+      id =
+        String(entry.fact?.id || "").trim() ||
+        String(entry.node_id || "")
+          .replace(/^fact_/i, "")
+          .trim();
+      title = String(entry.fact?.text || entry.display || "Fact")
+        .replace(/\s+/g, " ")
+        .trim();
+      subtitle = "Preference / fact";
+    } else if (kind === "concept") {
+      id =
+        String(entry.concept?.id || entry.concept?.slug || "").trim() ||
+        String(entry.node_id || "")
+          .replace(/^concept_/i, "")
+          .trim();
+      title = String(entry.concept?.label || entry.display || "Concept")
+        .replace(/\s+/g, " ")
+        .trim();
+      subtitle = "Concept";
+    } else {
+      continue;
+    }
+    if (!id || seen.has(`${kind}:${id}`)) continue;
+    seen.add(`${kind}:${id}`);
+    const safeTitle = title.replace(/[\]\n\r]/g, " ").slice(0, 100) || "Saved item";
+
+    // Vault media: render the same view as Vault (image / live artifact / video).
+    if (kind === "vault") {
+      const atts = parseVaultAttachmentsFromContent(entry.note?.content || "");
+      const primary = atts.find((a) => a && typeof a === "object") || null;
+      if (primary) {
+        const mediaKind = classifyVaultAttachmentForOverlay(primary);
+        const auth = await ensureToken();
+        const mediaUrl = await resolveVaultAttachmentDisplayUrl(primary, auth);
+        if (mediaUrl && mediaKind === "image") {
+          lines.push(`![${safeTitle}](${mediaUrl})`);
+          lines.push(vaultOpenCardMarkdown("vault", id, safeTitle, "Image · Open in Vault"));
+          lastOverlayVaultImage = { url: mediaUrl, title: safeTitle };
+          continue;
+        }
+        if (mediaUrl && mediaKind === "html") {
+          lines.push(`![lykn_artifact:${safeTitle}](${mediaUrl})`);
+          lines.push(vaultOpenCardMarkdown("vault", id, safeTitle, "Artifact · Open in Vault"));
+          // Seed Build-mode refine before the card lands so Edit → Build works.
+          try {
+            const code = await extractReactArtifactCodeFromResult({
+              file_url: mediaUrl,
+              title: safeTitle,
+            });
+            if (code && String(code).trim()) {
+              lastOverlayReactArtifact = {
+                toolName: "lykn_build_react_artifact",
+                title: safeTitle,
+                code: String(code),
+              };
+            }
+          } catch {
+            /* non-React HTML still previews; Build starts fresh */
+          }
+          continue;
+        }
+        if (mediaUrl && mediaKind === "video") {
+          lines.push(`![lykn_video:${safeTitle}](${mediaUrl})`);
+          lines.push(vaultOpenCardMarkdown("vault", id, safeTitle, "Video · Open in Vault"));
+          continue;
+        }
+      }
+    }
+
+    lines.push(vaultOpenCardMarkdown(kind, id, safeTitle, subtitle));
+    if (lines.length >= 12) break;
+  }
+  return lines.length ? `\n\n${lines.join("\n\n")}\n\n` : "";
 }
 
 // While streaming, a control tag can arrive split across deltas. Trim any
@@ -4046,27 +4535,40 @@ let overlayAskAbort = null;
 // the project the user was just looking at, instead of landing unfiled.
 let overlayActiveProjectId = null;
 
-// Last React artifact built in this overlay session — threaded back as
-// activeArtifact so "make the button blue" patches instead of rebuilding.
-let lastOverlayReactArtifact = null; // { toolName, title, code }
+async function extractReactArtifactCodeFromHtml(html) {
+  const m =
+    /<script id="lykn-artifact-source" type="application\/json">([\s\S]*?)<\/script>/.exec(
+      String(html || ""),
+    );
+  if (!m) return "";
+  try {
+    const code = JSON.parse(m[1]);
+    return typeof code === "string" ? code : "";
+  } catch {
+    return "";
+  }
+}
 
 async function extractReactArtifactCodeFromResult(result) {
   if (typeof result?.artifact_code === "string" && result.artifact_code.trim()) {
     return result.artifact_code;
   }
   const url = pickArtifactUrl(result);
-  if (!url || !/^https?:\/\//i.test(url)) return "";
+  if (!url) return "";
+  // Glass-local vault materialization.
+  if (/^lykn-artifact:\/\//i.test(url)) {
+    try {
+      const key = new URL(url).hostname.replace(/\/$/, "");
+      return extractReactArtifactCodeFromHtml(artifactHtmlCache.get(key) || "");
+    } catch {
+      return "";
+    }
+  }
+  if (!/^https?:\/\//i.test(url)) return "";
   try {
-    const res = await safeFetchMain(url);
-    if (!res.ok) return "";
-    const html = await res.text();
-    const m =
-      /<script id="lykn-artifact-source" type="application\/json">([\s\S]*?)<\/script>/.exec(
-        html,
-      );
-    if (!m) return "";
-    const code = JSON.parse(m[1]);
-    return typeof code === "string" ? code : "";
+    const res = await fetchOverlayMedia(url);
+    if (!res || !res.ok) return "";
+    return extractReactArtifactCodeFromHtml(await res.text());
   } catch {
     return "";
   }
@@ -4155,7 +4657,39 @@ async function errorFromAiResponse(res) {
   return new Error(`LYKN backend error (${res.status}).`);
 }
 
-async function readOverlayStreamResponse(res, send) {
+/** Glass: only render vault Open/image cards when the user asked for saved stuff. */
+function overlayUserWantsVaultSurface(userText, history) {
+  const t = String(userText || "").trim();
+  if (!t) return false;
+  const saved =
+    /\b(?:vault|saved|artifact|artifacts|my\s+(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|documents?|links?|articles?|bookmarks?|artifacts?|stuff)|from\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise)|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved)\b/i.test(
+      t,
+    );
+  const view =
+    /\b(show|see|view|open|pull\s*(?:up|in)|bring\s*(?:up|in)|display|load|find|grab)\b/i.test(t);
+  if (saved && view) return true;
+  if (
+    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|vault|saved|links?|articles?|artifacts?)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/^(?:\s*(?:yes|yep|yeah|yup|sure|ok|okay|k|please|do\s*it|go(?:\s*ahead)?)\b[\s.,!]*)+$/i.test(t)) {
+    const turns = Array.isArray(history) ? history : [];
+    for (let i = turns.length - 1; i >= 0; i--) {
+      const m = turns[i];
+      if (m?.role !== "assistant") continue;
+      return /\b(pull\s*(?:them|those|it|up|in)|bring\s*(?:them|those|it|up|in)|want\s*me\s*to\s*(?:pull|show|bring)|in\s*(?:your\s*)?vault|saved\s*(?:note|notes|item|items|image|images))\b/i.test(
+        String(m.content || ""),
+      );
+    }
+  }
+  return false;
+}
+
+async function readOverlayStreamResponse(res, send, opts = {}) {
+  const allowVaultSurface = opts.allowVaultSurface === true;
   const ctype = res.headers.get("content-type") || "";
   if (!res.ok || !res.body) {
     throw await errorFromAiResponse(res);
@@ -4197,6 +4731,7 @@ async function readOverlayStreamResponse(res, send) {
           send("lykn:answer-status", { status: j.status.trim() });
         } else if (j.tool_call && typeof j.tool_call === "object") {
           const tc = j.tool_call;
+          maybeNotifyProjectsChangedFromTool(tc.name, tc.status, tc.result);
           if (tc.status === "running") {
             send("lykn:answer-status", { status: toolStatusLabel(tc.name) });
           } else if (
@@ -4211,6 +4746,10 @@ async function readOverlayStreamResponse(res, send) {
             // <img> card. Living in `accumulated` means it also persists into
             // the saved session like any other answer text.
             accumulated += `\n\n![Generated image](${tc.result.image_url})\n\n`;
+            lastOverlayVaultImage = {
+              url: tc.result.image_url,
+              title: "Generated image",
+            };
             send("lykn:answer-delta", {
               text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
             });
@@ -4315,6 +4854,36 @@ async function readOverlayStreamResponse(res, send) {
           ) {
             // Other capability artifacts may not get an inline preview card in
             // the overlay yet. Vault persistence is explicit (Save / ask AI).
+          } else if (
+            tc.status === "done" &&
+            tc.result &&
+            /(^lykn_loadNeuron$|loadNeuron$)/.test(String(tc.name || ""))
+          ) {
+            // Vault pull-up only when the user asked for saved stuff this turn
+            // (or confirmed an offer). Blocks random loadNeuron on normal chat.
+            if (allowVaultSurface) {
+              const markers = await overlayVaultMarkersFromToolResult(tc.name, tc.result);
+              if (markers) {
+                accumulated += markers;
+                send("lykn:answer-delta", {
+                  text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
+                });
+              }
+            }
+          } else if (
+            tc.status === "done" &&
+            tc.result &&
+            /(^lykn_loadNeurons$|loadNeurons$)/.test(String(tc.name || ""))
+          ) {
+            if (allowVaultSurface) {
+              const markers = await overlayVaultMarkersFromToolResult(tc.name, tc.result);
+              if (markers) {
+                accumulated += markers;
+                send("lykn:answer-delta", {
+                  text: trimPartialControlTagTail(stripHiddenTags(accumulated)),
+                });
+              }
+            }
           }
         } else if (j.error) {
           throw new Error(String(j.error) || "Stream error.");
@@ -4556,8 +5125,40 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
   // Split dropped attachments into images (sent as image inputs) and text files
   // (inlined into the prompt).
   const atts = Array.isArray(attachments) ? attachments : [];
-  const imageAtts = atts.filter((a) => a && a.kind === "image" && a.dataUrl);
+  let imageAtts = atts.filter((a) => a && a.kind === "image" && a.dataUrl);
   const textAtts = atts.filter((a) => a && a.kind === "text" && a.text);
+  // Image mode with no attach: use the last vault/generated image shown in Glass
+  // so the user can enter Image mode and edit that thing directly.
+  if (
+    forceImage &&
+    imageAtts.length === 0 &&
+    lastOverlayVaultImage &&
+    /^https?:\/\//i.test(String(lastOverlayVaultImage.url || ""))
+  ) {
+    try {
+      const res = await safeFetchMain(lastOverlayVaultImage.url);
+      if (res.ok) {
+        const buf = Buffer.from(await res.arrayBuffer());
+        const mime =
+          (res.headers.get("content-type") || "").split(";")[0].trim() || "image/png";
+        if (buf.length && /^image\//i.test(mime)) {
+          const name =
+            `${String(lastOverlayVaultImage.title || "image")
+              .replace(/[^\w.-]+/g, "-")
+              .slice(0, 40) || "image"}.png`;
+          imageAtts = [
+            {
+              kind: "image",
+              name,
+              dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
+            },
+          ];
+        }
+      }
+    } catch {
+      /* keep empty — Image mode still works as a fresh generate */
+    }
+  }
   const conversationFollowUp = overlayMessageIsConversationFollowUp(text, history);
   const skipScreenContext =
     conversationFollowUp && imageAtts.length === 0 && textAtts.length === 0;
@@ -4713,6 +5314,18 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
       "Do NOT say you have highlighted, lit up, glowed, or ringed anything on their " +
       "screen, and do NOT emit [[HIGHLIGHT: …]] tags.";
   }
+  // Three-bucket memory — Glass should feel like it knows the person, not a
+  // generic screen Q&A bot. Server also injects WHO_I_AM / WHAT_IM_ON /
+  // WHAT_IVE_SAVED; this keeps the overlay prompt aligned when those land.
+  if (!skipScreenContext) {
+    prompt +=
+      "\n\nHow you know this person (use lightly — one personal anchor max unless they ask): " +
+      "WHO THEY ARE = preferences/facts/beliefs in context; " +
+      "WHAT THEY'RE ON = connect this screen to the best-fit project when clear; " +
+      "WHAT THEY'VE SAVED = Vault — pull only when they need something saved or one hit clearly helps. " +
+      "Keep learning them: if they reveal or contradict something about themselves, remember/update it. " +
+      "Answer the screen first; don't brief them with everything you know.";
+  }
   if (textAtts.length) {
     prompt +=
       "\n\nAttached files:\n" +
@@ -4819,10 +5432,12 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
     // lykn_generate_image tool (GPT Image 2), same as the web app's "+" →
     // Generate image. Only ever set by an explicit user toggle.
     ...(forceImage ? { forceImage: true, useTools: true } : {}),
-    // Build mode: force a NEW React artifact only when we don't already have
-    // one to refine, or the user explicitly asked to redesign/rebuild.
-    // Otherwise thread the last build as activeArtifact so edits stay surgical.
+    // Build mode: refine the last artifact (session build or vault pull-up)
+    // when we have source; otherwise force a fresh React artifact. Only
+    // armed while the composer is in Build mode — normal chat must not
+    // keep patching the last artifact.
     ...(() => {
+      if (!buildMode) return {};
       const redesign = OVERLAY_REDESIGN_INTENT_RE.test(String(text || ""));
       const cached =
         lastOverlayReactArtifact &&
@@ -4833,10 +5448,7 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
       if (cached && !redesign) {
         return { activeArtifact: cached, useTools: true };
       }
-      if (buildMode) {
-        return { forceArtifact: true, artifactType: "webapp", useTools: true };
-      }
-      return {};
+      return { forceArtifact: true, artifactType: "webapp", useTools: true };
     })(),
     overlayAsk: true,
     // Scope writes to the project the user is working in (sniffed from the
@@ -4888,7 +5500,9 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
           // Refresh really failed (signed out / refresh token revoked).
           throw new Error("LYKN backend error (401).");
         }
-        const accumulated = await readOverlayStreamResponse(res, send);
+        const accumulated = await readOverlayStreamResponse(res, send, {
+          allowVaultSurface: overlayUserWantsVaultSurface(text, history),
+        });
         if (superseded()) return;
         send("lykn:answer-done", { text: accumulated });
         return;
@@ -5404,10 +6018,21 @@ function registerOverlayIpc() {
       mainWindow.focus();
     }
   });
-  ipcMain.on("lykn:open-vault", () => {
-    const url = `${APP_ORIGIN}/vault`;
+  ipcMain.on("lykn:open-vault", (_e, noteId) => {
+    const id = String(noteId || "").trim();
+    const url = id
+      ? `${APP_ORIGIN}/vault?note=${encodeURIComponent(id)}`
+      : `${APP_ORIGIN}/vault`;
     if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-    else mainWindow.loadURL(url);
+    // Always navigate — createMainWindow loads the default app URL first.
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(url);
+    mainWindow.show();
+    mainWindow.focus();
+  });
+  ipcMain.on("lykn:open-synthesis", () => {
+    const url = `${APP_ORIGIN}/synthesis-layer`;
+    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(url);
     mainWindow.show();
     mainWindow.focus();
   });
@@ -5906,6 +6531,7 @@ function registerOverlayIpc() {
         body: JSON.stringify({ name, arguments: args ?? {}, chatId: null }),
       });
       const data = await res.json().catch(() => ({ ok: false, error: "bad_tool_response" }));
+      maybeNotifyProjectsChangedFromTool(name, "done", data);
       return data;
     } catch {
       return { ok: false, error: "tool_request_failed" };
@@ -6115,38 +6741,48 @@ function registerOverlayIpc() {
   // the signed URL's expiry.
   ipcMain.handle("lykn:download-file", async (_e, { url, name, title } = {}) => {
     const u = String(url || "").trim();
-    if (!/^https?:\/\//i.test(u)) return { ok: false, error: "bad_url" };
+    if (!/^https?:\/\//i.test(u) && !/^lykn-artifact:\/\//i.test(u)) {
+      return { ok: false, error: "bad_url" };
+    }
     try {
-      const res = await safeFetchMain(u);
-      if (!res.ok) return { ok: false, error: `http_${res.status}` };
-      const buf = Buffer.from(await res.arrayBuffer());
-
-      // Filename: caller suggestion → Content-Disposition (the file proxy
-      // always sends one) → URL path basename, with an extension inferred
-      // from Content-Type when missing.
+      let buf;
+      let mime = "application/octet-stream";
       let filename = String(name || "").trim();
-      if (!filename) {
-        const cd = res.headers.get("content-disposition") || "";
-        const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
-        if (m) {
+
+      if (/^lykn-artifact:\/\//i.test(u)) {
+        const key = new URL(u).hostname.replace(/\/$/, "");
+        const html = artifactHtmlCache.get(key);
+        if (!html) return { ok: false, error: "expired" };
+        buf = Buffer.from(html, "utf8");
+        mime = "text/html";
+      } else {
+        const res = await fetchOverlayMedia(u);
+        if (!res || !res.ok) return { ok: false, error: `http_${res?.status || 0}` };
+        buf = Buffer.from(await res.arrayBuffer());
+        mime = (res.headers.get("content-type") || "").split(";")[0].trim() || mime;
+        if (!filename) {
+          const cd = res.headers.get("content-disposition") || "";
+          const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+          if (m) {
+            try {
+              filename = decodeURIComponent(m[1]);
+            } catch {
+              filename = m[1];
+            }
+          }
+        }
+        if (!filename) {
           try {
-            filename = decodeURIComponent(m[1]);
+            filename = decodeURIComponent(new URL(u).pathname.split("/").pop() || "");
           } catch {
-            filename = m[1];
+            /* fall through */
           }
         }
       }
-      if (!filename) {
-        try {
-          filename = decodeURIComponent(new URL(u).pathname.split("/").pop() || "");
-        } catch {
-          /* fall through to the default */
-        }
-      }
+
       filename =
         filename.replace(/[/\\:*?"<>|]+/g, "-").replace(/^\.+/, "").slice(0, 120) || "download";
       if (!/\.[a-z0-9]{1,8}$/i.test(filename)) {
-        const ct = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
         const ext = {
           "image/png": ".png",
           "image/jpeg": ".jpg",
@@ -6158,7 +6794,7 @@ function registerOverlayIpc() {
           "text/plain": ".txt",
           "video/mp4": ".mp4",
           "video/webm": ".webm",
-        }[ct] || "";
+        }[mime.toLowerCase()] || "";
         filename += ext;
       }
 
@@ -6179,9 +6815,6 @@ function registerOverlayIpc() {
       try {
         const token = await getAuthToken();
         if (token) {
-          const mime =
-            (res.headers.get("content-type") || "").split(";")[0].trim() ||
-            "application/octet-stream";
           const form = new FormData();
           form.append("file", new Blob([buf], { type: mime }), filename);
           form.append("title", String(title || "").trim() || filename.replace(/\.[a-z0-9]{1,8}$/i, ""));
@@ -6209,14 +6842,69 @@ function registerOverlayIpc() {
   // hand the decoded component source back to the overlay's Code view.
   ipcMain.handle("lykn:artifact-code", async (_e, { url } = {}) => {
     const u = String(url || "").trim();
-    if (!/^https?:\/\//i.test(u)) return { ok: false, error: "bad_url" };
+    if (!/^https?:\/\//i.test(u) && !/^lykn-artifact:\/\//i.test(u)) {
+      return { ok: false, error: "bad_url" };
+    }
+    try {
+      let html = "";
+      if (/^lykn-artifact:\/\//i.test(u)) {
+        const key = new URL(u).hostname.replace(/\/$/, "");
+        html = artifactHtmlCache.get(key) || "";
+        if (!html) return { ok: false, error: "expired" };
+      } else {
+        const res = await fetchOverlayMedia(u);
+        if (!res || !res.ok) return { ok: false, error: `http_${res?.status || 0}` };
+        html = await res.text();
+      }
+      const code = await extractReactArtifactCodeFromHtml(html);
+      if (!code) return { ok: false, error: "no_source_block" };
+      return { ok: true, code };
+    } catch (err) {
+      return { ok: false, error: err?.message || "fetch_failed" };
+    }
+  });
+
+  // Seed Build-mode refine from a vault/generated artifact URL (Edit button).
+  ipcMain.handle("lykn:seed-artifact-from-url", async (_e, { url, title } = {}) => {
+    const u = String(url || "").trim();
+    if (!/^https?:\/\//i.test(u) && !/^lykn-artifact:\/\//i.test(u)) {
+      return { ok: false, error: "bad_url" };
+    }
+    try {
+      const code = await extractReactArtifactCodeFromResult({
+        file_url: u,
+        title: String(title || "Artifact"),
+      });
+      if (!code || !String(code).trim()) {
+        return { ok: false, error: "no_source_block" };
+      }
+      lastOverlayReactArtifact = {
+        toolName: "lykn_build_react_artifact",
+        title: String(title || "Artifact").replace(/\s+/g, " ").trim() || "Artifact",
+        code: String(code),
+      };
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err?.message || "seed_failed" };
+    }
+  });
+
+  // Fetch an image (or any allowlisted media URL) as a data URL for Image mode.
+  ipcMain.handle("lykn:fetch-as-data-url", async (_e, { url } = {}) => {
+    const u = String(url || "").trim();
+    if (!/^https?:\/\//i.test(u) && !/^data:image\//i.test(u)) {
+      return { ok: false, error: "bad_url" };
+    }
+    if (/^data:image\//i.test(u)) return { ok: true, dataUrl: u };
     try {
       const res = await safeFetchMain(u);
       if (!res.ok) return { ok: false, error: `http_${res.status}` };
-      const html = await res.text();
-      const m = /<script id="lykn-artifact-source" type="application\/json">([\s\S]*?)<\/script>/.exec(html);
-      if (!m) return { ok: false, error: "no_source_block" };
-      return { ok: true, code: JSON.parse(m[1]) };
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (!buf.length) return { ok: false, error: "empty" };
+      const mime =
+        (res.headers.get("content-type") || "").split(";")[0].trim() || "image/png";
+      if (!/^image\//i.test(mime)) return { ok: false, error: "not_image" };
+      return { ok: true, dataUrl: `data:${mime};base64,${buf.toString("base64")}` };
     } catch (err) {
       return { ok: false, error: err?.message || "fetch_failed" };
     }
@@ -7160,6 +7848,34 @@ function initAutoUpdate() {
 }
 
   app.whenReady().then(() => {
+  // Serve vault HTML artifacts to Glass iframes from memory (see
+  // resolveVaultHtmlDisplayUrl). Avoids localhost file-proxy iframe failures.
+  try {
+    protocol.handle("lykn-artifact", (request) => {
+      try {
+        const key = new URL(request.url).hostname.replace(/\/$/, "");
+        const html = artifactHtmlCache.get(key);
+        if (!html) {
+          return new Response("Artifact preview expired — pull it in again.", {
+            status: 404,
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          });
+        }
+        return new Response(html, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store",
+          },
+        });
+      } catch {
+        return new Response("Bad artifact URL", { status: 400 });
+      }
+    });
+  } catch (e) {
+    console.warn("[overlay-vault] lykn-artifact protocol:", e?.message || e);
+  }
+
   // Dev runs use the bare Electron binary, which shows Electron's dock icon.
   // Swap in the LYKN icon at runtime so dev looks like the packaged app.
   // Uses the pre-rounded variant: dock.setIcon draws the image literally

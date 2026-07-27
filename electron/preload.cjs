@@ -32,6 +32,20 @@ ipcRenderer.on("lykn:auth-tokens", (_event, tokens) => {
   else pendingAuthTokens = tokens;
 });
 
+// Overlay / voice project writes happen in another window. Main forwards them
+// here so /projects + Synthesis can reuse the same CustomEvent live-sync path.
+ipcRenderer.on("lykn:projects-changed", (_event, detail) => {
+  try {
+    window.dispatchEvent(
+      new CustomEvent("lykn:projects-changed", {
+        detail: detail && typeof detail === "object" ? detail : {},
+      }),
+    );
+  } catch {
+    /* renderer may not be ready */
+  }
+});
+
 contextBridge.exposeInMainWorld("lykn", {
   desktop: true,
   platform: process.platform,

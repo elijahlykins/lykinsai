@@ -935,14 +935,16 @@ export function formatBeliefsAndRulesForPrompt(beliefs, rules, opts = {}) {
   const body = buildBeliefsAndRulesBody(beliefs, rules, opts);
   if (!body) return '';
   const lines = [
-    '[BELIEFS_AND_RULES]',
-    'The user\'s ratified principles + the if-then rules they\'ve agreed should shape your behavior.',
-    'PREFER answering through these. Only consult [USER_MODEL] long-tail facts when this section can\'t cover the question.',
-    'Beliefs are USER-AUTHORED ONLY — do not propose, offer, or suggest new core beliefs.',
+    '[WHO_I_AM]',
+    'Who this person is — principles and if-then rules that should shape how you treat them.',
+    'This is part of LYKN\'s living model of the user (with preferences & facts below when present).',
+    'PREFER answering through these when judgment / taste / "how I work" matters.',
+    'Beliefs listed here are USER-AUTHORED — do not invent new core beliefs. Facts/preferences may be learned and updated.',
     'When you DO follow a rule, end your reply with a single hidden tag:',
     '  <applied rule_id="<uuid>">one short sentence (≤25 words) explaining HOW the rule shaped this reply</applied>',
     'Use a rule_id from the list below. Do NOT invent rule_ids. No tag = honest "this reply was not rule-driven".',
     '',
+    'Beliefs & rules:',
     body,
   ];
   return lines.join('\n').trim();
@@ -980,10 +982,10 @@ export function formatBeliefsAndRulesForPromptOutsideClient(beliefs, rules, opts
 
   if (body) {
     lines.push(
-      '[BELIEFS_AND_RULES]',
-      'These are the LYKN user\'s ratified principles + the if-then rules they\'ve agreed should shape an AI\'s replies.',
-      'PREFER answering through these. They are user-ratified, falsifiable, and revocable.',
-      'Beliefs are USER-AUTHORED ONLY — do not propose, offer, or suggest new core beliefs.',
+      '[WHO_I_AM]',
+      'Who this LYKN user is — ratified principles + if-then rules that should shape your replies.',
+      'PREFER answering through these when judgment / taste / "how I work" matters.',
+      'Beliefs are USER-AUTHORED — do not invent new core beliefs. Learned facts/preferences live elsewhere and may change.',
       '',
       'When a reply is materially shaped by one of the rules below, call the MCP tool:',
       '  lykn_recordRuleApplication({ rule_id: "<uuid>", message_id: "<your reply id>", reason: "<≤25 words on how the rule shaped this reply>" })',
@@ -991,6 +993,7 @@ export function formatBeliefsAndRulesForPromptOutsideClient(beliefs, rules, opts
       '',
       'Honesty over attribution: if your reply was generic and didn\'t actually lean on a rule, do NOT call the tool — most turns are not rule-driven and that\'s expected.',
       '',
+      'Beliefs & rules:',
       body,
     );
   }
@@ -1032,15 +1035,13 @@ export function formatOtherProjectsForPromptOutsideClient(otherProjects) {
   if (list.length === 0) return '';
 
   const lines = [
-    '[PROJECT_CATALOG]',
-    'All active projects the user owns (main + branches). ONLY the user creates',
-    'projects in LYKN — you may read/update any project by id but never create',
-    'one. Pick the best match for this conversation (like checking out the',
-    'right GitHub branch), then lykn_setActiveProject({ project_id }) or',
-    'lykn_getProjectState({ project_id }) without paraphrasing the name.',
+    '[WHAT_IM_ON — other projects]',
+    'Other active projects (main + branches). Connect the current screen / topic',
+    'to the best fit — the user may have several. ONLY the user creates projects;',
+    'you may read/update by id but never create one. When the fit is clear, call',
+    'lykn_setActiveProject({ project_id }) or lykn_getProjectState({ project_id }).',
     '',
-    'Structure: main projects have no parent. Branches belong to a main and',
-    'hold exploratory working memory that rolls up conceptually to that main.',
+    'Structure: main projects have no parent. Branches belong to a main.',
     '',
   ];
 
@@ -1064,7 +1065,9 @@ export function formatOtherProjectsForPromptOutsideClient(otherProjects) {
 }
 
 const PROJECT_CLIENT_LABELS = {
-  'lykn-chat': 'LYKN Chat',
+  LYKN: 'LYKN',
+  'lykn-chat': 'LYKN',
+  'lykn-synthesis': 'LYKN',
   'claude-desktop': 'Claude Desktop',
   'claude-code': 'Claude Code',
   cursor: 'Cursor',
@@ -1151,8 +1154,11 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
     : null;
 
   const header = [
-    '[CURRENT_PROJECT]',
-    `Name: ${project.name || '(unnamed)'}`,
+    '[WHAT_IM_ON]',
+    'What this person is working on — connect the current screen / conversation to their projects.',
+    'They may have multiple projects; pick the best fit and name it. Don\'t re-litigate decisions below.',
+    '',
+    `Active focus: ${project.name || '(unnamed)'}`,
   ];
   if (project.description) header.push(`Description: ${project.description}`);
   if (lastActive) header.push(`Last activity: ${lastActive}`);
@@ -1162,6 +1168,7 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
   } else if (!project.parent_project_id) {
     header.push('Type: main project');
   }
+  if (project.id) header.push(`project_id: ${project.id}`);
 
   // State kv-pairs. Sort so the most-recently-set keys appear first —
   // the model is more likely to lean on recent decisions, and recency
@@ -1207,7 +1214,7 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
   const neuronList = Array.isArray(neurons) ? neurons : [];
   const neuronLines = [];
   if (neuronList.length > 0) {
-    neuronLines.push('', 'Clustered neurons (user-grouped synthesis nodes):');
+    neuronLines.push('', 'Clustered context (user-grouped for this project):');
     // Cap at ~16 entries inline; the project is the user's pick of
     // what matters, so list density beats the long tail. The full
     // list is reachable via lykn_listProjects if the model needs it.
@@ -1265,10 +1272,11 @@ export function formatProjectStateForPromptInLykn(projectContext) {
     : null;
 
   const header = [
-    '[CURRENT_PROJECT]',
-    'The user\'s currently active synthesis-layer project — the work they\'re focused on across LYKN and any connected outside AI clients (Claude Desktop, Cursor, Claude Code, ChatGPT). Reference it naturally; don\'t re-litigate decisions already captured below.',
+    '[WHAT_IM_ON]',
+    'What this person is working on — connect the current screen / this conversation to their projects.',
+    'They may have several; pick the best fit, name it, and don\'t re-litigate decisions already captured below.',
     '',
-    `Name: ${project.name || '(unnamed)'}`,
+    `Active focus: ${project.name || '(unnamed)'}`,
   ];
   if (project.description) header.push(`Description: ${project.description}`);
   if (lastActive) header.push(`Last activity: ${lastActive}`);
@@ -1278,6 +1286,7 @@ export function formatProjectStateForPromptInLykn(projectContext) {
   } else if (!project.parent_project_id) {
     header.push('Type: main project');
   }
+  if (project.id) header.push(`project_id: ${project.id}`);
 
   const sorted = stateEntries
     .filter(([, v]) => v && v.value)
@@ -1311,7 +1320,7 @@ export function formatProjectStateForPromptInLykn(projectContext) {
   const neuronList = Array.isArray(neurons) ? neurons : [];
   const neuronLines = [];
   if (neuronList.length > 0) {
-    neuronLines.push('', 'Clustered neurons (user-grouped synthesis nodes):');
+    neuronLines.push('', 'Clustered context (user-grouped for this project):');
     for (const n of neuronList.slice(0, 16)) {
       const kind = n?.kind ? ` [${n.kind}]` : '';
       const label = (n?.label || '(unlabeled)').toString().replace(/\s+/g, ' ').trim();
@@ -1328,11 +1337,10 @@ export function formatProjectStateForPromptInLykn(projectContext) {
     'AI client pushed it. Prior assistant replies in [CONVERSATION] are labeled',
     'with their model — those were written by that model, not necessarily you.',
     'If this conversation produces a meaningful new decision, blocker, or',
-    'milestone for this project, suggest the user capture it on the',
-    'synthesis page so other AI clients pick it up next time. Outside AI',
-    'clients can update the project via MCP, but the in-LYKN chat does',
-    'not push state automatically — encourage the user to use the',
-    'project panel to record durable changes.',
+    'milestone for this project, suggest the user capture it so LYKN keeps',
+    'learning what they\'re on. Outside AI clients can update via MCP; in-LYKN',
+    'chat can use project tools when available — otherwise point them at the',
+    'project panel for durable changes.',
   ];
 
   return [
@@ -1611,25 +1619,27 @@ export async function loadOtherProjectsForUser(client, userId, opts = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Lightweight heuristic to decide whether to inject the wide [USER_MODEL]
- * fact pool. The premise: when the user has ratified beliefs+rules, those
- * cover most personalization needs and we can save tokens by skipping the
+ * Lightweight heuristic to decide whether to inject the wide [WHO_I_AM]
+ * preferences/facts pool. The premise: when the user has ratified beliefs+rules,
+ * those cover most personalization needs and we can save tokens by skipping the
  * fact dump. Long, identity-shaped, or recall questions still pull facts.
  *
  * Inputs are kept simple so this can stay sync — server.js calls it during
  * the same parallel context-fetch phase that pulls user model + identity.
  */
 export function shouldSkipUserModelGivenBeliefs({ activeBeliefCount, activeRuleCount, userMessage }) {
-  if (!activeBeliefCount || activeBeliefCount < 2) return false;
-  if (!activeRuleCount || activeRuleCount < 2) return false;
+  // Only skip the preferences/facts dump when the user has a RICH ratified
+  // belief+rule set — Who I Am is preferences + facts + beliefs; skipping
+  // facts too eagerly made LYKN feel like it forgot the individual.
+  if (!activeBeliefCount || activeBeliefCount < 4) return false;
+  if (!activeRuleCount || activeRuleCount < 4) return false;
   const msg = String(userMessage || '').trim();
   if (!msg) return false;
-  // Recall/identity questions ALWAYS get the full fact pool — the user is
-  // explicitly asking us to remember, and beliefs alone won't cover names,
-  // tools, locations, etc.
+  // Recall/identity/preference questions ALWAYS get the full fact pool.
   if (/\b(what|who).{0,20}(my|me|i)\b/i.test(msg)) return false;
-  if (/\b(remember|recall|told you|know about me|about myself)\b/i.test(msg)) return false;
-  if (msg.length > 600) return false;        // long messages may carry fresh disclosure
+  if (/\b(remember|recall|told you|know about me|about myself|my (prefs?|preferences|facts?))\b/i.test(msg)) return false;
+  if (/\b(i (prefer|like|hate|use|work)|my (tool|stack|setup|role))\b/i.test(msg)) return false;
+  if (msg.length > 400) return false;        // substantive messages may carry fresh disclosure
   return true;
 }
 

@@ -1,5 +1,6 @@
 /** Tool names that mutate project membership or working memory. */
 export const PROJECT_WRITE_TOOL_NAMES = new Set([
+  "lykn_createProject",
   "lykn_setActiveProject",
   "lykn_pushProjectState",
   "lykn_updateProject",

@@ -24,7 +24,7 @@
 //      of orphan-row footgun that pollutes the synthesis profile UI.
 
 import { jsonContent, errorContent, requireWrite } from './content.js';
-import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
+import { resolveProjectPushClient, resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const STATE_KEY_MAX = 80;
 const STATE_VALUE_MAX = 2000;
@@ -123,7 +123,7 @@ export const pushProjectStateTool = {
 
     const pushReason = args?.reason ? String(args.reason).trim().slice(0, REASON_MAX) : null;
     const messageId = args?.message_id ? String(args.message_id).trim().slice(0, 200) : null;
-    const clientKind = ctx?.chatModelLabel || ctx?.mcpAuth?.clientKind || 'lykn-chat';
+    const clientKind = resolveProjectPushClient(ctx);
 
     const explicitId = args?.project_id ? String(args.project_id).trim() : null;
     const { project, resolvedBy, reason: resolveReason } = await resolveWriteProjectTarget(ctx, explicitId);

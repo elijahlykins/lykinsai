@@ -31,6 +31,7 @@ import {
 } from "@/lib/synthesis/projectLiveSync";
 import { findMorningBrief, isFreshMorningBrief } from "@/lib/morningBrief";
 import MorningBriefCard from "@/components/projects/MorningBriefCard";
+import { formatPushClientLabel } from "@/components/projects/projectShared";
 
 /**
  * ProjectPanel — the right-side detail surface that opens when the
@@ -242,12 +243,13 @@ export default function ProjectPanel({
     const onProjectsChanged = (evt: Event) => {
       const detail = (evt as CustomEvent<ProjectsChangedDetail>).detail;
       if (detail?.userId && detail.userId !== userId) return;
-    if (detail?.projectId && detail.projectId !== project.id) return;
-      queryClient.invalidateQueries({
-        queryKey: ["lykn_project_state", userId || "guest", project.id],
-      });
+      // Always refresh the projects list (create of project B while viewing A).
       queryClient.invalidateQueries({
         queryKey: ["lykn_projects", userId],
+      });
+      if (detail?.projectId && detail.projectId !== project.id) return;
+      queryClient.invalidateQueries({
+        queryKey: ["lykn_project_state", userId || "guest", project.id],
       });
     };
     window.addEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
@@ -406,7 +408,7 @@ export default function ProjectPanel({
                       </p>
                       {u.setByClient ? (
                         <p className="mt-1.5 text-[0.55rem] uppercase tracking-[0.12em] text-white/35">
-                          via {u.setByClient}
+                          via {formatPushClientLabel(u.setByClient)}
                         </p>
                       ) : null}
                     </div>

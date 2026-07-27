@@ -42,6 +42,56 @@ export function relativeTime(ts) {
   return new Date(ts).toLocaleDateString();
 }
 
+/** Friendly labels for known external / automation push clients. */
+const PUSH_CLIENT_LABELS = {
+  lykn: "LYKN",
+  "lykn-chat": "LYKN",
+  "lykn-synthesis": "LYKN",
+  "night-shift": "Night Shift",
+  "cursor-build": "Cursor Build",
+  user: "you",
+  cursor: "Cursor",
+  claude: "Claude",
+  "claude-web": "Claude",
+  "claude-desktop": "Claude Desktop",
+  "claude-code": "Claude Code",
+  chatgpt: "ChatGPT",
+  "codex-cli": "Codex",
+  gemini: "Gemini",
+  windsurf: "Windsurf",
+  jetbrains: "JetBrains AI",
+  "github-copilot": "GitHub Copilot",
+  replit: "Replit",
+  lovable: "Lovable",
+  "v0-lovable": "v0",
+  perplexity: "Perplexity",
+  grok: "Grok",
+  "notion-ai": "Notion AI",
+  zapier: "Zapier",
+  elevenlabs: "ElevenLabs",
+  fathom: "Fathom",
+  "mem-ai": "Mem",
+  midjourney: "Midjourney",
+  "sora-veo": "Sora / Veo",
+  "figma-ai": "Figma AI",
+  "custom-agent": "Custom Agent",
+  other: "Other",
+};
+
+/**
+ * Display label for a project push's `set_by_client`.
+ * In-app Glass / Mac chat always brand as LYKN (including historical rows that
+ * stamped a model id or custom model name). External MCP clients keep identity.
+ */
+export function formatPushClientLabel(raw) {
+  const k = String(raw || "").trim();
+  if (!k) return "unknown client";
+  const lower = k.toLowerCase();
+  if (PUSH_CLIENT_LABELS[lower]) return PUSH_CLIENT_LABELS[lower];
+  // Historical in-app pushes stored the served model id / custom model name.
+  return "LYKN";
+}
+
 export const KIND_META = {
   vault: { title: "Vault items", icon: Plug, color: "#3b82f6" },
   concept: { title: "Concepts", icon: Lightbulb, color: "#a855f7" },
@@ -140,7 +190,7 @@ export function UpdateCard({ update, onSave, canEdit = true }) {
           {update.stateKey}
         </span>
         <span className="flex-shrink-0 ml-auto text-[0.625rem] text-black/35 dark:text-white/35">
-          {update.setByClient || "unknown client"} · {relativeTime(update.setAt)}
+          {formatPushClientLabel(update.setByClient)} · {relativeTime(update.setAt)}
         </span>
         {!editing && canEdit && (
           <Pencil className="w-3 h-3 flex-shrink-0 text-black/30 dark:text-white/30" />

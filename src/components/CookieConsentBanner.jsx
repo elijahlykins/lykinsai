@@ -51,13 +51,11 @@ export default function CookieConsentBanner() {
     <div
       role="dialog"
       aria-label="Cookie preferences"
-      className="fixed inset-x-0 bottom-0 z-[10000] p-3 sm:p-4 pointer-events-none"
+      className="fixed inset-x-0 bottom-0 z-[10000] border-t border-black/10 dark:border-white/12 bg-white/95 dark:bg-zinc-950/95 backdrop-blur-md"
     >
-      <div className="mx-auto max-w-2xl pointer-events-auto rounded-2xl border border-black/10 dark:border-white/12 bg-white/95 dark:bg-zinc-950/95 backdrop-blur-md shadow-[0_-4px_40px_rgba(0,0,0,0.12)] dark:shadow-[0_-4px_40px_rgba(0,0,0,0.45)] px-4 py-4 sm:px-5 sm:py-4">
-        <p className="text-[13px] leading-relaxed text-black/70 dark:text-white/75">
-          We use Google Analytics to understand how people use lykn.io — page
-          views and basic device info, not ads. Choose whether to allow
-          analytics cookies.{" "}
+      <div className="mx-auto max-w-6xl px-4 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <p className="text-[13px] leading-none text-black/70 dark:text-white/75 min-w-0">
+          We use cookies for analytics.{" "}
           <Link
             to="/cookies"
             className="underline underline-offset-2 hover:text-black/90 dark:hover:text-white/90"
@@ -65,20 +63,20 @@ export default function CookieConsentBanner() {
             Cookie Policy
           </Link>
         </p>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => setCookieConsent(true)}
             className="inline-flex items-center justify-center rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold px-3.5 py-2 transition-colors"
           >
-            Accept analytics
+            Accept cookies
           </button>
           <button
             type="button"
             onClick={() => setCookieConsent(false)}
             className="inline-flex items-center justify-center rounded-xl border border-black/12 dark:border-white/15 bg-transparent hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-black/80 dark:text-white/85 text-[13px] font-medium px-3.5 py-2 transition-colors"
           >
-            Reject
+            Reject cookies
           </button>
         </div>
       </div>

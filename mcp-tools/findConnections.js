@@ -24,19 +24,19 @@
 //   • Beliefs (active + proposed):  ilike on belief_text + rationale
 //   • Facts (active):               ilike on fact_text + reason
 //   • Concepts (active + proposed): ilike on label
-//   • Vault notes:                  ilike on title + content
+//   • Vault notes:                  hybrid BM25 + semantic (same engine as
+//                                   lykn_searchVault) — ilike only as fallback
 //
-// No embeddings yet. The point of "dumb" is determinism + zero LLM cost
-// per call. When we ship embeddings, this tool's name and shape stay
-// the same — handler grows a hybrid path. External clients shouldn't
-// need to know.
+// Beliefs/facts/concepts stay lexical for determinism + cost. Vault uses
+// the shared hybrid retriever so large vaults don't silently miss.
 //
 // Ordering: each store contributes up to `per_kind_limit` rows, sorted
 // by recency within its store. The merged response is bucketed by kind
 // in the order [belief, fact, concept, vault] so the highest-signal
 // stuff (governance > observation > theme > raw note) reads first.
 
-import { jsonContent, errorContent } from './index.js';
+import { jsonContent, errorContent } from './content.js';
+import { retrieveVaultHybridHits } from '../lib/rag/vaultHybrid.js';
 
 const MAX_QUERY_LEN = 200;
 const DEFAULT_PER_KIND_LIMIT = 5;
@@ -230,12 +230,41 @@ async function searchConcepts(ctx, query, limit) {
 
 async function searchVaultNotes(ctx, query, limit) {
   if (!query) return [];
+  // Same hybrid engine as lykn_searchVault — substring-only was the silent
+  // miss path when the model used findConnections for "what do I have on X?".
+  try {
+    const result = await retrieveVaultHybridHits(ctx, {
+      query,
+      limit,
+      // Related-word expansion + rerank — same quality as lykn_searchVault.
+      expand: true,
+      llmRerank: true,
+    });
+    if (result?.ok && Array.isArray(result.hits) && result.hits.length) {
+      return result.hits.map((hit) => ({
+        node_id: hit.node_id || `vault_${hit.id}`,
+        kind: 'vault',
+        label: hit.title || '(untitled note)',
+        snippet: String(hit.snippet || '').slice(0, 240),
+        extra: {
+          tags: Array.isArray(hit.tags) ? hit.tags.slice(0, 6) : [],
+          updated_at: hit.updated_at,
+          url: hit.url || `/vault?note=${encodeURIComponent(hit.id)}`,
+          match: hit.match,
+          ...(hit.similarity != null ? { similarity: hit.similarity } : {}),
+        },
+      }));
+    }
+  } catch (e) {
+    console.warn('[mcp:findConnections:vault] hybrid failed:', e?.message || e);
+  }
+  // Last-resort lexical fallback if hybrid throws (embeddings down, etc.).
   const pattern = `%${escapeLike(query)}%`;
   const { data, error } = await ctx.supabaseAdmin
     .from('vault_items')
-    .select('id, title, content, tags, created_at, updated_at')
+    .select('id, title, content, ai_summary, tags, created_at, updated_at')
     .eq('user_id', ctx.userId)
-    .or(`title.ilike.${pattern},content.ilike.${pattern}`)
+    .or(`title.ilike.${pattern},content.ilike.${pattern},ai_summary.ilike.${pattern}`)
     .order('updated_at', { ascending: false, nullsFirst: false })
     .limit(limit);
   if (error) {
@@ -246,7 +275,7 @@ async function searchVaultNotes(ctx, query, limit) {
     node_id: `vault_${row.id}`,
     kind: 'vault',
     label: row.title || '(untitled note)',
-    snippet: snippet(row.content || '', query, 240),
+    snippet: snippet(row.content || row.ai_summary || '', query, 240),
     extra: {
       tags: Array.isArray(row.tags) ? row.tags.slice(0, 6) : [],
       updated_at: row.updated_at,
@@ -275,7 +304,8 @@ export const findConnectionsTool = {
     'surfaces.',
     '',
     'TWO INPUT MODES:',
-    '  • query: "...free text..."  — substring search across every store.',
+    '  • query: "...free text..."  — lexical on beliefs/facts/concepts;',
+    '    hybrid BM25+semantic on vault (same engine as lykn_searchVault).',
     '  • node_id: "belief_<uuid>"  — find OTHER neurons related to this',
     '    starter neuron. node_id formats: belief_<uuid>, fact_<uuid>,',
     '    concept_<slug>, vault_<uuid>. The tool resolves the starter to',

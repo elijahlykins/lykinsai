@@ -85,12 +85,15 @@ function unescapeHtml(s) {
 function isAllowedMediaUrl(url) {
   try {
     const u = new URL(unescapeHtml(String(url || "")));
+    // Vault HTML served from Electron main memory (dev-safe artifact preview).
+    if (u.protocol === "lykn-artifact:") return true;
     if (u.protocol !== "https:" && u.protocol !== "http:") return false;
     // Dev: localhost API file proxy.
     if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
     const host = u.hostname.toLowerCase();
     return (
       host === "artifacts.lykn.io" ||
+      host === "api.lykn.io" ||
       host === "lykn-ideation.onrender.com" ||
       host.endsWith(".supabase.co") ||
       host === "lykn.io" ||
@@ -142,10 +145,12 @@ function renderMarkdown(md) {
       closeList();
       continue;
     }
-    // Standalone image line — how generated images (image mode) arrive.
-    // "lykn_artifact:" / "lykn-artifact:" (any case) marks a coded React
-    // artifact (Build mode): live iframe card, not an <img>.
-    let m = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)$/.exec(line.trim());
+    // Standalone image / card line — generated images, artifacts, videos,
+    // and Vault pull-ups (lykn_vault: → Open card in Glass).
+    // Lines are escapeHtml'd first, so optional title attrs use &quot; not ".
+    let m = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+|lykn-vault:\/\/[^\s)]+|lykn-artifact:\/\/[^\s)]+)(?:\s+(?:&quot;|")(.+?)(?:&quot;|"))?\)$/.exec(
+      line.trim(),
+    );
     if (m) {
       flushPara();
       closeList();
@@ -153,10 +158,55 @@ function renderMarkdown(md) {
       // so query strings (&w=, signed tokens, QuickChart c=) stay intact.
       const altText = unescapeHtml(m[1]);
       const mediaUrl = unescapeHtml(m[2]);
+      const previewText = m[3] ? unescapeHtml(m[3]) : "";
       const altLower = altText.toLowerCase();
       // Accept lykn_artifact:, lykn-artifact:, LYKN-artifact:, etc.
       const isArtifact = /^lykn[-_]artifact\s*:/.test(altLower);
       const isVideo = /^lykn[-_]video\s*:/.test(altLower);
+      const isVault = /^lykn[-_]vault\s*:/.test(altLower) || /^lykn-vault:\/\//i.test(mediaUrl);
+      if (isVault) {
+        let kind = "vault";
+        let itemId = "";
+        const vaultMatch = /^lykn-vault:\/\/([^/]+)\/(.+)$/i.exec(mediaUrl);
+        if (vaultMatch) {
+          try {
+            kind = decodeURIComponent(vaultMatch[1]) || "vault";
+            itemId = decodeURIComponent(vaultMatch[2]) || "";
+          } catch {
+            kind = vaultMatch[1] || "vault";
+            itemId = vaultMatch[2] || "";
+          }
+        }
+        const vaultTitle =
+          altText.replace(/^lykn[-_]vault\s*:/i, "").trim() || "Saved item";
+        const kindLabel =
+          kind === "belief"
+            ? "Belief"
+            : kind === "fact"
+              ? "Fact"
+              : kind === "concept"
+                ? "Concept"
+                : "Vault";
+        const safeTitle = escapeHtml(vaultTitle);
+        const safeKindLabel = escapeHtml(kindLabel);
+        const safeId = escapeAttr(itemId);
+        const safeKind = escapeAttr(kind);
+        const safePreview = previewText
+          ? `<div class="md-vault-preview">${escapeHtml(previewText)}</div>`
+          : "";
+        const openAttrs =
+          kind === "vault"
+            ? `data-kind="vault"${itemId ? ` data-note-id="${safeId}"` : ""}`
+            : `data-kind="${safeKind}" data-synthesis="1"`;
+        html +=
+          `<div class="md-vault" ${openAttrs}>` +
+          `<div class="md-vault-head"><span class="md-vault-kind">${safeKindLabel}</span>` +
+          `<button class="md-vault-open" type="button" ${openAttrs}>Open</button></div>` +
+          `<div class="md-vault-title">${safeTitle}</div>` +
+          safePreview +
+          `</div>`;
+        continue;
+      }
       if (isArtifact) {
         if (!isAllowedMediaUrl(mediaUrl)) {
           html += `<p><a href="${escapeAttr(mediaUrl)}" rel="noopener noreferrer">Open artifact ↗</a></p>`;
@@ -172,6 +222,7 @@ function renderMarkdown(md) {
           `<div class="md-artifact">` +
           `<div class="md-artifact-head"><span>${safeTitle}</span>` +
           `<span class="md-artifact-actions">` +
+          `<button class="md-edit-build" type="button" data-url="${safeUrl}" data-title="${safeTitle}">Edit</button>` +
           `<button class="md-code" type="button" data-url="${safeUrl}">Code</button>` +
           `<button class="md-dl" type="button" data-url="${safeUrl}" data-name="${safeFile}" data-title="${safeTitle}">Download</button>` +
           `<a href="${safeUrl}" rel="noopener noreferrer">Open ↗</a>` +
@@ -214,7 +265,10 @@ function renderMarkdown(md) {
         const safeAlt = escapeAttr(altText);
         html +=
           `<div class="md-img"><img src="${safeUrl}" alt="${safeAlt}" loading="lazy" />` +
+          `<div class="md-img-actions">` +
+          `<button class="md-edit-image" type="button" data-url="${safeUrl}" data-title="${safeAlt || "Image"}">Edit</button>` +
           `<button class="md-dl md-img-dl" type="button" data-url="${safeUrl}" data-name="" data-title="${safeAlt || "Generated image"}">Download</button>` +
+          `</div>` +
           `</div>`;
       } else {
         // Unknown host — show a link instead of dropping the line (avoids
@@ -1877,6 +1931,80 @@ threadEl.addEventListener("click", (e) => {
         codeBtn.textContent = "Code";
         pre.textContent = "";
       }
+    })();
+    return;
+  }
+  // Vault / neuron pull-up card: open the item in the main app (Vault note
+  // or Synthesis for beliefs/facts/concepts).
+  const vaultCard = e.target.closest(".md-vault");
+  if (vaultCard) {
+    e.preventDefault();
+    e.stopPropagation();
+    const noteId = vaultCard.getAttribute("data-note-id") || "";
+    const toSynthesis = vaultCard.getAttribute("data-synthesis") === "1";
+    try {
+      if (toSynthesis) window.lyknOverlay.openSynthesis?.();
+      else window.lyknOverlay.openVault?.(noteId);
+    } catch (_) {}
+    return;
+  }
+  // Edit on a vault/generated artifact → Build mode (source already seeded
+  // in main when the artifact was built or loaded via loadNeuron).
+  const editBuildBtn = e.target.closest(".md-edit-build");
+  if (editBuildBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const url = editBuildBtn.getAttribute("data-url") || "";
+    const title = editBuildBtn.getAttribute("data-title") || "Artifact";
+    editBuildBtn.disabled = true;
+    const orig = editBuildBtn.textContent;
+    editBuildBtn.textContent = "…";
+    void (async () => {
+      try {
+        if (url && window.lyknOverlay?.seedArtifactFromUrl) {
+          await window.lyknOverlay.seedArtifactFromUrl(url, title);
+        }
+      } catch (_) {}
+      setComposerMode("build");
+      askEl.focus();
+      editBuildBtn.textContent = orig;
+      editBuildBtn.disabled = false;
+      reportHeight();
+    })();
+    return;
+  }
+  // Edit on an image → Image mode with that image attached as the reference.
+  const editImgBtn = e.target.closest(".md-edit-image");
+  if (editImgBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const url = editImgBtn.getAttribute("data-url") || "";
+    const title = editImgBtn.getAttribute("data-title") || "Image";
+    if (!url) return;
+    editImgBtn.disabled = true;
+    const orig = editImgBtn.textContent;
+    editImgBtn.textContent = "…";
+    void (async () => {
+      let dataUrl = "";
+      try {
+        const res = await window.lyknOverlay.fetchAsDataUrl?.(url);
+        if (res && res.ok && res.dataUrl) dataUrl = res.dataUrl;
+      } catch (_) {}
+      if (dataUrl) {
+        clearAttachments();
+        addAttachmentObjects([
+          {
+            kind: "image",
+            name: `${String(title).replace(/[^\w.-]+/g, "-").slice(0, 40) || "image"}.png`,
+            dataUrl,
+          },
+        ]);
+      }
+      setComposerMode("image");
+      askEl.focus();
+      editImgBtn.textContent = orig;
+      editImgBtn.disabled = false;
+      reportHeight();
     })();
     return;
   }

@@ -437,9 +437,10 @@ export async function runChatTool(toolName, args, ctx, options = {}) {
  * what the <applied> tag funnel uses), and `mcpAuth` is null (JWT path).
  */
 /**
- * Human-readable attribution for in-app chat tool writes (project state,
- * etc.). Custom models use their display name; frontier models use the
- * served model id so the project panel can show "via Mark" / "via gpt-4.1".
+ * Label for the in-app chat model (custom display name or served model id).
+ * Project-state pushes no longer use this for UI attribution — those brand
+ * as "LYKN" via resolveProjectPushClient — but other call sites may still
+ * want the concrete model identity.
  */
 export function resolveChatModelLabel({ customModelName, modelId } = {}) {
   const custom = typeof customModelName === 'string' ? customModelName.trim() : '';

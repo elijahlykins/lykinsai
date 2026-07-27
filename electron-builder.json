@@ -63,6 +63,7 @@
     ],
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
+    "notarize": false,
     "entitlements": "electron/resources/entitlements.mac.plist",
     "entitlementsInherit": "electron/resources/entitlements.mac.plist",
     "extendInfo": {

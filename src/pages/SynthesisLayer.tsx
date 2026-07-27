@@ -5592,10 +5592,13 @@ export default function SynthesisLayer() {
         {/* Empty state */}
         {isEmpty && (
           <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-            <div className="text-center space-y-3">
+            <div className="text-center space-y-3 max-w-sm px-4">
               <Brain className="w-12 h-12 text-indigo-500 dark:text-indigo-300 mx-auto" />
-              <p className="text-sm text-gray-700 dark:text-gray-300">Your Synthesis Layer is empty.</p>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Create chats or vault notes to see them here.</p>
+              <p className="text-sm text-gray-700 dark:text-gray-300">LYKN doesn’t know you yet.</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                Talk in chat or Glass, save to the Vault, and add a project —
+                Who you are, what you’re on, and what’s in your stuff show up here.
+              </p>
             </div>
           </div>
         )}

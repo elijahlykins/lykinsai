@@ -20,6 +20,7 @@ import { VOICE_FIRST_MESSAGE_OVERRIDE } from "@/lib/voice/voiceConfig";
 import { getVoiceId } from "@/lib/ai-prefs";
 import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
 import VoiceTechOrb from "./VoiceTechOrb";
+import { emitProjectsChanged } from "@/lib/synthesis/projectLiveSync";
 
 type VoiceUiState = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "error";
 
@@ -216,6 +217,17 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
       if (display) {
         try { onDisplayDocumentRef.current?.(display); } catch { /* ignore */ }
         try { delete (data as { display?: unknown }).display; } catch { /* ignore */ }
+      }
+      // Voice project writes bypass the chat SSE path, so nudge Synthesis to
+      // refetch the projects list (create especially) without a manual refresh.
+      if (
+        (name === "create_project" || name === "set_active_project" || name === "add_to_project")
+        && (data as { ok?: boolean })?.ok !== false
+      ) {
+        const project = (data as { project?: { id?: string } })?.project;
+        emitProjectsChanged({
+          projectId: typeof project?.id === "string" ? project.id : null,
+        });
       }
       return JSON.stringify(data);
     } catch {

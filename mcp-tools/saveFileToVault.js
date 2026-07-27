@@ -28,9 +28,10 @@
 // Self-contained: inserts straight into `notes` via ctx.supabaseAdmin +
 // ctx.userId, so it behaves identically wherever the chat agent loop runs it.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent, requireWrite } from './content.js';
 import { resolveVaultAttachment } from '../lib/vaultAttachment.js';
 import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
+import { embedAndStoreChunks } from '../synthesis-service.js';
 
 const TITLE_MAX = 200;
 const CONTENT_MAX = 60000;
@@ -279,6 +280,16 @@ export const saveFileToVaultTool = {
       console.warn('[mcp:saveFileToVault]', error.message);
       return errorContent(`vault save failed: ${error.message}`);
     }
+
+    // Embed title (+ body) so hybrid search finds artifacts immediately.
+    void embedAndStoreChunks({
+      supabaseAdmin: ctx.supabaseAdmin,
+      userId: ctx.userId,
+      sourceType: 'vault_note',
+      sourceId: data.id,
+      text: [`Title: ${title}`, content].filter(Boolean).join('\n\n').slice(0, 120_000),
+      metadata: { title },
+    }).catch((e) => console.warn('[mcp:saveFileToVault] embed:', e?.message || e));
 
     return jsonContent({
       ok: true,

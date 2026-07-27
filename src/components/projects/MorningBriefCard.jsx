@@ -1,5 +1,6 @@
 import { Moon } from "lucide-react";
 import { renderMorningBriefHtml } from "@/lib/morningBrief";
+import { formatPushClientLabel } from "@/components/projects/projectShared";
 
 /**
  * Morning brief from Night Shift.
@@ -46,7 +47,7 @@ export default function MorningBriefCard({
       />
       {brief.setByClient ? (
         <p className="mt-2 text-[0.55rem] uppercase tracking-[0.12em] text-black/35 dark:text-white/35">
-          via {brief.setByClient}
+          via {formatPushClientLabel(brief.setByClient)}
         </p>
       ) : null}
     </>

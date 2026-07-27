@@ -103,7 +103,8 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
       return false;
     }
   },
-  openVault: () => ipcRenderer.send("lykn:open-vault"),
+  openVault: (noteId) => ipcRenderer.send("lykn:open-vault", noteId || ""),
+  openSynthesis: () => ipcRenderer.send("lykn:open-synthesis"),
   onBrowserProgress: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:browser-progress", fn);
@@ -118,6 +119,12 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   // Fetch the raw JSX source embedded in a Build-mode artifact's runner HTML
   // (for the artifact card's "Code" view). Returns { ok, code } or { ok:false }.
   artifactCode: (url) => ipcRenderer.invoke("lykn:artifact-code", { url }),
+  // Seed Build-mode refine from a vault/generated artifact URL (extracts
+  // #lykn-artifact-source into lastOverlayReactArtifact in main).
+  seedArtifactFromUrl: (url, title) =>
+    ipcRenderer.invoke("lykn:seed-artifact-from-url", { url, title }),
+  // Fetch an image URL as a data URL so Image mode can attach it as a reference.
+  fetchAsDataUrl: (url) => ipcRenderer.invoke("lykn:fetch-as-data-url", { url }),
   // Content protection — hide the overlay from screen recordings/shares.
   getContentProtection: () => ipcRenderer.invoke("lykn:get-content-protection"),
   setContentProtection: (enabled) =>

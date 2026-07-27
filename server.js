@@ -170,8 +170,10 @@ import {
   recordRuleApplication,
   formatBeliefsAndRulesForPrompt,
   formatProjectStateForPromptInLykn,
+  formatOtherProjectsForPromptOutsideClient,
   loadActiveProjectContext,
   loadProjectContextById,
+  loadOtherProjectsForUser,
   shouldSkipUserModelGivenBeliefs,
   listActiveBeliefsForUser,
   listActiveRulesForUser,
@@ -1519,7 +1521,7 @@ const PROMPT_SECTION_MARKERS = [
   '[USER_PREFERENCES]', '[INTENT]', '[CONVERSATION]', '[CONVERSATION_MEMORY',
   '[WORKSPACE_CONTEXT]', '[REQUEST_CONTEXT]', '[FULL_CONTEXT]',
   '[VAULT_URL_MATCHES]',
-  '[PROJECT_KNOWLEDGE]', '[PROJECT_ID]', '[CONTEXT]',
+  '[PROJECT_KNOWLEDGE]', '[WHAT_IM_ON]', '[WHO_I_AM]', '[WHAT_IVE_SAVED]', '[PROJECT_ID]', '[CONTEXT]',
   '[ATTACHED_IMAGES]', '[LATEST_USER_MESSAGE]', '[USER]',
 ];
 
@@ -1755,9 +1757,12 @@ function pickOutputCap({ wantsActions = false, hasImages = false, intent, overri
 // SYNTHESIS LAYER — semantic retrieval (Phase 2)
 // One OpenAI embed + one Supabase RPC per request when enabled.
 // ============================================
-const SYNTHESIS_RETRIEVAL_TOP_K = 8;
-const SYNTHESIS_MATCH_THRESHOLD = 0.55;
-const SYNTHESIS_BLOCK_MAX_CHARS = 4500;
+const SYNTHESIS_RETRIEVAL_TOP_K = 12;
+// Aligned with lykn_searchVault (0.35). The old 0.55 floor dropped many
+// real vault hits on short/topic queries — Glass then looked "blind".
+const SYNTHESIS_MATCH_THRESHOLD = 0.35;
+const SYNTHESIS_RETRIEVAL_OVERFETCH = 28;
+const SYNTHESIS_BLOCK_MAX_CHARS = 5500;
 
 // In-memory cache for retrieval embeddings. Same query within 15 minutes
 // returns the cached vector — no API call, no log row. Vectors are 1536
@@ -1928,6 +1933,238 @@ async function expandSynthesisChunkWindows(authHeader, rows) {
   }
 }
 
+const WHAT_IVE_SAVED_SOURCE_LABELS = {
+  vault: 'Vault',
+  note: 'Vault',
+  notes: 'Vault',
+  media: 'Vault',
+  notion: 'Notion',
+  gmail: 'Gmail',
+  slack: 'Slack',
+  github: 'GitHub',
+  linear: 'Linear',
+  todoist: 'Todoist',
+  trello: 'Trello',
+  drive: 'Google Drive',
+  'google-drive': 'Google Drive',
+  calendar: 'Calendar',
+  readwise: 'Readwise',
+  raindrop: 'Raindrop',
+  spotify: 'Spotify',
+  figma: 'Figma',
+  canva: 'Canva',
+  cursor: 'Cursor',
+};
+
+function labelForWhatIveSavedSource(sourceType) {
+  const key = String(sourceType || '').trim().toLowerCase();
+  if (!key) return 'Vault';
+  if (WHAT_IVE_SAVED_SOURCE_LABELS[key]) return WHAT_IVE_SAVED_SOURCE_LABELS[key];
+  // Connector tags often look like "notion_page" / "gmail_message".
+  for (const [k, label] of Object.entries(WHAT_IVE_SAVED_SOURCE_LABELS)) {
+    if (key.includes(k)) return label;
+  }
+  return key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).slice(0, 40) || 'Vault';
+}
+
+function formatWhatIveSavedHitLabel(row, titleBySourceId = null) {
+  const meta = row?.metadata && typeof row.metadata === 'object' ? row.metadata : {};
+  const sourceId = String(row?.source_id || '').trim();
+  const title = String(
+    meta.title || meta.note_title || meta.name || titleBySourceId?.get(sourceId) || '',
+  ).replace(/\s+/g, ' ').trim().slice(0, 120);
+  const origin = labelForWhatIveSavedSource(row?.source_type || meta.source || meta.connector);
+  // Always include vault_<uuid> so the model can lykn_loadNeuron without inventing an id.
+  const nodeId =
+    String(row?.source_type || '').toLowerCase() === 'vault_note' && sourceId
+      ? `vault_${sourceId}`
+      : sourceId
+        ? `vault_${sourceId}`
+        : '';
+  const idBit = nodeId ? ` · node_id=${nodeId}` : '';
+  if (title) return `From Vault · "${title}" (${origin})${idBit}`;
+  return `From Vault · ${origin} item${idBit}`;
+}
+
+/** Best-effort title lookup for vault note source_ids missing metadata.title. */
+async function lookupVaultTitlesForSynthesisRows(authHeader, userId, rows) {
+  const map = new Map();
+  if (!Array.isArray(rows) || !rows.length) return map;
+  const ids = [];
+  for (const r of rows) {
+    const meta = r?.metadata && typeof r.metadata === 'object' ? r.metadata : {};
+    if (meta.title || meta.note_title || meta.name) continue;
+    const sid = String(r?.source_id || '').trim();
+    // Vault notes use UUIDs as source_id.
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sid)) {
+      ids.push(sid);
+    }
+  }
+  const unique = [...new Set(ids)].slice(0, 24);
+  if (!unique.length) return map;
+  const client = supabaseAdmin || (authHeader ? createSynthesisUserClient(authHeader) : null);
+  if (!client) return map;
+  try {
+    let q = client.from('notes').select('id, title').in('id', unique);
+    if (userId) q = q.eq('user_id', userId);
+    const { data, error } = await q;
+    if (error || !Array.isArray(data)) return map;
+    for (const n of data) {
+      const t = String(n?.title || '').replace(/\s+/g, ' ').trim();
+      if (t && n.id) map.set(String(n.id), t);
+    }
+  } catch (e) {
+    console.warn('⚠️ Vault title lookup for WHAT_IVE_SAVED:', e?.message || e);
+  }
+  return map;
+}
+
+/** Prefer vault_note chunks, then higher similarity; dedupe by source_id. */
+function rankSynthesisRowsForWhatIveSaved(rows) {
+  const list = Array.isArray(rows) ? rows.filter((r) => r && String(r.content || '').trim()) : [];
+  const scored = list.map((r, i) => {
+    const st = String(r.source_type || '').toLowerCase();
+    const isVault = st === 'vault_note' || st === 'vault' || st === 'note' || st === 'notes';
+    const sim = typeof r.similarity === 'number' ? r.similarity : 0;
+    return { r, i, isVault, sim };
+  });
+  scored.sort((a, b) => {
+    if (a.isVault !== b.isVault) return a.isVault ? -1 : 1;
+    if (b.sim !== a.sim) return b.sim - a.sim;
+    return a.i - b.i;
+  });
+  const seen = new Set();
+  const out = [];
+  for (const item of scored) {
+    const key = `${item.r.source_type || ''}:${item.r.source_id || item.i}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item.r);
+    if (out.length >= SYNTHESIS_RETRIEVAL_TOP_K) break;
+  }
+  return out;
+}
+
+/**
+ * Lexical BM25 vault notes merged into WHAT_IVE_SAVED when dense search
+ * alone is thin — recovers exact-title / keyword hits embeddings miss.
+ * Artifact notes are often title + [ATTACHMENTS_JSON] only — never drop those.
+ */
+async function fetchBm25VaultRowsForWhatIveSaved(userId, queryText, existingSourceIds) {
+  if (!supabaseAdmin || !userId) return [];
+  const raw = String(queryText || '').trim().slice(0, 200);
+  if (raw.length < 2) return [];
+  // Prefer topic words so "I have something on prosthetics" still hits a title.
+  let probe = raw;
+  let relatedProbes = [];
+  try {
+    const { normalizeVaultSearchQuery } = await import('./lib/rag/vaultHybrid.js');
+    probe = normalizeVaultSearchQuery(raw) || raw;
+  } catch {
+    /* keep raw */
+  }
+  // Related-word probes (morph always; LLM synonyms when keyed) so Glass
+  // auto-recall can find "artificial limbs" ↔ "prosthetics" saves.
+  if (process.env.RAG_QUERY_EXPANSION !== '0') {
+    try {
+      const { expandQuery } = await import('./lib/rag/queryExpansion.js');
+      relatedProbes = await expandQuery(probe, {
+        enabled: !!process.env.OPENAI_API_KEY,
+        force: true,
+        mode: 'related',
+        max: 5,
+        timeoutMs: 3500,
+      });
+    } catch (e) {
+      console.warn('⚠️ WHAT_IVE_SAVED related expand:', e?.message || e);
+    }
+  }
+  try {
+    const seenIds = new Set();
+    const ids = [];
+    const bm25Queries = [probe, raw, ...relatedProbes]
+      .map((s) => String(s || '').trim().slice(0, 200))
+      .filter((s, i, a) => s && a.findIndex((x) => x.toLowerCase() === s.toLowerCase()) === i)
+      .slice(0, 6);
+    for (const q of bm25Queries) {
+      const { data: bm, error } = await supabaseAdmin.rpc('search_notes_bm25', {
+        p_user_id: userId,
+        p_query: q,
+        match_count: 12,
+      });
+      if (error) {
+        console.warn('⚠️ WHAT_IVE_SAVED BM25 rpc:', error.message);
+        continue;
+      }
+      for (const r of bm || []) {
+        const id = String(r.id || '');
+        if (!id || seenIds.has(id)) continue;
+        if (existingSourceIds instanceof Set && existingSourceIds.has(id)) continue;
+        seenIds.add(id);
+        ids.push(id);
+        if (ids.length >= 10) break;
+      }
+      if (ids.length >= 10) break;
+    }
+    // Title / summary ilike safety net — include related terms so artifact
+    // titles match synonyms (e.g. "Top Prosthetic Companies" ← "artificial limb").
+    const titleTerms = bm25Queries.filter((t) => t.length >= 3).slice(0, 6);
+    if (titleTerms.length) {
+      const patterns = [];
+      for (const term of titleTerms) {
+        const esc = term.replace(/[%_,()]/g, '\\$&');
+        patterns.push(`title.ilike.%${esc}%`);
+        patterns.push(`ai_summary.ilike.%${esc}%`);
+      }
+      const { data: titleHits } = await supabaseAdmin
+        .from('vault_items')
+        .select('id')
+        .eq('user_id', userId)
+        .or(patterns.slice(0, 20).join(','))
+        .limit(10);
+      for (const r of titleHits || []) {
+        const id = String(r.id || '');
+        if (!id || seenIds.has(id)) continue;
+        if (existingSourceIds instanceof Set && existingSourceIds.has(id)) continue;
+        seenIds.add(id);
+        ids.push(id);
+      }
+    }
+    if (!ids.length) return [];
+    const { data: notes, error: nErr } = await supabaseAdmin
+      .from('vault_items')
+      .select('id, title, content, ai_summary')
+      .eq('user_id', userId)
+      .in('id', ids.slice(0, 12));
+    if (nErr || !Array.isArray(notes)) return [];
+    const byId = new Map(notes.map((n) => [String(n.id), n]));
+    const rows = [];
+    for (const id of ids.slice(0, 12)) {
+      const n = byId.get(id);
+      if (!n) continue;
+      const title = String(n.title || '').replace(/\s+/g, ' ').trim();
+      const summary = String(n.ai_summary || '').replace(/\s+/g, ' ').trim();
+      const stripped = String(n.content || '')
+        .replace(/\[ATTACHMENTS_JSON:[\s\S]*$/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      // Marker-only artifacts: title IS the searchable body.
+      const body = (summary || stripped || title || 'Saved vault item').slice(0, 400);
+      rows.push({
+        source_type: 'vault_note',
+        source_id: id,
+        content: body,
+        similarity: 0.55,
+        metadata: { title: title || 'Vault item' },
+      });
+    }
+    return rows;
+  } catch (e) {
+    console.warn('⚠️ WHAT_IVE_SAVED BM25:', e?.message || e);
+    return [];
+  }
+}
+
 async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = null) {
   // Admin path: the voice custom-LLM endpoint is hit server-to-server by
   // ElevenLabs with NO user JWT, so it passes authHeader=null plus a resolved
@@ -1944,19 +2181,24 @@ async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = nu
   if (!embedding) return '';
   try {
     let rows;
-    if (useAdmin) {
+    if (useAdmin || (supabaseAdmin && userId)) {
+      // Prefer admin RPC whenever we know the user — same quality as searchVault
+      // dense pass, and lets us BM25-fuse below.
       const { data, error } = await supabaseAdmin.rpc('match_lykn_synthesis_chunks_for_user', {
         query_embedding: embedding,
         p_user_id: userId,
-        match_count: SYNTHESIS_RETRIEVAL_TOP_K,
+        match_count: SYNTHESIS_RETRIEVAL_OVERFETCH,
         match_threshold: SYNTHESIS_MATCH_THRESHOLD,
       });
       if (error) {
         console.warn('⚠️ Synthesis RPC (admin)', error.message);
-        return '';
+        if (!hasUserAuth) return '';
+        rows = null;
+      } else {
+        rows = data;
       }
-      rows = data;
-    } else {
+    }
+    if (!rows && hasUserAuth) {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/match_lykn_synthesis_chunks`, {
         method: 'POST',
         headers: {
@@ -1966,7 +2208,7 @@ async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = nu
         },
         body: JSON.stringify({
           query_embedding: embedding,
-          match_count: SYNTHESIS_RETRIEVAL_TOP_K,
+          match_count: SYNTHESIS_RETRIEVAL_OVERFETCH,
           match_threshold: SYNTHESIS_MATCH_THRESHOLD,
         }),
       });
@@ -1977,7 +2219,22 @@ async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = nu
       }
       rows = await res.json();
     }
-    if (!Array.isArray(rows) || rows.length === 0) {
+    if (!Array.isArray(rows)) rows = [];
+
+    // Lexical vault boost — fill gaps dense search misses on large vaults.
+    if (supabaseAdmin && userId) {
+      const existing = new Set(
+        rows
+          .filter((r) => String(r.source_type || '') === 'vault_note')
+          .map((r) => String(r.source_id || ''))
+          .filter(Boolean),
+      );
+      const bm25Rows = await fetchBm25VaultRowsForWhatIveSaved(userId, queryText, existing);
+      if (bm25Rows.length) rows = [...rows, ...bm25Rows];
+    }
+
+    rows = rankSynthesisRowsForWhatIveSaved(rows);
+    if (!rows.length) {
       logSynthesisRetrievalStats([], { threshold: SYNTHESIS_MATCH_THRESHOLD });
       return '';
     }
@@ -1988,20 +2245,23 @@ async function fetchSynthesisRetrievalSection(authHeader, queryText, userId = nu
     // a coherent window, not a sentence in isolation. Degrade-safe + bounded;
     // disable with RAG_PARENT_WINDOW=0.
     const windowByRow = await expandSynthesisChunkWindows(authHeader, rows);
+    const titleBySourceId = await lookupVaultTitlesForSynthesisRows(authHeader, userId, rows);
 
     const lines = [
-      '[SYNTHESIS_RETRIEVAL]',
-      'Semantically matched snippets from this user\'s embedded workspace index (vector search). May be empty for new accounts.',
-      'Use when relevant to the latest user message. Prefer live [CONTEXT], [WORKSPACE_CONTEXT], and [CONVERSATION] for current session facts.',
+      '[WHAT_IVE_SAVED]',
+      'Relevant items from their Vault (saved files, notes, links, synced apps).',
+      'Each hit includes node_id=vault_<uuid>. To SHOW an item, call',
+      'lykn_loadNeuron({ node_id }) with THAT exact id — never invent a uuid,',
+      'never reuse an id from a different hit, never pass a bare uuid.',
+      'If unsure which hit, call lykn_searchVault({ query }) first, then loadNeuron.',
+      'Do NOT dump vault contents unprompted. Prefer live screen / [CONVERSATION] for what is happening now.',
       '',
     ];
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
-      const sim = typeof r.similarity === 'number' ? r.similarity.toFixed(3) : '?';
-      const src = `${r.source_type || '?'}|${r.source_id ?? ''}|${r.chunk_index ?? 0}`;
       const body = (windowByRow && windowByRow[i]) || String(r.content || '').replace(/\s+/g, ' ').trim();
       if (!body) continue;
-      lines.push(`${i + 1}. [${src}] similarity=${sim}`);
+      lines.push(`${i + 1}. ${formatWhatIveSavedHitLabel(r, titleBySourceId)}`);
       lines.push(body);
       lines.push('');
     }
@@ -2881,7 +3141,7 @@ async function fetchConnectedToolsSection(authHeader, userId) {
 
   const text = [
     '[CONNECTED_TOOLS]',
-    "These are the external apps this user has actively connected to LYKN. Synced content from each one already lives in their Vault and shows up inside [WORKSPACE_CONTEXT] / [SYNTHESIS_RETRIEVAL]. USE THIS LIST when giving advice — prefer specific, actionable suggestions tied to tools they actually use (e.g. \"drop a ticket for this in Linear\", \"save this to your Notion\", \"add it to your Todoist inbox\"). Never invent or assume a tool that isn't on this list. If a clearly relevant tool from the broader connector catalog is NOT connected and would obviously help (e.g. the user is talking about engineering tickets but has no issue tracker connected), you may briefly mention they could connect it from the Connections page — at most one such nudge per reply, and only when it's directly useful.",
+    "These are the external apps this user has actively connected to LYKN. Synced content from each one already lives in their Vault and shows up inside [WHAT_IVE_SAVED] / [WORKSPACE_CONTEXT]. USE THIS LIST when giving advice — prefer specific, actionable suggestions tied to tools they actually use (e.g. \"drop a ticket for this in Linear\", \"save this to your Notion\", \"add it to your Todoist inbox\"). Never invent or assume a tool that isn't on this list. If a clearly relevant tool from the broader connector catalog is NOT connected and would obviously help (e.g. the user is talking about engineering tickets but has no issue tracker connected), you may briefly mention they could connect it from the Connections page — at most one such nudge per reply, and only when it's directly useful.",
     '',
     ...lines,
     customBlock,
@@ -3028,7 +3288,23 @@ async function fetchProjectSection(authHeader, userId, projectIdOverride = null)
     const ctx = projectIdOverride
       ? await loadProjectContextById(client, userId, projectIdOverride)
       : await loadActiveProjectContext(client, userId);
-    const text = ctx ? formatProjectStateForPromptInLykn(ctx) : '';
+    let text = ctx ? formatProjectStateForPromptInLykn(ctx) : '';
+    // Other projects help the model connect the screen / topic to the right
+    // focus when the user has more than one active project.
+    try {
+      const others = await loadOtherProjectsForUser(client, userId, {
+        excludeId: ctx?.project?.id || null,
+        limit: 8,
+      });
+      const catalog = formatOtherProjectsForPromptOutsideClient(others);
+      if (catalog) {
+        text = text ? `${text}\n\n${catalog}` : catalog;
+      } else if (!text) {
+        text = '';
+      }
+    } catch {
+      /* catalog is best-effort */
+    }
     projectSectionCache.set(cacheKey, {
       text,
       projectId: ctx?.project?.id || null,
@@ -3075,8 +3351,8 @@ function formatUserModelRow(row) {
   const signals = row.signals && typeof row.signals === 'object' && !Array.isArray(row.signals) ? row.signals : {};
   if (!narrative && themes.length === 0 && Object.keys(signals).length === 0) return '';
   const lines = [
-    '[USER_MODEL]',
-    'Longer-term model of this user (refreshed periodically from saved cross-surface chats). Use for tone, recurring themes, and continuity — not as ground truth. Prefer live [CONTEXT], [WORKSPACE_CONTEXT], and [CONVERSATION] for facts.',
+    '[WHO_I_AM]',
+    'Preferences, facts, and patterns LYKN has learned about this person. Keep this living: when they contradict or refine something here, update it (do not cling to stale facts). Prefer live [CONVERSATION] / screen for what is happening right now.',
     '',
   ];
   if (narrative) lines.push(`Narrative:\n${narrative.slice(0, 2000)}`, '');
@@ -3270,10 +3546,12 @@ async function fetchUserModelSection(authHeader, userId) {
 
     let text = profileBlock;
     if (factsBlock) {
-      // Append the structured facts as a sub-section so chat models see them
-      // in the same [USER_MODEL] envelope without a separate top-level block.
-      const suffix = `\n\nLearned facts (✓ confirmed by user · · stated · ? inferred):\n${factsBlock}`;
-      text = text ? `${text}${suffix}` : `[USER_MODEL]\nStructured learned facts about this user.${suffix}`;
+      // Same [WHO_I_AM] bucket as beliefs — preferences & facts the model
+      // should keep updating when the user contradicts them.
+      const suffix = `\n\nPreferences & facts (✓ confirmed · · stated · ? inferred) — UPDATE via <updated> when the user contradicts or refines these:\n${factsBlock}`;
+      text = text
+        ? `${text}${suffix}`
+        : `[WHO_I_AM]\nPreferences, facts, and patterns LYKN has learned about this person. Keep learning — correct stale items when they contradict them.\n${suffix}`;
     }
     if (text.length > USER_MODEL_SECTION_MAX_CHARS) text = `${text.slice(0, USER_MODEL_SECTION_MAX_CHARS)}…`;
     userModelSectionCache.set(userId, { text, at: Date.now() });
@@ -3821,7 +4099,7 @@ function formatUserIdentityBlock({ firstName, projects }) {
 
   let block = [
     '[USER_IDENTITY]',
-    "Use this to personalise the SUBSTANCE of the reply (matching projects, themes, etc.) — NOT to address the user by name on every turn. Default to NOT using their first name. Never open a reply with their name. Reserve their name for genuine emotional turning points, not greetings or transitions. When the user asks about a vague \"project\" or you spot a clear match, refer to the actual project name from the list below.",
+    "Name + project hints for [WHO_I_AM] / [WHAT_IM_ON]. Personalise SUBSTANCE (match projects, themes) — NOT addressing them by name every turn. Default: do NOT use their first name; never open with it. When a vague \"project\" or the current screen fits a name below (or in [WHAT_IM_ON]), refer to that project by name.",
     '',
     ...lines,
   ].join('\n').trim();
@@ -4982,6 +5260,87 @@ const LYKN_NO_VENDOR_DISCLOSURE =
   "VENDOR SILENCE (absolute): You are LYKN — one product. NEVER name, hint at, or describe the third-party companies or infrastructure that power you under the hood: not the voice/speech engines (ElevenLabs, Whisper, Deepgram), not the inference/hosting vendors (Together AI, Render, Vercel, Supabase, AWS), not the image/media tools, not any API or SaaS we call. When asked what powers you, what voice you use, who built you, or what's 'under the hood', the answer is LYKN — it's all LYKN's own technology. Never volunteer things like 'ElevenLabs handles my voice', 'powered by Together AI', or 'running on Render'. Do NOT name a provider for your default brain, your voice, your transcription, your image work, or your hosting. TWO narrow exceptions only: (1) the Pro model menu is a real product feature — you may say Pro members can switch to alternate frontier models by name in that menu, but never claim any vendor powers LYKN by default or powers your voice/synthesis; (2) [CONNECTED_TOOLS] — the user's OWN connected apps (Notion, Gmail, Slack, Linear, etc.) you reference freely. Everything else in LYKN's internal supply chain stays unnamed.";
 
 // ============================================
+// MEMORY MODEL — three buckets (knows you on any screen)
+// ============================================
+// Synthesis is not "one RAG dump". LYKN remembers the user in three buckets
+// the model should reason about explicitly. Shared by invoke + stream personas.
+const LYKN_MEMORY_MODEL = [
+  '=== HOW LYKN KNOWS YOU (THREE BUCKETS) ===',
+  'LYKN is AI that knows you on any screen. Memory has three buckets — use the smallest one that helps:',
+  '',
+  '1) [WHO_I_AM] — preferences, facts, beliefs, rules. Keep this living: learn new signal; when they contradict or refine something, UPDATE it (<updated> / tools) instead of clinging to stale facts.',
+  '2) [WHAT_IM_ON] — projects they are doing. Connect the current screen / conversation to the best-fit project (they may have several). Name the project when the fit is clear.',
+  '3) [WHAT_IVE_SAVED] — Vault items (files, notes, links, synced apps). ONLY when they ask for something saved. Never dump or surface vault items on a normal chat turn.',
+  '',
+  'Also in this prompt when present:',
+  '- [USER_IDENTITY] — first name + project name hints (substance only; do not name-lead replies).',
+  '- [CONNECTED_TOOLS] — apps they OAuthed; tailor suggestions to these only.',
+  '- [VAULT_URL_MATCHES] — exact URL/item they pasted from a synced service (SUMMARY first, BODY if needed).',
+  '- [CONVERSATION] — this thread. Prefer over older [CONVERSATION_MEMORY].',
+  '- [WORKSPACE_CONTEXT] — broader Vault listing when embedded (same bucket as WHAT_IVE_SAVED).',
+  '- Web / YouTube / [ATTACHED_IMAGES] blocks when present.',
+  '',
+  'PRIORITY EACH TURN:',
+  '1. Screen + [CONVERSATION] (what is in front of them now)',
+  '2. [WHO_I_AM] when judgment / taste / "how I work" / identity matters',
+  '3. [WHAT_IM_ON] when work/status/next-steps/project fit matters',
+  '4. [WHAT_IVE_SAVED] / Vault ONLY when they explicitly asked for saved stuff',
+  '',
+  'ONE PERSONAL ANCHOR: unless they asked for a full recall, use at most ONE clear personal pull per reply (one belief/fact OR one project fit) — never a vault card unless they asked. Do not brief them with everything you know.',
+  '',
+  'VAULT-FOCUSED TURNS: if they ask what is in the Vault / what they saved / "find that thing I saved", answer from Vault / [WHAT_IVE_SAVED] / lykn_searchVault first — do not pivot to a project unless they asked.',
+  'Always call the saved-content area "The Vault".',
+  '=== END HOW LYKN KNOWS YOU ===',
+].join('\n');
+
+/** Glass (⌘L) — screen is primary; still know the person via the three buckets. */
+const LYKN_GLASS_MEMORY_ADDENDUM = [
+  '=== LYKN GLASS — KNOW THEM ON THIS SCREEN ===',
+  'You are on their screen (Glass). Priority:',
+  '1. What is on screen / this message (answer that first).',
+  '2. [WHAT_IM_ON] — if the screen or topic clearly fits a project, name it once ("this fits your Launch project").',
+  '3. [WHO_I_AM] — use one preference/belief only when it changes judgment or tone.',
+  '4. [WHAT_IVE_SAVED] — ONLY if they asked for something saved. On a normal',
+  '   screen/chat turn: do NOT search the Vault, do NOT call loadNeuron, do NOT',
+  '   mention random saved items. Answer from the screen + conversation.',
+  'SURFACING IN GLASS (strict — opt-in only):',
+  '  • Call lykn_searchVault / lykn_loadNeuron ONLY when they explicitly ask to',
+  '    find / show / pull up / open something from their Vault or "what I saved".',
+  '  • To SHOW it: lykn_loadNeuron({ node_id }) using ONLY a node_id from that',
+  '    search result or from [WHAT_IVE_SAVED] (shape vault_<uuid>). Never invent',
+  '    an id. Never load a different hit than the one you just named.',
+  '  • If they did not ask for Vault content: zero vault tools this turn.',
+  '  • If search is empty, say so — do not pull a random other vault item.',
+  'Keep learning: if they reveal or contradict something about themselves, update [WHO_I_AM] via <learned>/<updated>.',
+  'Do not narrate the memory system. Just feel like you know them.',
+  '=== END GLASS ===',
+].join('\n');
+
+/** True when the user is asking for something from their Vault / saved stuff. */
+function messageWantsSavedRecall(msg) {
+  const t = String(msg || '').toLowerCase();
+  if (!t) return false;
+  if (/\b(?:my\s+)?vault\b/.test(t)) return true;
+  if (/\b(?:what\s+(?:have|did)\s+i\s+save|i\s+saved|something\s+i\s+saved)\b/.test(t)) return true;
+  if (/\bsaved\s+(?:note|notes|file|files|image|images|pic|pics|photo|photos|doc|docs|link|links|article|articles|artifact|artifacts|stuff|item|items)\b/.test(t)) return true;
+  if (/\bmy\s+(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|documents?|links?|articles?|bookmarks?|artifacts?)\b/.test(t)) return true;
+  if (/\b(?:pull|bring|show|open)\b.{0,40}\b(?:artifact|artifacts)\b/.test(t)) return true;
+  if (/\bfrom\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise|raindrop)\b/.test(t)) return true;
+  if (/\b(?:pull|bring|show|open|find|get|grab|look\s+up)\b.{0,48}\b(?:vault|saved|my\s+(?:note|file|pic|photo|image|doc|link|article))\b/.test(t)) return true;
+  if (/\b(?:do\s+i\s+have|have\s+i|anything|something)\b.{0,40}\b(?:saved|in\s+(?:my\s+)?vault|in\s+the\s+vault)\b/.test(t)) return true;
+  return false;
+}
+
+/** Ultra-short Glass acks where vault retrieval is pure latency waste. */
+function isCasualOverlayAck(msg) {
+  const t = String(msg || '').trim();
+  if (!t || t.length > 40) return false;
+  return /^(ok|okay|k|thanks?|thank you|ty|got it|gotcha|cool|nice|yes|yep|yeah|no|nah|sure|great|perfect|makes sense|sounds good|lol|lmao|👍|🙏)[.!?]*$/i.test(
+    t,
+  );
+}
+
+// ============================================
 // STATIC AUTH-CHAT PERSONA (cacheable)
 // ============================================
 // Compact, single canonical version of the auth-mode chat persona. Replaces
@@ -5017,44 +5376,25 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "- You CANNOT create, edit, move, resize, delete, color, connect, or organize blocks/bricks/cards on any canvas, board, or grid. There is NO grid, NO board canvas, and NO block editor in this product. If the user mentions a grid / board / canvas / bricks / blocks / wires, treat it as a misunderstanding — gently clarify that the workspace is chat + Vault + Synthesis Layer, and continue in plain chat. Never claim you placed, organized, embedded, or wired anything onto a canvas; never describe what you would add as if a canvas existed.",
   "",
   "=== MEMORY HYGIENE (CRITICAL — STORED CONTEXT IS STALE) ===",
-  "[CONVERSATION_MEMORY], [USER_MODEL], [SYNTHESIS_RETRIEVAL], and any other injected past data may STILL reference an old 'grid', 'board', 'canvas', 'bricks', 'blocks', or 'wires' surface from when those existed. That surface has been REMOVED. Even if your own past replies in those blocks talk about putting things on the grid / arranging bricks / organizing the board, DO NOT mirror that language now. NEVER copy a past phrase like 'on your grid', 'on the board', 'I'll put a brick', 'let's wire these', etc. into a new reply. Silently translate references to the live surfaces — chat, Vault, Synthesis Layer — and continue. If a past memory item is ONLY about an old grid operation, ignore it rather than describing it; that work no longer exists.",
+  "[CONVERSATION_MEMORY], [WHO_I_AM], [WHAT_IVE_SAVED], and any other injected past data may STILL reference an old 'grid', 'board', 'canvas', 'bricks', 'blocks', or 'wires' surface from when those existed. That surface has been REMOVED. Even if your own past replies in those blocks talk about putting things on the grid / arranging bricks / organizing the board, DO NOT mirror that language now. NEVER copy a past phrase like 'on your grid', 'on the board', 'I'll put a brick', 'let's wire these', etc. into a new reply. Silently translate references to the live surfaces — chat, Vault, Glass, projects — and continue. If a past memory item is ONLY about an old grid operation, ignore it rather than describing it; that work no longer exists.",
   "=== END MEMORY HYGIENE ===",
   "",
   "VAULT MARKERS (hidden from user, parsed by app — only place markers at the END of your response, never in visible body text):",
   "- [TAG_NOTES:noteId|tag1,tag2,tag3] — add tags to Vault items. Lowercase, hyphens for multi-word (e.g. ui-design). Multiple items OK. Tags ADD to existing.",
-  "- [AI_CONNECTION:title|sourceType|reason] — at most 3 per response. sourceType is 'media'. Title must match an item in [WORKSPACE_CONTEXT] exactly. Only meaningful connections, not trivial keyword matches.",
+  "- [AI_CONNECTION:title|sourceType|reason] — at most 3 per response. sourceType is 'media'. Title must match a Vault item title exactly. Only meaningful connections, not trivial keyword matches.",
   "Always confirm in plain words what you tagged / connected. Don't reference the markers in visible text. Do NOT emit [PULL_MEDIA:...] — there is no canvas to pull items onto.",
   "",
-  "DATA ACCESS — what's in this prompt:",
-  "- [WORKSPACE_CONTEXT] (when present) — the entire Vault (saved notes, files, links, videos, images). Background context.",
-  "- [PROJECT_KNOWLEDGE] (when present) — the active project's knowledge base.",
-  "- [USER_IDENTITY] (when present) — the user's first name + active projects.",
-  "- [CONNECTED_TOOLS] (when present) — the external apps the user has actively OAuthed (Notion, Gmail, Linear, Slack, Readwise, etc.). USE THIS to tailor every suggestion to the tools they actually use: \"drop a ticket in Linear\", \"save this to your Notion workspace\", \"add it to your Todoist inbox\", \"share this in your team Slack\". Never recommend a tool that isn't on this list. When a clearly relevant tool from the broader connector catalog ISN'T connected and would obviously help, you may mention they could connect it from the Connections page — at most one such nudge per reply, only when it's directly useful, and never as a hedge / disclaimer.",
-  "- [USER_MODEL] (when present) — themes/style summary from past chats. Tone hint, not factual ground truth.",
-  "- [SYNTHESIS_RETRIEVAL] (when present) — semantically matched snippets from their embedded workspace index, including connected-source content.",
-  "- [VAULT_URL_MATCHES] (when present) — the user pasted OR dragged a URL/item from a synced service (Notion / Drive / GitHub / Linear / Figma / Slack / etc.) and we did an exact-URL lookup against their vault. For each URL with MATCH=found you get a SUMMARY (2-5 sentences, AI-generated) followed by the BODY. ANSWERING RULE: try SUMMARY first — if it covers the question, quote/paraphrase from it and stop. Drop into BODY only when the question needs specifics the summary doesn't carry (a particular section, exact quote, sub-page detail, specific number). FORBIDDEN PHRASES when MATCH=found: \"I can't access the page\", \"I can't read the entire document\", \"the body isn't accessible\", \"the Vault's full body content isn't currently accessible\", \"can you paste the relevant sections\", \"would you like to paste a particular section\". The content IS in this prompt — read it and answer. If BODY says \"empty\", that's the truth about THAT specific page (it has only databases/images/embeds, no flattened text) — say so honestly rather than denying capability. If BODY contains real text, treat it as authoritative; don't ask the user to paste what's already in front of you. When MATCH=none, say so concretely and offer the Connections-page fix; never ask them to paste the content.",
-  "- [CONVERSATION] — full current-session history including your own previous responses.",
-  "- [CONVERSATION_MEMORY] (when present) — past exchanges from other projects/Vault.",
-  "- Web data when present: [WEB_SEARCH_RESULTS] / [DEEP_BROWSE_CONTENT] / [SCRAPED_WEB_PAGES] / [YOUTUBE_SEARCH_RESULTS].",
-  "- [ATTACHED_IMAGES] (when present) — N image(s) sent as actual pixel data.",
+  LYKN_MEMORY_MODEL,
   "",
-  "CONNECTED SOURCES (live inside the Vault): When the user OAuths a service from the Connections page, our connectors sync that content into the Vault as regular notes — and they appear inside [WORKSPACE_CONTEXT] and [SYNTHESIS_RETRIEVAL] just like manually saved items. Sources we sync include: Notion pages (full page body flattened to text — paragraphs, headings, lists, to-dos, toggles, quotes, callouts, code, tables, sub-page refs), Gmail / Outlook messages, Slack messages, GitHub, Linear, Todoist, Trello, Loom, Vimeo, Figma, Canva, Dribbble, Behance, Readwise / Raindrop / Instapaper / Matter / Pocket highlights, Spotify / Apple Music / SoundCloud, Pinterest pins, X / Bluesky / Reddit / Mastodon posts, Google Drive / Calendar, plus anything caught by the browser extension, bookmarklet, share-target, email-to-vault, or RSS. You CAN read all of it. If the user asks 'can you read my Notion / Gmail / Slack / Readwise / etc.?' the answer is YES — those items show up as Vault notes (often tagged with the source name) and as embedded chunks in synthesis retrieval. Treat them as first-class Vault content. Note one real caveat worth mentioning if relevant: non-text attachments inside connected pages (images, PDFs, audio, video files) aren't transcribed — only the surrounding text body is captured.",
+  "CONNECTED TOOLS: When [CONNECTED_TOOLS] is present, tailor suggestions to apps they actually OAuthed. Never invent a tool that isn't listed. At most one connect-nudge per reply when a missing app would clearly help.",
+  "CONNECTED SOURCES live in the Vault ([WHAT_IVE_SAVED] / [WORKSPACE_CONTEXT]): Notion, Gmail/Outlook, Slack, GitHub, Linear, Todoist, Trello, Drive/Calendar, Readwise/Raindrop, design/media syncs, browser extension captures, etc. If they ask whether you can read a connected app — YES, via Vault. Caveat: non-text attachments inside synced pages usually aren't transcribed.",
+  "You DO have access. NEVER say you can't see their Vault / files / connected apps. If a specific item isn't visible, say so concretely and offer Connections — don't deny capability wholesale.",
   "",
-  "You DO have access to all of this. NEVER say 'I don't have access to your files / vault / notes / accounts / Notion / Gmail / Slack / [any connected service]', 'I can't see your X', or any variation. The data is in this prompt — use it. If a specific item you'd expect isn't visible, say so concretely (\"I don't see a Notion page about X in what synced — want me to check your Connections page to make sure the integration was granted access to that page?\") instead of denying capability wholesale.",
+  "PERSONALISATION: Use the first name from [USER_IDENTITY] SPARINGLY — default is never. Never open with their name. When 'my project' / this screen fits a project in [WHAT_IM_ON] or [USER_IDENTITY], name that project. Never invent biography. When they share something new about themselves, acknowledge briefly, carry it forward, and learn/update [WHO_I_AM].",
   "",
-  "PERSONALISATION: Use the user's first name (from [USER_IDENTITY]) SPARINGLY. The default is to NOT use their name — most replies should not include it at all. Never open a reply with their name (\"Elijah, ...\" is forbidden). Reserve the name for genuine emotional turning points (a hard moment, a real win, a goodbye), not casual greetings or transitions. At most once per response, and most responses should be zero. When the user says 'my project' / 'this project' and you can match it to a real project in [USER_IDENTITY], refer to it by NAME (\"this fits with your LYKN launch\"). Never invent a project, role, or biographical fact. When the user shares something new about themselves, acknowledge briefly and carry it forward.",
+  "CONVERSATION: Read [CONVERSATION] before responding. Prefer it over [CONVERSATION_MEMORY]. Each latest message is its own intent.",
   "",
-  "CONTEXT PRIORITY: 1) [CONVERSATION] (what we're actively discussing). 2) [PROJECT_KNOWLEDGE] when present. 3) [WORKSPACE_CONTEXT] / Vault when relevant. Widen scope only when the question requires it.",
-  "",
-  "VAULT-FOCUSED TURNS — priority override: When the user explicitly asks about their VAULT or what they SAVED (\"what's in my vault\", \"show me my vault\", \"what have I saved\", \"do I have anything on X\", \"find that thing I saved about Y\", \"my saved <notes/links/files/articles>\"), flip the priority for THIS turn: [WORKSPACE_CONTEXT] / lykn_searchVault results come FIRST, [PROJECT_KNOWLEDGE] comes LAST. Answer about what is actually in the vault. Do NOT pivot to the active project, do NOT summarise project state, do NOT say \"this fits with your <Project>\" unless the user asked. If the vault has nothing matching the query, say so plainly (\"I don't see anything saved on X yet\") — never substitute project content as if it were vault content.",
-  "",
-  "CONVERSATION: Read [CONVERSATION] before responding. Connect the user's answers to questions YOU asked. Treat as a continuous thread. Prefer [CONVERSATION] over [CONVERSATION_MEMORY] when both cover the same topic. Each user message is its own intent — use history for context but classify the LATEST message on its own merits.",
-  "",
-  "CLARIFICATION: When the message is genuinely ambiguous, ask one short clarifying question naming 2-3 likely candidates. Don't ask when the question is already specific.",
-  "",
-  "Always call the saved-content area 'The Vault' — never 'media page'.",
-  "",
-  "DEFAULT SCOPE — GROUND IN THE USER'S OWN WORK WHEN IT'S RELEVANT: LYKN's home base is the user's own knowledge, so when their question genuinely touches something they've saved, are working on, or believe, lean on [WORKSPACE_CONTEXT] (the Vault), [SYNTHESIS_RETRIEVAL], [PROJECT_KNOWLEDGE], [USER_MODEL], and [CONVERSATION] / [CONVERSATION_MEMORY] before your own training. But RELEVANCE is the gate, not reflex. If the current question has nothing to do with their saved items (a general explanation, a how-to, a coding question, casual chat), just answer it directly — do NOT trawl the Vault, and do NOT mention, quote, or surface saved items merely because they exist or are loosely on-topic. Pulling in things the user didn't ask about is exactly the behavior to avoid. Your own training is a fine source for general explanations and reasoning. The web is for live/current facts only (see WEB ACCESS) — not a default for every question.",
+  "CLARIFICATION: When genuinely ambiguous, ask one short clarifying question naming 2-3 likely candidates.",
   "",
   "WEB ACCESS — LIVE WHEN IT MATTERS:",
   "- When [WEB_SEARCH_RESULTS] / [DEEP_BROWSE_CONTENT] / [SCRAPED_WEB_PAGES] ARE present, use them freely and PREFER them over your training for anything current.",
@@ -5124,41 +5464,25 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "- You CANNOT create, edit, move, resize, delete, color, connect, or organize blocks/bricks/cards on any canvas, board, or grid. There is NO grid, NO board canvas, and NO block editor in this product. If the user mentions a grid / board / canvas / bricks / blocks / wires, treat it as a misunderstanding — gently clarify that the workspace is chat + Vault + Synthesis Layer, and continue in plain chat. Never claim you placed, organized, embedded, or wired anything onto a canvas.",
   "",
   "=== MEMORY HYGIENE (CRITICAL — STORED CONTEXT IS STALE) ===",
-  "[CONVERSATION_MEMORY], [USER_MODEL], [SYNTHESIS_RETRIEVAL], and any other injected past data may STILL reference an old 'grid', 'board', 'canvas', 'bricks', 'blocks', or 'wires' surface from when those existed. That surface has been REMOVED. Even if your own past replies in those blocks talk about putting things on the grid / arranging bricks / organizing the board, DO NOT mirror that language now. NEVER copy a past phrase like 'on your grid', 'on the board', 'I'll put a brick', 'let's wire these', etc. into a new reply. Silently translate references to the live surfaces — chat, Vault, Synthesis Layer — and continue. If a past memory item is ONLY about an old grid operation, ignore it rather than describing it; that work no longer exists.",
+  "[CONVERSATION_MEMORY], [WHO_I_AM], [WHAT_IVE_SAVED], and any other injected past data may STILL reference an old 'grid', 'board', 'canvas', 'bricks', 'blocks', or 'wires' surface from when those existed. That surface has been REMOVED. Even if your own past replies in those blocks talk about putting things on the grid / arranging bricks / organizing the board, DO NOT mirror that language now. NEVER copy a past phrase like 'on your grid', 'on the board', 'I'll put a brick', 'let's wire these', etc. into a new reply. Silently translate references to the live surfaces — chat, Vault, Glass, projects — and continue. If a past memory item is ONLY about an old grid operation, ignore it rather than describing it; that work no longer exists.",
   "=== END MEMORY HYGIENE ===",
   "",
   "VAULT MARKERS (hidden from user, parsed by app — only place markers at END of response, never in visible body text):",
   "- [TAG_NOTES:noteId|tag1,tag2,tag3] — add tags. Lowercase, hyphens for multi-word. Multiple items OK. Tags ADD to existing.",
-  "- [AI_CONNECTION:title|sourceType|reason] — at most 3 per response. sourceType is 'media'. Title must match an item in [WORKSPACE_CONTEXT] exactly. Only meaningful connections.",
+  "- [AI_CONNECTION:title|sourceType|reason] — at most 3 per response. sourceType is 'media'. Title must match a Vault item title exactly. Only meaningful connections.",
   "Always confirm in plain words what you tagged / connected. Don't reference markers in visible text. Do NOT emit [PULL_MEDIA:...] — there is no canvas to pull items onto.",
   "",
-  "DATA ACCESS — what's in this prompt:",
-  "- [WORKSPACE_CONTEXT] (when present) — the entire Vault (saved notes, files, links, videos, images). Background context.",
-  "- [PROJECT_KNOWLEDGE] (when present) — the active project's knowledge base.",
-  "- [USER_IDENTITY] / [USER_MODEL] / [SYNTHESIS_RETRIEVAL] (when present). Synthesis retrieval includes embedded chunks from connected-source content.",
-  "- [CONNECTED_TOOLS] (when present) — the external apps the user has actively OAuthed (Notion, Gmail, Linear, Slack, Readwise, etc.). USE THIS to tailor every suggestion to tools they actually use: \"drop a ticket in Linear\", \"save this to your Notion\", \"add it to your Todoist inbox\". Never recommend a tool that isn't on this list. If a clearly relevant tool ISN'T connected and would obviously help, you may briefly mention they could connect it from the Connections page — at most one such nudge per reply, only when directly useful.",
-  "- [VAULT_URL_MATCHES] (when present) — user pasted OR dragged a URL/item from a synced service (Notion / Drive / GitHub / Linear / Figma / Slack / etc.) and we did an exact lookup against their vault. For MATCH=found you get SUMMARY (2-5 sentence AI overview) + BODY. ANSWERING RULE: try SUMMARY first — if it answers the question, quote/paraphrase and stop. Use BODY only when you need specifics the summary doesn't carry. FORBIDDEN when MATCH=found: \"I can't access the page\", \"I can't read the entire document\", \"the body isn't accessible\", \"would you like to paste a particular section\". The content IS in this prompt. If BODY says \"empty\", that's the truth about THAT page (databases/images/embeds only, no flattened text) — say so honestly. If BODY contains text, it IS the page — treat it as authoritative; don't ask the user to paste what's already here. MATCH=none means not synced — say so, offer the Connections-page fix, never ask them to paste.",
-  "- [CONVERSATION] — full current-session history. [CONVERSATION_MEMORY] — past exchanges from other projects/Vault when present.",
-  "- Web data when present: [WEB_SEARCH_RESULTS] / [DEEP_BROWSE_CONTENT] / [SCRAPED_WEB_PAGES] / [YOUTUBE_SEARCH_RESULTS].",
-  "- [ATTACHED_IMAGES] (when present) — N image(s) as actual pixel data.",
+  LYKN_MEMORY_MODEL,
   "",
-  "CONNECTED SOURCES (live inside the Vault): When the user OAuths a service from the Connections page, our connectors sync that content into the Vault as regular notes — they appear inside [WORKSPACE_CONTEXT] and [SYNTHESIS_RETRIEVAL] just like manually saved items. Sources we sync include: Notion pages (full page body flattened to text — paragraphs, headings, lists, to-dos, toggles, quotes, callouts, code, tables, sub-page refs), Gmail / Outlook, Slack, GitHub, Linear, Todoist, Trello, Loom, Vimeo, Figma, Canva, Dribbble, Behance, Readwise / Raindrop / Instapaper / Matter / Pocket, Spotify / Apple Music / SoundCloud, Pinterest, X / Bluesky / Reddit / Mastodon, Google Drive / Calendar, plus browser extension / bookmarklet / share-target / email-to-vault / RSS captures. You CAN read all of it. If the user asks 'can you read my Notion / Gmail / Slack / Readwise / etc.?' the answer is YES — those items appear as Vault notes (often tagged with the source name) and as embedded chunks in synthesis retrieval. Caveat worth mentioning only when relevant: non-text attachments inside connected pages (images, PDFs, audio, video files) aren't transcribed — only the text body is captured.",
+  "CONNECTED TOOLS: When [CONNECTED_TOOLS] is present, tailor suggestions to apps they actually OAuthed. Never invent a tool that isn't listed. At most one connect-nudge per reply when a missing app would clearly help.",
+  "CONNECTED SOURCES live in the Vault ([WHAT_IVE_SAVED] / [WORKSPACE_CONTEXT]). If they ask whether you can read a connected app — YES, via Vault. Caveat: non-text attachments inside synced pages usually aren't transcribed.",
+  "You DO have access. NEVER say you can't see their Vault / files / connected apps. If a specific item isn't visible, say so concretely — don't deny capability wholesale.",
   "",
-  "You DO have access. NEVER say 'I don't have access to your X', 'I can't see your X', or any variation — including for Notion, Gmail, Slack, or any other connected service. The data is in this prompt — use it. If a specific item you'd expect isn't visible, say so concretely (\"I don't see a Notion page about X in what synced — want to check the Connections page to confirm that page was shared with the integration?\") instead of denying capability wholesale.",
+  "PERSONALISATION: Use the first name from [USER_IDENTITY] SPARINGLY — default is never. Never open with their name. When 'my project' / this screen fits a project in [WHAT_IM_ON] or [USER_IDENTITY], name that project. Never invent biography. When they share something new about themselves, acknowledge briefly, carry it forward, and learn/update [WHO_I_AM].",
   "",
-  "PERSONALISATION: Use the user's first name (from [USER_IDENTITY]) SPARINGLY. The default is to NOT use their name — most replies should not include it at all. Never open a reply with their name (\"Elijah, ...\" is forbidden). Reserve the name for genuine emotional turning points, not casual greetings or transitions. At most once per response, and most responses should be zero. Match 'my project' / 'this project' to real projects in [USER_IDENTITY] when confident — refer by NAME. Never invent a project, role, or biographical fact. When the user shares something new about themselves, acknowledge briefly and carry it forward.",
+  "CONVERSATION: Read [CONVERSATION] before responding. Prefer it over [CONVERSATION_MEMORY]. Each latest message is its own intent.",
   "",
-  "CONTEXT PRIORITY: 1) [CONVERSATION] (what we're actively discussing). 2) [PROJECT_KNOWLEDGE] when present. 3) [WORKSPACE_CONTEXT] / Vault when relevant. Widen scope only when the question requires it.",
-  "",
-  "VAULT-FOCUSED TURNS — priority override: When the user explicitly asks about their VAULT or what they SAVED (\"what's in my vault\", \"show me my vault\", \"what have I saved\", \"do I have anything on X\", \"find that thing I saved about Y\", \"my saved <notes/links/files/articles>\"), flip the priority for THIS turn: [WORKSPACE_CONTEXT] / lykn_searchVault results come FIRST, [PROJECT_KNOWLEDGE] comes LAST. Answer about what is actually in the vault. Do NOT pivot to the active project, do NOT summarise project state, do NOT say \"this fits with your <Project>\" unless the user asked. If the vault has nothing matching the query, say so plainly (\"I don't see anything saved on X yet\") — never substitute project content as if it were vault content.",
-  "",
-  "CONVERSATION: Read [CONVERSATION] before responding. Connect answers to questions YOU asked. Continuous thread. Prefer [CONVERSATION] over [CONVERSATION_MEMORY] when both cover the same topic. Each user message is its own intent — use history for context, classify the LATEST message on its own.",
-  "",
-  "CLARIFICATION: When the message is genuinely ambiguous, ask one short clarifying question naming 2-3 likely candidates. Don't ask when the question is already specific.",
-  "",
-  "Always call the saved-content area 'The Vault' — never 'media page'.",
-  "",
-  "DEFAULT SCOPE — GROUND IN THE USER'S OWN WORK WHEN IT'S RELEVANT: LYKN's home base is the user's own knowledge, so when their question genuinely touches something they've saved, are working on, or believe, lean on [WORKSPACE_CONTEXT] (the Vault), [SYNTHESIS_RETRIEVAL], [PROJECT_KNOWLEDGE], [USER_MODEL], and [CONVERSATION] / [CONVERSATION_MEMORY] before your own training. But RELEVANCE is the gate, not reflex. If the current question has nothing to do with their saved items (a general explanation, a how-to, a coding question, casual chat), just answer it directly — do NOT trawl the Vault, and do NOT mention, quote, or surface saved items merely because they exist or are loosely on-topic. Pulling in things the user didn't ask about is exactly the behavior to avoid. Your own training is a fine source for general explanations and reasoning. The web is for live/current facts only (see WEB ACCESS) — not a default for every question.",
+  "CLARIFICATION: When genuinely ambiguous, ask one short clarifying question naming 2-3 likely candidates.",
   "",
   "WEB ACCESS — LIVE WHEN IT MATTERS:",
   "- When [WEB_SEARCH_RESULTS] / [DEEP_BROWSE_CONTENT] / [SCRAPED_WEB_PAGES] ARE present, use them freely and PREFER them over your training for anything current.",
@@ -5415,8 +5739,9 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '=== SELF-CHECK BEFORE YOU SEND (DO THIS EVERY TURN) ===',
   'After you finish writing your visible reply, run this 3-step check before sending:',
   '  1. Did the user\'s LATEST message contain ANY concrete personal information about THEM? (a role, a tool they use, a place, a habit, a frustration, an opinion, a project, a person they know, a feeling about something, an aspiration, a hobby, a constraint, an aesthetic preference, a small fact about how they work or live)',
-  '  2. If yes — is that exact fact already in [USER_MODEL] verbatim?',
-  '  3. If (1) is yes AND (2) is no → a tag is MANDATORY. Choose <learned> for a brand-new fact, <updated> for a refinement of an existing one. If (1) is no, no tag.',
+  '  2. If yes — is that exact fact already in [WHO_I_AM] verbatim?',
+  '  3. If (1) is yes AND (2) is no → a tag is MANDATORY. Choose <learned> for a brand-new fact, <updated> for a refinement/contradiction of an existing one. If (1) is no, no tag.',
+  '  4. If they CONTRADICT or correct something already in [WHO_I_AM] — <updated> is MANDATORY. Stale facts hurt trust more than missing ones.',
   'If you\'re uncertain whether something counts as personal — TAG IT. False positives are recoverable (the user can dismiss); silent misses are the failure mode we are trying to eliminate.',
   '',
   'WHAT COUNTS AS A FACT (be generous — both good AND bad, big AND small):',
@@ -5436,12 +5761,12 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '- VAGUE-but-personal counts: "I\'m kind of all over the place lately", "I think I\'m an introvert", "I\'ve been feeling stuck on this" — capture the shape of it.',
   '- IN-PASSING mentions count: a location dropped casually, a tool named without fanfare, a person referenced as "my designer" or "my partner" — these are still real signal. Tag them.',
   '- Negative facts ("I procrastinate on cold outreach", "I can\'t stand corporate decks", "math gives me anxiety", "I\'m bad at finishing things") are FIRST-CLASS neurons — tag them with kind="constraint" or kind="preference" as appropriate.',
-  '- If [USER_MODEL] already lists this exact fact, do NOT re-emit. Only tag genuinely new facts. Refining angle is fine via <updated>; duplicating is not.',
+  '- If [WHO_I_AM] already lists this exact fact, do NOT re-emit. Only tag genuinely new facts. Refining / correcting is via <updated>; duplicating is not.',
   '',
   'WHEN NOT TO TAG (CASE B — skip the tag):',
   '- The message is PURELY a question to you about an external topic ("what\'s the capital of France"), a greeting with no info ("hey"), or a workspace command ("summarize this", "what\'s in my Vault", "find that note"). Note: a question that REVEALS something about them — e.g. "as a designer, what fonts do you recommend?" — still warrants a tag for "Designer".',
   '- The message is about content / craft / external topic with zero personal disclosure attached.',
-  '- The fact is already in [USER_MODEL] verbatim and the user did not refine it.',
+  '- The fact is already in [WHO_I_AM] verbatim and the user did not refine or contradict it.',
   '',
   'TAG FORMAT — when CASE A, FINISH THE VISIBLE REPLY COMPLETELY before emitting the tags.',
   '- The user only sees the text BEFORE the tags. The client strips everything from `<learned`/`<updated` onward, so if you start a tag mid-sentence the user sees a broken reply (e.g. "...right now. We" with nothing after the "We").',
@@ -5452,7 +5777,7 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   'The kind="..." attribute is REQUIRED — pick the single best match from the list above. If unsure between two, pick the more durable one (identity > focus > theme > preference).',
   '',
   '=== UPDATING AN EXISTING NEURON (CASE C — refine instead of duplicate) ===',
-  'If the user just shared something that REFINES, CORRECTS, EVOLVES, or PIVOTS a fact already present in [USER_MODEL] (rather than introducing a brand new one), use the <updated> tag INSTEAD of <learned>. The tag REPLACES the old fact text with the new one — same neuron, refreshed content. Same node in the synthesis layer, just with sharper meaning.',
+  'If the user just shared something that REFINES, CORRECTS, EVOLVES, CONTRADICTS, or PIVOTS a fact already present in [WHO_I_AM] (rather than introducing a brand new one), use the <updated> tag INSTEAD of <learned>. The tag REPLACES the old fact text with the new one — same neuron, refreshed content. LYKN keeps learning them; stale [WHO_I_AM] facts are a bug.',
   '',
   'When to use <updated> instead of <learned>:',
   '- The new info is a more SPECIFIC version of something already known. ("Writer" → "Horror screenwriter" once they reveal the genre.)',
@@ -5466,9 +5791,9 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '- The new info just reinforces the existing fact without adding detail (no tag at all — reinforcement happens automatically).',
   '',
   'Tag format for updates — same hidden-tag rules as <learned>:',
-  '  <updated old="exact text of the existing fact, copied verbatim from [USER_MODEL]" kind="identity|focus|theme|goal|preference|style|constraint|relationship">new refined phrase (2 to 6 word noun phrase)</updated><reason>one short sentence explaining how this evolved — what changed and why</reason>',
+  '  <updated old="exact text of the existing fact, copied verbatim from [WHO_I_AM]" kind="identity|focus|theme|goal|preference|style|constraint|relationship">new refined phrase (2 to 6 word noun phrase)</updated><reason>one short sentence explaining how this evolved — what changed and why</reason>',
   '',
-  'CRITICAL — the old="..." attribute MUST be a verbatim copy of the existing fact text shown in [USER_MODEL]. Do not paraphrase, retag, or invent. If you can\'t quote it exactly, fall back to <learned> and let it become a fresh neuron.',
+  'CRITICAL — the old="..." attribute MUST be a verbatim copy of the existing fact text shown in [WHO_I_AM]. Do not paraphrase, retag, or invent. If you can\'t quote it exactly, fall back to <learned> and let it become a fresh neuron.',
   '',
   'You may also CHANGE the kind during an update if the refinement reclassifies it. ("Hates cold outreach" was kind=constraint; "Doing 5 cold emails a day" is now kind=focus.) Just emit the new kind in the kind="..." attribute.',
   '',
@@ -5479,15 +5804,15 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '  User: "I honestly hate doing cold outreach. I procrastinate on it for weeks."',
   '  You: "That avoidance pattern is super common — usually the script feels off, not the activity. ... <learned kind=\\"constraint\\">Procrastinates on cold outreach</learned><reason>They named a recurring block — useful for shaping how I help them ship outreach work.</reason>"',
   '',
-  '  ([USER_MODEL] already shows · Writer)',
+  '  ([WHO_I_AM] already shows · Writer)',
   '  User: "Specifically I write horror — short fiction mostly, working toward a novella."',
   '  You: "Horror short fiction is a brutal-but-loved form — Shirley Jackson territory. ... <updated old=\\"Writer\\" kind=\\"identity\\">Horror short-fiction writer</updated><reason>They sharpened the broad \\"writer\\" tag into the actual genre and form they work in.</reason>"',
   '',
-  '  ([USER_MODEL] already shows · Building SaaS for plumbers)',
+  '  ([WHO_I_AM] already shows · Building SaaS for plumbers)',
   '  User: "We pivoted last month — it\'s for dentists now, plumbers wasn\'t closing."',
   '  You: "Dental is a much higher ACV market — that pivot makes sense. ... <updated old=\\"Building SaaS for plumbers\\" kind=\\"focus\\">Building SaaS for dentists</updated><reason>They told me about a real pivot in their current focus — the old fact is no longer accurate.</reason>"',
   '',
-  '  ([USER_MODEL] already shows ? Procrastinates on cold outreach)',
+  '  ([WHO_I_AM] already shows ? Procrastinates on cold outreach)',
   '  User: "I\'ve been doing 5 cold emails every morning before opening Slack."',
   '  You: "That\'s a real shift — small habit, real momentum. ... <updated old=\\"Procrastinates on cold outreach\\" kind=\\"focus\\">Doing 5 cold emails daily</updated><reason>They flipped what was a constraint into an active focus — the old block is no longer the truth.</reason>"',
   '',
@@ -5524,22 +5849,22 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '- Never explain the <learned>, <updated>, or <reason> tags to the user.',
   '- Never wrap them in markdown, code fences, or JSON.',
   '- Never put text AFTER </reason>. The tag pair must be the final characters of your reply.',
-  '- Never tag a fact already present in [USER_MODEL] with <learned> — use <updated> if it\'s a refinement, or no tag if it\'s just reinforcement.',
+  '- Never tag a fact already present in [WHO_I_AM] with <learned> — use <updated> if it\'s a refinement or contradiction, or no tag if it\'s just reinforcement.',
   '- Per reply, emit AT MOST ONE tag pair: either <learned> OR <updated>, never both, never multiple.',
   '- If neither fits, emit nothing. Tag-less replies are fine and expected most turns.',
   '- ABSOLUTELY NEVER emit a tag with NO visible reply before it. The user only sees the prose BEFORE the tag — if you start your response with `<learned>` or `<updated>`, the user gets a blank message and wonders if the AI is broken. Even on tag-worthy turns, your reply MUST start with a complete visible answer (at least one full sentence ending in proper punctuation), and only THEN the tag.',
-  '- A question ABOUT the user ("what do you know about me?", "tell me about myself", "what have you learned?") is CASE B, not CASE A — the user is not sharing new information, they\'re asking you to recall. Answer using [USER_MODEL] / [USER_IDENTITY] facts and emit NO tag. Do NOT mistake a recall question for a personal disclosure.',
+  '- A question ABOUT the user ("what do you know about me?", "tell me about myself", "what have you learned?") is CASE B, not CASE A — the user is not sharing new information, they\'re asking you to recall. Answer using [WHO_I_AM] / [USER_IDENTITY] facts and emit NO tag. Do NOT mistake a recall question for a personal disclosure.',
   '- THE TAG IS OPTIONAL, THE COMPLETE REPLY IS MANDATORY. If you find yourself approaching the end of your reply but the last sentence is not yet finished, DO NOT cut the reply short to fit the tag — drop the tag entirely and let your reply finish naturally. A clean tag-less reply is ALWAYS better than a reply that ends mid-thought ("...the aspirational, Honda Civic version of their ego") so the tag could fit. The neuron will be created the next time the user mentions this fact; you will not lose the data permanently.',
   '=== END LEARN-A-FACT MECHANIC ===',
   '',
-  '=== BELIEF-WINDOW APPLIED MECHANIC (when [BELIEFS_AND_RULES] is present) ===',
-  'If [BELIEFS_AND_RULES] appears in this prompt, it lists the user\'s ratified principles + the if-then rules they\'ve agreed should shape your behavior. PREFER answering through these — they\'re cheaper, more legible, and give the user an audit trail. Only walk down to [USER_MODEL] facts when the rules cannot cover the question.',
+  '=== BELIEF-WINDOW APPLIED MECHANIC (when [WHO_I_AM] beliefs & rules are present) ===',
+  'If [WHO_I_AM] lists beliefs & rules, PREFER answering through those for judgment / taste — they\'re cheaper, more legible, and give the user an audit trail. Preferences & facts in the same bucket fill identity detail the rules do not cover.',
   '',
   'WHEN A RULE FIRES — emit ONE hidden tag at the very end of your reply, after any <learned>/<updated> tag, on the same line:',
   '  <applied rule_id="EXACT_UUID_FROM_THE_RULES_LIST">one short sentence (≤25 words) explaining HOW the rule shaped this specific reply</applied>',
   '',
   'STRICT RULES for <applied>:',
-  '- The rule_id MUST be copied verbatim from the [BELIEFS_AND_RULES] block. Do NOT invent rule_ids, do NOT pick from memory, do NOT use "0" or "none". If the exact id isn\'t in this prompt, do not emit the tag.',
+  '- The rule_id MUST be copied verbatim from the [WHO_I_AM] beliefs & rules list. Do NOT invent rule_ids, do NOT pick from memory, do NOT use "0" or "none". If the exact id isn\'t in this prompt, do not emit the tag.',
   '- Emit AT MOST ONE <applied> tag per reply. If multiple rules fired, pick the one that most influenced your response.',
   '- HONESTY OVER ATTRIBUTION: if the reply was a generic answer that didn\'t actually lean on a rule, emit NO tag. The audit trail is only useful when it\'s honest. False attributions poison the user\'s belief in the system.',
   '- Tag-less replies are the COMMON CASE. Most chat turns are not rule-driven — that\'s expected. Only attribute when the rule actually changed what you said or how you said it.',
@@ -5855,7 +6180,11 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    faster than 10 single-tool hops, and avoids burning the per-hop',
   '    tool-call budget. Same "do not paste the bodies back as text"',
   '    rule applies — the cards show the content.',
-  '  • lykn_searchVault — vault-only substring search. Use only when',
+  '  • lykn_searchVault — vault hybrid search (BM25 + title + semantic + rerank).',
+  '    Finds notes AND artifacts/images (title often carries the topic).',
+  '    Pass TOPIC words ("prosthetics", "porsche pricing"), not a full chat',
+  '    sentence. If the first query is thin, retry once with a synonym /',
+  '    broader noun before telling them nothing is saved. Use only when',
   '    you specifically want saved notes / saved articles / saved links',
   '    and not the other stores. Returns snippets with a `node_id` of',
   '    shape `vault_<uuid>` on every hit — pass that node_id straight',
@@ -9143,6 +9472,7 @@ function buildToolCtx(req) {
 // state via these tools should be visible to the in-LYKN chat on the
 // very next turn, not 90 seconds later when the TTL expires.
 const PROJECT_WRITE_TOOLS = new Set([
+  'lykn_createProject',
   'lykn_setActiveProject',
   'lykn_pushProjectState',
   'lykn_updateProject',
@@ -11446,6 +11776,44 @@ app.post('/api/discover/ingest', async (req, res) => {
 // Idempotent: hashes the stripped body and skips the LLM call when the
 // hash matches `ai_content_hash` and a summary already exists. So calling
 // this on every sync is cheap (one DB read) when the page hasn't changed.
+/**
+ * Fire-and-forget: enrich + embed a vault note so hybrid search finds it
+ * (especially marker-only artifacts whose only searchable signal is the title).
+ */
+async function indexVaultNoteForSearch({ userId, noteId, authHeader = null, title = '', content = '' } = {}) {
+  if (!userId || !noteId || !supabaseAdmin) return;
+  try {
+    const enr = await enrichVaultNoteSummary({ userId, noteId, supabaseAdmin });
+    const { data: after } = await supabaseAdmin
+      .from('vault_items')
+      .select('title, content, ai_summary')
+      .eq('id', noteId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    const t = String(after?.title || title || '').trim();
+    const c = String(after?.content || content || '');
+    const summary = (enr && enr.summary) || after?.ai_summary || '';
+    const baseText = backfillVaultText(t, c);
+    // Title-first embed text so "Top Prosthetic Companies" is always in the vector.
+    const embedRaw = [
+      t ? `Title: ${t}` : '',
+      summary ? `Summary (AI):\n${summary}` : '',
+      baseText,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    const chunks = chunkTextForSynthesis(embedRaw || t);
+    if (chunks.length) {
+      await replaceSynthesisChunks(userId, authHeader, 'vault_note', noteId, chunks, {
+        title: t,
+        vaultIndexedOnSave: true,
+      }, embedRaw);
+    }
+  } catch (e) {
+    console.warn('[vault:indexOnSave]', noteId, e?.message || e);
+  }
+}
+
 async function enrichVaultNoteSummary({ userId, noteId, supabaseAdmin: clientOverride }) {
   if (!userId || !noteId) return { ok: false, reason: 'missing_args' };
   if (!process.env.OPENAI_API_KEY) return { ok: false, reason: 'openai_key_missing' };
@@ -12429,9 +12797,9 @@ ${t}
         focusedBricksNote,
         convo ? `[CONVERSATION — each line shows role, timestamp, and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
         conversationMemory ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(String(conversationMemory).slice(0, 6000))}` : "",
-        wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's entire Vault contents. This is real data.\n${wsCtx}` : "",
+        wsCtx ? `[WHAT_IVE_SAVED]\n[WORKSPACE_CONTEXT]\nVault listing (saved notes, files, links). Use when they need something from their stuff — do not dump unprompted.\n${wsCtx}` : "",
         rawPrompt ? `[REQUEST_CONTEXT]\n${rawPrompt}` : "",
-        kb ? `[PROJECT_KNOWLEDGE]\n${kb}` : "",
+        kb ? `[WHAT_IM_ON]\n[PROJECT_KNOWLEDGE]\nProject knowledge for the active focus — connect the screen / topic here when it fits.\n${kb}` : "",
         contextText ? `[CONTEXT]\n${contextText}` : "",
         imageNote,
         `[LATEST_USER_MESSAGE]\n${latestUserMessage || "(empty)"}`,
@@ -14372,9 +14740,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         conversationMemoryText
           ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(conversationMemoryText)}`
           : '',
-        wsCtx ? `[WORKSPACE_CONTEXT]\nBelow are the user's entire Vault contents. This is real data.\n${wsCtx}` : "",
+        wsCtx ? `[WHAT_IVE_SAVED]\n[WORKSPACE_CONTEXT]\nVault listing (saved notes, files, links). Use when they need something from their stuff — do not dump unprompted.\n${wsCtx}` : "",
         fullPrompt && fullPrompt !== userMsg ? `[FULL_CONTEXT]\n${fullPrompt.slice(0, 16000)}` : "",
-        kb ? `[PROJECT_KNOWLEDGE]\n${kb}` : "",
+        kb ? `[WHAT_IM_ON]\n[PROJECT_KNOWLEDGE]\nProject knowledge for the active focus — connect the screen / topic here when it fits.\n${kb}` : "",
         ctx ? `[CONTEXT]\n${ctx}` : "",
         `[USER]\n${userMsg}`,
       ].filter(Boolean).join("\n\n");
@@ -14477,20 +14845,25 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     const streamSkipSearch    = (forceWebSearch || deepResearch)
       ? false
       : (skipWebSearch || streamEnrichTierEffective !== 'full');
-    // Overlay (⌘L) asks are screen-grounded — the screenshot/page IS the context,
-    // so the semantic vault retrieval (an OpenAI embedding round-trip + RPC on the
-    // critical path) rarely helps and just delays the first token. Skip it for
-    // overlay asks; beliefs/identity/project still inject personalization.
-    const streamSkipSynthesis = streamEnrichTierEffective === 'none' || Boolean(overlayAsk) || Boolean(liveWatch);
-    const streamSkipUserModel = streamEnrichTierEffective === 'none';
-    let streamSkipBeliefs   = streamEnrichTierEffective === 'none' || !isChatIntent;
+    // Glass (⌘L): screen + Who I Am / What I'm On — NOT the Vault dump — on
+    // normal turns. Inject [WHAT_IVE_SAVED] only when they ask for saved stuff;
+    // otherwise the model tends to "helpfully" loadNeuron random related hits.
+    const streamOverlayMsg = streamPureUserMessage || streamSearchText || '';
+    const streamSkipSynthesis =
+      streamEnrichTierEffective === 'none' ||
+      Boolean(liveWatch) ||
+      (Boolean(overlayAsk) && !messageWantsSavedRecall(streamOverlayMsg));
+    // Glass always gets Who I Am (beliefs + facts) — skipping made overlay feel generic.
+    const streamSkipUserModel = streamEnrichTierEffective === 'none' && !overlayAsk;
+    let streamSkipBeliefs =
+      (streamEnrichTierEffective === 'none' && !overlayAsk) || !isChatIntent;
     streamSkipBeliefs = shouldSkipSynthesisBeliefsForCustomModel(
       streamSkipBeliefs,
       streamCustomModelCtx.overlay,
     );
     // Always pull identity for chat intents — name + projects are cheap and
-    // they're what makes the assistant feel personalised.
-    const streamSkipIdentity  = !isChatIntent;
+    // they're what makes the assistant feel personalised. Glass always gets it.
+    const streamSkipIdentity  = !isChatIntent && !overlayAsk;
     const streamSkipYouTube   = streamEnrichTierEffective === 'none' || !needsYouTubeSearch(streamPureUserMessage || streamSearchText);
     _ck(`before enrichment Promise.all (tier=${streamEnrichTierEffective}, skipScrape=${streamSkipScrape}, skipSearch=${streamSkipSearch}, skipSynth=${streamSkipSynthesis}, skipUM=${streamSkipUserModel}, skipBeliefs=${streamSkipBeliefs}, skipIdentity=${streamSkipIdentity}, skipYT=${streamSkipYouTube})`);
     // Connected-source URL → vault lookup (see invoke path for rationale).
@@ -14554,14 +14927,21 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // a fraction of the prompt cost.
     let userModelSection = "";
     if (!streamSkipUserModel) {
-      const skipFactDump = shouldSkipUserModelGivenBeliefs({
-        activeBeliefCount: beliefSection.beliefs?.length || 0,
-        activeRuleCount: beliefSection.rules?.length || 0,
-        userMessage: streamPureUserMessage || streamSearchText || "",
-      });
+      // Overlay always loads preferences/facts; in-app chat may skip when
+      // beliefs+rules already cover personalization (see heuristic).
+      const skipFactDump =
+        !overlayAsk &&
+        shouldSkipUserModelGivenBeliefs({
+          activeBeliefCount: beliefSection.beliefs?.length || 0,
+          activeRuleCount: beliefSection.rules?.length || 0,
+          userMessage: streamPureUserMessage || streamSearchText || "",
+        });
       if (!skipFactDump) {
         userModelSection = await fetchUserModelSection(req.headers.authorization, req.user?.id);
       }
+    }
+    if (overlayAsk) {
+      prompt += "\n\n" + LYKN_GLASS_MEMORY_ADDENDUM;
     }
     if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
     if (connectedToolsSection) prompt += "\n\n" + connectedToolsSection;
@@ -14575,11 +14955,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       const scopedName = String(req.body?.scopedProjectName || '').trim();
       prompt +=
         "\n\n[ACTIVE_PROJECT_SCOPE — The user opened this chat scoped to the project" +
-        (scopedName ? ` "${scopedName}"` : " shown in [CURRENT_PROJECT] above") +
+        (scopedName ? ` "${scopedName}"` : " shown in [WHAT_IM_ON] above") +
         ". This project is the active working context for the ENTIRE conversation, not just one turn. " +
-        "In your FIRST reply you MUST name this project and make clear you're working inside it, then orient around it — what's already in it and what they want to do with it — using [CURRENT_PROJECT] above for specifics. " +
+        "In your FIRST reply you MUST name this project and make clear you're working inside it, then orient around it — what's already in it and what they want to do with it — using [WHAT_IM_ON] above for specifics. " +
         "This overrides the default greeting style: do NOT send a generic greeting that ignores the project. " +
-        "If [CURRENT_PROJECT] shows no saved state or neurons yet, say the project looks empty so far and offer to help start filling it in.]";
+        "If [WHAT_IM_ON] shows no saved state or clustered context yet, say the project looks empty so far and offer to help start filling it in.]";
     }
     if (artifactBuildSpec) {
       prompt +=
@@ -18854,8 +19234,8 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "be personally contextual, never a generic assistant. " +
   "Speak naturally and conversationally, in short spoken-friendly sentences. Avoid markdown, bullet lists, code blocks, " +
   "or reading URLs aloud. " +
-  "IMPORTANT: the context below contains formatting tokens such as section headers in brackets (e.g. [BELIEFS_AND_RULES], " +
-  "[CURRENT_PROJECT]), identifiers like rule_id=..., and tags like <applied>. These are silent guidance for you ONLY. " +
+  "IMPORTANT: the context below contains formatting tokens such as section headers in brackets (e.g. [WHO_I_AM], " +
+  "[WHAT_IM_ON], [WHAT_IVE_SAVED]), identifiers like rule_id=..., and tags like <applied>. These are silent guidance for you ONLY. " +
   "NEVER read them aloud, never say words like 'rule_id', 'applied', or bracketed section names, and never emit any tags. " +
   "SHARED IMAGES & FILES — you CAN work with them: when the user pastes, drops, uploads, or shares an image, screenshot, " +
   "photo, PDF, document, or link (or asks about one they just shared), it arrives in your context as a written description " +
@@ -20033,6 +20413,7 @@ app.post('/api/ai/realtime/tool', requireAuth, requireAppAccess, aiLimiter, asyn
       if (!created.ok) {
         return res.json({ ok: false, error: 'could_not_create', message: 'I could not start that project just now.' });
       }
+      invalidateProjectSectionCache(userId);
       return res.json({
         ok: true,
         was_created: created.was_created,
@@ -21933,7 +22314,16 @@ app.post('/api/vault/save-image', requireAuth, upload.single('image'), async (re
     }
 
     console.log(`✅ Saved overlay image to vault: ${note?.id} (${(buffer.length / 1024).toFixed(0)}KB)`);
-    return res.json({ ok: true, id: note?.id || null, title });
+    if (note?.id) {
+      void indexVaultNoteForSearch({
+        userId,
+        noteId: note.id,
+        authHeader: req.headers.authorization,
+        title,
+        content,
+      });
+    }
+    return res.json({ ok: true, id: note?.id || null, title, node_id: note?.id ? `vault_${note.id}` : null });
   } catch (error) {
     console.error('❌ Vault save-image error:', error);
     return res.status(500).json({ error: error?.message || 'save_failed' });
@@ -22040,7 +22430,17 @@ app.post('/api/vault/save-file', requireAuth, upload.single('file'), async (req,
     }
 
     console.log(`✅ Saved overlay file to vault: ${note?.id} (${(buffer.length / 1024).toFixed(0)}KB, ${mimeType})`);
-    return res.json({ ok: true, id: note?.id || null, title });
+    // Index immediately so artifacts are searchable by title (don't wait for client backfill).
+    if (note?.id) {
+      void indexVaultNoteForSearch({
+        userId,
+        noteId: note.id,
+        authHeader: req.headers.authorization,
+        title,
+        content,
+      });
+    }
+    return res.json({ ok: true, id: note?.id || null, title, node_id: note?.id ? `vault_${note.id}` : null });
   } catch (error) {
     console.error('❌ Vault save-file error:', error);
     return res.status(500).json({ error: error?.message || 'save_failed' });

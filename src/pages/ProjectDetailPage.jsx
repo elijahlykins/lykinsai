@@ -100,6 +100,7 @@ import {
   splitMembers,
 } from "@/components/projects/projectShared";
 import VaultPickerDialog from "@/components/vault/VaultPickerDialog";
+import VaultDocumentViewer from "@/components/lyknChat/VaultDocumentViewer";
 import DatePickerPopover from "@/components/ui/DatePickerPopover";
 import { fetchVaultNotesByIds } from "@/lib/vault/fetchVaultNotesByIds";
 import { fetchVaultFileTypeCounts, VAULT_TYPE_META } from "@/lib/vault/fetchVaultFileTypeCounts";
@@ -1422,6 +1423,8 @@ export default function ProjectDetailPage() {
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [selectedDay, setSelectedDay] = useState(null);
+  /** In-project vault reader — same pull-up viewer as chat / vault. */
+  const [vaultViewer, setVaultViewer] = useState(null);
   const dark = useIsDark();
 
   const { data: projects = [], isLoading } = useQuery({
@@ -1939,25 +1942,58 @@ export default function ProjectDetailPage() {
                   <div key={key} className="mb-3">
                     <SectionLabel>{title}</SectionLabel>
                     <div className="mt-1 flex flex-col gap-0.5">
-                      {items.map((m) => (
-                        <div
-                          key={m.nodeId}
-                          className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-blue-500/[0.06] transition-colors"
-                        >
-                          <Icon className="w-3.5 h-3.5 flex-shrink-0 text-black/40 dark:text-white/40" />
-                          <span className="flex-1 min-w-0 truncate text-xs text-black/70 dark:text-white/70">
-                            {m.label || m.nodeId}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveMember(m.nodeId)}
-                            className="flex-shrink-0 w-5 h-5 rounded flex items-center justify-center hover-reveal hover:bg-red-500/10 text-black/40 dark:text-white/40 hover:text-red-500 transition-all"
-                            title="Remove from project"
+                      {items.map((m) => {
+                        const isVault =
+                          key === "vault" ||
+                          m.kind === "vault" ||
+                          String(m.nodeId || "").startsWith("vault_");
+                        const noteId = isVault
+                          ? String(m.nodeId || "").replace(/^vault_/, "")
+                          : "";
+                        const openVault = () => {
+                          if (!noteId) return;
+                          setVaultViewer({
+                            ok: true,
+                            kind: "vault",
+                            node_id: `vault_${noteId}`,
+                            note: {
+                              id: noteId,
+                              title: m.label || "Untitled",
+                              content: "",
+                            },
+                          });
+                        };
+                        return (
+                          <div
+                            key={m.nodeId}
+                            className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-blue-500/[0.06] transition-colors"
                           >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ))}
+                            <Icon className="w-3.5 h-3.5 flex-shrink-0 text-black/40 dark:text-white/40" />
+                            {isVault ? (
+                              <button
+                                type="button"
+                                onClick={openVault}
+                                className="flex-1 min-w-0 truncate text-left text-xs text-black/70 dark:text-white/70 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
+                                title="Open vault item"
+                              >
+                                {m.label || m.nodeId}
+                              </button>
+                            ) : (
+                              <span className="flex-1 min-w-0 truncate text-xs text-black/70 dark:text-white/70">
+                                {m.label || m.nodeId}
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveMember(m.nodeId)}
+                              className="flex-shrink-0 w-5 h-5 rounded flex items-center justify-center hover-reveal hover:bg-red-500/10 text-black/40 dark:text-white/40 hover:text-red-500 transition-all"
+                              title="Remove from project"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -2018,6 +2054,14 @@ export default function ProjectDetailPage() {
         committedNoteIds={committedVaultNoteIds}
         onAddFiles={handleAddVaultFiles}
       />
+
+      {vaultViewer ? (
+        <VaultDocumentViewer
+          payload={vaultViewer}
+          open={!!vaultViewer}
+          onClose={() => setVaultViewer(null)}
+        />
+      ) : null}
     </div>
   );
 }

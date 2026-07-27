@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { jsonContent, errorContent, requireWrite } from './index.js';
-import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
+import { resolveProjectPushClient, resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const TITLE_MAX = 280;
 
@@ -56,7 +56,7 @@ export const createStewardItemTool = {
         : 'Project not writable.');
     }
 
-    const clientKind = ctx?.chatModelLabel || ctx?.mcpAuth?.clientKind || 'lykn-chat';
+    const clientKind = resolveProjectPushClient(ctx);
     const { data, error } = await ctx.supabaseAdmin
       .from('lykn_steward_items')
       .insert({
