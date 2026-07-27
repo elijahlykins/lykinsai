@@ -73,6 +73,11 @@ export const createVaultNoteTool = {
     '    Synthesis Layer (+ → Core Belief neuron). Do not propose beliefs.',
     '  • Atomic identity disclosures → use lykn_proposeFact (observation,',
     '    not memory).',
+    '  • The user asked to SEE / pull up / show existing vault items',
+    '    (images, notes, saved files). That is lykn_searchVault +',
+    '    lykn_loadNeurons — NEVER create a note that merely says you',
+    '    pulled or saved something. Meta titles like "Saved items: X"',
+    '    are forbidden.',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -124,6 +129,23 @@ export const createVaultNoteTool = {
 
     const titleRaw = typeof args?.title === 'string' ? args.title.trim().slice(0, TITLE_MAX) : '';
     const title = titleRaw || null;
+
+    // Block meta "I noted / pulled your Porsche" notes. Models sometimes
+    // create these instead of calling lykn_loadNeurons when the user asked
+    // to SEE existing vault media — which pollutes search and confuses
+    // later pulls.
+    const looksMetaAck =
+      /^saved items\s*:/i.test(titleRaw) ||
+      (/i have noted this as a saved item/i.test(content) && content.length < 1200) ||
+      (/the user asked to save\b/i.test(content) && content.length < 1200) ||
+      (/\b(?:pulled|pulling)\s+(?:in|up)\b.{0,60}\b(?:vault|saved|items?)\b/i.test(content) &&
+        content.length < 1200);
+    if (looksMetaAck) {
+      return errorContent(
+        'Refused: do not create a vault note that only acknowledges saving or pulling items. ' +
+          'To show existing vault content, call lykn_searchVault then lykn_loadNeurons.',
+      );
+    }
 
     const folderRaw = typeof args?.folder === 'string' ? args.folder.trim().slice(0, FOLDER_MAX) : '';
     const folder = folderRaw || null;

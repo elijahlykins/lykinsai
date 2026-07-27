@@ -1482,8 +1482,27 @@ function userAskedForImages(userText) {
   return /\b(?:pics?|pictures?|photos?|images?|imgs?)\b/i.test(String(userText || ''));
 }
 
+/**
+ * AI-authored "I noted that you wanted X saved" rollups. Search ranks these
+ * highly on the topic word, so the model loads them and claims it pulled the
+ * real media — while the actual images never appear. Keep them out of
+ * auto-load (and treat loading only these as a miss to repair).
+ */
+function isMetaVaultHit(hit) {
+  const title = String(hit?.title || '').trim();
+  const snippet = String(hit?.snippet || hit?.content || '').trim();
+  if (/^saved items\s*:/i.test(title)) return true;
+  if (/i have noted this as a saved item/i.test(snippet)) return true;
+  if (/the user asked to save\b/i.test(snippet) && snippet.length < 800) return true;
+  if (/\b(?:pulled|pulling)\s+(?:in|up)\b.{0,40}\b(?:vault|saved)\b/i.test(snippet) && snippet.length < 800) {
+    return true;
+  }
+  return false;
+}
+
 /** true / false / null (unknown) — search hits don't carry a media type. */
 function looksLikeImageHit(hit) {
+  if (isMetaVaultHit(hit)) return false;
   const blob = `${hit?.title || ''} ${hit?.snippet || ''} ${hit?.source || ''}`.toLowerCase();
   if (
     /\b(image|photo|picture|png|jpe?g|webp|gif|heic|pexels|unsplash|generated image)\b/.test(blob)
@@ -1495,6 +1514,57 @@ function looksLikeImageHit(hit) {
   return null;
 }
 
+function loadedVaultPayloads(calls) {
+  const out = [];
+  for (const c of calls || []) {
+    if (c?.status !== 'done') continue;
+    if (c.name === 'lykn_loadNeuron' && c.result?.ok && c.result?.kind === 'vault') {
+      out.push(c.result);
+      continue;
+    }
+    if (c.name === 'lykn_loadNeurons' && Array.isArray(c.result?.results)) {
+      for (const r of c.result.results) {
+        if (r?.ok && r?.kind === 'vault') out.push(r);
+      }
+    }
+  }
+  return out;
+}
+
+function vaultPayloadLooksLikeImage(payload) {
+  const note = payload?.note || {};
+  const title = String(note.title || '');
+  const content = String(note.content || '');
+  if (isMetaVaultHit({ title, snippet: content.slice(0, 500) })) return false;
+  if (/\[ATTACHMENTS_JSON:/.test(content)) {
+    if (/"type"\s*:\s*"(?:image|photo)"/i.test(content)) return true;
+    if (/\.(png|jpe?g|webp|gif|heic)\b/i.test(content)) return true;
+    if (/"mime"\s*:\s*"image\//i.test(content)) return true;
+  }
+  return looksLikeImageHit({ title, snippet: content.slice(0, 240) }) === true;
+}
+
+function vaultPayloadIsMeta(payload) {
+  const note = payload?.note || {};
+  return isMetaVaultHit({
+    title: note.title,
+    snippet: String(note.content || '').slice(0, 800),
+  });
+}
+
+/**
+ * True when the model already called loadNeuron(s) but what it brought in
+ * still doesn't satisfy the user's ask (e.g. loaded a "Saved items: Porsche"
+ * meta-note while they wanted the actual car photos).
+ */
+function needsVaultLoadRepair(calls, userText) {
+  const loaded = loadedVaultPayloads(calls);
+  if (loaded.length === 0) return true;
+  if (loaded.every(vaultPayloadIsMeta)) return true;
+  if (userAskedForImages(userText) && !loaded.some(vaultPayloadLooksLikeImage)) return true;
+  return false;
+}
+
 /**
  * Pick which search hits to auto-load.
  *   1) Prefer hits whose titles the model already named in its reply.
@@ -1502,7 +1572,14 @@ function looksLikeImageHit(hit) {
  *   3) Cap at `max`.
  */
 function selectAutoLoadHits(hits, { assistantText = '', userText = '', max = AUTO_LOAD_MAX } = {}) {
-  const list = Array.isArray(hits) ? hits.filter((h) => typeof h?.node_id === 'string' && h.node_id.startsWith('vault_')) : [];
+  const list = Array.isArray(hits)
+    ? hits.filter(
+        (h) =>
+          typeof h?.node_id === 'string' &&
+          h.node_id.startsWith('vault_') &&
+          !isMetaVaultHit(h),
+      )
+    : [];
   if (!list.length) return [];
 
   const text = String(assistantText || '').toLowerCase();
@@ -1517,6 +1594,8 @@ function selectAutoLoadHits(hits, { assistantText = '', userText = '', max = AUT
     // Models usually echo the vault title (or a long filename prefix) when
     // narrating hits. Match a stable prefix so we only auto-load what they
     // actually talked about — not the rest of a noisy search page.
+    // Skip meta titles even if the model narrated them ("Saved items: X").
+    if (isMetaVaultHit(h)) continue;
     const needle = title.toLowerCase().slice(0, Math.min(title.length, 48));
     if (needle.length >= 6 && text.includes(needle)) mentioned.push(h);
     else rest.push(h);
@@ -1527,12 +1606,12 @@ function selectAutoLoadHits(hits, { assistantText = '', userText = '', max = AUT
   if (userAskedForImages(userText)) {
     const images = pool.filter((h) => looksLikeImageHit(h) === true);
     const unknown = pool.filter((h) => looksLikeImageHit(h) == null);
-    // When the model named specific titles, keep those even if the heuristic
-    // is unsure; only drop clear non-images from the unmentioned fallback.
-    if (mentioned.length > 0) {
-      pool = pool.filter((h) => looksLikeImageHit(h) !== false);
-    } else if (images.length > 0) {
+    // Prefer real image hits. Meta / email / plain-text rollups are never
+    // good enough when the user asked for pics.
+    if (images.length > 0) {
       pool = [...images, ...unknown];
+    } else if (mentioned.length > 0) {
+      pool = pool.filter((h) => looksLikeImageHit(h) !== false);
     } else {
       pool = unknown.length ? unknown : pool;
     }
@@ -1546,7 +1625,8 @@ function selectAutoLoadHits(hits, { assistantText = '', userText = '', max = AUT
  * deterministically — independent of whether the model remembered to call
  * the tools. Runs AFTER the model's turn when:
  *   • the user expressed a view intent, AND
- *   • the model did NOT already loadNeuron(s) this turn.
+ *   • the model did NOT already loadNeuron(s) this turn — OR it loaded
+ *     only meta / non-image junk while the user asked for real media.
  *
  * Node_ids come from (1) a searchVault the model ran this turn, or — when the
  * model answered straight from the injected vault dossier without searching —
@@ -1563,14 +1643,19 @@ async function autoLoadVaultNeuronsIfMissed(opts, result, assistantText = '') {
   // user clearly wants saved Vault items on screen.
   if (!userAskedToViewSavedItems(userText, opts.priorTurns)) return;
 
-  // Model already asked the user which items to pull in — don't second-guess
-  // with a raw dump of search hits (that's how unrelated Vault cards appear
-  // under an otherwise-correct "here's what I found" reply).
-  if (assistantDeferredVaultSurface(assistantText)) return;
-
   const calls = Array.isArray(result.toolCalls) ? result.toolCalls : [];
-  // The model already brought items into view this turn → nothing to repair.
-  if (calls.some((c) => c.name === 'lykn_loadNeurons' || c.name === 'lykn_loadNeuron')) return;
+  // Model already loaded something — but it may have grabbed a meta "Saved
+  // items: …" note (or other non-image) while claiming it pulled the photos.
+  // Only skip repair when the load actually satisfies the ask.
+  const mustRepair = needsVaultLoadRepair(calls, userText);
+  const alreadyLoaded =
+    calls.some((c) => c.name === 'lykn_loadNeurons' || c.name === 'lykn_loadNeuron');
+  if (alreadyLoaded && !mustRepair) return;
+
+  // Model offered "want me to pull any in?" with no (or only-correct) load —
+  // wait for the user. Override only when it already loaded the WRONG thing
+  // (meta note / zero images for a pics ask) and claimed success.
+  if (assistantDeferredVaultSurface(assistantText) && !(alreadyLoaded && mustRepair)) return;
 
   const allowedToolNames = Array.isArray(opts.chatToolNames) ? opts.chatToolNames : null;
   // If loadNeurons isn't reachable for this model (custom agent with a
@@ -1619,8 +1704,17 @@ async function autoLoadVaultNeuronsIfMissed(opts, result, assistantText = '') {
     userText,
     max: AUTO_LOAD_MAX,
   });
+  // Don't re-load node_ids the model already hydrated this turn.
+  const alreadyIds = new Set(
+    loadedVaultPayloads(calls)
+      .map((p) => (typeof p?.node_id === 'string' ? p.node_id : ''))
+      .filter(Boolean),
+  );
   const nodeIds = [];
-  collectVaultNodeIds(selected, nodeIds);
+  collectVaultNodeIds(
+    selected.filter((h) => !alreadyIds.has(h.node_id)),
+    nodeIds,
+  );
 
   if (nodeIds.length === 0) return;
 

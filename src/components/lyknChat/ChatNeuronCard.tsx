@@ -542,8 +542,8 @@ function SaveBackRow({ member }: SaveBackProps) {
             Added to “<span className="max-w-[7rem] truncate">{target?.name}</span>”
           </span>
         ) : alreadyMember && target ? (
-          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/[0.04] dark:bg-white/[0.05] border border-black/8 dark:border-white/8 text-black/55 dark:text-white/55 text-[0.65rem]">
-            <Check size={10} className="text-emerald-500/85" />
+          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-500/12 border border-blue-400/30 text-blue-700 dark:text-blue-300 text-[0.65rem]">
+            <Check size={10} className="text-blue-600 dark:text-blue-400" />
             In “<span className="max-w-[7rem] truncate">{target.name}</span>”
           </span>
         ) : (
@@ -551,7 +551,7 @@ function SaveBackRow({ member }: SaveBackProps) {
             type="button"
             onClick={() => target && handleSave(target.id)}
             disabled={!target || saving}
-            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-400/30 hover:border-indigo-300/55 text-indigo-700 dark:text-indigo-200 text-[0.65rem] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-500/12 hover:bg-blue-500/20 border border-blue-400/40 hover:border-blue-300/55 text-blue-700 dark:text-blue-300 text-[0.65rem] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             title={target ? `Add to ${target.name}` : "Add to a project"}
           >
             {saving ? (
@@ -695,7 +695,7 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
             <button
               type="button"
               onClick={() => setViewerOpen(true)}
-              className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[0.625rem] font-medium text-[#c2603f] dark:text-[#e08e6f] hover:bg-[#c2603f]/10 dark:hover:bg-[#e08e6f]/12 transition-colors"
+              className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[0.625rem] font-medium text-black/70 dark:text-white hover:bg-black/[0.05] dark:hover:bg-white/10 transition-colors"
               title="Pull up the full document"
               aria-label="Pull up the full document"
             >
