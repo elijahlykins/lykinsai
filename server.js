@@ -22640,11 +22640,16 @@ async function findAuthUserByEmail(email) {
 // Replaces Supabase's default confirmation-link email for password signup.
 // Creates an unconfirmed auth user, emails a 5-minute code via Resend, and
 // confirms the account when the Mac app /login screen verifies the code.
+// Auth codes (signup + password reset) come from security@ — not the general
+// feedback From address — so users can trust/filter security mail separately.
+const AUTH_EMAIL_FROM =
+  process.env.RESEND_SECURITY_FROM_EMAIL || 'LYKN Security <security@lykn.io>';
+
 const emailSignupHandlers = createEmailSignupHandlers({
   supabaseAdmin,
   resendClient,
   findAuthUserByEmail,
-  fromAddress: process.env.RESEND_FROM_EMAIL || 'LYKN <feedback@lykn.io>',
+  fromAddress: AUTH_EMAIL_FROM,
 });
 
 const signupStartSchema = z.object({
@@ -22709,7 +22714,7 @@ const emailPasswordResetHandlers = createEmailPasswordResetHandlers({
   supabaseAdmin,
   resendClient,
   findAuthUserByEmail,
-  fromAddress: process.env.RESEND_FROM_EMAIL || 'LYKN <feedback@lykn.io>',
+  fromAddress: AUTH_EMAIL_FROM,
 });
 
 const passwordResetConfirmSchema = z.object({
