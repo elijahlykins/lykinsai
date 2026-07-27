@@ -17,6 +17,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Resend } from 'resend';
 import Stripe from 'stripe';
 import { createEmailSignupHandlers } from './lib/auth/emailSignup.js';
+import { createEmailPasswordResetHandlers } from './lib/auth/emailPasswordReset.js';
 import {
   answerVideoQuestion,
   clearCacheForVideo,
@@ -22696,6 +22697,50 @@ app.post('/api/auth/signup-verify', authLimiter, validate(signupVerifySchema), a
   } catch (err) {
     console.error('❌ signup-verify:', err?.message || err);
     return res.status(500).json({ ok: false, error: 'Could not verify code.' });
+  }
+});
+
+// ============================================
+// PASSWORD RESET — 6-digit code via Resend
+// ============================================
+// Replaces Supabase's default recovery-link email (generic "Reset Password"
+// copy that Gmail often flags). User enters the code + a new password on /login.
+const emailPasswordResetHandlers = createEmailPasswordResetHandlers({
+  supabaseAdmin,
+  resendClient,
+  findAuthUserByEmail,
+  fromAddress: process.env.RESEND_FROM_EMAIL || 'LYKN <feedback@lykn.io>',
+});
+
+const passwordResetConfirmSchema = z.object({
+  email: z.string().email().max(320),
+  code: z.string().min(4).max(12),
+  password: z.string().min(6).max(200),
+});
+
+app.post('/api/auth/password-reset-start', authLimiter, validate(signupEmailOnlySchema), async (req, res) => {
+  try {
+    const result = await emailPasswordResetHandlers.startPasswordReset({ email: req.body.email });
+    if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error });
+    return res.json({ ok: true, email: result.email, expiresAt: result.expiresAt });
+  } catch (err) {
+    console.error('❌ password-reset-start:', err?.message || err);
+    return res.status(500).json({ ok: false, error: 'Could not start password reset.' });
+  }
+});
+
+app.post('/api/auth/password-reset-confirm', authLimiter, validate(passwordResetConfirmSchema), async (req, res) => {
+  try {
+    const result = await emailPasswordResetHandlers.confirmPasswordReset({
+      email: req.body.email,
+      code: req.body.code,
+      password: req.body.password,
+    });
+    if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error });
+    return res.json({ ok: true, email: result.email });
+  } catch (err) {
+    console.error('❌ password-reset-confirm:', err?.message || err);
+    return res.status(500).json({ ok: false, error: 'Could not reset password.' });
   }
 });
 

@@ -284,17 +284,43 @@ export function SupabaseAuthProvider({ children }) {
     return data;
   };
 
-  // Send a password-recovery email. The link lands on /reset-password with a
-  // recovery session (detectSessionInUrl exchanges the code), where the user
-  // sets a new password via updateUser. Also works for Google-only accounts —
-  // completing recovery adds a password identity, so "I signed up with Google
-  // but want a password" self-serves through the same flow.
+  // Password reset goes through our API so we can email a branded 6-digit
+  // code via Resend instead of Supabase's generic recovery link (which Gmail
+  // often flags). confirmPasswordReset updates the password server-side;
+  // the client then signs in with the new password. Also works for
+  // Google-only accounts — setting a password adds an email/password identity.
   const resetPasswordForEmail = async (email) => {
     setAuthError(null);
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
+    const { API_BASE_URL } = await import("@/lib/api-config");
+    const res = await fetch(`${API_BASE_URL}/api/auth/password-reset-start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: String(email || "").trim() }),
     });
-    if (error) throw error;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || "Could not start password reset.");
+    }
+    return data;
+  };
+
+  const confirmPasswordReset = async (email, code, password) => {
+    setAuthError(null);
+    const { API_BASE_URL } = await import("@/lib/api-config");
+    const res = await fetch(`${API_BASE_URL}/api/auth/password-reset-confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: String(email || "").trim(),
+        code: String(code || "").trim(),
+        password: String(password || ""),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || "Could not reset password.");
+    }
+    return data;
   };
 
   // Re-send a fresh 5-minute signup code.
@@ -375,6 +401,7 @@ export function SupabaseAuthProvider({ children }) {
       signUpWithEmail,
       verifySignupEmailCode,
       resetPasswordForEmail,
+      confirmPasswordReset,
       resendSignupEmail,
       signOut,
     }}>

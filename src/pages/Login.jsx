@@ -211,6 +211,7 @@ export default function Login() {
     signUpWithEmail,
     verifySignupEmailCode,
     resetPasswordForEmail,
+    confirmPasswordReset,
     resendSignupEmail,
   } = useAuth();
   // "login" | "signup" | "forgot"
@@ -223,7 +224,7 @@ export default function Login() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  // null | "verify" (signup code) | "reset" (recovery link sent)
+  // null | "verify" (signup code) | "reset" (password-reset code)
   const [successKind, setSuccessKind] = useState(null);
   const [verifyCode, setVerifyCode] = useState("");
   const [expiresAt, setExpiresAt] = useState(null);
@@ -261,9 +262,9 @@ export default function Login() {
     }
   }, []);
 
-  // Live countdown for the 5-minute signup code.
+  // Live countdown for the 5-minute signup / password-reset code.
   useEffect(() => {
-    if (successKind !== "verify" || !expiresAt) return undefined;
+    if ((successKind !== "verify" && successKind !== "reset") || !expiresAt) return undefined;
     const tick = () => {
       const left = Math.max(0, Date.parse(expiresAt) - Date.now());
       setRemainingMs(left);
@@ -338,8 +339,12 @@ export default function Login() {
       if (mode === "login") {
         await signInWithEmail(email.trim(), password);
       } else if (mode === "forgot") {
-        await resetPasswordForEmail(email.trim());
+        const data = await resetPasswordForEmail(email.trim());
         setResendState("idle");
+        setVerifyCode("");
+        setPassword("");
+        setConfirmPassword("");
+        setExpiresAt(data?.expiresAt || new Date(Date.now() + 5 * 60 * 1000).toISOString());
         setSuccessKind("reset");
       } else {
         const data = await signUpWithEmail(email.trim(), password, { name: name.trim() });
@@ -382,13 +387,47 @@ export default function Login() {
     }
   };
 
+  const handleConfirmReset = async (e) => {
+    e?.preventDefault();
+    setError(null);
+    if (remainingMs <= 0) {
+      setError("Code expired. Request a new one.");
+      return;
+    }
+    const code = verifyCode.replace(/\s+/g, "");
+    if (!/^\d{6}$/.test(code)) {
+      setError("Enter the 6-digit code from your email.");
+      return;
+    }
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords don’t match.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await confirmPasswordReset(email.trim(), code, password);
+      await signInWithEmail(email.trim(), password);
+    } catch (err) {
+      if (import.meta.env.DEV) console.error("Reset confirm error:", err);
+      setError(friendlyError(err?.message) || "Could not reset password.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleResend = async () => {
     if (resendState === "sending") return;
     setResendState("sending");
     setError(null);
     try {
       if (successKind === "reset") {
-        await resetPasswordForEmail(email.trim());
+        const data = await resetPasswordForEmail(email.trim());
+        setExpiresAt(data?.expiresAt || new Date(Date.now() + 5 * 60 * 1000).toISOString());
+        setVerifyCode("");
         setResendState("sent");
       } else {
         const data = await resendSignupEmail(email.trim());
@@ -487,47 +526,96 @@ export default function Login() {
   }
 
   if (successKind === "reset") {
+    const expired = remainingMs <= 0;
     return (
       <PageShell>
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
+          transition={{ duration: 0.45 }}
         >
-          <div className="w-16 h-16 mb-6 rounded-2xl bg-blue-500/15 ring-1 ring-blue-300/50 flex items-center justify-center">
-            <svg className="w-8 h-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          <div className="w-14 h-14 mb-5 rounded-2xl bg-blue-500/15 ring-1 ring-blue-300/50 flex items-center justify-center">
+            <svg className="w-7 h-7 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
             </svg>
           </div>
           <h2 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">
-            Check your email
+            Enter reset code
           </h2>
-          <p className="text-slate-600 mb-8">
-            We sent a password-reset link to{" "}
+          <p className="text-slate-600 mb-6 text-sm leading-relaxed">
+            We sent a 6-digit code to{" "}
             <span className="font-medium text-slate-800">{email}</span>.
-            Click it to choose a new password.
+            Enter it below and choose a new password.
           </p>
-          <div className="flex items-center gap-5">
-            <button
-              type="button"
-              onClick={resetToLogin}
-              className="text-sm font-semibold text-blue-600 hover:text-blue-700 transition-colors"
-            >
-              Back to login
-            </button>
-            <button
-              type="button"
-              onClick={handleResend}
-              disabled={resendState === "sending" || resendState === "sent"}
-              className="text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors disabled:opacity-60"
-            >
-              {resendState === "sending"
-                ? "Sending…"
-                : resendState === "sent"
-                  ? "Email sent again"
-                  : "Resend email"}
-            </button>
-          </div>
+
+          <form
+            onSubmit={(e) => {
+              if (expired) {
+                e.preventDefault();
+                handleResend();
+                return;
+              }
+              handleConfirmReset(e);
+            }}
+            className="space-y-3"
+          >
+            <input
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              value={verifyCode}
+              onChange={(e) => setVerifyCode(e.target.value.replace(/[^\d\s]/g, "").slice(0, 8))}
+              placeholder="6-digit code"
+              className={`${INPUT_CLS} tracking-[0.35em] text-center text-base font-semibold`}
+              autoFocus
+            />
+            <PasswordField
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="New password"
+              autoComplete="new-password"
+              show={showPassword}
+              onToggleShow={() => setShowPassword((v) => !v)}
+            />
+            <PasswordField
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Confirm new password"
+              autoComplete="new-password"
+              show={showConfirmPassword}
+              onToggleShow={() => setShowConfirmPassword((v) => !v)}
+            />
+            <div className="flex items-center justify-between text-xs">
+              <span className={expired ? "text-red-600 font-medium" : "text-slate-500"}>
+                {expired ? "Code expired" : `Expires in ${formatCountdown(remainingMs)}`}
+              </span>
+              <button
+                type="button"
+                onClick={handleResend}
+                disabled={resendState === "sending"}
+                className="font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50"
+              >
+                {resendState === "sending"
+                  ? "Sending…"
+                  : resendState === "sent"
+                    ? "Code sent again"
+                    : "Resend code"}
+              </button>
+            </div>
+            <ErrorBanner message={displayError} />
+            <SubmitButton
+              submitting={submitting || resendState === "sending"}
+              label={expired ? "Code expired — resend" : "Update password"}
+              busyLabel={expired ? "Sending…" : "Updating…"}
+            />
+          </form>
+
+          <button
+            type="button"
+            onClick={resetToLogin}
+            className="mt-5 text-sm font-semibold text-slate-500 hover:text-slate-800 transition-colors"
+          >
+            Back to login
+          </button>
         </motion.div>
       </PageShell>
     );
@@ -564,7 +652,7 @@ export default function Login() {
             {mode === "login"
               ? "Sign in to your intelligence layer"
               : mode === "forgot"
-                ? "Enter your email and we'll send you a reset link"
+                ? "Enter your email and we'll send a 6-digit reset code"
                 : "Build an AI that actually knows you"}
           </p>
 
@@ -654,7 +742,7 @@ export default function Login() {
                 mode === "login"
                   ? "Sign in"
                   : mode === "forgot"
-                    ? "Send reset link"
+                    ? "Send reset code"
                     : "Create account"
               }
               busyLabel={
