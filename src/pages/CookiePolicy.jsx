@@ -6,11 +6,9 @@
 //   • GDPR Article 13 transparency obligations
 //   • CCPA/CPRA notice requirements for California residents
 //
-// LYKN's honest position: we don't actually set traditional HTTP cookies for
-// tracking. We do use localStorage / sessionStorage / IndexedDB extensively
-// for UI state and auth, which is functionally equivalent and legally
-// equivalent under ePrivacy guidance, so it gets disclosed here in the
-// same shape a Cookies page would normally take.
+// LYKN uses localStorage / sessionStorage / IndexedDB for UI state and auth
+// (strictly necessary), plus optional Google Analytics 4 cookies when the
+// visitor accepts analytics via the consent banner (Consent Mode v2).
 //
 // Keep the table below in sync with what's actually written client-side:
 //   • Auth (Supabase SDK)       , sb-<project>-auth-token
@@ -19,17 +17,15 @@
 //   • Vault view mode           , lykn_vault_view
 //   • Canvas prefs              , lykn_wheel_zoom_mode, lykn_show_grid
 //   • Onboarding/dismissals     , lykn:lastLoadInGreetingChatId
-//
-// If we ever add analytics, advertising, or third-party trackers, this page
-// becomes a real consent-required surface and the lawful basis flips from
-// "strictly necessary" to "consent." That's a material change, bump the
-// LAST_UPDATED date and notify users per Privacy Policy §Changes.
+//   • Cookie consent choice     , lykn_cookie_consent
+//   • Google Analytics (opt-in) , _ga, _ga_*, via gtag G-Q4KSD1G8YF
 // ============================================================================
 
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
+import { openCookiePreferences } from "@/lib/analytics";
 
-const LAST_UPDATED = "July 21, 2026";
+const LAST_UPDATED = "July 27, 2026";
 
 export default function CookiePolicy() {
   return (
@@ -86,55 +82,95 @@ export default function CookiePolicy() {
         <Section title="The short version" anchor="tldr">
           <ul className="space-y-2">
             <Bullet>
-              We don't set any HTTP cookies for analytics, advertising, or
-              cross-site tracking. We don't share any storage with third
-              parties.
+              We use your browser&apos;s <code>localStorage</code> and{" "}
+              <code>sessionStorage</code> for signing you in and remembering UI
+              preferences. Those are <strong>strictly necessary</strong>.
             </Bullet>
             <Bullet>
-              We do use your browser&apos;s <code>localStorage</code> and{" "}
-              <code>sessionStorage</code> for two things: keeping you signed
-              in, and remembering your UI preferences. Both are{" "}
-              <strong>strictly necessary</strong> for the web surfaces to
-              function.
+              Optional <strong>Google Analytics 4</strong> runs on lykn.io only
+              after you accept analytics in the cookie banner (or change your
+              choice later). We do not use advertising or remarketing cookies.
             </Bullet>
             <Bullet>
-              LYKN Glass also stores local preferences and session tokens on
-              your device (not as advertising cookies).
+              LYKN Glass stores local preferences and session tokens on your
+              device; it does not load the website analytics tag.
             </Bullet>
             <Bullet>
-              You can clear browser storage from your browser&apos;s site
-              settings, clear Glass preferences by signing out / resetting the
-              app, or delete your account from{" "}
-              <Link
-                to="/settings"
+              You can accept, reject, or change analytics anytime via{" "}
+              <button
+                type="button"
+                onClick={() => openCookiePreferences()}
                 className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
               >
-                Settings
-              </Link>
-              .
-            </Bullet>
-            <Bullet>
-              If we ever add analytics or advertising tech, we'll surface a
-              real consent banner first. Not before.
+                Manage cookie preferences
+              </button>
+              , or clear site data in your browser.
             </Bullet>
           </ul>
         </Section>
 
         <Section title="Cookies vs. localStorage" anchor="cookies-vs-storage">
           <p>
-            For clarity: LYKN itself doesn't set traditional HTTP cookies
-            from <code>lykn.io</code>. Some of our infrastructure providers
-            (Supabase, Vercel, Render) may issue a session cookie when you
-            load the site; those are strictly necessary for routing and
-            load balancing and contain no personal identifiers.
+            LYKN writes most of its own state to <code>localStorage</code>,{" "}
+            <code>sessionStorage</code>, and (for cached vault thumbnails){" "}
+            <code>IndexedDB</code>. EU ePrivacy guidance treats these the same
+            as cookies, so they are disclosed here.
           </p>
           <p className="mt-3">
-            The data LYKN itself writes in a browser lives in{" "}
-            <code>localStorage</code>, <code>sessionStorage</code>, and (for
-            cached vault thumbnails) <code>IndexedDB</code>. EU ePrivacy
-            guidance treats these the same as cookies, so we disclose them
-            here too.
+            When you accept analytics, Google Analytics may also set first-party
+            cookies (for example <code>_ga</code> / <code>_ga_*</code>) on{" "}
+            <code>lykn.io</code>. Infrastructure providers (Supabase, Vercel,
+            Render) may issue short-lived session or routing cookies that are
+            strictly necessary and contain no advertising identifiers.
           </p>
+        </Section>
+
+        <Section title="Analytics (optional, consent)" anchor="analytics">
+          <p>
+            We use <strong>Google Analytics 4</strong> (measurement ID{" "}
+            <code>G-Q4KSD1G8YF</code>) to understand aggregate traffic on
+            lykn.io — pages viewed, approximate geography from IP, device /
+            browser category, and referral source. This helps us see which
+            product and marketing pages are useful.
+          </p>
+          <ul className="space-y-2 mt-3">
+            <Bullet>
+              Lawful basis: <strong>consent</strong> (GDPR Art. 6(1)(a) and
+              ePrivacy). Analytics storage stays denied until you accept.
+            </Bullet>
+            <Bullet>
+              We configure Google Consent Mode so ads-related storage (
+              <code>ad_storage</code>, <code>ad_user_data</code>,{" "}
+              <code>ad_personalization</code>) remains denied. We do not run
+              Google Ads remarketing from this tag.
+            </Bullet>
+            <Bullet>
+              IP anonymization is enabled on the tag configuration.
+            </Bullet>
+            <Bullet>
+              Your choice is stored locally under{" "}
+              <code>lykn_cookie_consent</code> so we do not re-ask every visit.
+            </Bullet>
+            <Bullet>
+              Google acts as a sub-processor for this analytics data; see{" "}
+              <Link
+                to="/privacy#processors"
+                className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+              >
+                Privacy Policy §Where your data lives
+              </Link>
+              .
+            </Bullet>
+          </ul>
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={() => openCookiePreferences()}
+              className="inline-flex items-center justify-center rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold px-3.5 py-2 transition-colors"
+            >
+              Manage cookie preferences
+            </button>
+          </div>
         </Section>
 
         <Section title="LYKN Glass (desktop)" anchor="desktop">
@@ -159,8 +195,9 @@ export default function CookiePolicy() {
             </Bullet>
           </ul>
           <p className="mt-3">
-            Screen stills, snips, and audio processed by Glass features are
-            handled as described in the{" "}
+            Glass does not load the lykn.io Google Analytics tag. Screen stills,
+            snips, and audio processed by Glass features are handled as
+            described in the{" "}
             <Link
               to="/privacy#data"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
@@ -178,9 +215,9 @@ export default function CookiePolicy() {
             Authentication (strictly necessary)
           </h3>
           <p>
-            Supabase's SDK stores a signed JWT and refresh token in{" "}
+            Supabase&apos;s SDK stores a signed JWT and refresh token in{" "}
             <code>localStorage</code> under a key like{" "}
-            <code>sb-&lt;project&gt;-auth-token</code>. Without this you'd
+            <code>sb-&lt;project&gt;-auth-token</code>. Without this you&apos;d
             be signed out on every page load.
           </p>
 
@@ -232,9 +269,39 @@ export default function CookiePolicy() {
                 life="Persistent until cleared"
               />
               <StorageRow
+                k="lykn_cookie_consent"
+                purpose="Your analytics accept/reject choice so we don't re-prompt every visit"
+                life="Persistent until cleared or changed"
+              />
+              <StorageRow
                 k="lykn:* (sessionStorage)"
                 purpose="Per-tab UI state: open panels, scroll position, dismissed prompts"
                 life="Cleared when you close the tab"
+              />
+            </tbody>
+          </table>
+
+          <h3 className="text-[15px] font-semibold tracking-tight mt-5 mb-1">
+            Google Analytics (optional — only after Accept)
+          </h3>
+          <table className="w-full text-[12.5px] mt-3 border-collapse">
+            <thead>
+              <tr className="border-b border-black/[0.08] dark:border-white/[0.1]">
+                <th className="text-left py-2 pr-4 font-semibold">Cookie</th>
+                <th className="text-left py-2 pr-4 font-semibold">Purpose</th>
+                <th className="text-left py-2 font-semibold">Lifetime</th>
+              </tr>
+            </thead>
+            <tbody className="text-black/65 dark:text-white/70">
+              <StorageRow
+                k="_ga"
+                purpose="Distinguishes visitors for aggregate Analytics reports"
+                life="Up to 2 years (Google default)"
+              />
+              <StorageRow
+                k="_ga_*"
+                purpose="Persists GA4 session state for the LYKN property"
+                life="Up to 2 years (Google default)"
               />
             </tbody>
           </table>
@@ -255,18 +322,14 @@ export default function CookiePolicy() {
           </h3>
           <ul className="space-y-2 mt-2">
             <Bullet>
-              No analytics cookies (no Google Analytics, no Plausible, no
-              Fathom, we use server-side logs only).
+              No advertising or remarketing cookies. We don&apos;t show ads.
             </Bullet>
             <Bullet>
-              No advertising or remarketing cookies. We don't show ads.
+              No third-party social-media pixels. There are no embedded
+              Facebook / X / LinkedIn trackers in the app.
             </Bullet>
             <Bullet>
-              No third-party social-media cookies. There are no embedded
-              Facebook / X / LinkedIn pixels anywhere in the app.
-            </Bullet>
-            <Bullet>
-              No fingerprinting libraries. We don't probe canvas, WebGL, or
+              No fingerprinting libraries. We don&apos;t probe canvas, WebGL, or
               fonts to identify your device.
             </Bullet>
           </ul>
@@ -274,19 +337,18 @@ export default function CookiePolicy() {
 
         <Section title="Lawful basis" anchor="basis">
           <p>
-            Everything in the table above is processed on the basis of{" "}
-            <strong>strict necessity</strong> (GDPR Art. 6(1)(b), performance
-            of a contract, and the ePrivacy Directive's strictly-necessary
-            exemption from consent). The app cannot function without it: you
-            wouldn't stay signed in, your settings wouldn't persist, and the
-            vault would re-download every file on every visit.
+            Strictly necessary storage (auth, UI preferences, vault caches) is
+            processed on the basis of <strong>strict necessity</strong> (GDPR
+            Art. 6(1)(b), performance of a contract, and the ePrivacy
+            Directive&apos;s strictly-necessary exemption from consent). The
+            app cannot function without it.
           </p>
           <p className="mt-3">
-            Because nothing here is for analytics, advertising, or profiling,
-            no consent banner is required under EU/UK ePrivacy guidance. If
-            that ever changes, for example, if we add an opt-in analytics
-            integration, we'll add a real consent flow before the new
-            storage is set.
+            Google Analytics cookies and related client identifiers are
+            processed only on the basis of <strong>consent</strong>. Until you
+            accept, Consent Mode keeps <code>analytics_storage</code> denied.
+            You can withdraw consent anytime via Manage cookie preferences or
+            by clearing site data.
           </p>
         </Section>
 
@@ -298,31 +360,32 @@ export default function CookiePolicy() {
             <Bullet>
               <strong>Chrome / Edge / Brave:</strong> Settings → Privacy →
               Cookies and other site data → See all site data → search
-              "lykn" → remove.
+              &quot;lykn&quot; → remove.
             </Bullet>
             <Bullet>
               <strong>Safari:</strong> Settings → Privacy → Manage Website
-              Data → search "lykn" → remove.
+              Data → search &quot;lykn&quot; → remove.
             </Bullet>
             <Bullet>
-              <strong>Firefox:</strong> Settings → Privacy & Security →
-              Cookies and Site Data → Manage Data → search "lykn" → remove.
+              <strong>Firefox:</strong> Settings → Privacy &amp; Security →
+              Cookies and Site Data → Manage Data → search &quot;lykn&quot; → remove.
             </Bullet>
           </ul>
           <p className="mt-3">
-            Clearing storage signs you out. The next time you sign in,
-            preferences reset to defaults.
+            Clearing storage signs you out and resets preferences (including
+            your analytics choice). The next visit shows the consent banner
+            again.
           </p>
           <p className="mt-3">
-            If you want the server-side counterparts gone too, your
-            account, vault, synthesis content, delete your account from{" "}
+            If you want the server-side counterparts gone too — your
+            account, vault, synthesis content — delete your account from{" "}
             <Link
               to="/settings"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
             >
               Settings
             </Link>
-            . That's a hard delete; see{" "}
+            . That&apos;s a hard delete; see{" "}
             <Link
               to="/privacy#retention"
               className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
@@ -342,21 +405,33 @@ export default function CookiePolicy() {
             >
               Privacy Policy §Where your data lives
             </Link>
-            . Of those, only the three that serve traffic from your browser
-            may set their own infrastructure cookies:
+            . Of those, the following may set cookies or similar storage from
+            your browser:
           </p>
           <ul className="space-y-2 mt-3">
             <Bullet>
-              <strong>Supabase</strong>, auth tokens in localStorage (see
+              <strong>Supabase</strong> — auth tokens in localStorage (see
               above).
             </Bullet>
             <Bullet>
-              <strong>Vercel</strong>, may set short-lived load-balancer
-              cookies for routing. No identifiers; cleared with the rest of
-              site storage.
+              <strong>Vercel</strong> — may set short-lived load-balancer
+              cookies for routing. No advertising identifiers.
             </Bullet>
             <Bullet>
-              <strong>Stripe</strong>, only on billing pages (
+              <strong>Google Analytics</strong> — only after you accept
+              analytics (<code>_ga</code> / <code>_ga_*</code>). Governed by{" "}
+              <a
+                href="https://policies.google.com/privacy"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+              >
+                Google&apos;s Privacy Policy
+              </a>
+              .
+            </Bullet>
+            <Bullet>
+              <strong>Stripe</strong> — only on billing pages (
               <code>/billing</code>, checkout). Stripe sets its own fraud-
               prevention cookies governed by{" "}
               <a
@@ -365,7 +440,7 @@ export default function CookiePolicy() {
                 rel="noreferrer"
                 className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
               >
-                Stripe's cookie policy
+                Stripe&apos;s cookie policy
               </a>
               .
             </Bullet>
@@ -375,7 +450,7 @@ export default function CookiePolicy() {
         <Section title="Changes" anchor="changes">
           <p>
             Material changes (a new category of storage, a new third party
-            with cookies, or any move away from strict necessity) bump the
+            with cookies, or any change to consent requirements) bump the
             date at the top and trigger the same 14-day email notice that
             applies to the Privacy Policy.
           </p>

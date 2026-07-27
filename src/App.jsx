@@ -12,6 +12,8 @@ import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import { IntakeProvider } from '@/context/IntakeContext';
 import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
+import CookieConsentBanner from '@/components/CookieConsentBanner';
+import { initAnalyticsConsent, trackPageview } from '@/lib/analytics';
 
 import Login from "./pages/Login";
 import DesktopAuth from "./pages/DesktopAuth";
@@ -219,6 +221,17 @@ function AppShell() {
   const isSharePage = location.pathname === "/share";
 
   useEffect(() => {
+    initAnalyticsConsent();
+  }, []);
+
+  useEffect(() => {
+    if (isEmbeddedRoute) return;
+    trackPageview(
+      `${location.pathname}${location.search}${location.hash}`,
+    );
+  }, [location.pathname, location.search, location.hash, isEmbeddedRoute]);
+
+  useEffect(() => {
     document.documentElement.classList.toggle("embedded-vault-mode", isEmbeddedRoute);
     document.body.classList.toggle("embedded-vault-mode", isEmbeddedRoute);
     return () => {
@@ -292,6 +305,7 @@ function AppShell() {
       {!chromeHidden && !isMobile && <AppSidebar />}
       {!chromeHidden && isMobile && <MobileTabBar />}
       {!chromeHidden && isMobile && <MobileExperienceNotice />}
+      {!isEmbeddedRoute && <CookieConsentBanner />}
 
       {showSignInPillGlobally && (
         <div className="fixed left-4 top-4 z-[9995] flex items-center gap-3 pointer-events-auto">

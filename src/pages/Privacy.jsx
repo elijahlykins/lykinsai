@@ -21,7 +21,7 @@
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 
-const LAST_UPDATED = "July 21, 2026";
+const LAST_UPDATED = "July 27, 2026";
 
 export default function Privacy() {
   return (
@@ -203,15 +203,29 @@ export default function Privacy() {
           <p>
             Sparse server-side logs of API calls (which endpoint, response
             time, status code, your user ID), MCP tool invocation counts and
-            tool names (so the Connections page can show you "Claude Desktop
-            called <code>getBeliefs</code> 14 times today"), and OAuth client
+            tool names (so the Connections page can show you &quot;Claude Desktop
+            called <code>getBeliefs</code> 14 times today&quot;), and OAuth client
             metadata for connected AI tools (client name, scopes, last-used
-            timestamp). No third-party analytics, we use server logs only.
-            The iOS app additionally forwards Apple MetricKit diagnostics
-            (crash reports, hang and performance summaries — never message or
-            vault content) to our own servers, associated with your account so
-            we can investigate issues you report; these are deleted with your
-            account.
+            timestamp). The iOS app additionally forwards Apple MetricKit
+            diagnostics (crash reports, hang and performance summaries — never
+            message or vault content) to our own servers, associated with your
+            account so we can investigate issues you report; these are deleted
+            with your account.
+          </p>
+          <p className="mt-3">
+            On the public website (lykn.io), we also use{" "}
+            <strong>Google Analytics 4</strong> for aggregate page-view and
+            traffic measurement when you accept analytics cookies. This is
+            optional, gated by a consent banner and Google Consent Mode, and
+            does not include advertising or remarketing. Details and how to
+            change your choice are in the{" "}
+            <Link
+              to="/cookies#analytics"
+              className="underline underline-offset-2 hover:text-black/85 dark:hover:text-white/90"
+            >
+              Cookie Policy
+            </Link>
+            . LYKN Glass (desktop) does not load this website analytics tag.
           </p>
 
           <h3 className="text-[15px] font-semibold tracking-tight mt-5 mb-1">
@@ -352,7 +366,7 @@ export default function Privacy() {
               <Row p="Vercel" purpose="Website and web app hosting (lykn.io)" region="Global edge" />
               <Row p="Anthropic" purpose="LLM inference (Claude tiers) for chat, synthesis, Glass, and builds" region="US" />
               <Row p="OpenAI" purpose="LLM inference (GPT tiers); embeddings; image generation; speech-to-text / TTS paths; optional Realtime voice on supported clients" region="US" />
-              <Row p="Google" purpose="LLM / vision inference (Gemini tiers) when you select those models; Google OAuth for sign-in and connectors you enable" region="US" />
+              <Row p="Google" purpose="LLM / vision inference (Gemini tiers) when you select those models; Google OAuth for sign-in and connectors you enable; Google Analytics 4 on lykn.io when you accept analytics cookies" region="US" />
               <Row p="xAI" purpose="LLM inference (Grok tiers) when you select those models" region="US" />
               <Row p="ElevenLabs" purpose="Voice Mode audio (desktop Glass and supported clients): mic / conversation audio streamed to ElevenLabs during a voice session" region="US" />
               <Row p="Resend" purpose="Transactional email (sign-in links, account changes)" region="US" />
