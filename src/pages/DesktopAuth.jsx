@@ -20,12 +20,19 @@ import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-w
 //
 // sessionStorage key `lykn:desktop-auth-boot` records that we already cleared
 // + bounced to Google for this desktop_state, so the post-Google reload does
-// NOT wipe the new session (that was the "works on the second try" bug).
+// NOT wipe the new session.
+//
+// Important: after Google redirects back with ?code=, Supabase's PKCE exchange
+// can finish a beat after INITIAL_SESSION(null). We poll for the session
+// instead of immediately showing "didn't complete" (that was the every-first-
+// attempt failure that cleared on Try again).
 
 const LANDING_FONT =
   '"Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif';
 
 const BOOT_KEY = "lykn:desktop-auth-boot";
+const SESSION_WAIT_MS = 12_000;
+const SESSION_POLL_MS = 200;
 
 const Spinner = () => (
   <svg className="w-5 h-5 animate-spin text-blue-600" viewBox="0 0 24 24" fill="none">
@@ -60,6 +67,38 @@ function writeBootMarker(state) {
   }
 }
 
+/** True when this load is the OAuth redirect back from Google/Supabase. */
+function hasOAuthCallbackParams() {
+  if (typeof window === "undefined") return false;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    return Boolean(
+      params.get("code") ||
+        hash.get("access_token") ||
+        params.get("access_token"),
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function waitForSession(timeoutMs = SESSION_WAIT_MS) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (data?.session?.access_token && data?.session?.refresh_token) {
+        return data.session;
+      }
+    } catch {
+      /* keep polling */
+    }
+    await new Promise((r) => setTimeout(r, SESSION_POLL_MS));
+  }
+  return null;
+}
+
 function buildDeepLink(session) {
   const at = encodeURIComponent(session.access_token || "");
   const rt = encodeURIComponent(session.refresh_token || "");
@@ -85,11 +124,12 @@ function navigateToDeepLink(url) {
 
 export default function DesktopAuth() {
   const { user, loading, signInWithOAuth } = useAuth();
-  // 'boot' → auth still resolving; 'starting' → bouncing to Google;
-  // 'handoff' → signed in, deep-linking into the app; 'error' → OAuth failed.
+  // 'boot' → auth still resolving; 'starting' → bouncing to Google / finishing
+  // exchange; 'handoff' → signed in; 'error' → OAuth failed.
   const [phase, setPhase] = useState("boot");
   const [errorMsg, setErrorMsg] = useState(null);
   const startedRef = useRef(false);
+  const waitingRef = useRef(false);
 
   const oauthError = (() => {
     if (typeof window === "undefined") return null;
@@ -110,9 +150,10 @@ export default function DesktopAuth() {
     const returnPath = desktopState
       ? `/desktop-auth?desktop_state=${encodeURIComponent(desktopState)}`
       : "/desktop-auth";
+    // Keep desktop_state; drop any leftover OAuth params before leaving.
     window.history.replaceState({}, "", returnPath);
     if (desktopState) writeBootMarker(desktopState);
-    const { error } = await signInWithOAuth("google", {
+    const { data, error } = await signInWithOAuth("google", {
       redirectTo: `${window.location.origin}${returnPath}`,
       // Force Google's account chooser so Mac sign-out → different Google
       // account works on the first try (SSO otherwise reuses the last user).
@@ -121,6 +162,13 @@ export default function DesktopAuth() {
     if (error) {
       setErrorMsg("Couldn't start Google sign-in. Please try again.");
       setPhase("error");
+      return;
+    }
+    // Backup redirect — supabase usually navigates itself; if it doesn't
+    // (some browsers / ad blockers), follow the URL so we don't sit here
+    // with a boot marker and look "broken" on refresh.
+    if (data?.url && typeof window !== "undefined") {
+      window.location.assign(data.url);
     }
   };
 
@@ -140,17 +188,15 @@ export default function DesktopAuth() {
       setPhase("error");
       return;
     }
-    // Must run from a real click — browsers block lykn:// without a user gesture,
-    // which is why auto-handoff looked like "works the second time".
+    // Must run from a real click — browsers block lykn:// without a user gesture.
     navigateToDeepLink(buildDeepLink(session));
   };
 
   const switchAccount = async () => {
     startedRef.current = true;
+    waitingRef.current = false;
     setPhase("starting");
     const desktopState = readDesktopState();
-    // New boot marker so the post-Google return is treated as a fresh OAuth
-    // completion, not a stale leftover session.
     if (desktopState) writeBootMarker(desktopState);
     try {
       await supabase.auth.signOut({ scope: "local" });
@@ -159,6 +205,25 @@ export default function DesktopAuth() {
     }
     await startOAuth();
   };
+
+  // If auth state catches up after a slow PKCE exchange (or we briefly showed
+  // an error), move to handoff. Do NOT do this during a fresh outbound bounce
+  // to Google — that would cancel account switching.
+  useEffect(() => {
+    if (!user) return;
+    if (phase === "error") {
+      setErrorMsg(null);
+      setPhase("handoff");
+      return;
+    }
+    if (
+      (phase === "boot" || phase === "starting") &&
+      (hasOAuthCallbackParams() || waitingRef.current)
+    ) {
+      setErrorMsg(null);
+      setPhase("handoff");
+    }
+  }, [user, phase]);
 
   useEffect(() => {
     if (loading) return;
@@ -169,40 +234,40 @@ export default function DesktopAuth() {
       return;
     }
 
+    // Already in flight: wait for user / session; don't re-enter boot logic.
     if (startedRef.current) {
-      // Effect re-ran after signOut cleared `user` mid-boot — wait for OAuth return.
-      // Do NOT auto-open lykn:// here; wait for the Open LYKN click.
-      if (user) setPhase("handoff");
+      if (user) {
+        setErrorMsg(null);
+        setPhase("handoff");
+      }
       return;
     }
     startedRef.current = true;
 
     const desktopState = readDesktopState();
     const bootMarker = readBootMarker();
+    const oauthCallback = hasOAuthCallbackParams();
     const returningFromGoogle = Boolean(
-      desktopState && bootMarker && bootMarker === desktopState,
+      oauthCallback || (desktopState && bootMarker && bootMarker === desktopState),
     );
 
     (async () => {
-      // Post-Google reload: we already cleared + started OAuth for this state.
+      // Post-Google reload (or any load that still has ?code= / tokens).
       if (returningFromGoogle) {
         if (user) {
           setPhase("handoff");
           return;
         }
-        // Session can lag a tick behind INITIAL_SESSION on some browsers —
-        // confirm with getSession before declaring failure.
-        try {
-          const { data } = await supabase.auth.getSession();
-          if (data?.session?.user) {
-            setPhase("handoff");
-            return;
-          }
-        } catch {
-          /* fall through */
+        waitingRef.current = true;
+        setPhase("starting");
+        const session = await waitForSession();
+        waitingRef.current = false;
+        if (session?.user || (await supabase.auth.getSession()).data?.session?.user) {
+          setErrorMsg(null);
+          setPhase("handoff");
+          return;
         }
-        // Marker set but auth finished with no session — offer retry instead
-        // of silently clearing again (that caused the "second try" loop).
+        // Only fail after a real wait — first paint with null session is normal.
         setErrorMsg("Google sign-in didn't complete. Please try again.");
         setPhase("error");
         return;
@@ -231,6 +296,16 @@ export default function DesktopAuth() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, user]);
 
+  const waitingCopy = hasOAuthCallbackParams() || waitingRef.current
+    ? {
+        title: "Finishing sign-in…",
+        body: "Confirming your Google account, then you can open the LYKN Mac app.",
+      }
+    : {
+        title: "Redirecting to Google…",
+        body: "Choose the Google account you want, then we'll send you back to the LYKN Mac app.",
+      };
+
   return (
     <div
       className="fixed inset-0 z-50 overflow-hidden bg-white"
@@ -250,11 +325,10 @@ export default function DesktopAuth() {
               <>
                 <div className="flex justify-center mb-4"><Spinner /></div>
                 <h1 className="text-lg font-semibold text-slate-900">
-                  Redirecting to Google…
+                  {waitingCopy.title}
                 </h1>
                 <p className="mt-2 text-sm text-slate-500">
-                  Choose the Google account you want, then we&apos;ll send you
-                  back to the LYKN Mac app.
+                  {waitingCopy.body}
                 </p>
               </>
             )}
