@@ -430,7 +430,14 @@ export default function Billing() {
       if (planId === currentPlan) return;
       setCheckoutBusy(planId);
       try {
-        const { url } = await postBilling("/api/billing/checkout", { planId, period });
+        // The iOS app opens /billing?source=ios; Login preserves the query
+        // through its auth bounce. Forwarding it lets the server point
+        // Stripe's return at the app's universal-link paths.
+        const source =
+          new URLSearchParams(window.location.search).get("source") === "ios"
+            ? "ios"
+            : undefined;
+        const { url } = await postBilling("/api/billing/checkout", { planId, period, source });
         if (url) window.location.href = url;
       } catch (err) {
         if (err?.code === "student_email_required") {

@@ -24139,6 +24139,7 @@ app.get('/api/billing/me', requireAuth, async (req, res) => {
 const billingCheckoutSchema = z.object({
   planId: z.string().min(1).max(64),
   period: z.string().min(1).max(64),
+  source: z.enum(['ios', 'web']).optional(),
 });
 
 app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), async (req, res) => {
@@ -24176,12 +24177,22 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
     const checkoutIdentity = await buildStripeCheckoutIdentity(user, row);
     const appUrl = appUrlFromReq(req);
 
+    // iOS-initiated checkouts (Safari, arriving from the app's external
+    // purchase link) return to the AASA-whitelisted /billing/success and
+    // /billing/cancel paths, whose pages offer a "Return to LYKN" hand-off
+    // back into the app. Web checkouts keep the query-param round-trip that
+    // Billing.jsx already handles.
+    const fromIOS = req.body.source === 'ios';
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       ...checkoutIdentity,
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${appUrl}/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${appUrl}/billing?checkout=canceled`,
+      success_url: fromIOS
+        ? `${appUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`
+        : `${appUrl}/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: fromIOS
+        ? `${appUrl}/billing/cancel`
+        : `${appUrl}/billing?checkout=canceled`,
       client_reference_id: user.id,
       allow_promotion_codes: true,
       metadata: { supabase_user_id: user.id, plan: planId, period },
