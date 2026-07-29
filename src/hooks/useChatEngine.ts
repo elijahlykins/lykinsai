@@ -619,7 +619,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
 
   /* ---------- Callbacks ---------- */
 
-  const SUMMARIZE_EVERY_N_TURNS = 8;
+  // Working memory: refresh often enough that goals/open questions stick
+  // across mid-length chats without summarizing every turn.
+  const SUMMARIZE_EVERY_N_TURNS = 4;
   const maybeRunConversationSummary = useCallback(async (targetChatId?: string | null) => {
     // Operate on the stream's own board snapshot so summaries don't mix
     // conversation history across chats in a thread.
@@ -628,12 +630,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (snap) {
       snap.convoTurnsSinceSummary += 1;
       if (snap.convoTurnsSinceSummary < SUMMARIZE_EVERY_N_TURNS) return;
-      if (snap.aiThread.length < 8) return;
+      if (snap.aiThread.length < 6) return;
       snap.convoTurnsSinceSummary = 0;
     } else {
       convoTurnsSinceSummaryRef.current += 1;
       if (convoTurnsSinceSummaryRef.current < SUMMARIZE_EVERY_N_TURNS) return;
-      if (aiThreadRef.current.length < 8) return;
+      if (aiThreadRef.current.length < 6) return;
       convoTurnsSinceSummaryRef.current = 0;
     }
     const thread = snap ? snap.aiThread : aiThreadRef.current;

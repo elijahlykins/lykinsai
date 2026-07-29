@@ -176,28 +176,93 @@ async function loadAllMemory(
 // ---------------------------------------------------------------------------
 // Format memory entries into a prompt-friendly string
 // ---------------------------------------------------------------------------
-const MEMORY_CHAR_BUDGET = 6000;
+const MEMORY_CHAR_BUDGET = 4500;
+const EPISODIC_MAX = 5;
 
-export function formatMemoryForPrompt(entries: MemoryEntry[]): string {
+function tokenizeQuery(q: string): string[] {
+  return String(q || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s_-]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length >= 3)
+    .slice(0, 14);
+}
+
+function episodicScore(entry: MemoryEntry, tokens: string[]): number {
+  if (!tokens.length) return 0;
+  const hay = `${entry.user_message || ""} ${entry.assistant_message || ""} ${entry.surface_title || ""} ${entry.summary || ""}`.toLowerCase();
+  let hits = 0;
+  for (const t of tokens) {
+    if (hay.includes(t)) hits += 1;
+  }
+  // Mild recency boost so recent relevant chats win ties.
+  const ageDays = Math.max(
+    0,
+    (Date.now() - (Date.parse(entry.created_at) || 0)) / (1000 * 60 * 60 * 24),
+  );
+  const recency = ageDays < 7 ? 0.35 : ageDays < 30 ? 0.15 : 0;
+  return hits / tokens.length + recency;
+}
+
+function relativeWhen(iso: string | null | undefined): string {
+  const t = Date.parse(iso || "");
+  if (!Number.isFinite(t)) return "earlier";
+  const days = Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
+  if (days <= 0) return "earlier today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
+  return `${Math.floor(days / 30)} months ago`;
+}
+
+/**
+ * Rank past exchanges for this turn and format as episodic recalls.
+ * Prefer query-relevant hits; fall back to recent if nothing matches.
+ */
+export function formatMemoryForPrompt(
+  entries: MemoryEntry[],
+  queryText?: string,
+): string {
   if (!entries.length) return "";
 
-  const lines: string[] = [];
-  let chars = 0;
+  const tokens = tokenizeQuery(queryText || "");
+  const scored = entries
+    .map((e) => ({ e, score: episodicScore(e, tokens) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return (Date.parse(b.e.created_at) || 0) - (Date.parse(a.e.created_at) || 0);
+    });
 
-  for (const e of entries) {
+  const relevant = scored.filter((x) => x.score > 0).slice(0, EPISODIC_MAX);
+  const picked = (relevant.length ? relevant : scored.slice(0, 3)).map((x) => x.e);
+
+  const lines: string[] = [
+    "[EPISODIC]",
+    "Past chats that may be relevant. When one clearly fits, you may briefly reference it (\"Last time we talked about…\") — do not invent episodes. Prefer User Facts for durable identity.",
+    "",
+  ];
+  let chars = lines.join("\n").length;
+
+  for (const e of picked) {
     const label = surfaceLabel(e);
-    const when = e.created_at ? new Date(e.created_at).toISOString() : "";
-    const whenPrefix = when ? `[${when}] ` : "";
-    const userSnip = (e.summary || e.user_message).slice(0, 600);
-    const aiSnip = (e.summary || e.assistant_message).slice(0, 600);
-    const block = `${whenPrefix}[${label}]\nUser: ${userSnip}\nAssistant: ${aiSnip}`;
+    const when = relativeWhen(e.created_at);
+    const userSnip = (e.summary || e.user_message).replace(/\s+/g, " ").trim().slice(0, 280);
+    const aiSnip = (e.assistant_message || "").replace(/\s+/g, " ").trim().slice(0, 220);
+    const block = [
+      `• ${when} — ${label}`,
+      `  They said: ${userSnip}`,
+      aiSnip ? `  You replied: ${aiSnip}` : null,
+      e.surface_id ? `  chat_id: ${e.surface_id}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     if (chars + block.length > MEMORY_CHAR_BUDGET) break;
     lines.push(block);
     chars += block.length;
   }
 
-  return lines.join("\n\n");
+  return lines.join("\n").trim();
 }
 
 function surfaceLabel(e: MemoryEntry): string {
@@ -222,7 +287,8 @@ const CACHE_TTL = 60_000;
 
 export async function getMemoryForPrompt(
   userId: string,
-  excludeChatId?: string | null
+  excludeChatId?: string | null,
+  queryText?: string,
 ): Promise<string> {
   const bid = excludeChatId || null;
   if (
@@ -231,11 +297,11 @@ export async function getMemoryForPrompt(
     _cache.excludeChatId === bid &&
     Date.now() - _cache.fetchedAt < CACHE_TTL
   ) {
-    return formatMemoryForPrompt(_cache.entries);
+    return formatMemoryForPrompt(_cache.entries, queryText);
   }
   const entries = await loadAllMemory(userId, bid);
   _cache = { userId, excludeChatId: bid, entries, fetchedAt: Date.now() };
-  return formatMemoryForPrompt(entries);
+  return formatMemoryForPrompt(entries, queryText);
 }
 
 export function invalidateMemoryCache(): void {

@@ -16,6 +16,7 @@ import {
 import { useAuth } from "@/lib/SupabaseAuth";
 import FeedbackModal from "@/components/FeedbackModal";
 import LyknCalendarDialog from "@/components/calendar/LyknCalendarDialog";
+import { SYNTHESIS_LAYER_UI_ENABLED } from "@/lib/synthesisLayerUi";
 
 const flushAndNavigate = (nav, path) => {
   window.dispatchEvent(new Event("lyknchat_flush_save"));
@@ -151,14 +152,16 @@ export default function MobileTabBar() {
               )}
 
               <div className="py-1">
-                <MoreItem
-                  icon={Brain}
-                  label="Synthesis Layer"
-                  onClick={() => {
-                    setMoreOpen(false);
-                    flushAndNavigate(nav, "/synthesis-layer");
-                  }}
-                />
+                {SYNTHESIS_LAYER_UI_ENABLED ? (
+                  <MoreItem
+                    icon={Brain}
+                    label="Synthesis Layer"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      flushAndNavigate(nav, "/synthesis-layer");
+                    }}
+                  />
+                ) : null}
                 <MoreItem
                   icon={CalendarDays}
                   label="Calendar / To-do"

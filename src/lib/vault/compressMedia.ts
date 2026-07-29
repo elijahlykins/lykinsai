@@ -29,7 +29,7 @@ import { useVaultUploadStore } from "@/store/vaultUploadStore";
 export const VIDEO_COMPRESS_THRESHOLD_BYTES = 50 * 1024 * 1024; // 50 MB
 
 /** Images at or above this size get re-encoded. */
-export const IMAGE_COMPRESS_THRESHOLD_BYTES = 3 * 1024 * 1024; // 3 MB
+export const IMAGE_COMPRESS_THRESHOLD_BYTES = 5 * 1024 * 1024; // 5 MB
 
 /**
  * File containers that commonly hold codecs browsers can't decode
@@ -131,7 +131,9 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 /**
  * Returns a possibly-compressed version of the input file. Images above
- * 3 MB are downscaled; everything else is returned unchanged.
+ * 5 MB are downscaled; everything else is returned unchanged.
+ * Tuned for sharp vault / chat viewing (≤4096px, high JPEG quality) rather
+ * than aggressive storage savings — blurry saved photos were worse UX.
  */
 export async function maybeCompressImage(
   file: File,
@@ -153,10 +155,10 @@ export async function maybeCompressImage(
     // through so a fast cancel doesn't keep the worker spinning on a
     // megapixel image the user no longer cares about.
     const compressedBlob: Blob = await imageCompression(file, {
-      maxSizeMB: 2,
-      maxWidthOrHeight: 2048,
+      maxSizeMB: 6,
+      maxWidthOrHeight: 4096,
       useWebWorker: true,
-      initialQuality: 0.85,
+      initialQuality: 0.92,
       fileType: file.type?.includes("png") ? "image/png" : "image/jpeg",
       signal,
       onProgress: (percent: number) => {

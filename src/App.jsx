@@ -9,6 +9,7 @@ import { canUseWebApp } from '@/lib/webAppAccess';
 import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
+import { supabase } from '@/lib/supabase';
 import { IntakeProvider } from '@/context/IntakeContext';
 import LoadingScreen from "@/components/LoadingScreen";
 import RouteErrorBoundary from '@/lib/RouteErrorBoundary';
@@ -41,6 +42,10 @@ import {
   isEmbeddedSurfacePath,
   readEmbeddedPreviewParams,
 } from "@/lib/embeddedPreview";
+import {
+  SYNTHESIS_LAYER_UI_ENABLED,
+  SYNTHESIS_LAYER_FALLBACK_PATH,
+} from "@/lib/synthesisLayerUi";
 import ShareReceiver from "./pages/ShareReceiver";
 import Onboarding from "./pages/Onboarding";
 import Pricing from "./pages/Pricing";
@@ -138,7 +143,19 @@ function GuestOnly({ children, to = "/app" }) {
 }
 
 async function fetchBillingMeForGate() {
-  const res = await fetch(`${API_BASE_URL}/api/billing/me`);
+  // Wait for a real JWT before hitting the gate. After a local server /
+  // Electron restart, useAuth can report `user` a tick before the fetch
+  // interceptor has a cached token — bare /api/billing/me then 401s and the
+  // fail-closed screen locks the whole app.
+  let token = (await supabase.auth.getSession())?.data?.session?.access_token;
+  if (!token) {
+    token = (await supabase.auth.refreshSession())?.data?.session?.access_token;
+  }
+  if (!token) throw new Error("billing/me: no session token");
+
+  const res = await fetch(`${API_BASE_URL}/api/billing/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (!res.ok) throw new Error(`billing/me ${res.status}`);
   return res.json();
 }
@@ -153,12 +170,13 @@ function useSubscriptionGate() {
   const location = useLocation();
   const exempt = isSubscriptionGateExempt(location.pathname);
 
-  const { data, isLoading, isError, refetch, isFetching } = useQuery({
+  const { data, isLoading, isError, refetch, isFetching, error } = useQuery({
     queryKey: ["billing-me", user?.id || "guest"],
     queryFn: fetchBillingMeForGate,
     enabled: Boolean(user?.id) && !exempt,
     staleTime: 5_000,
-    retry: 1,
+    retry: 2,
+    retryDelay: (n) => Math.min(1000 * 2 ** n, 4000),
   });
 
   if (authLoading || !user || exempt) {
@@ -167,9 +185,15 @@ function useSubscriptionGate() {
   if (isLoading) {
     return { redirect: null, loading: true, error: false, retry: null };
   }
-  // Fail closed on billing errors — never admit unpaid users when we can't
-  // verify access. Paid users see a retry screen instead of a silent open.
+  // Fail closed on billing errors in production — never admit unpaid users
+  // when we can't verify access. In local DEV, a server restart / JWT race
+  // should not hard-lock the overlay; allow through and let metered routes
+  // enforce access on the server.
   if (isError) {
+    if (import.meta.env.DEV) {
+      console.warn("[subscription-gate] billing/me failed in DEV — allowing through", error);
+      return { redirect: null, loading: false, error: false, retry: null };
+    }
     return {
       redirect: null,
       loading: false,
@@ -275,12 +299,12 @@ function AppShell() {
 
   if (subscriptionGate.error) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white px-6">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--app-background,#ececeb)] px-6">
         <div className="w-full max-w-sm text-center">
-          <p className="text-base font-semibold text-slate-900">
+          <p className="text-base font-semibold text-black/90 dark:text-white/90">
             Couldn&apos;t verify your subscription
           </p>
-          <p className="mt-2 text-sm text-slate-500">
+          <p className="mt-2 text-sm text-black/50 dark:text-white/50">
             Check your connection and try again. LYKN won&apos;t open until billing status is confirmed.
           </p>
           <button
@@ -394,11 +418,15 @@ function AppShell() {
             <Route
               path="/synthesis-layer"
               element={
-                <ProtectedRoute>
-                  <Suspense fallback={loadingFallback}>
-                    <SynthesisLayer />
-                  </Suspense>
-                </ProtectedRoute>
+                SYNTHESIS_LAYER_UI_ENABLED ? (
+                  <ProtectedRoute>
+                    <Suspense fallback={loadingFallback}>
+                      <SynthesisLayer />
+                    </Suspense>
+                  </ProtectedRoute>
+                ) : (
+                  <Navigate to={SYNTHESIS_LAYER_FALLBACK_PATH} replace />
+                )
               }
             />
             <Route

@@ -15,19 +15,17 @@ export const getFactsTool = {
   title: 'Get the user\'s identity facts',
   scope: 'read',
   description: [
-    'Return atomic facts the LYKN user has accumulated in their synthesis',
-    'profile — short, third-person statements describing identity, focus,',
-    'preferences, constraints, goals, etc. ("works as a designer", "is',
-    'building a spatial AI workspace", "prefers terse replies").',
+    'On-demand recall of the user\'s User Facts (chat-ratified personalization).',
+    'Short third-person claims: identity, focus, preferences, style, constraints,',
+    'goals, relationships, etc. Confirmed (✓) facts beat soft ones.',
     '',
-    'Prefer lykn_getBeliefs / lykn_getRules first; fall back here when:',
-    '  • the user asks a recall question ("what do you know about me?")',
-    '  • the user is choosing between options where their stated preferences',
-    '    matter ("which of these tools fits my workflow?")',
-    '  • the beliefs/rules don\'t cover the question at hand',
+    'Call this when [WHO_I_AM] in the prompt is missing detail for the topic',
+    '(prefs, people, places, style), or on "what do you know about me?" when',
+    '[WHO_I_AM] is thin. Answer as identity prose from these facts — never as',
+    'a project inventory. Do not dump a full bullet audit.',
     '',
-    'Pass a `query` to filter facts by free-text match against fact_text +',
-    'fact_kind, otherwise this returns the highest-confidence active facts.',
+    'Pass `query` for relevance ranking (token match on fact_text + kind).',
+    'Do NOT use Core Beliefs / rules as the personalization engine.',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -70,10 +68,29 @@ export const getFactsTool = {
     });
 
     const queryRaw = typeof args.query === 'string' ? args.query.trim().toLowerCase() : '';
-    if (queryRaw) {
-      facts = facts.filter((f) => {
-        const hay = `${f.fact_text || ''} ${f.fact_kind || ''}`.toLowerCase();
-        return hay.includes(queryRaw);
+    const tokens = queryRaw
+      ? queryRaw.replace(/[^a-z0-9\s_-]/g, ' ').split(/\s+/).filter((t) => t.length >= 3).slice(0, 12)
+      : [];
+    if (tokens.length) {
+      facts = facts
+        .map((f) => {
+          const hay = `${f.fact_text || ''} ${f.fact_kind || ''}`.toLowerCase();
+          let hits = 0;
+          for (const t of tokens) if (hay.includes(t)) hits += 1;
+          const statusBoost = f.status === 'confirmed' ? 0.5 : f.status === 'stated' ? 0.25 : 0;
+          return { f, score: hits / tokens.length + statusBoost };
+        })
+        .filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map((x) => x.f);
+    } else {
+      // Confirmed + recent first when no query.
+      facts = facts.slice().sort((a, b) => {
+        const sr = { confirmed: 5, stated: 4, corrected: 3, inferred: 1 };
+        const ds = (sr[b.status] || 0) - (sr[a.status] || 0);
+        if (ds !== 0) return ds;
+        return (Date.parse(b.confirmed_at || b.last_seen_at || 0) || 0)
+          - (Date.parse(a.confirmed_at || a.last_seen_at || 0) || 0);
       });
     }
     const kindFilter = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
@@ -90,6 +107,7 @@ export const getFactsTool = {
         text: f.fact_text,
         confidence: f.confidence,
         status: f.status,
+        confirmed_at: f.confirmed_at || null,
         last_seen_at: f.last_seen_at || null,
       })),
     });

@@ -41,6 +41,9 @@ export type FactNeuron = {
   isNew: boolean;
   isUpdate: boolean;
   previousText: string | null;
+  /** When true, show Yes / Edit / No ratification chip instead of a passive pill. */
+  needsConfirm?: boolean;
+  status?: string | null;
 };
 
 export type ParsedLearnedTag =
@@ -51,6 +54,14 @@ export type ParsedLearnedTag =
       kind: string;
       reason: string | null;
       previousText: string;
+    }
+  | {
+      mode: "confirm";
+      text: string;
+      kind: string;
+      reason: string | null;
+      /** When set, this confirm replaces an existing WHO_I_AM fact. */
+      previousText?: string | null;
     };
 
 /**
@@ -62,21 +73,28 @@ export type ParsedLearnedTag =
  * stray characters don't flash on screen for a frame before the closing
  * angle bracket arrives in the next stream chunk.
  */
+const STREAM_TAG_PREFIXES = [
+  "<learned",
+  "<updated",
+  "<fact_confirm",
+  "<reason",
+] as const;
+
 export function stripLearnedTagFromStream(text: string): string {
   const learnedIdx = text.indexOf("<learned");
   const updatedIdx = text.indexOf("<updated");
-  let cutIdx = -1;
-  if (learnedIdx !== -1 && updatedIdx !== -1)
-    cutIdx = Math.min(learnedIdx, updatedIdx);
-  else if (learnedIdx !== -1) cutIdx = learnedIdx;
-  else if (updatedIdx !== -1) cutIdx = updatedIdx;
-  if (cutIdx !== -1) return text.slice(0, cutIdx).trimEnd();
+  const confirmIdx = text.indexOf("<fact_confirm");
+  const idxs = [learnedIdx, updatedIdx, confirmIdx].filter((i) => i !== -1);
+  if (idxs.length) return text.slice(0, Math.min(...idxs)).trimEnd();
 
-  const partial = text.match(
-    /(?:<l(?:e(?:a(?:r(?:n(?:e)?)?)?)?)?|<u(?:p(?:d(?:a(?:t(?:e)?)?)?)?)?)$/,
-  );
-  if (partial && partial.index !== undefined) {
-    return text.slice(0, partial.index).trimEnd();
+  // Partial trailing prefix (e.g. "...end. <fa", "<fact_c") — avoid a nested
+  // optional-group regex; Rollup rejects unbalanced / overly nested patterns.
+  const lastLt = text.lastIndexOf("<");
+  if (lastLt === -1) return text;
+  const tail = text.slice(lastLt);
+  if (tail.includes(">")) return text;
+  if (STREAM_TAG_PREFIXES.some((prefix) => prefix.startsWith(tail))) {
+    return text.slice(0, lastLt).trimEnd();
   }
   return text;
 }
@@ -103,6 +121,36 @@ function extractReasonSentence(rawReply: string): string | null {
  * `previousText` to find and rewrite the matching existing neuron in place.
  */
 export function parseLearnedTag(rawReply: string): ParsedLearnedTag | null {
+  const confirmOpen = rawReply.match(
+    /<fact_confirm\b([^>]*)>\s*([\s\S]+?)\s*<\/fact_confirm>/i,
+  );
+  if (confirmOpen) {
+    const attrs = confirmOpen[1] || "";
+    const kindAttr = attrs.match(/\bkind\s*=\s*["']([^"']+)["']/i);
+    const replacesAttr = attrs.match(/\breplaces\s*=\s*["']([^"']+)["']/i);
+    const rawKind = (kindAttr?.[1] || "").trim().toLowerCase();
+    const kind = ALLOWED_FACT_KINDS.has(rawKind)
+      ? rawKind
+      : LEARNED_TAG_KIND_FALLBACK;
+    const phrase = (confirmOpen[2] || "")
+      .trim()
+      .replace(/^["'`]|["'`]$/g, "")
+      .replace(/[.!?]$/, "")
+      .slice(0, 90);
+    const previousText = replacesAttr
+      ? replacesAttr[1].trim().slice(0, 240)
+      : null;
+    if (phrase) {
+      return {
+        mode: "confirm",
+        text: phrase,
+        kind,
+        reason: extractReasonSentence(rawReply),
+        previousText,
+      };
+    }
+  }
+
   const updatedMatch = rawReply.match(
     /<updated\b([^>]*)>\s*([\s\S]+?)\s*<\/updated>/i,
   );
@@ -154,6 +202,7 @@ export function parseLearnedTag(rawReply: string): ParsedLearnedTag | null {
  */
 export function stripLearnedTagsFromFinal(text: string): string {
   return text
+    .replace(/<fact_confirm\b[^>]*>[\s\S]*?<\/fact_confirm>/gi, "")
     .replace(/<learned\b[^>]*>[\s\S]*?<\/learned>/gi, "")
     .replace(/<updated\b[^>]*>[\s\S]*?<\/updated>/gi, "")
     .replace(/<reason>[\s\S]*?<\/reason>/gi, "")
@@ -329,23 +378,37 @@ export async function postLearnedFact(
     reason: string | null;
     sourceId?: string;
     replacesText?: string;
+    /** When true, POST to propose endpoint (pending confirm chip). */
+    needsConfirm?: boolean;
+    sourceMessageId?: string;
   },
 ): Promise<FactNeuron | null> {
   try {
-    const res = await fetch(`${apiBase}/api/learned`, {
+    const endpoint = payload.needsConfirm
+      ? `${apiBase}/api/user-facts/propose`
+      : `${apiBase}/api/learned`;
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text: payload.text,
         kind: payload.kind,
         reason: payload.reason || undefined,
+        evidenceQuote: payload.reason || undefined,
         sourceId: payload.sourceId || undefined,
+        sourceMessageId: payload.sourceMessageId || undefined,
         replacesText: payload.replacesText || undefined,
       }),
     });
     if (!res.ok) return null;
     const body = await res.json().catch(() => null);
     if (!body?.ok || !body?.fact) return null;
+    // User previously dismissed this claim — do not resurface a chip.
+    if (body.blocked || body.fact.status === "dismissed") return null;
+    const needsConfirm =
+      Boolean(payload.needsConfirm) &&
+      Boolean(body.fact.needsConfirm ?? body.fact.status === "pending") &&
+      !body.alreadyConfirmed;
     return {
       id: body.fact.id ?? null,
       text: String(body.fact.fact_text || payload.text),
@@ -354,9 +417,57 @@ export async function postLearnedFact(
       isNew: Boolean(body.fact.isNew),
       isUpdate: Boolean(body.fact.isUpdate),
       previousText: body.fact.previousText ?? payload.replacesText ?? null,
+      needsConfirm,
+      status: body.fact.status ?? null,
     };
   } catch {
     return null;
+  }
+}
+
+export async function confirmUserFactRequest(
+  apiBase: string,
+  factId: string,
+  text?: string,
+): Promise<FactNeuron | null> {
+  try {
+    const res = await fetch(`${apiBase}/api/user-facts/${encodeURIComponent(factId)}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(text ? { text } : {}),
+    });
+    if (!res.ok) return null;
+    const body = await res.json().catch(() => null);
+    if (!body?.ok || !body?.fact) return null;
+    return {
+      id: body.fact.id ?? factId,
+      text: String(body.fact.fact_text || text || ""),
+      kind: String(body.fact.fact_kind || "identity"),
+      reason: body.fact.reason ?? null,
+      isNew: false,
+      isUpdate: Boolean(text),
+      previousText: null,
+      needsConfirm: false,
+      status: "confirmed",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function dismissUserFactRequest(
+  apiBase: string,
+  factId: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${apiBase}/api/user-facts/${encodeURIComponent(factId)}/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 

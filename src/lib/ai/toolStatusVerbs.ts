@@ -41,11 +41,6 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   lykn_touchConcept: "Refreshing the idea…",
   lykn_updateUserPreference: "Updating your settings…",
 
-  // ── Sub-agents ─────────────────────────────────────────────────
-  lykn_delegate_to_sub_model: "Handing off to a specialist…",
-  lykn_list_sub_model_tasks: "Checking on the sub-agents…",
-  lykn_get_sub_model_task: "Checking the task status…",
-
   // ── Exterior capabilities (the "building the thing out" cases) ──
   lykn_web_search: "Searching the web…",
   lykn_web_fetch: "Reading the page…",

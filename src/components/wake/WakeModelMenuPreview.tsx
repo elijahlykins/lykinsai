@@ -2,6 +2,8 @@ import React from "react";
 import { Check, Lock } from "lucide-react";
 import { MODEL_GROUPS, LYKN_ID } from "@/lib/modelCatalog";
 import { isModelAllowedForPlan } from "@/lib/modelTiers";
+import lyknWordmarkBlack from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLACK-web.png";
+import lyknWordmarkNeutral from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-NEUTRAL-web.png";
 
 /**
  * Static, non-interactive replica of the in-app model `<Select>` menu, shown
@@ -66,7 +68,15 @@ export default function WakeModelMenuPreview({
                   } ${allowed ? itemTextCls : `${itemTextCls} opacity-50`}`}
                 >
                   <span className="inline-flex items-center gap-1.5">
-                    {item.label}
+                    {item.value === LYKN_ID ? (
+                      <img
+                        src={lightMode ? lyknWordmarkBlack : lyknWordmarkNeutral}
+                        alt="LYKN"
+                        className="h-3.5 w-auto translate-y-[2px]"
+                      />
+                    ) : (
+                      item.label
+                    )}
                     {!allowed && <Lock className="w-3 h-3 opacity-60" />}
                   </span>
                   {item.hint ? (

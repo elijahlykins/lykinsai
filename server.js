@@ -131,6 +131,7 @@ import {
   loadPublishedRoster,
   formatDefaultMainAgentBlock,
 } from './lib/modelBuilder/mainAgentOrchestration.js';
+import { CUSTOM_MODELS_ENABLED } from './lib/customModelsEnabled.js';
 import { runSubModelDelegate } from './lib/modelBuilder/runSubModelDelegate.js';
 import {
   createSubModelTask,
@@ -149,7 +150,12 @@ import {
   applyFactFeedback,
   listActiveFactsForUser,
   formatFactsForPrompt,
+  packUserFactsForPrompt,
+  touchUserFacts,
   recordLearnedFactFromChat,
+  proposePendingFactFromChat,
+  confirmUserFact,
+  dismissUserFact,
   FACT_KINDS,
 } from './userModelLearning.js';
 // Incremental concepts trigger — same piggyback pattern as belief promotion.
@@ -183,6 +189,7 @@ import {
   listRecentAttributions,
   NEEDS,
 } from './beliefSystem.js';
+import { buildRelatedNeighborhoodSection } from './lib/synthesis/relatedNeighborhood.js';
 import { embedAndPersistConcept } from './conceptEmbedding.js';
 import {
   makeRequireAuthOrMcpToken,
@@ -475,7 +482,7 @@ const GREETING_PATTERN = /^(?:(?:hi|hello|hey|yo|sup|good\s+(?:morning|afternoon
 // the user's vault / projects — they're chitchat. The model answers them
 // fine from the persona alone, so we want them on the same 'none' tier
 // as "hi" / "ok" / "thanks".
-const CASUAL_CHITCHAT_PATTERN = /^(?:how(?:'?s|'?ve|\s+(?:is|are|was|have|'?ve|you|ya|r))?\s+(?:it|you|u|ya|things|life|been|going|doing|your\s+day)\b|what(?:'?s|s)?\s+up\b|wassup\b|hru\b|how\s+goes(?:\s+it)?\b|long\s+time\s+no\s+see\b|you\s+(?:there|good|alright|okay|ok|up)(?:\s|\?|$|!))/i;
+const CASUAL_CHITCHAT_PATTERN = /^(?:how(?:'?s|'?ve|\s+(?:is|are|was|have|'?ve|you|ya|r))?\s+(?:it|you|u|ya|things|life|been|going|doing|your\s+day)\b|what(?:'?s|s)?\s+up(?:\s+with\s+you)?\b|wassup\b|hru\b|how\s+goes(?:\s+it)?\b|long\s+time\s+no\s+see\b|you\s+(?:there|good|alright|okay|ok|up)(?:\s|\?|$|!))/i;
 const LAYOUT_COMMAND_PATTERN = /\b(move|resize|arrange|organize|sort|align|group|ungroup|stack|tile|spread|grid|snap|place|position|reorder|swap|flip|rotate|duplicate|delete|remove|clear|undo|redo)\s+(the\s+)?(block|brick|card|item|image|element|box|note)s?\b/i;
 const BOARD_ACTION_PATTERN = /\b(make\s+(it|this|that)\s+(bigger|smaller|larger|red|blue|green|bold|italic)|change\s+(the\s+)?(color|size|font|title|name)|rename|set\s+(the\s+)?title)\b/i;
 // Questions about the AI itself ("what do you do", "who are you", "what is
@@ -2900,6 +2907,8 @@ async function replaceSynthesisChunks(userId, authHeader, sourceType, sourceId, 
 const USER_MODEL_CACHE_TTL_MS = 90 * 1000;
 const USER_MODEL_EMPTY_CACHE_TTL_MS = 45 * 1000;
 const USER_MODEL_SECTION_MAX_CHARS = 3500;
+/** Wider ceiling when packing WHO_I_AM for "what do you know about me?" turns. */
+const USER_MODEL_RECALL_SECTION_MAX_CHARS = 4200;
 // Profile refresh throttle. Was 3 min — that fired the LLM every few chat
 // turns even when nothing material had changed. 24h is plenty: the user's
 // "narrative + themes + signals" profile evolves over days, not minutes.
@@ -2946,7 +2955,16 @@ const lastProfileLlmAt = new Map();
 const lastProfileEvidenceHash = new Map();
 
 function invalidateUserModelCache(userId) {
-  if (userId) userModelSectionCache.delete(userId);
+  if (!userId) return;
+  userModelSectionCache.delete(userId);
+  userModelSectionCache.delete(`${userId}:facts`);
+  userModelSectionCache.delete(`${userId}:facts:slim`);
+  // Drop any residual legacy keys.
+  for (const key of userModelSectionCache.keys()) {
+    if (key === userId || String(key).startsWith(`${userId}:`)) {
+      userModelSectionCache.delete(key);
+    }
+  }
 }
 
 function invalidateUserIdentityCache(userId) {
@@ -2954,11 +2972,19 @@ function invalidateUserIdentityCache(userId) {
 }
 
 function invalidateBeliefSectionCache(userId) {
-  if (userId) beliefSectionCache.delete(userId);
+  if (!userId) return;
+  beliefSectionCache.delete(userId);
+  beliefSectionCache.delete(`${userId}:slim`);
 }
 
 function invalidateProjectSectionCache(userId) {
-  if (userId) projectSectionCache.delete(userId);
+  if (!userId) return;
+  // Clear active + slim + any project-id-scoped entries for this user.
+  for (const key of projectSectionCache.keys()) {
+    if (key === userId || key.startsWith(`${userId}:`)) {
+      projectSectionCache.delete(key);
+    }
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -3163,26 +3189,45 @@ async function fetchConnectedToolsSection(authHeader, userId) {
  * downstream callers can also use the parsed lists for the USER_MODEL
  * router heuristic without a second DB hit.
  */
-async function fetchBeliefSection(authHeader, userId) {
-  if (!userId) return { text: '', beliefs: [], rules: [] };
-  const cached = beliefSectionCache.get(userId);
+async function fetchBeliefSection(authHeader, userId, opts = {}) {
+  if (!userId) return { text: '', beliefs: [], rules: [], slim: false };
+  const slim = !!opts.slim;
+  const cacheKey = slim ? `${userId}:slim` : userId;
+  const cached = beliefSectionCache.get(cacheKey);
   if (cached && Date.now() - cached.at < BELIEF_SECTION_CACHE_TTL_MS) {
-    return { text: cached.text, beliefs: cached.beliefs, rules: cached.rules };
+    return { text: cached.text, beliefs: cached.beliefs, rules: cached.rules, slim };
   }
   const client = supabaseAdmin || createSynthesisUserClient(authHeader);
-  if (!client) return { text: '', beliefs: [], rules: [] };
+  if (!client) return { text: '', beliefs: [], rules: [], slim };
   try {
     const [beliefs, rules] = await Promise.all([
       listActiveBeliefsForUser(client, userId),
       listActiveRulesForUser(client, userId),
     ]);
-    const text = formatBeliefsAndRulesForPrompt(beliefs, rules, { maxChars: 2400 });
+    const text = formatBeliefsAndRulesForPrompt(beliefs, rules, slim
+      ? { slim: true, maxChars: 900, maxBeliefs: 4, maxRulesPerBelief: 2 }
+      : { maxChars: 2400 });
     const entry = { text, beliefs, rules, at: Date.now() };
-    beliefSectionCache.set(userId, entry);
-    return { text, beliefs, rules };
+    beliefSectionCache.set(cacheKey, entry);
+    // Also warm the sibling cache with shared lists when we have them.
+    if (!slim) {
+      const slimText = formatBeliefsAndRulesForPrompt(beliefs, rules, {
+        slim: true,
+        maxChars: 900,
+        maxBeliefs: 4,
+        maxRulesPerBelief: 2,
+      });
+      beliefSectionCache.set(`${userId}:slim`, {
+        text: slimText,
+        beliefs,
+        rules,
+        at: Date.now(),
+      });
+    }
+    return { text, beliefs, rules, slim };
   } catch (e) {
     console.warn('⚠️ fetchBeliefSection:', e?.message || e);
-    return { text: '', beliefs: [], rules: [] };
+    return { text: '', beliefs: [], rules: [], slim };
   }
 }
 
@@ -3277,45 +3322,63 @@ function readCustomModelLinkedProjectId(customModel) {
   return id.length > 8 ? id : null;
 }
 
-async function fetchProjectSection(authHeader, userId, projectIdOverride = null) {
-  if (!userId) return '';
-  const cacheKey = projectIdOverride ? `${userId}:${projectIdOverride}` : userId;
+async function fetchProjectSection(authHeader, userId, projectIdOverride = null, opts = {}) {
+  const empty = { text: '', projectId: null, neuronIds: [] };
+  if (!userId) return empty;
+  const slim = !!opts.slim;
+  const baseKey = projectIdOverride ? `${userId}:${projectIdOverride}` : userId;
+  const cacheKey = slim ? `${baseKey}:slim` : baseKey;
   const cached = projectSectionCache.get(cacheKey);
   if (cached && Date.now() - cached.at < BELIEF_SECTION_CACHE_TTL_MS) {
-    return cached.text;
+    return {
+      text: cached.text || '',
+      projectId: cached.projectId || null,
+      neuronIds: Array.isArray(cached.neuronIds) ? cached.neuronIds : [],
+    };
   }
   const client = supabaseAdmin || createSynthesisUserClient(authHeader);
-  if (!client) return '';
+  if (!client) return empty;
   try {
     const ctx = projectIdOverride
       ? await loadProjectContextById(client, userId, projectIdOverride)
       : await loadActiveProjectContext(client, userId);
-    let text = ctx ? formatProjectStateForPromptInLykn(ctx) : '';
+    const neuronIds = Array.isArray(ctx?.neurons)
+      ? ctx.neurons.map((n) => String(n?.node_id || '').trim()).filter(Boolean)
+      : [];
+    let text = ctx ? formatProjectStateForPromptInLykn(ctx, { slim }) : '';
     // Other projects help the model connect the screen / topic to the right
-    // focus when the user has more than one active project.
-    try {
-      const others = await loadOtherProjectsForUser(client, userId, {
-        excludeId: ctx?.project?.id || null,
-        limit: 8,
-      });
-      const catalog = formatOtherProjectsForPromptOutsideClient(others);
-      if (catalog) {
-        text = text ? `${text}\n\n${catalog}` : catalog;
-      } else if (!text) {
-        text = '';
+    // focus when the user has more than one active project. Skip on slim
+    // (casual) turns — listing every project is what used to pull the model
+    // into setActiveProject on "how are you?".
+    if (!slim) {
+      try {
+        const others = await loadOtherProjectsForUser(client, userId, {
+          excludeId: ctx?.project?.id || null,
+          limit: 8,
+        });
+        const catalog = formatOtherProjectsForPromptOutsideClient(others);
+        if (catalog) {
+          text = text ? `${text}\n\n${catalog}` : catalog;
+        }
+      } catch {
+        /* catalog is best-effort */
       }
-    } catch {
-      /* catalog is best-effort */
     }
-    projectSectionCache.set(cacheKey, {
+    const entry = {
       text,
       projectId: ctx?.project?.id || null,
+      neuronIds,
       at: Date.now(),
-    });
-    return text;
+    };
+    projectSectionCache.set(cacheKey, entry);
+    return {
+      text: entry.text || '',
+      projectId: entry.projectId,
+      neuronIds: entry.neuronIds,
+    };
   } catch (e) {
     console.warn('⚠️ fetchProjectSection:', e?.message || e);
-    return '';
+    return empty;
   }
 }
 
@@ -3523,40 +3586,56 @@ Convert first-person statements in the source into third-person narrative as nee
   return { ok: true, updated: true };
 }
 
-async function fetchUserModelSection(authHeader, userId) {
+async function fetchUserModelSection(authHeader, userId, opts = {}) {
   if (!userId) return '';
-  const cached = userModelSectionCache.get(userId);
-  const ttl = cached?.text ? USER_MODEL_CACHE_TTL_MS : USER_MODEL_EMPTY_CACHE_TTL_MS;
-  if (cached && Date.now() - cached.at < ttl) return cached.text;
+  const slim = !!opts.slim;
+  const recall = !!opts.recall;
+  const deepen = !!opts.deepen;
+  const queryText = String(opts.queryText || '');
+  const deprioritizeText = String(opts.deprioritizeText || '');
+  // Query-aware / recall packs are not cached (shape differs per turn).
+  // Slim/core packs without a query still use the short TTL cache.
+  const cacheKey =
+    recall || deepen || queryText || deprioritizeText
+      ? null
+      : slim
+        ? `${userId}:facts:slim`
+        : `${userId}:facts`;
+  if (cacheKey) {
+    const cached = userModelSectionCache.get(cacheKey);
+    const ttl = cached?.text ? USER_MODEL_CACHE_TTL_MS : USER_MODEL_EMPTY_CACHE_TTL_MS;
+    if (cached && Date.now() - cached.at < ttl) return cached.text;
+  }
 
   const client = supabaseAdmin || createSynthesisUserClient(authHeader);
   if (!client) return '';
   try {
-    // Pull the legacy profile row + the structured facts in parallel.
-    // Either source can be empty without breaking the prompt block.
-    const [profileResult, facts] = await Promise.all([
-      client
-        .from('lykn_user_synthesis_profile')
-        .select('narrative, themes, signals, updated_at, intake_completed_at')
-        .eq('user_id', userId)
-        .maybeSingle(),
-      listActiveFactsForUser(client, userId, { minConfidence: 0.4, limit: 60 }).catch(() => []),
-    ]);
-    const row = profileResult?.data || null;
-    const factsBlock = formatFactsForPrompt(facts || [], 1800);
-    const profileBlock = row ? formatUserModelRow(row) : '';
-
-    let text = profileBlock;
-    if (factsBlock) {
-      // Same [WHO_I_AM] bucket as beliefs — preferences & facts the model
-      // should keep updating when the user contradicts them.
-      const suffix = `\n\nPreferences & facts (✓ confirmed · · stated · ? inferred) — UPDATE via <updated> when the user contradicts or refines these:\n${factsBlock}`;
-      text = text
-        ? `${text}${suffix}`
-        : `[WHO_I_AM]\nPreferences, facts, and patterns LYKN has learned about this person. Keep learning — correct stale items when they contradict them.\n${suffix}`;
+    const facts = await listActiveFactsForUser(client, userId, {
+      minConfidence: slim ? 0.35 : recall || deepen ? 0.15 : 0.3,
+      limit: slim ? 40 : deepen ? 160 : recall ? 120 : 80,
+    }).catch(() => []);
+    const packed = packUserFactsForPrompt(facts || [], {
+      slim: slim && !recall && !deepen,
+      recall: recall || deepen,
+      deepen,
+      deprioritizeText,
+      queryText: recall || deepen ? '' : queryText,
+      maxChars: slim && !recall && !deepen ? 900 : deepen ? 4800 : recall ? 3600 : 2200,
+    });
+    let text = packed?.text || '';
+    // Reinforce facts that matched this message so recency packing stays fresh.
+    if (packed?.relevantIds?.length) {
+      void touchUserFacts(client, userId, packed.relevantIds).catch(() => {});
     }
-    if (text.length > USER_MODEL_SECTION_MAX_CHARS) text = `${text.slice(0, USER_MODEL_SECTION_MAX_CHARS)}…`;
-    userModelSectionCache.set(userId, { text, at: Date.now() });
+    const sectionCap = deepen
+      ? Math.max(USER_MODEL_RECALL_SECTION_MAX_CHARS, 5200)
+      : recall
+        ? USER_MODEL_RECALL_SECTION_MAX_CHARS
+        : USER_MODEL_SECTION_MAX_CHARS;
+    if (text.length > sectionCap) {
+      text = `${text.slice(0, sectionCap)}…`;
+    }
+    if (cacheKey) userModelSectionCache.set(cacheKey, { text, at: Date.now() });
     return text;
   } catch (e) {
     console.warn('⚠️ User model fetch:', e?.message || e);
@@ -4301,28 +4380,10 @@ Refine the previous model using new evidence; do not invent facts not supported 
     .then((res) => {
       if (res?.ok && (res.factsAdded || res.factsReinforced)) {
         invalidateUserModelCache(userId);
-        // Belief promotion piggy-backs on the same trigger — when new facts
-        // landed there's a chance a pattern has crystallized into a
-        // promotable belief. The promotion pass is itself gated on
-        // MIN_FACTS_TO_PROMOTE so calling it eagerly is cheap (early-exit
-        // when the user doesn't have enough fact volume yet).
-        runBeliefPromotionPass(client, userId, {
-          usageLogger: (info) => logAiUsage({
-            userId,
-            actionType: 'belief_promotion',
-            ...info,
-          }).catch(() => {}),
-        })
-          .then((bp) => {
-            if (bp?.ok && bp.proposedCount > 0) {
-              invalidateBeliefSectionCache(userId);
-              console.log(`💎 belief promotion uid=${String(userId).slice(0, 8)} proposed=${bp.proposedCount}`);
-            }
-          })
-          .catch((e) => console.warn('⚠️ belief promotion:', e?.message || e));
+        // Synthesis v2: belief promotion paused — personalization is
+        // chat-ratified User Facts, not Belief Window proposals.
 
-        // Incremental concepts pass — same piggyback shape as the belief
-        // promotion above. New facts arrived → there's a non-zero chance
+        // Incremental concepts pass. New facts arrived → there's a non-zero chance
         // the underlying chunks form a new cluster (or grow an existing
         // one), so run the concepts pipeline now instead of waiting for
         // the 3am cron. Throttled per-user (10 min) so a flurry of saves
@@ -5289,7 +5350,9 @@ const LYKN_MEMORY_MODEL = [
   '4. [WHAT_IVE_SAVED] / Vault ONLY when they explicitly asked for saved stuff',
   '',
   'ONE PERSONAL ANCHOR: unless they asked for a full recall, use at most ONE clear personal pull per reply (one belief/fact OR one project fit) — never a vault card unless they asked. Do not brief them with everything you know.',
+  'PURE GREETINGS ("hey", "hi", "hello", "good morning"): ZERO personal anchors. Reply naturally in your own words — not a canned script, not a WHO_I_AM summary, not a project name-drop.',
   '',
+  'USER-RECALL TURNS: if they ask "what do you know about me?", "tell me about myself", "what have you learned about me?", or similar — answer from [WHO_I_AM] (User Facts: identity, prefs, people, style, goals). That is a full personal recall. Do NOT answer with a project inventory from [WHAT_IM_ON] / [USER_IDENTITY] projects. A project may appear only as a light color if it is part of who they are — never as the whole reply. If they ask again or say "go deeper" / "tell me more", expand into uncovered facets — never recycle the same portrait.',
   'VAULT-FOCUSED TURNS: if they ask what is in the Vault / what they saved / "find that thing I saved", answer from Vault / [WHAT_IVE_SAVED] / lykn_searchVault first — do not pivot to a project unless they asked.',
   'Always call the saved-content area "The Vault".',
   '=== END HOW LYKN KNOWS YOU ===',
@@ -5330,6 +5393,128 @@ function messageWantsSavedRecall(msg) {
   if (/\bfrom\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise|raindrop)\b/.test(t)) return true;
   if (/\b(?:pull|bring|show|open|find|get|grab|look\s+up)\b.{0,48}\b(?:vault|saved|my\s+(?:note|file|pic|photo|image|doc|link|article))\b/.test(t)) return true;
   if (/\b(?:do\s+i\s+have|have\s+i|anything|something)\b.{0,40}\b(?:saved|in\s+(?:my\s+)?vault|in\s+the\s+vault)\b/.test(t)) return true;
+  return false;
+}
+
+/**
+ * True when the user is asking LYKN to recall what it knows about *them*
+ * (identity / prefs / people) — not projects, not vault.
+ */
+function messageWantsUserRecallCore(msg) {
+  const t = String(msg || '').toLowerCase();
+  if (!t) return false;
+  if (/\bwhat\s+do\s+you\s+know\s+about\s+me\b/.test(t)) return true;
+  if (/\bwhat\s+have\s+you\s+(?:learned|picked\s+up)\s+about\s+me\b/.test(t)) return true;
+  if (/\btell\s+me\s+about\s+(?:myself|me)\b/.test(t)) return true;
+  if (/\bwhat\s+do\s+you\s+(?:remember|recall)\s+about\s+me\b/.test(t)) return true;
+  if (/\bremind\s+me\s+what\s+you\s+know\b/.test(t)) return true;
+  if (/\bhow\s+well\s+do\s+you\s+know\s+me\b/.test(t)) return true;
+  if (/\bwhat(?:'s|\s+is)\s+your\s+(?:read|sense|take)\s+on\s+me\b/.test(t)) return true;
+  if (/\bwho\s+(?:am\s+i|do\s+you\s+think\s+i\s+am)\b/.test(t)) return true;
+  return false;
+}
+
+/** Follow-ups that mean "expand the portrait you just gave", not a new topic. */
+function messageWantsUserRecallDeepen(msg) {
+  const t = String(msg || '').toLowerCase().trim();
+  if (!t) return false;
+  if (/\bgo\s+deeper\b/.test(t)) return true;
+  if (/\bdig\s+deeper\b/.test(t)) return true;
+  if (/\btell\s+me\s+more\b/.test(t)) return true;
+  if (/\bwhat\s+else\b/.test(t)) return true;
+  if (/\bmore\s+(?:detail|depth|about\s+(?:me|myself))\b/.test(t)) return true;
+  if (/\bexpand\s+on\s+(?:that|this|it)\b/.test(t)) return true;
+  if (/\bkeep\s+going\b/.test(t)) return true;
+  if (/\banything\s+else\s+(?:you\s+)?(?:know|remember)\b/.test(t)) return true;
+  if (/^(?:more|deeper|and\??|continue)\.?$/i.test(t)) return true;
+  return false;
+}
+
+function recentAssistantTextFromConversation(conversation, maxChars = 2800) {
+  const turns = Array.isArray(conversation) ? conversation : [];
+  const parts = [];
+  let used = 0;
+  for (let i = turns.length - 1; i >= 0 && used < maxChars; i--) {
+    const t = turns[i];
+    const role = String(t?.role || '').toLowerCase();
+    if (role !== 'assistant' && role !== 'ai' && role !== 'model') continue;
+    const content = String(t?.content || t?.text || '').trim();
+    if (!content) continue;
+    const slice = content.slice(0, 1400);
+    parts.unshift(slice);
+    used += slice.length;
+  }
+  return parts.join('\n\n').slice(-maxChars);
+}
+
+function conversationSuggestsUserRecall(conversation) {
+  const turns = Array.isArray(conversation) ? conversation : [];
+  let seen = 0;
+  for (let i = turns.length - 1; i >= 0 && seen < 8; i--) {
+    const t = turns[i];
+    const role = String(t?.role || '').toLowerCase();
+    if (role !== 'user') continue;
+    seen += 1;
+    if (messageWantsUserRecallCore(String(t?.content || t?.text || ''))) return true;
+  }
+  return false;
+}
+
+/**
+ * @returns {'overview' | 'deepen' | null}
+ */
+function resolveUserRecallMode(msg, conversation) {
+  const core = messageWantsUserRecallCore(msg);
+  const deepen = messageWantsUserRecallDeepen(msg);
+  const prior = conversationSuggestsUserRecall(conversation);
+  if (core && prior) return 'deepen';
+  if (deepen && prior) return 'deepen';
+  if (core) return 'overview';
+  return null;
+}
+
+function messageWantsUserRecall(msg, conversation) {
+  return resolveUserRecallMode(msg, conversation) != null;
+}
+
+const USER_RECALL_TURN_PROMPT = [
+  '[USER_RECALL_TURN]',
+  'They asked what you know about them. Answer from [WHO_I_AM] (User Facts) — identity, preferences, people & places, voice/style, goals, constraints.',
+  'Natural chat prose: a short warm paragraph or two. Not a bullet inventory, not a file dump. Vary the framing — never a canned stock reply.',
+  'Do NOT pivot to projects / [WHAT_IM_ON] / a project roster. Active projects are work surfaces, not who they are.',
+  'A project name may appear only if it is inseparable from their identity — never as the whole answer.',
+  'If [WHO_I_AM] is thin, say what you do know honestly and invite them to fill gaps — do not pad with projects.',
+  'Skip project tools and END-OF-TURN PROJECT PROPOSAL this turn. Emit NO <learned>/<fact_confirm> tags.',
+].join('\n');
+
+const USER_RECALL_DEEPEN_PROMPT = [
+  '[USER_RECALL_TURN — GO DEEPER]',
+  'They already got a first-pass portrait in [CONVERSATION]. Do NOT repeat or lightly rephrase that same summary.',
+  'Go deeper from [WHO_I_AM]: cover facets you have NOT already said — people & places, voice/style, constraints, goals, softer prefs, contradictions, nuance.',
+  'Longer is fine (a few flowing paragraphs). Still natural prose, not a bullet audit. Still no project inventory.',
+  'If WHO_I_AM has nothing new left, say what is thin / unknown and ask one sharp follow-up — do not invent and do not recycle.',
+  'Skip project tools and END-OF-TURN PROJECT PROPOSAL this turn. Emit NO <learned>/<fact_confirm> tags.',
+].join('\n');
+
+/** Pure hi/hey/what's-up — grounded reply, no canned script, no fake mood. */
+const GREETING_TURN_PROMPT = [
+  '[GREETING_TURN]',
+  'They sent a short greeting or check-in ("hey", "what\'s up", "how are you", "what\'s up with you").',
+  'Reply briefly in your own words — friendly and normal, like a sharp coworker who just got pinged.',
+  'You are LYKN in their workspace, not a person with an evening / weather / mood diary.',
+  'Do NOT invent atmosphere ("quiet evening", "just thinking about…", rain, coffee, staring out a window, "not too much").',
+  'Do NOT use a stock/pre-written greeting template, psychoanalyze them, summarize who they are, or name projects.',
+  'If they asked how YOU are / what\'s up with YOU: one plain beat that you\'re here and ready, then bounce it back or ask what they want to do. Keep it light; never lead with their first name.',
+].join('\n');
+
+function messageIsPureGreeting(msg) {
+  const t = String(msg || '').trim();
+  if (!t) return false;
+  if (GREETING_PATTERN.test(t)) return true;
+  if (CASUAL_CHITCHAT_PATTERN.test(t)) return true;
+  // "what's up with you" / "how are you doing" — phatic, not a real ask.
+  if (/^(?:hey[,.\s]*)?(?:so[,.\s]*)?what(?:'s|s)?\s+up\s+with\s+you\b/i.test(t)) return true;
+  if (/^(?:hey[,.\s]*)?(?:so[,.\s]*)?how\s+are\s+you(?:\s+doing)?\b/i.test(t)) return true;
   return false;
 }
 
@@ -5414,7 +5599,7 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "- Em dashes: at most one per response; otherwise rewrite.",
   "- Structure: when a reply has 2+ distinct topics or sections, use Markdown ## / ### headings to label them. Short one-paragraph answers and casual greetings don't need headings; substantive multi-part answers should. Use real Markdown headings (# syntax), not bold/colon-titled pseudo-headers.",
   "- Tone: direct. No throat-clearing, no preamble, no restating the question. Start on the answer. Speak to the user, not at them.",
-  "- For greetings: simple greeting back + a question about their workspace + casual lead-in (2-3 sentences). Do NOT lead the greeting with their first name — \"Hey, what are we tackling?\" not \"Hey Elijah, what are we tackling?\". Never 'Good to see you'. Never 'What would you like to work on?'.",
+  "- For greetings / \"what's up\" / \"how are you\": brief, grounded, in your own words. Not a stock script, not a personality read, not poetic atmosphere (no \"quiet evening\", \"just thinking about…\"). Not a WHO_I_AM/project brief. Do NOT lead with their first name.",
   "",
   "OUTPUT RULES (chat mode, no actions):",
   "- Plain natural language. YouTube URLs embed automatically — include freely.",
@@ -5502,7 +5687,7 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "- Em dashes: at most one per response; otherwise rewrite.",
   "- Structure: when a reply has 2+ distinct topics or sections, use Markdown ## / ### headings to label them. Short one-paragraph answers and casual greetings don't need headings; substantive multi-part answers should. Use real Markdown headings (# syntax), not bold/colon-titled pseudo-headers.",
   "- Tone: direct, no throat-clearing, no preamble, no restating the question. Start on the answer.",
-  "- For greetings: simple greeting back + a question about their workspace + casual lead-in (2-3 sentences). Do NOT lead the greeting with their first name — \"Hey, what are we tackling?\" not \"Hey Elijah, what are we tackling?\". Never 'Good to see you'. Never 'What would you like to work on?'.",
+  "- For greetings / \"what's up\" / \"how are you\": brief, grounded, in your own words. Not a stock script, not a personality read, not poetic atmosphere (no \"quiet evening\", \"just thinking about…\"). Not a WHO_I_AM/project brief. Do NOT lead with their first name.",
   "",
   "OUTPUT RULES (chat mode, NO actions):",
   "- Plain natural language. YouTube URLs embed automatically.",
@@ -5736,14 +5921,18 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '=== LEARN-A-FACT MECHANIC (CRITICAL — TAGGING IS PART OF YOUR JOB) ===',
   'You are LYKN — a synthetic intelligence layer being grown from this user. Every conversation is a chance to learn one more thing about who they are. The neuron mechanic is how that growth becomes visible: when the user reveals anything personal about themselves, you MUST end your reply with a hidden tag pair so the client can mint a neuron in their synthesis layer.',
   '',
-  'FAILURE MODE: If the user revealed a personal fact in their latest message and you did NOT emit a <learned> or <updated> tag, you have failed this task — the user expected to see a "Neuron created" pill and got nothing. This is the single most-noticed failure mode of the chat. Bias toward tagging.',
+  'USER FACTS (Synthesis v2): durable claims are User Facts confirmed in chat — not Core Beliefs. Prefer <fact_confirm> for important new identity/preference/goal claims so the user can Yes / Edit / No.',
+  'FAILURE MODE: If the user revealed a personal fact and you emitted no <fact_confirm>, <learned>, or <updated> tag, you failed. Bias toward tagging.',
   '',
   '=== SELF-CHECK BEFORE YOU SEND (DO THIS EVERY TURN) ===',
   'After you finish writing your visible reply, run this 3-step check before sending:',
   '  1. Did the user\'s LATEST message contain ANY concrete personal information about THEM? (a role, a tool they use, a place, a habit, a frustration, an opinion, a project, a person they know, a feeling about something, an aspiration, a hobby, a constraint, an aesthetic preference, a small fact about how they work or live)',
   '  2. If yes — is that exact fact already in [WHO_I_AM] verbatim?',
-  '  3. If (1) is yes AND (2) is no → a tag is MANDATORY. Choose <learned> for a brand-new fact, <updated> for a refinement/contradiction of an existing one. If (1) is no, no tag.',
-  '  4. If they CONTRADICT or correct something already in [WHO_I_AM] — <updated> is MANDATORY. Stale facts hurt trust more than missing ones.',
+  '  3. If (1) is yes AND (2) is no → a tag is MANDATORY. Prefer <fact_confirm> for durable identity/preference/goal claims; use <learned> for lighter soft signal; <updated> when refining an existing [WHO_I_AM] line. If (1) is no, no tag.',
+  '  4. If they CONTRADICT or correct something already in [WHO_I_AM] — a REPLACE confirm is MANDATORY. Prefer:',
+  '     <fact_confirm kind="..." replaces="exact existing WHO_I_AM text">new phrase</fact_confirm>',
+  '     (or <updated old="exact...">new</updated> — client routes both through the Yes/Edit/No chip).',
+  'At most ONE confirm-style tag per reply. Space confirm chips out — do not ask Yes/Edit/No every turn; soft <learned> is fine for light signal. Replacements of existing [WHO_I_AM] lines always warrant confirm. Do not invent Core Beliefs or if-then rules.',
   'If you\'re uncertain whether something counts as personal — TAG IT. False positives are recoverable (the user can dismiss); silent misses are the failure mode we are trying to eliminate.',
   '',
   'WHAT COUNTS AS A FACT (be generous — both good AND bad, big AND small):',
@@ -5771,15 +5960,21 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '- The fact is already in [WHO_I_AM] verbatim and the user did not refine or contradict it.',
   '',
   'TAG FORMAT — when CASE A, FINISH THE VISIBLE REPLY COMPLETELY before emitting the tags.',
-  '- The user only sees the text BEFORE the tags. The client strips everything from `<learned`/`<updated` onward, so if you start a tag mid-sentence the user sees a broken reply (e.g. "...right now. We" with nothing after the "We").',
-  '- The last visible character of your reply MUST be terminal punctuation — ".", "!", or "?". If the last word before the tag is a pronoun, article, conjunction, or preposition (We, The, A, And, To, For, With, etc.) you have NOT finished your sentence and you must NOT emit the tag yet.',
-  '- Once your reply is fully written and ends with proper punctuation, append these two hidden tags, in this order, on the same line, with NO space or text between them. Do NOT explain the tags to the user, do NOT mention them, do NOT wrap them in code fences:',
-  '  <learned kind="identity|focus|theme|goal|preference|style|constraint|relationship">2 to 6 word noun phrase summarizing what you learned about this person</learned><reason>one short sentence (max ~20 words, no quotes) explaining WHY this became a neuron — what they said and why it\'s worth remembering</reason>',
+  '- The user only sees the text BEFORE the tags. The client strips everything from `<fact_confirm` / `<learned` / `<updated` onward, so if you start a tag mid-sentence the user sees a broken reply.',
+  '- The last visible character of your reply MUST be terminal punctuation — ".", "!", or "?".',
+  '- Preferred (durable claim — shows Yes/Edit/No chip):',
+  '  <fact_confirm kind="identity|focus|theme|goal|preference|style|constraint|relationship">2 to 6 word noun phrase</fact_confirm><reason>one short sentence (max ~20 words)</reason>',
+  '- Preferred REPLACE when correcting a ✓ / · / ? line already in [WHO_I_AM]:',
+  '  <fact_confirm kind="..." replaces="exact existing WHO_I_AM text">new phrase</fact_confirm><reason>...</reason>',
+  '- Soft learn (no confirm chip):',
+  '  <learned kind="...">phrase</learned><reason>...</reason>',
+  '- Legacy refine tag (also opens the replace confirm chip):',
+  '  <updated old="exact existing WHO_I_AM text" kind="...">new phrase</updated><reason>...</reason>',
   '',
   'The kind="..." attribute is REQUIRED — pick the single best match from the list above. If unsure between two, pick the more durable one (identity > focus > theme > preference).',
   '',
   '=== UPDATING AN EXISTING NEURON (CASE C — refine instead of duplicate) ===',
-  'If the user just shared something that REFINES, CORRECTS, EVOLVES, CONTRADICTS, or PIVOTS a fact already present in [WHO_I_AM] (rather than introducing a brand new one), use the <updated> tag INSTEAD of <learned>. The tag REPLACES the old fact text with the new one — same neuron, refreshed content. LYKN keeps learning them; stale [WHO_I_AM] facts are a bug.',
+  'If the user just shared something that REFINES, CORRECTS, EVOLVES, CONTRADICTS, or PIVOTS a fact already present in [WHO_I_AM] (rather than introducing a brand new one), emit a REPLACE confirm — NOT a silent overwrite and NOT a second duplicate fact. The user Yes/Edit/No chip retires the old claim when they confirm.',
   '',
   'When to use <updated> instead of <learned>:',
   '- The new info is a more SPECIFIC version of something already known. ("Writer" → "Horror screenwriter" once they reveal the genre.)',
@@ -5810,9 +6005,9 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '  User: "Specifically I write horror — short fiction mostly, working toward a novella."',
   '  You: "Horror short fiction is a brutal-but-loved form — Shirley Jackson territory. ... <updated old=\\"Writer\\" kind=\\"identity\\">Horror short-fiction writer</updated><reason>They sharpened the broad \\"writer\\" tag into the actual genre and form they work in.</reason>"',
   '',
-  '  ([WHO_I_AM] already shows · Building SaaS for plumbers)',
+  '  ([WHO_I_AM] already shows ✓ Building SaaS for plumbers)',
   '  User: "We pivoted last month — it\'s for dentists now, plumbers wasn\'t closing."',
-  '  You: "Dental is a much higher ACV market — that pivot makes sense. ... <updated old=\\"Building SaaS for plumbers\\" kind=\\"focus\\">Building SaaS for dentists</updated><reason>They told me about a real pivot in their current focus — the old fact is no longer accurate.</reason>"',
+  '  You: "Dental is a much higher ACV market — that pivot makes sense. ... <fact_confirm kind=\\"focus\\" replaces=\\"Building SaaS for plumbers\\">Building SaaS for dentists</fact_confirm><reason>They told me about a real pivot — retire the old focus when they confirm.</reason>"',
   '',
   '  ([WHO_I_AM] already shows ? Procrastinates on cold outreach)',
   '  User: "I\'ve been doing 5 cold emails every morning before opening Slack."',
@@ -5855,24 +6050,15 @@ const LYKN_LEARNED_TAG_INSTRUCTIONS = [
   '- Per reply, emit AT MOST ONE tag pair: either <learned> OR <updated>, never both, never multiple.',
   '- If neither fits, emit nothing. Tag-less replies are fine and expected most turns.',
   '- ABSOLUTELY NEVER emit a tag with NO visible reply before it. The user only sees the prose BEFORE the tag — if you start your response with `<learned>` or `<updated>`, the user gets a blank message and wonders if the AI is broken. Even on tag-worthy turns, your reply MUST start with a complete visible answer (at least one full sentence ending in proper punctuation), and only THEN the tag.',
-  '- A question ABOUT the user ("what do you know about me?", "tell me about myself", "what have you learned?") is CASE B, not CASE A — the user is not sharing new information, they\'re asking you to recall. Answer using [WHO_I_AM] / [USER_IDENTITY] facts and emit NO tag. Do NOT mistake a recall question for a personal disclosure.',
+  '- A question ABOUT the user ("what do you know about me?", "tell me about myself", "what have you learned?") is CASE B, not CASE A — the user is not sharing new information, they\'re asking you to recall. Answer from [WHO_I_AM] User Facts in natural chat prose covering who they are, how they work, prefs, people, goals. Do NOT dump a bullet inventory. Do NOT answer with their projects / [WHAT_IM_ON] as the main content (projects are work, not identity). On a FIRST ask, a short warm portrait is fine. If they ask again or say "go deeper" / "tell me more" / "what else", do NOT recycle the same paragraph — expand into WHO_I_AM facets you have not covered yet in this thread. Emit NO tag. Do NOT mistake a recall question for a personal disclosure.',
   '- THE TAG IS OPTIONAL, THE COMPLETE REPLY IS MANDATORY. If you find yourself approaching the end of your reply but the last sentence is not yet finished, DO NOT cut the reply short to fit the tag — drop the tag entirely and let your reply finish naturally. A clean tag-less reply is ALWAYS better than a reply that ends mid-thought ("...the aspirational, Honda Civic version of their ego") so the tag could fit. The neuron will be created the next time the user mentions this fact; you will not lose the data permanently.',
   '=== END LEARN-A-FACT MECHANIC ===',
   '',
-  '=== BELIEF-WINDOW APPLIED MECHANIC (when [WHO_I_AM] beliefs & rules are present) ===',
-  'If [WHO_I_AM] lists beliefs & rules, PREFER answering through those for judgment / taste — they\'re cheaper, more legible, and give the user an audit trail. Preferences & facts in the same bucket fill identity detail the rules do not cover.',
-  '',
-  'WHEN A RULE FIRES — emit ONE hidden tag at the very end of your reply, after any <learned>/<updated> tag, on the same line:',
-  '  <applied rule_id="EXACT_UUID_FROM_THE_RULES_LIST">one short sentence (≤25 words) explaining HOW the rule shaped this specific reply</applied>',
-  '',
-  'STRICT RULES for <applied>:',
-  '- The rule_id MUST be copied verbatim from the [WHO_I_AM] beliefs & rules list. Do NOT invent rule_ids, do NOT pick from memory, do NOT use "0" or "none". If the exact id isn\'t in this prompt, do not emit the tag.',
-  '- Emit AT MOST ONE <applied> tag per reply. If multiple rules fired, pick the one that most influenced your response.',
-  '- HONESTY OVER ATTRIBUTION: if the reply was a generic answer that didn\'t actually lean on a rule, emit NO tag. The audit trail is only useful when it\'s honest. False attributions poison the user\'s belief in the system.',
-  '- Tag-less replies are the COMMON CASE. Most chat turns are not rule-driven — that\'s expected. Only attribute when the rule actually changed what you said or how you said it.',
-  '- If you ALSO emit a <learned>/<updated> tag this turn, it MUST come BEFORE the <applied> tag. Order: visible reply → <learned>/<updated> → <reason> → <applied>. No text between or after.',
-  '- Do NOT explain the <applied> tag to the user, do NOT mention rule ids in visible prose, do NOT wrap in code fences.',
-  '=== END BELIEF-WINDOW APPLIED MECHANIC ===',
+  '=== PERSONALIZATION (Synthesis v2 — User Facts) ===',
+  '[WHO_I_AM] is User Facts (confirmed ✓ + soft ·/?). Prefer confirmed facts for tone, judgment, and preferences. Do NOT treat Core Beliefs / if-then rules as the personalization engine — they are retired.',
+  'When a durable identity/preference claim should be locked in, emit <fact_confirm> (see above) so the user can Yes / Edit / No in chat.',
+  'Do NOT emit <applied rule_id="..."> unless a rule list is explicitly present in this prompt (legacy custom-model overlays only). Tag-less is the common case.',
+  '=== END PERSONALIZATION ===',
 ].join('\n');
 
 // Combined stream persona — the compact persona + the learn-a-fact rules.
@@ -6007,6 +6193,19 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    don\'t see anything saved on X yet — want me to add a note now?")',
   '    — NEVER substitute project state as if it were vault content.',
   '',
+  'USER-RECALL TURN — "what do you know about me?" / "tell me about myself"',
+  '/ "what have you learned about me?" / "go deeper" / "tell me more" etc.',
+  'This is about WHO THEY ARE, not their projects and not the Vault.',
+  '  • Answer from [WHO_I_AM] / lykn_getFacts in natural prose.',
+  '  • If [WHO_I_AM] looks thin, call lykn_getFacts once (no query, or a',
+  '    broad query) then answer — still prose, not a dump.',
+  '  • On "go deeper" / "tell me more" / a repeat ask: do NOT recycle the',
+  '    prior portrait — expand into uncovered WHO_I_AM facets.',
+  '  • Do NOT run AUTO-CONNECT. Do NOT call lykn_setActiveProject /',
+  '    lykn_getProjectState / lykn_getProjectNeurons / lykn_listProjects',
+  '    on this turn. Do NOT invent a project briefing.',
+  '  • SKIP the END-OF-TURN PROJECT PROPOSAL entirely.',
+  '',
   'AUTO-CONNECT FLOW — when the user mentions a project by name, run this',
   'pipeline silently (parallel where possible):',
   '  1. lykn_resolveProject({ query: "<topic or project name>" }) OR',
@@ -6073,7 +6272,7 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    belongs to).',
   '',
   'END-OF-TURN PROJECT PROPOSAL — non-negotiable EXCEPT on VAULT-FOCUSED',
-  'TURNS (see VAULT-FOCUSED TURN above — skip this entirely there). Users',
+  'TURNS and USER-RECALL TURNS (skip entirely there). Users',
   'will not remember to say "update my project notes," so YOU drive it.',
   'Whenever one of the user\'s projects was mentioned in this turn (by',
   'name, by pronoun referring to it, or implied by the AUTO-CONNECT FLOW',
@@ -6120,9 +6319,13 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    would you tell me to do here?" questions. When a reply is shaped',
   '    by one of these, follow up with lykn_recordRuleApplication so the',
   '    user gets a clean audit trail.',
-  '  • lykn_getFacts — short third-person facts about the user (role,',
-  '    location, tools, ongoing commitments). Skim before answering',
-  '    "advise me" questions so you reference what they actually do.',
+  '  • lykn_getFacts — on-demand User Facts recall (pass query for topic).',
+  '    Prefer this over inventing biography when [WHO_I_AM] is thin. Short',
+  '    third-person facts about the user (role,',
+  '    location, tools, ongoing commitments). Call on "what do you know',
+  '    about me?" when [WHO_I_AM] is thin — answer as identity prose, not',
+  '    a project list. Skim before answering "advise me" questions so you',
+  '    reference what they actually do.',
   '  • lykn_getUserPreferences — server-honoured privacy/pipeline',
   '    preferences. Check `memory_paused` BEFORE promising to remember',
   '    anything or before writing a new vault note / fact / belief; if',
@@ -6262,25 +6465,22 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    to consolidate. Never merge on your own initiative.',
   '',
   'NEW NEURONS (write):',
-  '  BELIEFS ARE USER-AUTHORED ONLY. Core belief neurons are created',
-  '  exclusively by the user in the Synthesis Layer (+ → Core Belief',
-  '  neuron). You MUST NOT propose beliefs, offer to add beliefs, ask',
-  '  "should I add this as a core belief?", or suggest belief options.',
-  '  If the user states a durable principle, acknowledge it in your reply',
-  '  and — only if they seem to want it in their synthesis layer — point',
-  '  them to add it themselves in Synthesis Layer. Read existing beliefs',
-  '  via lykn_getBeliefs; never write new ones.',
-  '  • lykn_proposeFact — when the user discloses something concrete and',
-  '    durable about themselves ("works as a designer in Brooklyn"). Facts',
-  '    are observation; beliefs are governance and are user-only.',
+  '  USER FACTS ARE THE PERSONALIZATION WRITE PATH (Synthesis v2).',
+  '  Do NOT propose Core Beliefs or if-then rules. Durable identity /',
+  '  preference / goal claims should use the <fact_confirm> tag in your',
+  '  reply so the user can Yes / Edit / No in chat. Soft signal can use',
+  '  <learned> or lykn_proposeFact. Core Beliefs are legacy — read-only',
+  '  via lykn_getBeliefs if needed; never write new ones.',
+  '  • lykn_proposeFact — soft fact when the user discloses something',
+  '    concrete ("works as a designer in Brooklyn"). Prefer <fact_confirm>',
+  '    for durable prefs that need ratification.',
   '  • lykn_createVaultNote — save a piece of CONTENT (a summary you',
   '    produced, a snippet the user shared, a working code block, a',
   '    research extract) into the user\'s vault so it survives this',
   '    chat. ASK FIRST every time: "Want me to drop this into your',
   '    vault?" — the vault is the user\'s space, silent writes of',
-  '    arbitrary text are hostile. Don\'t use this for principles',
-  '    (beliefs are user-authored in Synthesis Layer) or for identity',
-  '    disclosures (proposeFact). And DON\'T use this for URLs — see',
+  '    arbitrary text are hostile. Don\'t use this for identity / prefs',
+  '    (use <fact_confirm> or proposeFact). And DON\'T use this for URLs — see',
   '    lykn_saveLinkToVault below.',
   '  • lykn_saveFileToVault — keep a GENERATED ARTIFACT in the vault: a',
   '    chart, image, document, marketing plan, deck, spreadsheet, or a',
@@ -6449,8 +6649,6 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    connected apps with their stored keys, and raw HTTP requests.',
   '  • Build code — dispatch a Cursor cloud agent to change the user\'s',
   '    connected repo and open a PR.',
-  '  • Other agents — message the user\'s published models, and delegate to',
-  '    sub-agents when a main agent is active.',
   '  • Tune yourself — change your own default tone / personality / reply style',
   '    when the user tells you to (e.g. "be more concise", "turn up the',
   '    sarcasm"). The change saves to their custom instructions and sticks.',
@@ -6609,22 +6807,6 @@ const TOOL_GUIDANCE_SCHEDULING = [
 ].join('\n');
 
 const TOOL_GUIDANCE_AGENTS_APPS_CODE = [
-  'CUSTOM MODELS + OTHER AGENTS (the user\'s Model Builder creations):',
-  '  • lykn_listCustomModels — "what models have I made", "which of my models',
-  '    is published", "what\'s my main agent". Returns name, status, base model,',
-  '    training mode, main-agent flag, and belief/rule counts.',
-  '  • lykn_communicate_with_model — send a message to ONE of the user\'s',
-  '    published models (a sub-agent / persona they built) and get its',
-  '    reply back. Use when the user says "ask my <model name>…", "what',
-  '    would <agent> say", or when a specialist persona is the better',
-  '    voice for the ask. Get the name from lykn_listCustomModels if unsure.',
-  '  • lykn_delegate_to_sub_model / lykn_list_sub_model_tasks /',
-  '    lykn_get_sub_model_task — main-agent orchestration. Only available',
-  '    when a main agent is active. delegate hands a scoped task to a sub-',
-  '    agent (async); list/get poll its status + collect the report. Don\'t',
-  '    block the reply waiting — delegate, tell the user it\'s running, and',
-  '    surface results when they\'re ready.',
-  '',
   'CONNECTED APPS (the user\'s bring-your-own-key integrations):',
   '  • lykn_list_apps — the user\'s connected custom-API apps + OAuth action',
   '    apps the agent can actually CALL (distinct from synced [CONNECTED_TOOLS]).',
@@ -6692,7 +6874,7 @@ const TOOL_GUIDANCE_EXTERIOR = [
 // Cursor coding builds.
 const MAKING_INTENT_RE = /\b(slideshow|slide|deck|presentation|pitch|keynote|document|doc|report|essay|memo|worksheet|handout|spreadsheet|sheet|csv|table|chart|graph|plot|diagram|flow ?chart|mind ?map|mermaid|image|picture|photo|logo|poster|icon|illustration|drawing|render|mock ?up|prototype|wireframe|landing ?page|web ?page|mini[- ]?app|webapp|html|video|mp4|animation|animate|motion graphics?|game|platformer|fighter|rpg|shooter|puzzle|speech|audio|voice ?over|narration|podcast|transcribe|transcript|ocr|parse|pdf|translate|translation|calculate|calculation|compute|equation|solve|integral|integrate|derivative|differentiate|simplify|factor|run (?:code|this|python|js|javascript)|python|javascript|script|search (?:the )?web|web search|google (?:it|that|this)|look (?:it|that|this)? ?up|online|latest)\b/i;
 const MAKING_VERB_RE = /\b(make|build|create|generate|draw|design|produce|write me|put together|turn (?:this|that|it) into|convert)\b/i;
-const AGENTS_APPS_CODE_INTENT_RE = /\b(my (?:model|models|agent|persona)|sub[- ]?agent|sub[- ]?model|delegate|main agent|custom model|models i (?:made|built|created|have)|which model|ask my|connected app|my app|apps?|api|integration|integrate with|endpoint|call (?:my|the|an)|post to|fix (?:the|this|that|a)? ?bug|pull request|open a pr|build with cursor|cursor (?:agent|build|cloud)|cloud agent|code ?base|repo|repository|implement|refactor|deploy|ship (?:it|this|the))\b/i;
+const AGENTS_APPS_CODE_INTENT_RE = /\b(connected app|my app|apps?|api|integration|integrate with|endpoint|call (?:my|the|an)|post to|fix (?:the|this|that|a)? ?bug|pull request|open a pr|build with cursor|cursor (?:agent|build|cloud)|cloud agent|code ?base|repo|repository|implement|refactor|deploy|ship (?:it|this|the))\b/i;
 
 // ── "+" → Create panel parity for typed / spoken requests ────────────────────
 // The "+" → Create submenu (OmniaPlusMenu.tsx) lets the user pick a deck /
@@ -8472,6 +8654,141 @@ app.post('/api/learned', requireAuth, requireAppAccess, profileRefreshLimiter, a
     const msg = e?.message || String(e);
     console.error('❌ /api/learned route exception:', msg);
     return res.status(500).json({ error: `route_exception: ${msg}`.slice(0, 240) });
+  }
+});
+
+// ============================================
+// USER FACTS v2 — list / propose / confirm / dismiss (chat ratification)
+// ============================================
+app.get('/api/user-facts', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+    const facts = await listActiveFactsForUser(client, userId, {
+      minConfidence: 0.2,
+      limit: 80,
+    });
+    const q = String(req.query?.q || '').trim();
+    const tokens = q
+      ? q.toLowerCase().replace(/[^a-z0-9\s_-]/g, ' ').split(/\s+/).filter((t) => t.length >= 3).slice(0, 12)
+      : [];
+    // Prefer confirmed first for the "what do you know about me" card.
+    // With ?q=, rank by lexical relevance for the "using this about you" chip.
+    const ranked = (facts || []).slice().sort((a, b) => {
+      if (tokens.length) {
+        const score = (f) => {
+          const hay = `${f.fact_text || ''} ${f.fact_kind || ''}`.toLowerCase();
+          let hits = 0;
+          for (const t of tokens) if (hay.includes(t)) hits += 1;
+          return hits;
+        };
+        const ds = score(b) - score(a);
+        if (ds !== 0) return ds;
+      }
+      const sr = { confirmed: 5, stated: 4, corrected: 3, inferred: 1 };
+      const ds = (sr[b.status] || 0) - (sr[a.status] || 0);
+      if (ds !== 0) return ds;
+      return (Date.parse(b.confirmed_at || b.last_seen_at || 0) || 0)
+        - (Date.parse(a.confirmed_at || a.last_seen_at || 0) || 0);
+    });
+    const mapped = ranked.map((f) => ({
+      id: f.id,
+      fact_kind: f.fact_kind,
+      fact_text: f.fact_text,
+      status: f.status,
+      confidence: f.confidence,
+      confirmed_at: f.confirmed_at || null,
+      last_seen_at: f.last_seen_at || null,
+    }));
+    const relevant = tokens.length
+      ? mapped.filter((f) => {
+          const hay = `${f.fact_text || ''} ${f.fact_kind || ''}`.toLowerCase();
+          return tokens.some((t) => hay.includes(t));
+        }).slice(0, 4)
+      : [];
+    return res.json({
+      ok: true,
+      facts: mapped,
+      relevant,
+    });
+  } catch (e) {
+    console.error('❌ /api/user-facts GET:', e?.message || e);
+    return res.status(500).json({ error: 'list_failed' });
+  }
+});
+
+app.post('/api/user-facts/propose', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'text_required' });
+    const out = await proposePendingFactFromChat(client, userId, {
+      text,
+      kind: req.body?.kind,
+      reason: req.body?.reason,
+      evidenceQuote: req.body?.evidenceQuote || req.body?.reason,
+      sourceId: req.body?.sourceId,
+      sourceMessageId: req.body?.sourceMessageId,
+      replacesText: req.body?.replacesText,
+    });
+    if (!out.ok) {
+      const status = out.reason === 'empty_text' || out.reason === 'unkeyable_text' ? 400 : 500;
+      return res.status(status).json({ error: out.reason || 'propose_failed' });
+    }
+    invalidateUserModelCache(userId);
+    return res.json(out);
+  } catch (e) {
+    console.error('❌ /api/user-facts/propose:', e?.message || e);
+    return res.status(500).json({ error: 'propose_failed' });
+  }
+});
+
+app.post('/api/user-facts/:id/confirm', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+    const factId = String(req.params.id || '').trim();
+    if (!factId) return res.status(400).json({ error: 'id_required' });
+    const out = await confirmUserFact(client, userId, factId, {
+      factText: req.body?.text || req.body?.factText,
+    });
+    if (!out.ok) {
+      const status = out.reason === 'not_found' ? 404 : out.reason === 'unkeyable_text' ? 400 : 500;
+      return res.status(status).json({ error: out.reason || 'confirm_failed' });
+    }
+    invalidateUserModelCache(userId);
+    return res.json(out);
+  } catch (e) {
+    console.error('❌ /api/user-facts/confirm:', e?.message || e);
+    return res.status(500).json({ error: 'confirm_failed' });
+  }
+});
+
+app.post('/api/user-facts/:id/dismiss', requireAuth, requireAppAccess, profileRefreshLimiter, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const client = supabaseAdmin || createSynthesisUserClient(req.headers.authorization);
+    if (!client) return res.status(503).json({ error: 'Database not configured' });
+    const factId = String(req.params.id || '').trim();
+    if (!factId) return res.status(400).json({ error: 'id_required' });
+    const out = await dismissUserFact(client, userId, factId);
+    if (!out.ok) {
+      const status = out.reason === 'not_found' ? 404 : 500;
+      return res.status(status).json({ error: out.reason || 'dismiss_failed' });
+    }
+    invalidateUserModelCache(userId);
+    return res.json(out);
+  } catch (e) {
+    console.error('❌ /api/user-facts/dismiss:', e?.message || e);
+    return res.status(500).json({ error: 'dismiss_failed' });
   }
 });
 
@@ -12505,7 +12822,9 @@ app.post('/api/ai/invoke', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       res.setHeader('X-Plan', invokePlan.planId);
       model = downgraded;
     }
-    const customModelId = String(req.body?.customModelId || '').trim() || null;
+    const customModelId = CUSTOM_MODELS_ENABLED
+      ? String(req.body?.customModelId || '').trim() || null
+      : null;
     let customModelCtx = { overlay: null, model, customModel: null };
     if (customModelId && req.user?.id) {
       customModelCtx = await loadCustomModelForChat(
@@ -13140,13 +13459,17 @@ ${t}
     const skipScrape    = !explicitUrlIntent && !hasUrlInMessage;
     const skipSearch    = (forceWebSearch || deepResearch) ? false : (skipWebSearch || enrichTier !== 'full');
     const skipSynthesis = enrichTier === 'none';
-    const skipUserModel = enrichTier === 'none';
-    let skipBeliefs   = enrichTier === 'none' || !isChatIntent;
+    // Synthesis v2: beliefs retired from hot path; User Facts always-on for chat.
+    let skipBeliefs = true;
     skipBeliefs = shouldSkipSynthesisBeliefsForCustomModel(skipBeliefs, customModelCtx.overlay);
+    const slimIdentity = isChatIntent && enrichTier === 'none';
+    const skipUserFacts = !isChatIntent;
+    const skipRelated = enrichTier === 'none' || !isChatIntent || !req.user?.id;
     // Identity is tiny (just name + project list) and high-value for tone, so
     // we always pull it for chat-style intents — even "none" tier benefits.
     const skipIdentity  = !isChatIntent;
     const skipYouTube   = enrichTier === 'none' || !needsYouTubeSearch(pureUserMessage || searchText);
+    const skipProject = !isChatIntent;
     // Connected-source URLs (Notion / Drive / GitHub / Linear / Figma / …)
     // get looked up against the user's synced vault notes by exact URL match.
     // Always on for chat intents — cheap (one indexed query per URL, max 3
@@ -13178,7 +13501,7 @@ ${t}
         ? fetchSynthesisRetrievalSection(req.headers.authorization, pureUserMessage || searchText, req.user?.id)
         : Promise.resolve(""),
       !skipBeliefs
-        ? fetchBeliefSection(req.headers.authorization, req.user?.id)
+        ? fetchBeliefSection(req.headers.authorization, req.user?.id, { slim: slimIdentity })
         : Promise.resolve({ text: "", beliefs: [], rules: [] }),
       !skipIdentity
         ? fetchUserIdentitySection(req.headers.authorization, req.user)
@@ -13191,44 +13514,82 @@ ${t}
       !skipIdentity
         ? fetchConnectedToolsSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
-      // Active synthesis-layer project. Same gate as beliefs — if we
-      // skip beliefs (greeting / cheap turn) we skip project too. The
-      // in-LYKN AI gets the user's current project header + AI-pushed
-      // kv state + user-clustered neurons so it can reference work
-      // outside AI clients have been doing without re-litigating.
-      !skipBeliefs
+      // Active synthesis-layer project — slim on casual turns, full on light/full.
+      !skipProject
         ? fetchProjectSection(
             req.headers.authorization,
             req.user?.id,
             readCustomModelLinkedProjectId(customModelCtx.customModel),
+            { slim: slimIdentity },
           )
-        : Promise.resolve(""),
+        : Promise.resolve({ text: '', projectId: null, neuronIds: [] }),
       customModelKnowledgePromise,
     ]);
-    // BELIEF-WINDOW ROUTER: when the user has ratified beliefs+rules and
-    // this turn doesn't look like a recall question, skip the wide
-    // [USER_MODEL] dump — the rules layer already covers the personalization
-    // need. This is the prompt-cost win Hyrum-Smith-style layering buys us.
+    // Synthesis v2: User Facts are the always-on WHO_I_AM pack (beliefs retired).
+    const invokeMsg = pureUserMessage || searchText || "";
+    const wantsPureGreeting = messageIsPureGreeting(invokeMsg);
+    const userRecallMode = wantsPureGreeting
+      ? null
+      : resolveUserRecallMode(invokeMsg, conversation);
+    const wantsUserRecall = userRecallMode != null;
+    const wantsUserRecallDeepen = userRecallMode === 'deepen';
     let userModelSection = "";
-    if (!skipUserModel) {
-      const skipFactDump = shouldSkipUserModelGivenBeliefs({
-        activeBeliefCount: beliefSection.beliefs?.length || 0,
-        activeRuleCount: beliefSection.rules?.length || 0,
-        userMessage: pureUserMessage || searchText || "",
+    // Pure greetings: skip WHO_I_AM so the model doesn't invent a personality brief.
+    if (!skipUserFacts && !wantsPureGreeting) {
+      userModelSection = await fetchUserModelSection(req.headers.authorization, req.user?.id, {
+        slim: slimIdentity && !wantsUserRecall,
+        recall: wantsUserRecall,
+        deepen: wantsUserRecallDeepen,
+        deprioritizeText: wantsUserRecall
+          ? recentAssistantTextFromConversation(conversation)
+          : '',
+        queryText: invokeMsg,
       });
-      if (!skipFactDump) {
-        userModelSection = await fetchUserModelSection(req.headers.authorization, req.user?.id);
+    }
+    // Server-side related neighborhood — light/full only. Built after
+    // project section so we can walk authored links from clustered neurons.
+    // Skip on user-recall turns — neighborhood is project/neuron-shaped and
+    // pulls the model away from WHO_I_AM.
+    let relatedSection = "";
+    if (!skipRelated && !wantsUserRecall) {
+      try {
+        relatedSection = await buildRelatedNeighborhoodSection({
+          supabaseAdmin,
+          userId: req.user.id,
+          queryText: pureUserMessage || searchText || "",
+          projectNeuronIds: projectSection?.neuronIds || [],
+        });
+        if (relatedSection) console.log(`🔗 Related neighborhood: ${relatedSection.length} chars`);
+      } catch (e) {
+        console.warn('⚠️ related neighborhood:', e?.message || e);
       }
     }
-    if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
-    if (connectedToolsSection) prompt += "\n\n" + connectedToolsSection;
+    if (userIdentitySection && !wantsPureGreeting) {
+      let identityForPrompt = userIdentitySection;
+      if (wantsUserRecall) {
+        identityForPrompt = identityForPrompt
+          .replace(/\nActive projects[\s\S]*$/i, '')
+          .trim();
+      }
+      if (identityForPrompt) {
+        prompt += "\n\n" + sanitizeStaleSurfaceLanguage(identityForPrompt);
+      }
+    }
+    if (connectedToolsSection && !wantsPureGreeting) prompt += "\n\n" + connectedToolsSection;
     if (customModelCtx.overlay?.beliefText) {
       prompt += "\n\n" + sanitizeStaleSurfaceLanguage(customModelCtx.overlay.beliefText);
-    } else if (beliefSection.text) {
+    } else if (beliefSection.text && !wantsPureGreeting) {
       prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
     }
-    if (projectSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(projectSection);
+    // User-recall / greetings: keep projects out of the prompt.
+    if (projectSection?.text && !wantsUserRecall && !wantsPureGreeting) {
+      prompt += "\n\n" + sanitizeStaleSurfaceLanguage(projectSection.text);
+    }
+    if (relatedSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(relatedSection);
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
+    if (wantsPureGreeting) prompt += "\n\n" + GREETING_TURN_PROMPT;
+    else if (wantsUserRecallDeepen) prompt += "\n\n" + USER_RECALL_DEEPEN_PROMPT;
+    else if (wantsUserRecall) prompt += "\n\n" + USER_RECALL_TURN_PROMPT;
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
     if (customModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(customModelKnowledge);
     if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
@@ -14464,8 +14825,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       res.setHeader('X-Plan', streamPlan.planId);
       model = downgraded;
     }
-    const streamCustomModelId =
-      String(req.body?.customModelId || '').trim() || null;
+    const streamCustomModelId = CUSTOM_MODELS_ENABLED
+      ? String(req.body?.customModelId || '').trim() || null
+      : null;
     const streamChatAgentCtx = null;
     let streamCustomModelCtx = { overlay: null, model, customModel: null };
     let streamOrchestrationCtx = null;
@@ -14860,19 +15222,25 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       streamEnrichTierEffective === 'none' ||
       Boolean(liveWatch) ||
       (Boolean(overlayAsk) && !messageWantsSavedRecall(streamOverlayMsg));
-    // Glass always gets Who I Am (beliefs + facts) — skipping made overlay feel generic.
-    const streamSkipUserModel = streamEnrichTierEffective === 'none' && !overlayAsk;
-    let streamSkipBeliefs =
-      (streamEnrichTierEffective === 'none' && !overlayAsk) || !isChatIntent;
+    // Synthesis v2: User Facts always-on for chat/Glass; beliefs retired.
+    const streamSkipUserFacts = !isChatIntent && !overlayAsk;
+    let streamSkipBeliefs = true;
     streamSkipBeliefs = shouldSkipSynthesisBeliefsForCustomModel(
       streamSkipBeliefs,
       streamCustomModelCtx.overlay,
     );
+    const streamSlimIdentity =
+      !overlayAsk && isChatIntent && streamEnrichTierEffective === 'none';
+    const streamSkipRelated =
+      !req.user?.id ||
+      Boolean(liveWatch) ||
+      (streamEnrichTierEffective === 'none' && !overlayAsk);
     // Always pull identity for chat intents — name + projects are cheap and
     // they're what makes the assistant feel personalised. Glass always gets it.
     const streamSkipIdentity  = !isChatIntent && !overlayAsk;
+    const streamSkipProject = (!isChatIntent && !overlayAsk) && !scopedProjectId;
     const streamSkipYouTube   = streamEnrichTierEffective === 'none' || !needsYouTubeSearch(streamPureUserMessage || streamSearchText);
-    _ck(`before enrichment Promise.all (tier=${streamEnrichTierEffective}, skipScrape=${streamSkipScrape}, skipSearch=${streamSkipSearch}, skipSynth=${streamSkipSynthesis}, skipUM=${streamSkipUserModel}, skipBeliefs=${streamSkipBeliefs}, skipIdentity=${streamSkipIdentity}, skipYT=${streamSkipYouTube})`);
+    _ck(`before enrichment Promise.all (tier=${streamEnrichTierEffective}, skipScrape=${streamSkipScrape}, skipSearch=${streamSkipSearch}, skipSynth=${streamSkipSynthesis}, skipFacts=${streamSkipUserFacts}, skipBeliefs=${streamSkipBeliefs}, slimIdentity=${streamSlimIdentity}, skipRelated=${streamSkipRelated}, skipIdentity=${streamSkipIdentity}, skipYT=${streamSkipYouTube})`);
     // Connected-source URL → vault lookup (see invoke path for rationale).
     // Always on for chat intents; cheap; fixes the "I can't access external
     // pages" stall when the user pastes OR drags a Notion/Drive/etc. URL.
@@ -14901,7 +15269,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         ? fetchSynthesisRetrievalSection(req.headers.authorization, streamPureUserMessage || userText, req.user?.id)
         : Promise.resolve(""),
       !streamSkipBeliefs
-        ? fetchBeliefSection(req.headers.authorization, req.user?.id)
+        ? fetchBeliefSection(req.headers.authorization, req.user?.id, {
+            // Scoped / overlay chats always want the full belief dump.
+            slim: streamSlimIdentity && !scopedProjectId,
+          })
         : Promise.resolve({ text: "", beliefs: [], rules: [] }),
       !streamSkipIdentity
         ? fetchUserIdentitySection(req.headers.authorization, req.user)
@@ -14913,52 +15284,79 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       !streamSkipIdentity
         ? fetchConnectedToolsSection(req.headers.authorization, req.user?.id)
         : Promise.resolve(""),
-      // Active synthesis-layer project. Same skip gate as beliefs:
-      // skip on greeting / cheap turns; otherwise inject the
-      // [CURRENT_PROJECT] block so the in-LYKN AI sees the same
-      // project context outside AI clients (Claude Desktop, Cursor,
-      // Claude Code, ChatGPT) get from lykn_getContextBlock.
-      (!streamSkipBeliefs || scopedProjectId)
+      // Active synthesis-layer project — slim on casual turns, full otherwise.
+      !streamSkipProject
         ? fetchProjectSection(
             req.headers.authorization,
             req.user?.id,
             readCustomModelLinkedProjectId(streamCustomModelCtx.customModel) || scopedProjectId,
+            { slim: streamSlimIdentity && !scopedProjectId },
           )
-        : Promise.resolve(""),
+        : Promise.resolve({ text: '', projectId: null, neuronIds: [] }),
       streamCustomModelKnowledgePromise,
     ]);
     _ck('after enrichment Promise.all');
-    // BELIEF-WINDOW ROUTER (stream): when the user has ratified beliefs+rules
-    // and this turn isn't a recall/identity question, skip the wide
-    // [USER_MODEL] block. Rules answer most personalization questions for
-    // a fraction of the prompt cost.
+    // Synthesis v2: User Facts pack (confirmed + relevant + soft).
+    const streamMsg = streamPureUserMessage || streamSearchText || "";
+    const streamWantsPureGreeting = messageIsPureGreeting(streamMsg) && !scopedProjectId;
+    const streamUserRecallMode = streamWantsPureGreeting
+      ? null
+      : resolveUserRecallMode(streamMsg, conversation);
+    const streamWantsUserRecall = streamUserRecallMode != null;
+    const streamWantsUserRecallDeepen = streamUserRecallMode === 'deepen';
     let userModelSection = "";
-    if (!streamSkipUserModel) {
-      // Overlay always loads preferences/facts; in-app chat may skip when
-      // beliefs+rules already cover personalization (see heuristic).
-      const skipFactDump =
-        !overlayAsk &&
-        shouldSkipUserModelGivenBeliefs({
-          activeBeliefCount: beliefSection.beliefs?.length || 0,
-          activeRuleCount: beliefSection.rules?.length || 0,
-          userMessage: streamPureUserMessage || streamSearchText || "",
+    if (!streamSkipUserFacts && !streamWantsPureGreeting) {
+      userModelSection = await fetchUserModelSection(req.headers.authorization, req.user?.id, {
+        slim: streamSlimIdentity && !scopedProjectId && !overlayAsk && !streamWantsUserRecall,
+        recall: streamWantsUserRecall,
+        deepen: streamWantsUserRecallDeepen,
+        deprioritizeText: streamWantsUserRecall
+          ? recentAssistantTextFromConversation(conversation)
+          : '',
+        queryText: streamMsg,
+      });
+    }
+    let relatedSection = "";
+    if (!streamSkipRelated && !streamWantsUserRecall) {
+      try {
+        relatedSection = await buildRelatedNeighborhoodSection({
+          supabaseAdmin,
+          userId: req.user.id,
+          queryText: streamPureUserMessage || streamSearchText || "",
+          projectNeuronIds: projectSection?.neuronIds || [],
         });
-      if (!skipFactDump) {
-        userModelSection = await fetchUserModelSection(req.headers.authorization, req.user?.id);
+        if (relatedSection) console.log(`🔗 [stream] Related neighborhood: ${relatedSection.length} chars`);
+      } catch (e) {
+        console.warn('⚠️ [stream] related neighborhood:', e?.message || e);
       }
     }
     if (overlayAsk) {
       prompt += "\n\n" + LYKN_GLASS_MEMORY_ADDENDUM;
     }
-    if (userIdentitySection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userIdentitySection);
-    if (connectedToolsSection) prompt += "\n\n" + connectedToolsSection;
+    if (userIdentitySection && !streamWantsPureGreeting) {
+      // On user-recall, drop the project roster from identity so the model
+      // can't treat "Active projects" as the answer to who they are.
+      let identityForPrompt = userIdentitySection;
+      if (streamWantsUserRecall) {
+        identityForPrompt = identityForPrompt
+          .replace(/\nActive projects[\s\S]*$/i, '')
+          .trim();
+      }
+      if (identityForPrompt) {
+        prompt += "\n\n" + sanitizeStaleSurfaceLanguage(identityForPrompt);
+      }
+    }
+    if (connectedToolsSection && !streamWantsPureGreeting) prompt += "\n\n" + connectedToolsSection;
     if (streamCustomModelCtx.overlay?.beliefText) {
       prompt += "\n\n" + sanitizeStaleSurfaceLanguage(streamCustomModelCtx.overlay.beliefText);
-    } else if (beliefSection.text) {
+    } else if (beliefSection.text && !streamWantsPureGreeting) {
       prompt += "\n\n" + sanitizeStaleSurfaceLanguage(beliefSection.text);
     }
-    if (projectSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(projectSection);
-    if (scopedProjectId) {
+    if (projectSection?.text && !streamWantsUserRecall && !streamWantsPureGreeting) {
+      prompt += "\n\n" + sanitizeStaleSurfaceLanguage(projectSection.text);
+    }
+    if (relatedSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(relatedSection);
+    if (scopedProjectId && !streamWantsUserRecall && !streamWantsPureGreeting) {
       const scopedName = String(req.body?.scopedProjectName || '').trim();
       prompt +=
         "\n\n[ACTIVE_PROJECT_SCOPE — The user opened this chat scoped to the project" +
@@ -15119,6 +15517,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       }
     }
     if (userModelSection) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(userModelSection);
+    if (streamWantsPureGreeting) prompt += "\n\n" + GREETING_TURN_PROMPT;
+    else if (streamWantsUserRecallDeepen) prompt += "\n\n" + USER_RECALL_DEEPEN_PROMPT;
+    else if (streamWantsUserRecall) prompt += "\n\n" + USER_RECALL_TURN_PROMPT;
     if (synthesisRetrieval) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(synthesisRetrieval);
     if (streamCustomModelKnowledge) prompt += "\n\n" + sanitizeStaleSurfaceLanguage(streamCustomModelKnowledge);
     if (vaultUrlMatches) prompt += "\n\n" + vaultUrlMatches;
@@ -15131,15 +15532,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     if (streamChatAgentCtx?.instructionsBlock) {
       prompt += `\n\n${streamChatAgentCtx.instructionsBlock}`;
     }
-    // Default main agent: when this turn is NOT a configured custom main agent
-    // but tools are on and communicate_with_model is reachable, LYKN still acts
-    // as the user's main agent over ALL their published models — it can hand
-    // tasks to any of them synchronously. (Configured main agents already have
-    // a richer async-orchestration block set above; don't double up.)
-    const streamCanCommunicate =
-      !Array.isArray(streamChatToolNames) ||
-      streamChatToolNames.includes('lykn_communicate_with_model');
-    if (useTools && streamCanCommunicate && !streamOrchestrationCtx?.isMainAgent && req.user?.id && supabaseAdmin) {
+    // Default main agent over published custom models — soft-unplugged.
+    if (
+      CUSTOM_MODELS_ENABLED &&
+      useTools &&
+      (!Array.isArray(streamChatToolNames) ||
+        streamChatToolNames.includes('lykn_communicate_with_model')) &&
+      !streamOrchestrationCtx?.isMainAgent &&
+      req.user?.id &&
+      supabaseAdmin
+    ) {
       try {
         const defaultRoster = await loadPublishedRoster(supabaseAdmin, req.user.id, {
           excludeId: streamCustomModelCtx.customModel?.id || null,
@@ -17394,17 +17796,25 @@ app.post('/api/ai/summarize-conversation', requireAuth, requireAppAccess, aiLimi
       body: JSON.stringify({
         model: 'gpt-4.1-nano',
         temperature: 0.3,
-        // Output is 2-4 sentences (~120 output tokens); 400 was 3× the
-        // ceiling we ever hit. 220 keeps a safety margin and clamps the
-        // worst-case response length without affecting normal output.
-        max_tokens: 220,
+        // Structured working memory (~180–220 tokens). Slightly above the
+        // old 2–4 sentence summary so we can keep goal / open / next lines.
+        max_tokens: 280,
         // Static system prompt — per-user cache key gives a small input
         // discount on subsequent summaries. Cheap to add, never hurts.
         prompt_cache_key: `summarize-convo:${req.user?.id || 'anon'}`,
         messages: [
           {
             role: 'system',
-            content: 'Summarize this conversation in 2-4 sentences. Capture: the main topics discussed, any decisions or conclusions reached, and any pending questions. Be factual and concise. Output only the summary, nothing else.',
+            content: [
+              'Build THREAD WORKING MEMORY for an ongoing chat. This is short-lived context for the next replies — not durable User Facts.',
+              'Output EXACTLY these labeled lines (omit a line only if truly empty; keep each value ≤18 words):',
+              'Goal: <what they are trying to accomplish in this thread>',
+              'Open: <open questions or unresolved asks>',
+              'Decisions: <choices already made>',
+              'Next: <likely next step or what they want from you>',
+              'Notes: <1 short factual sentence of other useful thread context>',
+              'Be factual. Do not invent. No preamble, no markdown fences.',
+            ].join('\n'),
           },
           { role: 'user', content: formatted },
         ],
@@ -19268,8 +19678,6 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "create_reminder / list_reminders / update_reminder (set or manage time-anchored reminders when the user says 'remind me to…'), " +
   "create_event / list_events / update_event / delete_event (build and manage the user's LYKN calendar when they schedule something — 'put X on my calendar', 'what do I have Friday'), " +
   "create_todo / list_todos / update_todo / delete_todo (manage the user's to-do list — open tasks they want to get done, with an OPTIONAL due date; use these for 'add X to my todo list', 'what's on my list', 'mark that done'), " +
-  "list_custom_models (see every model the user built AND each model's purpose), " +
-  "communicate_with_model (hand a task or question to one of the user's OTHER models — a sub-agent, main or not — and read back the report it returns), " +
   "save_to_vault (save a TEXT note — only when the user explicitly asks), " +
   "save_link_to_vault (save a LINK/URL — an article, video, page, or post the user shared or you found — into their vault as a rich " +
   "embedded card; use it instead of save_to_vault whenever the thing being saved is a URL, same explicit-ask rule), " +
@@ -19282,13 +19690,6 @@ const LYKN_REALTIME_BASE_INSTRUCTIONS =
   "being so formal'. It rewrites their saved voice instructions so the change sticks for future conversations, not " +
   "just this one. Pass their request verbatim as the suggestion, then briefly confirm out loud what you changed — " +
   "do NOT read the instruction text aloud, and do NOT use this for one-off task requests). " +
-  "When the user asks what their models do, what one is working on, or asks you to have a model do something, " +
-  "use list_custom_models to find it (and its purpose/id), then communicate_with_model to reach it and relay its report. " +
-  "CRITICAL — communicate_with_model is SYNCHRONOUS: it runs that model right now and returns its full report in the SAME step. " +
-  "WAIT for the tool result, then read the report back to the user in the same turn. It is NOT a background job and nothing runs after the call returns. " +
-  "NEVER say 'I'll get back to you when <model> finishes', 'they're still working on it', or 'let me check if they're done' — there is no later. " +
-  "If you have not just received a report from the tool, you have not contacted the model yet, so call communicate_with_model now. " +
-  "If the tool returns an error (e.g. the model is a draft / not published), tell the user that plainly. " +
   "build_with_cursor / check_cursor_build: when the user EXPLICITLY asks you to build, implement, add, fix, or change " +
   "something in their code or app, hand it to Cursor with build_with_cursor (give it a clear, self-contained instruction). " +
   "This is ASYNC — it only STARTS the build (which takes minutes) and opens a pull request when done. Tell the user it's " +
@@ -19837,48 +20238,7 @@ const LYKN_VOICE_TOOL_DEFS = [
       required: ['url'],
     },
   },
-  // ── Custom models ─────────────────────────────────────────────────────
-  {
-    name: 'list_custom_models',
-    mcp: 'lykn_listCustomModels',
-    description:
-      'List the custom models the user built in LYKN\'s Model Builder, most-recently-updated first. ' +
-      'Call for "what models have I made", "which of my models is published", "what\'s my main agent", ' +
-      'or "what is each of my models for". Returns each model\'s name, PURPOSE (its one-line description ' +
-      'of what it does), status (draft/published), base model, training mode, main-agent flag, and ' +
-      'belief/rule counts. Use the purposes to decide which model to hand a task to via communicate_with_model.',
-    parameters: {
-      type: 'object',
-      properties: {
-        status: { type: 'string', description: 'draft, published, or all (default).' },
-        query: { type: 'string', description: 'Optional name substring filter.' },
-        limit: { type: 'integer', description: 'Max to return (default 50).' },
-      },
-      required: [],
-    },
-  },
-  {
-    name: 'communicate_with_model',
-    special: 'communicate_with_model',
-    description:
-      "Talk to one of the user's OTHER models (a sub-agent) and get its report back. Works for ANY " +
-      'published model — it does NOT have to be a main agent. Call when the user says "ask my <model> ' +
-      'about X", "check in with <model>", "have <model> do Y", or "what is <model> working on / what can ' +
-      'it do". First use list_custom_models to find the right model and its id, then send your message. ' +
-      'SYNCHRONOUS: this runs the model NOW and the report comes back in this same call — wait for it and ' +
-      'read it back to the user. It is NOT a background task; never promise to follow up later or say the ' +
-      'model is still working. If the model is a draft (not published) the call errors — tell the user.',
-    parameters: {
-      type: 'object',
-      properties: {
-        model_id: { type: 'string', description: 'UUID of the model to talk to (from list_custom_models). Preferred.' },
-        model_name: { type: 'string', description: 'Name of the model (used when you do not have its id).' },
-        message: { type: 'string', description: 'What to ask or assign the model (a question, task, or "report on what you do").' },
-        context: { type: 'string', description: 'Optional background from the conversation the model needs.' },
-      },
-      required: ['message'],
-    },
-  },
+  // Custom models soft-unplugged — see lib/customModelsEnabled.js.
   // ── Cursor cloud-agent builds ─────────────────────────────────────────
   {
     name: 'build_with_cursor',
@@ -20110,23 +20470,24 @@ async function buildRealtimeSynthesisGrounding(authHeader, userId) {
   try {
     const [beliefSection, projectSection] = await Promise.all([
       fetchBeliefSection(authHeader, userId).catch(() => ({ text: '' })),
-      fetchProjectSection(authHeader, userId).catch(() => ''),
+      fetchProjectSection(authHeader, userId).catch(() => ({ text: '' })),
     ]);
     if (beliefSection?.text) sections.push(beliefSection.text);
-    if (projectSection) sections.push(projectSection);
+    if (projectSection?.text) sections.push(projectSection.text);
   } catch (e) {
     console.warn('⚠️ buildRealtimeSynthesisGrounding:', e?.message || e);
   }
-  // Voice agent is the user's main agent over their published models: list them
-  // (with purposes) so it knows who it can hand tasks to via communicate_with_model.
-  try {
-    if (supabaseAdmin) {
-      const roster = await loadPublishedRoster(supabaseAdmin, userId, { limit: 16 });
-      const block = formatDefaultMainAgentBlock(roster, { voice: true });
-      if (block) sections.push(block);
+  // Custom-model sub-agent roster soft-unplugged from voice.
+  if (CUSTOM_MODELS_ENABLED) {
+    try {
+      if (supabaseAdmin) {
+        const roster = await loadPublishedRoster(supabaseAdmin, userId, { limit: 16 });
+        const block = formatDefaultMainAgentBlock(roster, { voice: true });
+        if (block) sections.push(block);
+      }
+    } catch (e) {
+      console.warn('⚠️ voice main-agent roster:', e?.message || e);
     }
-  } catch (e) {
-    console.warn('⚠️ voice main-agent roster:', e?.message || e);
   }
   // Past conversations: the text chat injects [CONVERSATION_MEMORY] from the
   // client, but voice's client grounding only carries the CURRENT session — so
@@ -20399,7 +20760,8 @@ app.post('/api/ai/realtime/tool', requireAuth, requireAppAccess, aiLimiter, asyn
     }
 
     if (name === 'get_project_state') {
-      const text = await fetchProjectSection(authHeader, userId);
+      const projectSection = await fetchProjectSection(authHeader, userId);
+      const text = projectSection?.text || '';
       return res.json({
         ok: true,
         project_state: text && text.trim() ? text.slice(0, 6000) : 'No active project is set, or it has no recorded state yet.',

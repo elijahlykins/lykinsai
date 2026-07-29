@@ -94,7 +94,7 @@ function fullName(node: MindNode): string {
 }
 
 function kindLabel(node: MindNode): string {
-  if (node.kind === "belief") return "Core Belief";
+  if (node.kind === "belief") return "Legacy Belief";
   if (node.kind === "concept") return "Concept";
   if (node.kind === "vault") {
     // Connector rollups (Gmail / Slack / Notion / …) collapse many
@@ -112,7 +112,10 @@ function kindLabel(node: MindNode): string {
   if (node.kind === "perspective") return "Perspective";
   if (node.kind === "chat") return "Chat";
   if (node.kind === "tag") return "Tag";
-  if (node.kind === "neuron") return node.meta?.kindLabel || "Fact";
+  if (node.kind === "neuron") {
+    const sub = typeof node.meta?.kindLabel === "string" ? node.meta.kindLabel : null;
+    return sub ? `User Fact · ${sub}` : "User Fact";
+  }
   if (node.kind === "root") return "Your Mind";
   if (node.kind === "category") return "Category";
   return "Neuron";
@@ -773,8 +776,8 @@ export default function NeuronPanel({
           transition={{ type: "spring", stiffness: 280, damping: 32 }}
           className={
             embedded
-              ? "absolute top-0 right-0 bottom-0 z-[10] w-[min(320px,88%)] max-w-[92%] flex flex-col bg-[rgba(15,15,18,0.94)] backdrop-blur-xl border-l border-white/10 shadow-[0_0_40px_rgba(99,102,241,0.14)]"
-              : "fixed top-0 right-0 z-[90] h-full w-[380px] max-w-[92vw] flex flex-col bg-[rgba(15,15,18,0.92)] backdrop-blur-xl border-l border-white/10 shadow-[0_0_60px_rgba(99,102,241,0.16)]"
+              ? "absolute top-0 right-0 bottom-0 z-[10] w-[min(320px,88%)] max-w-[92%] flex flex-col bg-panel backdrop-blur-xl border-l border-black/[0.08] dark:border-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.10)] dark:shadow-[0_0_40px_rgba(0,0,0,0.35)] text-black/85 dark:text-white/90"
+              : "fixed top-0 right-0 z-[90] h-full w-[380px] max-w-[92vw] flex flex-col bg-panel backdrop-blur-xl border-l border-black/[0.08] dark:border-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.12)] dark:shadow-[0_0_60px_rgba(0,0,0,0.45)] text-black/85 dark:text-white/90"
           }
           role="dialog"
           aria-label="Neuron details"
@@ -782,16 +785,16 @@ export default function NeuronPanel({
           {/* Header — type chip + the page-level close chevron (z-[100],
               right-4) lives outside this component, so we just leave
               room for it on the right. */}
-          <header className="pl-5 pr-12 py-4 border-b border-white/8 flex items-center gap-2 relative">
-            <Icon size={14} className="text-blue-300" />
-            <h2 className="text-[0.65rem] uppercase tracking-[0.18em] font-semibold text-white/55">
+          <header className="pl-5 pr-12 py-4 border-b border-black/[0.08] dark:border-white/8 flex items-center gap-2 relative">
+            <Icon size={14} className="text-blue-600 dark:text-blue-300" />
+            <h2 className="text-[0.65rem] uppercase tracking-[0.18em] font-semibold text-black/50 dark:text-white/55">
               {kindLabel(node)}
             </h2>
             {embedded ? (
               <button
                 type="button"
                 onClick={onClose}
-                className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center text-white/55 hover:text-white/90 hover:bg-white/8 transition-colors"
+                className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center text-black/50 dark:text-white/55 hover:text-black/90 dark:hover:text-white/90 hover:bg-black/[0.06] dark:hover:bg-white/8 transition-colors"
                 aria-label="Close panel"
                 title="Close"
               >
@@ -812,13 +815,13 @@ export default function NeuronPanel({
                     autoFocus
                     rows={3}
                     maxLength={200}
-                    className="w-full bg-black/30 border border-blue-400/40 rounded-md px-3 py-2 text-[0.92rem] text-white/95 leading-snug focus:outline-none focus:border-blue-300/60 resize-none"
+                    className="w-full bg-black/[0.04] dark:bg-black/30 border border-blue-500/35 dark:border-blue-400/40 rounded-md px-3 py-2 text-[0.92rem] text-black/90 dark:text-white/95 leading-snug focus:outline-none focus:border-blue-500/50 dark:focus:border-blue-300/60 resize-none"
                   />
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={commit}
                       disabled={!draft.trim() || saving}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-200 text-[0.7rem] font-medium transition-colors disabled:opacity-40"
+                      className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 dark:border-emerald-400/30 text-emerald-700 dark:text-emerald-200 text-[0.7rem] font-medium transition-colors disabled:opacity-40"
                     >
                       {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
                       Save
@@ -832,7 +835,7 @@ export default function NeuronPanel({
                         // with the truncated text.
                         setDraft(fullName(node));
                       }}
-                      className="px-2.5 py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-white/55 text-[0.7rem] transition-colors"
+                      className="px-2.5 py-1.5 rounded-md bg-black/[0.04] dark:bg-white/5 hover:bg-black/[0.06] dark:hover:bg-white/10 text-black/50 dark:text-white/55 text-[0.7rem] transition-colors"
                     >
                       Cancel
                     </button>
@@ -844,13 +847,13 @@ export default function NeuronPanel({
                       single very long token wraps inside the panel
                       width rather than overflowing. No truncation,
                       no ellipsis — the user wants the full name. */}
-                  <h3 className="flex-1 min-w-0 text-[1rem] leading-snug text-white/95 font-medium break-words whitespace-pre-wrap">
+                  <h3 className="flex-1 min-w-0 text-[1rem] leading-snug text-black/90 dark:text-white/95 font-medium break-words whitespace-pre-wrap">
                     {fullName(node)}
                   </h3>
                   {editable && (
                     <button
                       onClick={() => setEditing(true)}
-                      className="shrink-0 p-1.5 rounded-md text-white/55 hover:text-white/95 hover:bg-white/8 transition-colors"
+                      className="shrink-0 p-1.5 rounded-md text-black/50 dark:text-white/55 hover:text-black/90 dark:hover:text-white/95 hover:bg-black/[0.06] dark:hover:bg-white/8 transition-colors"
                       aria-label="Edit"
                       title="Edit"
                     >
@@ -864,19 +867,19 @@ export default function NeuronPanel({
             {/* Why + When meta */}
             <section className="space-y-3">
               <div>
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-1">
                   {node.kind === "category" ? "What this is" : "Why"}
                 </p>
-                <p className="text-[0.75rem] text-white/75 leading-relaxed">
+                <p className="text-[0.75rem] text-black/70 dark:text-white/75 leading-relaxed">
                   {whyCreated(node)}
                 </p>
               </div>
               {node.kind === "category" ? (
                 <div>
-                  <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                  <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-1">
                     Contains
                   </p>
-                  <p className="text-[0.75rem] text-white/75">
+                  <p className="text-[0.75rem] text-black/70 dark:text-white/75">
                     {allNodes.filter((n) => n.categoryId === node.id).length} items
                     {allNodes.filter((n) => n.categoryId === node.id).length === 0
                       ? ". Starts empty and fills as you use LYKN."
@@ -884,12 +887,54 @@ export default function NeuronPanel({
                   </p>
                 </div>
               ) : null}
+              {/* User Facts audit — list claims with status so the category
+                  cluster is a real memory surface, not just a count. */}
+              {node.kind === "category" && node.id === "__cat_facts__" ? (
+                <div className="space-y-1.5 max-h-64 overflow-y-auto scrollbar-hide">
+                  <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-1">
+                    Audit
+                  </p>
+                  {allNodes
+                    .filter((n) => n.categoryId === "__cat_facts__" && n.kind === "neuron")
+                    .slice(0, 40)
+                    .map((n) => {
+                      const status = String(n.meta?.factStatus || "stated");
+                      const tag =
+                        status === "confirmed" ? "✓" : status === "pending" ? "?" : "·";
+                      return (
+                        <button
+                          key={n.id}
+                          type="button"
+                          onClick={() => onSelectNode?.(n.id)}
+                          className="w-full text-left flex items-start gap-2 rounded-lg border border-black/8 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.03] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] px-2.5 py-2 transition-colors"
+                        >
+                          <span className="text-[11px] font-semibold text-black/40 dark:text-white/40 mt-0.5 shrink-0">
+                            {tag}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[0.75rem] font-medium text-black/85 dark:text-white/85 leading-snug truncate">
+                              {n.meta?.factText || n.label}
+                            </span>
+                            <span className="block text-[0.6rem] text-black/40 dark:text-white/40 capitalize">
+                              {String(n.meta?.kindLabel || n.meta?.factKind || "fact")} · {status}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  {allNodes.filter((n) => n.categoryId === "__cat_facts__" && n.kind === "neuron").length === 0 ? (
+                    <p className="text-[0.7rem] text-black/45 dark:text-white/45">
+                      No User Facts yet — confirm claims in chat or add one with +.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
               {node.kind !== "category" && node.kind !== "root" ? (
                 <div>
-                  <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                  <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-1">
                     Added
                   </p>
-                  <p className="text-[0.75rem] text-white/75">
+                  <p className="text-[0.75rem] text-black/70 dark:text-white/75">
                     {formatWhen(whenCreatedISO(node))}
                   </p>
                 </div>
@@ -916,7 +961,7 @@ export default function NeuronPanel({
                     navigate(openTarget.href);
                     onClose();
                   }}
-                  className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-md bg-blue-500/10 hover:bg-blue-500/18 border border-blue-400/30 hover:border-blue-300/50 text-blue-100 hover:text-white text-[0.72rem] font-medium transition-colors"
+                  className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-md bg-blue-500/10 hover:bg-blue-500/18 border border-blue-500/25 dark:border-blue-400/30 hover:border-blue-500/40 dark:hover:border-blue-300/50 text-blue-700 dark:text-blue-100 hover:text-blue-900 dark:hover:text-white text-[0.72rem] font-medium transition-colors"
                   aria-label={openTarget.label}
                   title={openTarget.label}
                 >
@@ -939,11 +984,11 @@ export default function NeuronPanel({
             {(node.kind === "vault" || node.kind === "perspective") &&
             !node.meta?.isSourceRollup ? (
               <section>
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-2">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-2">
                   {node.kind === "perspective" ? "Story" : "Content"}
                 </p>
                 {notesContentLoading && !vaultParsed?.body && !vaultParsed?.attachments?.length ? (
-                  <p className="text-[0.7rem] text-white/35 italic">Loading…</p>
+                  <p className="text-[0.7rem] text-black/35 dark:text-white/35 italic">Loading…</p>
                 ) : vaultParsed && (vaultParsed.body || vaultParsed.attachments.length > 0) ? (
                   <div className="space-y-3">
                     {vaultParsed.body ? (
@@ -951,7 +996,7 @@ export default function NeuronPanel({
                       // user typed, `break-words` makes long URLs /
                       // tokens wrap inside the 380px panel rather
                       // than overflow it.
-                      <p className="text-[0.78rem] text-white/85 leading-relaxed whitespace-pre-wrap break-words">
+                      <p className="text-[0.78rem] text-black/80 dark:text-white/85 leading-relaxed whitespace-pre-wrap break-words">
                         {vaultParsed.body}
                       </p>
                     ) : null}
@@ -964,7 +1009,7 @@ export default function NeuronPanel({
                     ) : null}
                   </div>
                 ) : (
-                  <p className="text-[0.7rem] text-white/35 italic">
+                  <p className="text-[0.7rem] text-black/35 dark:text-white/35 italic">
                     No body, just a title.
                   </p>
                 )}
@@ -974,11 +1019,11 @@ export default function NeuronPanel({
             {/* Connected neurons */}
             {node.kind !== "category" ? (
             <section>
-              <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-2">
+              <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-2">
                 Connected ({connected.length})
               </p>
               {connected.length === 0 ? (
-                <p className="text-[0.7rem] text-white/40">
+                <p className="text-[0.7rem] text-black/40 dark:text-white/40">
                   No connections yet. This neuron stands alone.
                 </p>
               ) : (
@@ -989,13 +1034,13 @@ export default function NeuronPanel({
                       <button
                         key={c.id}
                         onClick={() => onSelectNode(c.id)}
-                        className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md bg-white/[0.025] hover:bg-white/[0.06] border border-white/8 hover:border-white/14 text-left transition-colors"
+                        className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md bg-black/[0.03] dark:bg-white/[0.025] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] border border-black/[0.08] dark:border-white/8 hover:border-black/12 dark:hover:border-white/14 text-left transition-colors"
                       >
-                        <CIcon size={11} className="shrink-0 text-white/55" />
-                        <span className="flex-1 min-w-0 text-[0.74rem] text-white/85 truncate">
+                        <CIcon size={11} className="shrink-0 text-black/50 dark:text-white/55" />
+                        <span className="flex-1 min-w-0 text-[0.74rem] text-black/80 dark:text-white/85 truncate">
                           {c.label}
                         </span>
-                        <span className="shrink-0 text-[0.55rem] uppercase tracking-[0.12em] text-white/35">
+                        <span className="shrink-0 text-[0.55rem] uppercase tracking-[0.12em] text-black/35 dark:text-white/35">
                           {kindLabel(c).split(" ")[0]}
                         </span>
                       </button>
@@ -1016,7 +1061,7 @@ export default function NeuronPanel({
               {onBeginLinking && node.kind !== "root" && node.kind !== "category" && node.kind !== "tag" && (
                 <button
                   onClick={() => onBeginLinking([node.id])}
-                  className="mt-2 w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-white/55 hover:text-white/85 text-[0.68rem] font-medium transition-colors"
+                  className="mt-2 w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.06] dark:hover:bg-white/[0.08] border border-black/10 dark:border-white/10 hover:border-black/15 dark:hover:border-white/20 text-black/50 dark:text-white/55 hover:text-black/80 dark:hover:text-white/85 text-[0.68rem] font-medium transition-colors"
                   aria-label="Add a connection"
                   title="Add a connection"
                 >
@@ -1042,7 +1087,7 @@ export default function NeuronPanel({
                 handled inside `userProjects.ts`. */}
             {node.kind !== "root" && node.kind !== "category" ? (
               <section>
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-2">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-2">
                   Projects ({projectsContainingNode.length})
                 </p>
 
@@ -1068,7 +1113,7 @@ export default function NeuronPanel({
                             key={p.id}
                             onClick={() => removeFromProject(p.id)}
                             disabled={isPending}
-                            className="group flex items-center gap-1.5 px-2 py-1 rounded-md bg-indigo-500/12 hover:bg-indigo-500/18 border border-indigo-400/25 hover:border-rose-400/40 text-[0.68rem] text-indigo-100/90 hover:text-rose-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="group flex items-center gap-1.5 px-2 py-1 rounded-md bg-sky-500/10 hover:bg-sky-500/15 border border-sky-500/25 hover:border-rose-400/40 text-[0.68rem] text-sky-800 dark:text-sky-100/90 hover:text-rose-700 dark:hover:text-rose-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             title={`Remove from ${p.name}`}
                           >
                             <span className="max-w-[140px] truncate">{p.name}</span>
@@ -1077,7 +1122,7 @@ export default function NeuronPanel({
                             ) : (
                               <X
                                 size={9}
-                                className="text-indigo-300/70 group-hover:text-rose-300/90"
+                                className="text-sky-600/70 dark:text-sky-300/70 group-hover:text-rose-500 dark:group-hover:text-rose-300/90"
                               />
                             )}
                           </button>
@@ -1086,12 +1131,12 @@ export default function NeuronPanel({
                       return (
                         <div
                           key={p.id}
-                          className="group flex items-center rounded-md bg-indigo-500/12 hover:bg-indigo-500/18 border border-indigo-400/25 text-[0.68rem] text-indigo-100/90 transition-colors"
+                          className="group flex items-center rounded-md bg-sky-500/10 hover:bg-sky-500/15 border border-sky-500/25 text-[0.68rem] text-sky-800 dark:text-sky-100/90 transition-colors"
                         >
                           <button
                             onClick={() => onOpenProject(p.id)}
                             disabled={isPending}
-                            className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-l-md hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-l-md hover:text-sky-950 dark:hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             title={`Open ${p.name}`}
                             aria-label={`Open ${p.name}`}
                           >
@@ -1100,7 +1145,7 @@ export default function NeuronPanel({
                           <button
                             onClick={() => removeFromProject(p.id)}
                             disabled={isPending}
-                            className="flex items-center pl-1 pr-2 py-1 rounded-r-md text-indigo-300/70 hover:text-rose-300/95 hover:bg-rose-500/10 border-l border-indigo-400/20 hover:border-rose-400/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="flex items-center pl-1 pr-2 py-1 rounded-r-md text-sky-600/70 dark:text-sky-300/70 hover:text-rose-600 dark:hover:text-rose-300/95 hover:bg-rose-500/10 border-l border-sky-500/20 hover:border-rose-400/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             title={`Remove from ${p.name}`}
                             aria-label={`Remove from ${p.name}`}
                           >
@@ -1115,7 +1160,7 @@ export default function NeuronPanel({
                     })}
                   </div>
                 ) : (
-                  <p className="text-[0.7rem] text-white/40 mb-2">
+                  <p className="text-[0.7rem] text-black/40 dark:text-white/40 mb-2">
                     Not in any project yet.
                   </p>
                 )}
@@ -1131,7 +1176,7 @@ export default function NeuronPanel({
                   <div className="space-y-1">
                     {projectPickerOpen ? (
                       <>
-                        <div className="rounded-md border border-white/10 bg-white/[0.02] max-h-44 overflow-y-auto divide-y divide-white/5">
+                        <div className="rounded-md border border-black/10 dark:border-white/10 bg-black/[0.025] dark:bg-white/[0.02] max-h-44 overflow-y-auto divide-y divide-black/5 dark:divide-white/5">
                           {projectsNotContainingNode.map((p) => {
                             const isPending = pendingProjectId === p.id;
                             return (
@@ -1139,15 +1184,15 @@ export default function NeuronPanel({
                                 key={p.id}
                                 onClick={() => addToProject(p.id)}
                                 disabled={isPending}
-                                className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[0.72rem] text-white/80 hover:text-white/95 hover:bg-white/[0.04] transition-colors disabled:opacity-50"
+                                className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[0.72rem] text-black/75 dark:text-white/80 hover:text-black/90 dark:hover:text-white/95 hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors disabled:opacity-50"
                               >
                                 {isPending ? (
-                                  <Loader2 size={10} className="animate-spin text-white/55" />
+                                  <Loader2 size={10} className="animate-spin text-black/50 dark:text-white/55" />
                                 ) : (
-                                  <Plus size={10} className="text-white/55" />
+                                  <Plus size={10} className="text-black/50 dark:text-white/55" />
                                 )}
                                 <span className="flex-1 truncate">{p.name}</span>
-                                <span className="text-[0.55rem] uppercase tracking-[0.12em] text-white/35">
+                                <span className="text-[0.55rem] uppercase tracking-[0.12em] text-black/35 dark:text-white/35">
                                   {p.members.length}
                                 </span>
                               </button>
@@ -1156,7 +1201,7 @@ export default function NeuronPanel({
                         </div>
                         <button
                           onClick={() => setProjectPickerOpen(false)}
-                          className="w-full px-2.5 py-1 text-[0.62rem] text-white/40 hover:text-white/70 transition-colors"
+                          className="w-full px-2.5 py-1 text-[0.62rem] text-black/40 dark:text-white/40 hover:text-black/60 dark:hover:text-white/70 transition-colors"
                         >
                           Cancel
                         </button>
@@ -1164,7 +1209,7 @@ export default function NeuronPanel({
                     ) : (
                       <button
                         onClick={() => setProjectPickerOpen(true)}
-                        className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-white/55 hover:text-white/85 text-[0.68rem] font-medium transition-colors"
+                        className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.06] dark:hover:bg-white/[0.08] border border-black/10 dark:border-white/10 hover:border-black/15 dark:hover:border-white/20 text-black/50 dark:text-white/55 hover:text-black/80 dark:hover:text-white/85 text-[0.68rem] font-medium transition-colors"
                         aria-label="Add to project"
                         title="Add to project"
                       >
@@ -1177,7 +1222,7 @@ export default function NeuronPanel({
                   // First-run state: the user has no projects at all.
                   // Point them at the page-level "Create project"
                   // flow rather than pretending the button works.
-                  <p className="text-[0.62rem] text-white/35 leading-snug">
+                  <p className="text-[0.62rem] text-black/35 dark:text-white/35 leading-snug">
                     No projects yet. Use the "+ → Create project" cluster flow to
                     start one.
                   </p>
@@ -1197,10 +1242,10 @@ export default function NeuronPanel({
                 the two actions read as opposite verbs and bunching
                 them together would invite mis-taps. */}
             {deletable ? (
-              <section className="pt-4 mt-2 border-t border-white/8">
+              <section className="pt-4 mt-2 border-t border-black/[0.08] dark:border-white/8">
                 {confirmingDelete ? (
                   <div className="space-y-2">
-                    <p className="text-[0.7rem] text-white/75 leading-relaxed">
+                    <p className="text-[0.7rem] text-black/70 dark:text-white/75 leading-relaxed">
                       Delete this {kindLabel(node).toLowerCase()}?
                       {node.kind === "vault" || node.kind === "perspective"
                         ? " This permanently removes the note."
@@ -1210,7 +1255,7 @@ export default function NeuronPanel({
                       <button
                         onClick={performDelete}
                         disabled={deleting}
-                        className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 text-rose-200 text-[0.7rem] font-medium transition-colors disabled:opacity-40"
+                        className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 text-rose-700 dark:text-rose-200 text-[0.7rem] font-medium transition-colors disabled:opacity-40"
                       >
                         {deleting ? (
                           <Loader2 size={11} className="animate-spin" />
@@ -1225,7 +1270,7 @@ export default function NeuronPanel({
                           setDeleteError(null);
                         }}
                         disabled={deleting}
-                        className="px-2.5 py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-white/55 text-[0.7rem] transition-colors disabled:opacity-40"
+                        className="px-2.5 py-1.5 rounded-md bg-black/[0.04] dark:bg-white/5 hover:bg-black/[0.06] dark:hover:bg-white/10 text-black/50 dark:text-white/55 text-[0.7rem] transition-colors disabled:opacity-40"
                       >
                         <span className="inline-flex items-center gap-1">
                           <X size={10} />
@@ -1234,7 +1279,7 @@ export default function NeuronPanel({
                       </button>
                     </div>
                     {deleteError ? (
-                      <p className="text-[0.65rem] text-rose-300/85">{deleteError}</p>
+                      <p className="text-[0.65rem] text-rose-600 dark:text-rose-300/85">{deleteError}</p>
                     ) : null}
                   </div>
                 ) : (
@@ -1243,7 +1288,7 @@ export default function NeuronPanel({
                       setConfirmingDelete(true);
                       setDeleteError(null);
                     }}
-                    className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/[0.02] hover:bg-rose-500/10 border border-white/10 hover:border-rose-400/30 text-white/45 hover:text-rose-200 text-[0.68rem] font-medium transition-colors"
+                    className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-black/[0.025] dark:bg-white/[0.02] hover:bg-rose-500/10 border border-black/10 dark:border-white/10 hover:border-rose-400/30 text-black/40 dark:text-white/45 hover:text-rose-700 dark:hover:text-rose-200 text-[0.68rem] font-medium transition-colors"
                     aria-label="Delete neuron"
                     title="Delete neuron"
                   >

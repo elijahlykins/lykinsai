@@ -43,6 +43,10 @@ export default function VaultPickerDialog({
   const committedRef = useRef(committedNoteIds);
   const baselineAtOpenRef = useRef([]);
   const ignoreEmptyPickerChangesRef = useRef(true);
+  // Once the user has clicked anything in the iframe, stop re-pushing the
+  // baseline SET_SELECTION - those delayed syncs were wiping fresh picks
+  // (especially when opening with an empty baseline).
+  const userAdjustedRef = useRef(false);
   const [pendingNoteIds, setPendingNoteIds] = useState([]);
 
   useEffect(() => {
@@ -52,11 +56,13 @@ export default function VaultPickerDialog({
   useEffect(() => {
     if (!open) {
       ignoreEmptyPickerChangesRef.current = true;
+      userAdjustedRef.current = false;
       return;
     }
     baselineAtOpenRef.current = mergeNoteIds(committedRef.current);
     setPendingNoteIds(baselineAtOpenRef.current);
     ignoreEmptyPickerChangesRef.current = true;
+    userAdjustedRef.current = false;
   }, [open]);
 
   // Escape closes the dialog.
@@ -88,6 +94,7 @@ export default function VaultPickerDialog({
   }, []);
 
   const postSelectionToIframe = useCallback((noteIds) => {
+    if (userAdjustedRef.current) return;
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
     try {
@@ -109,7 +116,10 @@ export default function VaultPickerDialog({
         ? event.data.noteIds.map(String).filter(Boolean)
         : [];
       if (noteIds.length === 0 && ignoreEmptyPickerChangesRef.current) return;
-      if (noteIds.length > 0) ignoreEmptyPickerChangesRef.current = false;
+      if (noteIds.length > 0) {
+        ignoreEmptyPickerChangesRef.current = false;
+        userAdjustedRef.current = true;
+      }
       setPendingNoteIds(mergeWithBaseline(noteIds));
     };
     window.addEventListener("message", handler);
@@ -120,12 +130,13 @@ export default function VaultPickerDialog({
     postSelectionToIframe(baselineAtOpenRef.current);
   }, [postSelectionToIframe]);
 
+  // One short retry after open covers late iframe boot; do not keep
+  // re-pushing empty baselines or user clicks get cleared.
   useEffect(() => {
     if (!open) return undefined;
     const timers = [
       window.setTimeout(syncSelectionToIframe, 120),
-      window.setTimeout(syncSelectionToIframe, 500),
-      window.setTimeout(syncSelectionToIframe, 1200),
+      window.setTimeout(syncSelectionToIframe, 400),
     ];
     return () => timers.forEach((t) => window.clearTimeout(t));
   }, [open, syncSelectionToIframe]);
@@ -185,7 +196,7 @@ export default function VaultPickerDialog({
           </p>
           <button
             type="button"
-            className="lykn-primary-btn shrink-0"
+            className="shrink-0 inline-flex items-center justify-center text-sm font-medium px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-500/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             disabled={pendingCount === 0}
             onClick={handleAddFiles}
           >

@@ -93,7 +93,6 @@ import {
   ChartTooltip,
   CompositionChart,
   KIND_META,
-  NeuronPicker,
   SectionLabel,
   UpdateCard,
   relativeTime,
@@ -102,6 +101,8 @@ import {
 import VaultPickerDialog from "@/components/vault/VaultPickerDialog";
 import VaultDocumentViewer from "@/components/lyknChat/VaultDocumentViewer";
 import DatePickerPopover from "@/components/ui/DatePickerPopover";
+import MenuSelectPopover from "@/components/ui/MenuSelectPopover";
+import TimePickerPopover, { formatTimeLabel } from "@/components/ui/TimePickerPopover";
 import { fetchVaultNotesByIds } from "@/lib/vault/fetchVaultNotesByIds";
 import { fetchVaultFileTypeCounts, VAULT_TYPE_META } from "@/lib/vault/fetchVaultFileTypeCounts";
 import { useIsDark, chartSeries, chartSlice } from "@/lib/projectChartTheme";
@@ -132,6 +133,11 @@ const PRIORITY_META = {
   normal: { label: "Normal", dot: "bg-blue-500 dark:bg-blue-400", text: "text-blue-500 dark:text-blue-400" },
   low: { label: "Low", dot: "bg-black/25 dark:bg-white/30", text: "text-black/40 dark:text-white/40" },
 };
+const PRIORITY_OPTIONS = [
+  { value: "low", label: "Low priority", dot: "bg-black/25 dark:bg-white/30" },
+  { value: "normal", label: "Normal priority", dot: "bg-blue-500 dark:bg-blue-400" },
+  { value: "high", label: "High priority", dot: "bg-red-500" },
+];
 const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
 
 function fmtEventWhen(ev) {
@@ -738,16 +744,17 @@ function TasksPanel({ userId, projectId, todos, onChanged, canEdit = true }) {
           className="w-full text-sm px-3 py-2 rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/[0.04] outline-none focus:border-blue-500/40 placeholder:text-black/35 dark:placeholder:text-white/35"
         />
         <div className="flex flex-wrap items-center gap-2">
-          <select
+          <MenuSelectPopover
             value={priority}
-            onChange={(e) => setPriority(e.target.value)}
-            className="text-[0.75rem] px-2 py-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/70 dark:text-white/70 outline-none focus:border-blue-500/40 cursor-pointer"
+            onChange={setPriority}
+            options={PRIORITY_OPTIONS}
             title="Priority"
-          >
-            <option value="low">Low priority</option>
-            <option value="normal">Normal priority</option>
-            <option value="high">High priority</option>
-          </select>
+            icon={<Flag className="w-3.5 h-3.5" />}
+            active={priority !== "normal"}
+            triggerLabel={
+              (PRIORITY_OPTIONS.find((o) => o.value === priority)?.label) || "Priority"
+            }
+          />
           <DatePickerPopover
             value={due}
             onChange={setDue}
@@ -1108,26 +1115,64 @@ function EventsPanel({ userId, projectId, events, onChanged, filterDay = null, o
             />
             All day
           </label>
-          <div className="flex flex-wrap items-end gap-2">
-            <input
-              type="date"
+          <div className="flex flex-wrap items-center gap-2">
+            <DatePickerPopover
               value={form.date}
-              onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
-              className="text-[0.75rem] px-2 py-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/70 dark:text-white/70 outline-none focus:border-blue-500/40"
+              onChange={(date) => setForm((f) => ({ ...f, date }))}
+              trigger={
+                <button
+                  type="button"
+                  className={`inline-flex items-center gap-1.5 text-[0.75rem] px-2.5 py-1.5 rounded-lg border transition-colors ${
+                    form.date
+                      ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                      : "border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/55 dark:text-white/55 hover:border-blue-500/40"
+                  }`}
+                  title="Event date"
+                >
+                  <CalendarClock className="w-3.5 h-3.5" />
+                  {form.date ? dateInputToText(form.date) : "Date"}
+                </button>
+              }
             />
             {!form.allDay && (
               <>
-                <input
-                  type="time"
+                <TimePickerPopover
                   value={form.startTime}
-                  onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))}
-                  className="text-[0.75rem] px-2 py-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/70 dark:text-white/70 outline-none focus:border-blue-500/40"
+                  onChange={(startTime) => setForm((f) => ({ ...f, startTime }))}
+                  trigger={
+                    <button
+                      type="button"
+                      className={`inline-flex items-center gap-1.5 text-[0.75rem] px-2.5 py-1.5 rounded-lg border transition-colors ${
+                        form.startTime
+                          ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                          : "border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/55 dark:text-white/55 hover:border-blue-500/40"
+                      }`}
+                      title="Start time"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      {form.startTime ? formatTimeLabel(form.startTime) : "Start"}
+                    </button>
+                  }
                 />
-                <input
-                  type="time"
+                <TimePickerPopover
                   value={form.endTime}
-                  onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
-                  className="text-[0.75rem] px-2 py-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/70 dark:text-white/70 outline-none focus:border-blue-500/40"
+                  onChange={(endTime) => setForm((f) => ({ ...f, endTime }))}
+                  allowClear
+                  clearLabel="No end"
+                  trigger={
+                    <button
+                      type="button"
+                      className={`inline-flex items-center gap-1.5 text-[0.75rem] px-2.5 py-1.5 rounded-lg border transition-colors ${
+                        form.endTime
+                          ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                          : "border-black/10 dark:border-white/10 bg-white/60 dark:bg-zinc-800 text-black/55 dark:text-white/55 hover:border-blue-500/40"
+                      }`}
+                      title="End time"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      {form.endTime ? formatTimeLabel(form.endTime) : "End"}
+                    </button>
+                  }
                 />
               </>
             )}
@@ -1418,7 +1463,6 @@ export default function ProjectDetailPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const userId = user?.id;
-  const [showNeuronPicker, setShowNeuronPicker] = useState(false);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1595,16 +1639,6 @@ export default function ProjectDetailPage() {
     return { open: open.length, overdue, doneThisWeek, upcomingEvents };
   }, [todos, events, now]);
 
-  const handleAddMember = async (member) => {
-    setAdding(true);
-    try {
-      await addNeuronsToProject(userId, projectId, [member]);
-      refetchProjects();
-    } finally {
-      setAdding(false);
-    }
-  };
-
   const handleRemoveMember = async (nodeId) => {
     const ok = await removeNeuronFromProject(userId, projectId, nodeId);
     if (!ok) {
@@ -1690,7 +1724,6 @@ export default function ProjectDetailPage() {
   const isOwner = role === "owner";
   const canEdit = role === "owner" || role === "editor";
   const groups = splitMembers(project.members);
-  const existingNodeIds = new Set(project.members.map((m) => m.nodeId));
   // Vault note ids already in the project (members are stored `vault_<id>`),
   // so the vault picker opens with them pre-selected.
   const committedVaultNoteIds = project.members
@@ -1795,27 +1828,14 @@ export default function ProjectDetailPage() {
           {/* Neuron/vault clustering is personal (not shared in v1), so it's
               only offered on projects you own. */}
           {!project.isShared && (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowNeuronPicker(false);
-                  setVaultPanelOpen(true);
-                }}
-                className={actionBtn(vaultPanelOpen)}
-              >
-                <Library className="w-3 h-3" />
-                Add from vault
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowNeuronPicker((v) => !v)}
-                className={actionBtn(showNeuronPicker)}
-              >
-                <Plus className="w-3 h-3" />
-                Add neurons
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={() => setVaultPanelOpen(true)}
+              className={actionBtn(vaultPanelOpen)}
+            >
+              <Library className="w-3 h-3" />
+              Add from vault
+            </button>
           )}
           <div className="flex-1" />
           <button
@@ -1841,10 +1861,6 @@ export default function ProjectDetailPage() {
             </button>
           )}
         </div>
-
-        {showNeuronPicker && (
-          <NeuronPicker userId={userId} existingNodeIds={existingNodeIds} onAdd={handleAddMember} adding={adding} />
-        )}
 
         {/* Stat tiles */}
         <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -1931,7 +1947,7 @@ export default function ProjectDetailPage() {
           <SectionLabel>Knowledge in this project</SectionLabel>
           {project.members.length === 0 ? (
             <p className="text-xs text-black/40 dark:text-white/40 mt-2">
-              Nothing saved into this project yet — add vault items or neurons above.
+              Nothing saved into this project yet — add vault items above.
             </p>
           ) : (
             <div className="mt-2">

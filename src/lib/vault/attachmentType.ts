@@ -136,11 +136,36 @@ function normalizePlatformString(value: unknown): CanonicalPlatform | null {
 }
 
 function extOf(att: AttachmentLike): string {
-  const url = String(att.url || "");
-  const name = String(att.name || "");
-  const urlNoQuery = url.split("?")[0];
-  const m = (urlNoQuery.split("/").pop() || name).match(/\.([^.]+)$/);
-  return m ? m[1].toLowerCase() : "";
+  // Check every place a filename can hide — signed URLs, storagePath, and
+  // variant paths like `…/medium.jpg` that used to leave type stuck on "file".
+  const candidates = [
+    att.name,
+    att.storagePath,
+    att.storage_path,
+    att.variantMediumPath,
+    att.variant_medium_path,
+    att.variantThumbPath,
+    att.variant_thumb_path,
+    att.url,
+  ];
+  for (const raw of candidates) {
+    const s = String(raw || "").trim().split("?")[0];
+    if (!s) continue;
+    const leaf = s.split("/").pop() || s;
+    const m = leaf.match(/\.([^.]+)$/);
+    if (m) return m[1].toLowerCase();
+  }
+  return "";
+}
+
+/** True when attachment paths/names look like an image file. */
+export function looksLikeImageAttachment(attachment: AttachmentLike = {}): boolean {
+  const mime = String(attachment.mimeType || "").toLowerCase().split(";")[0].trim();
+  if (mime.startsWith("image/")) return true;
+  if (String(attachment.type || "").toLowerCase() === "image") return true;
+  const url = String(attachment.url || "");
+  if (url.startsWith("data:image/")) return true;
+  return IMAGE_EXT.includes(extOf(attachment));
 }
 
 /**
@@ -151,7 +176,16 @@ function extOf(att: AttachmentLike): string {
  */
 export function resolveRenderType(attachment: AttachmentLike = {}): string {
   const url = String(attachment.url || "");
-  const name = String(attachment.name || "");
+  const explicit = String(attachment.type || "").toLowerCase();
+  const mime = String(attachment.mimeType || "").toLowerCase().split(";")[0].trim();
+
+  // Media types first — never let a leftover siteName/articleText coerce an
+  // image into a bookmark tile (which used to paint the supabase URL).
+  if (explicit === "image" || mime.startsWith("image/") || url.startsWith("data:image/")) return "image";
+  if (explicit === "video" || mime.startsWith("video/") || url.startsWith("data:video/")) return "video";
+  if (explicit === "audio" || mime.startsWith("audio/") || url.startsWith("data:audio/")) return "audio";
+  if (explicit === "pdf" || mime === "application/pdf") return "pdf";
+  if (explicit === "html") return "html";
 
   if (isSocialEmbedType(attachment.oembedType as string | undefined)) return String(attachment.oembedType);
   const socialPlatform = detectSocialPlatform(url);
@@ -159,21 +193,21 @@ export function resolveRenderType(attachment: AttachmentLike = {}): string {
 
   if ((url.includes("youtube.com") || url.includes("youtu.be")) && extractYouTubeVideoId(url)) return "youtube";
 
-  if (attachment.type === "bookmark" || attachment.type === "link" || attachment.siteName || attachment.articleText) return "bookmark";
+  if (explicit === "bookmark" || explicit === "link" || attachment.siteName || attachment.articleText) {
+    return "bookmark";
+  }
   if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
 
-  const explicit = attachment.type as string | undefined;
   if (explicit && explicit !== "file") return explicit;
-  if (url.startsWith("data:image/")) return "image";
-  if (url.startsWith("data:video/")) return "video";
-  if (url.startsWith("data:audio/")) return "audio";
 
-  const mime = String(attachment.mimeType || "").toLowerCase().split(";")[0].trim();
   const ext = extOf(attachment);
-  if (IMAGE_EXT.includes(ext)) return "image";
-  if (VIDEO_EXT.includes(ext)) return "video";
-  if (AUDIO_EXT.includes(ext)) return "audio";
-  if (ext === "pdf") return "pdf";
+  // Mime / path extension win over a missing explicit type — storage signed
+  // URLs and variant paths (`medium.jpg`) used to fall through to a generic
+  // "file" tile that painted the raw supabase URL as a download link.
+  if (mime.startsWith("image/") || IMAGE_EXT.includes(ext)) return "image";
+  if (mime.startsWith("video/") || VIDEO_EXT.includes(ext)) return "video";
+  if (mime.startsWith("audio/") || AUDIO_EXT.includes(ext)) return "audio";
+  if (mime === "application/pdf" || ext === "pdf") return "pdf";
   if (["xls", "xlsx", "csv"].includes(ext) || attachment.type === "spreadsheet") return "spreadsheet";
   // Built artifacts / saved HTML pages — iframe preview (also recovers legacy
   // rows that were saved as type "file" with a .html name).
@@ -181,6 +215,12 @@ export function resolveRenderType(attachment: AttachmentLike = {}): string {
     return "html";
   }
   if (["doc", "docx", "ppt", "pptx", "txt", "md"].includes(ext)) return "file";
+
+  // Storage-backed uploads with no extension still shouldn't become a
+  // bookmark/link (which surfaces the signed URL). Keep a neutral file tile.
+  if (/supabase\.co\/storage\//i.test(url) || attachment.storagePath || attachment.storage_path) {
+    return "file";
+  }
 
   return "file";
 }

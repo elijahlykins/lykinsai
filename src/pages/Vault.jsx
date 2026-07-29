@@ -7,7 +7,8 @@ import {
   ChevronRight,
   ChevronUp,
   Clock,
-  ExternalLink,
+  Copy,
+  Download,
   FileText,
   Globe,
   Grid2X2,
@@ -15,13 +16,16 @@ import {
   LayoutGrid,
   Link as LinkIcon,
   Loader2,
+  Maximize2,
   MessageCircle,
   Mic,
-  MoreHorizontal,
   Music,
+  Pencil,
   Plug,
   Plus,
   Search,
+  Share,
+  Sparkles,
   StickyNote,
   Tag,
   Trash2,
@@ -68,7 +72,7 @@ import { toast } from "@/components/ui/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { extractYouTubeVideoId, getYouTubeEmbedUrl } from "@/lib/media/youtube";
 import { isVerticalSocialContent } from "@/lib/media/socialEmbed";
-import { resolveRenderType } from "@/lib/vault/attachmentType";
+import { looksLikeImageAttachment, resolveRenderType } from "@/lib/vault/attachmentType";
 import { SocialEmbedInline } from "@/components/media/SocialEmbedInline";
 import LoadingScreen from "@/components/LoadingScreen";
 import LinkPreview from "@/components/LinkPreview";
@@ -242,12 +246,12 @@ function normalizeUrl(input) {
 
 function parseStorageTarget(attachment = {}, prefer = null) {
   const explicitBucket = String(attachment.storageBucket || "user-files").trim() || "user-files";
+  const thumb = String(attachment.variantThumbPath || "").trim();
+  const medium = String(attachment.variantMediumPath || "").trim();
 
   // Prefer a smaller rendition when asked and available (Phase 3 variants):
   // thumb → medium → original; medium → original.
   if (prefer) {
-    const thumb = String(attachment.variantThumbPath || "").trim();
-    const medium = String(attachment.variantMediumPath || "").trim();
     const variantPath = prefer === "thumb" ? thumb || medium : medium;
     if (variantPath) return { bucket: explicitBucket, path: variantPath };
   }
@@ -255,6 +259,11 @@ function parseStorageTarget(attachment = {}, prefer = null) {
   const explicitPath = String(attachment.storagePath || "").trim();
   if (explicitPath) {
     return { bucket: explicitBucket, path: explicitPath };
+  }
+  // Recover cards that only kept a variant path (e.g. medium.jpg) after the
+  // original storagePath was lost — still enough to re-sign and show Try again.
+  if (medium || thumb) {
+    return { bucket: explicitBucket, path: medium || thumb };
   }
 
   const url = String(attachment.url || "").trim();
@@ -426,12 +435,36 @@ function textNoteLabel(style) {
   return "Quick Note";
 }
 
-function sanitizeCardTitle(raw = "") {
+function isSupabaseStorageUrlText(value = "") {
+  return /supabase\.co\/storage\//i.test(String(value || ""));
+}
+
+function sanitizeCardTitle(raw = "", fallback = "Untitled") {
   const s = String(raw).trim();
+  // Never show raw storage URLs (signed or public) as a card title.
+  if (isSupabaseStorageUrlText(s)) {
+    try {
+      const path = new URL(s).pathname.split("/").pop() || "";
+      const decoded = decodeURIComponent(path.split("?")[0] || "");
+      if (
+        decoded &&
+        !isSupabaseStorageUrlText(decoded) &&
+        !/^https?:\/\//i.test(decoded) &&
+        !/^(medium|thumb|original)(\.|$)/i.test(decoded)
+      ) {
+        return decoded;
+      }
+    } catch { /* fall through */ }
+    return fallback === "Untitled" ? "Image" : fallback;
+  }
+  // Variant filenames are internal — never show them as the card label.
+  if (/^(medium|thumb|original)(\.[a-z0-9]+)?$/i.test(s)) {
+    return fallback === "Untitled" ? "Image" : fallback;
+  }
   if (/^https?:\/\//i.test(s)) {
     try { return new URL(s).hostname.replace(/^www\./, ""); } catch { return "Saved Item"; }
   }
-  return s || "Untitled";
+  return s || fallback;
 }
 
 function parseAttachmentNotes(attachment = {}) {
@@ -734,10 +767,11 @@ function getAttachmentHeightClass(card) {
 // live-measured dimensions — so the column a card lands in never changes as
 // images resolve or more pages append. Approximate balance is fine; stability
 // is the goal. The unit is "height relative to one column's width" (1 / aspect)
-// plus a small constant for the tag/action footer.
+// plus a tiny constant for spacing (tags / ⋯ live in the click-to-open
+// preview now, not under the card face).
 function estimateCardHeightUnit(card) {
   if (!card) return 1;
-  const FOOTER = 0.28;
+  const FOOTER = 0.06;
   if (card.kind === "source-folder") return 0.62;
   if (card.kind === "chat-preview") return 1.0 + FOOTER;
   if (card.kind === "quick-note") {
@@ -822,15 +856,15 @@ function VaultLoadMoreSkeleton({ masonry = false, embedded = false, count = 10 }
     return (
       <div
         aria-hidden
-        className={`mt-4 md:mt-5 columns-2 sm:columns-3 md:columns-4 xl:columns-5 2xl:columns-6 ${
-          embedded ? "gap-3" : "gap-4 md:gap-5"
+        className={`mt-2 columns-2 sm:columns-3 md:columns-4 xl:columns-5 2xl:columns-6 ${
+          embedded ? "gap-2" : "gap-2 md:gap-2.5"
         }`}
       >
         {tiles.map((_, i) => (
           <div
             key={`vault-skeleton-${i}`}
             className={`break-inside-avoid inline-block w-full rounded-2xl bg-black/[0.04] dark:bg-white/[0.06] animate-pulse ${
-              embedded ? "mb-3" : "mb-4 md:mb-5"
+              embedded ? "mb-2" : "mb-2"
             } ${VAULT_SKELETON_HEIGHTS[i % VAULT_SKELETON_HEIGHTS.length]}`}
           />
         ))}
@@ -842,8 +876,8 @@ function VaultLoadMoreSkeleton({ masonry = false, embedded = false, count = 10 }
       aria-hidden
       className={
         embedded
-          ? "mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"
-          : "mt-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
+          ? "mt-2 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2"
+          : "mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2"
       }
     >
       {tiles.map((_, i) => (
@@ -899,10 +933,11 @@ function trapPopoverWheel(event) {
  * item (distinct from the comments thread). Self-contained so it owns its
  * draft state; the parent only supplies the initial value + a save handler.
  */
-function WhyEditor({ initialValue = "", onSave, busy = false }) {
+function WhyEditor({ initialValue = "", onSave, busy = false, variant = "default", onAddComment = null, commentActive = false }) {
   const [draft, setDraft] = useState(initialValue);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const cardStyle = variant === "card";
 
   useEffect(() => {
     setDraft(initialValue);
@@ -923,18 +958,47 @@ function WhyEditor({ initialValue = "", onSave, busy = false }) {
     }
   };
 
+  const addCommentBtn = typeof onAddComment === "function" ? (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onAddComment(e);
+      }}
+      className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-white transition-colors ${
+        commentActive ? "bg-blue-600" : "bg-blue-500 hover:bg-blue-600"
+      }`}
+      title="Add comment"
+      aria-label="Add comment"
+      aria-expanded={commentActive}
+    >
+      <MessageCircle className="w-3.5 h-3.5" />
+    </button>
+  ) : null;
+
   if (!editing && trimmed) {
     return (
-      <div className="space-y-1">
-        <div className="flex items-baseline justify-between gap-3">
-          <p className="text-xs text-black/45 dark:text-white/45">Why I saved this</p>
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            className="text-xs text-black/45 dark:text-white/45 hover:text-black/70 dark:hover:text-white/70 transition-colors"
-          >
-            Edit
-          </button>
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-3">
+          <p className={cardStyle
+            ? "text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-black/40 dark:text-white/40"
+            : "text-xs text-black/45 dark:text-white/45"}>
+            Why I saved this
+          </p>
+          <div className="flex items-center gap-1.5">
+            {addCommentBtn}
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className={cardStyle
+                ? "p-1 rounded-md text-black/35 dark:text-white/35 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+                : "text-xs text-black/45 dark:text-white/45 hover:text-black/70 dark:hover:text-white/70 transition-colors"}
+              title="Edit"
+              aria-label="Edit why you saved this"
+            >
+              {cardStyle ? <Pencil className="w-3.5 h-3.5" /> : "Edit"}
+            </button>
+          </div>
         </div>
         <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{trimmed}</p>
       </div>
@@ -943,19 +1007,49 @@ function WhyEditor({ initialValue = "", onSave, busy = false }) {
 
   if (!editing && !trimmed) {
     return (
-      <button
-        type="button"
-        onClick={() => setEditing(true)}
-        className="text-left text-sm text-black/45 dark:text-white/45 hover:text-black/70 dark:hover:text-white/70 transition-colors"
-      >
-        Add why you saved this
-      </button>
+      <div className="space-y-1.5">
+        {cardStyle ? (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-black/40 dark:text-white/40">
+              Why I saved this
+            </p>
+            <div className="flex items-center gap-1.5">
+              {addCommentBtn}
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+                title="Add why"
+                aria-label="Add why you saved this"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className={cardStyle
+            ? "text-left text-sm italic text-black/35 dark:text-white/35 hover:text-black/55 dark:hover:text-white/55 transition-colors"
+            : "text-left text-sm text-black/45 dark:text-white/45 hover:text-black/70 dark:hover:text-white/70 transition-colors"}
+        >
+          Add why you saved this
+        </button>
+      </div>
     );
   }
 
   return (
     <div className="space-y-2">
-      <p className="text-xs text-black/45 dark:text-white/45">Why I saved this</p>
+      <div className="flex items-center justify-between gap-3">
+        <p className={cardStyle
+          ? "text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-black/40 dark:text-white/40"
+          : "text-xs text-black/45 dark:text-white/45"}>
+          Why I saved this
+        </p>
+        {addCommentBtn}
+      </div>
       <textarea
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
@@ -1109,6 +1203,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   const lastSelectedCardIdRef = useRef(null);
   const draggedCardMetricsRef = useRef(null);
   const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState({});
+  // Full-res signed URL for the open lightbox (original storage object).
+  // Grid tiles use the medium variant; opening an image upgrades to original
+  // so expanded viewing stays sharp on retina.
+  const [previewFullUrl, setPreviewFullUrl] = useState(null);
   // Signed URLs for video poster frames (the generated thumb/medium JPEG).
   // Used as the <video poster> so grid cards show a real frame instead of a
   // black box while the video itself only preloads metadata.
@@ -1138,10 +1236,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   const [showSignInBlocker, setShowSignInBlocker] = useState(false);
   const [walkthroughGateOpen, setWalkthroughGateOpen] = useState(false);
   const [previewCard, setPreviewCard] = useState(null);
-  // "Details" dropdown in the item preview — everything tied to the item
-  // (notes/comments, description, tags, date) is tucked behind it so the item
-  // itself reads as the screen. Reset closed whenever a different item opens.
-  const [previewDetailsOpen, setPreviewDetailsOpen] = useState(false);
+  // Share sheet anchored to the preview modal's Share button.
+  const [previewShareMenuRect, setPreviewShareMenuRect] = useState(null);
+  const [previewProjectDropdownOpen, setPreviewProjectDropdownOpen] = useState(false);
+  // Inline comment composer under "Why I saved this" in the pulled-up card.
+  const [previewCommentComposerOpen, setPreviewCommentComposerOpen] = useState(false);
+  const [previewCommentDraft, setPreviewCommentDraft] = useState("");
+  const [previewEditingCommentId, setPreviewEditingCommentId] = useState(null);
   // Per-connector "folder" view. When non-null, the vault grid collapses
   // every connector-sourced card (e.g. Notion pages) into a single tile
   // and clicking that tile opens this state to the connector's id. The
@@ -1248,6 +1349,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   const loadMoreRef = useRef(null);
   const cardMenuRef = useRef(null);
   const noteComposerRef = useRef(null);
+  const previewShareMenuRef = useRef(null);
+  const previewProjectDropdownRef = useRef(null);
   const signedUrlCacheRef = useRef(new Map());
 
   // Reactive mobile-viewport detection (used for FAB / action-bar
@@ -1603,6 +1706,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     setNewTagInput("");
     setShowEmbeddedTagDropdown(false);
     setShowVaultViewDropdown(false);
+    setPreviewShareMenuRect(null);
+    setPreviewProjectDropdownOpen(false);
+    // Inline preview comments are not a popover — don't clear them here or
+    // clicking the textarea / Save wipes the draft before the click lands.
   }, []);
 
   useEffect(() => {
@@ -1616,8 +1723,12 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       if (cardMenuRef.current?.contains(target)) return;
       if (noteComposerRef.current?.contains(target)) return;
       if (tagPickerRef.current?.contains(target)) return;
+      if (previewShareMenuRef.current?.contains(target)) return;
+      if (previewProjectDropdownRef.current?.contains(target)) return;
       if (embeddedTagDropdownRef.current?.contains(target)) return;
       if (vaultViewDropdownRef.current?.contains(target)) return;
+      // Inline comment composer / list under Why I saved this.
+      if (target instanceof Element && target.closest("[data-vault-preview-comments]")) return;
       // Toggle triggers manage open/close themselves — don't fight them.
       if (target instanceof Element && target.closest("[data-vault-popover-trigger]")) return;
       closeAllVaultPopovers();
@@ -2021,7 +2132,15 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       const noteExcerpt = excerpt || "";
 
       attachments.forEach((attachment, idx) => {
-        const type = resolveAttachmentType(attachment);
+        let type = resolveAttachmentType(attachment);
+        // Recover mis-typed storage images (e.g. variant path `medium.jpg`
+        // saved as type "file") so the grid/preview never fall back to a
+        // raw supabase download link.
+        if (type === "file" && looksLikeImageAttachment(attachment)) {
+          type = "image";
+        }
+        const noteTitle = String(note.title || "").trim();
+        const attName = String(attachment.name || "").trim();
         cards.push({
           id: `${note.id}-att-${attachment.id || idx}`,
           kind: "attachment",
@@ -2029,7 +2148,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
           attachmentIndex: idx,
           type,
           attachment,
-          title: sanitizeCardTitle(attachment.name || note.title),
+          title: sanitizeCardTitle(
+            attName,
+            sanitizeCardTitle(noteTitle, type === "image" ? "Image" : "Vault item"),
+          ),
           parentTitle: sanitizeCardTitle(note.title || "Untitled note"),
           noteExcerpt,
           dateLabel,
@@ -2232,9 +2354,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     const handler = (event) => {
       if (event.origin !== embeddedTargetOrigin) return;
       if (event.data?.type !== VAULT_PICKER_SET_SELECTION) return;
+      // Parent sometimes re-pushes the open-time baseline after the user has
+      // already clicked. Honor their picks and ignore the late overwrite.
+      if (pickerUserAdjustedRef.current) return;
       pickerParentInitReceivedRef.current = true;
       pickerSyncedWithParentRef.current = false;
-      pickerUserAdjustedRef.current = false;
       const noteIds = Array.isArray(event.data.noteIds)
         ? event.data.noteIds.map(String).filter(Boolean)
         : [];
@@ -2556,12 +2680,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 
   const resolveSignedUrlForCard = useCallback(async (card) => {
     if (!card || card.kind !== "attachment") return;
-    // Grid cards prefer the small thumb variant for images (big bandwidth win);
-    // video keeps the original (its variant is a poster, not a playable file).
+    // Grid cards prefer the medium variant for images (sharp on retina tiles);
+    // thumb is reserved for video posters. Video keeps the original playable
+    // file (its variant is a poster JPEG, not a playable file).
     const cardType = resolveAttachmentType(card.attachment || {});
     const isImage = cardType === "image";
     // Existing images without variants: backfill them in the background on
-    // first view so future loads use the small rendition.
+    // first view so future loads use the medium / thumb renditions.
     if (isImage && user?.id && card.noteId) {
       lazyBackfillCardVariants({ userId: user.id, noteId: card.noteId, attachment: card.attachment || {} });
     }
@@ -2626,7 +2751,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       }
     }
     const isHtml = cardType === "html";
-    const target = parseStorageTarget(card.attachment || {}, isImage ? "thumb" : null);
+    const target = parseStorageTarget(card.attachment || {}, isImage ? "medium" : null);
     if (!target?.path || !target?.bucket) {
       const rawUrl = String(card.attachment?.url || "").trim();
       if (rawUrl && (rawUrl.startsWith("data:") || rawUrl.startsWith("blob:") || !rawUrl.includes("supabase.co/storage/"))) {
@@ -3792,44 +3917,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                     data-vault-card-id={card.id}
                     data-card-id={card.id}
                     ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
-                    draggable={!isPickerMode && !isEmbeddedMode}
-                    onDragStart={(e) => handleCardDragStart(e, card)}
-                    onDrag={handleCardDrag}
-                    onDragEnter={(e) => {
-                      e.preventDefault();
-                      if (!draggedCardId || draggedCardId === card.id) return;
-                      // While the dragged card is overlapping the trash, suspend
-                      // the live "push cards around" reorder so dropping deletes
-                      // cleanly rather than racing with a reorder.
-                      if (vaultTrashHover || vaultTrashHoldReady) return;
-                      if (lastHoverTargetRef.current === card.id) return;
-                      lastHoverTargetRef.current = card.id;
-                      setDropTargetCardId(card.id);
-                      reorderActivePage(draggedCardId, card.id);
-                    }}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      if (vaultTrashHover || vaultTrashHoldReady) return;
-                      setDropTargetCardId(card.id);
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      // Trash overlap takes precedence — let dragend run the
-                      // delete; don't reorder onto the hovered card.
-                      if (vaultTrashHoldReady) {
-                        setDropTargetCardId(null);
-                        return;
-                      }
-                      const droppedId = e.dataTransfer.getData("application/x-lykins-vault-card-id") || draggedCardId;
-                      if (droppedId && droppedId !== card.id) {
-                        reorderActivePage(droppedId, card.id);
-                      }
-                      setDraggedCardId(null);
-                      setDropTargetCardId(null);
-                      lastHoverTargetRef.current = null;
-                      window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_end"));
-                    }}
-                    onDragEnd={handleCardDragEnd}
+                    draggable={false}
+                    onDragStart={handleCardDragStart}
                     onClick={(e) => handleCardPress(e, card)}
                     // Browser-native off-screen culling for large vaults.
                     // While being dragged, opt OUT — `content-visibility:
@@ -3842,7 +3931,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         ? virtualizedCardStyle
                         : undefined
                     }
-                    className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${vaultView === "grid" ? "" : isEmbeddedMode ? "mb-3" : "mb-5"} rounded-2xl relative ${
+                    className={`${vaultView === "grid" ? "" : "break-inside-avoid"} ${vaultView === "grid" ? "" : isEmbeddedMode ? "mb-2" : "mb-2"} rounded-2xl relative ${
                       card.kind === "chat-preview" ? "overflow-hidden" : vaultView === "grid" ? "overflow-hidden" : "overflow-visible"
                     } ${
                       card.kind === "attachment" || card.kind === "quick-note"
@@ -3925,39 +4014,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                             <span>{parseAttachmentNotes(card.attachment).length}</span>
                           </button>
                         )}
-                        {card.tags?.length > 0 && (
-                          <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
-                            {card.tags.map((t) => (
-                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
-                                {t}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <div className="relative">
-                            <button
-                              type="button"
-                              data-vault-popover-trigger=""
-                              data-no-drag="true"
-                              draggable={false}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (openCardMenuId === card.id) {
-                                  setOpenCardMenuId(null);
-                                  return;
-                                }
-                                openCardMenuForAnchor(card.id, e.currentTarget);
-                              }}
-                              className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                              title="Actions"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
                       </>
                     ) : card.kind === "chat-preview" ? (
                       <div className={`p-4 space-y-3 ${vaultView === "grid" ? "aspect-square w-full overflow-hidden" : ""}`}>
@@ -3971,15 +4027,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         {card.answer && vaultView !== "grid" && (
                           <div className="rounded-xl bg-black/10 border border-white/30 px-3 py-2">
                             <p className="text-[0.75rem] text-black/75 dark:text-white/75 line-clamp-4">{card.answer}</p>
-                          </div>
-                        )}
-                        {card.tags?.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {card.tags.map((t) => (
-                              <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
-                                {t}
-                              </span>
-                            ))}
                           </div>
                         )}
                         {vaultView !== "grid" && (
@@ -4008,15 +4055,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                           <div className={vaultView === "grid" ? "overflow-hidden" : "max-h-56 overflow-y-auto scrollbar-hide"}>
                             <p className={`text-sm text-black/70 dark:text-white/70 whitespace-pre-wrap break-words ${vaultView === "grid" ? "line-clamp-5" : ""}`}>{card.excerpt}</p>
                           </div>
-                          {card.tags?.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {card.tags.map((t) => (
-                                <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
-                                  {t}
-                                </span>
-                              ))}
-                            </div>
-                          )}
                           <div className="mt-3 text-[0.6875rem] text-black/55 dark:text-white/55 flex items-center gap-1">
                             <Clock className="w-3 h-3" />
                             <span>{card.dateLabel}</span>
@@ -4043,30 +4081,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                               <span>{card.comments.length}</span>
                             </button>
                           )}
-                        </div>
-                        <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                          <div className="relative">
-                            <button
-                              type="button"
-                              data-vault-popover-trigger=""
-                              data-no-drag="true"
-                              draggable={false}
-                              onPointerDown={(e) => e.stopPropagation()}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (openCardMenuId === card.id) {
-                                  setOpenCardMenuId(null);
-                                  return;
-                                }
-                                openCardMenuForAnchor(card.id, e.currentTarget);
-                              }}
-                              className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                              title="Quick note actions"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                          </div>
                         </div>
                       </>
                     )}
@@ -4242,128 +4256,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     }
   }, [startVaultTrashHold, clearVaultTrashHold]);
 
-  const handleCardDragStart = useCallback((e, card) => {
-    if (isPickerMode) {
-      e.preventDefault();
-      return;
-    }
-    // Guest demo cards aren't backed by a real note — dragging them into a
-    // project or the canvas would have nowhere to land. Block the drag and
-    // surface the sign-in prompt instead.
-    if (card?.isDemo) {
-      e.preventDefault();
-      requireSignInForAction();
-      return;
-    }
-    // In-flight (ghost) uploads aren't backed by a note yet, so dragging
-    // them around the grid (or out to the canvas) has no meaningful target.
-    if (card?.ghost) {
-      e.preventDefault();
-      return;
-    }
-    // Source-folder tiles are synthetic — they collapse N real cards into
-    // one. Reordering or dragging them out of the vault has no sensible
-    // semantics, so block the drag entirely.
-    if (card?.kind === "source-folder") {
-      e.preventDefault();
-      return;
-    }
-    if (e.target instanceof Element && e.target.closest("[data-no-drag='true']")) {
-      e.preventDefault();
-      return;
-    }
-    const resolvedUrl =
-      card.kind === "attachment"
-        ? resolvedAttachmentUrls[card.id] || card?.attachment?.url || ""
-        : "";
-    if (resolvedUrl) {
-      try {
-        e.dataTransfer.setData("text/uri-list", resolvedUrl);
-        e.dataTransfer.setData("text/plain", resolvedUrl);
-      } catch {}
-    }
-
-    if (isEmbeddedMode && card.kind === "attachment" && card.attachment) {
-      const att = card.attachment;
-      const videoId = card.type === "youtube" ? (att.videoId || extractYouTubeVideoId(att.url || "") || "") : "";
-      const resolvedForDrag = resolvedAttachmentUrls[card.id] || att.url || "";
-      const pdfText = (card.type === "pdf" && att.extractedText) ? String(att.extractedText) : "";
-      const dragAttachment = { ...att, url: resolvedForDrag, type: card.type, videoId, ...(pdfText ? { pdfText, extractedText: pdfText } : {}) };
-      const pendingData = {
-        id: card.id,
-        // Persist the source note id and the original attachment index so
-        // canvas drop handlers can target the exact attachment the user
-        // dragged, not just "the first attachment whose mime matches". Today
-        // attachments[] always has length 1 (per-tile drag), but keeping
-        // these explicit means future flows that drag a whole note with
-        // multiple attachments don't silently lose precision.
-        noteId: card.noteId || card.id,
-        attachmentIndex: Number.isInteger(card.attachmentIndex) ? card.attachmentIndex : 0,
-        title: card.title || "",
-        content: "",
-        attachments: [dragAttachment],
-        attachment: dragAttachment,
-        tags: Array.isArray(card.tags) ? card.tags : [],
-        timestamp: Date.now(),
-      };
-      try { e.dataTransfer.setData("application/x-lykn-chat-vault", JSON.stringify(pendingData)); } catch {}
-      try {
-        const target = window.parent !== window ? window.parent : window;
-        /** @type {any} */ (target).__lyknchat_pending_vault = pendingData;
-      } catch {}
-      try {
-        window.parent.postMessage({ type: "lykn-chat-vault-drag-start", data: pendingData }, embeddedTargetOrigin);
-      } catch {}
-      e.dataTransfer.effectAllowed = "copyMove";
-    } else if (isEmbeddedMode && card.kind === "quick-note") {
-      const pendingData = {
-        id: card.id,
-        noteId: card.noteId || card.id,
-        attachmentIndex: 0,
-        title: card.title || "Quick Note",
-        content: card.excerpt || "",
-        attachments: [],
-        tags: Array.isArray(card.tags) ? card.tags : [],
-        timestamp: Date.now(),
-      };
-      try {
-        e.dataTransfer.setData("text/plain", card.excerpt || card.title || "Quick Note");
-        e.dataTransfer.setData("application/x-lykn-chat-vault", JSON.stringify(pendingData));
-      } catch {}
-      try {
-        const target = window.parent !== window ? window.parent : window;
-        /** @type {any} */ (target).__lyknchat_pending_vault = pendingData;
-      } catch {}
-      try {
-        window.parent.postMessage({ type: "lykn-chat-vault-drag-start", data: pendingData }, embeddedTargetOrigin);
-      } catch {}
-      e.dataTransfer.effectAllowed = "copyMove";
-    } else {
-      e.dataTransfer.effectAllowed = "move";
-    }
-
-    setDraggedCardId(card.id);
-    lastHoverTargetRef.current = card.id;
-    // Capture the card's bounding rect + cursor offset so we can compute
-    // the dragged card's virtual rect during the drag (the HTML5 drag
-    // image follows the cursor with this same offset). This mirrors the
-    // canvas trash overlap logic, where the dragged element's rect — not
-    // the cursor — drives trash detection.
-    const targetEl = e.currentTarget;
-    if (targetEl) {
-      const rect = targetEl.getBoundingClientRect();
-      draggedCardMetricsRef.current = {
-        offsetX: e.clientX - rect.left,
-        offsetY: e.clientY - rect.top,
-        width: rect.width,
-        height: rect.height,
-      };
-    } else {
-      draggedCardMetricsRef.current = null;
-    }
-    window.dispatchEvent(new CustomEvent("vault_collage_reorder_drag_start"));
-    try { e.dataTransfer.setData("application/x-lykins-vault-card-id", card.id); } catch {}
-  }, [isPickerMode, isEmbeddedMode, resolvedAttachmentUrls, requireSignInForAction, embeddedTargetOrigin]);
+  // Vault cards cannot be dragged / reordered. Keeping the handler so any
+  // leftover `onDragStart` wiring still no-ops safely.
+  const handleCardDragStart = useCallback((e) => {
+    e.preventDefault();
+  }, []);
 
   // NOTE: `removeAttachmentFromNote` and `removeQuickNoteCard` are
   // defined later in this component (TDZ), so they are intentionally
@@ -4582,6 +4479,177 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     return true;
   }, [resolveHtmlArtifactOpenUrl, openUrlInSystemBrowser]);
 
+  // Preview "Expand" — open the full item in a separate browser/system window.
+  // Card click stays in the in-app view mode for every type (including HTML).
+  const openCardFullyInBrowser = useCallback(async (card) => {
+    if (!card) return false;
+    if (card.kind === "attachment") {
+      const att = card.attachment || {};
+      const t = resolveAttachmentType(att) || card.type;
+      if (t === "html") return openVaultArtifactInBrowser(card);
+      if (t === "youtube" || t === "bookmark" || t === "link") {
+        const url = String(att.url || "").trim();
+        if (!url || !openUrlInSystemBrowser(url)) {
+          toast({ title: "Couldn't open", description: "No link available for this item." });
+          return false;
+        }
+        return true;
+      }
+      const target = parseStorageTarget(att);
+      let url = "";
+      if (target?.bucket && target?.path) {
+        try {
+          const { data } = await supabase.storage
+            .from(target.bucket)
+            .createSignedUrl(target.path, SIGNED_URL_TTL_SECONDS);
+          url = data?.signedUrl || "";
+        } catch {
+          /* fall through */
+        }
+      }
+      if (!url) url = resolvedAttachmentUrls[card.id] || String(att.url || "").trim();
+      if (!url || !openUrlInSystemBrowser(url)) {
+        toast({ title: "Couldn't open", description: "Try again in a moment." });
+        return false;
+      }
+      return true;
+    }
+    toast({
+      title: "Already open",
+      description: "This item is shown in the preview — there's no separate page to expand.",
+    });
+    return false;
+  }, [openVaultArtifactInBrowser, openUrlInSystemBrowser, resolvedAttachmentUrls]);
+
+  const chatAboutPreviewCard = useCallback((card) => {
+    const payload = buildEmbeddedVaultPayload(card);
+    if (!payload) {
+      toast({ title: "Couldn't open chat", description: "This item can't be added to chat." });
+      return;
+    }
+    if (isEmbeddedMode) {
+      try {
+        window.parent.postMessage({ type: "lykn-chat-vault-add", data: payload }, embeddedTargetOrigin);
+      } catch {
+        /* ignore */
+      }
+      setPreviewCard(null);
+      return;
+    }
+    try {
+      sessionStorage.setItem("lykn_pending_vault_chat_add", JSON.stringify({ ...payload, timestamp: Date.now() }));
+    } catch {
+      /* ignore */
+    }
+    setPreviewCard(null);
+    nav("/app");
+  }, [buildEmbeddedVaultPayload, isEmbeddedMode, embeddedTargetOrigin, nav]);
+
+  const resolvePreviewShareUrl = useCallback((card, urlHint = "") => {
+    const url = String(urlHint || card?.attachment?.url || "").trim();
+    return safeAttachmentUrl(url) || safeExternalUrl(url) || "";
+  }, []);
+
+  const resolvePreviewShareText = useCallback((card) => {
+    const title = String(card?.title || card?.label || "").trim();
+    const body = String(card?.body || card?.excerpt || card?.question || "").trim();
+    const whyNote = card?.noteId
+      ? notes.find((n) => String(n?.id) === String(card.noteId))
+      : null;
+    const why = String(whyNote?.why || "").trim();
+    const parts = [title, body, why ? `Why I saved this:\n${why}` : ""].filter(Boolean);
+    return parts.join("\n\n").trim();
+  }, [notes]);
+
+  const sharePreviewNative = useCallback(async (card, urlHint = "") => {
+    const title = String(card?.title || "LYKN vault item");
+    const safe = resolvePreviewShareUrl(card, urlHint);
+    const text = resolvePreviewShareText(card);
+    try {
+      if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
+        await navigator.share({
+          title,
+          ...(safe ? { url: safe } : {}),
+          ...(text ? { text } : !safe ? { text: title } : {}),
+        });
+        setPreviewShareMenuRect(null);
+        return;
+      }
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+    }
+    toast({ title: "Share unavailable", description: "Use Copy link or Download instead." });
+  }, [resolvePreviewShareUrl, resolvePreviewShareText]);
+
+  const sharePreviewCopyLink = useCallback(async (card, urlHint = "") => {
+    const safe = resolvePreviewShareUrl(card, urlHint);
+    if (!safe) {
+      toast({ title: "No link", description: "This item doesn't have a shareable link." });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(safe);
+      toast({ title: "Link copied" });
+      setPreviewShareMenuRect(null);
+    } catch {
+      toast({ title: "Couldn't copy", description: "Copy the link manually instead." });
+    }
+  }, [resolvePreviewShareUrl]);
+
+  const sharePreviewCopyText = useCallback(async (card) => {
+    const text = resolvePreviewShareText(card);
+    if (!text) {
+      toast({ title: "Nothing to copy", description: "This item has no text to copy." });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title: "Text copied" });
+      setPreviewShareMenuRect(null);
+    } catch {
+      toast({ title: "Couldn't copy" });
+    }
+  }, [resolvePreviewShareText]);
+
+  const sharePreviewOpenLink = useCallback((card, urlHint = "") => {
+    const safe = resolvePreviewShareUrl(card, urlHint);
+    if (!safe) {
+      toast({ title: "No link", description: "This item doesn't have a link to open." });
+      return;
+    }
+    openUrlInSystemBrowser(safe);
+    setPreviewShareMenuRect(null);
+  }, [resolvePreviewShareUrl, openUrlInSystemBrowser]);
+
+  const sharePreviewDownload = useCallback(async (card, urlHint = "") => {
+    const safe = resolvePreviewShareUrl(card, urlHint);
+    const filename = String(card?.attachment?.name || card?.title || "lykn-download")
+      .replace(/[^\w.\- ()[\]]+/g, "_")
+      .slice(0, 120);
+    if (!safe) {
+      toast({ title: "Can't download", description: "This item doesn't have a downloadable file." });
+      return;
+    }
+    try {
+      const res = await fetch(safe);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename || "download";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+      toast({ title: "Download started" });
+      setPreviewShareMenuRect(null);
+    } catch {
+      openUrlInSystemBrowser(safe);
+      setPreviewShareMenuRect(null);
+    }
+  }, [resolvePreviewShareUrl, openUrlInSystemBrowser]);
+
   // Open a full-size preview/view window when a card is clicked. Interactive
   // elements (buttons, links, form fields, media controls, menus) opt-out
   // either via stopPropagation or by being covered in this selector.
@@ -4670,19 +4738,16 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       }
     }
 
-    // Saved HTML artifacts open in the system browser so their scripts don't
-    // execute inside the LYKN shell.
+    // Every card type opens the same in-app view mode. Expand (in the
+    // preview header) is what opens the full item in a separate window —
+    // including HTML artifacts (via the branded file proxy).
     if (card.kind === "attachment") {
       const attType = resolveAttachmentType(card.attachment || {}) || card.type;
       if (attType === "html") {
-        setPreviewDetailsOpen(false);
-        setPreviewCard(null);
-        void openVaultArtifactInBrowser(card);
-        return;
+        void resolveHtmlArtifactOpenUrl(card);
       }
     }
 
-    setPreviewDetailsOpen(false);
     setPreviewCard(card);
   }, [
     draggedCardId,
@@ -4696,29 +4761,123 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
     toggleNoteSelectionInPicker,
     selectedCardIds,
     clearSelection,
-    openVaultArtifactInBrowser,
+    resolveHtmlArtifactOpenUrl,
     closeAllVaultPopovers,
   ]);
 
   useEffect(() => {
-    if (!previewCard) return;
+    if (!previewCard) {
+      setPreviewShareMenuRect(null);
+      setPreviewProjectDropdownOpen(false);
+      setPreviewCommentComposerOpen(false);
+      setPreviewCommentDraft("");
+      setPreviewEditingCommentId(null);
+      return;
+    }
     const onKey = (e) => {
-      if (e.key === "Escape") setPreviewCard(null);
+      if (e.key !== "Escape") return;
+      if (previewShareMenuRect) {
+        setPreviewShareMenuRect(null);
+        return;
+      }
+      if (previewProjectDropdownOpen) {
+        setPreviewProjectDropdownOpen(false);
+        return;
+      }
+      if (previewCommentComposerOpen || previewEditingCommentId) {
+        setPreviewCommentComposerOpen(false);
+        setPreviewCommentDraft("");
+        setPreviewEditingCommentId(null);
+        return;
+      }
+      setPreviewCard(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [previewCard]);
+  }, [previewCard, previewShareMenuRect, previewProjectDropdownOpen, previewCommentComposerOpen, previewEditingCommentId]);
 
-  // Interactive HTML artifacts open in the system browser (see handleCardPress).
-  // If one still lands in previewCard, bounce it out instead of iframing in-app.
+  // Lightbox: re-sign storage images whenever preview opens. Never rely on a
+  // stale `attachment.url` (expired signed URL) as the <img> src — that path
+  // is what left users staring at a supabase link / blank "Image" tile.
   useEffect(() => {
-    if (!previewCard || previewCard.kind !== "attachment") return;
-    const t = resolveAttachmentType(previewCard.attachment || {});
-    if (t !== "html") return;
-    const card = previewCard;
-    setPreviewCard(null);
-    void openVaultArtifactInBrowser(card);
-  }, [previewCard, openVaultArtifactInBrowser]);
+    if (!previewCard || previewCard.kind !== "attachment") {
+      setPreviewFullUrl(null);
+      return undefined;
+    }
+    const att = previewCard.attachment || {};
+    const isImage =
+      resolveAttachmentType(att) === "image" || looksLikeImageAttachment(att);
+    if (!isImage) {
+      setPreviewFullUrl(null);
+      return undefined;
+    }
+
+    // Clear a prior failure so opening the card always retries.
+    setFailedImageIds((prev) => {
+      if (!prev.has(previewCard.id)) return prev;
+      const next = new Set(prev);
+      next.delete(previewCard.id);
+      return next;
+    });
+
+    const original = parseStorageTarget(att);
+    const medium = parseStorageTarget(att, "medium");
+    const targets = [original, medium].filter(
+      (t, i, arr) => t?.bucket && t?.path && arr.findIndex((x) => x.path === t.path) === i,
+    );
+    if (targets.length === 0) {
+      setPreviewFullUrl(null);
+      // Still try the grid resolver — it may recover from url parsing.
+      urlResolveQueueRef.current.push(previewCard);
+      drainUrlResolveQueue();
+      return undefined;
+    }
+
+    let cancelled = false;
+    setPreviewFullUrl(null);
+
+    (async () => {
+      for (const target of targets) {
+        if (cancelled) return;
+        const cacheKey = `full:${target.bucket}:${target.path}`;
+        const cached = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
+        if (cached) {
+          setPreviewFullUrl(cached);
+          setResolvedAttachmentUrls((prev) =>
+            prev[previewCard.id] ? prev : { ...prev, [previewCard.id]: cached },
+          );
+          return;
+        }
+        try {
+          const { data, error } = await supabase.storage
+            .from(target.bucket)
+            .createSignedUrl(target.path, SIGNED_URL_TTL_SECONDS);
+          if (!error && data?.signedUrl) {
+            writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, data.signedUrl);
+            if (cancelled) return;
+            setPreviewFullUrl(data.signedUrl);
+            setResolvedAttachmentUrls((prev) => ({
+              ...prev,
+              [previewCard.id]: data.signedUrl,
+            }));
+            return;
+          }
+        } catch {
+          /* try next target */
+        }
+      }
+      if (!cancelled) {
+        // Last resort: grid resolve pipeline (medium prefer + server fallback).
+        urlResolveQueueRef.current.push({ ...previewCard, attachment: att });
+        drainUrlResolveQueue();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [previewCard, drainUrlResolveQueue]);
+
   // Lock body scroll while any full-screen vault overlay is up so wheel/touch
   // over the backdrop doesn't scroll the grid behind it (users otherwise close
   // the modal to find themselves at a different scroll position).
@@ -5161,8 +5320,17 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
   }, []);
 
   const renderAttachmentCard = (card, tileHeightClass) => {
-    const { attachment, type, title } = card;
-    const resolvedUrl = resolvedAttachmentUrls[card.id] || attachment.url;
+    const { attachment, title } = card;
+    let type = card.type;
+    if (type === "file" || type === "bookmark" || type === "link") {
+      if (looksLikeImageAttachment(attachment || {})) type = "image";
+    }
+    // Never paint an expired/raw storage URL into an <img> — wait for a
+    // freshly signed URL from the resolver instead.
+    const rawAttUrl = String(attachment?.url || "");
+    const resolvedUrl =
+      resolvedAttachmentUrls[card.id] ||
+      (isSupabaseStorageUrlText(rawAttUrl) ? "" : rawAttUrl);
     const wakeDemoCard = isWakePreview && card.isDemo;
     const stableTileHeight = resolveStableTileHeight(card, tileHeightClass);
     // Grid/tags/type views pass a single fixed / square class and expect
@@ -5256,14 +5424,18 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       }
 
       if (hasFailed) {
+        const failedLabel = sanitizeCardTitle(title || attachment.name || "", "Image");
+        const canRetry =
+          isStorageBacked ||
+          isSupabaseStorageUrlText(attachment.url || resolvedUrl || "");
         return (
           <div
             className={`w-full ${reservedHeightClass} rounded-2xl bg-black/5 dark:bg-white/5 flex flex-col items-center justify-center gap-2 px-3`}
             style={reservedAspectStyle}
           >
             <FileText className="w-8 h-8 text-black/20 dark:text-white/20" />
-            <span className="text-xs text-black/40 dark:text-white/40 text-center truncate max-w-full">{title}</span>
-            {isStorageBacked && (
+            <span className="text-xs text-black/40 dark:text-white/40 text-center truncate max-w-full">{failedLabel}</span>
+            {canRetry && (
               <button
                 type="button"
                 className="text-[0.625rem] font-medium text-blue-500 hover:text-blue-600 transition-colors"
@@ -5271,7 +5443,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                   e.stopPropagation();
                   imageRetryCountsRef.current.delete(card.id);
                   setFailedImageIds((prev) => { const next = new Set(prev); next.delete(card.id); return next; });
-                  signedUrlCacheRef.current.delete(`${storageTarget?.bucket || "user-files"}:${storageTarget?.path || ""}`);
+                  const retryTarget = parseStorageTarget(attachment || {}) || storageTarget;
+                  if (retryTarget?.bucket && retryTarget?.path) {
+                    signedUrlCacheRef.current.delete(`${retryTarget.bucket}:${retryTarget.path}`);
+                  }
                   setResolvedAttachmentUrls((prev) => { const next = { ...prev }; delete next[card.id]; return next; });
                   visibleCardIdsRef.current.delete(card.id);
                   urlResolveQueueRef.current.push(card);
@@ -5754,7 +5929,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             <Video className="w-4 h-4 mt-0.5" />
             <div className="min-w-0">
               <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{title}</p>
-              <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1 truncate">{attachment.url}</p>
+              <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1 truncate">YouTube video</p>
             </div>
           </div>
         );
@@ -5826,11 +6001,39 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
         return listCard;
       }
       const linkUrl = attachment.url || resolvedUrl || "";
+      // Never paint a Supabase storage URL as a "link" card — that used to
+      // dump the signed URL into the tile when an image lost its type.
+      if (
+        isSupabaseStorageUrlText(linkUrl) ||
+        attachment.storagePath ||
+        attachment.storage_path ||
+        attachment.variantMediumPath ||
+        looksLikeImageAttachment(attachment)
+      ) {
+        // Recover as an image tile when possible; otherwise a neutral file
+        // label (never the raw URL).
+        if (looksLikeImageAttachment(attachment) || /\.(jpe?g|png|gif|webp|heic|avif)$/i.test(String(attachment.variantMediumPath || attachment.storagePath || ""))) {
+          const imageCard = { ...card, type: "image" };
+          return renderAttachmentCard(imageCard, tileHeightClass);
+        }
+        const storageLabel = sanitizeCardTitle(attachment.name || title || "", "Image");
+        return (
+          <div className={`p-4 rounded-2xl ${tileHeightClass}`}>
+            <div className="flex items-start gap-2 h-full">
+              <FileText className="w-4 h-4 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-black/85 dark:text-white/85 truncate">{storageLabel}</p>
+                <p className="text-[0.6875rem] text-black/55 dark:text-white/55 mt-1">Image</p>
+              </div>
+            </div>
+          </div>
+        );
+      }
       const preview = (
         <div className={isPickerMode ? "pointer-events-none h-full" : "h-full"}>
           <LinkPreview
             url={linkUrl}
-            title={attachment.title || title || ""}
+            title={sanitizeCardTitle(attachment.title || title || "")}
             description={String(attachment.description || "")}
             image={attachment.image || ""}
             siteName={attachment.siteName || ""}
@@ -6126,6 +6329,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       await addNeuronsToProject(user?.id || null, projectId, [member]);
       invalidateVaultProjects();
       setOpenCardMenuId(null);
+      setPreviewProjectDropdownOpen(false);
       toast({
         title: "Added to project",
         description: project.name,
@@ -6355,6 +6559,115 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       setIsCardActionBusy(false);
     }
   }, [notes, user?.id]);
+
+  const updateAttachmentNote = useCallback(async (card, commentId, textInput) => {
+    if (!user?.id || !card?.noteId || !commentId) return false;
+    const text = String(textInput || "").trim();
+    if (!text) return false;
+    setIsCardActionBusy(true);
+    try {
+      const note = notes.find((n) => String(n?.id) === String(card.noteId));
+      if (!note) return false;
+      const attachments = parseAttachmentsFromNote(note);
+      const idx = Number(card.attachmentIndex);
+      if (!Number.isFinite(idx) || idx < 0 || idx >= attachments.length) return false;
+
+      const target = attachments[idx] || {};
+      const existingNotes = parseAttachmentNotes(target);
+      let changed = false;
+      const nextAttachmentNotes = existingNotes.map((entry) => {
+        if (entry.id !== commentId) return entry;
+        changed = true;
+        return { ...entry, text };
+      });
+      if (!changed) return false;
+      const nextAttachments = attachments.slice();
+      nextAttachments[idx] = { ...target, notes: nextAttachmentNotes };
+      const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
+
+      const { error: updateError } = await supabase
+        .from("vault_items")
+        .update({
+          content: nextContent,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", card.noteId)
+        .eq("user_id", user.id);
+
+      if (!updateError) {
+        setNotes((prev) =>
+          prev.map((n) =>
+            String(n?.id) === String(card.noteId)
+              ? { ...n, content: nextContent, updated_at: new Date().toISOString() }
+              : n
+          )
+        );
+        return true;
+      }
+      return false;
+    } finally {
+      setIsCardActionBusy(false);
+    }
+  }, [notes, user?.id]);
+
+  const updateQuickNoteComment = useCallback(async (card, commentId, textInput) => {
+    if (!user?.id || !card?.noteId || !commentId) return false;
+    const text = String(textInput || "").trim();
+    if (!text) return false;
+    setIsCardActionBusy(true);
+    try {
+      const note = notes.find((n) => String(n?.id) === String(card.noteId));
+      if (!note) return false;
+      const existing = parseQuickNoteComments(note);
+      let changed = false;
+      const nextComments = existing.map((entry) => {
+        if (entry.id !== commentId) return entry;
+        changed = true;
+        return { ...entry, text };
+      });
+      if (!changed) return false;
+
+      const { error: updateError } = await supabase
+        .from("vault_items")
+        .update({
+          comments: nextComments,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", card.noteId)
+        .eq("user_id", user.id);
+
+      if (updateError) {
+        if (updateError.code === "PGRST204" || updateError.message?.toLowerCase().includes("does not exist")) {
+          console.warn("notes.comments column missing — run migration 041_notes_comments_column.sql", updateError);
+        }
+        return false;
+      }
+
+      setNotes((prev) =>
+        prev.map((n) =>
+          String(n?.id) === String(card.noteId)
+            ? { ...n, comments: nextComments, updated_at: new Date().toISOString() }
+            : n
+        )
+      );
+      return true;
+    } finally {
+      setIsCardActionBusy(false);
+    }
+  }, [notes, user?.id]);
+
+  const updateWakePreviewCardComment = useCallback((card, commentId, textInput) => {
+    const text = String(textInput || "").trim();
+    if (!text || !card?.id || !commentId) return false;
+    setWakePreviewCardComments((prev) => {
+      const list = prev[card.id] || [];
+      const nextForCard = list.map((entry) =>
+        entry.id === commentId ? { ...entry, text } : entry,
+      );
+      return { ...prev, [card.id]: nextForCard };
+    });
+    return true;
+  }, []);
 
   const removeWakePreviewCardComment = useCallback((card, commentId) => {
     if (!card?.id || !commentId) return false;
@@ -7131,7 +7444,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                       <h2 className="text-lg font-semibold text-black/80 dark:text-white/80">{tagName}</h2>
                       <span className="text-xs text-black/40 dark:text-white/40 font-medium">{cards.length}</span>
                     </div>
-                    <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
+                    <div className={isEmbeddedMode ? "grid grid-cols-2 gap-2" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2"}>
                       {cards.map((card) => {
                         const isSelected = selectedCardIds.has(card.id);
                         return (
@@ -7147,10 +7460,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                           data-vault-card-id={card.id}
                           data-card-id={card.id}
                           ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
-                          draggable
-                          onDragStart={(e) => handleCardDragStart(e, card)}
-                          onDrag={handleCardDrag}
-                          onDragEnd={handleCardDragEnd}
+                          draggable={false}
+                          onDragStart={handleCardDragStart}
                           onClick={(e) => handleCardPress(e, card)}
                           // Same browser-native culling as the main grid;
                           // tag view often renders the largest single
@@ -7178,34 +7489,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                           {card.kind === "source-folder" ? (
                             <SourceFolderTile card={card} heightClass="aspect-square w-full" />
                           ) : card.kind === "attachment" ? (
-                            <>
-                              {renderAttachmentCard(card, "aspect-square w-full")}
-                              {card.tags?.length > 0 && (
-                                <div className="mt-1 flex flex-wrap gap-1 px-1">
-                                  {card.tags.map((t) => (
-                                    <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">{t}</span>
-                                  ))}
-                                </div>
-                              )}
-                              <div className="mt-1 flex justify-end px-1">
-                                <button
-                                  type="button"
-                              data-vault-popover-trigger=""
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setOpenAttachmentNotesCardId(null);
-                                    if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
-                                    openCardMenuForAnchor(card.id, e.currentTarget);
-                                  }}
-                                  className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                                  title="Actions"
-                                >
-                                  <MoreHorizontal className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </>
+                            renderAttachmentCard(card, "aspect-square w-full")
                           ) : card.kind === "quick-note" ? (
-                            <>
                               <div className="glass-control rounded-2xl p-3 aspect-square w-full overflow-hidden">
                                 <div className="flex items-center gap-1.5 text-black/60 dark:text-white/60 mb-1.5">
                                   {card.noteStyle === "meeting" ? (
@@ -7222,46 +7507,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                                 ) : null}
                                 <p className="text-xs text-black/70 dark:text-white/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
                               </div>
-                              <div className="mt-1 flex justify-end px-1">
-                                <button
-                                  type="button"
-                              data-vault-popover-trigger=""
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setOpenAttachmentNotesCardId(null);
-                                    if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
-                                    openCardMenuForAnchor(card.id, e.currentTarget);
-                                  }}
-                                  className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                                  title="Actions"
-                                >
-                                  <MoreHorizontal className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </>
                           ) : (
-                            <>
                               <div className="glass-control rounded-2xl p-3 aspect-square w-full overflow-hidden">
                                 <h3 className="text-xs font-semibold text-black/80 dark:text-white/80 truncate mb-1">{card.title}</h3>
                                 {card.question && <p className="text-[0.6875rem] text-black/60 dark:text-white/60 line-clamp-3">{card.question}</p>}
                               </div>
-                              <div className="mt-1 flex justify-end px-1">
-                                <button
-                                  type="button"
-                              data-vault-popover-trigger=""
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setOpenAttachmentNotesCardId(null);
-                                    if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
-                                    openCardMenuForAnchor(card.id, e.currentTarget);
-                                  }}
-                                  className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                                  title="Actions"
-                                >
-                                  <MoreHorizontal className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </>
                           )}
                         </motion.article>
                         );
@@ -7290,7 +7540,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                         <h2 className="text-lg font-semibold text-black/80 dark:text-white/80">{typeName}</h2>
                         <span className="text-xs text-black/40 dark:text-white/40 font-medium">{cards.length}</span>
                       </div>
-                      <div className={isEmbeddedMode ? "grid grid-cols-2 gap-3" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"}>
+                      <div className={isEmbeddedMode ? "grid grid-cols-2 gap-2" : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2"}>
                         {cards.map((card) => {
                           const isSelected = selectedCardIds.has(card.id);
                           return (
@@ -7306,10 +7556,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                             data-vault-card-id={card.id}
                             data-card-id={card.id}
                             ref={(el) => { if (card.kind === "attachment") registerCardRef(card.id, el); }}
-                            draggable
-                            onDragStart={(e) => handleCardDragStart(e, card)}
-                            onDrag={handleCardDrag}
-                            onDragEnd={handleCardDragEnd}
+                            draggable={false}
+                            onDragStart={handleCardDragStart}
                             onClick={(e) => handleCardPress(e, card)}
                             // See `virtualizedCardStyle` definition above:
                             // browser-native off-screen culling kicks in
@@ -7336,27 +7584,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                               </span>
                             )}
                             {card.kind === "attachment" ? (
-                              <>
-                                {renderAttachmentCard(card, "aspect-square w-full")}
-                                <div className="mt-1 flex justify-end px-1">
-                                  <button
-                                    type="button"
-                              data-vault-popover-trigger=""
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setOpenAttachmentNotesCardId(null);
-                                      if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
-                                      openCardMenuForAnchor(card.id, e.currentTarget);
-                                    }}
-                                    className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                                    title="Actions"
-                                  >
-                                    <MoreHorizontal className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              </>
+                              renderAttachmentCard(card, "aspect-square w-full")
                             ) : card.kind === "quick-note" ? (
-                              <>
                                 <div className="glass-control rounded-2xl p-3 aspect-square w-full overflow-hidden">
                                   <div className="flex items-center gap-1.5 text-black/60 dark:text-white/60 mb-1.5">
                                     {card.noteStyle === "meeting" ? (
@@ -7373,46 +7602,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                                   ) : null}
                                   <p className="text-xs text-black/70 dark:text-white/70 whitespace-pre-wrap break-words line-clamp-5">{card.excerpt}</p>
                                 </div>
-                                <div className="mt-1 flex justify-end px-1">
-                                  <button
-                                    type="button"
-                              data-vault-popover-trigger=""
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setOpenAttachmentNotesCardId(null);
-                                      if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
-                                      openCardMenuForAnchor(card.id, e.currentTarget);
-                                    }}
-                                    className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                                    title="Actions"
-                                  >
-                                    <MoreHorizontal className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              </>
                             ) : (
-                              <>
                                 <div className="glass-control rounded-2xl p-3 aspect-square w-full overflow-hidden">
                                   <h3 className="text-xs font-semibold text-black/80 dark:text-white/80 truncate mb-1">{card.title}</h3>
                                   {card.question && <p className="text-[0.6875rem] text-black/60 dark:text-white/60 line-clamp-3">{card.question}</p>}
                                 </div>
-                                <div className="mt-1 flex justify-end px-1">
-                                  <button
-                                    type="button"
-                              data-vault-popover-trigger=""
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setOpenAttachmentNotesCardId(null);
-                                      if (openCardMenuId === card.id) { setOpenCardMenuId(null); return; }
-                                      openCardMenuForAnchor(card.id, e.currentTarget);
-                                    }}
-                                    className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                                    title="Actions"
-                                  >
-                                    <MoreHorizontal className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              </>
                             )}
                           </motion.article>
                           );
@@ -7463,37 +7657,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                             className="rounded-2xl relative cursor-pointer overflow-visible"
                           >
                             {renderAttachmentCard(card, "h-20")}
-                            {card.tags?.length > 0 && (
-                              <div className="mt-1.5 flex flex-wrap gap-1 px-1" data-no-drag="true">
-                                {card.tags.map((t) => (
-                                  <span key={t} className="vault-tag-pill inline-flex items-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] leading-none px-2 py-px font-medium text-black/55 dark:text-white/55">
-                                    {t}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                            <div className="mt-2 flex justify-end px-1" data-no-drag="true">
-                              <button
-                                type="button"
-                                data-vault-popover-trigger=""
-                                data-no-drag="true"
-                                draggable={false}
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => e.stopPropagation()}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (openCardMenuId === card.id) {
-                                    setOpenCardMenuId(null);
-                                    return;
-                                  }
-                                  openCardMenuForAnchor(card.id, e.currentTarget);
-                                }}
-                                className="px-1 py-0.5 text-black/75 dark:text-white/75 hover:text-black dark:hover:text-white leading-none text-base font-semibold"
-                                title="Actions"
-                              >
-                                <MoreHorizontal className="w-4 h-4" />
-                              </button>
-                            </div>
                           </article>
                         ))}
                       </div>
@@ -7501,11 +7664,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                   </>
                 )}
               {useMasonryLayout ? (
-                <div className={`flex items-start ${isEmbeddedMode ? "gap-3" : "gap-4 md:gap-5"}`}>
+                <div className={`flex items-start ${isEmbeddedMode ? "gap-2" : "gap-2 md:gap-2.5"}`}>
                   {collageColumnBuckets.map((bucket, colIdx) => (
                     <div key={`vault-col-${colIdx}`} className="flex-1 min-w-0 flex flex-col">
                       {colIdx === 0 && vaultView === "collage" && !isWakePreview && (
-                        <div className="mb-5 rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
+                        <div className="mb-2 rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center min-h-[130px] gap-2">
                           <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
                           <div className="flex gap-2">
                             <button
@@ -7538,10 +7701,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               ) : (
                 <div className={
                   isWakePreview
-                    ? "lykn-wake-vault-preview-grid col-start-1 col-span-3 row-start-2 grid grid-cols-3 gap-3"
+                    ? "lykn-wake-vault-preview-grid col-start-1 col-span-3 row-start-2 grid grid-cols-3 gap-2"
                     : isEmbeddedMode
-                    ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"
-                    : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4"
+                    ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2"
+                    : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2"
                 }>
                   {vaultView === "grid" && !isWakePreview && (
                     <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center aspect-square gap-2">
@@ -7782,7 +7945,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                     ? { top }
                     : { top: openCardMenuRect.bottom + pad }),
                 maxHeight: maxH,
-                zIndex: 9999,
+                // Above the card lightbox (z-9999) when opened from Expand view.
+                zIndex: previewCard ? 10050 : 9999,
               }}
               onMouseDown={(e) => e.stopPropagation()}
               onWheel={trapPopoverWheel}
@@ -7920,7 +8084,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       */}
       {openAttachmentNotesCardId && createPortal(
         (() => {
-          const card = orderedVisibleCards.find((c) => c.id === openAttachmentNotesCardId);
+          const card =
+            orderedVisibleCards.find((c) => c.id === openAttachmentNotesCardId) ||
+            vaultCards.find((c) => c.id === openAttachmentNotesCardId) ||
+            (previewCard && previewCard.id === openAttachmentNotesCardId ? previewCard : null);
           if (!card) return null;
           const isAttachment = card.kind === "attachment";
           const existingComments = isAttachment
@@ -8023,6 +8190,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               maxHeight: window.innerHeight - pad * 2,
               zIndex: 9999,
             };
+          }
+          // Sit above the pulled-up card lightbox when commenting from preview.
+          if (positionStyle && previewCard) {
+            positionStyle = { ...positionStyle, zIndex: 10050 };
           }
 
           return (
@@ -8127,7 +8298,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               ref={tagPickerRef}
               data-vault-popover=""
               className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-panel shadow-lg text-black/80 dark:text-white/90 p-1.5 overflow-hidden overscroll-contain"
-              style={{ position: "fixed", width: menuW, left, top, zIndex: 10000 }}
+              style={{ position: "fixed", width: menuW, left, top, zIndex: previewCard ? 10050 : 10000 }}
               onMouseDown={(e) => e.stopPropagation()}
               onWheel={trapPopoverWheel}
             >
@@ -8220,16 +8391,66 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
           const card =
             vaultCards.find((c) => c.id === previewCard.id) || previewCard;
           const att = card.attachment || {};
-          const type = card.type || card.kind;
-          const resolvedUrl = resolvedAttachmentUrls[card.id] || att.url || "";
-          const title = card.title || att.name || (card.kind === "quick-note" ? (card.label || "Quick Note") : "Vault Item");
+          const previewStorageTarget =
+            parseStorageTarget(att) || parseStorageTarget(att, "medium");
+          const previewIsStorageBacked = !!(previewStorageTarget?.bucket && previewStorageTarget?.path);
+          let type = card.type || resolveAttachmentType(att) || card.kind;
+          // Storage images must never render as bookmark/file — that path
+          // paints the raw supabase URL via LinkPreview / download links.
+          const attLooksLikeImage =
+            looksLikeImageAttachment(att) ||
+            looksLikeImageAttachment({
+              ...att,
+              name: att.name || previewStorageTarget?.path || "",
+              url: att.url || "",
+            });
+          if (
+            card.kind === "attachment" &&
+            attLooksLikeImage &&
+            !["video", "audio", "pdf", "html", "youtube"].includes(String(type))
+          ) {
+            type = "image";
+          }
+          // Fresh signed URLs only — never fall back to attachment.url for
+          // images (those are often expired signed storage links that then
+          // surface as visible text in bookmark/file fallbacks).
+          const signedOnly =
+            previewFullUrl || resolvedAttachmentUrls[card.id] || "";
+          const resolvedUrl =
+            type === "image"
+              ? signedOnly
+              : (signedOnly || (!isSupabaseStorageUrlText(att.url) ? String(att.url || "") : "") || "");
+          const imagePreviewUrl = signedOnly;
+          const title = sanitizeCardTitle(
+            card.title || att.name || "",
+            card.kind === "quick-note" ? (card.label || "Quick Note") : (type === "image" ? "Image" : "Vault Item"),
+          );
+          const previewImageFailed = type === "image" && failedImageIds.has(card.id);
+          const previewImageLoading =
+            type === "image" && !previewImageFailed && !imagePreviewUrl && previewIsStorageBacked;
+          const retryPreviewImage = () => {
+            imageRetryCountsRef.current.delete(card.id);
+            setFailedImageIds((prev) => {
+              const next = new Set(prev);
+              next.delete(card.id);
+              return next;
+            });
+            if (previewStorageTarget?.bucket && previewStorageTarget?.path) {
+              signedUrlCacheRef.current.delete(
+                `${previewStorageTarget.bucket}:${previewStorageTarget.path}`,
+              );
+            }
+            setResolvedAttachmentUrls((prev) => {
+              const next = { ...prev };
+              delete next[card.id];
+              return next;
+            });
+            setPreviewFullUrl(null);
+            visibleCardIdsRef.current.delete(card.id);
+            urlResolveQueueRef.current.push(card);
+            drainUrlResolveQueue();
+          };
           const cardTags = Array.isArray(card.tags) ? card.tags : [];
-          const fileNotes = card.kind === "attachment" ? parseAttachmentNotes(att) : [];
-          const quickNoteComments = card.kind === "quick-note" ? parseQuickNoteComments(card) : [];
-          const previewDescription =
-            card.kind === "attachment"
-              ? att.aiDescription
-              : card.aiDescription;
           const previewNote = card.noteId
             ? notes.find((n) => String(n?.id) === String(card.noteId))
             : null;
@@ -8241,9 +8462,6 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               ? stripAttachmentsMarker(String(previewNote.content)).replace(/\r\n/g, "\n").trim()
               : (card.body || card.excerpt || ""),
           ).trim();
-          // The "why" editor is available for any real (non-wake-preview)
-          // saved item, so the Details panel must open even when nothing else
-          // is filled in yet.
           const canEditWhy = !isWakePreview && !!card.noteId;
           const videoId = type === "youtube"
             ? (extractYouTubeVideoId(String(att.url || "")) || String(att.videoId || "").trim() || null)
@@ -8252,14 +8470,50 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
 
           let body;
           if (card.kind === "attachment" && type === "image") {
-            body = (
-              <img
-                src={resolvedUrl}
-                alt={title}
-                className="w-full max-h-[78vh] object-contain rounded-xl bg-black/5 dark:bg-white/5"
-                draggable={false}
-              />
-            );
+            if (previewImageFailed) {
+              body = (
+                <div className="flex flex-col items-center justify-center gap-3 py-16 text-center px-6 h-full">
+                  <FileText className="w-14 h-14 text-black/25 dark:text-white/25" />
+                  <p className="text-sm text-black/60 dark:text-white/60">{title}</p>
+                  <p className="text-xs text-black/40 dark:text-white/40">Preview unavailable</p>
+                  <button
+                    type="button"
+                    onClick={retryPreviewImage}
+                    className="text-sm font-medium text-blue-500 hover:text-blue-600 transition-colors"
+                  >
+                    Try again
+                  </button>
+                </div>
+              );
+            } else if (previewImageLoading || !imagePreviewUrl) {
+              body = (
+                <div className="flex flex-col items-center justify-center gap-3 py-16 text-center h-full">
+                  <Loader2 className="w-8 h-8 text-black/25 dark:text-white/25 animate-spin" />
+                  <p className="text-sm text-black/45 dark:text-white/45">Loading image…</p>
+                  {previewIsStorageBacked ? (
+                    <button
+                      type="button"
+                      onClick={retryPreviewImage}
+                      className="text-xs font-medium text-blue-500 hover:text-blue-600 transition-colors"
+                    >
+                      Try again
+                    </button>
+                  ) : null}
+                </div>
+              );
+            } else {
+              body = (
+                <img
+                  src={imagePreviewUrl}
+                  alt={title}
+                  className="w-full h-full max-h-full object-contain bg-black/[0.03]"
+                  draggable={false}
+                  onError={() => {
+                    setFailedImageIds((prev) => new Set(prev).add(card.id));
+                  }}
+                />
+              );
+            }
           } else if (card.kind === "attachment" && type === "video") {
             body = (
               <video
@@ -8267,13 +8521,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                 controls
                 autoPlay
                 playsInline
-                className="w-full max-h-[78vh] rounded-xl bg-black"
+                className="w-full h-full max-h-full rounded-xl bg-black"
               />
             );
           } else if (card.kind === "attachment" && type === "audio") {
             const voiceNote = isVoiceNoteCard(card);
             body = (
-              <div className="flex flex-col items-center gap-4 py-8">
+              <div className="flex flex-col items-center justify-center gap-4 py-8 h-full">
                 {voiceNote ? (
                   <Mic className="w-14 h-14 text-black/40 dark:text-white/40" />
                 ) : (
@@ -8288,7 +8542,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               <iframe
                 title={title}
                 src={vaultPdfEmbedUrl(resolvedUrl)}
-                className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-white"
+                className="w-full h-full min-h-[24rem] rounded-xl border border-white/30 dark:border-white/10 bg-white"
               />
             );
           } else if (card.kind === "attachment" && type === "html") {
@@ -8305,12 +8559,12 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               <iframe
                 title={title}
                 src={htmlEmbed.url}
-                className="w-full h-[78vh] rounded-xl border border-white/30 dark:border-white/10 bg-[#15130f]"
+                className="w-full h-full min-h-[24rem] rounded-xl border border-white/30 dark:border-white/10 bg-[#15130f]"
                 sandbox={htmlEmbed.sandbox}
                 referrerPolicy="no-referrer"
               />
             ) : (
-              <div className="flex flex-col items-center gap-4 py-10 text-center">
+              <div className="flex flex-col items-center justify-center gap-4 py-10 text-center h-full">
                 <FileText className="w-14 h-14 text-black/30 dark:text-white/30" />
                 <p className="text-sm text-black/70 dark:text-white/70">
                   {failedImageIds.has(card.id) ? "Preview unavailable" : "Loading preview…"}
@@ -8321,7 +8575,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             const isMockDemoYoutube = Boolean(card.isDemo && !youtubeEmbedUrl);
             if (isMockDemoYoutube) {
               body = (
-                <div className="flex flex-col items-center justify-center gap-5 py-20 px-6 text-center rounded-xl bg-black/5 dark:bg-white/5">
+                <div className="flex flex-col items-center justify-center gap-5 py-20 px-6 text-center rounded-xl bg-black/5 dark:bg-white/5 h-full">
                   <div className="w-16 h-11 bg-red-600 rounded-xl flex items-center justify-center shadow-lg">
                     <svg viewBox="0 0 24 24" fill="white" className="w-7 h-7 ml-0.5" aria-hidden>
                       <polygon points="8,5 20,12 8,19" />
@@ -8335,7 +8589,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                 <iframe
                   title={title}
                   src={youtubeEmbedUrl}
-                  className="w-full h-[70vh] rounded-xl border-0 bg-black"
+                  className="w-full h-full min-h-[22rem] rounded-xl border-0 bg-black"
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                   allowFullScreen
                 />
@@ -8349,7 +8603,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             }
           } else if (card.kind === "attachment" && (type === "instagram" || type === "tiktok" || type === "facebook")) {
             body = (
-              <div className="w-full max-h-[78vh] overflow-auto rounded-xl">
+              <div className="w-full h-full max-h-full overflow-auto rounded-xl">
                 <SocialEmbedInline
                   platform={type}
                   oembedHtml={String(att.oembedHtml || "")}
@@ -8379,21 +8633,25 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                   variant="vault"
                 />
                 {att.articleText && (
-                  <div className="rounded-xl bg-white/40 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3 max-h-[40vh] overflow-y-auto text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap">
+                  <div className="rounded-xl bg-white/40 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3 max-h-[min(40vh,22rem)] overflow-y-auto text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap">
                     {att.articleText}
                   </div>
                 )}
-                {safeAttachmentUrl(att.url || resolvedUrl) && (
-                  <a
-                    href={safeAttachmentUrl(att.url || resolvedUrl) || undefined}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-500 hover:text-blue-600"
-                  >
-                    <Globe className="w-3.5 h-3.5" />
-                    Open link in new tab
-                  </a>
-                )}
+                {(() => {
+                  const openHref = safeAttachmentUrl(att.url || resolvedUrl);
+                  if (!openHref || isSupabaseStorageUrlText(openHref)) return null;
+                  return (
+                    <a
+                      href={openHref}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-500 hover:text-blue-600"
+                    >
+                      <Globe className="w-3.5 h-3.5" />
+                      Open link in new tab
+                    </a>
+                  );
+                })()}
               </div>
             );
           } else if (card.kind === "attachment" && type === "spreadsheet") {
@@ -8401,7 +8659,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             const totalRows = Math.min(Number(att.rows) || 0, 200);
             const totalCols = Math.min(Number(att.cols) || 0, 50);
             body = (
-              <div className="rounded-xl overflow-auto max-h-[78vh] border border-white/30 dark:border-white/10 bg-white/60 dark:bg-white/5">
+              <div className="rounded-xl overflow-auto h-full max-h-full border border-white/30 dark:border-white/10 bg-white/60 dark:bg-white/5">
                 <table className="w-full border-collapse text-xs">
                   <tbody>
                     {Array.from({ length: totalRows }, (_, r) => (
@@ -8418,13 +8676,23 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
               </div>
             );
           } else if (card.kind === "attachment") {
+            const safeDownload = safeAttachmentUrl(resolvedUrl);
+            const hideStorageLink = isSupabaseStorageUrlText(safeDownload || resolvedUrl || "");
             body = (
               <div className="flex flex-col items-center gap-4 py-10 text-center">
                 <FileText className="w-14 h-14 text-black/30 dark:text-white/30" />
-                <p className="text-sm text-black/70 dark:text-white/70 break-all max-w-lg">{title}</p>
-                {safeAttachmentUrl(resolvedUrl) && (
+                <p className="text-sm text-black/70 dark:text-white/70 break-words max-w-lg">{title}</p>
+                {previewIsStorageBacked ? (
+                  <button
+                    type="button"
+                    onClick={retryPreviewImage}
+                    className="text-sm font-medium text-blue-500 hover:text-blue-600 transition-colors"
+                  >
+                    Try again
+                  </button>
+                ) : safeDownload && !hideStorageLink ? (
                   <a
-                    href={safeAttachmentUrl(resolvedUrl) || undefined}
+                    href={safeDownload}
                     target="_blank"
                     rel="noreferrer"
                     download={title}
@@ -8432,13 +8700,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
                   >
                     Open / download file
                   </a>
-                )}
+                ) : null}
               </div>
             );
           } else if (card.kind === "quick-note") {
             const useMarkdown = !!(card.formatted || (card.noteStyle && card.noteStyle !== "quick"));
             body = (
-              <div className="rounded-xl bg-white/45 dark:bg-white/5 border border-white/40 dark:border-white/10 px-5 py-4 max-h-[72vh] overflow-y-auto">
+              <div className="rounded-xl bg-white/45 dark:bg-white/5 border border-white/40 dark:border-white/10 px-5 py-4 h-full max-h-full overflow-y-auto">
                 {useMarkdown ? (
                   <div className="vault-note-md text-sm text-black/85 dark:text-white/85 leading-relaxed break-words">
                     <style>{`
@@ -8468,7 +8736,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             );
           } else if (card.kind === "chat-preview") {
             body = (
-              <div className="space-y-3 max-h-[72vh] overflow-y-auto">
+              <div className="space-y-3 h-full max-h-full overflow-y-auto">
                 {card.question && (
                   <div className="rounded-xl bg-white/45 dark:bg-white/5 border border-white/40 dark:border-white/10 px-4 py-3">
                     <div className="text-[0.625rem] uppercase tracking-wide text-black/45 dark:text-white/45 mb-1">You</div>
@@ -8492,118 +8760,591 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
             );
           }
 
-          // Everything tied to the item (its writeup/description, notes a.k.a.
-          // "comments", tags, date) lives behind one Details dropdown so the
-          // item itself shows plainly — "just what it is" — with only a little X.
-          const allComments = [...fileNotes, ...quickNoteComments];
-          const hasDetails =
-            !!previewDescription || allComments.length > 0 || cardTags.length > 0 || !!card.dateLabel || canEditWhy || !!previewWhy;
+          const canExpandExternally =
+            card.kind === "attachment" &&
+            ["html", "image", "video", "audio", "pdf", "youtube", "bookmark", "link", "file", "spreadsheet"].includes(
+              String(type || resolveAttachmentType(att) || ""),
+            );
+          const shareUrl =
+            type === "image"
+              ? (previewFullUrl || resolvedUrl)
+              : (resolvedUrl || String(att.url || ""));
+          const openTagsPicker = (anchorEl) => {
+            if (!card.noteId) return;
+            const rect = anchorEl?.getBoundingClientRect?.();
+            setOpenCardMenuId(null);
+            setTagPickerCardId(card.id);
+            setTagPickerPosition(
+              rect
+                ? { left: rect.left, top: rect.bottom + 8 }
+                : { left: 24, top: 96 },
+            );
+          };
+          const deleteFromPreview = () => {
+            if (isWakePreview && card.isWakePreviewNote) {
+              const ok = window.confirm(`Are you sure you want to delete "${card.title || "Quick Note"}"? This cannot be undone.`);
+              if (!ok) return;
+              removeWakeVaultPreviewQuickNote(card.id);
+              setWakePreviewQuickNotes((prev) => prev.filter((note) => note.id !== card.id));
+              setPreviewCard(null);
+              return;
+            }
+            if (blockWakePreviewVaultMutation(card)) return;
+            if (card.kind === "attachment") {
+              confirmAndDeleteAttachment(card);
+              setPreviewCard(null);
+              return;
+            }
+            const ok = window.confirm(`Are you sure you want to delete "${card.title || "Quick Note"}"? This cannot be undone.`);
+            if (!ok) return;
+            void removeQuickNoteCard(card);
+            setPreviewCard(null);
+          };
 
           return (
             <div
-              className="fixed inset-0 z-[9999] bg-black/55 backdrop-blur-sm flex items-start justify-center p-4 sm:p-6 md:p-10"
+              className="fixed inset-0 z-[9999] bg-black/50 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 lg:p-10"
               onClick={() => setPreviewCard(null)}
             >
               <div
-                className="relative w-[min(1100px,96vw)] max-h-[90vh] flex flex-col"
+                className="relative w-full max-w-[min(96vw,72rem)] h-[min(90vh,52rem)] flex flex-col lg:flex-row rounded-[1.5rem] lg:rounded-[1.75rem] bg-white dark:bg-[#1c1c1e] shadow-[0_28px_100px_rgba(0,0,0,0.4)] overflow-hidden"
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* Minimal floating controls: one Details toggle + close. */}
-                <div className="flex items-center justify-between gap-3 mb-2">
-                  {hasDetails ? (
+                {/* Floating close — overlaps the card corner like the mock. */}
+                <button
+                  type="button"
+                  onClick={() => setPreviewCard(null)}
+                  className="absolute top-3 right-3 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-white/95 dark:bg-[#2c2c2e] text-black/70 dark:text-white/80 shadow-md border border-black/8 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/[0.08] transition-colors"
+                  title="Close (Esc)"
+                  aria-label="Close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+
+                {/* Media / body — dominant pane on laptop.
+                    Always use `body` so image load/error/retry states render
+                    (a bare <img> here used to hide Try again and flash raw URLs). */}
+                <div className="relative min-h-0 flex-1 lg:flex-[1.7] overflow-hidden bg-black/[0.03] dark:bg-white/[0.04] border-b lg:border-b-0 lg:border-r border-black/6 dark:border-white/8">
+                  <div className="h-full min-h-[16rem] lg:min-h-0 overflow-y-auto flex items-center justify-center">
+                    <div className={`w-full h-full ${type === "image" ? "" : "p-4 sm:p-5 lg:p-6"}`}>
+                      {body}
+                    </div>
+                  </div>
+                  {canExpandExternally ? (
                     <button
                       type="button"
-                      onClick={() => setPreviewDetailsOpen((v) => !v)}
-                      aria-expanded={previewDetailsOpen}
-                      className="inline-flex items-center gap-1.5 text-sm font-medium text-white/85 hover:text-white transition-colors max-w-[min(20rem,70vw)]"
+                      onClick={() => { void openCardFullyInBrowser(card); }}
+                      className="absolute bottom-4 right-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-black/55 hover:bg-black/70 text-white backdrop-blur-sm transition-colors shadow-md"
+                      title="Open fully in a separate window"
+                      aria-label="Expand"
                     >
-                      <span className="truncate">{title}</span>
-                      <ChevronDown className={`w-3.5 h-3.5 shrink-0 opacity-70 transition-transform ${previewDetailsOpen ? "rotate-180" : ""}`} />
+                      <Maximize2 className="w-5 h-5" />
                     </button>
-                  ) : (
-                    <span className="text-sm font-medium text-white/85 px-0 max-w-[18rem] truncate drop-shadow">{title}</span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setPreviewCard(null)}
-                    className="text-sm font-medium text-white/70 hover:text-white transition-colors"
-                    title="Close (Esc)"
-                  >
-                    Close
-                  </button>
+                  ) : null}
                 </div>
 
-                {/* Details — description, why, notes, tags, date. */}
-                {previewDetailsOpen && hasDetails && (
-                  <div className="mb-3 bg-panel border border-black/10 dark:border-white/10 px-4 py-3.5 max-h-[42vh] overflow-y-auto space-y-4">
-                    {card.dateLabel && (
-                      <p className="text-xs text-black/45 dark:text-white/45">{card.dateLabel}</p>
-                    )}
-                    {canEditWhy ? (
-                      <WhyEditor
-                        initialValue={previewWhy}
-                        busy={isCardActionBusy}
-                        onSave={(value) => saveCardWhy(card, value)}
-                      />
-                    ) : previewWhy ? (
-                      <div className="space-y-1">
-                        <p className="text-xs text-black/45 dark:text-white/45">Why I saved this</p>
-                        <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{previewWhy}</p>
-                      </div>
+                {/* Meta + actions — side panel on laptop. */}
+                <div className="shrink-0 w-full lg:w-[22rem] xl:w-[24rem] flex flex-col min-h-0 lg:max-h-full overflow-visible px-5 sm:px-6 pt-5 pb-5">
+                  <div className="min-h-0 flex-1 overflow-y-auto space-y-4 pr-0.5">
+                    {title ? (
+                      <h2 className="pr-10 text-lg font-semibold text-black/85 dark:text-white/90 leading-snug line-clamp-3">
+                        {title}
+                      </h2>
                     ) : null}
-                    {previewDescription && (
-                      <div className="space-y-1">
-                        <p className="text-xs text-black/45 dark:text-white/45">Description</p>
-                        <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{String(previewDescription)}</p>
-                      </div>
-                    )}
-                    {allComments.length > 0 && (
-                      <div className="space-y-2">
-                        <p className="text-xs text-black/45 dark:text-white/45">Notes</p>
-                        {allComments.map((n) => (
-                          <div key={n.id} className="flex items-start gap-2">
-                            <p className="flex-1 min-w-0 text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">
-                              {n.text}
-                            </p>
-                            {(isWakePreview || canEditWhy) && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (isWakePreview) {
-                                    removeWakePreviewCardComment(card, n.id);
-                                    return;
-                                  }
-                                  if (blockWakePreviewVaultMutation(card)) return;
-                                  const onDelete = card.kind === "attachment"
-                                    ? removeAttachmentNote
-                                    : removeQuickNoteComment;
-                                  void onDelete(card, n.id);
-                                }}
-                                disabled={isCardActionBusy}
-                                className="shrink-0 p-0.5 rounded text-black/35 dark:text-white/35 hover:text-red-600 dark:hover:text-red-400 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-40 transition-colors"
-                                title="Delete comment"
-                                aria-label="Delete comment"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {cardTags.map((t) => (
+                        <span
+                          key={t}
+                          className="vault-tag-pill inline-flex items-center rounded-full border border-black/10 dark:border-white/12 bg-[#f4f1ea] dark:bg-white/[0.08] text-[11px] leading-none px-2.5 py-1 font-medium text-black/65 dark:text-white/70"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                      {card.noteId && !isWakePreview ? (
+                        <button
+                          type="button"
+                          data-vault-popover-trigger=""
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openTagsPicker(e.currentTarget);
+                          }}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-500 text-white hover:bg-blue-600 transition-colors"
+                          title="Add tag"
+                          aria-label="Add tag"
+                        >
+                          <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {/* Add to project — above Why I saved this. */}
+                    {!isWakePreview ? (
+                      <div className="relative z-20" ref={previewProjectDropdownRef}>
+                        <button
+                          type="button"
+                          data-vault-popover-trigger=""
+                          disabled={isCardActionBusy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPreviewShareMenuRect(null);
+                            setPreviewProjectDropdownOpen((open) => !open);
+                          }}
+                          className={`w-full inline-flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-sm font-medium transition-colors disabled:opacity-50 ${
+                            previewProjectDropdownOpen
+                              ? "border-black/15 dark:border-white/20 bg-black/[0.04] dark:bg-white/[0.08] text-black/80 dark:text-white/85"
+                              : "border-black/10 dark:border-white/12 bg-black/[0.02] dark:bg-white/[0.04] text-black/70 dark:text-white/75 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
+                          }`}
+                          aria-expanded={previewProjectDropdownOpen}
+                          aria-haspopup="listbox"
+                        >
+                          <span className="truncate">Add to project</span>
+                          <ChevronDown
+                            className={`w-4 h-4 shrink-0 opacity-60 transition-transform ${
+                              previewProjectDropdownOpen ? "rotate-180" : ""
+                            }`}
+                          />
+                        </button>
+                        {previewProjectDropdownOpen ? (
+                          <div
+                            data-vault-popover=""
+                            role="listbox"
+                            className="absolute left-0 right-0 top-full mt-1.5 z-30 max-h-52 overflow-y-auto scrollbar-hide rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-white dark:bg-[#2c2c2e] shadow-[0_12px_36px_rgba(0,0,0,0.18)] p-1.5"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {projects.length === 0 ? (
+                              <div className="px-3 py-2.5 text-sm text-black/45 dark:text-white/45">
+                                No projects yet
+                              </div>
+                            ) : (
+                              projects.map((project) => (
+                                <button
+                                  key={project.id}
+                                  type="button"
+                                  role="option"
+                                  disabled={isCardActionBusy}
+                                  onClick={() => {
+                                    if (blockWakePreviewVaultMutation(card)) return;
+                                    void addCardToProject(card, project.id);
+                                  }}
+                                  className="w-full text-left rounded-lg px-3 py-2 text-sm text-black/80 dark:text-white/85 hover:bg-black/[0.05] dark:hover:bg-white/[0.08] disabled:opacity-50 truncate transition-colors"
+                                  title={project.name}
+                                >
+                                  {project.name}
+                                </button>
+                              ))
                             )}
                           </div>
-                        ))}
+                        ) : null}
                       </div>
-                    )}
-                    {cardTags.length > 0 && (
-                      <p className="text-xs text-black/45 dark:text-white/45">
-                        {cardTags.join(" · ")}
-                      </p>
-                    )}
-                  </div>
-                )}
+                    ) : null}
 
-                {/* The item itself — shown plainly as what it is. */}
-                <div className="flex-1 min-h-0 overflow-y-auto">
-                  {body}
+                    <div
+                      data-vault-preview-comments=""
+                      className="border-t border-black/8 dark:border-white/10 pt-4 space-y-3"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      {(() => {
+                        const canAddComment =
+                          card.kind === "attachment" || card.kind === "quick-note";
+                        const canMutateComments =
+                          canAddComment && (!isWakePreview || card.isWakePreviewNote);
+                        // Prefer live note/attachment from query cache so newly
+                        // saved comments show immediately in the pulled-up card.
+                        const liveAttachment = (() => {
+                          if (card.kind !== "attachment" || !previewNote) return att;
+                          const list = parseAttachmentsFromNote(previewNote);
+                          const idx = Number(card.attachmentIndex);
+                          if (Number.isFinite(idx) && idx >= 0 && idx < list.length) {
+                            return list[idx] || att;
+                          }
+                          return att;
+                        })();
+                        const previewComments = card.kind === "attachment"
+                          ? parseAttachmentNotes(liveAttachment)
+                          : parseQuickNoteComments(previewNote || card);
+                        const toggleNewComment = () => {
+                          setPreviewShareMenuRect(null);
+                          setPreviewProjectDropdownOpen(false);
+                          if (previewCommentComposerOpen && !previewEditingCommentId) {
+                            setPreviewCommentComposerOpen(false);
+                            setPreviewCommentDraft("");
+                            return;
+                          }
+                          setPreviewEditingCommentId(null);
+                          setPreviewCommentDraft("");
+                          setPreviewCommentComposerOpen(true);
+                        };
+                        const cancelCommentForm = () => {
+                          setPreviewCommentComposerOpen(false);
+                          setPreviewCommentDraft("");
+                          setPreviewEditingCommentId(null);
+                        };
+                        const saveCommentForm = async () => {
+                          const text = previewCommentDraft.trim();
+                          if (!text || isCardActionBusy) return;
+                          if (isWakePreview) {
+                            if (previewEditingCommentId) {
+                              updateWakePreviewCardComment(card, previewEditingCommentId, text);
+                            } else {
+                              addWakePreviewCardComment(card, text);
+                            }
+                            cancelCommentForm();
+                            return;
+                          }
+                          if (blockWakePreviewVaultMutation(card)) return;
+                          let ok = false;
+                          if (previewEditingCommentId) {
+                            ok = card.kind === "attachment"
+                              ? await updateAttachmentNote(card, previewEditingCommentId, text)
+                              : await updateQuickNoteComment(card, previewEditingCommentId, text);
+                          } else {
+                            ok = card.kind === "attachment"
+                              ? await addAttachmentNote(card, text)
+                              : await addQuickNoteComment(card, text);
+                          }
+                          if (ok) cancelCommentForm();
+                        };
+                        const startEditComment = (entry) => {
+                          setPreviewShareMenuRect(null);
+                          setPreviewProjectDropdownOpen(false);
+                          setPreviewEditingCommentId(entry.id);
+                          setPreviewCommentDraft(entry.text || "");
+                          setPreviewCommentComposerOpen(false);
+                        };
+                        const showNewComposer =
+                          canMutateComments && previewCommentComposerOpen && !previewEditingCommentId;
+
+                        return (
+                          <>
+                            {canEditWhy ? (
+                              <WhyEditor
+                                variant="card"
+                                initialValue={previewWhy}
+                                busy={isCardActionBusy}
+                                onSave={(value) => saveCardWhy(card, value)}
+                                onAddComment={canMutateComments ? toggleNewComment : null}
+                                commentActive={showNewComposer}
+                              />
+                            ) : (
+                              <div className="space-y-1.5">
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-black/40 dark:text-white/40">
+                                    Why I saved this
+                                  </p>
+                                  {canMutateComments ? (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        toggleNewComment();
+                                      }}
+                                      className={`inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors ${
+                                        showNewComposer
+                                          ? "bg-blue-600 text-white"
+                                          : "bg-blue-500 text-white hover:bg-blue-600"
+                                      }`}
+                                      title="Add comment"
+                                      aria-label="Add comment"
+                                    >
+                                      <MessageCircle className="w-3.5 h-3.5" />
+                                    </button>
+                                  ) : null}
+                                </div>
+                                {previewWhy ? (
+                                  <p className="text-sm text-black/80 dark:text-white/80 whitespace-pre-wrap break-words">{previewWhy}</p>
+                                ) : (
+                                  <p className="text-sm italic text-black/35 dark:text-white/35">Add why you saved this</p>
+                                )}
+                              </div>
+                            )}
+
+                            {showNewComposer ? (
+                              <div className="space-y-2 rounded-xl border border-black/10 dark:border-white/12 bg-black/[0.02] dark:bg-white/[0.04] px-3 py-2.5">
+                                <textarea
+                                  value={previewCommentDraft}
+                                  onChange={(e) => setPreviewCommentDraft(e.target.value)}
+                                  autoFocus
+                                  rows={3}
+                                  maxLength={2000}
+                                  placeholder="Write a comment…"
+                                  className="w-full resize-y bg-transparent border-0 text-sm text-black/85 dark:text-white/85 outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
+                                />
+                                <div className="flex items-center gap-4">
+                                  <button
+                                    type="button"
+                                    disabled={isCardActionBusy || !previewCommentDraft.trim()}
+                                    onClick={() => { void saveCommentForm(); }}
+                                    className="text-sm font-medium text-black dark:text-white hover:opacity-70 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+                                  >
+                                    {isCardActionBusy ? "Saving…" : "Save"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={cancelCommentForm}
+                                    className="text-sm text-black/45 dark:text-white/45 hover:text-black/70 dark:hover:text-white/70 transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {previewComments.length > 0 ? (
+                              <div className="space-y-1.5">
+                                {previewComments.map((entry) => {
+                                  const isEditing = previewEditingCommentId === entry.id;
+                                  return (
+                                    <div
+                                      key={entry.id}
+                                      className="rounded-xl bg-black/[0.03] dark:bg-white/[0.05] px-2.5 py-2"
+                                    >
+                                      {isEditing ? (
+                                        <div className="space-y-2">
+                                          <textarea
+                                            value={previewCommentDraft}
+                                            onChange={(e) => setPreviewCommentDraft(e.target.value)}
+                                            autoFocus
+                                            rows={3}
+                                            maxLength={2000}
+                                            className="w-full resize-y bg-transparent border-0 text-sm text-black/85 dark:text-white/85 outline-none"
+                                          />
+                                          <div className="flex items-center gap-4">
+                                            <button
+                                              type="button"
+                                              disabled={isCardActionBusy || !previewCommentDraft.trim()}
+                                              onClick={() => { void saveCommentForm(); }}
+                                              className="text-sm font-medium text-black dark:text-white hover:opacity-70 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+                                            >
+                                              {isCardActionBusy ? "Saving…" : "Save"}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={cancelCommentForm}
+                                              className="text-sm text-black/45 dark:text-white/45 hover:text-black/70 dark:hover:text-white/70 transition-colors"
+                                            >
+                                              Cancel
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div className="group flex items-start gap-1.5">
+                                          <p className="flex-1 min-w-0 text-sm text-black/75 dark:text-white/75 whitespace-pre-wrap break-words">
+                                            {entry.text}
+                                          </p>
+                                          {canMutateComments ? (
+                                            <div className="flex items-center gap-0.5 shrink-0 opacity-70 group-hover:opacity-100 transition-opacity">
+                                              <button
+                                                type="button"
+                                                disabled={isCardActionBusy}
+                                                onClick={() => startEditComment(entry)}
+                                                className="p-0.5 rounded text-black/35 dark:text-white/35 hover:text-black/70 dark:hover:text-white/70 disabled:opacity-40 transition-colors"
+                                                title="Edit comment"
+                                                aria-label="Edit comment"
+                                              >
+                                                <Pencil className="w-3.5 h-3.5" />
+                                              </button>
+                                              <button
+                                                type="button"
+                                                disabled={isCardActionBusy}
+                                                onClick={() => {
+                                                  if (isWakePreview) {
+                                                    removeWakePreviewCardComment(card, entry.id);
+                                                    return;
+                                                  }
+                                                  if (blockWakePreviewVaultMutation(card)) return;
+                                                  if (card.kind === "attachment") {
+                                                    void removeAttachmentNote(card, entry.id);
+                                                  } else {
+                                                    void removeQuickNoteComment(card, entry.id);
+                                                  }
+                                                }}
+                                                className="p-0.5 rounded text-black/30 dark:text-white/30 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40 transition-colors"
+                                                title="Delete comment"
+                                                aria-label="Delete comment"
+                                              >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                              </button>
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 pt-4 mt-4 shrink-0 border-t border-black/8 dark:border-white/10">
+                    <button
+                      type="button"
+                      data-vault-popover-trigger=""
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (previewShareMenuRect) {
+                          setPreviewShareMenuRect(null);
+                          return;
+                        }
+                        setPreviewProjectDropdownOpen(false);
+                        setOpenCardMenuId(null);
+                        setOpenCardMenuRect(null);
+                        setTagPickerCardId(null);
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setPreviewShareMenuRect({
+                          left: rect.left,
+                          top: rect.top,
+                          right: rect.right,
+                          bottom: rect.bottom,
+                          width: rect.width,
+                          height: rect.height,
+                        });
+                      }}
+                      className={`flex h-11 w-11 items-center justify-center rounded-full transition-colors ${
+                        previewShareMenuRect
+                          ? "bg-black/[0.08] dark:bg-white/[0.12] text-black/80 dark:text-white/85"
+                          : "text-black/55 dark:text-white/55 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
+                      }`}
+                      title="Share"
+                      aria-label="Share"
+                      aria-expanded={!!previewShareMenuRect}
+                    >
+                      <Share className="w-5 h-5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => chatAboutPreviewCard(card)}
+                      className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-[#dbeafe] dark:bg-blue-500/25 px-5 py-2.5 text-[0.9375rem] font-semibold text-blue-700 dark:text-blue-200 hover:bg-[#cfe3ff] dark:hover:bg-blue-500/35 transition-colors"
+                      title="Chat about this"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      Chat
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCardActionBusy}
+                      onClick={deleteFromPreview}
+                      className="flex h-11 w-11 items-center justify-center rounded-full bg-red-500/10 text-red-600 hover:bg-red-500/15 disabled:opacity-50 transition-colors"
+                      title="Delete"
+                      aria-label="Delete"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  </div>
                 </div>
               </div>
+            </div>
+          );
+        })(),
+        document.body
+      )}
+      {previewShareMenuRect && previewCard && createPortal(
+        (() => {
+          const card =
+            vaultCards.find((c) => c.id === previewCard.id) || previewCard;
+          const att = card.attachment || {};
+          const type = card.type || card.kind;
+          const shareUrl =
+            type === "image"
+              ? (previewFullUrl || resolvedAttachmentUrls[card.id] || att.url || "")
+              : (resolvedAttachmentUrls[card.id] || att.url || "");
+          const safeUrl = resolvePreviewShareUrl(card, shareUrl);
+          const shareText = resolvePreviewShareText(card);
+          const canNativeShare =
+            typeof navigator !== "undefined" && typeof navigator.share === "function";
+          const canDownload =
+            !!safeUrl &&
+            card.kind === "attachment" &&
+            ["image", "video", "audio", "pdf", "file", "html", "spreadsheet"].includes(
+              String(type || resolveAttachmentType(att) || ""),
+            );
+          const menuW = Math.min(220, window.innerWidth - 16);
+          const pad = 8;
+          let left = previewShareMenuRect.left;
+          if (left + menuW > window.innerWidth - pad) {
+            left = Math.max(pad, window.innerWidth - menuW - pad);
+          }
+          if (left < pad) left = pad;
+          // Prefer opening above the Share button so it stays over the card.
+          const estimatedH = 220;
+          const openUp = previewShareMenuRect.top > estimatedH + pad;
+          const style = openUp
+            ? { bottom: window.innerHeight - previewShareMenuRect.top + 8, left }
+            : { top: previewShareMenuRect.bottom + 8, left };
+
+          const itemClass =
+            "w-full text-left rounded-xl px-3 py-2.5 text-sm hover:bg-black/[0.05] dark:hover:bg-white/[0.08] flex items-center gap-2.5 text-black/80 dark:text-white/85 transition-colors";
+
+          return (
+            <div
+              ref={previewShareMenuRef}
+              data-vault-popover=""
+              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#2c2c2e] shadow-[0_12px_40px_rgba(0,0,0,0.22)] p-1.5 flex flex-col min-w-[11rem]"
+              style={{ position: "fixed", width: menuW, zIndex: 10060, ...style }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {canNativeShare ? (
+                <button
+                  type="button"
+                  onClick={() => { void sharePreviewNative(card, shareUrl); }}
+                  className={itemClass}
+                >
+                  <Share className="w-4 h-4 shrink-0 opacity-70" />
+                  Share…
+                </button>
+              ) : null}
+              {safeUrl ? (
+                <button
+                  type="button"
+                  onClick={() => { void sharePreviewCopyLink(card, shareUrl); }}
+                  className={itemClass}
+                >
+                  <LinkIcon className="w-4 h-4 shrink-0 opacity-70" />
+                  Copy link
+                </button>
+              ) : null}
+              {shareText ? (
+                <button
+                  type="button"
+                  onClick={() => { void sharePreviewCopyText(card); }}
+                  className={itemClass}
+                >
+                  <Copy className="w-4 h-4 shrink-0 opacity-70" />
+                  Copy text
+                </button>
+              ) : null}
+              {canDownload ? (
+                <button
+                  type="button"
+                  onClick={() => { void sharePreviewDownload(card, shareUrl); }}
+                  className={itemClass}
+                >
+                  <Download className="w-4 h-4 shrink-0 opacity-70" />
+                  Download
+                </button>
+              ) : null}
+              {safeUrl ? (
+                <button
+                  type="button"
+                  onClick={() => sharePreviewOpenLink(card, shareUrl)}
+                  className={itemClass}
+                >
+                  <Globe className="w-4 h-4 shrink-0 opacity-70" />
+                  Open link
+                </button>
+              ) : null}
+              {!canNativeShare && !safeUrl && !shareText ? (
+                <div className="px-3 py-2.5 text-sm text-black/45 dark:text-white/45">
+                  Nothing to share yet.
+                </div>
+              ) : null}
             </div>
           );
         })(),

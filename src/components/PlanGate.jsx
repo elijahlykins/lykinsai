@@ -62,7 +62,7 @@ export default function PlanGate({
 
   if (isGuest) {
     return (
-      <div className="fixed inset-0 z-[220] bg-[#f8f7f3] dark:bg-[#0f0f0f] overflow-y-auto">
+      <div className="fixed inset-0 z-[220] bg-[var(--app-background,#ececeb)] overflow-y-auto">
         <button
           type="button"
           onClick={() => nav(-1)}

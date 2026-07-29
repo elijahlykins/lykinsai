@@ -6,9 +6,9 @@ export const SYNTHESIS_CATEGORY_WHY: Record<string, string> = {
   __cat_vault__:
     "What's in my stuff — your Vault. Saved files, notes, and links LYKN can pull in when you need them on any screen.",
   __cat_belief__:
-    "Who I am — principles you want every AI to respect. Ratified beliefs shape judgment, tone, and boundaries across Glass, chat, and connected clients.",
+    "Legacy Beliefs — being replaced by chat-ratified User Facts. Kept for older principles still on your map.",
   __cat_facts__:
-    "Who I am — concrete preferences and facts about you. LYKN learns these as you talk and updates them when you contradict something stale.",
+    "User Facts — claims about you that LYKN can personalize with. Confirmed (✓) facts are always-on; softer ones personalize lightly. Edit or dismiss any fact from its panel, or ask in chat “what do you know about me?”.",
   __cat_concepts__:
     "Themes LYKN clusters so Who I am and What I'm on stay coherent — ideas you keep returning to across chats, vault, and projects.",
   __cat_projects__:

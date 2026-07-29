@@ -28,7 +28,7 @@ import {
   Search,
   StickyNote,
   Sparkles,
-  Sun,
+  Box,
   Tag,
   X,
 } from "lucide-react";
@@ -63,7 +63,14 @@ import { GridIcon } from "@/components/ui/GridIcon";
 // the synthesis canvas. The Suspense fallback below paints the dark canvas
 // chrome so the lazy boundary is invisible to the user.
 const SynthesisScene3D = lazy(() => import("@/pages/synthesis/SynthesisScene3D"));
+import SynthesisScene2D, {
+  readStoredViewMode,
+  storeViewMode,
+  type SynthesisViewMode,
+} from "@/pages/synthesis/SynthesisScene2D";
+import { legendSwatch } from "@/pages/synthesis/graphColors";
 import SynthesisSceneErrorBoundary from "@/pages/synthesis/SynthesisSceneErrorBoundary";
+import { useIsDark } from "@/lib/projectChartTheme";
 import { useIsMobile } from "@/hooks/useViewportTier";
 import { isDemoNodeId } from "@/lib/demoSynthesis";
 import { isDemoLyknChatId } from "@/lib/demoLyknChats";
@@ -99,9 +106,9 @@ const isBlockedDemoId = (id: string | null | undefined): boolean => {
 const PROJECT_KIND_FILTERS = [
   { id: "all", label: "All" },
   { id: "vault", label: "Vault" },
-  { id: "belief", label: "Beliefs" },
+  { id: "belief", label: "Beliefs (legacy)" },
   { id: "concept", label: "Concepts" },
-  { id: "fact", label: "Facts" },
+  { id: "fact", label: "User Facts" },
   { id: "learned", label: "Learned" },
   { id: "perspective", label: "Perspectives" },
   { id: "chat", label: "Chats" },
@@ -682,7 +689,9 @@ function buildGraph(
   // dedup happens via the `edgeSet` `addCrossEdge` builds out of the
   // edges array, so these still get deduped against the heuristic /
   // provenance passes that follow.
-  const SHARED_TAG_EDGE_CAP = 8;
+  // Cap kept low so popular tags don't re-hairball the Obsidian-style
+  // 2D graph. Star pattern (hub → others) already avoids O(n²) pairs.
+  const SHARED_TAG_EDGE_CAP = 3;
   tagArr.forEach((tag) => {
     const tagged = vaultNotes.filter((n) => (n.tags || []).includes(tag));
     if (tagged.length < 2) return;
@@ -750,7 +759,7 @@ function buildGraph(
   // chooser; for now they ride along under the Belief umbrella.
   const beliefHasContent = beliefs.length > 0 || perspectiveNotes.length > 0;
   if (beliefHasContent || forceCategoryIds.has("__cat_belief__")) {
-    cats.push({ id: "__cat_belief__", label: "Beliefs", color: palette.belief.bg, glow: palette.belief.glow });
+    cats.push({ id: "__cat_belief__", label: "Beliefs (legacy)", color: palette.belief.bg, glow: palette.belief.glow });
   }
 
   // Concepts — first-class topic layer (migrations 056-058). Sits as a
@@ -784,11 +793,11 @@ function buildGraph(
   //      noticed this" once it's a fact.
   const factsHasContent = manualFacts.length > 0 || neuronItems.length > 0;
   if (factsHasContent || forceCategoryIds.has("__cat_facts__")) {
-    cats.push({ id: "__cat_facts__", label: "Facts", color: palette.facts.bg, glow: palette.facts.glow });
+    cats.push({ id: "__cat_facts__", label: "User Facts", color: palette.facts.bg, glow: palette.facts.glow });
   }
 
   if ((beliefHasContent || forceCategoryIds.has("__cat_belief__")) && !nodes.some((n) => n.id === "__cat_belief__")) {
-    nodes.push({ id: "__cat_belief__", label: "Beliefs", kind: "category", radius: 32, color: palette.belief.bg, glow: palette.belief.glow, parentId: rootId });
+    nodes.push({ id: "__cat_belief__", label: "Beliefs (legacy)", kind: "category", radius: 32, color: palette.belief.bg, glow: palette.belief.glow, parentId: rootId });
     edges.push({ from: rootId, to: "__cat_belief__" });
   }
   if ((liveConcepts.length > 0 || forceCategoryIds.has("__cat_concepts__")) && !nodes.some((n) => n.id === "__cat_concepts__")) {
@@ -796,7 +805,7 @@ function buildGraph(
     edges.push({ from: rootId, to: "__cat_concepts__" });
   }
   if ((factsHasContent || forceCategoryIds.has("__cat_facts__")) && !nodes.some((n) => n.id === "__cat_facts__")) {
-    nodes.push({ id: "__cat_facts__", label: "Facts", kind: "category", radius: 30, color: palette.facts.bg, glow: palette.facts.glow, parentId: rootId });
+    nodes.push({ id: "__cat_facts__", label: "User Facts", kind: "category", radius: 30, color: palette.facts.bg, glow: palette.facts.glow, parentId: rootId });
     edges.push({ from: rootId, to: "__cat_facts__" });
   }
 
@@ -952,38 +961,45 @@ function buildGraph(
     });
     edges.push({ from: "__cat_facts__", to: ni.id });
 
-    // Cross-link neurons to notes/boards/tags that relate to this theme
+    // Cross-link neurons to related notes/boards — hard-capped so each
+    // theme/goal neuron doesn't spray edges across the whole vault.
+    // Prefer theme/tag exact matches over haystack substring hits.
     const term = ni.label.toLowerCase();
-
-    // Dedup like the tag pass — a neuron matched by 20 rolled-up gmail
-    // items shouldn't draw 20 edges into the same Gmail rollup node.
+    const NEURON_CROSS_EDGE_CAP = 3;
+    type RankedTarget = { id: string; rank: number };
+    const ranked: RankedTarget[] = [];
     const seenNeuronTargets = new Set<string>();
+
     notes.forEach((n) => {
       const noteThemes = noteThemeMap.get(n.id) || [];
       const noteTags = (n.tags || []).map((t) => t.toLowerCase());
-      // `content` is no longer fetched for the graph (see NoteRow comment);
-      // ai_summary + title is a strict subset of what we used to match
-      // against but covers >90% of real cross-link cases in practice.
       const haystack = `${(n.title || "").toLowerCase()} ${(n.ai_summary || "").toLowerCase()}`;
-      if (noteThemes.includes(term) || noteTags.includes(term) || haystack.includes(term)) {
-        const target = vaultNodeIdFor(n.id);
-        if (seenNeuronTargets.has(target)) return;
-        seenNeuronTargets.add(target);
-        edges.push({ from: ni.id, to: target, cross: true });
-      }
+      let rank = 0;
+      if (noteThemes.includes(term)) rank = 3;
+      else if (noteTags.includes(term)) rank = 2;
+      else if (haystack.includes(term)) rank = 1;
+      if (rank === 0) return;
+      const target = vaultNodeIdFor(n.id);
+      if (seenNeuronTargets.has(target)) return;
+      seenNeuronTargets.add(target);
+      ranked.push({ id: target, rank });
     });
 
     boards.forEach((b) => {
       if ((b.title || "").toLowerCase().includes(term)) {
-        edges.push({ from: ni.id, to: `grid_${b.id}`, cross: true });
+        const id = `grid_${b.id}`;
+        if (seenNeuronTargets.has(id)) return;
+        seenNeuronTargets.add(id);
+        ranked.push({ id, rank: 2 });
       }
     });
 
-    tagArr.forEach((tag) => {
-      if (tag.toLowerCase().includes(term) || term.includes(tag.toLowerCase())) {
-        edges.push({ from: ni.id, to: `tag_${tag}`, cross: true });
-      }
-    });
+    ranked
+      .sort((a, b) => b.rank - a.rank)
+      .slice(0, NEURON_CROSS_EDGE_CAP)
+      .forEach(({ id }) => {
+        edges.push({ from: ni.id, to: id, cross: true });
+      });
   });
 
   // Manual / user-stated atomic facts. We render each as its own neuron
@@ -1082,17 +1098,12 @@ function buildGraph(
   };
 
   notes.forEach((n) => {
-    const themes = noteThemeMap.get(n.id) || [];
     // Rolled-up notes redirect onto the rollup node; `addCrossEdge`
     // dedupes so dozens of gmail items overlapping the same board only
     // produce a single Gmail-rollup → grid edge.
     const noteId = vaultNodeIdFor(n.id);
     // `content` is no longer projected; use title+summary as the haystack.
-    // This is a deliberate slight degradation of heuristic cross-edge
-    // recall in exchange for cutting the notes payload by ~10x. Provenance
-    // edges (belief→fact→source) still produce the strongest cross-links.
     const noteHaystack = `${(n.title || "").toLowerCase()} ${(n.ai_summary || "").toLowerCase()}`;
-    const noteSummary = (n.ai_summary || "").toLowerCase();
 
     // Synthesis-chunk–based vault→grid edges
     const linkedBoards = vaultGridMap.get(n.id);
@@ -1103,55 +1114,40 @@ function buildGraph(
       });
     }
 
-    // Connect to boards whose titles appear in note title/summary/themes
+    // Strong title match only: every significant word of the board
+    // title must appear in the note title/summary. Theme-fuzzy and
+    // summary-only matches were removed — they were a major source of
+    // hairball cross-edges in dense vaults.
     boardTitleLower.forEach((title, boardNodeId) => {
       if (title.length < 3) return;
       const titleWords = title.split(/\s+/).filter((w) => w.length > 2);
       const titleMatch = titleWords.length > 0 && titleWords.every((w) => noteHaystack.includes(w));
-      if (
-        titleMatch ||
-        (noteSummary && titleWords.length > 0 && titleWords.every((w) => noteSummary.includes(w))) ||
-        themes.some((t) => title.includes(t) || t.includes(title.split(" ")[0]))
-      ) {
+      if (titleMatch) {
         addCrossEdge(noteId, boardNodeId);
       }
     });
-
   });
 
-  // Connect notes that share themes with each other. Two notes that
-  // both rolled up into the same source (e.g. both gmail) resolve to
-  // the same node id — skip the self-loop so we don't draw an edge
-  // from Gmail to itself.
-  const noteIds = notes.map((n) => n.id);
-  for (let i = 0; i < noteIds.length; i++) {
-    const themesA = noteThemeMap.get(noteIds[i]) || [];
-    if (themesA.length === 0) continue;
-    const fromId = vaultNodeIdFor(noteIds[i]);
-    for (let j = i + 1; j < noteIds.length; j++) {
-      const themesB = noteThemeMap.get(noteIds[j]) || [];
-      if (themesA.some((t) => themesB.includes(t))) {
-        const toId = vaultNodeIdFor(noteIds[j]);
-        if (fromId === toId) continue;
-        addCrossEdge(fromId, toId);
+  // Shared-theme note↔note edges: star from the first note that carries
+  // each theme (max 1 outgoing theme-edge per note) instead of the old
+  // O(n²) every-pair pass that filled the graph with gray lines.
+  const noteThemeEdgeBudget = new Map<string, number>();
+  const themeHubs = new Map<string, string>();
+  notes.forEach((n) => {
+    const themes = noteThemeMap.get(n.id) || [];
+    const fromId = vaultNodeIdFor(n.id);
+    for (const theme of themes) {
+      const hub = themeHubs.get(theme);
+      if (!hub) {
+        themeHubs.set(theme, fromId);
+        continue;
       }
+      if (hub === fromId) continue;
+      const used = noteThemeEdgeBudget.get(fromId) || 0;
+      if (used >= 1) continue;
+      noteThemeEdgeBudget.set(fromId, used + 1);
+      addCrossEdge(hub, fromId);
     }
-  }
-
-  // Connect boards whose titles share synthesis themes.
-  boards.forEach((b1, i) => {
-    const b1Title = (b1.title || "").toLowerCase();
-    boards.forEach((b2, j) => {
-      if (j <= i) return;
-      const b2Title = (b2.title || "").toLowerCase();
-      // check if any synthesis theme connects them
-      const sharedTheme = synthesisThemes.some((t) => {
-        const tl = t.toLowerCase();
-        return (b1Title.includes(tl) || tl.includes(b1Title.split(" ")[0])) &&
-               (b2Title.includes(tl) || tl.includes(b2Title.split(" ")[0]));
-      });
-      if (sharedTheme) addCrossEdge(`grid_${b1.id}`, `grid_${b2.id}`);
-    });
   });
 
   // -------------------------------------------------------------------
@@ -1628,7 +1624,10 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
     setError(null);
   }, [factId, factStatus]);
 
-  const needsConfirm = status === "inferred" || status === "unconfirmed";
+  const needsConfirm =
+    status === "inferred" ||
+    status === "unconfirmed" ||
+    status === "pending";
 
   const accept = async () => {
     if (!factId || pending) return;
@@ -1637,7 +1636,11 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
     try {
       const { error: upErr } = await supabase
         .from("lykn_user_model_facts")
-        .update({ status: "confirmed" })
+        .update({
+          status: "confirmed",
+          pending_confirm: false,
+          confirmed_at: new Date().toISOString(),
+        })
         .eq("id", factId);
       if (upErr) {
         setError(toUserFacingError());
@@ -1665,7 +1668,7 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
         >
           {needsConfirm ? "Awaiting confirmation" : factKindLbl}
         </span>
-        <span className="text-[0.6rem] text-gray-400 dark:text-gray-500">Neuron</span>
+        <span className="text-[0.6rem] text-gray-400 dark:text-gray-500">User Fact</span>
       </div>
 
       <p className="text-[0.875rem] text-gray-800 dark:text-gray-100 leading-relaxed mb-3">
@@ -1678,10 +1681,12 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
         </p>
         <p className="text-[0.75rem] text-gray-600 dark:text-gray-300 leading-relaxed">
           {status === "stated"
-            ? "You stated this directly in chat. LYKN saved it as a Basic neuron."
+            ? "You stated this directly in chat. LYKN saved it as a User Fact."
             : status === "confirmed"
-              ? "You confirmed this when LYKN surfaced it from your conversations."
-              : "LYKN's synthesis layer inferred this from patterns in your chats and vault. It's awaiting your confirmation before becoming a permanent neuron."}
+              ? "You confirmed this in chat (or migrated it from a Core Belief)."
+              : status === "pending"
+                ? "LYKN proposed this in chat and is waiting for your Yes / Edit / No."
+                : "LYKN inferred this from your chats and vault. Confirm it to lock it into your always-on User Facts."}
         </p>
       </div>
 
@@ -1725,7 +1730,7 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
             ) : (
               <>
                 <Check size={14} />
-                Accept as official neuron
+                Confirm User Fact
               </>
             )}
           </button>
@@ -1740,7 +1745,7 @@ const FactDetailSection: React.FC<{ node: MindNode }> = ({ node }) => {
       ) : (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 text-[0.75rem]">
           <Check size={13} />
-          {status === "confirmed" ? "Confirmed neuron" : "Active neuron"}
+          {status === "confirmed" ? "Confirmed User Fact" : "Active User Fact"}
         </div>
       )}
     </div>
@@ -3060,13 +3065,13 @@ const FREE_SYNTHESIS_NODE_LIMIT: number =
 // the same generic textbox over and over.
 const NEURON_TYPE_THEME = {
   basic: {
-    title: "Fact Neuron",
+    title: "User Fact",
     short: "A single fact about you",
     // Fact = short and sweet. One sentence. The composer enforces
     // this with a single-line input + tight char cap so the user
     // physically can't write a paragraph here.
     description:
-      "Atomic memory the AI can lean on. Keep it to one sentence: \"I work as a designer,\" \"I focus best in the morning.\" Short, true, easy to recall.",
+      "Atomic memory the AI can lean on. Keep it to one sentence: \"I work as a designer,\" \"I prefer short answers.\" Short, true, easy to recall. Durable prefs are also confirmed in chat.",
     accent: "blue",
     accentHex: "#60a5fa", // blue-400
     accentRing: "border-blue-400/35",
@@ -3074,14 +3079,12 @@ const NEURON_TYPE_THEME = {
     accentGlow: "shadow-[0_0_60px_rgba(96,165,250,0.5)]",
   },
   belief: {
-    title: "Belief Neuron",
-    short: "A principle that shapes every reply",
-    // Belief = the principle PLUS the reason. Two-field form: the
-    // belief itself, then a "why" rationale that gets stored on the
-    // belief row. The AI uses the rationale to explain itself when it
-    // applies this belief in chat.
+    title: "Legacy Belief",
+    short: "Retired — prefer User Facts",
+    // Soft-deprecated: Synthesis v2 personalizes via chat-ratified
+    // User Facts. Kept so existing belief nodes can still be edited.
     description:
-      "The principles you live by. The AI runs every reply through these before anything else. Capture the belief AND why you hold it, so the AI can explain itself when it leans on this.",
+      "Core Beliefs are being replaced by User Facts confirmed in chat. Prefer adding a User Fact instead. This form remains for legacy beliefs already on your map.",
     // Beliefs render as the WHITE cluster in the 3D scene
     // (palette.belief.bg = "#ffffff"). The build modal used to be
     // tinted indigo, which read as purple and didn't match the 3D
@@ -3928,26 +3931,15 @@ export default function SynthesisLayer() {
   // by design), so we deliberately skip the heavy renderer there.
   const isMobile = useIsMobile();
 
-  // The synthesis layer always renders in its dark treatment (the 3D glow only
-  // reads on a dark backdrop). If the user arrives here while their app theme is
-  // light, force the whole app to dark for the duration of the visit — using
-  // the same `.dark` class on <html> that global dark mode uses, so the sidebar
-  // and every other dark: surface flip exactly as they do in real dark mode.
-  // We also briefly surface a notice that the layer is a dark-only space, then
-  // restore the user's light theme on the way out.
-  const [showLightModeNotice, setShowLightModeNotice] = useState(false);
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const html = document.documentElement;
-    const appInLightMode = !html.classList.contains("dark");
-    if (!appInLightMode) return;
-    html.classList.add("dark");
-    setShowLightModeNotice(true);
-    const t = setTimeout(() => setShowLightModeNotice(false), 4500);
-    return () => {
-      clearTimeout(t);
-      html.classList.remove("dark");
-    };
+  // Follow the app theme (light + dark). The Obsidian-style 2D graph is
+  // built for both; 3D still receives `isLight` so bloom/emissive retune.
+  const isDark = useIsDark();
+  const isLight = !isDark;
+
+  const [viewMode, setViewMode] = useState<SynthesisViewMode>(() => readStoredViewMode());
+  const setViewModePersist = useCallback((mode: SynthesisViewMode) => {
+    setViewMode(mode);
+    storeViewMode(mode);
   }, []);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -4019,9 +4011,7 @@ export default function SynthesisLayer() {
   // The "+" toolbar menu — { Basic neuron, Core Belief neuron }. Tap a
   // type and the menu closes; a centered creation modal takes over.
   const [addMenuOpen, setAddMenuOpen] = useState(false);
-  // "drag to orbit" hint — visible for the first few seconds only. The old
-  // `animate-pulse` version claimed to fade but pulsed forever, permanently
-  // drawing the eye to bottom-center.
+  // Navigation hint — visible for the first few seconds only.
   const [orbitHintVisible, setOrbitHintVisible] = useState(true);
   useEffect(() => {
     const t = window.setTimeout(() => setOrbitHintVisible(false), 8000);
@@ -5498,18 +5488,18 @@ export default function SynthesisLayer() {
 
   const svgAreaRef = useRef<HTMLDivElement>(null);
 
-  // Wheel-on-canvas drives external zoom state. OrbitControls has its own
-  // wheel-zoom disabled in the scene so this stays the source of truth.
+  // Wheel-on-canvas drives external zoom for the 3D scene (OrbitControls
+  // has its own wheel-zoom disabled). The 2D scene handles wheel/pinch
+  // internally with Obsidian-style cursor-anchored zoom.
   // NOTE: depends on `allQueriesFetched` so the listener re-attaches once
   // the LoadingScreen gate below clears and the canvas div actually
   // enters the DOM — otherwise svgAreaRef.current is null on first mount
   // for signed-in users and zoom is silently dead until refresh.
   useEffect(() => {
+    if (viewMode !== "3d") return;
     const el = svgAreaRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      // Only handle wheel when the cursor is over the canvas area (not
-      // overlay HTML like the side panel that has its own scroll).
       const target = e.target as HTMLElement | null;
       if (target && target.closest('[data-stop-canvas-wheel="true"]')) return;
       e.preventDefault();
@@ -5518,7 +5508,7 @@ export default function SynthesisLayer() {
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [allQueriesFetched, user?.id]);
+  }, [allQueriesFetched, user?.id, viewMode]);
 
   // Initial-load takeover for signed-in users. Until every core query
   // (boards / notes / synthesis profile / chunks) has settled, we'd
@@ -5553,38 +5543,35 @@ export default function SynthesisLayer() {
   return (
     <div
       ref={containerRef}
-      // The synthesis layer is always rendered in its dark treatment — the 3D
-      // glow (emissive + Bloom) only reads on a dark backdrop, so scoping the
-      // whole page to `.dark` forces every dark: utility + CSS var (labels,
-      // chrome) to its dark variant regardless of the app's global theme.
-      className="dark fixed inset-0 overflow-hidden select-none"
-      style={{ backgroundColor: "hsl(0 0% 12%)" }}
+      className="fixed inset-0 overflow-hidden select-none"
+      style={{
+        backgroundColor: isLight ? "hsl(40 10% 97%)" : "hsl(0 0% 12%)",
+      }}
     >
-      {/* 3D Scene area — orbit, hover, click happen inside the Canvas. The
-          page-level wheel handler (above) still drives external zoom so the
-          existing +/- buttons remain the source of truth. */}
+      {/* Graph area — 2D (default, Obsidian-style) or 3D behind a toggle. */}
       <div
         ref={svgAreaRef}
         className="absolute inset-0"
         style={{ cursor: "grab" }}
       >
-        {/* Soft radial spotlight — adds a subtle cool sheen at center so neurons
-            read against a slight gradient. Edges fade to fully transparent so
-            the page-level dark-mode background (hsl(0 0% 12%)) shows through
-            and the canvas matches the rest of the app's chrome. */}
-          <div
+        {/* Soft radial wash for depth without competing with nodes */}
+        <div
           className="absolute inset-0 pointer-events-none"
           style={{
-            background:
-              "radial-gradient(ellipse at center, rgba(120,130,180,0.10) 0%, rgba(31,31,31,0) 65%)",
+            background: isLight
+              ? "radial-gradient(ellipse at center, rgba(99,102,241,0.06) 0%, rgba(255,255,255,0) 62%)"
+              : "radial-gradient(ellipse at center, rgba(120,130,180,0.10) 0%, rgba(31,31,31,0) 65%)",
           }}
         />
 
-        {/* Subtle dot grid — kept from the SVG version for spatial reference */}
+        {/* Subtle dot grid — spatial reference (Obsidian-adjacent) */}
         <div
-          className="absolute inset-0 opacity-[0.04] pointer-events-none"
+          className="absolute inset-0 pointer-events-none"
           style={{
-            backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.7) 1px, transparent 1px)",
+            opacity: isLight ? 0.35 : 0.04,
+            backgroundImage: isLight
+              ? "radial-gradient(circle, rgba(0,0,0,0.12) 1px, transparent 1px)"
+              : "radial-gradient(circle, rgba(255,255,255,0.7) 1px, transparent 1px)",
             backgroundSize: "44px 44px",
           }}
         />
@@ -5671,69 +5658,63 @@ export default function SynthesisLayer() {
                 the radial spotlight, so the chunk swap looks like a brief
                 loading hold on an already-decorated canvas instead of a
                 white flash. */}
-            <Suspense fallback={null}>
-            <SynthesisScene3D
-              nodes={simNodes}
-              edges={edges}
-              hoveredId={hoveredNode}
-              selectedId={selectedId}
-              // Selecting a node (from canvas click OR side-panel connection
-              // click) flies the camera to it. Same source of truth as
-              // selectedId — they always move together.
-              focusNodeId={selectedId}
-              highlightSet={highlightSet}
-              isTopicMode={isTopicMode}
-              zoom={camera.zoom}
-              resetSignal={resetSignal}
-              onHoverNode={setHoveredNode}
-              onClickNode={handleNodeClick}
-              // Linking mode visual feedback. The scene boosts each
-              // selected node's emissive multiplier so the user can
-              // see across the entire cloud which neurons they've
-              // queued for the link without scrolling through the
-              // action bar's count. Empty set = no boost (identical
-              // to pre-link-mode rendering). Project-cluster mode
-              // reuses the same prop because the visual treatment
-              // ("these are the neurons you're collecting") is
-              // identical — only the bottom-center action bar
-              // differs.
-              linkSelectedIds={
-                linkingMode
-                  ? linkSelection
-                  : projectMode
-                    ? projectSelection
-                    : undefined
-              }
-              // Filter highlight (currently driven by the "By
-              // Project" mode). Members of the picked project
-              // glow with the same emissive boost link selections
-              // use; everything else dims out. Null when no
-              // filter is active — scene renders unchanged.
-              focusedSet={projectFocusSet}
-              // Prototype handoff: empty-space clicks must NOT deselect the
-              // highlighted neuron (would fly the camera back to centroid
-              // and undo the whole "this is YOUR neuron, look at it"
-              // moment). Keep it locked there until the user signs in.
-              onBackgroundClick={handleBackgroundClick}
-              // Prototype handoff: when set, the scene draws an electric-blue
-              // line out from "AI Learned" and scales the neuron into being
-              // at the end of it, instead of rendering the node in place.
-              formingNodeId={formingNodeId}
-              // Prototype handoff: lock the camera ONLY while the neuron is
-              // forming so the user sees the formation play out without
-              // OrbitControls hijacking pointer events. The instant the
-              // formation completes (formingNodeId clears) we hand control
-              // back so the user can pan / rotate around their new neuron.
-              lockCamera={formingNodeId != null}
-              // Tour intro: slow cinematic orbit for the first ~15s after
-              // arriving from the wake screen so the visitor sees their
-              // (sample) brain from several angles before they have to
-              // figure out drag-to-orbit themselves. Cancels on first
-              // interaction — see the pointerdown listener bound to
-              // containerRef above.
-              autoRotate={false}
-            />
-            </Suspense>
+            {viewMode === "2d" ? (
+              <SynthesisScene2D
+                nodes={simNodes}
+                edges={edges}
+                hoveredId={hoveredNode}
+                selectedId={selectedId}
+                focusNodeId={selectedId}
+                highlightSet={highlightSet}
+                isTopicMode={isTopicMode}
+                zoom={camera.zoom}
+                resetSignal={resetSignal}
+                onHoverNode={setHoveredNode}
+                onClickNode={handleNodeClick}
+                linkSelectedIds={
+                  linkingMode
+                    ? linkSelection
+                    : projectMode
+                      ? projectSelection
+                      : undefined
+                }
+                focusedSet={projectFocusSet}
+                onBackgroundClick={handleBackgroundClick}
+                formingNodeId={formingNodeId}
+                lockCamera={formingNodeId != null}
+                isLight={isLight}
+                onZoomChange={(z) => setCamera((c) => ({ ...c, zoom: z }))}
+              />
+            ) : (
+              <Suspense fallback={null}>
+                <SynthesisScene3D
+                  nodes={simNodes}
+                  edges={edges}
+                  hoveredId={hoveredNode}
+                  selectedId={selectedId}
+                  focusNodeId={selectedId}
+                  highlightSet={highlightSet}
+                  isTopicMode={isTopicMode}
+                  zoom={camera.zoom}
+                  resetSignal={resetSignal}
+                  onHoverNode={setHoveredNode}
+                  onClickNode={handleNodeClick}
+                  linkSelectedIds={
+                    linkingMode
+                      ? linkSelection
+                      : projectMode
+                        ? projectSelection
+                        : undefined
+                  }
+                  focusedSet={projectFocusSet}
+                  onBackgroundClick={handleBackgroundClick}
+                  formingNodeId={formingNodeId}
+                  lockCamera={formingNodeId != null}
+                  autoRotate={false}
+                  isLight={isLight}
+                />
+              </Suspense>
+            )}
           </SynthesisSceneErrorBoundary>
         )}
       </div>
@@ -5805,7 +5786,7 @@ export default function SynthesisLayer() {
           title="Hide panel"
           aria-label="Hide right-side panel"
         >
-          <ChevronRight className="w-4 h-4" />
+          <ChevronRight className="w-4 h-4 text-black/60 dark:text-white/70" />
         </button>
       ) : null}
 
@@ -6153,33 +6134,6 @@ export default function SynthesisLayer() {
         </div>
       </div>
 
-      {/* Light-mode notice — a brief, self-dismissing card shown when the user
-          lands here with the app in light mode (the synthesis layer is a
-          dark-only space by design). */}
-      <AnimatePresence>
-        {showLightModeNotice && (
-          <motion.div
-            key="light-mode-notice"
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.28, ease: "easeOut" }}
-            className="fixed top-16 left-1/2 -translate-x-1/2 z-[110] pointer-events-none"
-            role="status"
-            aria-live="polite"
-          >
-            <div className="flex items-center gap-2.5 rounded-full bg-[rgba(23,23,23,0.92)] backdrop-blur-md border border-white/12 shadow-[0_12px_40px_rgba(0,0,0,0.45)] pl-3 pr-4 py-2">
-              <span className="flex-shrink-0 h-6 w-6 rounded-full bg-amber-400/15 border border-amber-300/30 flex items-center justify-center">
-                <Sun size={13} className="text-amber-300" />
-              </span>
-              <p className="text-[0.75rem] text-white/85 leading-snug">
-                The Synthesis Layer isn’t available in light mode.
-              </p>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Stats. Right offset always leaves room for the always-visible
           recent-activity toggle button (sidebar-style chevron pinned at
           right-4, w-8). When the detail panel or recent-activity panel
@@ -6270,30 +6224,14 @@ export default function SynthesisLayer() {
                 role="menu"
               >
                 {([
-                  // Order within the "noun" section above the divider
-                  // groups the three "deepest-self" neurons (Beliefs,
-                  // Facts, Concepts) together at the top, since they
-                  // all open the unified creation panel. Vault and
-                  // Chat sit below them as navigation entries — they
-                  // bounce to a different page rather than open the
-                  // composer, so visually separating them from the
-                  // composer-trigger group makes the menu read as
-                  // "create a neuron … (or jump to a surface)".
-                  {
-                    key: "belief",
-                    label: "Beliefs",
-                    blurb: "A core belief or principle that shapes every reply.",
-                    Icon: Atom,
-                    divider: false,
-                    onClick: () => {
-                      setAddMenuOpen(false);
-                      setCreatingNeuronType("belief");
-                    },
-                  },
+                  // Synthesis v2: User Facts replace Core Beliefs as the
+                  // happy-path personalization write. Belief creation is
+                  // soft-deprecated (legacy Belief Window still opens from
+                  // belief nodes in the graph).
                   {
                     key: "fact",
-                    label: "Fact",
-                    blurb: "A single fact about you the AI should remember.",
+                    label: "User Fact",
+                    blurb: "A claim about you the AI should remember.",
                     Icon: Brain,
                     divider: false,
                     onClick: () => {
@@ -6411,25 +6349,74 @@ export default function SynthesisLayer() {
       <div className={`absolute bottom-6 z-20 flex flex-wrap gap-3 text-[0.625rem] text-black/55 dark:text-white/55 pointer-events-none ${
         isMobile ? "left-6" : "left-[13rem]"
       }`}>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.chats.bg, color: palette.chats.bg }} /> Chats</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.vault.bg, color: palette.vault.bg }} /> Vault</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.belief.bg, color: palette.belief.bg }} /> Beliefs</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.facts.bg, color: palette.facts.bg }} /> Facts</span>
-        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: palette.concepts.bg, color: palette.concepts.bg }} /> Concepts</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: legendSwatch("chats", isLight), color: legendSwatch("chats", isLight) }} /> Chats</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: legendSwatch("vault", isLight), color: legendSwatch("vault", isLight) }} /> Vault</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: legendSwatch("belief", isLight), color: legendSwatch("belief", isLight) }} /> Beliefs</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: legendSwatch("facts", isLight), color: legendSwatch("facts", isLight) }} /> Facts</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full shadow-[0_0_8px_currentColor]" style={{ background: legendSwatch("concepts", isLight), color: legendSwatch("concepts", isLight) }} /> Concepts</span>
       </div>
 
-      {/* Orbit hint — first-time users may not realise drag = orbit (not pan).
-          Fades after a few seconds via CSS animation; tiny enough to ignore.
-          Hidden during linking + project-cluster mode so it doesn't fight
-          the action bar for the same bottom-center slot. */}
+      {/* Nav hint — fades after a few seconds. Hidden during linking /
+          project-cluster mode so it doesn't fight the action bar. */}
       {!linkingMode && !projectMode && orbitHintVisible && (
-        <div
-          // Hidden on touch devices (the copy is desktop-only: scroll/shift+drag).
-          className="hidden sm:block absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-[0.6rem] text-black/45 dark:text-white/40 pointer-events-none animate-pulse"
-        >
-          drag to orbit · scroll to zoom · shift+drag to pan
+        <div className="hidden sm:block absolute bottom-6 left-1/2 -translate-x-1/2 z-20 text-[0.6rem] text-black/45 dark:text-white/40 pointer-events-none animate-pulse">
+          {viewMode === "2d"
+            ? "drag to pan · scroll to zoom · click a node to open"
+            : "drag to orbit · scroll to zoom · shift+drag to pan"}
         </div>
       )}
+
+      {/* 2D / 3D view toggle — default 2D (Obsidian-style); 3D kept for
+          the cinematic graph. Persisted in localStorage. Sits above the
+          "+" so it doesn't collide with the mode filter / title. */}
+      <div
+        className="absolute z-20 flex items-center rounded-full border backdrop-blur-md shadow-[0_6px_20px_rgba(0,0,0,0.18)] overflow-hidden transition-[right] duration-300"
+        style={{
+          right: anyRightPanelOpen ? 384 : 24,
+          bottom: "calc(4.75rem + var(--mobile-tabbar-clear, 0px))",
+          background: isLight ? "rgba(255,255,255,0.82)" : "rgba(20,20,20,0.72)",
+          borderColor: isLight ? "rgba(0,0,0,0.10)" : "rgba(255,255,255,0.12)",
+        }}
+        role="group"
+        aria-label="Graph view mode"
+      >
+        <button
+          type="button"
+          onClick={() => setViewModePersist("2d")}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[0.65rem] font-medium transition-colors ${
+            viewMode === "2d"
+              ? isLight
+                ? "bg-black/[0.08] text-black/85"
+                : "bg-white/15 text-white/90"
+              : isLight
+                ? "text-black/45 hover:text-black/70"
+                : "text-white/45 hover:text-white/75"
+          }`}
+          aria-pressed={viewMode === "2d"}
+          title="2D graph (default)"
+        >
+          <Network size={12} />
+          2D
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewModePersist("3d")}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[0.65rem] font-medium transition-colors ${
+            viewMode === "3d"
+              ? isLight
+                ? "bg-black/[0.08] text-black/85"
+                : "bg-white/15 text-white/90"
+              : isLight
+                ? "text-black/45 hover:text-black/70"
+                : "text-white/45 hover:text-white/75"
+          }`}
+          aria-pressed={viewMode === "3d"}
+          title="3D graph"
+        >
+          <Box size={12} />
+          3D
+        </button>
+      </div>
 
       {/* Link-mode action bar — floats at bottom-center while the
           user is wiring neurons together. Shows the running selection

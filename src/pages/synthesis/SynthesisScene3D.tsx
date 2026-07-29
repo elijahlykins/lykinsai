@@ -7,6 +7,7 @@ import { Canvas, useFrame, type ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, Line, Html } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import * as THREE from "three";
+import { resolveGraphNodeColor } from "./graphColors";
 
 // Detect any touch-capable input device (phones, tablets, hybrid laptops
 // with touchscreens). Used to enable OrbitControls' built-in pinch-zoom
@@ -252,49 +253,50 @@ const NEURON_FORMATION_DURATION_S = 0.6;
 /*  background (where additive bloom would just wash to white).        */
 /* ------------------------------------------------------------------ */
 let _glowTexture: THREE.CanvasTexture | null = null;
+// Bump when the gradient recipe changes so HMR doesn't keep a stale white halo.
+const GLOW_TEXTURE_VERSION = 2;
+let _glowTextureVersion = 0;
 function getGlowTexture(): THREE.CanvasTexture | null {
-  if (_glowTexture) return _glowTexture;
+  if (_glowTexture && _glowTextureVersion === GLOW_TEXTURE_VERSION) return _glowTexture;
+  _glowTexture?.dispose();
+  _glowTexture = null;
   if (typeof document === "undefined") return null;
   const size = 128;
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
+  // Soft grey core (not pure white) so the sprite tint stays readable on
+  // light backgrounds — pure white * color still washed out to invisible.
   const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  g.addColorStop(0, "rgba(255,255,255,1)");
-  g.addColorStop(0.42, "rgba(255,255,255,0.75)");
-  g.addColorStop(0.72, "rgba(255,255,255,0.2)");
-  g.addColorStop(1, "rgba(255,255,255,0)");
+  g.addColorStop(0, "rgba(90,90,90,0.95)");
+  g.addColorStop(0.35, "rgba(90,90,90,0.55)");
+  g.addColorStop(0.7, "rgba(90,90,90,0.18)");
+  g.addColorStop(1, "rgba(90,90,90,0)");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, size, size);
   const tex = new THREE.CanvasTexture(canvas);
   tex.needsUpdate = true;
   _glowTexture = tex;
+  _glowTextureVersion = GLOW_TEXTURE_VERSION;
   return tex;
 }
 
 function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, onHoverOut, onClick, isLinkSelected = false, isForming = false, isLight = false }: NeuronProps) {
   const groupRef = useRef<THREE.Group>(null);
 
-  // Light-theme color/emissive remap. On a light backdrop the additive bloom
-  // around bright emissive cores swells into washed-out blobs (worst on the
-  // pure-white Belief "stars"). In light mode we therefore render every neuron
-  // as a PASTEL: repaint near-white cores to a violet base first (so beliefs
-  // read as colored stars, not white), then lift each color toward white into
-  // a soft pastel and scale emissive down so bloom only adds a gentle halo.
-  // Identity in dark mode.
-  const isNearWhite = useMemo(() => {
-    const c = new THREE.Color(node.color);
-    return c.r > 0.85 && c.g > 0.85 && c.b > 0.85;
-  }, [node.color]);
-  const effectiveColor = useMemo(() => {
-    if (!isLight) return node.color;
-    // Beliefs (the pure-white "stars") become a deep blue in light mode so
-    // they read as the strongest, deepest tier against the light backdrop.
-    // Every other node keeps its vivid hue — the glow sprite below supplies
-    // the soft halo, so cores stay crisp/saturated rather than pastel.
-    return isNearWhite ? "#1d4ed8" : node.color;
-  }, [isLight, isNearWhite, node.color]);
+  // Light-theme color remap — deeper ink tones that read on paper
+  // (shared with the 2D Obsidian graph via graphColors.ts).
+  const effectiveColor = useMemo(
+    () =>
+      resolveGraphNodeColor(
+        node.kind,
+        node.color,
+        isLight,
+        node.kind === "category" ? node.id : null,
+      ),
+    [isLight, node.kind, node.color, node.id],
+  );
   // Light mode: cores are crisp lit beads (the sprite does the glowing), so we
   // keep emissive modest — enough to keep the color vivid without bloom blowout.
   const lightEmissiveScale = isLight ? 0.45 : 1;
@@ -356,9 +358,20 @@ function Neuron({ node, isHovered, isSelected, isDimmed, isTopicMode, onHover, o
   // glowConfig since it reads from it.)
   const glowTexture = isLight ? getGlowTexture() : null;
   // Simple, clean halo (mirrors the landing footer: a small, low-opacity glow
-  // hugging each node — not a big cloud). Tight scale + gentle opacity.
-  const glowOpacity = Math.min(0.34, 0.07 + glowConfig.emissive * 0.06);
-  const glowScale = node.radius * (node.kind === "root" || node.kind === "category" ? 3.4 : 3);
+  // Light mode: stronger, tighter colored halo so it reads on paper
+  // (the old white low-opacity wash vanished against the pale canvas).
+  const glowOpacity = isLight
+    ? Math.min(0.55, 0.22 + glowConfig.emissive * 0.08)
+    : Math.min(0.34, 0.07 + glowConfig.emissive * 0.06);
+  const glowScale =
+    node.radius *
+    (node.kind === "root" || node.kind === "category"
+      ? isLight
+        ? 2.8
+        : 3.4
+      : isLight
+        ? 2.4
+        : 3);
 
   // Subtle pulse on neurons + root → keeps the "thinking" feel alive. With
   // the halo gone, the pulse rides on the core's emissive intensity so bloom
@@ -658,7 +671,7 @@ const EDGE_FORMATION_DURATION_S = 0.8;
  * because <Line> from drei expects a static `points` prop and we want to
  * mutate the endpoint every frame.
  */
-function FormingEdge({ a, b }: { a: Scene3DNode; b: Scene3DNode }) {
+function FormingEdge({ a, b, isLight = false }: { a: Scene3DNode; b: Scene3DNode; isLight?: boolean }) {
   const startRef = useRef<number | null>(null);
   const lineRef = useRef<THREE.Line | null>(null);
   // Two-vertex BufferGeometry; we mutate the second vertex every frame.
@@ -686,7 +699,7 @@ function FormingEdge({ a, b }: { a: Scene3DNode; b: Scene3DNode }) {
     // @ts-expect-error - R3F intrinsic (line) typing is loose; ref typing isn't a great match for Three.Line vs LineSegments.
     <line ref={lineRef} geometry={geometry}>
       <lineBasicMaterial
-        color={"#60a5fa"}
+        color={isLight ? "#c4c4c4" : "#60a5fa"}
         linewidth={2.4}
         transparent
         opacity={0.95}
@@ -706,44 +719,45 @@ function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isUserLink 
   );
 
   if (isForming) {
-    return <FormingEdge a={a} b={b} />;
+    return <FormingEdge a={a} b={b} isLight={isLight} />;
   }
 
   // Provenance edges sit visually between heuristic cross-edges and
   // structural edges: more present than a faint dashed theme link
   // (because the user explicitly asked "show me the web of beliefs")
   // but not so loud they drown out the hover-highlighted path.
+  // Light mode needs higher base opacity — pale lines vanish on paper.
   const opacity = isDimmed
-    ? 0.06
+    ? isLight
+      ? 0.12
+      : 0.06
     : isTopicMode && edgeRelevance < 0.3
-      ? 0.10
+      ? isLight
+        ? 0.22
+        : 0.1
       : isHl
         ? 0.95
         : isUserLink
-          ? 0.78
+          ? 0.85
           : isProvenance
-            ? 0.55
+            ? isLight
+              ? 0.72
+              : 0.55
             : isCross
-              ? 0.20
-              : 0.40;
+              ? isLight
+                ? 0.42
+                : 0.2
+              : isLight
+                ? 0.62
+                : 0.4;
 
-  // Indigo matches `palette.beliefs.bg` in SynthesisLayer.tsx so the
-  // provenance overlay reads as "these edges come from the belief
-  // cluster you can see above," not a random new color.
+  // Light mode: every connector is the same light grey (no provenance /
+  // user-link / highlight color variants). Dark mode keeps accent colors.
   const PROVENANCE_COLOR = "#a5b4fc";
-  // Bright sky-blue for user links — same family as the "+" menu's
-  // primary action accent and the link-mode action bar, so the user
-  // visually associates "their" threads with the linking affordance.
   const USER_LINK_COLOR = "#60a5fa";
+  const LIGHT_EDGE_COLOR = "#c4c4c4";
   const color = isLight
-    ? // Light mode: a very light blue web (mirrors the landing footer's
-      // constellation, rgba(37,99,235,0.3)) so the wires read as quiet,
-      // airy connective tissue. Highlighted/user edges get a touch more blue.
-      isUserLink
-        ? "#3b82f6"
-        : isHl
-          ? "#7c9be0"
-          : "#bcccea"
+    ? LIGHT_EDGE_COLOR
     : isHl
       ? a.color
       : isUserLink
@@ -761,10 +775,8 @@ function Edge({ a, b, isHl, isDimmed, isCross, isProvenance = false, isUserLink 
           ? 0.5
           : 0.8;
 
-  // Light mode keeps the wires intentionally airy/light (footer-style), so no
-  // opacity boost — just a hair more width so the pale lines stay crisp.
   const finalOpacity = opacity;
-  const finalLineWidth = isLight && !isDimmed ? lineWidth + 0.2 : lineWidth;
+  const finalLineWidth = isLight && !isDimmed ? lineWidth + 0.45 : lineWidth;
 
   return (
     <Line
@@ -1277,9 +1289,17 @@ export default function SynthesisScene3D(props: Props) {
           Omitted in-app, where the canvas stays transparent over its host. */}
       {opaqueBlackBg && <color attach="background" args={["#000000"]} />}
 
-      <ambientLight intensity={props.isLight ? 0.85 : 0.55} />
-      <pointLight position={[400, 500, 600]} intensity={0.6} color="#ffffff" />
-      <pointLight position={[-500, -300, 200]} intensity={0.35} color="#a78bfa" />
+      <ambientLight intensity={props.isLight ? 0.75 : 0.55} />
+      <pointLight
+        position={[400, 500, 600]}
+        intensity={props.isLight ? 0.45 : 0.6}
+        color={props.isLight ? "#f8fafc" : "#ffffff"}
+      />
+      <pointLight
+        position={[-500, -300, 200]}
+        intensity={props.isLight ? 0.28 : 0.35}
+        color={props.isLight ? "#38bdf8" : "#a78bfa"}
+      />
 
       <SceneInner
         nodes={props.nodes}
@@ -1335,8 +1355,10 @@ export default function SynthesisScene3D(props: Props) {
           // Light mode leans on the per-node glow sprites instead of bloom, so
           // we keep the bloom pass nearly off (tiny lift on the very brightest
           // cores only) to avoid the grey wash additive bloom leaves on light.
-          intensity={props.isLight ? 0.25 : opaqueBlackBg ? 0.9 : 1.05}
-          luminanceThreshold={props.isLight ? 0.9 : opaqueBlackBg ? 0.32 : 0.18}
+          // Light mode: bloom nearly off — additive white wash was killing
+          // edge/halo contrast on the pale canvas. Halos come from sprites.
+          intensity={props.isLight ? 0.08 : opaqueBlackBg ? 0.9 : 1.05}
+          luminanceThreshold={props.isLight ? 0.95 : opaqueBlackBg ? 0.32 : 0.18}
           luminanceSmoothing={0.18}
           mipmapBlur
           // Radius tightened from 0.85 → 0.7 in-app. The mipmap-blur pass cost

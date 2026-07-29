@@ -35,6 +35,7 @@ import {
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQueryClient } from "@tanstack/react-query";
 import SignInPill from "@/components/SignInPill";
+import { SYNTHESIS_LAYER_UI_ENABLED } from "@/lib/synthesisLayerUi";
 
 // LYKN icon mark — blue in light mode, neutral (near-white) in dark mode.
 function LyknMark({ className = "", draggable = false }) {
@@ -340,18 +341,22 @@ export default function AppSidebar({
 
   const userMenuItems = (
     <>
-      <button
-        type="button"
-        onClick={() => { setUserMenuOpen(false); nav("/synthesis-layer"); }}
-        title="Synthesis Layer"
-        className={`w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors ${
-          effectiveHighlightSynthesis ? "lykn-sidebar-synthesis-glow" : ""
-        }`}
-      >
-        <Brain className={`w-3.5 h-3.5 ${effectiveHighlightSynthesis ? "text-blue-400" : "text-black/50 dark:text-white/50"}`} />
-        Synthesis Layer
-      </button>
-      <div className="my-1 border-t border-black/5 dark:border-white/5" />
+      {SYNTHESIS_LAYER_UI_ENABLED ? (
+        <>
+          <button
+            type="button"
+            onClick={() => { setUserMenuOpen(false); nav("/synthesis-layer"); }}
+            title="Synthesis Layer"
+            className={`w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors ${
+              effectiveHighlightSynthesis ? "lykn-sidebar-synthesis-glow" : ""
+            }`}
+          >
+            <Brain className={`w-3.5 h-3.5 ${effectiveHighlightSynthesis ? "text-blue-400" : "text-black/50 dark:text-white/50"}`} />
+            Synthesis Layer
+          </button>
+          <div className="my-1 border-t border-black/5 dark:border-white/5" />
+        </>
+      ) : null}
       <button
         type="button"
         onClick={() => { setUserMenuOpen(false); goTo("/settings"); }}
@@ -432,7 +437,7 @@ export default function AppSidebar({
 
       {/* ── Collapsed icon rail (cross-fades in over the panel as it collapses) ── */}
       <div
-        className={`fixed top-0 left-0 z-[72] h-[100svh] w-14 bg-panel pt-16 pb-3 flex flex-col items-center transition-opacity duration-200 ease-out ${
+        className={`fixed top-0 left-0 z-[72] h-[100svh] w-14 bg-[hsl(var(--sidebar-surface))] pt-16 pb-3 flex flex-col items-center transition-opacity duration-200 ease-out ${
           open ? "opacity-0 pointer-events-none" : "opacity-100"
         }`}
         aria-hidden={open}
@@ -510,7 +515,7 @@ export default function AppSidebar({
       </div>
 
       <div
-        className={`fixed top-0 left-0 z-[70] h-[100svh] overflow-hidden bg-panel transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] ${
+        className={`fixed top-0 left-0 z-[70] h-[100svh] overflow-hidden bg-[hsl(var(--sidebar-surface))] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] ${
           open ? "w-[12rem]" : "w-0"
         } ${isLocked ? "lykn-sidebar-locked" : ""}`}
       >

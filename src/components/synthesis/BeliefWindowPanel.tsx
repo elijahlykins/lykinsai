@@ -485,7 +485,16 @@ export default function BeliefWindowPanel({
             <h2 className="text-sm font-semibold text-white/90 tracking-wide">
               Core Beliefs
             </h2>
+            <span className="ml-auto text-[0.6rem] uppercase tracking-wider text-white/40 font-medium">
+              Legacy
+            </span>
           </header>
+
+          {/* Synthesis v2: personalization moved to chat-ratified User Facts. */}
+          <div className="mx-3 mt-3 px-3 py-2.5 rounded-lg border border-amber-400/25 bg-amber-500/10 text-amber-100/90 text-[0.7rem] leading-relaxed">
+            Preferences now save as <span className="font-medium text-amber-50">User Facts</span> inside chat
+            (Yes / Edit / No). This panel is kept for existing beliefs; new durable claims should be confirmed in chat.
+          </div>
 
           {/* Sub-tabs */}
           <div className="px-3 pt-3 pb-2 flex items-center gap-1 border-b border-white/6">

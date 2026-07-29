@@ -45,7 +45,6 @@ import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/c
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { fetchLoadInUpdatesMessage } from "@/lib/synthesis/loadInUpdates";
-import DailyDocketCard from "@/components/projects/DailyDocketCard";
 import { useProjectFiles } from "@/hooks/useProjectFiles";
 import LyknChatToolbar from "@/components/lyknChat/LyknChatToolbar";
 import LyknChatToasts from "@/components/lyknChat/LyknChatToasts";
@@ -57,7 +56,6 @@ import LyknChatVoiceMode from "@/components/lyknChat/LyknChatVoiceMode";
 import VaultDocumentViewer from "@/components/lyknChat/VaultDocumentViewer";
 import type { ChatNeuronVaultPayload } from "@/components/lyknChat/ChatNeuronCard";
 import SubAgentTasksStrip from "@/components/lyknChat/SubAgentTasksStrip";
-import LoadInBriefingPanel from "@/components/lyknChat/LoadInBriefingPanel";
 import MobileLyknChat from "@/components/lyknChat/MobileLyknChat";
 import { useLyknChatPersistence, makeDefaultNotesPages } from "@/hooks/useLyknChatPersistence";
 import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
@@ -71,6 +69,7 @@ import {
   customModelSelectValue,
   parseCustomModelSelectValue,
 } from "@/lib/modelBuilder/customModelSelect";
+import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
 import { fromChatModelKey, toChatModelKey } from "@/lib/lyknChat/chatModelKey";
 import { patchThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
 import LyknChatPlusMenu from "@/components/lyknChat/LyknChatPlusMenu";
@@ -902,8 +901,12 @@ export default function LyknChat() {
     { id: string; name: string; baseModelId?: string }[]
   >([]);
   const refreshPublishedCustomModels = useCallback(async () => {
-    if (!user?.id) {
+    if (!CUSTOM_MODELS_ENABLED || !user?.id) {
       setPublishedCustomModels([]);
+      if (!CUSTOM_MODELS_ENABLED) {
+        saveActiveCustomModelId(null);
+        setActiveCustomModelId(null);
+      }
       return;
     }
     try {
@@ -922,6 +925,7 @@ export default function LyknChat() {
     void refreshPublishedCustomModels();
   }, [refreshPublishedCustomModels]);
   useEffect(() => {
+    if (!CUSTOM_MODELS_ENABLED) return undefined;
     const onRefresh = () => void refreshPublishedCustomModels();
     window.addEventListener("lykn_custom_models_changed", onRefresh);
     window.addEventListener("lykn_active_custom_model_changed", onRefresh);
@@ -1097,10 +1101,6 @@ export default function LyknChat() {
   const convoSummaryRef = useRef<string>("");
   const convoTurnsSinceSummaryRef = useRef(0);
   const [typedWelcome, setTypedWelcome] = useState("");
-  // "Today's briefing" — a toggle chip that's always present in the chat so
-  // the user can pull up their calendar + task rundown any time. Starts
-  // collapsed; only the user opens it (never auto-expands on entry / first chat).
-  const [showDocketCard, setShowDocketCard] = useState(false);
   const [showAiSuggestionToast, setShowAiSuggestionToast] = useState(false);
   const lastSuggestionKeyRef = useRef<string>("");
   const [connectionCards, setConnectionCards] = useState<Array<{ title: string; sourceType: "board" | "media"; reason: string }>>([]);
@@ -1224,15 +1224,6 @@ export default function LyknChat() {
     const firstName = fullName ? fullName.split(/\s+/)[0] : "";
     const preferredName = String(firstName || emailName || "").trim();
     return preferredName ? `Welcome back, ${preferredName}` : "Start a new chat";
-  }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
-
-  const docketGreetingName = useMemo(() => {
-    const emailName = String(user?.email || "").split("@")[0].trim();
-    const fullName = String(
-      user?.user_metadata?.full_name || user?.user_metadata?.name || "",
-    ).trim();
-    const firstName = fullName ? fullName.split(/\s+/)[0] : "";
-    return (firstName || emailName || "").trim() || null;
   }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
 
   useEffect(() => {
@@ -1862,24 +1853,6 @@ export default function LyknChat() {
   } = chatEngine;
   const thinkingStatus = useThinkingStatus(isChatLoading, chatStatusText);
 
-  // Retire the "on your plate today" bubble the moment the user starts a
-  // turn so it doesn't linger beneath the fresh exchange. Declared here (not
-  // beside the trigger) because `isChatLoading` is destructured just above.
-  useEffect(() => {
-    if (showDocketCard && isChatLoading) setShowDocketCard(false);
-  }, [showDocketCard, isChatLoading]);
-
-  // If the user had the briefing open, collapse it when they switch chats —
-  // each conversation starts with the chip only; they reopen via the toggle.
-  const docketPrevChatIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    const id = chatId ?? null;
-    if (docketPrevChatIdRef.current && id && id !== docketPrevChatIdRef.current) {
-      setShowDocketCard(false);
-    }
-    if (id) docketPrevChatIdRef.current = id;
-  }, [chatId]);
-
   const clampChatRailWidth = useCallback((raw: number, vw: number) => {
     const width = Math.max(0, Math.floor(vw || 0));
     if (width < 640) return width;
@@ -2355,6 +2328,27 @@ export default function LyknChat() {
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
+  }, [applyVaultDropToChat]);
+
+  // Vault page "Chat" on a pulled-up card: stash payload, navigate here, then
+  // attach it with the same path as embedded click-to-add.
+  useEffect(() => {
+    let raw = "";
+    try {
+      raw = sessionStorage.getItem("lykn_pending_vault_chat_add") || "";
+      if (raw) sessionStorage.removeItem("lykn_pending_vault_chat_add");
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      if (data && typeof data === "object") {
+        void applyVaultDropToChat({ ...data, timestamp: Date.now() });
+      }
+    } catch {
+      /* ignore bad payload */
+    }
   }, [applyVaultDropToChat]);
 
   const saveAiImageToMedia = useCallback(async (imageUrl: string, promptText?: string) => {
@@ -4470,15 +4464,6 @@ export default function LyknChat() {
           onChatInputChange={handleChatInputChange}
           onSend={handleChatSend}
           typedWelcome={typedWelcome}
-          docketBubble={
-            !isEmbeddedMode ? (
-              <DailyDocketCard
-                greetingName={docketGreetingName}
-                expanded={showDocketCard}
-                onToggle={() => setShowDocketCard((v) => !v)}
-              />
-            ) : null
-          }
           isMobileGrid={isMobileGrid}
           isMobilePhone={isMobilePhone}
           isDictating={isDictating}
@@ -4519,43 +4504,22 @@ export default function LyknChat() {
           onActiveArtifactChange={setActiveArtifact}
           onSaveArtifact={saveArtifactToVault}
           chatKey={chatId || routeChatId || ""}
+          onFactNeuronChange={(msgId, next) => {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === msgId
+                  ? { ...m, factNeuron: next || undefined }
+                  : m,
+              ),
+            );
+          }}
           composerAbove={
-            chatMode && isMainAgentChat ? (
+            chatMode && isMainAgentChat && CUSTOM_MODELS_ENABLED ? (
               <SubAgentTasksStrip chatId={chatId} enabled={isMainAgentChat} />
             ) : null
           }
         />
       )}
-
-      {/* Floating load-in briefing panel — anchored to the far right
-          of the viewport, outside the chat column. Visible only while
-          the user is sitting on a fresh load-in greeting (single
-          unprompted assistant message) on a screen wide enough to
-          fit the panel without crowding the chat surface. */}
-      {chatMode && !isMobilePhone && !isMobileGrid && (() => {
-        const greeting =
-          chatMessages.length === 1 && chatMessages[0]?.kind === "load-in-greeting"
-            ? chatMessages[0]
-            : null;
-        if (!greeting?.aiResponseStats) return null;
-        return (
-          <div
-            // 2xl breakpoint: below ~1536px the fixed 20rem card overlaps the
-            // centered greeting column it's meant to accompany. overflow-y so
-            // the panel content scrolls on short viewports instead of clipping.
-            className="hidden 2xl:block fixed right-4 xl:right-8 top-20 z-[80] overflow-y-auto"
-            style={{
-              maxHeight: "calc(100vh - 6rem)",
-              width: "20rem",
-            }}
-          >
-            <LoadInBriefingPanel
-              stats={greeting.aiResponseStats}
-              greetingName={(greeting as any).greetingName}
-            />
-          </div>
-        );
-      })()}
 
       <DialogAny open={showAttachMenu} onOpenChange={setShowAttachMenu}>
         <DialogContentAny className="rounded-2xl border border-white/30 bg-[#f2f2f7]/65 backdrop-blur-md text-black shadow-lg">

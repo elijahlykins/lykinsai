@@ -2,6 +2,10 @@ import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { CONNECTORS } from "@/lib/connectors/catalog";
 import { OUTBOUND_TARGETS } from "@/lib/connectors/outboundTargets";
+import {
+  SYNTHESIS_LAYER_UI_ENABLED,
+  synthesisLayerHref,
+} from "@/lib/synthesisLayerUi";
 // Same LYKN squircle the app dock renders — used as the brand mark
 // on synthesis-layer notification bubbles (proposed beliefs, new
 // neurons, etc.) so those groups read as "from LYKN" instead of
@@ -1284,24 +1288,27 @@ function buildActions(
   // synthesis layer with `?focus=belief_<id>`, which selects the
   // node and opens its dedicated DetailPanel — the panel specific to
   // that one belief, not the generic "what's new" pullout.
-  for (const a of sections.topApprovalIds.slice(0, 2)) {
-    actions.push({
-      label: `Review “${truncate(a.label, 40)}”`,
-      href: `/synthesis-layer?focus=belief_${encodeURIComponent(a.id)}`,
-      description: "Approve or dismiss this belief",
-      tone: "amber",
-    });
+  if (SYNTHESIS_LAYER_UI_ENABLED) {
+    for (const a of sections.topApprovalIds.slice(0, 2)) {
+      actions.push({
+        label: `Review “${truncate(a.label, 40)}”`,
+        href: synthesisLayerHref(
+          `focus=belief_${encodeURIComponent(a.id)}`,
+        ),
+        description: "Approve or dismiss this belief",
+        tone: "amber",
+      });
+    }
   }
 
   // Projects — one button per recently-touched project (capped at 2).
-  // The dedicated /project/:id route isn't wired into the router yet,
-  // so we deep-link into the synthesis layer with the project node
-  // focused. From there the user can jump into the project's grids /
-  // notes / chats via the detail panel's "Open project →" affordance.
+  // When the graph UI is unplugged, land on /projects instead of a focus URL.
   for (const p of sections.topProjects.slice(0, 2)) {
     actions.push({
       label: `Open ${truncate(p.name, 32)}`,
-      href: `/synthesis-layer?focus=project_${encodeURIComponent(p.id)}`,
+      href: SYNTHESIS_LAYER_UI_ENABLED
+        ? synthesisLayerHref(`focus=project_${encodeURIComponent(p.id)}`)
+        : "/projects",
       description: "Jump to this project",
       tone: "fuchsia",
     });
@@ -1378,18 +1385,23 @@ function buildActions(
     });
   }
 
-  // Catch-all fallback — synthesis layer if nothing else above
-  // anchored a destination. We deep-link straight to the layer
-  // itself; there is no longer a "what's new" panel to pop open
-  // (the chat *is* the what's-new surface, and individual updates
-  // route to their own dedicated detail panels via `?focus=<id>`).
+  // Catch-all fallback when nothing else above anchored a destination.
   if (actions.length === 0) {
-    actions.push({
-      label: "Open Synthesis Layer",
-      href: "/synthesis-layer",
-      description: "See every recent update and neuron",
-      tone: "primary",
-    });
+    actions.push(
+      SYNTHESIS_LAYER_UI_ENABLED
+        ? {
+            label: "Open Synthesis Layer",
+            href: synthesisLayerHref(),
+            description: "See every recent update and neuron",
+            tone: "primary",
+          }
+        : {
+            label: "Open Projects",
+            href: "/projects",
+            description: "Jump into your active work",
+            tone: "primary",
+          },
+    );
   }
 
   return actions;
@@ -2221,7 +2233,7 @@ function buildConceptsMovedSection(
           id: `concept-item-${r.concept_id}`,
           title: `Your "${r.label}" concept moved`,
           subtitle,
-          href: `/synthesis-layer?focus=concept_${r.concept_id}`,
+          href: synthesisLayerHref(`focus=concept_${r.concept_id}`),
         },
       ],
     };
@@ -2298,7 +2310,9 @@ function buildApprovalsSectionStructured(
       const href =
         row.source_type === "vault_note"
           ? `/vault?note=${encodeURIComponent(sid)}`
-          : `/synthesis-layer?focus=fact_${encodeURIComponent(row.fact_id)}`;
+          : synthesisLayerHref(
+              `focus=fact_${encodeURIComponent(row.fact_id)}`,
+            );
       provenance.push({
         id: sid,
         label: label.length > 60 ? `${label.slice(0, 58)}…` : label,
@@ -2311,7 +2325,9 @@ function buildApprovalsSectionStructured(
       id: e.target_id,
       title: e.target_label || "a new belief",
       subtitle,
-      href: `/synthesis-layer?focus=belief_${encodeURIComponent(e.target_id)}`,
+      href: synthesisLayerHref(
+        `focus=belief_${encodeURIComponent(e.target_id)}`,
+      ),
       ...(provenance.length > 0 ? { provenance } : {}),
     });
     if (proposedItems.length >= 8) break;
@@ -2331,14 +2347,15 @@ function buildApprovalsSectionStructured(
       id: e.target_id,
       title: e.target_label || "a new belief",
       subtitle: `Activated · from ${clientDisplay(e.by_client)} · ${relativeTime(e.when)}`,
-      href: `/synthesis-layer?focus=belief_${encodeURIComponent(e.target_id)}`,
+      href: synthesisLayerHref(
+        `focus=belief_${encodeURIComponent(e.target_id)}`,
+      ),
     });
     if (activeItems.length >= 8) break;
   }
 
-  // New neurons (facts learned). These don't need explicit approval
-  // but the user wants visibility into what was learned about them
-  // recently, with the option to jump in and edit / dismiss.
+  // User Facts memory digest — recent claims LYKN locked in or proposed.
+  // Jump to synthesis to edit / dismiss; chat confirm chips handle pending.
   const factSeen = new Set<string>();
   const factItems: LoadInUpdatesGroup["items"] = [];
   for (const e of recent.filter((e) => e.type === "fact_added")) {
@@ -2348,8 +2365,10 @@ function buildApprovalsSectionStructured(
     factItems.push({
       id: e.target_id,
       title: e.target_label || "about you",
-      subtitle: `${who === "you" ? "You added" : `${who} learned`} this · ${relativeTime(e.when)}`,
-      href: `/synthesis-layer?focus=fact_${encodeURIComponent(e.target_id)}`,
+      subtitle: `${who === "you" ? "You saved" : `${who} proposed`} a User Fact · ${relativeTime(e.when)}`,
+      href: synthesisLayerHref(
+        `focus=fact_${encodeURIComponent(e.target_id)}`,
+      ),
     });
     if (factItems.length >= 8) break;
   }
@@ -2390,8 +2409,8 @@ function buildApprovalsSectionStructured(
   if (factItems.length > 0) {
     const newest = factItems[0];
     groups.push({
-      id: "neurons-new",
-      label: "New neurons",
+      id: "user-facts-digest",
+      label: "User Facts",
       iconUrl: lyknIconUrl,
       count: factItems.length,
       latestTitle: newest.title,
@@ -2404,26 +2423,26 @@ function buildApprovalsSectionStructured(
   // recap the user reads before deciding which bubble to expand.
   const bits: string[] = [];
   if (factItems.length > 0) {
-    bits.push(`${factItems.length} new neuron${factItems.length === 1 ? "" : "s"}`);
+    bits.push(`${factItems.length} User Fact${factItems.length === 1 ? "" : "s"} this week`);
   }
   if (activeItems.length > 0) {
     bits.push(
-      `${activeItems.length} belief${activeItems.length === 1 ? "" : "s"} promoted to active`,
+      `${activeItems.length} legacy belief${activeItems.length === 1 ? "" : "s"} activated`,
     );
   }
   if (proposedItems.length > 0) {
     bits.push(
-      `${proposedItems.length} new belief${proposedItems.length === 1 ? "" : "s"} waiting on your call`,
+      `${proposedItems.length} legacy belief${proposedItems.length === 1 ? "" : "s"} still proposed`,
     );
   }
   const summary =
     bits.length > 0
-      ? `Your synthesis layer minted ${bits.length === 1 ? bits[0] : bits.length === 2 ? `${bits[0]} and ${bits[1]}` : `${bits.slice(0, -1).join(", ")}, and ${bits[bits.length - 1]}`} in the last few days. Tap any of them to open the synthesis layer with the full description and an approve button.`
+      ? `Memory digest: ${bits.length === 1 ? bits[0] : bits.length === 2 ? `${bits[0]} and ${bits[1]}` : `${bits.slice(0, -1).join(", ")}, and ${bits[bits.length - 1]}`}. Open synthesis to review or edit a User Fact.`
       : "";
 
   return {
     id: "approvals",
-    heading: "Awaiting your approval",
+    heading: "Memory digest",
     summary,
     items: [],
     groups,

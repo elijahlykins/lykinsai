@@ -228,17 +228,19 @@ async function searchConcepts(ctx, query, limit) {
   }));
 }
 
-async function searchVaultNotes(ctx, query, limit) {
+async function searchVaultNotes(ctx, query, limit, opts = {}) {
   if (!query) return [];
   // Same hybrid engine as lykn_searchVault — substring-only was the silent
   // miss path when the model used findConnections for "what do I have on X?".
+  // `fast: true` skips expansion + LLM rerank for auto-injection paths
+  // (server-side [RELATED] packing) where latency/cost matter more.
+  const fast = !!opts.fast;
   try {
     const result = await retrieveVaultHybridHits(ctx, {
       query,
       limit,
-      // Related-word expansion + rerank — same quality as lykn_searchVault.
-      expand: true,
-      llmRerank: true,
+      expand: !fast,
+      llmRerank: !fast,
     });
     if (result?.ok && Array.isArray(result.hits) && result.hits.length) {
       return result.hits.map((hit) => ({
@@ -282,6 +284,85 @@ async function searchVaultNotes(ctx, query, limit) {
       url: `/vault?note=${encodeURIComponent(row.id)}`,
     },
   }));
+}
+
+/**
+ * Programmatic cross-store relatedness search (same engine as the MCP tool).
+ * Used by server-side [RELATED] prompt packing so chat doesn't wait for the
+ * model to remember to call lykn_findConnections.
+ *
+ * @returns {{ ok: true, query: string, matches: Array, counts: object } | { ok: false, reason: string }}
+ */
+export async function findRelatedConnectionHits(ctx, opts = {}) {
+  if (!ctx?.supabaseAdmin || !ctx?.userId) {
+    return { ok: false, reason: 'unauthorized' };
+  }
+
+  const rawQuery = typeof opts?.query === 'string' ? opts.query.trim().slice(0, MAX_QUERY_LEN) : '';
+  const rawNodeId = typeof opts?.node_id === 'string' ? opts.node_id.trim() : '';
+  if (!rawQuery && !rawNodeId) {
+    return { ok: false, reason: 'missing_query' };
+  }
+
+  const requestedKinds = Array.isArray(opts?.kinds) && opts.kinds.length > 0
+    ? opts.kinds.map((k) => String(k).toLowerCase()).filter((k) => KIND_SET.has(k))
+    : ALL_KINDS;
+
+  const perKindLimit = Number.isFinite(opts?.per_kind_limit)
+    ? Math.max(1, Math.min(MAX_PER_KIND_LIMIT, opts.per_kind_limit))
+    : DEFAULT_PER_KIND_LIMIT;
+
+  let seedKind = null;
+  let query = rawQuery;
+  if (!query && rawNodeId) {
+    const resolved = await resolveNodeIdToQuery(ctx, rawNodeId);
+    if (!resolved) return { ok: false, reason: 'node_not_found' };
+    query = resolved.query;
+    seedKind = resolved.seedKind;
+  }
+  if (!query) return { ok: false, reason: 'empty_seed' };
+
+  let searchKinds = requestedKinds;
+  if (seedKind && !Array.isArray(opts?.kinds)) {
+    searchKinds = requestedKinds.filter((k) => k !== seedKind);
+  }
+
+  const vaultOpts = { fast: !!opts.fast };
+  const tasks = [];
+  if (searchKinds.includes('belief')) {
+    tasks.push(searchBeliefs(ctx, query, perKindLimit).then((r) => ['belief', r]));
+  }
+  if (searchKinds.includes('fact')) {
+    tasks.push(searchFacts(ctx, query, perKindLimit).then((r) => ['fact', r]));
+  }
+  if (searchKinds.includes('concept')) {
+    tasks.push(searchConcepts(ctx, query, perKindLimit).then((r) => ['concept', r]));
+  }
+  if (searchKinds.includes('vault')) {
+    tasks.push(searchVaultNotes(ctx, query, perKindLimit, vaultOpts).then((r) => ['vault', r]));
+  }
+
+  const settled = await Promise.all(tasks);
+  const byKind = Object.fromEntries(settled);
+  const matches = [];
+  for (const kind of ALL_KINDS) {
+    if (!searchKinds.includes(kind)) continue;
+    for (const row of byKind[kind] || []) matches.push(row);
+  }
+  const counts = Object.fromEntries(
+    ALL_KINDS.map((k) => [k, (byKind[k] || []).length]),
+  );
+
+  return {
+    ok: true,
+    query,
+    seed_kind: seedKind,
+    kinds_searched: searchKinds,
+    per_kind_limit: perKindLimit,
+    count: matches.length,
+    counts,
+    matches,
+  };
 }
 
 export const findConnectionsTool = {
@@ -367,83 +448,37 @@ export const findConnectionsTool = {
       return errorContent('Pass either `query` (free-text) or `node_id` (starter neuron id).');
     }
 
-    const requestedKinds = Array.isArray(args?.kinds) && args.kinds.length > 0
-      ? args.kinds.map((k) => String(k).toLowerCase()).filter((k) => KIND_SET.has(k))
-      : ALL_KINDS;
+    const result = await findRelatedConnectionHits(ctx, {
+      query: rawQuery,
+      node_id: rawNodeId,
+      kinds: args?.kinds,
+      per_kind_limit: args?.per_kind_limit,
+      fast: false,
+    });
 
-    const perKindLimit = Number.isFinite(args?.per_kind_limit)
-      ? Math.max(1, Math.min(MAX_PER_KIND_LIMIT, args.per_kind_limit))
-      : DEFAULT_PER_KIND_LIMIT;
-
-    // Resolve node_id → query. If the caller passed BOTH query AND
-    // node_id, query wins (explicit > seeded) but we still note the
-    // seed_kind in the response so the model knows the original anchor.
-    let seedKind = null;
-    let query = rawQuery;
-    if (!query && rawNodeId) {
-      const resolved = await resolveNodeIdToQuery(ctx, rawNodeId);
-      if (!resolved) {
+    if (!result.ok) {
+      if (result.reason === 'node_not_found') {
         return jsonContent({
           ok: false,
           reason: 'node_not_found',
           message: `Could not resolve node_id "${rawNodeId}" to a source row. Format must be belief_<uuid>, fact_<uuid>, concept_<slug>, or vault_<uuid>.`,
         });
       }
-      query = resolved.query;
-      seedKind = resolved.seedKind;
+      if (result.reason === 'empty_seed') {
+        return jsonContent({
+          ok: false,
+          reason: 'empty_seed',
+          message: 'Starter neuron has no searchable text. Pass `query` explicitly.',
+        });
+      }
+      return errorContent('Pass either `query` (free-text) or `node_id` (starter neuron id).');
     }
-    if (!query) {
-      // resolveNodeIdToQuery returned a row but no usable text. Bail
-      // rather than silently returning every neuron in the system.
-      return jsonContent({
-        ok: false,
-        reason: 'empty_seed',
-        message: 'Starter neuron has no searchable text. Pass `query` explicitly.',
-      });
-    }
-
-    // Skip the seed kind from the search set — finding the starter
-    // neuron in its own result list is noise. The caller can pass an
-    // explicit `kinds` array if they DO want the same-kind results.
-    let searchKinds = requestedKinds;
-    if (seedKind && !Array.isArray(args?.kinds)) {
-      searchKinds = requestedKinds.filter((k) => k !== seedKind);
-    }
-
-    // Fire all enabled store queries in parallel.
-    const tasks = [];
-    if (searchKinds.includes('belief')) tasks.push(searchBeliefs(ctx, query, perKindLimit).then((r) => ['belief', r]));
-    if (searchKinds.includes('fact')) tasks.push(searchFacts(ctx, query, perKindLimit).then((r) => ['fact', r]));
-    if (searchKinds.includes('concept')) tasks.push(searchConcepts(ctx, query, perKindLimit).then((r) => ['concept', r]));
-    if (searchKinds.includes('vault')) tasks.push(searchVaultNotes(ctx, query, perKindLimit).then((r) => ['vault', r]));
-
-    const settled = await Promise.all(tasks);
-
-    const byKind = Object.fromEntries(settled);
-    // Interleave in policy order (belief → fact → concept → vault).
-    const matches = [];
-    for (const kind of ALL_KINDS) {
-      if (!searchKinds.includes(kind)) continue;
-      const rows = byKind[kind] || [];
-      for (const row of rows) matches.push(row);
-    }
-
-    const counts = Object.fromEntries(
-      ALL_KINDS.map((k) => [k, (byKind[k] || []).length]),
-    );
 
     return jsonContent({
-      ok: true,
-      query,
-      seed_kind: seedKind,
-      kinds_searched: searchKinds,
-      per_kind_limit: perKindLimit,
-      count: matches.length,
-      counts,
-      matches,
-      message: matches.length === 0
-        ? `No connections found for "${query}". The user hasn\'t saved / believed / observed anything matching that yet.`
-        : `Found ${matches.length} related neuron${matches.length === 1 ? '' : 's'} across ${searchKinds.length} store${searchKinds.length === 1 ? '' : 's'}.`,
+      ...result,
+      message: result.count === 0
+        ? `No connections found for "${result.query}". The user hasn\'t saved / believed / observed anything matching that yet.`
+        : `Found ${result.count} related neuron${result.count === 1 ? '' : 's'} across ${result.kinds_searched.length} store${result.kinds_searched.length === 1 ? '' : 's'}.`,
     });
   },
 };

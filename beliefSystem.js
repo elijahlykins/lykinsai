@@ -892,11 +892,17 @@ export async function recordRuleApplication(client, userId, payload) {
 function buildBeliefsAndRulesBody(beliefs, rules, opts = {}) {
   const activeBeliefs = (beliefs || []).filter((b) => b.status === 'active');
   if (!activeBeliefs.length) return null;
+  const maxRulesPerBelief = Number.isFinite(opts.maxRulesPerBelief)
+    ? Math.max(0, opts.maxRulesPerBelief)
+    : 4;
+  const maxBeliefs = Number.isFinite(opts.maxBeliefs)
+    ? Math.max(1, opts.maxBeliefs)
+    : MAX_ACTIVE_RULES_FOR_PROMPT;
   const rulesByBelief = new Map();
   for (const r of (rules || [])) {
     if (r.status !== 'active') continue;
     const arr = rulesByBelief.get(r.belief_id) || [];
-    if (arr.length < 4) arr.push(r);
+    if (arr.length < maxRulesPerBelief) arr.push(r);
     rulesByBelief.set(r.belief_id, arr);
   }
   const blocks = [];
@@ -906,7 +912,9 @@ function buildBeliefsAndRulesBody(beliefs, rules, opts = {}) {
     const ruleArr = rulesByBelief.get(b.id) || [];
     const ruleLines = ruleArr.length
       ? ruleArr.map((r) => `    · rule_id=${r.id} :: IF ${r.trigger_text} THEN ${r.action_text}`)
-      : ['    · (no active rules — answer in the spirit of the belief)'];
+      : (maxRulesPerBelief > 0
+          ? ['    · (no active rules — answer in the spirit of the belief)']
+          : []);
     const block = [
       `- belief [need=${b.serves_need}]: ${b.belief_text}`,
       ...ruleLines,
@@ -915,7 +923,7 @@ function buildBeliefsAndRulesBody(beliefs, rules, opts = {}) {
     blocks.push(block);
     totalLen += block.length;
     active += 1;
-    if (active >= MAX_ACTIVE_RULES_FOR_PROMPT) break;
+    if (active >= maxBeliefs) break;
   }
   return blocks.join('\n');
 }
@@ -934,6 +942,20 @@ function buildBeliefsAndRulesBody(beliefs, rules, opts = {}) {
 export function formatBeliefsAndRulesForPrompt(beliefs, rules, opts = {}) {
   const body = buildBeliefsAndRulesBody(beliefs, rules, opts);
   if (!body) return '';
+  if (opts.slim) {
+    // Always-on casual-turn variant: enough identity for tone, short
+    // enough that "hi" doesn't drown in governance prose.
+    const lines = [
+      '[WHO_I_AM]',
+      'Core principles for this person. Use lightly for tone/judgment; do not dig into projects unless they ask.',
+      'Beliefs are USER-AUTHORED — do not invent new ones.',
+      'If a rule below materially shapes this reply, end with:',
+      '  <applied rule_id="<uuid>">≤25 words on how it shaped this reply</applied>',
+      '',
+      body,
+    ];
+    return lines.join('\n').trim();
+  }
   const lines = [
     '[WHO_I_AM]',
     'Who this person is — principles and if-then rules that should shape how you treat them.',
@@ -1099,6 +1121,57 @@ function formatProjectStateEntryLine(key, entry) {
   return `- ${key}${metaSuffix}: ${value}`;
 }
 
+/**
+ * Pull a compact Who / What / Next resume from project state keys so the
+ * model can continue a project without re-reading the full kv dump.
+ */
+function buildProjectResumeLines(state, opts = {}) {
+  const slim = !!opts.slim;
+  if (!state || typeof state !== 'object') return [];
+  const pick = (...keys) => {
+    for (const k of keys) {
+      const entry = state[k];
+      const v = String(entry?.value || '').replace(/\s+/g, ' ').trim();
+      if (v) return v.slice(0, slim ? 120 : 200);
+    }
+    return null;
+  };
+  const who = pick(
+    'who',
+    'stakeholders',
+    'audience',
+    'users',
+    'customer',
+    'team',
+    'collaborators',
+  );
+  const what = pick(
+    'what',
+    'current_focus',
+    'focus',
+    'status',
+    'summary',
+    'goal',
+    'milestone',
+    'tech_stack',
+  );
+  const next = pick(
+    'next',
+    'next_step',
+    'next_steps',
+    'todo',
+    'current_blocker',
+    'blocker',
+    'blocked_by',
+  );
+  if (!who && !what && !next) return [];
+  const lines = ['', 'Resume (who / what / next — prefer these over inventing status):'];
+  if (who) lines.push(`Who: ${who}`);
+  if (what) lines.push(`What: ${what}`);
+  if (next) lines.push(`Next: ${next}`);
+  return lines;
+}
+
 /** Chronological push log — helps models reason about sequence of decisions. */
 function formatProjectRecentActivityLines(recentActivity) {
   const list = Array.isArray(recentActivity) ? recentActivity.filter(Boolean) : [];
@@ -1262,29 +1335,44 @@ export function formatProjectStateForPromptOutsideClient(projectContext) {
  *
  * If `projectContext` is null (no active project), returns ''.
  */
-export function formatProjectStateForPromptInLykn(projectContext) {
+export function formatProjectStateForPromptInLykn(projectContext, opts = {}) {
   if (!projectContext || !projectContext.project) return '';
   const { project, state, neurons, recentActivity, mainContext } = projectContext;
   const stateEntries = state && typeof state === 'object' ? Object.entries(state) : [];
+  const slim = !!opts.slim;
+  const maxState = slim ? 4 : 24;
+  const maxNeurons = slim ? 6 : 16;
 
   const lastActive = project.last_active_at
     ? new Date(project.last_active_at).toISOString()
     : null;
 
-  const header = [
-    '[WHAT_IM_ON]',
-    'What this person is working on — connect the current screen / this conversation to their projects.',
-    'They may have several; pick the best fit, name it, and don\'t re-litigate decisions already captured below.',
-    '',
-    `Active focus: ${project.name || '(unnamed)'}`,
-  ];
-  if (project.description) header.push(`Description: ${project.description}`);
-  if (lastActive) header.push(`Last activity: ${lastActive}`);
-  if (project.created_by_client) header.push(`Started in: ${project.created_by_client}`);
-  if (project.parent_project_id && project.main_project_name) {
-    header.push(`Branch of main: ${project.main_project_name} [id=${project.parent_project_id}]`);
-  } else if (!project.parent_project_id) {
-    header.push('Type: main project');
+  const header = slim
+    ? [
+        '[WHAT_IM_ON]',
+        'Active project (context only — do not open tools or re-litigate unless they ask).',
+        '',
+        `Active focus: ${project.name || '(unnamed)'}`,
+      ]
+    : [
+        '[WHAT_IM_ON]',
+        'What this person is working on — connect the current screen / this conversation to their projects.',
+        'They may have several; pick the best fit, name it, and don\'t re-litigate decisions already captured below.',
+        '',
+        `Active focus: ${project.name || '(unnamed)'}`,
+      ];
+  if (project.description) {
+    const desc = String(project.description);
+    header.push(`Description: ${slim && desc.length > 160 ? `${desc.slice(0, 157)}…` : desc}`);
+  }
+  if (!slim && lastActive) header.push(`Last activity: ${lastActive}`);
+  if (!slim && project.created_by_client) header.push(`Started in: ${project.created_by_client}`);
+  if (!slim) {
+    if (project.parent_project_id && project.main_project_name) {
+      header.push(`Branch of main: ${project.main_project_name} [id=${project.parent_project_id}]`);
+    } else if (!project.parent_project_id) {
+      header.push('Type: main project');
+    }
   }
   if (project.id) header.push(`project_id: ${project.id}`);
 
@@ -1295,16 +1383,16 @@ export function formatProjectStateForPromptInLykn(projectContext) {
       const bSet = b[1]?.set_at ? Date.parse(b[1].set_at) : 0;
       return bSet - aSet;
     })
-    .slice(0, 24);
+    .slice(0, maxState);
 
   const stateLines = sorted.length
     ? sorted.map(([key, entry]) => formatProjectStateEntryLine(key, entry))
-    : ['(no state pushes yet — this project was just created)'];
+    : (slim ? [] : ['(no state pushes yet — this project was just created)']);
 
-  const activityLines = formatProjectRecentActivityLines(recentActivity);
+  const activityLines = slim ? [] : formatProjectRecentActivityLines(recentActivity);
 
   const mainLines = [];
-  if (mainContext?.project && mainContext?.state) {
+  if (!slim && mainContext?.project && mainContext?.state) {
     const mainEntries = Object.entries(mainContext.state).filter(([, v]) => v?.value).slice(0, 8);
     if (mainEntries.length) {
       mainLines.push(
@@ -1320,15 +1408,29 @@ export function formatProjectStateForPromptInLykn(projectContext) {
   const neuronList = Array.isArray(neurons) ? neurons : [];
   const neuronLines = [];
   if (neuronList.length > 0) {
-    neuronLines.push('', 'Clustered context (user-grouped for this project):');
-    for (const n of neuronList.slice(0, 16)) {
+    neuronLines.push('', slim ? 'Clustered context:' : 'Clustered context (user-grouped for this project):');
+    for (const n of neuronList.slice(0, maxNeurons)) {
       const kind = n?.kind ? ` [${n.kind}]` : '';
       const label = (n?.label || '(unlabeled)').toString().replace(/\s+/g, ' ').trim();
       neuronLines.push(`- ${label}${kind}`);
     }
-    if (neuronList.length > 16) {
-      neuronLines.push(`(+ ${neuronList.length - 16} more — visible on the synthesis page)`);
+    if (neuronList.length > maxNeurons) {
+      neuronLines.push(`(+ ${neuronList.length - maxNeurons} more — visible on the synthesis page)`);
     }
+  }
+
+  const resumeLines = buildProjectResumeLines(state, { slim });
+
+  if (slim) {
+    const slimBody = [
+      ...header,
+      ...resumeLines,
+      ...(stateLines.length
+        ? ['', 'Recent state:', ...stateLines]
+        : []),
+      ...neuronLines,
+    ];
+    return slimBody.join('\n').trim();
   }
 
   const footer = [
@@ -1337,14 +1439,15 @@ export function formatProjectStateForPromptInLykn(projectContext) {
     'AI client pushed it. Prior assistant replies in [CONVERSATION] are labeled',
     'with their model — those were written by that model, not necessarily you.',
     'If this conversation produces a meaningful new decision, blocker, or',
-    'milestone for this project, suggest the user capture it so LYKN keeps',
-    'learning what they\'re on. Outside AI clients can update via MCP; in-LYKN',
+    'next step for this project, push it (who / what / next / current_blocker)',
+    'so Resume stays accurate. Outside AI clients can update via MCP; in-LYKN',
     'chat can use project tools when available — otherwise point them at the',
     'project panel for durable changes.',
   ];
 
   return [
     ...header,
+    ...resumeLines,
     '',
     'Current state (sorted by most recently updated key):',
     ...stateLines,
