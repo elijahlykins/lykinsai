@@ -74,6 +74,7 @@ import { fromChatModelKey, toChatModelKey } from "@/lib/lyknChat/chatModelKey";
 import { patchThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
 import LyknChatPlusMenu from "@/components/lyknChat/LyknChatPlusMenu";
 import LyknChatProjectPicker, { type LyknChatScopedProject } from "@/components/lyknChat/LyknChatProjectPicker";
+import AddLinkDialog, { type AddLinkPreview } from "@/components/AddLinkDialog";
 // Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
 // Keep this `true` to make the focused chat the main interface across `/app`,
 // `/chat/:chatId`, and `/omnia`. Flip back to `false` to re-enable the
@@ -810,6 +811,7 @@ export default function LyknChat() {
   const reset = useLyknChatStore((s) => s.reset);
   const gridSize = useLyknChatStore((s) => s.gridSize);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [showAddLinkDialog, setShowAddLinkDialog] = useState(false);
   const [showVaultSidebar, setShowVaultSidebar] = useState(false);
   const [vaultDragActive, setVaultDragActive] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
@@ -2515,27 +2517,41 @@ export default function LyknChat() {
   }, [user?.id, routeChatId, chatId, requireSignIn]);
 
   // Add a URL as a focused chat attachment. Shows the chip instantly, then
-  // unfurls Open Graph metadata in the background so the sent message renders
-  // the same rich LinkPreview card the Vault shows (hero image, site name,
-  // title, description) rather than a bare file chip. YouTube URLs stay as
-  // an embeddable youtube attachment.
-  const addLinkToChat = useCallback((rawUrl: string) => {
-    const trimmedUrl = String(rawUrl || "").trim();
+  // unfurls Open Graph metadata in the background (unless the Add Link
+  // dialog already provided a preview) so the sent message renders the
+  // same rich LinkPreview card the Vault shows.
+  const addLinkToChat = useCallback((rawUrl: string, preview?: AddLinkPreview | null) => {
+    const trimmedUrl = String(rawUrl || preview?.url || "").trim();
     if (!trimmedUrl) return;
     const urlType = inferUrlAttachmentType(trimmedUrl);
     const videoId = urlType === "youtube" ? (extractYouTubeVideoId(trimmedUrl) || "") : "";
     const attId = makeAttId();
+    const hasPreviewMeta = Boolean(
+      preview && (preview.title || preview.description || preview.image || preview.siteName),
+    );
     addFocusedAttachment({
       id: attId,
       type: urlType,
       url: trimmedUrl,
-      name: trimmedUrl,
+      name: preview?.title || trimmedUrl,
       mime: "",
       size: 0,
       ...(videoId ? { videoId } : {}),
+      ...(hasPreviewMeta
+        ? {
+            linkTitle: preview?.title || "",
+            linkDescription: preview?.description || "",
+            linkImage: preview?.image || "",
+            linkSiteName: preview?.siteName || "",
+            linkFavicon: preview?.favicon || "",
+            oembedType: preview?.oembedType || "",
+            authorName: preview?.authorName || "",
+            authorHandle: preview?.authorHandle || "",
+          }
+        : {}),
     });
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
-    if (urlType === "link") {
+    if (urlType === "link" && !hasPreviewMeta) {
       void (async () => {
         try {
           const { API_BASE_URL } = await import("@/lib/api-config");
@@ -2571,14 +2587,19 @@ export default function LyknChat() {
   }, []);
 
   const handleAddLinkClick = useCallback(() => {
-    const url = prompt("Enter any URL:");
-    const trimmedUrl = String(url || "").trim();
-    if (!trimmedUrl) return;
+    // Same panel as Vault → Add link. Electron blocks window.prompt().
+    setShowAddLinkDialog(true);
+  }, []);
+
+  const handleConfirmAddLink = useCallback((preview: AddLinkPreview) => {
+    const url = String(preview?.url || "").trim();
+    if (!url) return;
     if (chatMode) {
-      addLinkToChat(trimmedUrl);
+      addLinkToChat(url, preview);
     } else {
-      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: trimmedUrl } }));
+      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url, preview } }));
     }
+    setShowAddLinkDialog(false);
   }, [chatMode, addLinkToChat]);
 
   // Open the same vault pullout the top-right "+" uses, so the user can browse
@@ -4521,6 +4542,15 @@ export default function LyknChat() {
         />
       )}
 
+      <AddLinkDialog
+        open={showAddLinkDialog}
+        onClose={() => setShowAddLinkDialog(false)}
+        title="Add link to chat"
+        confirmLabel="Add to chat"
+        confirmingLabel="Adding..."
+        onConfirm={handleConfirmAddLink}
+      />
+
       <DialogAny open={showAttachMenu} onOpenChange={setShowAttachMenu}>
         <DialogContentAny className="rounded-2xl border border-white/30 bg-[#f2f2f7]/65 backdrop-blur-md text-black shadow-lg">
           <DialogHeaderAny>
@@ -4534,15 +4564,8 @@ export default function LyknChat() {
             <button
               type="button"
               onClick={() => {
-                const url = prompt("Enter any URL:");
-                const trimmedUrl = String(url || "").trim();
-                if (!trimmedUrl) return;
-                if (chatMode) {
-                  addLinkToChat(trimmedUrl);
-                } else {
-                  window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: trimmedUrl } }));
-                }
                 setShowAttachMenu(false);
+                setShowAddLinkDialog(true);
               }}
               className="w-full flex items-center gap-3 justify-start rounded-xl px-3 py-2 bg-white/35 border border-white/30 backdrop-blur-sm hover:opacity-90"
             >
