@@ -14,6 +14,8 @@
  * the production gate locally.
  */
 
+import { isEmbeddedSurfacePath } from "@/lib/embeddedPreview";
+
 export function isDesktopShell(): boolean {
   try {
     return typeof window !== "undefined" && Boolean((window as any).lykn?.desktop);
@@ -32,9 +34,32 @@ export function isWebAppEnabled(): boolean {
   return Boolean(import.meta.env.DEV);
 }
 
+/**
+ * Same-origin iframes like VaultPickerDialog (`/vault?embedded=1`) and the
+ * chat vault panel. Electron's preload does not run in subframes by default,
+ * so `window.lykn.desktop` is missing there and the desktop gate would
+ * otherwise bounce the iframe to /download (Glass marketing chrome).
+ *
+ * Safe because:
+ *   • only applies inside a frame (top-level ?embedded=1 still gated)
+ *   • CSP `frame-ancestors 'self'` blocks cross-origin embedding
+ *   • ProtectedRoute still requires an authenticated session
+ */
+export function isEmbeddedDesktopSurface(): boolean {
+  try {
+    if (typeof window === "undefined") return false;
+    if (window.self === window.top) return false;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("embedded") !== "1") return false;
+    return isEmbeddedSurfacePath(window.location.pathname);
+  } catch {
+    return false;
+  }
+}
+
 /** True when this client may use the full in-app product UI. */
 export function canUseWebApp(): boolean {
-  return isWebAppEnabled() || isDesktopShell();
+  return isWebAppEnabled() || isDesktopShell() || isEmbeddedDesktopSurface();
 }
 
 /** Public marketing / legal / desktop-auth surfaces that stay on the website. */
