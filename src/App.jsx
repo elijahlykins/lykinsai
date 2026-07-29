@@ -62,6 +62,8 @@ import Terms from "./pages/Terms";
 import CookiePolicy from "./pages/CookiePolicy";
 import DPA from "./pages/DPA";
 import Support from "./pages/Support";
+import BillingSuccess from "./pages/BillingSuccess";
+import BillingCancel from "./pages/BillingCancel";
 import { useIsMobile } from "@/hooks/useViewportTier";
 import ProjectsPage from "./pages/ProjectsPage";
 import ProjectDetailPage from "./pages/ProjectDetailPage";
@@ -241,6 +243,8 @@ function AppShell() {
     location.pathname.startsWith("/news/") ||
     location.pathname.startsWith("/product/") ||
     location.pathname === "/support" ||
+    location.pathname === "/billing/success" ||
+    location.pathname === "/billing/cancel" ||
     location.pathname.startsWith("/apps/");
   const isSharePage = location.pathname === "/share";
 
@@ -281,6 +285,8 @@ function AppShell() {
     location.pathname === "/cookies" ||
     location.pathname === "/dpa" ||
     location.pathname === "/support" ||
+    location.pathname === "/billing/success" ||
+    location.pathname === "/billing/cancel" ||
     location.pathname === "/news" ||
     location.pathname.startsWith("/news/") ||
     location.pathname.startsWith("/product/");
@@ -375,6 +381,8 @@ function AppShell() {
             <Route path="/cookies" element={<CookiePolicy />} />
             <Route path="/dpa" element={<DPA />} />
             <Route path="/support" element={<Support />} />
+            <Route path="/billing/success" element={<BillingSuccess />} />
+            <Route path="/billing/cancel" element={<BillingCancel />} />
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/download" element={<DownloadLykn />} />
             {/* Capability product pages: Chat / Build / Imagine / Voice. */}

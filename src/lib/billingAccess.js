@@ -56,6 +56,8 @@ const SUBSCRIPTION_GATE_EXACT = new Set([
   "/cookies",
   "/dpa",
   "/support",
+  "/billing/success",
+  "/billing/cancel",
   "/",
   "/landing",
   "/glass",
