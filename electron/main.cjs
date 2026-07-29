@@ -2381,6 +2381,9 @@ function stripHiddenTags(s) {
 // Declared above the vault marker helpers that write them.
 let lastOverlayReactArtifact = null; // { toolName, title, code }
 let lastOverlayVaultImage = null; // { url, title }
+// Last page fingerprint for Glass asks — when the screen/URL changes mid-chat,
+// keep the screenshot even on text-rich pages so we don't go blind.
+let lastOverlayPageFingerprint = "";
 
 /**
  * Parse `[ATTACHMENTS_JSON:…]` from vault note content (CJS twin of
@@ -5230,11 +5233,19 @@ function overlayMessageWantsVisualGuidance(text) {
   if (!t) return false;
   // "do/can you see...", "are you seeing my screen", "look at this".
   if (/\b(do|can|are) you see(ing)?\b/.test(t)) return true;
-  if (/\b(on (my|the) screen|look at (my|the|this)|screenshot)\b/.test(t)) return true;
+  if (/\b(on (my|the) screen|look at (my|the|this)|screenshot|read (the |my )?screen)\b/.test(t)) return true;
   // Naming a concrete UI element ("the run button", "that settings icon") is
   // about LAYOUT — the page text can't answer where it is or whether it shows.
   if (
     /\b(button|icon|tab|toolbar|menu|sidebar|panel|modal|dialog|field|input|toggle|checkbox|dropdown|slider)\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // Ads / analytics UI nouns — often charts and creatives the scrape misses.
+  if (
+    /\bthe (ad|ads|creative|campaign|graph|chart|plot|preview|audience|bid|budget|metric|ctr|cpc)\b/.test(
       t,
     )
   ) {
@@ -5256,6 +5267,38 @@ function overlayMessageWantsVisualGuidance(text) {
     return true;
   }
   return false;
+}
+
+// Short deictic follow-ups mid-chat ("what about this?", "and that one?")
+// usually point at the screen after a UI change — keep pixels, don't go text-only.
+function overlayMessageLooksScreenDeictic(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t || t.length > 280) return false;
+  if (/\b(compare|vs\.?|versus)\b/.test(t)) return true;
+  if (
+    /\b(this|that|these|those)\b/.test(t) &&
+    /\b(ad|ads|creative|campaign|graph|chart|plot|one|metric|number|result|results|preview|audience|bid|budget|option|setting)\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // Bare short deixis with history is almost always about the screen.
+  if (t.length <= 80 && /\b(this|that|these|those|here)\b/.test(t)) return true;
+  return false;
+}
+
+function overlayPageFingerprint(pageContext) {
+  if (!pageContext) return "";
+  const url = String(pageContext.url || "").trim();
+  const title = String(pageContext.title || "").trim();
+  if (!url && !title) return "";
+  // Include a short text head so SPA route changes without URL churn still count.
+  const head = String(pageContext.text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return `${url}|${title}|${head}`;
 }
 
 function overlayMessageIsPhatic(text) {
@@ -5539,8 +5582,20 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
   // A message that clearly wants VISUAL help ("do you see this?", "how do I
   // run this?", "where do I click?") must keep the pixels even when the page
   // is text-rich — the text-only fast path leaves the model blind to layout.
+  // Also keep pixels when the page fingerprint changed since the last ask, or
+  // when a short deictic follow-up likely points at the new UI.
+  const pageFingerprint = overlayPageFingerprint(pageContext);
+  const screenChanged =
+    !skipScreenContext &&
+    !!pageFingerprint &&
+    !!lastOverlayPageFingerprint &&
+    pageFingerprint !== lastOverlayPageFingerprint;
+  const hasChatHistory = Array.isArray(history) && history.length > 0;
   const wantsVisualGuidance =
-    !skipScreenContext && overlayMessageWantsVisualGuidance(text);
+    !skipScreenContext &&
+    (overlayMessageWantsVisualGuidance(text) ||
+      screenChanged ||
+      (hasChatHistory && overlayMessageLooksScreenDeictic(text)));
   // Live Watch already ran a recent vision pass — skip the screenshot upload when
   // there's no scraped page text (games, native apps) to stay fast.
   let attachScreenshot =
@@ -5552,13 +5607,19 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
   // model about which image the user means (and could bleed screen content
   // into the generation). Drop it; the attachment carries the pixels.
   if (forceImage && imageAtts.length) attachScreenshot = false;
+  if (!skipScreenContext && pageFingerprint) {
+    lastOverlayPageFingerprint = pageFingerprint;
+  }
   if (hasRichPageText && dataURL && !attachScreenshot) {
     console.log(
       `[overlay-ask] text-rich page (${pageContext.text.length} chars) — dropping screenshot, staying on fast model`,
     );
   } else if (hasRichPageText && attachScreenshot) {
+    const reason = screenChanged
+      ? "screen/page changed since last ask"
+      : "message wants visual guidance";
     console.log(
-      `[overlay-ask] text-rich page (${pageContext.text.length} chars) but message wants visual guidance — keeping screenshot`,
+      `[overlay-ask] text-rich page (${pageContext.text.length} chars) but ${reason} — keeping screenshot`,
     );
   }
   let prompt = skipScreenContext
@@ -5602,11 +5663,14 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
     "sections when helpful, '- ' bullet points for lists, **bold** for key terms, " +
     "and `code` for code/identifiers. Keep it scannable — don't write one long " +
     "paragraph when bullets or headers would read better." +
-    "\n\nSimple formatting does NOT need Build mode: for a standalone chart or " +
-    "graph, call lykn_generate_chart (Glass shows the image automatically — do " +
-    "NOT invent or paste QuickChart URLs). For a flowchart/diagram, call " +
-    "lykn_generate_diagram. Lists, headers, and bold are just Markdown in your " +
-    "reply. Reserve Build mode for live coded apps / dashboards / interactive tools.";
+    "\n\nDo NOT call lykn_generate_chart, lykn_generate_diagram, or enter Build " +
+    "mode unless the user clearly asked you to make/build/create/generate a " +
+    "chart, diagram, or coded app. Mentions of a graph/chart/ad on their screen " +
+    "are about what they are looking at — answer from the screen, do not invent " +
+    "a new chart. Only when they clearly commission a standalone chart/graph, " +
+    "call lykn_generate_chart (Glass shows the image — never invent QuickChart " +
+    "URLs). Same for lykn_generate_diagram. Lists, headers, and bold are just " +
+    "Markdown in your reply.";
   if (!hasVideoTranscript) {
     // Tools are on for this turn (see useTools below), which includes live web
     // search. Without this note the screen-first framing above makes the model
@@ -5765,6 +5829,9 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
       return { forceArtifact: true, artifactType: "webapp", useTools: true };
     })(),
     overlayAsk: true,
+    // Server uses this to strip chart/diagram/webapp builders when the turn
+    // has live screen/page context and no explicit Create/Build ask.
+    overlayScreenContext: !skipScreenContext,
     // Scope writes to the project the user is working in (sniffed from the
     // active browser tab). Lets "add this task to my project" land on the
     // project they're looking at instead of unfiled.

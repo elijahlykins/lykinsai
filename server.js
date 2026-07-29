@@ -5368,6 +5368,12 @@ const LYKN_GLASS_MEMORY_ADDENDUM = [
   '4. [WHAT_IVE_SAVED] — ONLY if they asked for something saved. On a normal',
   '   screen/chat turn: do NOT search the Vault, do NOT call loadNeuron, do NOT',
   '   mention random saved items. Answer from the screen + conversation.',
+  'SCREEN-FIRST MAKERS (strict): when this turn has screen/page context and the',
+  '  user did NOT clearly ask you to make/build/create/generate a chart, diagram,',
+  '  or coded app — do NOT call lykn_generate_chart, lykn_generate_diagram, or',
+  '  lykn_build_react_artifact. Mentions of a graph/chart/ad on their screen are',
+  '  questions ABOUT the screen, not commissions to invent a new one. Answer from',
+  '  the screen first; only build when they clearly commission a deliverable.',
   'SURFACING IN GLASS (strict — opt-in only):',
   '  • Call lykn_searchVault / lykn_loadNeuron ONLY when they explicitly ask to',
   '    find / show / pull up / open something from their Vault or "what I saved".',
@@ -6914,9 +6920,23 @@ const ARTIFACT_INTENT_NOUNS = [
   { type: 'document',  re: /(documents?|\bdocs?\b|google ?docs?|word ?docs?|report|essay|memo|white ?paper|one[- ]?pager|cover letter|letter|write[- ]?up)/i },
 ];
 const ARTIFACT_BUILD_VERB_RE = /\b(?:make|build|create|generate|design|draft|produce|prepare|compose|put together|whip up|mock up|draw up|draw|write|give|need|want|turn (?:this|that|it) into)\b(?:\s+(?:me|us))?\s+(?:a|an|the|some|my|another|one)\s+/i;
+// Soft verbs ("want/need/give me a …") are everyday English for looking at
+// something that already exists. Hard verbs commission a deliverable.
+const ARTIFACT_SOFT_BUILD_VERB_RE = /\b(?:give|need|want)\b/i;
+const ARTIFACT_HARD_BUILD_VERB_RE = /\b(?:make|build|create|generate|design|draft|produce|prepare|compose|put together|whip up|mock up|draw up|draw|write|turn (?:this|that|it) into)\b/i;
 const ARTIFACT_ANALYSIS_LEAD_RE = /^(?:can you|could you|would you|please|hey|ok|okay|so|now|then|and)?[,\s]*(?:summari[sz]e|explain|describe|analy[sz]e|review|read|improve|fix|edit|update|revise|shorten|expand|lengthen|critique|proofread|rewrite|reword)\b/i;
+// Glass follow-ups about on-screen UI ("this ad", "the graph above") must not
+// auto-arm Create/Build — the user is asking about the screen, not a deliverable.
+const ARTIFACT_SCREEN_DEICTIC_RE =
+  /\b(?:on (?:my|the) screen|look at|read (?:the |my )?screen|above|right here)\b|\b(?:this|that|these|those|the)\b.{0,48}\b(?:chart|graph|plot|ad|ads|creative|campaign|screen|page|dashboard|table|metric|ctr|cpc|preview|audience|bid|budget)\b/i;
+// Chart/diagram object must LEAD the tail — "want a better look at the graph"
+// used to match because "graph" appeared anywhere in the next 60 chars.
+const ARTIFACT_CHART_OBJECT_LEAD_RE =
+  /^(?:simple |quick |small |bar |line |pie |column |area |stacked |scatter )?(?:charts?|graphs?|plots?|histograms?)\b/i;
+const ARTIFACT_DIAGRAM_OBJECT_LEAD_RE =
+  /^(?:simple |quick |small )?(?:flow ?charts?|flow ?diagrams?|org ?charts?|sequence diagrams?|state diagrams?|gantt ?charts?|gantts?|mind ?maps?|diagrams?)\b/i;
 
-function detectArtifactIntent(message) {
+function detectArtifactIntent(message, opts = {}) {
   const raw = String(message || '').trim();
   if (!raw) return null;
   // Classify from the leading ask even when the user pasted a long article
@@ -6927,11 +6947,31 @@ function detectArtifactIntent(message) {
   if (ARTIFACT_ANALYSIS_LEAD_RE.test(t)) return null;
   const m = ARTIFACT_BUILD_VERB_RE.exec(t);
   if (!m) return null;
+  const verbChunk = m[0];
+  const softVerb = ARTIFACT_SOFT_BUILD_VERB_RE.test(verbChunk);
+  const hardVerb = ARTIFACT_HARD_BUILD_VERB_RE.test(verbChunk);
+  // Glass + deictic soft ask ("I want a better look at the graph") → screen Q&A,
+  // never auto-force a maker. Hard "make me a chart of this" still builds.
+  if (opts.glassScreenFirst && softVerb && !hardVerb && ARTIFACT_SCREEN_DEICTIC_RE.test(t)) {
+    return null;
+  }
   // Bind the build verb to its object: the artifact noun must appear right
   // after the "make a …" construction, not somewhere far off in the sentence.
   const tail = t.slice(m.index + m[0].length, m.index + m[0].length + 60);
   for (const { type, re } of ARTIFACT_INTENT_NOUNS) {
-    if (re.test(tail)) return type;
+    if (!re.test(tail)) continue;
+    if (type === 'chart' || type === 'diagram') {
+      const leads =
+        type === 'chart'
+          ? ARTIFACT_CHART_OBJECT_LEAD_RE.test(tail)
+          : ARTIFACT_DIAGRAM_OBJECT_LEAD_RE.test(tail);
+      if (!leads) continue;
+      // Soft "want a chart…" is fine in web chat; on Glass it fights screen-read.
+      if (opts.glassScreenFirst && softVerb && !hardVerb) continue;
+    }
+    // Soft "want a dashboard" on Glass is often about Ads Manager UI, not Build.
+    if (opts.glassScreenFirst && type === 'webapp' && softVerb && !hardVerb) continue;
+    return type;
   }
   return null;
 }
@@ -14594,7 +14634,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       }
     }
     if (!forceArtifact && !forceImage && !hasActiveArtifactBody) {
-      const inferredArtifactType = detectArtifactIntent(text || '');
+      const inferredArtifactType = detectArtifactIntent(text || '', {
+        glassScreenFirst: !!overlayAsk,
+      });
       if (inferredArtifactType) {
         artifactType = inferredArtifactType;
         artifactAutoInferred = true;
@@ -14663,7 +14705,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       ) &&
       (imageUrls.length > 0 || activeArtifactHasSource);
     const imageWebappAsk =
-      imageUrls.length > 0 && detectArtifactIntent(askText) === 'webapp';
+      imageUrls.length > 0 &&
+      detectArtifactIntent(askText, { glassScreenFirst: !!overlayAsk }) === 'webapp';
     // Same-chat open platformer + "build me a copy of minecraft like this"
     // must start a NEW coded artifact — not surgical edits of Super Coin Dash.
     const freshWebappAsk = isFreshWebappBuildAsk(askText, {
@@ -14729,7 +14772,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // Same-kind non-tweaks ("build another deck about X" over an open deck) also
     // force a fresh builder call so we don't only narrate success.
     if (!artifactBuildSpec && !forceImage && activeArtifactHasSource && activeArtifact) {
-      const inferredKind = detectArtifactIntent(askText);
+      const inferredKind = detectArtifactIntent(askText, {
+        glassScreenFirst: !!overlayAsk,
+      });
       const inferredSpec = inferredKind ? ARTIFACT_BUILD_SPEC[inferredKind] : null;
       const openToolNow = String(activeArtifact.toolName || '');
       const differentBuilder =
@@ -14988,6 +15033,30 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         streamChatToolNames = names;
       }
       useTools = true;
+    }
+    // Glass screen-first: when this turn has live screen/page context and the
+    // user did not arm/force a maker, strip chart/diagram/webapp builders so
+    // the model can't invent a graph instead of reading the screen.
+    const GLASS_SCREEN_MAKER_TOOLS = new Set([
+      'lykn_generate_chart',
+      'lykn_generate_diagram',
+      'lykn_build_react_artifact',
+    ]);
+    if (
+      overlayAsk &&
+      req.body?.overlayScreenContext === true &&
+      !forceArtifact &&
+      !artifactAutoInferred &&
+      !artifactToolName &&
+      Array.isArray(streamChatToolNames)
+    ) {
+      const before = streamChatToolNames.length;
+      streamChatToolNames = streamChatToolNames.filter((n) => !GLASS_SCREEN_MAKER_TOOLS.has(n));
+      if (streamChatToolNames.length !== before) {
+        console.log(
+          '🪟 Stream: Glass screen-first — stripping chart/diagram/webapp builders (no explicit build ask)',
+        );
+      }
     }
     // Custom AI instructions are Studio+. Strip them for basic-tier callers.
     if (streamPlan.modelTier === 'basic' && userPrompt) {
