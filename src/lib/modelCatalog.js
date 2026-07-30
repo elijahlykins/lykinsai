@@ -35,7 +35,7 @@ export const LEGACY_FRONTIER_ALIASES = {
 
 // Documented for reference; the runtime mapping lives in `server.js`.
 export const LYKN_ROUTED_MODELS = {
-  [LYKN_ID]: "gpt-4.1-nano",
+  [LYKN_ID]: "gpt-5.6-terra",
 };
 
 // Retired tier ids — still accepted from localStorage / DB and canonicalized

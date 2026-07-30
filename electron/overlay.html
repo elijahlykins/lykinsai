@@ -138,6 +138,42 @@
         -webkit-user-select: text;
         user-select: text;
       }
+      .chat-a-body { min-width: 0; }
+      .chat-a-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 10px;
+        padding-top: 2px;
+      }
+      .chat-a-actions[hidden] { display: none !important; }
+      .chat-copy {
+        -webkit-app-region: no-drag;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 9px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.72);
+        font: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+      }
+      .chat-copy:hover {
+        color: #f4f6fb;
+        background: rgba(255, 255, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.16);
+      }
+      .chat-copy.copied {
+        color: #34d399;
+        border-color: rgba(52, 211, 153, 0.35);
+        background: rgba(52, 211, 153, 0.12);
+      }
+      .chat-copy svg { width: 12px; height: 12px; flex: none; }
       .chat.collapsed .chat-a { display: none; }
       .chat.collapsed .suggest { display: none; }
 
@@ -570,8 +606,8 @@
         align-items: center;
         justify-content: flex-start;
         gap: 8px;
-        height: 20px;
-        padding: 0 12px;
+        height: 28px;
+        padding: 4px 10px 0 12px;
         cursor: grab;
       }
       .titlebar.dragging { cursor: grabbing; }
@@ -583,6 +619,28 @@
         transition: background 0.15s ease;
       }
       .titlebar:hover .grip { background: rgba(255, 255, 255, 0.32); }
+      .titlebar-spacer { flex: 1; min-width: 8px; }
+      /* Active mode — bare blue icon, top-right. Click clears back to chat. */
+      .mode-badge {
+        -webkit-app-region: no-drag;
+        flex: none;
+        width: 22px;
+        height: 22px;
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        color: #60a5fa;
+        background: transparent;
+        border: none;
+        padding: 0;
+        transition: color 0.12s ease, opacity 0.12s ease;
+      }
+      .mode-badge:hover {
+        color: #93c5fd;
+        opacity: 1;
+      }
+      .mode-badge[hidden] { display: none; }
+      .mode-badge svg { width: 15px; height: 15px; }
 
       /* Composer — textarea row + bottom toolbar (matches main app layout). */
       .composer {
@@ -592,9 +650,8 @@
         padding: 6px 12px 8px;
         flex: none;
       }
-      /* Sticky-mode pill — shows the armed composer mode (image/build) with a
-         ✕ to drop back to chat. Sits above the textarea row. */
-      .mode-pill {
+      /* Project scope chip (not a composer mode) — stays above the field. */
+      .mode-pill.project-pill {
         -webkit-app-region: no-drag;
         display: inline-flex;
         align-items: center;
@@ -611,11 +668,117 @@
         letter-spacing: 0.02em;
         cursor: pointer;
       }
-      .mode-pill:hover { background: rgba(96, 165, 250, 0.24); }
-      /* display:inline-flex above beats the UA's [hidden] rule — restate it,
-         or the pill shows in plain chat mode too. */
-      .mode-pill[hidden] { display: none; }
-      .mode-pill svg { width: 11px; height: 11px; opacity: 0.85; }
+      .mode-pill.project-pill:hover { background: rgba(96, 165, 250, 0.24); }
+      .mode-pill.project-pill[hidden] { display: none; }
+      .mode-pill.project-pill svg { width: 11px; height: 11px; opacity: 0.85; }
+      /* Target language picker — only visible while Translate mode is armed.
+         Custom menu (not native <select>) so the list scrolls at a fixed height
+         without growing the composer. */
+      .lang-pill {
+        -webkit-app-region: no-drag;
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        margin: 2px 0 0;
+        width: 148px;
+        flex: none;
+        z-index: 1;
+      }
+      .lang-pill[hidden] { display: none; }
+      .lang-pill-btn {
+        -webkit-app-region: no-drag;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        padding: 3px 8px 3px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.78);
+        font: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+      }
+      .lang-pill-btn:hover,
+      .lang-pill.open .lang-pill-btn {
+        color: #f4f6fb;
+        background: rgba(255, 255, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.18);
+      }
+      .lang-pill-btn .lang-prefix {
+        opacity: 0.7;
+        flex: none;
+      }
+      .lang-pill-btn .lang-value {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: left;
+      }
+      .lang-pill-btn .lang-chevron {
+        width: 11px;
+        height: 11px;
+        flex: none;
+        opacity: 0.7;
+        transition: transform 0.12s ease;
+      }
+      .lang-pill.open .lang-chevron { transform: rotate(180deg); }
+      /* Portaled onto #shell and position:fixed so it can hang below #wrap. */
+      .lang-menu {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 180px;
+        max-height: 180px;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 4px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: var(--tint);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        z-index: 200;
+        -webkit-app-region: no-drag;
+      }
+      html.no-vibrancy .lang-menu {
+        backdrop-filter: blur(28px) saturate(160%);
+        -webkit-backdrop-filter: blur(28px) saturate(160%);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+      }
+      .lang-menu[hidden] { display: none !important; }
+      .lang-option {
+        display: block;
+        width: 100%;
+        padding: 7px 10px;
+        border: none;
+        border-radius: 10px;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        text-align: left;
+        cursor: pointer;
+        transition: background 0.12s ease;
+      }
+      .lang-option:hover { background: rgba(255, 255, 255, 0.1); }
+      .lang-option[aria-selected="true"] {
+        background: rgba(255, 255, 255, 0.12);
+        font-weight: 600;
+      }
+      .composer-pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
       .composer-field-row {
         display: flex;
         align-items: flex-start;
@@ -1599,6 +1762,10 @@
       <div id="wrap">
       <div class="titlebar" id="drag" title="Drag to move">
         <span class="grip"></span>
+        <span class="titlebar-spacer" aria-hidden="true"></span>
+        <button type="button" class="mode-badge" id="mode-badge" hidden title="Back to chat" aria-label="Back to chat">
+          <span id="mode-badge-icon" aria-hidden="true"></span>
+        </button>
       </div>
       <div id="night-brief" hidden>
         <div class="night-brief-head">
@@ -1616,13 +1783,25 @@
       <div class="drop-hint">Drop files to attach…</div>
       <div class="attachments" id="attachments"></div>
       <div class="composer" id="composer">
-        <button class="mode-pill" id="mode-pill" type="button" hidden title="Back to chat mode">
-          <span id="mode-pill-label">Image mode</span>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M18 6 6 18" />
-            <path d="m6 6 12 12" />
-          </svg>
-        </button>
+        <div class="composer-pills">
+          <button class="mode-pill project-pill" id="project-pill" type="button" hidden title="Clear project scope">
+            <span id="project-pill-label">Project</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 6 6 18" />
+              <path d="m6 6 12 12" />
+            </svg>
+          </button>
+          <div class="lang-pill" id="translate-lang-pill" hidden>
+            <button type="button" class="lang-pill-btn" id="translate-lang-btn" aria-haspopup="listbox" aria-expanded="false" title="Output language">
+              <span class="lang-prefix">To</span>
+              <span class="lang-value" id="translate-lang-label">Spanish</span>
+              <svg class="lang-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+            <div class="lang-menu" id="translate-lang-menu" role="listbox" aria-label="Target language" hidden></div>
+          </div>
+        </div>
         <div class="composer-field-row">
           <svg class="dot" id="dot" viewBox="0 0 204.29 204.29" fill="none" aria-hidden="true">
             <path d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
@@ -1662,7 +1841,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
               </svg>
-              <span id="listen-label">Live meeting notes</span>
+              <span id="listen-label">Transcribe</span>
             </button>
             <button class="menu-item" id="menu-live-watch" type="button" aria-pressed="false">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1702,6 +1881,33 @@
               </svg>
               Build mode
               <span class="menu-state" id="build-state">Off</span>
+            </button>
+            <button class="menu-item" id="menu-research" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.3-4.3" />
+              </svg>
+              Deep research
+              <span class="menu-state" id="research-state">Off</span>
+            </button>
+            <button class="menu-item" id="menu-translate" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m5 8 6 6" />
+                <path d="m4 14 6-6 2-3" />
+                <path d="M2 5h12" />
+                <path d="M7 2h1" />
+                <path d="m22 22-5-10-5 10" />
+                <path d="M14 18h6" />
+              </svg>
+              Translate mode
+              <span class="menu-state" id="translate-state">Off</span>
+            </button>
+            <button class="menu-item" id="menu-transcribe" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" />
+              </svg>
+              Transcribe
+              <span class="menu-state" id="transcribe-state">Off</span>
             </button>
             <div class="menu-sep"></div>
             <button class="menu-item" id="menu-stealth" type="button" aria-pressed="false">
@@ -1755,6 +1961,12 @@
               <path d="M10 6h11" />
               <path d="M10 12h11" />
               <path d="M10 18h11" />
+            </svg>
+          </button>
+          <button class="bar-btn new-chat" id="new-chat" title="New chat" aria-label="New chat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+              <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
             </svg>
           </button>
           <button class="bar-btn more-btn" id="more" title="More" aria-label="More">

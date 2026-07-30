@@ -625,10 +625,29 @@ function clearSide() {
 // OPEN on whatever view the user picked (it only closes from its X or the
 // picker) — the previous turn's content remains visible until the new
 // answer's sources/notes arrive and re-render it in place.
+let researchSources = [];
+
 function resetSideForNewTurn() {
   sideContext = null;
   lastAnswerText = "";
+  researchSources = [];
   if (liveWatchEnabled && !sidePanelView) setSidePanelView("watch");
+}
+
+function mergeSourceLinks(base, extra) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of [...(base || []), ...(extra || [])]) {
+    if (!raw || !raw.url) continue;
+    const url = String(raw.url).trim();
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      title: String(raw.title || url).trim().slice(0, 160) || url,
+      url,
+    });
+  }
+  return out;
 }
 
 function setSidePanelView(viewId) {
@@ -943,7 +962,8 @@ async function requestSuggestions(question, answer) {
   } catch (_) {
     data = null;
   }
-  const links = (data && Array.isArray(data.links) ? data.links : []).filter((l) => l && l.url);
+  const suggested = (data && Array.isArray(data.links) ? data.links : []).filter((l) => l && l.url);
+  const links = mergeSourceLinks(researchSources, suggested);
   const followups = (data && Array.isArray(data.followups) ? data.followups : []).filter(Boolean);
 
   lastAnswerText = answer;
@@ -955,6 +975,7 @@ async function requestSuggestions(question, answer) {
 
   syncSidePickerState();
   if (sidePanelView && sidePanelView !== "watch") renderSidePanel();
+  else if (researchSources.length && !sidePanelView) setSidePanelView("sources");
 }
 
 // Width must match the main process constant (OVERLAY_WIDTH); the panel card
@@ -1082,7 +1103,16 @@ function startTurn(question) {
 
   const a = document.createElement("div");
   a.className = "chat-a";
-  a.innerHTML = thinkingHTML();
+  const body = document.createElement("div");
+  body.className = "chat-a-body";
+  body.innerHTML = thinkingHTML();
+  a.appendChild(body);
+  const actions = document.createElement("div");
+  actions.className = "chat-a-actions";
+  actions.hidden = true;
+  actions.innerHTML =
+    `<button type="button" class="chat-copy" title="Copy answer" aria-label="Copy answer">${COPY_BTN_SVG}<span>Copy</span></button>`;
+  a.appendChild(actions);
 
   item.appendChild(q);
   item.appendChild(a);
@@ -1116,7 +1146,17 @@ function renderHistoricTurn(question, answer, collapsed) {
 
   const a = document.createElement("div");
   a.className = "chat-a has-md";
-  a.innerHTML = renderMarkdown(answer || "");
+  a.dataset.raw = String(answer || "");
+  const body = document.createElement("div");
+  body.className = "chat-a-body";
+  body.innerHTML = renderMarkdown(answer || "");
+  a.appendChild(body);
+  const actions = document.createElement("div");
+  actions.className = "chat-a-actions";
+  actions.hidden = !String(answer || "").trim();
+  actions.innerHTML =
+    `<button type="button" class="chat-copy" title="Copy answer" aria-label="Copy answer">${COPY_BTN_SVG}<span>Copy</span></button>`;
+  a.appendChild(actions);
 
   item.appendChild(q);
   item.appendChild(a);
@@ -1169,6 +1209,9 @@ async function loadOverlaySession(session) {
   // Opening a chat always lands in plain chat mode — image/build stickiness
   // belongs to the session the user armed it in, not the one they open.
   setComposerMode("chat");
+  // Past chats don't carry project scope today — clear so we don't leak
+  // a previous project's context into an unrelated thread.
+  setScopedProject(null);
   askEl.focus();
 }
 
@@ -1193,9 +1236,12 @@ async function startNewOverlayChat() {
   };
   clearSide();
   setHistoryOpen(false);
-  // New chats always start in plain chat mode.
+  // New chats always start in plain chat mode (project scope cleared unless
+  // the caller re-scopes immediately after — see select-project).
   setComposerMode("chat");
+  setScopedProject(null);
   askEl.focus();
+  // Only place we intentionally shrink — new chat resets the bar height.
   reportHeight();
 }
 
@@ -1206,12 +1252,13 @@ let answerStillWorking = false;
 
 function ensureBuildingUnder(status) {
   if (!currentAnswerEl || !currentHasText) return;
-  let wrap = currentAnswerEl.querySelector(".building-under");
+  const body = ensureAnswerChrome(currentAnswerEl) || currentAnswerEl;
+  let wrap = body.querySelector(".building-under");
   if (!wrap) {
     wrap = document.createElement("div");
     wrap.className = "building-under";
     wrap.innerHTML = thinkingHTML();
-    currentAnswerEl.appendChild(wrap);
+    body.appendChild(wrap);
   }
   const el = wrap.querySelector(".thinking-text");
   if (el) el.textContent = status || lastThinkingStatus || "Building…";
@@ -1236,18 +1283,23 @@ function setThinkingStatus(text) {
     ensureBuildingUnder(lastThinkingStatus);
   }
   threadEl.scrollTop = threadEl.scrollHeight;
-  reportHeight();
+  // Don't resize on status text swaps — height rarely changes and it adds noise.
 }
 
 function updateAnswer(text) {
   if (!currentAnswerEl) return;
+  const bodyEl = ensureAnswerChrome(currentAnswerEl);
+  if (!bodyEl) return;
   // Trim trailing blank lines/whitespace — with pre-wrap they'd render as empty
   // vertical space and make the panel look like it grew for no reason.
   const trimmed = (text || "").replace(/\s+$/, "");
   if (!trimmed && !currentHasText) return; // keep the spinner until real text
   currentHasText = true;
   currentAnswerEl.classList.add("has-md");
-  currentAnswerEl.innerHTML = renderMarkdown(trimmed);
+  currentAnswerEl.dataset.raw = trimmed;
+  bodyEl.innerHTML = renderMarkdown(trimmed);
+  const actions = currentAnswerEl.querySelector(":scope > .chat-a-actions");
+  if (actions) actions.hidden = !trimmed;
   // Build mode: description lands first, then the tool runs for a while with
   // no more text — put the thinking animation under the description so it's
   // obvious LYKN is still working.
@@ -1258,11 +1310,11 @@ function updateAnswer(text) {
     threadEl.scrollTop = threadEl.scrollHeight;
     reportHeight();
   };
-  currentAnswerEl.querySelectorAll(".md-img img").forEach((img) => {
+  bodyEl.querySelectorAll(".md-img img").forEach((img) => {
     if (img.complete) return;
     img.addEventListener("load", onMediaReady, { once: true });
   });
-  currentAnswerEl.querySelectorAll(".md-artifact iframe").forEach((frame) => {
+  bodyEl.querySelectorAll(".md-artifact iframe").forEach((frame) => {
     frame.addEventListener("load", onMediaReady, { once: true });
   });
   threadEl.scrollTop = threadEl.scrollHeight;
@@ -1282,43 +1334,373 @@ let imageGenArmed = false;
 // same pipeline as the web app's Claude-style artifacts. Sticky like image
 // mode.
 let buildModeArmed = false;
+let researchModeArmed = false;
+let translateModeArmed = false;
+let transcribeModeArmed = false;
+/** Live system+mic capture for Transcribe mode (declared early for mode sync). */
+let listening = false;
+/** Prevent setComposerMode ↔ start/stopListen feedback loops. */
+let syncingTranscribeMode = false;
 
-// ── Composer mode (chat / image / build) ───────────────────────────────────
+// ── Composer mode (chat / image / build / research / translate / transcribe)
 // One switch owns the armed flags, the placeholder, the composer pill, and
 // the drawer badges, so every entry point (menu toggle, pill ✕, new chat,
 // Escape) stays consistent.
+const MODE_ICON_SVG = {
+  image:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>',
+  build:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+  research:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+  translate:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>',
+  transcribe:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/></svg>',
+};
 const COMPOSER_MODES = {
-  chat: { placeholder: DEFAULT_ASK_PLACEHOLDER, pill: "" },
-  image: { placeholder: "Describe the image to create, then Send…", pill: "Image mode" },
-  build: { placeholder: "Describe what to build, then Send…", pill: "Build mode" },
+  chat: { placeholder: DEFAULT_ASK_PLACEHOLDER, title: "" },
+  image: {
+    placeholder: "Describe the image to create, then Send…",
+    title: "Image mode — click to exit",
+  },
+  build: {
+    placeholder: "Describe what to build, then Send…",
+    title: "Build mode — click to exit",
+  },
+  research: {
+    placeholder: "Deep research a topic — multi-source analysis…",
+    title: "Deep research — click to exit",
+  },
+  translate: {
+    placeholder: "Type or dictate what to translate…",
+    title: "Translate mode — click to exit",
+  },
+  transcribe: {
+    placeholder: "Listening to system + mic — ask about what's being said…",
+    title: "Transcribe — click to exit",
+  },
 };
 let composerMode = "chat";
-const modePillEl = document.getElementById("mode-pill");
-const modePillLabelEl = document.getElementById("mode-pill-label");
+const modeBadgeEl = document.getElementById("mode-badge");
+const modeBadgeIconEl = document.getElementById("mode-badge-icon");
+const projectPillEl = document.getElementById("project-pill");
+const projectPillLabelEl = document.getElementById("project-pill-label");
+const translateLangPillEl = document.getElementById("translate-lang-pill");
+const translateLangBtnEl = document.getElementById("translate-lang-btn");
+const translateLangMenuEl = document.getElementById("translate-lang-menu");
+const translateLangLabelEl = document.getElementById("translate-lang-label");
+const TRANSLATE_LANG_KEY = "lykn.glass.translateLang";
+const TRANSLATE_LANGS = [
+  "Spanish",
+  "French",
+  "German",
+  "Portuguese",
+  "Italian",
+  "Dutch",
+  "Chinese (Simplified)",
+  "Chinese (Traditional)",
+  "Japanese",
+  "Korean",
+  "Arabic",
+  "Hindi",
+  "Russian",
+  "Polish",
+  "Turkish",
+  "Vietnamese",
+  "Thai",
+  "Swedish",
+  "Norwegian",
+  "Danish",
+  "Finnish",
+  "Greek",
+  "Hebrew",
+  "English",
+];
+let translateTargetLang = "Spanish";
+/** Explicit Glass project scope from the menu Projects picker (null = general). */
+let scopedProject = null; // { id, name } | null
+
+function getTranslateTargetLang() {
+  return translateTargetLang || "Spanish";
+}
+
+function setTranslateLangMenuOpen(open) {
+  if (!translateLangPillEl || !translateLangBtnEl) return;
+  translateLangPillEl.classList.toggle("open", !!open);
+  translateLangBtnEl.setAttribute("aria-expanded", open ? "true" : "false");
+  // In-window list stays hidden — the real list is a detached vibrancy card
+  // (same pattern as the three-dot menu), so the chat bar never grows/moves.
+  if (translateLangMenuEl) translateLangMenuEl.hidden = true;
+  try {
+    if (open && translateLangPillEl) {
+      const r = translateLangPillEl.getBoundingClientRect();
+      window.lyknOverlay.setLangPicker(true, {
+        left: r.left,
+        top: r.top,
+        bottom: r.bottom,
+        width: r.width,
+        height: r.height,
+      });
+    } else {
+      window.lyknOverlay.setLangPicker(false);
+    }
+  } catch (_) {}
+}
+
+window.__lyknLangPickerState = () => ({
+  languages: TRANSLATE_LANGS.slice(),
+  active: getTranslateTargetLang(),
+});
+
+if (window.lyknOverlay?.onLangPickerSelect) {
+  window.lyknOverlay.onLangPickerSelect((p) => {
+    const lang = String(p?.lang || "").trim();
+    if (lang) setTranslateTargetLang(lang);
+    setTranslateLangMenuOpen(false);
+    askEl.focus();
+  });
+}
+if (window.lyknOverlay?.onLangPickerVisible) {
+  window.lyknOverlay.onLangPickerVisible((visible) => {
+    if (!translateLangPillEl || !translateLangBtnEl) return;
+    translateLangPillEl.classList.toggle("open", !!visible);
+    translateLangBtnEl.setAttribute("aria-expanded", visible ? "true" : "false");
+  });
+}
+
+function renderTranslateLangMenu() {
+  if (!translateLangMenuEl) return;
+  const cur = getTranslateTargetLang();
+  translateLangMenuEl.innerHTML = TRANSLATE_LANGS.map(
+    (lang) =>
+      `<button type="button" class="lang-option" role="option" data-lang="${lang.replace(/"/g, "&quot;")}" aria-selected="${lang === cur ? "true" : "false"}">${lang}</button>`,
+  ).join("");
+}
+
+function setTranslateTargetLang(lang) {
+  const next = TRANSLATE_LANGS.includes(lang) ? lang : "Spanish";
+  translateTargetLang = next;
+  if (translateLangLabelEl) translateLangLabelEl.textContent = next;
+  try {
+    localStorage.setItem(TRANSLATE_LANG_KEY, next);
+  } catch (_) {}
+  renderTranslateLangMenu();
+  if (composerMode === "translate") {
+    askEl.placeholder = `Translate to ${next}…`;
+  }
+}
+
+function loadTranslateTargetLang() {
+  try {
+    const saved = String(localStorage.getItem(TRANSLATE_LANG_KEY) || "").trim();
+    if (TRANSLATE_LANGS.includes(saved)) translateTargetLang = saved;
+  } catch (_) {}
+  if (translateLangLabelEl) translateLangLabelEl.textContent = translateTargetLang;
+  renderTranslateLangMenu();
+}
+
+loadTranslateTargetLang();
+if (translateLangBtnEl) {
+  translateLangBtnEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const open = !translateLangPillEl?.classList.contains("open");
+    setTranslateLangMenuOpen(open);
+  });
+}
+if (translateLangMenuEl) {
+  translateLangMenuEl.addEventListener("click", (e) => {
+    const opt = e.target.closest(".lang-option");
+    if (!opt) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setTranslateTargetLang(opt.getAttribute("data-lang") || "Spanish");
+    setTranslateLangMenuOpen(false);
+    askEl.focus();
+  });
+}
+document.addEventListener("click", (e) => {
+  if (!translateLangPillEl || translateLangPillEl.hidden) return;
+  if (translateLangPillEl.contains(e.target)) return;
+  setTranslateLangMenuOpen(false);
+});
+
+const COPY_BTN_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16V4a2 2 0 0 1 2-2h10"/></svg>';
 
 function renderModeBadge(id, on) {
   const el = document.getElementById(id);
   if (el) el.textContent = on ? "On" : "Off";
 }
 
-function setComposerMode(mode) {
-  composerMode = COMPOSER_MODES[mode] ? mode : "chat";
-  imageGenArmed = composerMode === "image";
-  buildModeArmed = composerMode === "build";
-  askEl.placeholder = COMPOSER_MODES[composerMode].placeholder;
-  if (modePillEl) {
-    modePillEl.hidden = composerMode === "chat";
-    if (modePillLabelEl) modePillLabelEl.textContent = COMPOSER_MODES[composerMode].pill;
+function renderProjectPill() {
+  if (!projectPillEl) return;
+  const name = scopedProject?.name ? String(scopedProject.name).trim() : "";
+  projectPillEl.hidden = !name;
+  if (projectPillLabelEl) {
+    projectPillLabelEl.textContent = name ? name.slice(0, 28) : "Project";
   }
-  renderModeBadge("image-gen-state", composerMode === "image");
-  renderModeBadge("build-state", composerMode === "build");
+  projectPillEl.title = name ? `Scoped to ${name} — click to clear` : "Clear project scope";
   reportHeight();
 }
 
-// The pill's ✕ (or clicking the pill anywhere) drops back to chat mode.
-if (modePillEl) {
-  modePillEl.addEventListener("click", () => {
+function setScopedProject(next) {
+  if (next && next.id) {
+    scopedProject = {
+      id: String(next.id).trim(),
+      name: String(next.name || "Project").trim().slice(0, 120) || "Project",
+    };
+  } else {
+    scopedProject = null;
+  }
+  renderProjectPill();
+}
+
+function setComposerMode(mode) {
+  const prev = composerMode;
+  composerMode = COMPOSER_MODES[mode] ? mode : "chat";
+  imageGenArmed = composerMode === "image";
+  buildModeArmed = composerMode === "build";
+  researchModeArmed = composerMode === "research";
+  translateModeArmed = composerMode === "translate";
+  transcribeModeArmed = composerMode === "transcribe";
+  askEl.placeholder =
+    composerMode === "translate"
+      ? `Translate to ${getTranslateTargetLang()}…`
+      : COMPOSER_MODES[composerMode].placeholder;
+  if (modeBadgeEl) {
+    const active = composerMode !== "chat";
+    modeBadgeEl.hidden = !active;
+    if (active) {
+      const meta = COMPOSER_MODES[composerMode] || {};
+      modeBadgeEl.title = meta.title || "Back to chat";
+      modeBadgeEl.setAttribute("aria-label", meta.title || "Back to chat");
+      if (modeBadgeIconEl) {
+        modeBadgeIconEl.innerHTML = MODE_ICON_SVG[composerMode] || "";
+      }
+    }
+  }
+  if (translateLangPillEl) {
+    translateLangPillEl.hidden = composerMode !== "translate";
+    if (composerMode !== "translate") {
+      try {
+        window.lyknOverlay.setLangPicker(false);
+      } catch (_) {}
+      translateLangPillEl.classList.remove("open");
+      if (translateLangBtnEl) translateLangBtnEl.setAttribute("aria-expanded", "false");
+    }
+  }
+  renderModeBadge("image-gen-state", composerMode === "image");
+  renderModeBadge("build-state", composerMode === "build");
+  renderModeBadge("research-state", composerMode === "research");
+  renderModeBadge("translate-state", composerMode === "translate");
+  renderModeBadge("transcribe-state", composerMode === "transcribe" || listening);
+  reportHeight();
+
+  // Transcribe mode = live system+mic capture (same pipeline as former
+  // "Live meeting notes"). Arm → start listening; leave → stop.
+  if (!syncingTranscribeMode) {
+    if (composerMode === "transcribe" && prev !== "transcribe") {
+      void ensureTranscribeListening();
+    } else if (prev === "transcribe" && composerMode !== "transcribe") {
+      if (listening) stopListen();
+    }
+  }
+}
+
+async function ensureTranscribeListening() {
+  if (listening) {
+    renderModeBadge("transcribe-state", true);
+    return;
+  }
+  await startListen();
+  if (!listening) {
+    // Permission / capture failed — drop back to chat.
+    syncingTranscribeMode = true;
+    try {
+      setComposerMode("chat");
+    } finally {
+      syncingTranscribeMode = false;
+    }
+  }
+}
+
+/** Ensure answer DOM has a stable body + Copy footer (survives markdown rewrites). */
+function ensureAnswerChrome(answerEl) {
+  const el = answerEl || currentAnswerEl;
+  if (!el) return null;
+  let body = el.querySelector(":scope > .chat-a-body");
+  let actions = el.querySelector(":scope > .chat-a-actions");
+  if (!body) {
+    body = document.createElement("div");
+    body.className = "chat-a-body";
+    const keep = [];
+    while (el.firstChild) keep.push(el.removeChild(el.firstChild));
+    for (const node of keep) {
+      if (node.classList && node.classList.contains("chat-a-actions")) {
+        actions = node;
+      } else {
+        body.appendChild(node);
+      }
+    }
+    el.appendChild(body);
+  }
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "chat-a-actions";
+    actions.hidden = true;
+    actions.innerHTML =
+      `<button type="button" class="chat-copy" title="Copy answer" aria-label="Copy answer">${COPY_BTN_SVG}<span>Copy</span></button>`;
+    el.appendChild(actions);
+  }
+  return body;
+}
+
+async function copyAnswerText(btn) {
+  const answerEl = btn?.closest?.(".chat-a");
+  if (!answerEl) return;
+  const raw = String(answerEl.dataset.raw || "").trim();
+  const body = answerEl.querySelector(":scope > .chat-a-body");
+  const text = raw || String(body?.innerText || body?.textContent || "").trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    } catch (_) {
+      return;
+    }
+  }
+  const label = btn.querySelector("span");
+  btn.classList.add("copied");
+  if (label) label.textContent = "Copied";
+  setTimeout(() => {
+    btn.classList.remove("copied");
+    if (label) label.textContent = "Copy";
+  }, 1400);
+}
+
+// Mode icon in the titlebar — click exits back to chat.
+if (modeBadgeEl) {
+  modeBadgeEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
     setComposerMode("chat");
+    askEl.focus();
+  });
+}
+if (projectPillEl) {
+  projectPillEl.addEventListener("click", () => {
+    setScopedProject(null);
     askEl.focus();
   });
 }
@@ -1776,10 +2158,12 @@ function ask() {
   // route it straight to the streamed chat with buildMode so the server
   // forces the React artifact builder (Claude-style coded artifact).
   const buildAsk = !imageAsk && buildModeArmed && (!!q || attachments.length > 0);
+  const researchAsk = !imageAsk && !buildAsk && researchModeArmed && !!q;
+  const translateAsk = !imageAsk && !buildAsk && !researchAsk && translateModeArmed && (!!q || attachments.length > 0);
   // Modes are STICKY — they stay armed across sends (follow-up edits are the
   // normal flow: "same but darker", "now add a header…"). The user leaves a
   // mode via the composer pill's ✕, the menu toggle, or a new chat.
-  if (!imageAsk && !buildAsk) {
+  if (!imageAsk && !buildAsk && !researchAsk && !translateAsk) {
     // Live watch alerts — "tell me when an enemy is near", "watch for stock drop", etc.
     if (q && attachments.length === 0 && looksLikeClearWatchRules(q)) {
       askEl.value = "";
@@ -1816,22 +2200,44 @@ function ask() {
   askEl.style.height = "52px";
   setBusy(true);
   const sentAttachments = attachments.slice();
+  // Clear chips before startTurn so the forced shrink after collapse doesn't
+  // leave attachment-row height as empty space above the bar.
+  attachments.length = 0;
+  attachmentsEl.innerHTML = "";
+  attachmentsEl.classList.remove("show");
   const label =
     q || (sentAttachments.length ? `Sent ${sentAttachments.length} attachment(s)` : "");
   startTurn(label);
   history.push({ role: "user", content: q, at: new Date().toISOString() });
+  const askOpts = {
+    ...(imageAsk ? { forceImage: true } : {}),
+    ...(buildAsk ? { buildMode: true } : {}),
+    ...(researchAsk ? { deepResearch: true } : {}),
+    ...(translateAsk
+      ? { translateMode: true, translateTargetLang: getTranslateTargetLang() }
+      : {}),
+    ...(scopedProject?.id
+      ? { scopedProjectId: scopedProject.id, scopedProjectName: scopedProject.name }
+      : {}),
+  };
   window.lyknOverlay.ask(
     q,
     history,
     sentAttachments,
-    imageAsk ? { forceImage: true } : buildAsk ? { buildMode: true } : undefined,
+    Object.keys(askOpts).length ? askOpts : undefined,
   );
-  clearAttachments();
 }
 
 // Accordion: clicking a turn's header opens it and collapses every other turn,
 // keeping only one answer visible at a time. Clicking the open one closes it.
 threadEl.addEventListener("click", (e) => {
+  const copyBtn = e.target.closest(".chat-copy");
+  if (copyBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    void copyAnswerText(copyBtn);
+    return;
+  }
   // "Code" toggle on Build-mode artifact cards: swap the live preview for the
   // raw JSX the AI wrote (fetched once from the runner HTML's embedded source
   // block via main, then cached on the card). Copy button sits above it.
@@ -2068,6 +2474,24 @@ let streamingText = "";
 window.lyknOverlay.onStatus((p) => {
   setThinkingStatus((p && p.status) || "Thinking…");
 });
+window.lyknOverlay.onSources((p) => {
+  const list = Array.isArray(p?.sources) ? p.sources : [];
+  researchSources = list.filter((s) => s && s.url).slice(0, 24);
+  if (!researchSources.length) return;
+  sideContext = {
+    pageSource:
+      (currentPageSource && currentPageSource.url && currentPageSource) ||
+      (sideContext && sideContext.pageSource) ||
+      null,
+    links: mergeSourceLinks(researchSources, sideContext && sideContext.links),
+    followups: (sideContext && sideContext.followups) || [],
+  };
+  syncSidePickerState();
+  if (!sidePanelView || sidePanelView === "sources" || sidePanelView === "all") {
+    if (!sidePanelView) setSidePanelView("sources");
+    else renderSidePanel();
+  }
+});
 window.lyknOverlay.onDelta((p) => {
   streamingText = p && p.text ? p.text : streamingText;
   updateAnswer(streamingText);
@@ -2085,13 +2509,13 @@ window.lyknOverlay.onDone((p) => {
   } else if (!currentHasText && currentAnswerEl) {
     // Nothing came back — clear the spinner instead of leaving it spinning.
     currentHasText = true;
-    currentAnswerEl.textContent = "No response.";
-    reportHeight();
+    updateAnswer("No response.");
   } else {
     clearBuildingUnder();
   }
   streamingText = "";
   setBusy(false);
+  reportHeight();
   askEl.focus();
 });
 window.lyknOverlay.onError((p) => {
@@ -2100,6 +2524,7 @@ window.lyknOverlay.onError((p) => {
   clearBuildingUnder();
   streamingText = "";
   setBusy(false);
+  reportHeight();
 });
 // LYKN scraped the page the user is viewing — remember it so requestSuggestions
 // can show it as a source (visible proof the scrape happened).
@@ -2187,6 +2612,7 @@ let lastY = 0;
 dragEl.addEventListener("pointerdown", (e) => {
   if (e.target.closest(".bar-btn")) return;
   if (e.target.closest(".side-picker-btn")) return;
+  if (e.target.closest(".mode-badge")) return;
   dragging = true;
   lastX = e.screenX;
   lastY = e.screenY;
@@ -2305,9 +2731,9 @@ async function startDictation() {
   const ok = await window.lyknOverlay.ensureMic();
   if (!ok) {
     startTurn("Dictation");
-    currentHasText = true;
-    currentAnswerEl.textContent =
-      "LYKN needs Microphone access. Enable it in System Settings → Privacy & Security → Microphone, then try again.";
+    updateAnswer(
+      "LYKN needs Microphone access. Enable it in System Settings → Privacy & Security → Microphone, then try again.",
+    );
     reportHeight();
     return;
   }
@@ -2529,8 +2955,11 @@ window.__lyknMenuCmd = (name, arg) => {
       document.getElementById("voice").click();
       break;
     case "listen":
-      document.getElementById("listen").click();
+    case "menu-transcribe": {
+      const b = document.getElementById("menu-transcribe");
+      if (b) b.click();
       break;
+    }
     case "menu-live-watch": {
       const b = document.getElementById("menu-live-watch");
       if (b) b.click();
@@ -2554,6 +2983,16 @@ window.__lyknMenuCmd = (name, arg) => {
       if (b) b.click();
       break;
     }
+    case "menu-research": {
+      const b = document.getElementById("menu-research");
+      if (b) b.click();
+      break;
+    }
+    case "menu-translate": {
+      const b = document.getElementById("menu-translate");
+      if (b) b.click();
+      break;
+    }
     case "menu-stealth": {
       const b = document.getElementById("menu-stealth");
       if (b) b.click();
@@ -2570,6 +3009,19 @@ window.__lyknMenuCmd = (name, arg) => {
           const session = await window.lyknOverlay.getOverlaySession(arg);
           if (session) await loadOverlaySession(session);
         } catch (_) {}
+      })();
+      break;
+    case "select-project":
+      void (async () => {
+        // Fresh thread scoped to the chosen project (or clear → general chat).
+        await startNewOverlayChat();
+        if (arg && arg.id) {
+          setScopedProject({ id: arg.id, name: arg.name || "Project" });
+          askEl.placeholder = `Ask about ${String(arg.name || "this project").slice(0, 40)}…`;
+        } else {
+          setScopedProject(null);
+        }
+        askEl.focus();
       })();
       break;
   }
@@ -2598,6 +3050,11 @@ window.__lyknMenuState = () => {
     stealthState: text("stealth-state"),
     imageModeOn: composerMode === "image",
     buildModeOn: composerMode === "build",
+    researchModeOn: composerMode === "research",
+    translateModeOn: composerMode === "translate",
+    transcribeModeOn: composerMode === "transcribe" || listening,
+    scopedProjectId: scopedProject?.id || null,
+    scopedProjectName: scopedProject?.name || null,
   };
 };
 
@@ -2743,6 +3200,10 @@ document.getElementById("menu-new").addEventListener("click", () => {
   void startNewOverlayChat();
 });
 
+document.getElementById("new-chat").addEventListener("click", () => {
+  void startNewOverlayChat();
+});
+
 document.getElementById("menu-history").addEventListener("click", () => {
   setHistoryOpen(true);
   void refreshHistoryList();
@@ -2823,6 +3284,33 @@ if (menuBuildEl) {
   menuBuildEl.addEventListener("click", () => {
     setMenuOpen(false);
     setComposerMode(composerMode === "build" ? "chat" : "build");
+    askEl.focus();
+  });
+}
+
+const menuResearchEl = document.getElementById("menu-research");
+if (menuResearchEl) {
+  menuResearchEl.addEventListener("click", () => {
+    setMenuOpen(false);
+    setComposerMode(composerMode === "research" ? "chat" : "research");
+    askEl.focus();
+  });
+}
+
+const menuTranslateEl = document.getElementById("menu-translate");
+if (menuTranslateEl) {
+  menuTranslateEl.addEventListener("click", () => {
+    setMenuOpen(false);
+    setComposerMode(composerMode === "translate" ? "chat" : "translate");
+    askEl.focus();
+  });
+}
+
+const menuTranscribeEl = document.getElementById("menu-transcribe");
+if (menuTranscribeEl) {
+  menuTranscribeEl.addEventListener("click", () => {
+    setMenuOpen(false);
+    setComposerMode(composerMode === "transcribe" || listening ? "chat" : "transcribe");
     askEl.focus();
   });
 }
@@ -3224,8 +3712,7 @@ function voiceAiMessage(text) {
 
 function voiceError(message) {
   startTurn("Voice mode");
-  currentHasText = true;
-  currentAnswerEl.textContent = message;
+  updateAnswer(message);
   reportHeight();
 }
 
@@ -3477,7 +3964,6 @@ const notesActionsWrapEl = document.getElementById("notes-actions-wrap");
 const notesActionsEl = document.getElementById("notes-actions");
 const notesQuestionsEl = document.getElementById("notes-questions");
 const notesQuestionsWrapEl = document.getElementById("notes-questions-wrap");
-let listening = false;
 let listenDisplayStream = null;
 let listenSysStream = null;
 let listenMicStream = null;
@@ -3741,11 +4227,30 @@ function updateSpeakerInterim(speaker) {
 
 function setListenUi() {
   listenEl.classList.toggle("listening", listening);
-  listenEl.title = listening ? "Stop live meeting notes" : "Live meeting notes";
+  listenEl.title = listening ? "Stop transcribe" : "Transcribe";
   const listenLabel = document.getElementById("listen-label");
-  if (listenLabel) listenLabel.textContent = listening ? "Stop live notes" : "Live meeting notes";
+  if (listenLabel) listenLabel.textContent = listening ? "Stop transcribe" : "Transcribe";
   liveDotEl.classList.toggle("live", listening);
-  liveTitleEl.textContent = listening ? "Live · transcribing" : "Meeting notes";
+  liveTitleEl.textContent = listening ? "Transcribe · live" : "Transcript";
+  renderModeBadge("transcribe-state", listening || composerMode === "transcribe");
+  // Keep composer mode / pill in sync when capture starts/stops outside the menu.
+  if (!syncingTranscribeMode) {
+    if (listening && composerMode !== "transcribe") {
+      syncingTranscribeMode = true;
+      try {
+        setComposerMode("transcribe");
+      } finally {
+        syncingTranscribeMode = false;
+      }
+    } else if (!listening && composerMode === "transcribe") {
+      syncingTranscribeMode = true;
+      try {
+        setComposerMode("chat");
+      } finally {
+        syncingTranscribeMode = false;
+      }
+    }
+  }
   pushLiveState();
 }
 
@@ -4328,28 +4833,32 @@ function teardownListenTaps() {
 
 async function startListen() {
   if (listening) return;
+  // Order matters for macOS Allow dialogs: system-audio / Screen Recording first,
+  // then Microphone — never ask for both at once.
   let display;
   try {
     display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   } catch (_) {
-    startTurn("Live notes");
-    currentHasText = true;
+    startTurn("Transcribe");
     const isWin = window.lyknOverlay?.platform === "win32";
-    currentAnswerEl.textContent = isWin
-      ? "LYKN couldn't start system-audio capture. Make sure nothing is blocking screen capture, then try Live notes again."
-      : "LYKN needs Screen Recording permission to capture meeting audio. Enable it in System Settings → Privacy & Security → Screen Recording, then try again.";
+    updateAnswer(
+      isWin
+        ? "LYKN couldn't start system-audio capture. Make sure nothing is blocking screen capture, then try Transcribe again."
+        : "LYKN needs Screen Recording permission to capture system audio. Enable it in System Settings → Privacy & Security → Screen Recording, then try again.",
+    );
     reportHeight();
     return;
   }
   const sysTracks = display.getAudioTracks();
   if (!sysTracks.length) {
     try { display.getTracks().forEach((t) => t.stop()); } catch (_) {}
-    startTurn("Live notes");
-    currentHasText = true;
+    startTurn("Transcribe");
     const isWin = window.lyknOverlay?.platform === "win32";
-    currentAnswerEl.textContent = isWin
-      ? "Couldn't capture system audio. On Windows this uses loopback capture — try again, or restart LYKN if it still fails."
-      : "Couldn't capture system audio. This needs macOS 13 (Ventura) or newer.";
+    updateAnswer(
+      isWin
+        ? "Couldn't capture system audio. On Windows this uses loopback capture — try again, or restart LYKN if it still fails."
+        : "Couldn't capture system audio. This needs macOS 13 (Ventura) or newer.",
+    );
     reportHeight();
     return;
   }
@@ -4471,8 +4980,9 @@ function closeLive() {
 }
 
 listenEl.addEventListener("click", () => {
-  if (listening) stopListen();
-  else void startListen();
+  // Hidden drawer control — same toggle as Transcribe mode.
+  if (listening || composerMode === "transcribe") setComposerMode("chat");
+  else setComposerMode("transcribe");
 });
 // The card's own controls (tabs, close, copy, save, toast) live in the
 // detached window and arrive as commands via window.__lyknLiveCmd above.
