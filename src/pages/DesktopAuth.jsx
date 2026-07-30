@@ -17,11 +17,12 @@ import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-w
 //      or lykn://auth (tokens in the URL fragment, never in query/logs).
 //   3. The app's main process forwards the tokens to the renderer, which calls
 //      supabase.auth.setSession() — signed in, no embedded Google page ever.
-//   4. Immediately signOut({ scope: "local" }) in THIS browser tab so it stops
-//      auto-refreshing. Supabase rotates refresh tokens; if the browser and
-//      Electron both refresh the same family, one side gets revoked and the
-//      Mac app mysteriously logs the user out later. Electron owns the session
-//      after handoff; tokens stay in a memory cache so "Open LYKN" still works.
+//   4. After copying tokens, wipe THIS tab's local Supabase state WITHOUT calling
+//      the logout API. auth-js signOut({ scope:"local" }) still hits
+//      POST /logout?scope=local, which revokes that session's refresh token —
+//      the same token we just handed to Electron — so the Mac app signs in for
+//      a moment then bounces back to /login. We stop auto-refresh and clear
+//      storage only; tokens stay in a memory cache so "Open LYKN" still works.
 //
 // Machine-specific "works on the second Try again" was usually:
 //   • Double navigation (Supabase redirect + our backup assign) racing PKCE
@@ -245,15 +246,39 @@ export default function DesktopAuth() {
   const handoffInFlightRef = useRef(false);
   const handoffSucceededRef = useRef(false);
 
-  // Drop the browser's persisted Supabase session (local only — does NOT revoke
-  // the refresh token Electron is using). Idempotent.
+  // Drop the browser tab's Supabase client state without revoking the refresh
+  // token on the server (that token now belongs to the Mac app). Idempotent.
   const releaseBrowserSession = async () => {
     if (browserSessionReleasedRef.current) return;
     browserSessionReleasedRef.current = true;
     try {
+      supabase.auth.stopAutoRefresh();
+    } catch {
+      /* older clients */
+    }
+    // Block only the logout endpoint for this call. auth-js always POSTs
+    // /logout?scope=local before clearing storage; that revoke is what kicks
+    // the Mac app back to the login screen after a successful handoff.
+    const prevFetch = window.fetch.bind(window);
+    const blockedFetch = async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof Request
+            ? input.url
+            : String(input?.url || "");
+      if (/\/auth\/v1\/logout\b/i.test(url)) {
+        return new Response(null, { status: 204 });
+      }
+      return prevFetch(input, init);
+    };
+    window.fetch = blockedFetch;
+    try {
       await supabase.auth.signOut({ scope: "local" });
     } catch {
-      /* cosmetic — Mac already has the tokens */
+      /* cosmetic — Mac already has / is receiving the tokens */
+    } finally {
+      if (window.fetch === blockedFetch) window.fetch = prevFetch;
     }
   };
 
@@ -343,15 +368,14 @@ export default function DesktopAuth() {
     clearAutoRetry();
     handoffInFlightRef.current = true;
     try {
-      const result = await handoffSessionToApp(session, { softProtocol: silent });
+      // Stop browser refresh + clear local state BEFORE handoff so this tab
+      // cannot rotate/revoke the token family while Electron adopts it.
+      await releaseBrowserSession();
+      const result = await handoffSessionToApp(handoffTokensRef.current, {
+        softProtocol: silent,
+      });
       if (result.mode === "http") setHttpHandoffDone(true);
       handoffSucceededRef.current = true;
-      // Electron now owns this refresh-token family — stop browser auto-refresh
-      // before the next hourly rotation revokes the Mac session. Delay briefly
-      // so the Mac app can finish setSession before we drop the browser copy.
-      window.setTimeout(() => {
-        void releaseBrowserSession();
-      }, 400);
       return true;
     } catch {
       if (!silent) {
