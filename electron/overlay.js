@@ -1110,8 +1110,7 @@ function startTurn(question) {
   const actions = document.createElement("div");
   actions.className = "chat-a-actions";
   actions.hidden = true;
-  actions.innerHTML =
-    `<button type="button" class="chat-copy" title="Copy answer" aria-label="Copy answer">${COPY_BTN_SVG}<span>Copy</span></button>`;
+  actions.innerHTML = CHAT_COPY_BTN_HTML;
   a.appendChild(actions);
 
   item.appendChild(q);
@@ -1154,8 +1153,7 @@ function renderHistoricTurn(question, answer, collapsed) {
   const actions = document.createElement("div");
   actions.className = "chat-a-actions";
   actions.hidden = !String(answer || "").trim();
-  actions.innerHTML =
-    `<button type="button" class="chat-copy" title="Copy answer" aria-label="Copy answer">${COPY_BTN_SVG}<span>Copy</span></button>`;
+  actions.innerHTML = CHAT_COPY_BTN_HTML;
   a.appendChild(actions);
 
   item.appendChild(q);
@@ -1528,6 +1526,10 @@ document.addEventListener("click", (e) => {
 
 const COPY_BTN_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16V4a2 2 0 0 1 2-2h10"/></svg>';
+const CHECK_BTN_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+const CHAT_COPY_BTN_HTML =
+  `<button type="button" class="chat-copy" title="Copy answer" aria-label="Copy answer">${COPY_BTN_SVG}</button>`;
 
 function renderModeBadge(id, on) {
   const el = document.getElementById(id);
@@ -1650,8 +1652,7 @@ function ensureAnswerChrome(answerEl) {
     actions = document.createElement("div");
     actions.className = "chat-a-actions";
     actions.hidden = true;
-    actions.innerHTML =
-      `<button type="button" class="chat-copy" title="Copy answer" aria-label="Copy answer">${COPY_BTN_SVG}<span>Copy</span></button>`;
+    actions.innerHTML = CHAT_COPY_BTN_HTML;
     el.appendChild(actions);
   }
   return body;
@@ -1680,13 +1681,10 @@ async function copyAnswerText(btn) {
       return;
     }
   }
-  const label = btn.querySelector("span");
   btn.classList.add("copied");
-  if (label) label.textContent = "Copied";
-  setTimeout(() => {
-    btn.classList.remove("copied");
-    if (label) label.textContent = "Copy";
-  }, 1400);
+  btn.innerHTML = CHECK_BTN_SVG;
+  btn.title = "Copied";
+  btn.setAttribute("aria-label", "Copied");
 }
 
 // Mode icon in the titlebar — click exits back to chat.
@@ -2603,41 +2601,114 @@ window.lyknOverlay.onShown(() => {
   void refreshNightBriefBanner();
 });
 
-// Drag the panel around via the top-left handle. Pointer capture + screen coords
-// keep the drag tracking even if the cursor briefly outruns the moving window.
-const dragEl = document.getElementById("drag");
-let dragging = false;
-let lastX = 0;
-let lastY = 0;
-dragEl.addEventListener("pointerdown", (e) => {
-  if (e.target.closest(".bar-btn")) return;
-  if (e.target.closest(".side-picker-btn")) return;
-  if (e.target.closest(".mode-badge")) return;
-  dragging = true;
-  lastX = e.screenX;
-  lastY = e.screenY;
-  dragEl.classList.add("dragging");
-  try { dragEl.setPointerCapture(e.pointerId); } catch (_) {}
-  e.preventDefault();
-});
-dragEl.addEventListener("pointermove", (e) => {
-  if (!dragging) return;
-  const dx = e.screenX - lastX;
-  const dy = e.screenY - lastY;
-  if (dx || dy) {
+// Drag the panel via the titlebar handle (or the collapsed bubble). Electron
+// panel windows sometimes drop pointerup while setBounds is racing the cursor
+// — without a buttons check / lostpointercapture handler the bar stays glued
+// to the mouse and every move floods IPC (which stalls the cursor badly).
+function bindOverlayDrag(el, { ignoreTarget, onClick, dragClass } = {}) {
+  if (!el) return;
+  let dragging = false;
+  let moved = false;
+  let pointerId = null;
+  let lastX = 0;
+  let lastY = 0;
+  let pendingDx = 0;
+  let pendingDy = 0;
+  let raf = 0;
+
+  const flush = () => {
+    raf = 0;
+    if (!pendingDx && !pendingDy) return;
+    const dx = pendingDx;
+    const dy = pendingDy;
+    pendingDx = 0;
+    pendingDy = 0;
+    window.lyknOverlay.moveBy(dx, dy);
+  };
+
+  const end = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    const id = e && e.pointerId != null ? e.pointerId : pointerId;
+    pointerId = null;
+    if (dragClass) el.classList.remove(dragClass);
+    if (raf) {
+      cancelAnimationFrame(raf);
+      raf = 0;
+    }
+    if (pendingDx || pendingDy) flush();
+    try {
+      if (id != null) el.releasePointerCapture(id);
+    } catch (_) {
+      /* already released */
+    }
+    try {
+      window.lyknOverlay.moveEnd();
+    } catch (_) {
+      /* older preload */
+    }
+    if (onClick && !moved) onClick();
+    moved = false;
+  };
+
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    if (ignoreTarget && ignoreTarget(e.target)) return;
+    dragging = true;
+    moved = false;
+    pointerId = e.pointerId;
     lastX = e.screenX;
     lastY = e.screenY;
-    window.lyknOverlay.moveBy(dx, dy);
-  }
+    pendingDx = 0;
+    pendingDy = 0;
+    if (dragClass) el.classList.add(dragClass);
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch (_) {
+      /* capture optional */
+    }
+    e.preventDefault();
+  });
+
+  el.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    // Primary button no longer down — pointerup was lost (common on macOS
+    // panel windows while the HWND is being moved under the cursor).
+    if ((e.buttons & 1) === 0) {
+      end(e);
+      return;
+    }
+    const dx = e.screenX - lastX;
+    const dy = e.screenY - lastY;
+    if (!dx && !dy) return;
+    // Ignore tiny jitter so a click doesn't start a "drag".
+    if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+    moved = true;
+    lastX = e.screenX;
+    lastY = e.screenY;
+    pendingDx += dx;
+    pendingDy += dy;
+    if (!raf) raf = requestAnimationFrame(flush);
+  });
+
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+  el.addEventListener("lostpointercapture", end);
+  window.addEventListener("blur", () => end());
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) end();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && dragging) end();
+  });
+}
+
+const dragEl = document.getElementById("drag");
+bindOverlayDrag(dragEl, {
+  dragClass: "dragging",
+  ignoreTarget: (t) =>
+    !!(t && t.closest && t.closest(".bar-btn, .side-picker-btn, .mode-badge")),
 });
-const endDrag = (e) => {
-  if (!dragging) return;
-  dragging = false;
-  dragEl.classList.remove("dragging");
-  try { dragEl.releasePointerCapture(e.pointerId); } catch (_) {}
-};
-dragEl.addEventListener("pointerup", endDrag);
-dragEl.addEventListener("pointercancel", endDrag);
 
 // ── Collapse to a single LYKN icon bubble ──────────────────────────────────
 const bubbleEl = document.getElementById("bubble");
@@ -2662,38 +2733,8 @@ function expandOverlay() {
 // Click the glowing LYKN mark in the bar to collapse everything.
 dotEl.addEventListener("click", collapseOverlay);
 
-// The bubble can be dragged to reposition, or clicked (no drag) to expand.
-let bubbleDragging = false;
-let bubbleMoved = false;
-let bubbleLastX = 0;
-let bubbleLastY = 0;
-bubbleEl.addEventListener("pointerdown", (e) => {
-  bubbleDragging = true;
-  bubbleMoved = false;
-  bubbleLastX = e.screenX;
-  bubbleLastY = e.screenY;
-  try { bubbleEl.setPointerCapture(e.pointerId); } catch (_) {}
-  e.preventDefault();
-});
-bubbleEl.addEventListener("pointermove", (e) => {
-  if (!bubbleDragging) return;
-  const dx = e.screenX - bubbleLastX;
-  const dy = e.screenY - bubbleLastY;
-  if (Math.abs(dx) + Math.abs(dy) > 2) {
-    bubbleMoved = true;
-    bubbleLastX = e.screenX;
-    bubbleLastY = e.screenY;
-    window.lyknOverlay.moveBy(dx, dy);
-  }
-});
-const endBubble = (e) => {
-  if (!bubbleDragging) return;
-  bubbleDragging = false;
-  try { bubbleEl.releasePointerCapture(e.pointerId); } catch (_) {}
-  if (!bubbleMoved) expandOverlay();
-};
-bubbleEl.addEventListener("pointerup", endBubble);
-bubbleEl.addEventListener("pointercancel", endBubble);
+// Bubble: drag to reposition, or click (no drag) to expand.
+bindOverlayDrag(bubbleEl, { onClick: expandOverlay });
 
 // ── Dictation ────────────────────────────────────────────────────────────
 // Record mic audio with MediaRecorder, then hand the bytes to the main process

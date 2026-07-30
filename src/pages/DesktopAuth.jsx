@@ -13,10 +13,15 @@ import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-w
 //   1. Fresh desktop_state from the Mac app → clear any leftover browser
 //      Supabase session (Mac sign-out does NOT clear the system browser),
 //      then Google OAuth with prompt=select_account.
-//   2. Back from Google with a session → hand it to the app via the
-//      lykn://auth deep link (tokens in the URL fragment, never in query/logs).
+//   2. Back from Google with a session → hand it to the app via loopback POST
+//      or lykn://auth (tokens in the URL fragment, never in query/logs).
 //   3. The app's main process forwards the tokens to the renderer, which calls
 //      supabase.auth.setSession() — signed in, no embedded Google page ever.
+//   4. Immediately signOut({ scope: "local" }) in THIS browser tab so it stops
+//      auto-refreshing. Supabase rotates refresh tokens; if the browser and
+//      Electron both refresh the same family, one side gets revoked and the
+//      Mac app mysteriously logs the user out later. Electron owns the session
+//      after handoff; tokens stay in a memory cache so "Open LYKN" still works.
 //
 // Machine-specific "works on the second Try again" was usually:
 //   • Double navigation (Supabase redirect + our backup assign) racing PKCE
@@ -231,8 +236,24 @@ export default function DesktopAuth() {
   const [finishing, setFinishing] = useState(false);
   const [httpHandoffDone, setHttpHandoffDone] = useState(false);
   const [autoHandoffStarted, setAutoHandoffStarted] = useState(false);
+  // Survives browser local sign-out so the success UI can still show email.
+  const [handoffEmail, setHandoffEmail] = useState("");
   const startedRef = useRef(false);
   const handoffAttemptedRef = useRef(false);
+  const handoffTokensRef = useRef(null);
+  const browserSessionReleasedRef = useRef(false);
+
+  // Drop the browser's persisted Supabase session (local only — does NOT revoke
+  // the refresh token Electron is using). Idempotent.
+  const releaseBrowserSession = async () => {
+    if (browserSessionReleasedRef.current) return;
+    browserSessionReleasedRef.current = true;
+    try {
+      await supabase.auth.signOut({ scope: "local" });
+    } catch {
+      /* cosmetic — Mac already has the tokens */
+    }
+  };
 
   const oauthError = (() => {
     if (typeof window === "undefined") return null;
@@ -284,7 +305,11 @@ export default function DesktopAuth() {
   const openApp = async ({ silent = false } = {}) => {
     if (!silent) setErrorMsg(null);
     const { data } = await supabase.auth.getSession();
-    const session = data?.session;
+    // Prefer live session; fall back to in-memory tokens after we released the
+    // browser session so "Open LYKN" / pagehide retries still work.
+    const session = data?.session?.access_token
+      ? data.session
+      : handoffTokensRef.current;
     if (!session?.access_token || !session?.refresh_token) {
       if (!silent) {
         setErrorMsg("Your session expired. Please sign in again.");
@@ -301,10 +326,23 @@ export default function DesktopAuth() {
       }
       return false;
     }
+    handoffTokensRef.current = {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+    };
+    const email =
+      session.user?.email ||
+      user?.email ||
+      handoffEmail ||
+      "";
+    if (email) setHandoffEmail(email);
     clearAutoRetry();
     try {
       const result = await handoffSessionToApp(session, { softProtocol: silent });
       if (result.mode === "http") setHttpHandoffDone(true);
+      // Electron now owns this refresh-token family — stop browser auto-refresh
+      // before the next hourly rotation revokes the Mac session.
+      void releaseBrowserSession();
       return true;
     } catch {
       if (!silent) {
@@ -359,6 +397,12 @@ export default function DesktopAuth() {
     startedRef.current = true;
     setFinishing(false);
     setPhase("starting");
+    setHttpHandoffDone(false);
+    setHandoffEmail("");
+    handoffTokensRef.current = null;
+    browserSessionReleasedRef.current = false;
+    handoffAttemptedRef.current = false;
+    setAutoHandoffStarted(false);
     clearAutoRetry();
     const desktopState = readDesktopState();
     if (desktopState) writeBootMarker(desktopState);
@@ -373,6 +417,7 @@ export default function DesktopAuth() {
   // Late session arrival after a slow exchange → handoff (never stay on error).
   useEffect(() => {
     if (!user) return;
+    if (user.email) setHandoffEmail(user.email);
     if (phase === "error" || finishing) {
       clearAutoRetry();
       setErrorMsg(null);
@@ -525,7 +570,10 @@ export default function DesktopAuth() {
             {phase === "handoff" && (
               <>
                 <h1 className="text-lg font-semibold text-slate-900">
-                  You&apos;re signed in{user?.email ? ` as ${user.email}` : ""}
+                  You&apos;re signed in
+                  {(handoffEmail || user?.email)
+                    ? ` as ${handoffEmail || user?.email}`
+                    : ""}
                 </h1>
                 <p className="mt-2 text-sm text-slate-500">
                   {httpHandoffDone

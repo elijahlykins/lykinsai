@@ -151,15 +151,14 @@
         -webkit-app-region: no-drag;
         display: inline-flex;
         align-items: center;
-        gap: 5px;
-        padding: 4px 9px;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
         border-radius: 8px;
         border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(255, 255, 255, 0.05);
         color: rgba(255, 255, 255, 0.72);
-        font: inherit;
-        font-size: 11px;
-        font-weight: 600;
         cursor: pointer;
         transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
       }
@@ -169,11 +168,11 @@
         border-color: rgba(255, 255, 255, 0.16);
       }
       .chat-copy.copied {
-        color: #34d399;
-        border-color: rgba(52, 211, 153, 0.35);
-        background: rgba(52, 211, 153, 0.12);
+        color: #3b82f6;
+        border-color: rgba(59, 130, 246, 0.4);
+        background: rgba(59, 130, 246, 0.14);
       }
-      .chat-copy svg { width: 12px; height: 12px; flex: none; }
+      .chat-copy svg { width: 14px; height: 14px; flex: none; }
       .chat.collapsed .chat-a { display: none; }
       .chat.collapsed .suggest { display: none; }
 

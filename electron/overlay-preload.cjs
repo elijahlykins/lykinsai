@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     ipcRenderer.send("lykn:resize", { width, height, ...(opts || {}) }),
   // Drag the floating bar by a screen-pixel delta.
   moveBy: (dx, dy) => ipcRenderer.send("lykn:move-by", { dx, dy }),
+  // Drag finished — main can catch side panels up without doing it every pixel.
+  moveEnd: () => ipcRenderer.send("lykn:move-end"),
   // Collapse the panel to a small LYKN icon bubble (true) or expand it (false).
   collapse: (v) => ipcRenderer.send("lykn:collapse", !!v),
   hide: () => ipcRenderer.send("lykn:hide-overlay"),

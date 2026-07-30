@@ -1589,7 +1589,7 @@ function captureInteractiveSnip() {
       resolve(null);
       return;
     }
-    const display = screen.getPrimaryDisplay();
+    const display = getTargetCaptureDisplay();
     const { bounds, scaleFactor } = display;
     const physW = Math.round(bounds.width * scaleFactor);
     const physH = Math.round(bounds.height * scaleFactor);
@@ -1692,36 +1692,80 @@ function captureInteractiveSnip() {
   });
 }
 
-// Capture the primary display and return a PNG data URL. desktopCapturer fails
+// Display the overlay (or cursor) is on — so capture / burst cover the screen
+// the user is actually looking at, not always the primary (external monitors,
+// Sidecar, resolution changes).
+function getTargetCaptureDisplay() {
+  try {
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      const b = overlayWindow.getBounds();
+      return screen.getDisplayNearestPoint({
+        x: b.x + Math.round(b.width / 2),
+        y: b.y + Math.round(b.height / 2),
+      });
+    }
+  } catch (_) {
+    /* fall through */
+  }
+  try {
+    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  } catch (_) {
+    /* fall through */
+  }
+  return screen.getPrimaryDisplay();
+}
+
+// Capture the full target display and return a data URL. Always scales the
+// WHOLE screen (never a cropped sub-rectangle). desktopCapturer fails
 // ("Failed to get sources") when asked for a very large thumbnail (e.g. full
 // Retina resolution), so we try a ladder of decreasing sizes and take the
-// first that succeeds — sharp when possible, reliable always.
+// first that succeeds — sharp when possible, reliable always. Sizes are based
+// on physical pixels (bounds × scaleFactor) so Retina / HiDPI / ultrawide
+// Macs still yield a full-frame image.
 async function capturePrimaryScreen({ maxWidth, format = "png", quality = 80 } = {}) {
-  const display = screen.getPrimaryDisplay();
-  const { width: w, height: h } = display.size;
-  const aspect = h / w;
+  const display = getTargetCaptureDisplay();
+  const scale = Number(display.scaleFactor) || 1;
+  const dipW = Math.max(1, display.bounds.width);
+  const dipH = Math.max(1, display.bounds.height);
+  const physW = Math.max(1, Math.round(dipW * scale));
+  const physH = Math.max(1, Math.round(dipH * scale));
+  const aspect = physH / physW;
   // When a caller only needs a smaller image (e.g. the browser thumbnail), ask
-  // the compositor for it directly instead of grabbing 2048px and downscaling —
-  // capturing fewer pixels is meaningfully faster.
-  const cap = maxWidth ? Math.min(w, maxWidth) : Math.min(w, 2048);
-  const widths = maxWidth
-    ? [cap, Math.round(cap * 0.8), 960]
-    : [cap, 1600, 1280, 960];
-  const sizes = widths.map((width) => ({ width, height: Math.round(width * aspect) }));
+  // the compositor for it directly instead of grabbing full Retina and
+  // downscaling — capturing fewer pixels is meaningfully faster.
+  const cap = maxWidth ? Math.min(physW, maxWidth) : Math.min(physW, 2560);
+  const rawWidths = maxWidth
+    ? [cap, Math.round(cap * 0.8), Math.min(960, cap)]
+    : [cap, Math.min(2048, cap), Math.min(1600, cap), Math.min(1280, cap), 960];
+  const widths = [...new Set(rawWidths.map((w) => Math.max(320, Math.round(w))))];
+  const sizes = widths.map((width) => ({
+    width,
+    height: Math.max(1, Math.round(width * aspect)),
+  }));
 
   let lastErr = null;
   for (const thumbnailSize of sizes) {
     try {
       const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
-      const primary =
-        sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
-      if (primary && !primary.thumbnail.isEmpty()) {
+      const matched =
+        sources.find((s) => String(s.display_id) === String(display.id)) ||
+        sources.find((s) => {
+          // Some Electron builds leave display_id blank — pick the source whose
+          // thumbnail aspect is closest to the target display.
+          if (!s || s.thumbnail.isEmpty()) return false;
+          const sz = s.thumbnail.getSize();
+          if (!sz.width || !sz.height) return false;
+          const a = sz.height / sz.width;
+          return Math.abs(a - aspect) < 0.08;
+        }) ||
+        sources[0];
+      if (matched && !matched.thumbnail.isEmpty()) {
         // JPEG is 5–10× smaller than PNG for a screenshot — much faster to upload
         // and for the vision model to ingest, at no meaningful cost to OCR quality.
         if (format === "jpeg") {
-          return `data:image/jpeg;base64,${primary.thumbnail.toJPEG(quality).toString("base64")}`;
+          return `data:image/jpeg;base64,${matched.thumbnail.toJPEG(quality).toString("base64")}`;
         }
-        return primary.thumbnail.toDataURL();
+        return matched.thumbnail.toDataURL();
       }
     } catch (e) {
       lastErr = e;
@@ -1746,14 +1790,13 @@ async function captureBrowserScreenThumbnail() {
   }
 }
 
-// ── "LYKN is on" glass ───────────────────────────────────────────────────
-// A full-screen, transparent, click-through window that fades in a subtle
-// frosted-glass wash (pink→blue, with a glowing rim) across the WHOLE screen
-// while the overlay is active — an unmistakable "LYKN is live" cue. It sits
-// behind the glass bar, never steals focus, and stays up until the overlay is
-// dismissed (then hideOverlayGlass() fades it out).
+// ── Summon burst ─────────────────────────────────────────────────────────
+// A full-screen, transparent, click-through window that plays a brief color
+// wash across the WHOLE screen when the overlay is summoned. No persistent
+// outline — capture reads the full display on its own. The window covers the
+// display the overlay is on (not always primary) and hides after the anim.
 function createBurstWindow() {
-  const { bounds } = screen.getPrimaryDisplay();
+  const { bounds } = getTargetCaptureDisplay();
   burstWindow = new BrowserWindow({
     x: bounds.x,
     y: bounds.y,
@@ -1808,7 +1851,7 @@ function createBurstWindow() {
     if (!burstWindow || burstWindow.isDestroyed() || burstWindowWarmed) return;
     burstWindowWarmed = true;
     try {
-      const { bounds } = screen.getPrimaryDisplay();
+      const { bounds } = getTargetCaptureDisplay();
       // Park the window one full screen-height above the display.
       burstWindow.setBounds({
         x: bounds.x,
@@ -1841,9 +1884,14 @@ function createBurstWindow() {
 function playOverlayBurst() {
   try {
     if (!burstWindow || burstWindow.isDestroyed()) createBurstWindow();
-    // Re-cover the (possibly changed) primary display each time.
-    const { bounds } = screen.getPrimaryDisplay();
-    burstWindow.setBounds(bounds);
+    // Cover the display the overlay is on (handles external / scaled screens).
+    const { bounds } = getTargetCaptureDisplay();
+    burstWindow.setBounds({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+    });
     burstWindow.setIgnoreMouseEvents(true, { forward: true });
     // Show without activating so the overlay keeps key focus for typing.
     burstWindow.showInactive();
@@ -1858,20 +1906,22 @@ function playOverlayBurst() {
     } else {
       fire();
     }
-    // The glass PERSISTS while the overlay is active (it's the "LYKN is on"
-    // cue); the one-shot color burst plays once on summon (see burst.html).
-    // hideOverlayGlass() fades everything out when the overlay is dismissed.
+    // One-shot summon cue only — hide once the wash finishes (no persistent rim).
     if (burstHideTimer) {
       clearTimeout(burstHideTimer);
       burstHideTimer = null;
     }
+    burstHideTimer = setTimeout(() => {
+      burstHideTimer = null;
+      hideOverlayGlass();
+    }, 1400);
   } catch (_) {
     /* the burst is purely cosmetic — never block showing the overlay */
   }
 }
 
-// Fade the full-screen glass back out, then hide its window once the CSS
-// transition has finished. Called whenever the overlay is dismissed.
+// Stop the summon animation and hide its window. Called after the one-shot
+// wash finishes, or immediately when the overlay is dismissed.
 function hideOverlayGlass() {
   try {
     if (!burstWindow || burstWindow.isDestroyed()) return;
@@ -2474,8 +2524,7 @@ function showOverlay() {
   // Re-assert content protection on every show — like the window level, it can
   // be dropped after a restart or Space/full-screen transition.
   applyContentProtection();
-  // Fade in the full-screen glass behind the bar so the user gets an
-  // unmistakable "LYKN is on" cue for as long as the overlay is up.
+  // Brief summon wash behind the bar (no persistent outline).
   playOverlayBurst();
   overlayWindow.show();
   // Re-assert the level AFTER show too — ordering a window onto a full-screen
@@ -6998,22 +7047,54 @@ function registerOverlayIpc() {
       return { ok: false, briefs: [], error: e?.message || "fetch_failed" };
     }
   });
-  ipcMain.on("lykn:move-by", (_e, { dx, dy }) => {
-    if (!overlayWindow) return;
-    const b = overlayWindow.getBounds();
-    const nx = b.x + Math.round(dx || 0);
-    const ny = b.y + Math.round(dy || 0);
-    overlayProgrammaticMove = true;
-    setFloatingBounds(overlayWindow, { x: nx, y: ny, width: b.width, height: b.height });
-    overlayProgrammaticMove = false;
-    overlayUserPositioned = true;
-    overlayAnchorLeft = nx;
-    overlayAnchorBottomY = ny + b.height;
+  // During drag, only move the bar. Repositioning menu/picker/live/panel on
+  // every pixel was stalling the cursor; those catch up on lykn:move-end.
+  let overlayMoveSideTimer = null;
+  const followOverlaySideWindows = () => {
+    if (overlayMoveSideTimer) {
+      clearTimeout(overlayMoveSideTimer);
+      overlayMoveSideTimer = null;
+    }
     positionMenuWindow();
     positionPickerWindow();
     positionLangPickerWindow();
     positionLiveWindow();
     positionPanelWindow();
+  };
+  ipcMain.on("lykn:move-by", (_e, { dx, dy }) => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) return;
+    const rdx = Math.round(dx || 0);
+    const rdy = Math.round(dy || 0);
+    if (!rdx && !rdy) return;
+    const b = overlayWindow.getBounds();
+    const nx = b.x + rdx;
+    const ny = b.y + rdy;
+    overlayProgrammaticMove = true;
+    try {
+      overlayWindow.setBounds(
+        { x: nx, y: ny, width: b.width, height: b.height },
+        false,
+      );
+    } catch (_) {
+      try {
+        overlayWindow.setBounds({ x: nx, y: ny, width: b.width, height: b.height });
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    overlayProgrammaticMove = false;
+    overlayUserPositioned = true;
+    overlayAnchorLeft = nx;
+    overlayAnchorBottomY = ny + b.height;
+    // Safety net if the renderer never sends move-end (stuck drag / crash).
+    if (overlayMoveSideTimer) clearTimeout(overlayMoveSideTimer);
+    overlayMoveSideTimer = setTimeout(() => {
+      overlayMoveSideTimer = null;
+      followOverlaySideWindows();
+    }, 120);
+  });
+  ipcMain.on("lykn:move-end", () => {
+    followOverlaySideWindows();
   });
   ipcMain.on("lykn:ask", (event, args) => {
     streamScreenAnswer(event, args || {});
