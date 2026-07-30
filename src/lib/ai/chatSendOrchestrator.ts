@@ -2761,14 +2761,22 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       text,
     );
 
+  // Skip cross-chat memory fetch on short/phatic turns — it was a common
+  // pre-stream await even when the server would ignore conversationMemory.
+  const skipMemoryPrefetch =
+    !identity.userId ||
+    cappedText.trim().length < 12 ||
+    /^(?:hi|hello|hey|yo|sup|thanks|thank you|ok|okay|sure|yes|no|yep|nope|got it|cool|nice|great|bye)[\s!.?…]*$/i.test(
+      cappedText.trim(),
+    );
   const [memoryText, vaultNotesForAi] = await Promise.all([
-    identity.userId
-      ? getMemoryForPrompt(
+    skipMemoryPrefetch
+      ? Promise.resolve("")
+      : getMemoryForPrompt(
           identity.userId,
           identity.routeChatId || identity.chatId || null,
           cappedText,
-        )
-      : Promise.resolve(""),
+        ),
     identity.userId && wantsVaultDetail
       ? fetchNotesForVaultAi(identity.userId)
       : Promise.resolve([] as VaultAiNoteRow[]),

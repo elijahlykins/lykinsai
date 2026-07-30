@@ -3006,12 +3006,6 @@ window.__lyknMenuCmd = (name, arg) => {
       if (b) b.click();
       break;
     }
-    case "menu-attach":
-      void openFilePicker();
-      break;
-    case "menu-snip":
-      void snipFromScreen();
-      break;
     case "menu-image-gen": {
       // Clicks the hidden drawer button, which arms image mode — see its
       // listener below. (Never auto-sends; the user presses Send.)
@@ -3281,16 +3275,6 @@ async function snipFromScreen() {
     snipping = false;
   }
 }
-
-document.getElementById("menu-attach").addEventListener("click", async () => {
-  setMenuOpen(false);
-  await openFilePicker();
-});
-
-document.getElementById("menu-snip").addEventListener("click", async () => {
-  setMenuOpen(false);
-  await snipFromScreen();
-});
 
 // Toolbar attach button — the reliable way to add files to the bar. (macOS
 // blocks OS file drops onto this non-activating panel window, so the picker is

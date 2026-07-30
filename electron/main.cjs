@@ -5938,13 +5938,20 @@ async function streamScreenAnswer(event, {
     conversationFollowUp && imageAtts.length === 0 && textAtts.length === 0;
   const liveWatchSummary = !skipScreenContext ? getFreshLiveWatchSummary(4000) : "";
 
-  // Screen Recording: trigger the macOS Allow dialog when still not-determined
-  // instead of only telling the user to dig through Privacy settings.
-  // Finish this BEFORE any AppleScript page scrape so Automation dialogs cannot
-  // stack on top of the Screen Recording prompt.
-  const needScreen = !skipScreenContext && imageAtts.length === 0;
+  // Screen Recording only when we likely need pixels (explicit visual ask, or
+  // page scrape unavailable). Text-rich browser asks scrape via Automation and
+  // must not block on Screen Recording permission / capture.
+  const explicitVisualAskEarly = overlayMessageWantsVisualGuidance(text);
+  const pageScrapeLikelyBlocked =
+    imageAtts.length > 0 ||
+    skipScreenContext ||
+    automationOk.systemEvents === false;
+  const likelyNeedsPixels =
+    !skipScreenContext &&
+    imageAtts.length === 0 &&
+    (explicitVisualAskEarly || pageScrapeLikelyBlocked);
   let screenAccess = { ok: true, status: screenCaptureStatus(), prompted: false };
-  if (needScreen) {
+  if (likelyNeedsPixels) {
     screenAccess = await ensureScreenRecordingAccess();
     if (!screenAccess.ok) {
       send("lykn:answer-error", {
@@ -5954,27 +5961,23 @@ async function streamScreenAnswer(event, {
     }
   }
 
-  // Immediate UI feedback while capture/scrape/token run — don't wait for TTFT.
+  // Immediate UI feedback while scrape/token run — don't wait for TTFT.
   if (!skipScreenContext) {
-    send("lykn:answer-status", { status: "Reading screen…" });
+    send("lykn:answer-status", {
+      status: likelyNeedsPixels ? "Reading screen…" : "Reading page…",
+    });
   } else {
     send("lykn:answer-status", { status: "Thinking…" });
   }
 
-  // Capture + auth can still run concurrently. Page scrape (AppleScript /
-  // Automation) waits until Screen was already granted without prompting this
-  // turn — first Glass ask = Screen dialog only.
+  // Auth + page scrape first. Capture ONLY if we still need pixels after scrape
+  // — text-rich browser pages used to pay encode+upload cost for a screenshot
+  // we then threw away. Native apps / thin pages still capture as before.
   const skipPageScrape =
     imageAtts.length > 0 ||
     skipScreenContext ||
     !!screenAccess.prompted ||
     automationOk.systemEvents === false;
-  const capturePromise =
-    !skipScreenContext && screenCaptureStatus() === "granted"
-      ? liveWatchSummary && liveWatchLastFrameUrl
-        ? Promise.resolve(liveWatchLastFrameUrl)
-        : capturePrimaryScreen({ maxWidth: 1536, format: "jpeg", quality: 82 }).catch(() => null)
-      : Promise.resolve(null);
   const pageContextPromise = !skipPageScrape
     ? gatherOverlayPageContext({
         send,
@@ -5985,21 +5988,14 @@ async function streamScreenAnswer(event, {
       })
     : Promise.resolve({ pageContext: null, pastPageSection: "" });
   const tokenPromise = getAuthToken().catch(() => null);
+  const explicitVisualAsk = explicitVisualAskEarly;
 
-  const [dataURL, pageBundle, token] = await Promise.all([
-    capturePromise,
-    pageContextPromise,
-    tokenPromise,
-  ]);
+  const [pageBundle, token] = await Promise.all([pageContextPromise, tokenPromise]);
   if (superseded()) return;
 
   const pageContext = pageBundle?.pageContext || null;
   const pastPageSection = pageBundle?.pastPageSection || "";
 
-  if (needScreen && !dataURL) {
-    send("lykn:answer-error", { message: "Couldn't capture the screen." });
-    return;
-  }
   if (!token) {
     send("lykn:answer-error", {
       message: "Sign in to LYKN first. Open the main LYKN window and log in, then try again.",
@@ -6011,9 +6007,8 @@ async function streamScreenAnswer(event, {
   // If we scraped substantial page text, the text IS the context — so drop the
   // screenshot and let the request go text-only. That keeps the backend on the
   // fast model (no nano→gpt-4.1 vision upgrade) and shrinks the upload to almost
-  // nothing — the single biggest "feels instant" win for reading pages. We still
-  // captured the screenshot above as a fallback for thin pages / non-browser apps.
-  const RICH_PAGE_TEXT_CHARS = 1200;
+  // nothing — the single biggest "feels instant" win for reading pages.
+  const RICH_PAGE_TEXT_CHARS = 600;
   const hasRichPageText =
     !!pageContext &&
     pageContext.kind !== "video" &&
@@ -6021,20 +6016,57 @@ async function streamScreenAnswer(event, {
   // A message that clearly wants VISUAL help ("do you see this?", "how do I
   // run this?", "where do I click?") must keep the pixels even when the page
   // is text-rich — the text-only fast path leaves the model blind to layout.
-  // Also keep pixels when the page fingerprint changed since the last ask, or
-  // when a short deictic follow-up likely points at the new UI.
+  // Page fingerprint changes alone do NOT force a screenshot upload anymore;
+  // that was a common "every navigation feels slow" tax when page text is enough.
   const pageFingerprint = overlayPageFingerprint(pageContext);
-  const screenChanged =
-    !skipScreenContext &&
-    !!pageFingerprint &&
-    !!lastOverlayPageFingerprint &&
-    pageFingerprint !== lastOverlayPageFingerprint;
   const hasChatHistory = Array.isArray(history) && history.length > 0;
   const wantsVisualGuidance =
     !skipScreenContext &&
-    (overlayMessageWantsVisualGuidance(text) ||
-      screenChanged ||
-      (hasChatHistory && overlayMessageLooksScreenDeictic(text)));
+    (explicitVisualAsk ||
+      (!hasRichPageText && hasChatHistory && overlayMessageLooksScreenDeictic(text)));
+  const shouldCapture =
+    !skipScreenContext &&
+    imageAtts.length === 0 &&
+    !hasVideoTranscript &&
+    !(forceImage && imageAtts.length) &&
+    (wantsVisualGuidance || (!hasRichPageText && !liveWatchSummary));
+
+  let dataURL = null;
+  if (shouldCapture && screenCaptureStatus() === "granted") {
+    if (liveWatchSummary && liveWatchLastFrameUrl && !wantsVisualGuidance) {
+      dataURL = liveWatchLastFrameUrl;
+    } else {
+      send("lykn:answer-status", { status: "Reading screen…" });
+      dataURL = await capturePrimaryScreen({
+        maxWidth: 1536,
+        format: "jpeg",
+        quality: 82,
+      }).catch(() => null);
+    }
+  } else if (
+    !skipScreenContext &&
+    !hasRichPageText &&
+    !hasVideoTranscript &&
+    liveWatchSummary &&
+    liveWatchLastFrameUrl &&
+    !wantsVisualGuidance
+  ) {
+    // Thin page + live watch: reuse last frame without a fresh capture.
+    dataURL = liveWatchLastFrameUrl;
+  }
+  if (superseded()) return;
+
+  // Capture failure is only fatal when we have nothing else to ground on.
+  const hasPageGrounding =
+    !!(pageContext && (pageContext.text || pageContext.title || pageContext.url)) ||
+    !!liveWatchSummary ||
+    imageAtts.length > 0 ||
+    textAtts.length > 0;
+  if (shouldCapture && !dataURL && !hasPageGrounding) {
+    send("lykn:answer-error", { message: "Couldn't capture the screen." });
+    return;
+  }
+
   // Live Watch already ran a recent vision pass — skip the screenshot upload when
   // there's no scraped page text (games, native apps) to stay fast.
   let attachScreenshot =
@@ -6049,16 +6081,13 @@ async function streamScreenAnswer(event, {
   if (!skipScreenContext && pageFingerprint) {
     lastOverlayPageFingerprint = pageFingerprint;
   }
-  if (hasRichPageText && dataURL && !attachScreenshot) {
+  if (hasRichPageText && !attachScreenshot) {
     console.log(
-      `[overlay-ask] text-rich page (${pageContext.text.length} chars) — dropping screenshot, staying on fast model`,
+      `[overlay-ask] text-rich page (${pageContext.text.length} chars) — skip screenshot capture/upload, staying on fast model`,
     );
   } else if (hasRichPageText && attachScreenshot) {
-    const reason = screenChanged
-      ? "screen/page changed since last ask"
-      : "message wants visual guidance";
     console.log(
-      `[overlay-ask] text-rich page (${pageContext.text.length} chars) but ${reason} — keeping screenshot`,
+      `[overlay-ask] text-rich page (${pageContext.text.length} chars) but message wants visual guidance — keeping screenshot`,
     );
   }
   // Keep this prompt tiny — server injects LYKN_GLASS_STREAM_PERSONA_SLIM
