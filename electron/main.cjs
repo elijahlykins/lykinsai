@@ -396,6 +396,11 @@ function isAuthNavigation(url) {
 let pendingAuthTokens = null;
 /** @type {{ state: string, expiresAt: number } | null} */
 let pendingDesktopAuthState = null;
+// After a successful accept we clear one-time desktop_state immediately so
+// concurrent HTTP POSTs can't double-accept. Keep the last tokens briefly so
+// a second "Open LYKN" / pagehide retry with the SAME tokens still works.
+/** @type {{ access_token: string, refresh_token: string, expiresAt: number } | null} */
+let lastAcceptedAuthHandoff = null;
 const DESKTOP_AUTH_STATE_TTL_MS = 15 * 60 * 1000;
 
 function desktopAuthStatePath() {
@@ -464,20 +469,18 @@ function authHandoffAllowedOrigin(origin) {
   return "";
 }
 
-function acceptAuthHandoffPayload(body) {
-  const access_token = String(body?.access_token || "");
-  const refresh_token = String(body?.refresh_token || "");
-  const state = String(body?.state || "");
-  if (!access_token || !refresh_token) {
-    return { ok: false, error: "missing_tokens" };
-  }
-  const expected = loadDesktopAuthState();
-  if (!expected?.state || !state || expected.state !== state) {
-    console.warn("[auth] localhost handoff rejected — missing or mismatched desktop_state");
-    return { ok: false, error: "bad_state" };
-  }
+function isReplayOfLastAuthHandoff(access_token, refresh_token) {
+  return Boolean(
+    lastAcceptedAuthHandoff &&
+      lastAcceptedAuthHandoff.expiresAt > Date.now() &&
+      lastAcceptedAuthHandoff.access_token === access_token &&
+      lastAcceptedAuthHandoff.refresh_token === refresh_token,
+  );
+}
+
+function deliverAuthTokensToRenderer(access_token, refresh_token) {
   pendingAuthTokens = { access_token, refresh_token };
-  if (!app.isReady()) return { ok: true };
+  if (!app.isReady()) return;
   if (!mainWindow || mainWindow.isDestroyed()) {
     createMainWindow();
   } else {
@@ -491,6 +494,31 @@ function acceptAuthHandoffPayload(body) {
   } catch (_) {
     /* best-effort */
   }
+}
+
+function acceptAuthHandoffPayload(body) {
+  const access_token = String(body?.access_token || "");
+  const refresh_token = String(body?.refresh_token || "");
+  const state = String(body?.state || "");
+  if (!access_token || !refresh_token) {
+    return { ok: false, error: "missing_tokens" };
+  }
+  if (!isReplayOfLastAuthHandoff(access_token, refresh_token)) {
+    const expected = loadDesktopAuthState();
+    if (!expected?.state || !state || expected.state !== state) {
+      console.warn("[auth] localhost handoff rejected — missing or mismatched desktop_state");
+      return { ok: false, error: "bad_state" };
+    }
+    // Consume one-time state before any window work so a concurrent POST
+    // with the same mint can't both pass the state check.
+    clearDesktopAuthState();
+    lastAcceptedAuthHandoff = {
+      access_token,
+      refresh_token,
+      expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS,
+    };
+  }
+  deliverAuthTokensToRenderer(access_token, refresh_token);
   return { ok: true };
 }
 
@@ -567,6 +595,8 @@ function startAuthHandoffServer() {
 
 function mintDesktopAuthUrl(baseUrl) {
   const state = crypto.randomBytes(24).toString("base64url");
+  // New Google round-trip — don't accept replays from a prior attempt.
+  lastAcceptedAuthHandoff = null;
   persistDesktopAuthState({ state, expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS });
   try {
     const u = new URL(baseUrl);
@@ -587,8 +617,7 @@ function flushPendingAuthTokens() {
   if (wc.isLoading()) return; // did-finish-load will re-flush
   wc.send("lykn:auth-tokens", pendingAuthTokens);
   pendingAuthTokens = null;
-  // Tokens reached the renderer — consume the one-time desktop_state so a
-  // later unrelated lykn://auth can't replay the handoff.
+  // State is consumed at accept-time; this is a safety clear for older paths.
   clearDesktopAuthState();
 }
 
@@ -610,38 +639,31 @@ function handleAuthDeepLink(rawUrl) {
   const state = frag.get("state") || "";
   if (!access_token || !refresh_token) return;
 
-  const expected = loadDesktopAuthState();
-  if (!expected?.state || !state || expected.state !== state) {
-    console.warn("[auth] lykn://auth rejected — missing or mismatched desktop_state");
-    // Still raise the app so the user isn't left staring at a dead browser tab
-    // when Launch Services delivered the link to us but state was already used.
-    if (app.isReady() && mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
+  if (!isReplayOfLastAuthHandoff(access_token, refresh_token)) {
+    const expected = loadDesktopAuthState();
+    if (!expected?.state || !state || expected.state !== state) {
+      console.warn("[auth] lykn://auth rejected — missing or mismatched desktop_state");
+      // Still raise the app so the user isn't left staring at a dead browser tab
+      // when Launch Services delivered the link to us but state was already used.
+      if (app.isReady() && mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+      return;
     }
-    return;
+    // Consume immediately; same-token retries use lastAcceptedAuthHandoff.
+    clearDesktopAuthState();
+    lastAcceptedAuthHandoff = {
+      access_token,
+      refresh_token,
+      expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS,
+    };
   }
-  // Keep desktop_state until tokens are delivered to the renderer so a second
-  // "Open LYKN" click still works if the browser swallowed the first navigation.
-  pendingAuthTokens = { access_token, refresh_token };
   // Cold start via the deep link: open-url can fire before whenReady, and
   // BrowserWindow can't be created yet. whenReady's createMainWindow (deep-link
   // launches are not login launches) will flush the tokens on did-finish-load.
-  if (!app.isReady()) return;
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createMainWindow(); // flushes on did-finish-load
-  } else {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    flushPendingAuthTokens();
-  }
-  try {
-    app.focus({ steal: true });
-  } catch (_) {
-    /* focus is best-effort */
-  }
+  deliverAuthTokensToRenderer(access_token, refresh_token);
 }
 
 // macOS delivers custom-scheme URLs here (both cold start and while running).

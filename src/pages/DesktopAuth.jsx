@@ -242,6 +242,8 @@ export default function DesktopAuth() {
   const handoffAttemptedRef = useRef(false);
   const handoffTokensRef = useRef(null);
   const browserSessionReleasedRef = useRef(false);
+  const handoffInFlightRef = useRef(false);
+  const handoffSucceededRef = useRef(false);
 
   // Drop the browser's persisted Supabase session (local only — does NOT revoke
   // the refresh token Electron is using). Idempotent.
@@ -304,6 +306,8 @@ export default function DesktopAuth() {
 
   const openApp = async ({ silent = false } = {}) => {
     if (!silent) setErrorMsg(null);
+    if (handoffSucceededRef.current) return true;
+    if (handoffInFlightRef.current) return false;
     const { data } = await supabase.auth.getSession();
     // Prefer live session; fall back to in-memory tokens after we released the
     // browser session so "Open LYKN" / pagehide retries still work.
@@ -337,12 +341,17 @@ export default function DesktopAuth() {
       "";
     if (email) setHandoffEmail(email);
     clearAutoRetry();
+    handoffInFlightRef.current = true;
     try {
       const result = await handoffSessionToApp(session, { softProtocol: silent });
       if (result.mode === "http") setHttpHandoffDone(true);
+      handoffSucceededRef.current = true;
       // Electron now owns this refresh-token family — stop browser auto-refresh
-      // before the next hourly rotation revokes the Mac session.
-      void releaseBrowserSession();
+      // before the next hourly rotation revokes the Mac session. Delay briefly
+      // so the Mac app can finish setSession before we drop the browser copy.
+      window.setTimeout(() => {
+        void releaseBrowserSession();
+      }, 400);
       return true;
     } catch {
       if (!silent) {
@@ -353,6 +362,8 @@ export default function DesktopAuth() {
         );
       }
       return false;
+    } finally {
+      handoffInFlightRef.current = false;
     }
   };
 
@@ -402,6 +413,8 @@ export default function DesktopAuth() {
     handoffTokensRef.current = null;
     browserSessionReleasedRef.current = false;
     handoffAttemptedRef.current = false;
+    handoffInFlightRef.current = false;
+    handoffSucceededRef.current = false;
     setAutoHandoffStarted(false);
     clearAutoRetry();
     const desktopState = readDesktopState();
