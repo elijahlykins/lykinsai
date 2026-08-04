@@ -1,0 +1,555 @@
+<!doctype html>
+<html data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /* Match Mac app (src/lib/theme.js): light #ececeb · dark #1e1e1e */
+      :root,
+      html[data-theme="light"] {
+        --bg: #ececeb;
+        --bar: #e4e4e1;
+        --tab: #dbdbd8;
+        --tab-active: #ececeb;
+        --border: rgba(0, 0, 0, 0.1);
+        --text: #0a0a0a;
+        --muted: #737373;
+        --chrome: #e4e4e1;
+        --url-bg: rgba(255, 255, 255, 0.72);
+        --btn-bg: rgba(0, 0, 0, 0.06);
+        --btn-hover: rgba(0, 0, 0, 0.1);
+        --page: #ececeb;
+        --stamp-hi: rgba(255, 255, 255, 0.92);
+        --stamp-lo: rgba(0, 0, 0, 0.18);
+        --stamp-hi-soft: rgba(255, 255, 255, 0.45);
+        --stamp-lo-soft: rgba(0, 0, 0, 0.08);
+      }
+      html[data-theme="incognito"] {
+        --bg: #1e1e1e;
+        --bar: #292929;
+        --tab: #2e2e2e;
+        --tab-active: #1e1e1e;
+        --border: rgba(255, 255, 255, 0.1);
+        --text: #fafafa;
+        --muted: #a3a3a3;
+        --chrome: #292929;
+        --url-bg: rgba(0, 0, 0, 0.35);
+        --btn-bg: rgba(255, 255, 255, 0.06);
+        --btn-hover: rgba(255, 255, 255, 0.12);
+        --page: #1e1e1e;
+        --stamp-hi: rgba(255, 255, 255, 0.16);
+        --stamp-lo: rgba(0, 0, 0, 0.78);
+        --stamp-hi-soft: rgba(255, 255, 255, 0.07);
+        --stamp-lo-soft: rgba(0, 0, 0, 0.42);
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #shell {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+      #tabs {
+        display: flex;
+        align-items: flex-end;
+        gap: 2px;
+        height: 38px;
+        padding: 6px 8px 0;
+        background: var(--bar);
+        border-bottom: 1px solid var(--border);
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-app-region: drag;
+        scrollbar-width: none;
+      }
+      #tabs::-webkit-scrollbar { display: none; }
+      .tab {
+        -webkit-app-region: no-drag;
+        flex: 0 1 180px;
+        max-width: 200px;
+        min-width: 96px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px 0 10px;
+        border: none;
+        border-radius: 8px 8px 0 0;
+        background: var(--tab);
+        color: var(--muted);
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        text-align: left;
+      }
+      .tab:hover { color: var(--text); filter: brightness(0.98); }
+      html[data-theme="incognito"] .tab:hover { background: rgba(255,255,255,0.08); filter: none; }
+      .tab.active {
+        background: var(--tab-active);
+        color: var(--text);
+      }
+      .tab-new {
+        -webkit-app-region: no-drag;
+        flex: none;
+        width: 30px;
+        height: 30px;
+        margin-left: 2px;
+        margin-bottom: 0;
+        border: none;
+        border-radius: 8px 8px 0 0;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-size: 18px;
+        font-weight: 500;
+        line-height: 1;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        padding: 0 0 2px;
+      }
+      .tab-new:hover {
+        color: var(--text);
+        background: var(--btn-bg);
+      }
+      .tab.artifact .tab-label::before {
+        content: "◆ ";
+        font-size: 9px;
+        opacity: 0.7;
+      }
+      /* Deliverable subtab — nests under its owner tab: shorter, indented
+         with a connector arrow, sits tight against the parent. */
+      .tab.subtab {
+        flex: 0 1 150px;
+        min-width: 84px;
+        max-width: 170px;
+        height: 25px;
+        margin-left: -1px;
+        border-radius: 6px 6px 0 0;
+        font-size: 11px;
+      }
+      .tab.subtab .tab-label::before {
+        content: "↳ ";
+        font-size: 10px;
+        opacity: 0.7;
+      }
+      .tab-label {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tab-x {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        border: none;
+        border-radius: 4px;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        opacity: 0.55;
+      }
+      .tab-x:hover { opacity: 1; background: var(--btn-hover); }
+      .tab-x svg { width: 10px; height: 10px; display: block; }
+      #chrome {
+        height: 44px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 10px;
+        background: var(--chrome);
+        border-bottom: 1px solid var(--border);
+        -webkit-app-region: drag;
+      }
+      #chrome button, #chrome input { -webkit-app-region: no-drag; }
+      /* Chrome-style toolbar buttons: bare icons, circular hover only. */
+      #chrome button {
+        width: 28px;
+        height: 28px;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        color: var(--text);
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+      }
+      #chrome button:hover { background: var(--btn-hover); }
+      #chrome button.active {
+        background: var(--btn-hover);
+        color: var(--text);
+      }
+      #chrome svg { width: 15px; height: 15px; display: block; }
+      #incognito svg { width: 16px; height: 16px; }
+      #url-wrap {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+      }
+      #url {
+        flex: 1;
+        min-width: 0;
+        width: 100%;
+        height: 30px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--url-bg);
+        color: var(--text);
+        padding: 0 36px 0 10px;
+        font: inherit;
+        font-size: 12px;
+      }
+      #star {
+        position: absolute;
+        right: 4px;
+        width: 26px;
+        height: 26px;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        padding: 0;
+      }
+      #star:hover { background: var(--btn-hover); color: var(--text); }
+      #star.saved {
+        color: #d4a017;
+      }
+      #star.saved:hover { color: #c4920f; }
+      #star:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      #star svg { width: 15px; height: 15px; display: block; }
+      #star.saved svg { fill: currentColor; stroke: currentColor; }
+      #saved-btn.active {
+        background: var(--btn-hover);
+      }
+      #saved-menu {
+        position: absolute;
+        top: 40px;
+        right: 44px;
+        width: min(340px, calc(100vw - 24px));
+        max-height: min(360px, 50vh);
+        overflow: auto;
+        background: var(--tab-active);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+        z-index: 40;
+        padding: 6px;
+      }
+      #saved-menu[hidden] { display: none; }
+      #saved-menu .saved-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 8px 8px;
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      #saved-menu .saved-empty {
+        padding: 16px 10px;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.4;
+        text-align: center;
+      }
+      #saved-menu .saved-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text);
+        text-align: left;
+        padding: 8px;
+        cursor: pointer;
+        font: inherit;
+      }
+      #saved-menu .saved-item:hover { background: var(--btn-bg); }
+      #saved-menu .saved-item .meta {
+        flex: 1;
+        min-width: 0;
+      }
+      #saved-menu .saved-item .name {
+        font-size: 12px;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #saved-menu .saved-item .host {
+        font-size: 11px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        margin-top: 2px;
+      }
+      #saved-menu .saved-star {
+        flex: none;
+        width: 22px;
+        height: 22px;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: #d4a017;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        padding: 0;
+      }
+      #saved-menu .saved-star:hover { background: var(--btn-hover); }
+      #saved-menu .saved-star svg {
+        width: 13px;
+        height: 13px;
+        fill: currentColor;
+        stroke: currentColor;
+      }
+      #sync-menu {
+        position: absolute;
+        top: 40px;
+        right: 12px;
+        width: min(320px, calc(100vw - 24px));
+        background: var(--tab-active);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+        z-index: 40;
+        padding: 14px;
+      }
+      #sync-menu[hidden] { display: none; }
+      #sync-menu .sync-head {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text);
+        margin-bottom: 4px;
+      }
+      #sync-menu .sync-sub {
+        margin: 0 0 12px;
+        font-size: 11.5px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+      #sync-menu select {
+        width: 100%;
+        height: 30px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--url-bg);
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        padding: 0 8px;
+        margin-bottom: 10px;
+      }
+      #sync-menu .sync-opt {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--text);
+        padding: 4px 0;
+        cursor: pointer;
+      }
+      #sync-menu .sync-opt input { accent-color: #3b78ff; }
+      #sync-menu .sync-run {
+        width: 100%;
+        height: 32px;
+        margin-top: 12px;
+        border: none;
+        border-radius: 8px;
+        background: #3b78ff;
+        color: #fff;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      #sync-menu .sync-run:hover { background: #2f6ae6; }
+      #sync-menu .sync-run:disabled { opacity: 0.6; cursor: default; }
+      #sync-menu .sync-status {
+        margin: 10px 0 0;
+        font-size: 11.5px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+      #sync-menu .sync-status.error { color: #d9534f; }
+      #sync-menu .sync-status.ok { color: #2e9e5b; }
+      #sync-btn.active { background: var(--btn-hover); }
+      #chrome { position: relative; }
+      #page {
+        flex: 1;
+        min-height: 0;
+        background: var(--page);
+      }
+      #empty {
+        height: 100%;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        color: var(--muted);
+        font-size: 13px;
+        text-align: center;
+        padding: 24px;
+        line-height: 1.45;
+        background: var(--page);
+      }
+      /* Debossed LYKN mark — fill matches page; form from highlight/shadow only */
+      #empty-stamp {
+        width: min(260px, 52vw);
+        height: min(260px, 52vw);
+        margin-bottom: 18px;
+        color: var(--page);
+        filter:
+          drop-shadow(1.4px 1.4px 0.4px var(--stamp-hi))
+          drop-shadow(-1.6px -1.6px 0.7px var(--stamp-lo))
+          drop-shadow(2.8px 2.8px 1.6px var(--stamp-hi-soft))
+          drop-shadow(-2.8px -2.8px 2.2px var(--stamp-lo-soft));
+      }
+      #empty-stamp svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+      #empty-stamp path {
+        fill: currentColor;
+      }
+      #empty .title {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 0.28em 0.35em;
+        font-size: 18px;
+        font-weight: 650;
+        color: var(--text);
+        margin-bottom: 8px;
+      }
+      #empty .title .wordmark {
+        display: inline-block;
+        /* ViewBox has vertical padding — scale so glyph height matches surrounding type. */
+        height: 1.35em;
+        width: auto;
+        color: var(--text);
+      }
+      #empty .title .wordmark path {
+        fill: currentColor;
+      }
+      #empty[hidden] { display: none; }
+      #toast { display: none !important; }
+      /* Saved-links dropdown open: main.cjs overlays this document above the
+         page view — go transparent outside the bars/menu so the page shows. */
+      html.menu-overlay,
+      html.menu-overlay body { background: transparent; }
+      html.menu-overlay #page { background: transparent; }
+      html.menu-overlay #empty { visibility: hidden; }
+    </style>
+  </head>
+  <body>
+    <div id="shell">
+      <div id="toast" hidden></div>
+      <div id="tabs" aria-label="Agent tabs"></div>
+      <div id="chrome">
+        <button type="button" id="back" title="Back" aria-label="Back">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <button type="button" id="forward" title="Forward" aria-label="Forward">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+        <button type="button" id="reload" title="Reload" aria-label="Reload">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+        </button>
+        <div id="url-wrap">
+          <input id="url" type="text" spellcheck="false" placeholder="Search Google or type a URL" />
+          <button type="button" id="star" title="Save link for LYKN" aria-label="Save link" aria-pressed="false" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true">
+              <path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.2 1 5.8L12 16.8 6.8 19.7l1-5.8L3.5 9.7l5.9-.9L12 3.5z"/>
+            </svg>
+          </button>
+        </div>
+        <button type="button" id="saved-btn" title="Saved links" aria-label="Saved links" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 4h12a1 1 0 0 1 1 1v16l-7-3.5L5 21V5a1 1 0 0 1 1-1z"/>
+          </svg>
+        </button>
+        <button type="button" id="sync-btn" title="Bring your Chrome logins & tabs" aria-label="Sync from Chrome" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 0 1-9 9c-2.5 0-4.8-1-6.4-2.7" />
+            <path d="M3 12a9 9 0 0 1 9-9c2.5 0 4.8 1 6.4 2.7" />
+            <path d="M21 3v5h-5" />
+            <path d="M3 21v-5h5" />
+          </svg>
+        </button>
+        <button type="button" id="incognito" title="Incognito (dark, private session)" aria-label="Incognito" aria-pressed="false">
+          <!-- Classic hat + glasses — simple, recognizable, neutral -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 11.5h16" />
+            <path d="M6.5 11.5c0-3.2 2.3-5.5 5.5-5.5s5.5 2.3 5.5 5.5" />
+            <path d="M8 7.2c.7-.7 1.8-1.2 3-1.2h2c1.2 0 2.3.5 3 1.2" />
+            <circle cx="8.2" cy="15.2" r="2.4" />
+            <circle cx="15.8" cy="15.2" r="2.4" />
+            <path d="M10.6 15.2h2.8" />
+          </svg>
+        </button>
+        <div id="saved-menu" hidden role="menu" aria-label="Saved links"></div>
+        <div id="sync-menu" hidden role="dialog" aria-label="Sync from Chrome">
+          <div class="sync-head">Bring your browser</div>
+          <p class="sync-sub">Import your logins and open tabs so LYKN starts signed in, right where you left off.</p>
+          <select id="sync-profile" aria-label="Browser profile"></select>
+          <label class="sync-opt"><input type="checkbox" id="sync-logins" checked /> <span>Logins &amp; cookies</span></label>
+          <label class="sync-opt"><input type="checkbox" id="sync-tabs" checked /> <span>Open tabs (each becomes an agent)</span></label>
+          <label class="sync-opt"><input type="checkbox" id="sync-history" checked /> <span>Let LYKN learn my habits (private)</span></label>
+          <button type="button" id="sync-run" class="sync-run">Sync now</button>
+          <p id="sync-status" class="sync-status" hidden></p>
+        </div>
+      </div>
+      <div id="page">
+        <div id="empty">
+          <div id="empty-stamp" aria-hidden="true">
+            <svg viewBox="0 0 204.29 204.29" role="img" aria-label="LYKN">
+              <path
+                d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z"
+              />
+            </svg>
+          </div>
+          <div class="title">
+            <span>Welcome to the</span>
+            <svg class="wordmark" viewBox="0 0 480.27 194.53" role="img" aria-label="LYKN">
+              <path
+                d="M113.42,136.31h-39.19c-2.23,0-4.05-1.82-4.05-4.05V39.72c0-.45-.36-.81-.81-.81h-29.64c-.45,0-.81.36-.81.81v86.71c0,20.57,11.2,29.2,27.65,29.2h46.86c.45,0,.81-.36.81-.81v-17.69c0-.45-.36-.81-.81-.81ZM403.29,36.25c-15.94,0-26.62,7.59-32.83,15.64-1.48,1.92-2.75,1.47-2.75-.96v-11.21c0-.45-.36-.81-.81-.81h-27.94c-.45,0-.81.36-.81.81v115.09c0,.45.36.81.81.81h29.57c.45,0,.81-.36.81-.81v-62.28c0-24.75,10.56-34.37,22.16-34.37s18.66,7.86,18.66,22.14v74.51c0,.45.36.81.81.81h29.57c.45,0,.81-.36.81-.81v-79.75c0-25.52-16.91-38.81-38.08-38.81ZM285.84,84.42c-.54-.9-.4-2.28.31-3.05l37.57-41.1c.48-.52.11-1.36-.6-1.36h-26.05c-.48,0-.93.21-1.24.57l-43.12,50.89c-1.5,1.77-2.72,1.32-2.72-1v-49.65c0-.45-.36-.81-.81-.81h-29.64c-.45,0-.81.36-.81.81v115.09c0,.45.36.81.81.81h29.64c.45,0,.81-.36.81-.81v-31.5c0-1.32.73-3.19,1.61-4.16l10.7-11.72c.79-.86,1.91-.74,2.48.28l26.64,47.09c.29.51.83.82,1.41.82h34.13c.63,0,1.02-.69.7-1.23l-41.83-69.98ZM210.32,38.91h-23.32c-.61,0-1.17.34-1.45.89l-23.86,47.1c-.77,1.51-2.01,1.51-2.76-.01l-23.23-47.07c-.27-.55-.84-.91-1.46-.91h-33.97c-.62,0-1.01.66-.71,1.2l39.62,72.63v42.08c0,.45.36.81.81.81h29.64c.45,0,.81-.36.81-.81v-42.4l40.57-72.29c.3-.54-.09-1.21-.71-1.21Z"
+              />
+            </svg>
+            <span>browser</span>
+          </div>
+          <div>Ask LYKN to open a site, research, or build. Tabs show up here.</div>
+        </div>
+      </div>
+    </div>
+    <script src="agent-stage.js"></script>
+  </body>
+</html>

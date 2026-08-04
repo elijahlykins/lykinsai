@@ -8,7 +8,7 @@ export const SYNTHESIS_LAYER_UI_ENABLED = false;
 export const SYNTHESIS_LAYER_PATH = "/synthesis-layer";
 
 /** Where to send users instead of the graph while it's unplugged. */
-export const SYNTHESIS_LAYER_FALLBACK_PATH = "/app";
+export const SYNTHESIS_LAYER_FALLBACK_PATH = "/studio";
 
 /** Build a synthesis URL, or the fallback when the UI is unplugged. */
 export function synthesisLayerHref(query?: string): string {

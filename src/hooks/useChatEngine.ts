@@ -23,6 +23,11 @@ import {
   type ChatSendParams,
 } from "@/lib/ai/chatSendOrchestrator";
 import { type ChatArtifact, toArtifactEditContext, isEditableArtifact } from "@/lib/ai/chatArtifacts";
+import {
+  isInsistFreshBuildAsk,
+  isRedesignAsk,
+  isTypedNewDeliverableAsk,
+} from "@/lib/ai/artifactBuildIntent";
 import { markdownToTiptap } from "@/lib/markdownToTiptap";
 import { isDemoLyknChatId } from "@/lib/demoLyknChats";
 import { toast } from "@/components/ui/use-toast";
@@ -125,6 +130,13 @@ export interface UseChatEngineDeps {
   setShowMediaSuggestion: Dispatch<SetStateAction<boolean>>;
   setNotesOpen: Dispatch<SetStateAction<boolean>>;
   setShowAttachMenu: Dispatch<SetStateAction<boolean>>;
+
+  /** Studio mode pages (Build / Imagine / Research): mode system prompt to
+   *  ship with every send while the mode session is active. Read at
+   *  send-time so it always reflects the current pill selection. */
+  studioModeInstructionsRef?: React.MutableRefObject<string>;
+  /** Studio Research source dropdown — read at send-time. */
+  researchSourcePrefsRef?: React.MutableRefObject<string>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -288,6 +300,8 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     setConnectionCards, setShowConnectionCard,
     setMediaSuggestions, setSelectedMediaIds, setShowMediaSuggestion,
     setNotesOpen, setShowAttachMenu,
+    studioModeInstructionsRef,
+    researchSourcePrefsRef,
   } = deps;
 
   /* ---------- State (hook-local) ---------- */
@@ -691,12 +705,52 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic" }, children),
     code: (props: any) => React.createElement(ChatCodeBlock, props),
     pre: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    table: ({ children }: any) => React.createElement("div", { className: "my-3 overflow-x-auto" }, React.createElement("table", { className: "w-full border-collapse text-sm" }, children)),
-    thead: ({ children }: any) => React.createElement("thead", { className: "border-b border-black/20" }, children),
+    table: ({ children }: any) =>
+      React.createElement(
+        "div",
+        {
+          className:
+            "my-4 overflow-hidden rounded-2xl border border-black/[0.1] " +
+            "bg-gradient-to-br from-white via-[#f7f6f4] to-[#ececea] " +
+            "shadow-[0_8px_28px_rgba(28,25,23,0.06)] " +
+            "dark:border-white/[0.1] dark:from-[#141413] dark:via-[#111110] dark:to-[#0c0c0b]",
+        },
+        React.createElement(
+          "div",
+          { className: "overflow-x-auto" },
+          React.createElement("table", { className: "w-full min-w-full border-collapse text-[12px]" }, children),
+        ),
+      ),
+    thead: ({ children }: any) =>
+      React.createElement(
+        "thead",
+        { className: "bg-black/[0.04] dark:bg-white/[0.05]" },
+        children,
+      ),
     tbody: ({ children }: any) => React.createElement("tbody", null, children),
-    tr: ({ children }: any) => React.createElement("tr", { className: "border-b border-black/10" }, children),
-    th: ({ children }: any) => React.createElement("th", { className: "text-left px-3 py-2 font-semibold" }, children),
-    td: ({ children }: any) => React.createElement("td", { className: "px-3 py-2" }, children),
+    tr: ({ children }: any) =>
+      React.createElement("tr", {
+        className:
+          "border-b border-black/[0.05] odd:bg-white/60 even:bg-[#f3eee6]/55 " +
+          "dark:border-white/[0.06] dark:odd:bg-white/[0.015] dark:even:bg-white/[0.035]",
+      }, children),
+    th: ({ children }: any) =>
+      React.createElement(
+        "th",
+        {
+          className:
+            "whitespace-nowrap border-b border-black/[0.08] px-3 py-2 text-left " +
+            "text-[10px] font-semibold uppercase tracking-[0.08em] text-black/50 " +
+            "dark:border-white/[0.1] dark:text-white/50",
+        },
+        children,
+      ),
+    td: ({ children }: any) =>
+      React.createElement(
+        "td",
+        { className: "px-3 py-1.5 text-black/75 dark:text-white/75" },
+        children,
+      ),
   }), []);
 
   // Per-msgId components cache. The only msg-dependent component is `li`
@@ -2161,11 +2215,25 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       // Short tweak while Build is still armed → surgical. Otherwise Build
       // mode is a FRESH coded artifact (reference-image games, new apps) —
       // never strip Create or ship Smash Arena as activeArtifact.
+      // Regular chat never starts a new build from wording — Create/Build must
+      // be armed. (Server also enforces this and asks the user to switch modes.)
+      const createArmed =
+        typeof sendMode === "string" && sendMode.startsWith("create:");
+      const typedNewDeliverableAsk =
+        createArmed && isTypedNewDeliverableAsk(text);
+      const insistFreshBuildAsk = createArmed && isInsistFreshBuildAsk(text);
+      const regularChatBuildAsk =
+        !createArmed &&
+        (isTypedNewDeliverableAsk(text) || isInsistFreshBuildAsk(text));
+      const redesignAsk = isRedesignAsk(text);
       const looksLikeSurgicalTweak =
         text.trim().length < 140 &&
         /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme)\b/i.test(
           text,
-        );
+        ) &&
+        !redesignAsk &&
+        !typedNewDeliverableAsk &&
+        !insistFreshBuildAsk;
       const referenceRebuildAsk =
         /\b(?:exact(?:ly)?\s+clone|identical|1\s*:\s*1|recreate|clone\s+(?:this|that|it)|(?:look|make)\s+(?:it\s+)?(?:just\s+)?like\s+this|full\s+rewrite)\b/i.test(
           text,
@@ -2193,26 +2261,34 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         /\b(?:different|brand[- ]?new|entirely new|fresh|whole new|completely new)\s+(?:game|app|build|artifact|world)\b/i.test(
           text,
         );
-      const visualOverhaulAsk =
-        /\b(?:redesign|restyle|rebrand|rebuild|overhaul|from scratch|start over|new look|full\s+rewrite|look(?:s)?\s+(?:just\s+)?like|make\s+(?:it|this|that)\s+look\s+like|just\s+like\s+the\s+actual|in\s+the\s+style\s+of|hand[- ]?painted|thick\s+outlines|chunky\s+(?:cartoon|knights?)|comic\s+ui)\b/i.test(
-          text,
-        );
+      const visualOverhaulAsk = redesignAsk;
       const freshWebappAsk =
-        differentDeliverable ||
-        (makingVerb && (webappNoun || copyOfWebapp)) ||
-        (hasAttachedImage && makingVerb && referencePhrase) ||
-        (hasAttachedImage && (webappNoun || copyOfWebapp) && referencePhrase);
+        createArmed &&
+        (differentDeliverable ||
+          (makingVerb && (webappNoun || copyOfWebapp)) ||
+          (hasAttachedImage && makingVerb && referencePhrase) ||
+          (hasAttachedImage && (webappNoun || copyOfWebapp) && referencePhrase));
       // "make it look just like Castle Crashers" with an open game = full
       // rebuild, not a surgical refine (which rejects full_rewrite and dies).
       const openReactRebuildAsk =
         visualOverhaulAsk &&
         artifactBelongsHere &&
         String(editArtifact?.toolName || "") === "lykn_build_react_artifact";
+      // Style rematch of the OPEN deck — still send activeArtifact so the
+      // server can authorize full_rewrite; do NOT treat as a brand-new build.
+      const openTemplateRestyleAsk =
+        visualOverhaulAsk &&
+        artifactBelongsHere &&
+        String(editArtifact?.toolName || "") === "lykn_build_template" &&
+        !typedNewDeliverableAsk &&
+        !insistFreshBuildAsk;
       const buildModeFresh =
         (isBuildMode && (hasAttachedImage || !looksLikeSurgicalTweak)) ||
         referenceRebuildAsk ||
         freshWebappAsk ||
-        openReactRebuildAsk;
+        openReactRebuildAsk ||
+        insistFreshBuildAsk ||
+        (typedNewDeliverableAsk && artifactBelongsHere && !looksLikeSurgicalTweak);
       // Map "+" → Create kinds to their builder tools (must stay aligned with
       // server ARTIFACT_BUILD_SPEC). An open game must not swallow Create → Deck.
       const CREATE_TOOL_BY_KIND: Record<string, string> = {
@@ -2234,14 +2310,20 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       const openToolName = String(editArtifact?.toolName || "");
       const sameCreateBuilder =
         !!createToolName && !!openToolName && createToolName === openToolName;
-      // Surgical refine only for short same-builder tweaks. Create → Deck with
-      // an open React game (or a new deck ask over an old deck) stays armed.
+      // Thread the open panel for context / surgical tweaks / style rematches.
+      // Regular chat build asks: do NOT send the open artifact (avoids patching
+      // Columbus into a "new" deck) — server will ask them to arm Create/Build.
       const refiningOpenArtifact =
         artifactBelongsHere &&
         isEditableArtifact(editArtifact) &&
         !buildModeFresh &&
         !openReactRebuildAsk &&
-        (!createToolName || (sameCreateBuilder && looksLikeSurgicalTweak));
+        !typedNewDeliverableAsk &&
+        !insistFreshBuildAsk &&
+        !regularChatBuildAsk &&
+        (openTemplateRestyleAsk ||
+          !createToolName ||
+          (sameCreateBuilder && looksLikeSurgicalTweak));
       const effectiveComposerMode =
         refiningOpenArtifact &&
         typeof sendMode === "string" &&
@@ -2250,7 +2332,14 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         looksLikeSurgicalTweak
           ? "none"
           : sendMode;
-      if ((buildModeFresh || (createToolName && !refiningOpenArtifact)) && editArtifact) {
+      if (
+        (buildModeFresh ||
+          typedNewDeliverableAsk ||
+          insistFreshBuildAsk ||
+          (createToolName && !refiningOpenArtifact)) &&
+        editArtifact &&
+        !openTemplateRestyleAsk
+      ) {
         console.log(
           `🧑‍💻 Create/Build: starting fresh (ignoring open "${String(editArtifact.title || "").slice(0, 60)}")`,
         );
@@ -2259,6 +2348,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         text,
         promptId,
         composerMode: effectiveComposerMode,
+        // Studio mode session (Build / Imagine / Research): per-mode system
+        // prompt injected server-side into [ACTIVE_MODE] on every turn.
+        modeInstructions: studioModeInstructionsRef?.current || undefined,
+        researchSourcePref: researchSourcePrefsRef?.current || undefined,
         // Thread the open panel artifact for surgical edits — same chat only.
         // Build-mode fresh turns send null so the server cannot force edits.
         activeArtifact: refiningOpenArtifact

@@ -3,11 +3,25 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
 import { useLyknChatStore } from "@/store/lyknChatStore";
 import type { Block } from "@/lyknChat/types";
-import { ChevronDown, ChevronUp, ChevronRight, Link as LinkIcon, Image as ImageIcon, MessageSquare, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, FolderKanban, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, ThumbsUp, ThumbsDown, Square, Sparkles, Save, Globe, GripVertical, ArrowUp } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, Code, Link as LinkIcon, Image as ImageIcon, ImagePlus, MessageCircle, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, FolderKanban, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, Telescope, ThumbsUp, ThumbsDown, Square, Sparkles, Save, SquarePen, Globe, GripVertical, ArrowUp, Layers, GraduationCap, Newspaper, Users, TrendingUp, type LucideIcon } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  RESEARCH_SOURCE_OPTIONS,
+  normalizeResearchSourcePref,
+  type ResearchSourcePref,
+} from "@/lib/ai/researchSourcePrefs";
+
+const RESEARCH_SOURCE_ICONS: Record<ResearchSourcePref, LucideIcon> = {
+  all: Layers,
+  web: Globe,
+  academic: GraduationCap,
+  news: Newspaper,
+  social: Users,
+  finance: TrendingUp,
+};
 import ModelSelectOptions from "@/components/ModelSelectOptions";
 import { toast } from "@/components/ui/use-toast";
 import { useUserPlan } from "@/lib/useUserPlan";
@@ -36,6 +50,9 @@ import { maybeAutoNameChat, buildAttachmentContext } from "@/lib/ai/chatSendOrch
 import { ocrImageAttachments } from "@/lib/ai/imageOcr";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
 import { persistMessageFeedback } from "@/lib/chat/messageFeedback";
+import { createNewChat } from "@/lib/chat/chatThreadsClient";
+import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
+import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 import { getVaultSidebarWidth, useIsTouchOnlyDevice, getIsTouchOnlyDevice } from "@/hooks/useViewportTier";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
@@ -60,6 +77,8 @@ import MobileLyknChat from "@/components/lyknChat/MobileLyknChat";
 import { useLyknChatPersistence, makeDefaultNotesPages } from "@/hooks/useLyknChatPersistence";
 import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { useChatEngine, type ComposerMode, type ArtifactKind } from "@/hooks/useChatEngine";
+import { detectStudioModeRedirect } from "@/lib/ai/studioModeIntent";
+import StudioImagineMode, { IMAGINE_CLEAR_EVENT } from "@/components/lyknChat/StudioImagineMode";
 import { fetchPublishedCustomModels } from "@/lib/modelBuilder/customModelsClient";
 import {
   loadActiveCustomModelId,
@@ -590,16 +609,282 @@ function composerModeLabel(mode: ComposerMode): string {
   return "";
 }
 
+// Studio glass mode selector — Chat / Build / Imagine / Research. Floats at
+// the top of the glass chat page (inside LYKN Studio). Each mode segment is
+// its own page view: a fresh centered composer with a mode headline, the
+// composer mode armed silently (no blue chip). The mode rides through the
+// same pipeline as the "+" menu (Build = live React artifact, Imagine =
+// image gen, Research = deep-research report).
+type StudioView = "chat" | "build" | "imagine" | "research";
+
+const STUDIO_VIEW_MODES: Record<Exclude<StudioView, "chat">, ComposerMode> = {
+  build: "create:webapp",
+  imagine: "image",
+  research: "research",
+};
+
+const STUDIO_VIEW_HEADLINES: Record<Exclude<StudioView, "chat">, string> = {
+  build: "What would you like to build?",
+  imagine: "Generate any image",
+  research: "What should LYKN research?",
+};
+
+const STUDIO_VIEW_SUBTITLES: Record<Exclude<StudioView, "chat">, string> = {
+  build:
+    "Pitch decks, presentations, and polished visual docs. Describe what you need and LYKN builds it live.",
+  imagine: "Describe any image and LYKN generates a set of variations you can refine.",
+  research:
+    "Give a topic or question and LYKN digs into current sources, then writes a structured research report.",
+};
+
+// Per-mode system prompt, injected server-side into the stream system prompt
+// ([ACTIVE_MODE] section) on every turn while the mode page is active. The
+// pages are sticky sessions: the whole conversation stays in-lane.
+// Every mode prompt ends with the same out-of-lane rule: if the ask belongs
+// to a different mode, do NOT produce this mode's deliverable — point the
+// user at the mode pills at the top of the page (never the "+" menu).
+const STUDIO_MODE_SWITCH_RULE =
+  " If the user asks for something this mode can't do (e.g. an image in Build/Research, a " +
+  "research report in Build/Imagine, or an app/deck in Imagine/Research), do NOT produce this " +
+  "mode's deliverable as a substitute. Instead reply briefly telling them to switch modes using " +
+  "the pills at the top of the page (Chat / Build / Imagine / Research) and resend their " +
+  "request there. Never tell them to use the \"+\" menu for this.";
+
+const STUDIO_VIEW_SYSTEM_PROMPTS: Record<Exclude<StudioView, "chat">, string> = {
+  build:
+    "The user is in Build mode — a dedicated session for designing and building artifacts " +
+    "(interactive pages, apps, tools, games, decks, documents, charts, diagrams). Act as their " +
+    "build partner: help shape the idea, ask short clarifying questions when the request is " +
+    "ambiguous, propose concrete directions, and build or refine the artifact. Keep the " +
+    "conversation anchored on what they're building — don't drift into unrelated topics. When " +
+    "they ask for changes to an artifact that's already built, make targeted edits rather than " +
+    "rebuilding from scratch." + STUDIO_MODE_SWITCH_RULE,
+  imagine:
+    "The user is in Imagine mode — a dedicated image-generation session. Every request is about " +
+    "creating or refining images. Turn their ideas into vivid, detailed image prompts and " +
+    "generate the image; iterate on style, composition, lighting, and details as they react. If " +
+    "a request is ambiguous, make your best creative interpretation and generate, then offer " +
+    "quick variations or adjustments. Keep the session about images — don't drift into " +
+    "unrelated chat." + STUDIO_MODE_SWITCH_RULE,
+  research:
+    "The user is in Research mode — a dedicated session for producing deep research reports. " +
+    "Treat each request as a research brief: investigate thoroughly using current sources and " +
+    "deliver a structured, well-organized report. Ask a short clarifying question first only " +
+    "when the scope is genuinely unclear; otherwise research and write. Follow-up messages " +
+    "refine or extend the report — keep the session focused on the research topic." +
+    STUDIO_MODE_SWITCH_RULE,
+};
+
+const STUDIO_MODE_OPTIONS: {
+  id: StudioView;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { id: "chat", label: "Chat", icon: MessageCircle },
+  { id: "build", label: "Build", icon: Code },
+  { id: "imagine", label: "Imagine", icon: ImagePlus },
+  { id: "research", label: "Research", icon: Telescope },
+];
+
+const StudioModePill = React.memo(function StudioModePill({
+  activeView,
+  onSelect,
+}: {
+  activeView: StudioView;
+  onSelect: (view: StudioView) => void;
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-3 z-[70] flex justify-center">
+      <div className="pointer-events-auto flex items-center gap-0.5 rounded-full border border-black/10 bg-white/55 p-1 shadow-lg backdrop-blur-2xl dark:border-white/15 dark:bg-black/35">
+        {STUDIO_MODE_OPTIONS.map(({ id, label, icon: Icon }) => {
+          const active = id === activeView;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => onSelect(id)}
+              aria-pressed={active}
+              className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[0.72rem] font-medium transition-all ${
+                active
+                  ? "bg-black/85 text-white shadow dark:bg-white dark:text-black"
+                  : "text-black/60 hover:bg-black/10 hover:text-black/85 dark:text-white/65 dark:hover:bg-white/15 dark:hover:text-white/90"
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
+// Per-mode composer identity: each Studio page gets its own placeholder and
+// a strip of quick-start chips above the chat bar, so the bar itself signals
+// which page you're on. (Imagine has its own dedicated bar and skips this.)
+const STUDIO_COMPOSER_PLACEHOLDERS: Record<StudioView, string> = {
+  chat: "Ask me anything...",
+  build: "Describe what you want to build...",
+  imagine: "Describe the image you want...",
+  research: "What should LYKN research?",
+};
+
+const STUDIO_COMPOSER_CHIPS: Record<
+  Exclude<StudioView, "imagine" | "chat">,
+  { label: string; insert: string }[]
+> = {
+  build: [
+    { label: "Pitch deck", insert: "Make a pitch deck about " },
+    { label: "Slide deck", insert: "Create a slide deck that covers " },
+    { label: "One-pager", insert: "Design a one-pager for " },
+    { label: "Investor deck", insert: "Build an investor deck for " },
+    { label: "App", insert: "Build me an app that " },
+    { label: "Game", insert: "Create an interactive game where " },
+    { label: "Study guide", insert: "Make a study guide for " },
+    { label: "Dashboard", insert: "Design a dashboard for " },
+  ],
+  research: [
+    {
+      label: "Tesla stock performance",
+      insert: "Research Tesla stock: recent performance, valuation, and analyst outlook",
+    },
+    {
+      label: "AI chip market",
+      insert: "Give me a market overview of the AI semiconductor industry in 2026",
+    },
+    {
+      label: "Sleep and memory",
+      insert: "Do an academic research report on how sleep affects memory consolidation, citing recent studies",
+    },
+    {
+      label: "Global EV trends",
+      insert: "Write a trend report on the global electric vehicle market",
+    },
+    {
+      label: "CRISPR research",
+      insert: "Research the latest advances and debates in CRISPR gene editing",
+    },
+  ],
+};
+
+const StudioComposerStrip = React.memo(function StudioComposerStrip({
+  view,
+  onInsert,
+}: {
+  view: Exclude<StudioView, "imagine" | "chat">;
+  onInsert: (text: string) => void;
+}) {
+  return (
+    <div className="mb-1 flex flex-nowrap items-center gap-1.5 overflow-x-auto px-1">
+      {STUDIO_COMPOSER_CHIPS[view].map((chip) => (
+        <button
+          key={chip.label}
+          type="button"
+          onClick={() => onInsert(chip.insert)}
+          className="shrink-0 whitespace-nowrap rounded-full border border-black/10 bg-white/40 px-2.5 py-1 text-[11px] font-medium text-black/55 backdrop-blur-sm transition-colors hover:bg-black/[0.06] hover:text-black/80 dark:border-white/12 dark:bg-white/[0.05] dark:text-white/55 dark:hover:bg-white/[0.1] dark:hover:text-white/85"
+        >
+          {chip.label}
+        </button>
+      ))}
+    </div>
+  );
+});
+
+// Studio Research page: right rail listing every link the deep-research
+// pipeline searched/read (streamed from the server before the report text),
+// plus a Save report action that writes the finished report into the vault.
+function researchLinkHostname(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
+  sources,
+  canSave,
+  saving,
+  onSave,
+}: {
+  sources: { title: string; url: string }[];
+  canSave: boolean;
+  saving: boolean;
+  onSave: () => void;
+}) {
+  const openLink = (url: string) => {
+    const lykn = (window as any).lykn;
+    if (lykn?.openExternal) lykn.openExternal(url);
+    else window.open(url, "_blank", "noopener");
+  };
+  // Same background as the page — only a faint light-grey hairline
+  // separates the report from the links column.
+  return (
+    <div className="flex h-full flex-col border-l border-black/10 pt-14 dark:border-white/15">
+      <div className="flex items-center justify-between px-4 pb-2.5">
+        <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-black/55 dark:text-white/60">
+          Research links
+        </p>
+        {sources.length > 0 && (
+          <span className="rounded-full border border-black/10 bg-black/[0.05] px-2 py-0.5 text-[0.62rem] font-medium text-black/65 dark:border-white/10 dark:bg-white/[0.07] dark:text-white/70">
+            {sources.length}
+          </span>
+        )}
+      </div>
+      <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2 scrollbar-hide">
+        {sources.length === 0 ? (
+          <p className="px-3 py-8 text-center text-[0.7rem] leading-relaxed text-black/40 dark:text-white/40">
+            No sources were captured for this report.
+          </p>
+        ) : (
+          sources.map((s, i) => (
+            <button
+              key={`${s.url}-${i}`}
+              type="button"
+              onClick={() => openLink(s.url)}
+              title={s.url}
+              className="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
+            >
+              <Globe className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-black/40 dark:text-white/40" />
+              <span className="min-w-0">
+                <span className="block truncate text-[0.74rem] text-black/85 dark:text-white/85">
+                  {s.title || "Source"}
+                </span>
+                <span className="block truncate text-[0.62rem] text-black/40 dark:text-white/40">
+                  {researchLinkHostname(s.url)}
+                </span>
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+      <div className="p-3">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!canSave || saving}
+          className="flex w-full items-center justify-center gap-1.5 rounded-full bg-black/85 py-2 text-[0.75rem] font-semibold text-white shadow transition-opacity hover:bg-black/75 dark:bg-white dark:text-black dark:hover:bg-white/90 disabled:opacity-40"
+        >
+          <Save className="h-3.5 w-3.5" />
+          {saving ? "Saving…" : "Save report"}
+        </button>
+      </div>
+    </div>
+  );
+});
+
 const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   compact, onSend, chatInputHasText, hasAttachments, isChatLoading, isDictating, isTranscribing,
   modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
   handleStopAi, handleDictateToggle,
-  handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
-  handleBuildModeClick,
-  handleWebSearchClick, handleDeepResearchClick,
+  handlePickFiles, handleAddLinkClick, handlePullFromVault,
   handleSelectProjectClick, scopedProjectName, handleClearScopedProject,
-  handleCreateArtifact,
   composerMode, setComposerMode,
+  hideComposerModeChip,
+  showResearchSourceSelect,
+  researchSourcePref,
+  onResearchSourcePrefChange,
 }: {
   compact?: boolean;
   onSend: () => void | Promise<void>;
@@ -617,25 +902,30 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   handlePickFiles: () => void;
   handleAddLinkClick: () => void;
   handlePullFromVault: () => void;
-  handleGenerateImageClick: () => void;
-  handleBuildModeClick: () => void;
-  handleWebSearchClick: () => void;
-  handleDeepResearchClick: () => void;
   handleSelectProjectClick: () => void;
   scopedProjectName: string | null;
   handleClearScopedProject: () => void;
-  handleCreateArtifact: (kind: ArtifactKind) => void;
   composerMode: ComposerMode;
   setComposerMode: (m: ComposerMode) => void;
+  /** Studio mode pages (Build / Imagine / Research) surface the mode in the
+   *  top pill instead of a blue chip inside the chat bar. */
+  hideComposerModeChip?: boolean;
+  showResearchSourceSelect?: boolean;
+  researchSourcePref?: ResearchSourcePref;
+  onResearchSourcePrefChange?: (v: ResearchSourcePref) => void;
 }) {
   const [modelMenuOpen, setModelMenuOpen] = React.useState(false);
+  const [sourceMenuOpen, setSourceMenuOpen] = React.useState(false);
   const sendDisabled = (!chatInputHasText && !hasAttachments) || isChatLoading || isDictating || isTranscribing;
   const modelTriggerCls = compact
     ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0"
     : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[9rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-0 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0";
+  const sourceTriggerCls = compact
+    ? "lykn-chat-neu-chat-toolbar-select-trigger h-8 !w-auto max-w-[7.5rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-[0.625rem] px-1 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-1.5 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>span]:pr-0.5 [&>svg]:w-3 [&>svg]:h-3 [&>svg]:opacity-40 [&>svg]:shrink-0 [&>svg]:ml-0.5"
+    : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[8.5rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-1.5 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>span]:pr-0.5 [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0 [&>svg]:ml-0.5";
   const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
   const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
-  const dropdownCls = "rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg p-1.5";
+  const dropdownCls = "lykn-chat-bar-menu rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg p-1.5";
 
   const blurModelTrigger = React.useCallback(() => {
     requestAnimationFrame(() => {
@@ -662,6 +952,23 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
     [persistSelectedModel, blurModelTrigger],
   );
 
+  const handleSourceOpenChange = React.useCallback(
+    (open: boolean) => {
+      setSourceMenuOpen(open);
+      if (!open) blurModelTrigger();
+    },
+    [blurModelTrigger],
+  );
+
+  const handleSourceChange = React.useCallback(
+    (value: string) => {
+      setSourceMenuOpen(false);
+      onResearchSourcePrefChange?.(normalizeResearchSourcePref(value));
+      blurModelTrigger();
+    },
+    [onResearchSourcePrefChange, blurModelTrigger],
+  );
+
   return (
     <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>
       <Select
@@ -682,7 +989,7 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
           {modelSelectMenu}
         </SelectContent>
       </Select>
-      {composerMode !== "none" && (
+      {composerMode !== "none" && !hideComposerModeChip && (
         <button
           type="button"
           onClick={() => setComposerMode("none")}
@@ -706,6 +1013,48 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
         </button>
       )}
       <div className="flex-1 min-w-[4px]" aria-hidden />
+      {showResearchSourceSelect ? (
+        <Select
+          modal={false}
+          open={sourceMenuOpen}
+          onOpenChange={handleSourceOpenChange}
+          value={researchSourcePref || "all"}
+          onValueChange={handleSourceChange}
+        >
+          <SelectTrigger className={sourceTriggerCls} title="Sources to pull from">
+            <SelectValue placeholder="Sources">
+              {(() => {
+                const pref = researchSourcePref || "all";
+                const opt = RESEARCH_SOURCE_OPTIONS.find((o) => o.value === pref);
+                const Icon = RESEARCH_SOURCE_ICONS[pref] || Layers;
+                return (
+                  <span className="inline-flex min-w-0 items-center gap-1">
+                    <Icon className={`${compact ? "h-3 w-3" : "h-3.5 w-3.5"} shrink-0 opacity-70`} />
+                    <span className="truncate">{opt?.shortLabel || "Sources"}</span>
+                  </span>
+                );
+              })()}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent
+            side="top"
+            align="end"
+            className={`${dropdownCls} w-[min(92vw,14rem)]`}
+          >
+            {RESEARCH_SOURCE_OPTIONS.map((opt) => {
+              const Icon = RESEARCH_SOURCE_ICONS[opt.value];
+              return (
+                <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                  <span className="inline-flex items-center gap-2">
+                    <Icon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                    {opt.label}
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+      ) : null}
       <LyknChatPlusMenu
         iconBtnCls={iconBtn}
         iconSmCls={iconSm}
@@ -713,11 +1062,6 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
         onAddLink={handleAddLinkClick}
         onPullVault={handlePullFromVault}
         onProjects={handleSelectProjectClick}
-        onCreate={handleCreateArtifact}
-        onGenerateImage={handleGenerateImageClick}
-        onBuildMode={handleBuildModeClick}
-        onDeepResearch={handleDeepResearchClick}
-        onWebSearch={handleWebSearchClick}
       />
       {isChatLoading ? (
         <button
@@ -751,18 +1095,50 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   );
 });
 
-export default function LyknChat() {
+// `studioSurface` — the page is mounted IN-DOCUMENT inside the LYKN Studio
+// panel (its own MemoryRouter, no iframe). It behaves like the glass Studio
+// chat (mode pill, panel-sized layout) without any embedded=1 URL params.
+export default function LyknChat({ studioSurface = false }: { studioSurface?: boolean } = {}) {
   const nav = useNavigate();
   const location = useLocation();
   const { chatId: routeChatId } = useParams<{ chatId?: string }>();
   const { user } = useAuth();
-  const isEmbeddedMode = readEmbeddedPreviewParams(location.search).isEmbedded && !routeChatId;
+  const isEmbeddedMode =
+    (readEmbeddedPreviewParams(location.search).isEmbedded || studioSurface) && !routeChatId;
+  // Inside LYKN Studio (glass=1 iframe embed, or mounted in-document via
+  // studioSurface) the page shows the Chat / Build / Imagine / Research
+  // selector pill up top.
+  const isGlassChat = readEmbeddedPreviewParams(location.search).isGlass || studioSurface;
+  // Which studio page view is active. Build / Imagine / Research are sticky
+  // mode sessions: the chat stays in that mode (forced tool lane + mode
+  // system prompt) until the user switches the pill back.
+  const [studioView, setStudioView] = useState<StudioView>("chat");
+  // Read at send-time by useChatEngine → orchestrator so every turn in a
+  // mode session ships the mode's system prompt. Assigned during render so
+  // it can never lag the state.
+  const studioModeInstructionsRef = useRef("");
+  const [researchSourcePref, setResearchSourcePref] = useState<ResearchSourcePref>("all");
+  const researchSourcePrefsRef = useRef<string>("all");
+  researchSourcePrefsRef.current = researchSourcePref;
+  studioModeInstructionsRef.current =
+    isGlassChat && studioView !== "chat" ? STUDIO_VIEW_SYSTEM_PROMPTS[studioView] : "";
+  // The chat's Studio mode tag, persisted inside the chat snapshot so
+  // pulling the chat back up reopens the matching page view. In the Studio
+  // it mirrors the live pill; other surfaces keep whatever the snapshot
+  // hydrated so saves there don't strip the tag.
+  const studioModeSaveRef = useRef<string | null>(null);
+  if (isGlassChat) studioModeSaveRef.current = studioView === "chat" ? null : studioView;
+  // Hydration hook-up happens below once the chat engine provides
+  // setComposerMode; the persistence hook calls through this ref.
+  const studioModeHydratedCbRef = useRef<(mode: string | null) => void>(() => {});
 
   useEffect(() => {
-    if (!isEmbeddedMode) return;
+    // Only for true iframe embeds — the in-document Studio surface must not
+    // strip the Studio document's own backgrounds.
+    if (!isEmbeddedMode || studioSurface) return;
     document.documentElement.classList.add("embedded-transparent");
     return () => document.documentElement.classList.remove("embedded-transparent");
-  }, [isEmbeddedMode]);
+  }, [isEmbeddedMode, studioSurface]);
 
   const { modelTier, loading: planLoading, isGuest } = useUserPlan();
   const requireSignIn = useCallback((what: string = "save your work") => {
@@ -1376,6 +1752,8 @@ export default function LyknChat() {
     savedYouTubeIds,
     chatModelKeyRef,
     onChatModelKeyHydrated,
+    studioModeRef: studioModeSaveRef,
+    onStudioModeHydrated: (mode) => studioModeHydratedCbRef.current(mode),
   });
 
   const {
@@ -1828,6 +2206,8 @@ export default function LyknChat() {
     setConnectionCards, setShowConnectionCard,
     setMediaSuggestions, setSelectedMediaIds, setShowMediaSuggestion,
     setNotesOpen, setShowAttachMenu,
+    studioModeInstructionsRef,
+    researchSourcePrefsRef,
   });
   draftCleanupRef.current = chatEngine.cleanupDraftTimers;
   const {
@@ -2617,38 +2997,159 @@ export default function LyknChat() {
     setChatScopedProject(null);
   }, []);
 
-  // Arm a "+" capability mode for the next send and focus the composer so the
-  // user can type their request. Picking the same mode again toggles it off.
-  // The mode rides into the send via useChatEngine → orchestrator, which
-  // injects a tool directive and then auto-clears the mode.
-  const armComposerMode = useCallback((mode: Exclude<ComposerMode, "none">) => {
-    setComposerMode(composerMode === mode ? "none" : mode);
-    const el = chatMode ? chatPanelInputRef.current : centerChatInputRef.current;
-    window.setTimeout(() => el?.focus(), 0);
-  }, [composerMode, setComposerMode, chatMode, chatPanelInputRef, centerChatInputRef]);
+  // Studio glass pill: each segment is a page view. Switching modes NEVER
+  // starts a new chat — the current conversation and its context carry over
+  // so the user can e.g. research a topic, then flip to Build and turn the
+  // findings into something. Only the armed lane (and the mode tag the next
+  // save writes into the snapshot) changes. A fresh empty chat still shows
+  // the mode's centered composer + headline; an in-progress chat just keeps
+  // going in the new mode.
+  const handleStudioModeSelect = useCallback((view: StudioView) => {
+    if (view === studioView) return;
+    setStudioView(view);
+    setComposerMode(view === "chat" ? "none" : STUDIO_VIEW_MODES[view]);
+    if (view === "chat") return;
+    window.setTimeout(
+      () => (chatPanelInputRef.current || centerChatInputRef.current)?.focus(),
+      0,
+    );
+  }, [studioView, setComposerMode, chatPanelInputRef, centerChatInputRef]);
 
-  const handleCreateArtifact = useCallback((kind: ArtifactKind) => {
-    armComposerMode(`create:${kind}`);
-  }, [armComposerMode]);
+  // Studio "New chat" (top-left icon): same flow as the app sidebar — create
+  // the chat row immediately, then navigate this surface to it. The current
+  // mode session (Build / Imagine / Research) carries over. The Imagine page
+  // is special: it doesn't write chat turns, so a fresh chat row would change
+  // nothing visible — instead clear its canvas in place.
+  const handleStudioNewChat = useCallback(async () => {
+    if (studioView === "imagine") {
+      window.dispatchEvent(new CustomEvent(IMAGINE_CLEAR_EVENT));
+      return;
+    }
+    if (!user?.id) return;
+    try {
+      const { chatId: freshChatId } = await createNewChat(user.id);
+      addOpenThread(freshChatId);
+      notifyLyknChatsChanged();
+      nav(`/chat/${encodeURIComponent(freshChatId)}`);
+    } catch {
+      /* chat row creation failed — stay put */
+    }
+  }, [studioView, user?.id, nav]);
 
-  const handleGenerateImageClick = useCallback(() => {
-    armComposerMode("image");
-  }, [armComposerMode]);
+  // Quick-start chip → drop the template into the composer, cursor at the
+  // end, ready for the user to finish the sentence.
+  const handleComposerChipInsert = useCallback((text: string) => {
+    setChatInput(text);
+    window.setTimeout(() => {
+      const el = chatPanelInputRef.current || centerChatInputRef.current;
+      if (!el) return;
+      el.focus();
+      try {
+        el.setSelectionRange(el.value.length, el.value.length);
+      } catch {
+        /* selection is cosmetic */
+      }
+    }, 0);
+  }, [setChatInput, chatPanelInputRef, centerChatInputRef]);
 
-  // Build mode — the AI codes the request out as a live React artifact
-  // (landing page, dashboard, tool…). Same pipeline as "+" → Create, forced
-  // to the webapp spec (lykn_build_react_artifact).
-  const handleBuildModeClick = useCallback(() => {
-    armComposerMode("create:webapp");
-  }, [armComposerMode]);
+  // Mode sessions are sticky: useChatEngine auto-clears composerMode after
+  // every send, so while a mode page is active re-arm it — each turn keeps
+  // the forced tool lane (build / image / research) until the user switches
+  // the pill. Armed "+"-menu modes (e.g. web) are respected and not overridden;
+  // once they clear on send, the page's own mode re-arms.
+  useEffect(() => {
+    if (studioView === "chat" || composerMode !== "none") return;
+    setComposerMode(STUDIO_VIEW_MODES[studioView]);
+  }, [studioView, composerMode, setComposerMode]);
 
-  const handleWebSearchClick = useCallback(() => {
-    armComposerMode("web");
-  }, [armComposerMode]);
+  // Chats remember their Studio mode session: when a saved build / imagine /
+  // research chat hydrates, reopen the matching page view (pill, headline,
+  // armed lane); plain chats land back on the normal Chat view. Assigned
+  // every render so the persistence hook always calls the fresh closure.
+  studioModeHydratedCbRef.current = (mode: string | null) => {
+    if (!isGlassChat) return;
+    const m: StudioView =
+      mode === "build" || mode === "imagine" || mode === "research" ? mode : "chat";
+    setStudioView(m);
+    setComposerMode(m === "chat" ? "none" : STUDIO_VIEW_MODES[m]);
+  };
 
-  const handleDeepResearchClick = useCallback(() => {
-    armComposerMode("research");
-  }, [armComposerMode]);
+  // Voice mode is always a regular chat conversation: entering it from a
+  // Build / Imagine / Research page drops the mode page and disarms the
+  // pill-armed composer mode so the voice session behaves like plain chat.
+  useEffect(() => {
+    if (!voiceModeOn || studioView === "chat") return;
+    setStudioView("chat");
+    setComposerMode("none");
+  }, [voiceModeOn, studioView, setComposerMode]);
+
+  // Latest research turn in this chat: report text + the source links the
+  // deep-research pipeline streamed (the rail fills in live mid-stream).
+  const latestResearch = useMemo(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      const m = chatMessages[i] as any;
+      if (Array.isArray(m?.sources) && m.sources.length) {
+        return {
+          sources: m.sources as { title: string; url: string }[],
+          report: String(m.aiResponse || "").trim(),
+          topic: String(m.content || "").trim(),
+        };
+      }
+    }
+    return null;
+  }, [chatMessages]);
+
+  const [researchReportSaving, setResearchReportSaving] = useState(false);
+  const handleSaveResearchReport = useCallback(async () => {
+    if (researchReportSaving) return;
+    const research = latestResearch;
+    if (!research?.report) return;
+    if (!user?.id) { requireSignIn("save the report"); return; }
+    if (!(await checkVaultLimit())) return;
+    setResearchReportSaving(true);
+    try {
+      const topic = research.topic.replace(/\s+/g, " ").slice(0, 80);
+      const title = topic ? `Research report — ${topic}` : "Research report";
+      const sourcesBlock = research.sources.length
+        ? `\n\nSources:\n${research.sources.map((s) => `- [${s.title}](${s.url})`).join("\n")}`
+        : "";
+      const content = `${research.report}${sourcesBlock}`;
+      let noteId: string | null = null;
+      const { data: ins, error } = await supabase
+        .from("vault_items")
+        .insert({ user_id: user.id, title, content, source: "research_report" })
+        .select("id")
+        .single();
+      if (error) {
+        if (notifyVaultCapIfApplicable(error)) return;
+        // Older schema without a `source` column — retry plain.
+        const { data: ins2, error: err2 } = await supabase
+          .from("vault_items")
+          .insert({ user_id: user.id, title, content })
+          .select("id")
+          .single();
+        if (err2) {
+          if (!notifyVaultCapIfApplicable(err2)) {
+            toast({ title: "Couldn't save report", description: "Please try again." });
+          }
+          return;
+        }
+        noteId = ins2?.id ?? null;
+      } else {
+        noteId = ins?.id ?? null;
+      }
+      if (noteId) {
+        afterVaultNoteSaved(user.id, noteId, { title, content }, {
+          excludeChatId: routeChatId || chatId || undefined,
+        });
+      }
+      toast({ title: "Report saved to vault", description: title });
+    } catch {
+      toast({ title: "Couldn't save report", description: "Please try again." });
+    } finally {
+      setResearchReportSaving(false);
+    }
+  }, [researchReportSaving, latestResearch, user?.id, requireSignIn, checkVaultLimit, routeChatId, chatId]);
 
   const saveAttachmentToMedia = useCallback(async (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => {
     if (!url) return;
@@ -2988,13 +3489,61 @@ export default function LyknChat() {
   }, [user?.id, routeChatId, chatId, requireSignIn, checkVaultLimit]);
 
 
+  // Sticky-mode lane guard: on the Build / Imagine / Research pages every
+  // send is force-routed down that page's pipeline, so a clearly out-of-lane
+  // ask (e.g. "generate an image of a dog" on the Research page) would run
+  // the wrong pipeline to completion before the model could object. Catch
+  // it before dispatch and answer instantly with a pointer to the mode
+  // pills at the top of the page instead of wasting a full pipeline run.
+  const studioGuardedSend = useCallback(async () => {
+    if (isGlassChat && studioView !== "chat") {
+      const text = chatInputRef.current.trim();
+      const redirect = text ? detectStudioModeRedirect(text, studioView) : null;
+      if (redirect) {
+        const CURRENT_LABEL: Record<string, string> = { build: "Build", imagine: "Imagine", research: "Research" };
+        const LANE_DESC: Record<string, string> = {
+          build: "builds apps and artifacts",
+          imagine: "generates images",
+          research: "writes research reports",
+        };
+        const ASK_KIND: Record<string, string> = {
+          build: "a build request",
+          imagine: "an image request",
+          research: "a research request",
+        };
+        const notice =
+          `That looks like ${ASK_KIND[redirect.target]}, and this ${CURRENT_LABEL[studioView]} page only ` +
+          `${LANE_DESC[studioView]}. Switch to **${redirect.label}** using the pills at the top of the page ` +
+          `and send it again — I'll take it from there.`;
+        const id =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `mode-guard-${Date.now().toString(36)}`;
+        setChatMessages((prev) => [
+          ...prev,
+          { id, role: "user", content: text, aiResponse: notice, kind: "prompt" } as unknown as PromptMessage,
+        ]);
+        try {
+          aiThreadRef.current = [
+            ...(aiThreadRef.current || []),
+            { role: "user", content: text },
+            { role: "assistant", content: notice },
+          ];
+        } catch { /* ignore */ }
+        setChatInput("");
+        return;
+      }
+    }
+    await handleChatSend();
+  }, [isGlassChat, studioView, chatInputRef, setChatMessages, aiThreadRef, setChatInput, handleChatSend]);
+
   const handleCenterAskSend = useCallback(async () => {
     if ((!chatInputRef.current.trim() && focusedChatAttachments.length === 0) || isChatLoading) return;
     setChatRailOpen(true);
     setChatRailVisible(true);
     setCenterChatLeaving(false);
-    await handleChatSend();
-  }, [handleChatSend, isChatLoading, chatInputRef, focusedChatAttachments.length]);
+    await studioGuardedSend();
+  }, [studioGuardedSend, isChatLoading, chatInputRef, focusedChatAttachments.length]);
 
 
   const chatIsNearBottom = useCallback((threshold = 80) => {
@@ -3847,23 +4396,29 @@ export default function LyknChat() {
     isChatLoading, isDictating, isTranscribing,
     modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
-    handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
-    handleBuildModeClick,
-    handleWebSearchClick, handleDeepResearchClick,
+    handlePickFiles, handleAddLinkClick, handlePullFromVault,
     handleSelectProjectClick, scopedProjectName: chatScopedProject?.name ?? null, handleClearScopedProject,
-    handleCreateArtifact,
     composerMode, setComposerMode,
+    // Studio mode pages announce the mode in the top pill + headline; the
+    // in-bar blue chip only shows for modes armed outside the pill (e.g. web).
+    hideComposerModeChip:
+      isGlassChat &&
+      studioView !== "chat" &&
+      composerMode === STUDIO_VIEW_MODES[studioView],
+    showResearchSourceSelect:
+      (isGlassChat && studioView === "research") || composerMode === "research",
+    researchSourcePref,
+    onResearchSourcePrefChange: setResearchSourcePref,
   }), [
     chatInputHasText, focusedChatAttachments.length,
     isChatLoading, isDictating, isTranscribing,
     modelSelectValue, persistSelectedModel, modelTier, modelSelectMenu,
     handleOpenAttachments, handleStopAi, handleDictateToggle,
-    handlePickFiles, handleAddLinkClick, handlePullFromVault, handleGenerateImageClick,
-    handleBuildModeClick,
-    handleWebSearchClick, handleDeepResearchClick,
+    handlePickFiles, handleAddLinkClick, handlePullFromVault,
     handleSelectProjectClick, chatScopedProject, handleClearScopedProject,
-    handleCreateArtifact,
     composerMode, setComposerMode,
+    isGlassChat, studioView,
+    researchSourcePref,
   ]);
 
   const handleCloseSideRail = useCallback(() => {
@@ -4388,17 +4943,37 @@ export default function LyknChat() {
   }, []);
 
   return (
-    <div className={`w-full relative overflow-hidden lykn-chat-grid-bg ${isEmbeddedMode ? "h-full min-h-0" : "h-[100svh]"}`}>
+    <div className={`w-full relative overflow-hidden lykn-chat-grid-bg ${isEmbeddedMode || studioSurface ? "h-full min-h-0" : "h-[100svh]"}`}>
       {/* Match BrickEditor layout: minimal chrome + floating controls */}
       {!isEmbeddedMode && (
       <LyknChatToolbar
         isMobilePhone={isMobilePhone}
         notesOpen={notesOpen}
-        rightInset={activeArtifact && !isMobilePhone ? "min(760px, 50vw)" : undefined}
+        // In the glass Studio the artifact panel simply covers the top-right
+        // controls (it sits at a higher z-index) instead of nudging them left.
+        rightInset={activeArtifact && !isMobilePhone && !isGlassChat ? "min(760px, 50vw)" : undefined}
         voiceModeEligible={voiceModeEligible}
         voiceModeOn={voiceModeOn}
         onVoiceModeToggle={toggleVoiceMode}
       />
+      )}
+
+      {/* Studio glass shell: mode selector pill pinned top-center and the
+          New-chat icon pinned top-left. Hidden while the voice overlay is
+          up — voice is always plain chat. */}
+      {isGlassChat && !voiceModeOn && (
+        <>
+          <button
+            type="button"
+            onClick={() => void handleStudioNewChat()}
+            title="New chat"
+            aria-label="New chat"
+            className="absolute left-3 top-3 z-[70] flex h-9 w-9 items-center justify-center text-black/60 transition-colors hover:text-black dark:text-white/65 dark:hover:text-white"
+          >
+            <SquarePen className="h-4 w-4" />
+          </button>
+          <StudioModePill activeView={studioView} onSelect={handleStudioModeSelect} />
+        </>
       )}
 
       <LyknChatVoiceMode
@@ -4475,16 +5050,36 @@ export default function LyknChat() {
           create grids without leaving chat-only mobile mode. */}
       {chatMode && isMobilePhone && <MobileLyknChat />}
 
+      {/* Studio Imagine page — the full Midjourney-style image session
+          replaces the chat surface: centered batches of four variations,
+          click-to-edit lightbox, its own prompt bar. */}
+      {chatMode && isGlassChat && studioView === "imagine" && !voiceModeOn && (
+        <StudioImagineMode
+          chatKey={String(routeChatId || chatId || "")}
+          onSaveImage={handleFocusedChatSaveAiImage}
+          savedUrls={savedMediaUrls}
+        />
+      )}
+
       {/* Focused chat mode — centered, below top panel, no overlay */}
-      {chatMode && (
+      {chatMode && !(isGlassChat && studioView === "imagine" && !voiceModeOn) && (
         <LyknChatView
           chatMessages={chatMessages}
           isChatLoading={isChatLoading}
           thinkingStatus={thinkingStatus}
           chatInputRef={chatInputRef}
           onChatInputChange={handleChatInputChange}
-          onSend={handleChatSend}
-          typedWelcome={typedWelcome}
+          onSend={studioGuardedSend}
+          typedWelcome={
+            isGlassChat && studioView !== "chat"
+              ? STUDIO_VIEW_HEADLINES[studioView]
+              : typedWelcome
+          }
+          welcomeSubtitle={
+            isGlassChat && studioView !== "chat"
+              ? STUDIO_VIEW_SUBTITLES[studioView]
+              : undefined
+          }
           isMobileGrid={isMobileGrid}
           isMobilePhone={isMobilePhone}
           isDictating={isDictating}
@@ -4514,13 +5109,31 @@ export default function LyknChat() {
           renderFocusedAttachmentPreview={renderFocusedAttachmentPreview}
           onDragOver={handleFocusedChatDragOver}
           onDrop={handleFocusedChatDrop}
-          chatBarToolbar={<LyknChatBarToolbar onSend={handleChatSend} {...chatBarToolbarProps} />}
+          chatBarToolbar={<LyknChatBarToolbar onSend={studioGuardedSend} {...chatBarToolbarProps} />}
           chatReactions={chatReactions}
           onReaction={handleFocusedChatReaction}
           onRegenerate={handleFocusedChatRegenerate}
           onEditResend={handleFocusedChatEditResend}
           onRegenerateNonUser={handleFocusedChatRegenerateNonUser}
           onLoadInGreetingRefresh={refreshLoadInGreetingInPlace}
+          // Research page shows the source links in the right rail, so the
+          // per-message chips under the report would be duplicates.
+          hideMessageSources={isGlassChat && studioView === "research"}
+          researchSidebar={
+            // Appears once the report has finished streaming — not while
+            // LYKN is still researching/writing.
+            isGlassChat &&
+            studioView === "research" &&
+            !isChatLoading &&
+            !!latestResearch?.report ? (
+              <StudioResearchSidebar
+                sources={latestResearch.sources}
+                canSave={!!latestResearch.report}
+                saving={researchReportSaving}
+                onSave={handleSaveResearchReport}
+              />
+            ) : null
+          }
           activeArtifact={activeArtifact}
           onActiveArtifactChange={setActiveArtifact}
           onSaveArtifact={saveArtifactToVault}
@@ -4535,9 +5148,27 @@ export default function LyknChat() {
             );
           }}
           composerAbove={
-            chatMode && isMainAgentChat && CUSTOM_MODELS_ENABLED ? (
-              <SubAgentTasksStrip chatId={chatId} enabled={isMainAgentChat} />
+            (isGlassChat &&
+              (studioView === "research" || studioView === "build") &&
+              !voiceModeOn) ||
+            (chatMode && isMainAgentChat && CUSTOM_MODELS_ENABLED) ? (
+              <>
+                {isGlassChat &&
+                (studioView === "research" || studioView === "build") &&
+                !voiceModeOn ? (
+                  <StudioComposerStrip
+                    view={studioView}
+                    onInsert={handleComposerChipInsert}
+                  />
+                ) : null}
+                {chatMode && isMainAgentChat && CUSTOM_MODELS_ENABLED ? (
+                  <SubAgentTasksStrip chatId={chatId} enabled={isMainAgentChat} />
+                ) : null}
+              </>
             ) : null
+          }
+          composerPlaceholder={
+            isGlassChat ? STUDIO_COMPOSER_PLACEHOLDERS[studioView] : undefined
           }
         />
       )}

@@ -37,6 +37,7 @@ import {
   shouldEmitProjectsChanged,
 } from "@/lib/synthesis/projectLiveSync";
 import { toast } from "@/components/ui/use-toast";
+import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 
 // The browser's IANA timezone (e.g. "America/Denver"). Sent with each chat
 // request so the server can hand the model the user's LOCAL current time +
@@ -134,7 +135,7 @@ export function maybeAutoNameChat(args: {
           detail: { chatId: namingChatId, title: newTitle },
         }),
       );
-      window.dispatchEvent(new Event("lykinsai_chats_changed"));
+      notifyLyknChatsChanged();
     } catch {
       // Auto-naming is purely cosmetic — never let a flake bubble up.
     }
@@ -623,6 +624,11 @@ export interface ChatSendParams {
   promptId: string;
   /** "+" menu capability mode for this turn (image / web / research). */
   composerMode?: "none" | "image" | "web" | "research" | `create:${string}`;
+  /** Studio mode session (Build / Imagine / Research) system prompt — the
+   *  server injects it into the stream system prompt as [ACTIVE_MODE]. */
+  modeInstructions?: string;
+  /** Studio Research source focus (all / web / academic / news / social / finance). */
+  researchSourcePref?: string;
   /**
    * Artifact currently open in the side panel. When present, the server forces
    * surgical patches (edits / section_edits / cell_edits) instead of a full rebuild.
@@ -1139,12 +1145,15 @@ async function handleStreamingResponse(
   promptId: string,
   responseBlockId: string | null,
   userText: string,
-): Promise<{ accumulated: string; responseBlockId: string | null; servedModel: string | null; generatedImageUrl: string | null }> {
+): Promise<{ accumulated: string; responseBlockId: string | null; servedModel: string | null; generatedImageUrl: string | null; streamedSources: { title: string; url: string }[] }> {
   const { canvas, state, streamRefs } = p;
   const reader = streamRes.body?.getReader();
   const decoder = new TextDecoder();
   let accumulated = "";
   let servedModel: string | null = null;
+  // Deep research: the server emits the full source list (every page it
+  // searched/read) as an early SSE event, before the report text streams.
+  let streamedSources: { title: string; url: string }[] = [];
   // Image generated this turn (lykn_generate_image → done). The URL is
   // appended to the conversation-memory entry (NOT the visible bubble, which
   // renders the image via the artifact card) so the server's follow-up
@@ -1201,6 +1210,21 @@ async function handleStreamingResponse(
               continue;
             }
             if (parsed.status) { state.setChatStatusText(String(parsed.status)); continue; }
+            if (Array.isArray(parsed.sources)) {
+              // Deep-research source list — patch onto the in-flight message
+              // immediately so the Studio research rail fills in while the
+              // report is still streaming.
+              const list = (parsed.sources as any[])
+                .filter((s) => s && typeof s.url === "string" && s.url)
+                .map((s) => ({ title: String(s.title || "Source"), url: String(s.url) }));
+              if (list.length) {
+                streamedSources = list;
+                state.setChatMessages((prev) =>
+                  prev.map((m) => (m.id === promptId ? { ...m, sources: list } : m)),
+                );
+              }
+              continue;
+            }
             if (parsed.served_model && typeof parsed.served_model === "string") {
               servedModel = parsed.served_model.trim() || null;
               continue;
@@ -1345,7 +1369,7 @@ async function handleStreamingResponse(
               // the ACTIVITY in plain English ("Building the template…",
               // "Creating the image…") instead of leaking the raw tool name.
               if (tc.status === "running") {
-                state.setChatStatusText(toolRunningStatus(tc.name));
+                state.setChatStatusText(toolRunningStatus(tc.name, tc.args));
               } else if (
                 shouldEmitProjectsChanged(tc.name, tc.status, tc.result)
               ) {
@@ -1535,7 +1559,7 @@ async function handleStreamingResponse(
   if (serverErrorMsg && !accumulated.trim()) {
     accumulated = AI_TEMPORARY_FAILURE_TEXT;
   }
-  return { accumulated, responseBlockId, servedModel, generatedImageUrl };
+  return { accumulated, responseBlockId, servedModel, generatedImageUrl, streamedSources };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2149,6 +2173,7 @@ async function postProcessResponse(
   cappedText: string,
   servedModel: string | null = null,
   generatedImageUrl: string | null = null,
+  streamedSources: { title: string; url: string }[] = [],
 ): Promise<void> {
   const { analysis, postProcessing, state, canvas, typing, identity } = p;
 
@@ -2239,7 +2264,15 @@ async function postProcessResponse(
     }
   }
   const textAfterTags = await postProcessing.extractAndApplyTagActions(textWithoutConnections);
-  const { cleanText: displayText, sources } = postProcessing.extractSourceLinks(textAfterTags);
+  const { cleanText: displayText, sources: extractedSources } = postProcessing.extractSourceLinks(textAfterTags);
+  // Deep research streams its full source list (every page searched/read)
+  // as an early SSE event — richer than the trailing "Sources:" block the
+  // model writes. Keep the streamed list first, then any extra citations.
+  const sources = (() => {
+    if (!streamedSources.length) return extractedSources;
+    const seen = new Set(streamedSources.map((s) => s.url));
+    return [...streamedSources, ...extractedSources.filter((s) => !seen.has(s.url))];
+  })();
   const ytResult = await postProcessing.extractAndEmbedYouTubeUrls(displayText, promptId, responseBlockId);
   const textAfterYt = ytResult.cleanText || displayText;
   const mediaResult = await postProcessing.extractAndEmbedMediaItems(textAfterYt, responseBlockId);
@@ -2836,8 +2869,27 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     skipWebSearch: hasVideoTranscript,
     // Chat-bar "+" capability modes — the server forces the matching tool /
     // web search deterministically for this turn (see /api/ai/stream).
+    // Explicit composer mode so the server can lock exclusive lanes
+    // (research must not auto-infer Create just because the topic says "pitch").
+    ...(p.composerMode && p.composerMode !== "none"
+      ? { composerMode: p.composerMode }
+      : {}),
+    // Studio mode session (Build / Imagine / Research): mode system prompt
+    // for the server's [ACTIVE_MODE] section — every turn in the session.
+    ...(p.modeInstructions && p.modeInstructions.trim()
+      ? { modeInstructions: p.modeInstructions.trim().slice(0, 2000) }
+      : {}),
     ...(p.composerMode === "web" ? { forceWebSearch: true } : {}),
-    ...(p.composerMode === "research" ? { forceWebSearch: true, deepResearch: true } : {}),
+    ...(p.composerMode === "research"
+      ? {
+          forceWebSearch: true,
+          deepResearch: true,
+          researchSourcePref: String(p.researchSourcePref || "all")
+            .trim()
+            .toLowerCase()
+            .slice(0, 32),
+        }
+      : {}),
     ...(p.composerMode === "image" ? { forceImage: true } : {}),
     // "+" → Create submenu: build a rich artifact (deck, study guide, chart…).
     ...(typeof p.composerMode === "string" && p.composerMode.startsWith("create:")
@@ -2977,6 +3029,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       cappedText,
       streamResult.servedModel,
       streamResult.generatedImageUrl,
+      streamResult.streamedSources,
     );
   } else {
     /* Non-streaming invoke fallback */

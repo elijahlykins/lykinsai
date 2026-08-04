@@ -66,19 +66,20 @@ const COLLECT_INTERACTABLES_JS =
   "return btoa(unescape(encodeURIComponent(JSON.stringify({url:location.href,title:document.title,items:items}))));})()";
 
 // Visible viewport text — what the user actually sees on screen.
+// Reads the WHOLE document (not just the viewport) so tables and
+// below-the-fold data land in the scrape too.
 const EXTRACT_PAGE_CONTEXT_JS =
   "(function(){var sp=/ +/g,nl=String.fromCharCode(10);" +
-  "var vh=window.innerHeight||800,vw=window.innerWidth||1200;" +
-  "function vis(el){if(!el)return false;var r=el.getBoundingClientRect();if(r.width<2||r.height<2)return false;" +
-  "if(r.bottom<0||r.top>vh||r.right<0||r.left>vw)return false;" +
-  "var st=getComputedStyle(el);return st.visibility!=='hidden'&&st.display!=='none'&&st.opacity!=='0';}" +
+  "function shown(el){if(!el)return false;var st=getComputedStyle(el);return st.visibility!=='hidden'&&st.display!=='none';}" +
   "function txt(el){return ((el.getAttribute('aria-label')||el.innerText||el.textContent||'')+'').replace(sp,' ').trim();}" +
   "var seen=new Set(),parts=[],root=document.querySelector('main')||document.querySelector('[role=main]')||document.body;" +
-  "var nodes=root.querySelectorAll('h1,h2,h3,h4,p,li,label,button,[role=radio],[role=button],[role=heading],[role=option],span,div');" +
-  "for(var i=0;i<nodes.length&&parts.length<150;i++){var n=nodes[i];if(!vis(n))continue;var t=txt(n);if(!t||t.length<2||seen.has(t))continue;" +
-  "if(t.length>300&&n.children.length>2)continue;seen.add(t);parts.push(t);}" +
-  "if(!parts.length){var raw=(root.innerText||'').replace(sp,' ').trim();parts.push(raw.slice(0,8000));}" +
-  "var text=((document.title||'')+nl+parts.join(nl)).replace(sp,' ').trim().slice(0,9000);" +
+  "var nodes=root.querySelectorAll('h1,h2,h3,h4,p,li,th,td,dt,dd,label,button,[role=radio],[role=button],[role=heading],[role=option],[role=gridcell],[role=cell],span,div');" +
+  "for(var i=0;i<nodes.length&&parts.length<400;i++){var n=nodes[i];if(!shown(n))continue;var t=txt(n);if(!t||t.length<2||seen.has(t))continue;" +
+  "if(t.length>400&&n.children.length>2)continue;seen.add(t);parts.push(t);}" +
+  "var text=((document.title||'')+nl+parts.join(nl)).replace(sp,' ').trim();" +
+  "if(text.length<600){var raw=((document.body&&document.body.innerText)||'').replace(sp,' ').trim();" +
+  "if(raw.length>text.length)text=((document.title||'')+nl+raw).trim();}" +
+  "text=text.slice(0,16000);" +
   "return btoa(unescape(encodeURIComponent(JSON.stringify({text:text}))));})()";
 
 const RUN_ACTION_JS_PREFIX =
@@ -114,6 +115,12 @@ const RUN_ACTION_JS_PREFIX =
   "el.dispatchEvent(new KeyboardEvent('keyup',o));if(el.form){try{if(el.form.requestSubmit)el.form.requestSubmit();else el.form.submit();}catch(x){}}return;}" +
   "el.dispatchEvent(new KeyboardEvent('keydown',{key:key,bubbles:true}));" +
   "el.dispatchEvent(new KeyboardEvent('keyup',{key:key,bubbles:true}));}" +
+  "if(a.type==='select_all'||a.type==='selectall'){try{document.execCommand('selectAll');}catch(x){}" +
+  "return btoa(unescape(encodeURIComponent(JSON.stringify({ok:true}))));}" +
+  "if(a.type==='copy'||a.type==='cut'){var okd=false;try{okd=document.execCommand(a.type);}catch(x){}" +
+  "return btoa(unescape(encodeURIComponent(JSON.stringify({ok:!!okd,error:okd?undefined:'command_blocked'}))));}" +
+  "if(a.type==='paste'||a.type==='shortcut'||a.type==='hotkey'||a.type==='keyboard'){" +
+  "return btoa(unescape(encodeURIComponent(JSON.stringify({ok:false,error:'only_supported_in_lykn_browser'}))));}" +
   "var el=findEl(a);if(!el)return btoa(unescape(encodeURIComponent(JSON.stringify({ok:false,error:'Element not found'}))));" +
   "if(a.type==='click_point'){var t=pickClickTarget(el)||el;try{t.scrollIntoView({block:'center',inline:'center',behavior:'instant'});}catch(e){t.scrollIntoView(true);}var r=t.getBoundingClientRect();" +
   "var chromeOffset=Math.max(0,(window.outerHeight||0)-(window.innerHeight||0));" +
@@ -125,6 +132,21 @@ const RUN_ACTION_JS_PREFIX =
   "if(a.type==='type'){setVal(el,a.value||'');return btoa(unescape(encodeURIComponent(JSON.stringify({ok:true}))));}" +
   "if(a.type==='press'){doPress(el,a.key||'Enter');return btoa(unescape(encodeURIComponent(JSON.stringify({ok:true}))));}" +
   "if(a.type==='scroll'){window.scrollBy(0,Number(a.delta)||400);return btoa(unescape(encodeURIComponent(JSON.stringify({ok:true}))));}" +
+  "if(a.type==='select'){var v=((a.value||'')+'').trim(),sel=el.tagName==='SELECT'?el:(el.querySelector&&el.querySelector('select'));" +
+  "if(!sel)return btoa(unescape(encodeURIComponent(JSON.stringify({ok:false,error:'not_a_select'}))));" +
+  "var hit=-1,vl=v.toLowerCase();for(var j=0;j<sel.options.length;j++){var o=sel.options[j],ot=((o.textContent||'')+'').trim().toLowerCase();" +
+  "if(o.value===v||ot===vl||(vl&&ot.indexOf(vl)>-1)){hit=j;break;}}" +
+  "if(hit<0)return btoa(unescape(encodeURIComponent(JSON.stringify({ok:false,error:'option_not_found'}))));" +
+  "sel.selectedIndex=hit;sel.dispatchEvent(new Event('input',{bubbles:true}));sel.dispatchEvent(new Event('change',{bubbles:true}));" +
+  "return btoa(unescape(encodeURIComponent(JSON.stringify({ok:true,value:sel.value}))));}" +
+  "if(a.type==='check'||a.type==='uncheck'||a.type==='toggle'){" +
+  "var box=(el.tagName==='INPUT'&&(el.type==='checkbox'||el.type==='radio'))?el:(el.querySelector&&el.querySelector('input[type=checkbox],input[type=radio]'))||el;" +
+  "var want=a.type==='check'?true:a.type==='uncheck'?false:!box.checked;" +
+  "if(typeof box.checked==='boolean'){if(box.checked!==want)doClick(box);}else{doClick(box);}" +
+  "return btoa(unescape(encodeURIComponent(JSON.stringify({ok:true}))));}" +
+  "if(a.type==='hover'||a.type==='mouseover'){el.scrollIntoView({block:'center',inline:'center'});" +
+  "['mouseover','mouseenter','mousemove'].forEach(function(ev){try{el.dispatchEvent(new MouseEvent(ev,{bubbles:true,cancelable:true,view:window}));}catch(x){}});" +
+  "return btoa(unescape(encodeURIComponent(JSON.stringify({ok:true}))));}" +
   "return btoa(unescape(encodeURIComponent(JSON.stringify({ok:false,error:'Unknown action'}))));" +
   "}catch(e){return btoa(unescape(encodeURIComponent(JSON.stringify({ok:false,error:String(e.message||e)}))));}})('";
 
@@ -665,9 +687,15 @@ function userWantsVisionClick(intent) {
 function userWantsComplexTask(intent) {
   return (
     userWantsVisionClick(intent) ||
-    /multiple|several|all of them|each one|one by one|keep going|step by step|go through|find .+ and click|click on (all|each|every)/i.test(
+    /multiple|several|all of them|each one|one by one|keep going|step by step|go through|find .+ and (click|complete|finish|do|take|answer|fill)|click on (all|each|every)|then (click|type|fill|submit|open|answer|complete)|and then |after that|complete (it|the|this)|finish (it|the|this)|quiz|exercise|lesson|practice|work\s+through|fill (out|in)|share .{0,40}with|invite .{0,40}@/i.test(
       String(intent || "").toLowerCase(),
     )
+  );
+}
+
+function pageShowsExerciseComplete(text) {
+  return /you('ve| have) (finished|completed)|great work|nice work|way to go|unit complete|lesson complete|practice complete|exercise complete|all done|no more questions|course challenge complete|mastery|congratulations|keep practicing|review lesson|points earned|skill (mastered|completed)|show summary|you got \d|100%|perfect score|end of (the )?(quiz|exercise|practice)|quiz complete|test complete|submitted successfully/i.test(
+    String(text || ""),
   );
 }
 
@@ -888,11 +916,19 @@ async function executeAdaptiveBrowserTask(
     if (pageSigBefore && pageSigBefore === lastPageSig) {
       stalePageRounds += 1;
       if (stalePageRounds >= staleLimit) {
+        // Stable UI ≠ goal finished (quizzes/forms often sit still between questions).
+        const looksFinished =
+          !complexTask || pageShowsExerciseComplete(pageText);
         return {
           results,
-          done: true,
+          done: !!looksFinished,
           completed,
-          explanation: "Done — the page stopped changing.",
+          explanation: looksFinished
+            ? "Done — the page stopped changing."
+            : "Stopped — the page stopped changing before the goal looked finished.",
+          message: looksFinished
+            ? undefined
+            : "The page stopped changing before the task looked complete. Try a more specific next step.",
         };
       }
     } else {
@@ -971,7 +1007,15 @@ async function executeAdaptiveBrowserTask(
         lastTransition === "updated" ||
         lastTransition === "modal";
       if (meaningfulLast) {
-        // It already worked (screen changed) — re-firing it is a hallucination.
+        // It already worked — re-firing is a hallucination. For complex goals,
+        // force a different next step instead of claiming the whole task is done.
+        if (complexTask && !pageShowsExerciseComplete(pageText)) {
+          lastActionDiff =
+            `You already ran “${String(steps[0].label || "").slice(0, 60)}” and the screen changed. ` +
+            "Do NOT repeat it — pick the NEXT unfinished step toward the USER GOAL.";
+          lastExecutedSig = "";
+          continue;
+        }
         return {
           results,
           done: true,

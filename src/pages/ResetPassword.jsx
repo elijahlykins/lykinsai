@@ -64,7 +64,7 @@ export default function ResetPassword() {
       // Recovery leaves the user signed in. On desktop/web-enabled clients
       // open the product; on the public website land on /download (session
       // is already saved for the Mac app).
-      const dest = resolvePostAuthPath("/app");
+      const dest = resolvePostAuthPath("/studio");
       setTimeout(() => nav(dest, { replace: true }), 1200);
     } catch (err) {
       if (import.meta.env.DEV) console.error("[ResetPassword]", err);

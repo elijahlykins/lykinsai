@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Code2, Copy, Download, ExternalLink, Eye, FileDown, Loader2, Bookmark, Play, Sparkles, X as XIcon } from "lucide-react";
+import { Check, ChevronDown, Code2, Copy, Download, ExternalLink, Eye, FileDown, Loader2, Bookmark, Play, X as XIcon } from "lucide-react";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
@@ -9,6 +9,7 @@ import {
   safeExternalUrl,
   safeHtmlPreviewUrl,
 } from "@/lib/safeExternalUrl";
+import { openInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
 
 export type LyknChatArtifactPanelProps = {
   artifact: ChatArtifact | null;
@@ -437,7 +438,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
 
   return (
     <aside
-      className={`fixed right-0 top-0 z-[200] flex h-full flex-col border-l border-black/10 bg-panel shadow-2xl transition-transform duration-300 ease-out dark:border-white/10 ${
+      className={`lykn-artifact-panel fixed right-0 top-0 z-[200] flex h-full flex-col border-l border-black/10 bg-panel shadow-2xl transition-transform duration-300 ease-out dark:border-white/10 ${
         open ? "translate-x-0" : "translate-x-full"
       }`}
       style={{ width: fullWidth ? "100vw" : ARTIFACT_PANEL_WIDTH }}
@@ -447,9 +448,6 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
           <>
             <header className="flex items-center justify-between gap-3 border-b border-black/8 px-4 py-3 dark:border-white/10">
               <div className="flex min-w-0 items-center gap-2.5">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#c2603f]/12 text-[#c2603f] dark:bg-[#e08e6f]/15 dark:text-[#e08e6f]">
-                  <Sparkles className="h-4 w-4" />
-                </span>
                 <div className="min-w-0">
                   <p className="truncate text-[13.5px] font-semibold text-foreground">{shown.title}</p>
                   <p className="text-[11px] text-muted-foreground">
@@ -497,6 +495,10 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     href={openUrl}
                     target="_blank"
                     rel="noopener noreferrer"
+                    onClick={(e) => {
+                      // Inside the Studio: open in its docked browser, not the OS browser.
+                      if (openInStudioBrowser(openUrl, shown?.title)) e.preventDefault();
+                    }}
                     className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
                     title="Open in new tab"
                   >

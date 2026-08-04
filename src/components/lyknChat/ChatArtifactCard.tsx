@@ -3,6 +3,7 @@ import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Maximize2, Minimiz
 import type { ArtifactDownload, ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import { safeAttachmentUrl, safeHtmlPreviewUrl } from "@/lib/safeExternalUrl";
+import { openInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
 
 /** Download control that exposes every available format (png/svg/pdf/pptx/md…). */
 function ArtifactDownloads({ downloads }: { downloads: ArtifactDownload[] }) {
@@ -186,6 +187,10 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
               href={openUrl}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={(e) => {
+                // Inside the Studio: open in its docked browser, not the OS browser.
+                if (openInStudioBrowser(openUrl, artifact.title)) e.preventDefault();
+              }}
               className="inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
             >
               <ExternalLink className="h-3.5 w-3.5" />

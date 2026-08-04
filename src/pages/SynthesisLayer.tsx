@@ -6272,7 +6272,7 @@ export default function SynthesisLayer() {
                     divider: true,
                     onClick: () => {
                       setAddMenuOpen(false);
-                      navigate("/app");
+                      navigate("/studio");
                     },
                   },
                   {

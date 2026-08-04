@@ -1,5 +1,10 @@
 import React, { useCallback, useState } from "react";
 import { Highlight, themes } from "prism-react-renderer";
+import {
+  ResearchChartEmbed,
+  ResearchSheetEmbed,
+  ResearchStockEmbed,
+} from "@/components/lyknChat/ResearchReportEmbeds";
 
 /**
  * Recursively flattens react-markdown's `children` (which can be strings,
@@ -88,6 +93,11 @@ export function ChatCodeBlock({
   }
   const lang = (className || "").replace(/^language-/, "").trim().toLowerCase() || "text";
   const code = extractText(children).replace(/\n$/, "");
+  if (lang === "stock") return <ResearchStockEmbed code={code} />;
+  if (lang === "chart") return <ResearchChartEmbed code={code} />;
+  if (lang === "sheet" || lang === "spreadsheet" || lang === "csv") {
+    return <ResearchSheetEmbed code={code} />;
+  }
   return <CodeBlockInner code={code} lang={lang} />;
 }
 

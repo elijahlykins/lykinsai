@@ -1212,7 +1212,7 @@ export default function Onboarding() {
             type="button"
             onClick={() => {
               markConnectOnboardingDone();
-              navigate("/app");
+              navigate("/studio");
             }}
             disabled={connected.size === 0}
             className="inline-flex items-center gap-2 rounded-full bg-black text-white dark:bg-white dark:text-black px-4 py-2 text-[12.5px] font-medium hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"

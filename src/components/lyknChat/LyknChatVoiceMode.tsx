@@ -73,7 +73,7 @@ function LyknChatVoiceModeOpenAI({ open, onClose, chatId, voice, buildInstructio
           // Sits above the chat/canvas content but BELOW the app chrome
           // (sidebar z-70/z-80, top panel z-70) so those stay visible and
           // the top-panel Voice button can toggle this off.
-          className="fixed inset-0 z-[67] flex flex-col items-center justify-center bg-background"
+          className="lykn-voice-overlay fixed inset-0 z-[67] flex flex-col items-center justify-center bg-background"
           role="dialog"
           aria-modal="false"
           aria-label="Voice Mode"

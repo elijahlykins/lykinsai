@@ -456,6 +456,72 @@ function makeToolCallRecorder(onToolCall, allToolCalls) {
   };
 }
 
+// ── Tool-arg streaming narration ─────────────────────────────────────
+// For builder tools the model's tool-call ARGUMENTS are the deliverable
+// itself (the entire component source / document / composition), so the
+// dominant wait of a Build turn happens while those args stream — before
+// the tool ever reports "running". Without narration the status bubble
+// sits on a single line for a minute+. The narrator turns that arg stream
+// into live, deep-research-style progress: an opening beat when the tool
+// is first named, the artifact's title as soon as it can be parsed out of
+// the partial JSON, then throttled "Writing the code… (12k)" ticks.
+const ARG_STREAM_START_LINES = {
+  lykn_build_react_artifact: 'Designing the build…',
+  lykn_build_template: 'Drafting the document…',
+  lykn_build_spreadsheet: 'Laying out the spreadsheet…',
+  lykn_render_video: 'Composing the video…',
+  lykn_generate_image: 'Designing the image…',
+};
+
+const ARG_PROGRESS_VERBS = {
+  lykn_build_react_artifact: 'Writing the code',
+  lykn_build_template: 'Writing the document',
+  lykn_build_spreadsheet: 'Filling in the spreadsheet',
+  lykn_render_video: 'Writing the animation',
+};
+
+/** Pull a `"title": "..."` value out of a PARTIAL JSON arg buffer. */
+function extractTitleFromPartialArgs(buf) {
+  const m = /"title"\s*:\s*"((?:[^"\\]|\\.){1,80})/.exec(String(buf || ''));
+  if (!m) return '';
+  try { return JSON.parse(`"${m[1]}"`); } catch { return m[1]; }
+}
+
+function makeToolArgNarrator(onStatus) {
+  if (typeof onStatus !== 'function') return () => {};
+  const announced = new Set();
+  const titled = new Set();
+  let lastProgressAt = 0;
+  return function narrate(name, argsBuf = '') {
+    if (!name) return;
+    try {
+      if (!announced.has(name)) {
+        announced.add(name);
+        const line = ARG_STREAM_START_LINES[name];
+        if (line) onStatus(line);
+      }
+      const verb = ARG_PROGRESS_VERBS[name];
+      if (!verb) return;
+      if (!titled.has(name)) {
+        const title = extractTitleFromPartialArgs(argsBuf);
+        if (title) {
+          titled.add(name);
+          onStatus(`Building ${title.slice(0, 60)}…`);
+          return;
+        }
+      }
+      const now = Date.now();
+      if (argsBuf.length >= 1500 && now - lastProgressAt >= 1500) {
+        lastProgressAt = now;
+        const kb = argsBuf.length >= 1000 ? `${Math.round(argsBuf.length / 100) / 10}k` : `${argsBuf.length}`;
+        onStatus(`${verb}… (${kb})`);
+      }
+    } catch {
+      /* narration must never break the stream */
+    }
+  };
+}
+
 /**
  * Execute a batch of resolved tool calls in parallel, emitting
  * running/done events through `record`. Returns the array of normalised
@@ -788,6 +854,7 @@ async function runOpenAiCompatLoop({
 
     const pendingCalls = new Map(); // index → { id, name, argsBuf }
     let finishReason = '';
+    const narrate = makeToolArgNarrator(onStatus);
 
     try {
       await readSseStream(res.body, (payload) => {
@@ -807,6 +874,7 @@ async function runOpenAiCompatLoop({
             if (tc.id) acc.id = tc.id;
             if (tc.function?.name) acc.name = tc.function.name;
             if (typeof tc.function?.arguments === 'string') acc.argsBuf += tc.function.arguments;
+            narrate(acc.name, acc.argsBuf);
           }
         }
         if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -1031,6 +1099,7 @@ async function runAnthropicLoop({
     //                        { type: 'tool_use', id, name, input: ... , _argsBuf: '...' }
     const contentBlocks = [];
     let stopReason = '';
+    const narrate = makeToolArgNarrator(onStatus);
 
     try {
       await readSseStream(res.body, (payload) => {
@@ -1051,6 +1120,7 @@ async function runAnthropicLoop({
               input: blk.input || {},
               _argsBuf: '',
             };
+            narrate(blk.name, '');
           } else {
             contentBlocks[idx] = { type: blk.type || 'unknown' };
           }
@@ -1068,6 +1138,7 @@ async function runAnthropicLoop({
             stripper.ingest(d.text);
           } else if (d.type === 'input_json_delta' && typeof d.partial_json === 'string') {
             blk._argsBuf = (blk._argsBuf || '') + d.partial_json;
+            if (blk.type === 'tool_use') narrate(blk.name, blk._argsBuf);
           }
           return;
         }
@@ -1272,6 +1343,9 @@ async function runGeminiLoop({
     const assistantParts = [];      // parts to echo back in `contents` for the next request
     const toolCallsThisHop = [];    // calls to execute at end-of-stream
     const seenCallKeys = new Set(); // Gemini can re-emit the SAME functionCall across chunks
+    // Gemini delivers functionCall args whole (no delta stream), so this
+    // only fires the opening "Designing…" beat when the call lands.
+    const narrate = makeToolArgNarrator(onStatus);
 
     try {
       await readGeminiSseStream(res.body, (parsed) => {
@@ -1298,6 +1372,7 @@ async function runGeminiLoop({
             const key = `${fc.name}:${JSON.stringify(fc.args || {})}`;
             if (seenCallKeys.has(key)) continue;
             seenCallKeys.add(key);
+            narrate(fc.name, '');
             const id = fc.id || `fc_${hop}_${toolCallsThisHop.length}`;
             const args = fc.args && typeof fc.args === 'object' ? fc.args : {};
             assistantParts.push({

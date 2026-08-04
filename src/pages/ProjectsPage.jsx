@@ -35,6 +35,10 @@ const FEATURED_GRADIENT_LIGHT =
   "radial-gradient(120% 90% at 50% 115%, #3b82f6 0%, #93c5fd 28%, #eef4ff 62%, #ececeb 100%)";
 const FEATURED_GRADIENT_DARK =
   "radial-gradient(120% 90% at 50% 115%, #3b82f6 0%, #2563eb 32%, #152033 68%, #10141c 100%)";
+// Inside the Studio's dark Glass skin the blue wash looks out of place —
+// hovered cards brighten into a frostier white glass instead.
+const FEATURED_GRADIENT_GLASS =
+  "radial-gradient(120% 90% at 50% 115%, rgba(255,255,255,0.30) 0%, rgba(255,255,255,0.17) 42%, rgba(255,255,255,0.10) 100%)";
 
 function projectInitials(name) {
   const parts = String(name || "")
@@ -94,6 +98,11 @@ export default function ProjectsPage() {
   const [vaultItems, setVaultItems] = useState([]); // { id, title }[]
   const [creating, setCreating] = useState(false);
   const [hoveredId, setHoveredId] = useState(null);
+  // Studio glass skin (html.lykn-glass-embed) — set for the document's whole
+  // lifetime, so reading it once at render is safe.
+  const isGlassEmbed =
+    typeof document !== "undefined" &&
+    document.documentElement.classList.contains("lykn-glass-embed");
 
   // Only light up a card while hovered/focused - otherwise they all match.
   const featuredId = hoveredId;
@@ -217,7 +226,7 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-transparent text-black dark:bg-[#121214] dark:text-white flex items-center">
+    <div className="lykn-projects-page min-h-screen bg-transparent text-black dark:bg-[#121214] dark:text-white flex items-center">
       {/* Full-bleed within .app-content so the card-row clip lines up with
           the closed sidebar edge (`padding-left: 3.5rem` on .app-content). */}
       <div className="w-full py-16">
@@ -277,7 +286,9 @@ export default function ProjectsPage() {
                   style={{
                     background: isFeatured
                       ? isDark
-                        ? FEATURED_GRADIENT_DARK
+                        ? isGlassEmbed
+                          ? FEATURED_GRADIENT_GLASS
+                          : FEATURED_GRADIENT_DARK
                         : FEATURED_GRADIENT_LIGHT
                       : isDark
                         ? "rgba(255,255,255,0.07)"

@@ -14,6 +14,10 @@ import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } fro
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/lyknChat/ChatArtifactCard";
 import LyknChatArtifactPanel, { ARTIFACT_PANEL_WIDTH } from "@/components/lyknChat/LyknChatArtifactPanel";
+
+// Studio Research rail width — narrower than the artifact panel; the chat
+// column insets by this much while the rail is open.
+const RESEARCH_SIDEBAR_WIDTH = "min(340px, 30vw)";
 import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact, type ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ChatNeuronCard from "@/components/lyknChat/ChatNeuronCard";
 import FactConfirmChip from "@/components/lyknChat/FactConfirmChip";
@@ -380,6 +384,10 @@ export interface LyknChatViewProps {
   threadFooter?: React.ReactNode;
   /** Sub-agent task status strip above the composer (main agent orchestration). */
   composerAbove?: React.ReactNode;
+  /** Optional content under the composer (active thread). */
+  composerBelow?: React.ReactNode;
+  /** Composer placeholder — Studio mode pages set a per-mode prompt. */
+  composerPlaceholder?: string;
   /** Keep the composer pinned to the bottom even with no messages (e.g. new chat in a thread). */
   pinComposerToBottom?: boolean;
 
@@ -388,6 +396,13 @@ export interface LyknChatViewProps {
    * it large and the next chat edit refines it in place. Owned by useChatEngine
    * so the send path can include it as edit context.
    */
+  /** Studio Research page: right-hand rail with the deep-research source
+   *  links + Save report. When set (desktop), the chat column shrinks left
+   *  and the rail becomes a fixed right column like the artifact panel. */
+  researchSidebar?: React.ReactNode;
+  /** Hide the per-message source chips under AI responses (Studio Research
+   *  page shows the links in the right rail instead). */
+  hideMessageSources?: boolean;
   activeArtifact?: ChatArtifact | null;
   onActiveArtifactChange?: (artifact: ChatArtifact | null) => void;
   /** Save the open artifact (deck/doc/chart/file) to the vault. */
@@ -416,6 +431,9 @@ export interface LyknChatViewProps {
 type MessageItemProps = {
   msg: PromptMessage;
   idx: number;
+  /** Studio Research page shows source links in the right rail, so the
+   *  per-message chips under the response are hidden there. */
+  hideMessageSources?: boolean;
   isAiExpanded: boolean;
   isUserPromptExpanded: boolean;
   reaction: "like" | "dislike" | null | undefined;
@@ -928,6 +946,7 @@ const LoadInUserSectionEditor: React.FC<{
 
 const MessageItem = React.memo(function MessageItem({
   msg, idx,
+  hideMessageSources = false,
   isAiExpanded, isUserPromptExpanded,
   reaction, isCopied,
   isMobilePhone, gridDisabled,
@@ -1116,7 +1135,7 @@ const MessageItem = React.memo(function MessageItem({
             return (
               <div className="group max-w-[80%] flex flex-col items-end">
                 <div
-                  className="rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:my-2 [&_td]:px-2 [&_th]:px-2"
+                  className="lykn-user-prompt-bubble rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:my-2 [&_td]:px-2 [&_th]:px-2"
                   style={collapsedClampStyle}
                 >
                   <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>{normalizeChecklistSyntax(promptText)}</ReactMarkdown>
@@ -1664,7 +1683,7 @@ const MessageItem = React.memo(function MessageItem({
                     ))}
                   </div>
                 )}
-                {Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
+                {!hideMessageSources && Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 px-4 pb-3">
                     {(msg as any).sources.map((src: { title: string; url: string }, i: number) => (
                       <a key={i} href={src.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all">
@@ -1839,7 +1858,7 @@ const MessageItem = React.memo(function MessageItem({
                     </>
                   );
                 })()}
-                {Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
+                {!hideMessageSources && Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 px-4 pb-3">
                     {(msg as any).sources.map((src: { title: string; url: string }, i: number) => (
                       <a key={i} href={src.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all">
@@ -1951,7 +1970,11 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   compactPreview = false,
   threadFooter = null,
   composerAbove = null,
+  composerBelow = null,
+  composerPlaceholder = "Ask me anything...",
   pinComposerToBottom = false,
+  researchSidebar = null,
+  hideMessageSources = false,
   activeArtifact = null,
   onActiveArtifactChange,
   onSaveArtifact,
@@ -1970,7 +1993,14 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   // When the artifact panel is open on desktop, the chat column shrinks to the
   // left and the panel becomes a fixed right column (Claude-style split view).
   const panelOpen = !!activeArtifact && !!onActiveArtifactChange;
-  const chatRightInset = panelOpen && !isMobilePhone ? ARTIFACT_PANEL_WIDTH : "0px";
+  // Research rail (Studio Research page): fixed right column with the
+  // deep-research links + Save report. The artifact panel wins if both open.
+  const researchOpen = !!researchSidebar && !isMobilePhone && !panelOpen;
+  const chatRightInset = panelOpen && !isMobilePhone
+    ? ARTIFACT_PANEL_WIDTH
+    : researchOpen
+      ? RESEARCH_SIDEBAR_WIDTH
+      : "0px";
   const lastSeenArtifactRef = useRef<string | null>(null);
   const artifactChatKeyRef = useRef<string | undefined>(undefined);
   const artifactSeededRef = useRef(false);
@@ -2149,26 +2179,28 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
-          <div className={`w-full max-w-2xl my-auto ${compactPreview ? "space-y-3 px-1" : "space-y-10 sm:space-y-12"}`}>
-            <div className={`pointer-events-none text-center ${compactPreview ? "space-y-1" : "space-y-3"}`}>
+          <div
+            className={`mx-auto my-auto w-full max-w-2xl ${compactPreview ? "space-y-3 px-1" : "space-y-8 sm:space-y-10"}`}
+          >
+            <div className={`pointer-events-none text-center ${compactPreview ? "space-y-1" : "space-y-2.5"}`}>
               <p
                 className={`font-semibold tracking-tight text-black dark:text-white ${
-                  compactPreview ? "text-sm min-h-0 line-clamp-2" : "text-xl sm:text-3xl min-h-[44px]"
+                  compactPreview ? "text-sm min-h-0 line-clamp-2" : "text-xl sm:text-3xl min-h-0"
                 }`}
               >
                 {typedWelcome}
               </p>
               {welcomeSubtitle ? (
                 <p
-                  className={`text-black/60 dark:text-white/55 max-w-md mx-auto leading-relaxed ${
-                    compactPreview ? "text-[11px] line-clamp-2" : "text-sm sm:text-[15px]"
+                  className={`text-black/55 dark:text-white/50 max-w-lg mx-auto leading-relaxed ${
+                    compactPreview ? "text-[11px] line-clamp-2" : "text-[13px] sm:text-sm"
                   }`}
                 >
                   {welcomeSubtitle}
                 </p>
               ) : null}
             </div>
-            <div className="w-full flex flex-col gap-1">
+            <div className="mx-auto w-full flex flex-col gap-1">
               {composerAbove}
               <div className="lykn-chat-neu-chat-shell lykn-chat-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
               {focusedChatAttachments.length > 0 && (
@@ -2193,7 +2225,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   onChange={handleComposerInputChange}
                   onPaste={onPaste}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
-                  placeholder="Ask me anything..."
+                  placeholder={composerPlaceholder}
                   rows={1}
                   className="w-full min-h-[3.25rem] max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
                 />
@@ -2239,6 +2271,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     key={msg.id || idx}
                     msg={msg}
                     idx={idx}
+                    hideMessageSources={hideMessageSources}
                     isAiExpanded={expandedAiMsgIds.has(msg.id)}
                     isUserPromptExpanded={expandedUserPromptIds.has(msg.id)}
                     reaction={chatReactions[msg.id]}
@@ -2314,16 +2347,25 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   onChange={handleComposerInputChange}
                   onPaste={onPaste}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
-                  placeholder="Ask me anything..."
+                  placeholder={composerPlaceholder}
                   rows={1}
                   className="w-full min-h-[3.25rem] max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
                 />
               )}
               {chatBarToolbar}
             </div>
+            {composerBelow}
           </div>
         </div>
       )}
+      {researchOpen ? (
+        <div
+          className="fixed bottom-0 right-0 top-0 z-[66]"
+          style={{ width: RESEARCH_SIDEBAR_WIDTH }}
+        >
+          {researchSidebar}
+        </div>
+      ) : null}
       {onActiveArtifactChange ? (
         <LyknChatArtifactPanel
           artifact={activeArtifact}

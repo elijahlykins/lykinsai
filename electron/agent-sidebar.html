@@ -1,0 +1,250 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --tint: rgba(16, 18, 24, 0.28);
+        --border: rgba(255, 255, 255, 0.12);
+        --text: #f4f6fb;
+        --muted: #aab2c2;
+        --green: #86efac;
+      }
+      html.no-vibrancy {
+        --tint: rgba(16, 18, 24, 0.88);
+        --border: rgba(255, 255, 255, 0.16);
+      }
+      html.no-vibrancy,
+      html.no-vibrancy body {
+        background: transparent !important;
+      }
+      html.no-vibrancy #card {
+        backdrop-filter: blur(28px) saturate(160%);
+        -webkit-backdrop-filter: blur(28px) saturate(160%);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        clip-path: inset(0 round 16px);
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        width: 100%;
+        background: transparent;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+        font-size: 13px;
+        color: var(--text);
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #card {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        background: var(--tint);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 8px 8px 10px;
+        overflow: hidden;
+      }
+      #head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: none;
+        margin-bottom: 8px;
+      }
+      #title {
+        flex: 1;
+        min-width: 0;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      #new-chat-btn, #new-btn, #close {
+        flex: none;
+        border: none;
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+        border-radius: 7px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      #new-chat-btn, #new-btn { padding: 4px 8px; }
+      #new-chat-btn:hover, #new-btn:hover { background: rgba(255, 255, 255, 0.12); }
+      #close {
+        display: grid;
+        place-items: center;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        background: transparent;
+        color: var(--muted);
+      }
+      #close:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
+      #close svg { width: 12px; height: 12px; display: block; }
+      #list {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+      }
+      .empty {
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+        padding: 24px 10px;
+        line-height: 1.45;
+      }
+
+      /* Compact glass agent pill — short height, X on hover */
+      .agent {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        min-height: 36px;
+        height: 36px;
+        padding: 0 10px 0 8px;
+        border: none;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+        cursor: pointer;
+        font: inherit;
+        text-align: left;
+        overflow: hidden;
+      }
+      .agent:hover {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      .agent.active {
+        background: rgba(120, 180, 255, 0.14);
+      }
+      .agent.main {
+        background: rgba(255, 255, 255, 0.09);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+      }
+      .agent.main.active {
+        background: rgba(120, 180, 255, 0.16);
+      }
+      .agent.main .name::before {
+        content: "◆ ";
+        font-size: 9px;
+        opacity: 0.75;
+      }
+      .pin {
+        flex: none;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-right: 2px;
+      }
+      .agent.main .x { display: none !important; }
+      .icon {
+        flex: none;
+        width: 18px;
+        height: 18px;
+        color: rgba(220, 225, 235, 0.7);
+        display: grid;
+        place-items: center;
+      }
+      .icon svg { width: 18px; height: 18px; display: block; }
+      .agent.running .icon { color: var(--green); }
+      .agent.error .icon { color: #f87171; }
+      .meta {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 1px;
+        padding-right: 18px;
+      }
+      .name {
+        font-size: 12px;
+        font-weight: 550;
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        mask-image: linear-gradient(90deg, #000 78%, transparent);
+        -webkit-mask-image: linear-gradient(90deg, #000 78%, transparent);
+      }
+      .sub {
+        font-size: 10.5px;
+        line-height: 1.15;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sub .hi {
+        color: var(--green);
+        font-weight: 550;
+      }
+      .x {
+        position: absolute;
+        right: 6px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 18px;
+        height: 18px;
+        border: none;
+        border-radius: 5px;
+        padding: 0;
+        display: grid;
+        place-items: center;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+      }
+      .agent:hover .x {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .x:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .x svg { width: 11px; height: 11px; display: block; }
+      #foot {
+        flex: none;
+        margin-top: 6px;
+        font-size: 10px;
+        color: var(--muted);
+        letter-spacing: 0.02em;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="card">
+      <div id="head">
+        <div id="title">Agents</div>
+        <button type="button" id="new-chat-btn" title="New Main chat">New chat</button>
+        <button type="button" id="new-btn" title="New agent">+ Agent</button>
+        <button type="button" id="close" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div id="list"></div>
+      <div id="foot">New chat resets Main · + Agent adds a tab</div>
+    </div>
+    <script src="agent-sidebar.js"></script>
+  </body>
+</html>

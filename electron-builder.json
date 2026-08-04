@@ -70,6 +70,7 @@
       "NSMicrophoneUsageDescription": "LYKN uses your microphone for voice conversations.",
       "NSCameraUsageDescription": "LYKN may use your camera for visual context.",
       "NSScreenCaptureUsageDescription": "LYKN reads what's on your screen when you ask it to, so it can give feedback and take notes.",
+      "NSAppleEventsUsageDescription": "LYKN reads your open browser tabs so it can bring them into its own browser when you choose to sync.",
       "LSMultipleInstancesProhibited": true
     }
   },

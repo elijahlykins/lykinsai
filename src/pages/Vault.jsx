@@ -1054,7 +1054,10 @@ function WhyEditor({ initialValue = "", onSave, busy = false, variant = "default
   );
 }
 
-export default function Vault({ wakePreview = false, onWakePreviewTabChange } = {}) {
+// `studioSurface` — mounted in-document inside the LYKN Studio panel, which
+// draws its own chrome; floating affordances like the drag-to-delete trash
+// can stay hidden there.
+export default function Vault({ wakePreview = false, onWakePreviewTabChange, studioSurface = false } = {}) {
   const location = useLocation();
   const nav = useNavigate();
   const { user, loading } = useAuth();
@@ -9171,7 +9174,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange } = 
       {/* Drag-to-delete trash can — desktop only. On phones the bottom-left
           corner conflicts with the mobile tab bar and the drag-and-hold
           gesture isn't usable on touch, so the affordance is hidden. */}
-      {!isEmbeddedMode && !isWakePreview && !isMobileChat && !sidebarOpen && createPortal(
+      {!isEmbeddedMode && !isWakePreview && !studioSurface && !isMobileChat && !sidebarOpen && createPortal(
         <div
           className="fixed z-[200] flex items-end gap-2"
           style={{

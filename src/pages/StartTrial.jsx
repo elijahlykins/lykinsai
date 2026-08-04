@@ -96,7 +96,7 @@ function postTrialDestination(user) {
   if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
     return "/onboarding/connect";
   }
-  return "/app";
+  return "/studio";
 }
 
 function checkoutErrorMessage(err) {

@@ -26,6 +26,7 @@ import {
 } from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { isDemoLyknChatId } from "@/lib/demoLyknChats";
+import { notifyLyknChatsChanged, subscribeLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 const flushAndNavigate = (nav, path) => {
   window.dispatchEvent(new Event("lyknchat_flush_save"));
   setTimeout(() => nav(path), 80);
@@ -62,9 +63,9 @@ export default function MobileLyknChat() {
   });
 
   useEffect(() => {
-    const onBoardsChanged = () => invalidateLyknChatListQueries(queryClient, user?.id);
-    window.addEventListener("lykinsai_chats_changed", onBoardsChanged);
-    return () => window.removeEventListener("lykinsai_chats_changed", onBoardsChanged);
+    return subscribeLyknChatsChanged(() =>
+      invalidateLyknChatListQueries(queryClient, user?.id),
+    );
   }, [queryClient, user?.id]);
 
   // Lock body scroll while the sheet is open so the page underneath
@@ -132,7 +133,7 @@ export default function MobileLyknChat() {
     setActionFor(null);
     if (error) return;
     invalidateLyknChatListQueries(queryClient, user.id);
-    window.dispatchEvent(new Event("lykinsai_chats_changed"));
+    notifyLyknChatsChanged();
     // Tell LyknChat (and anyone else mounted) so the in-memory title
     // for the active grid stays in sync — otherwise the next autosave
     // could clobber the new name with the stale local copy.
@@ -181,7 +182,7 @@ export default function MobileLyknChat() {
       window.alert("Couldn't delete chat. " + toUserFacingError());
       return;
     }
-    window.dispatchEvent(new Event("lykinsai_chats_changed"));
+    notifyLyknChatsChanged();
   };
 
   const togglePinGrid = async (chatId, currentlyPinned) => {
@@ -200,7 +201,7 @@ export default function MobileLyknChat() {
       window.alert("Couldn't update pin. " + toUserFacingError());
       return;
     }
-    window.dispatchEvent(new Event("lykinsai_chats_changed"));
+    notifyLyknChatsChanged();
   };
 
   return (

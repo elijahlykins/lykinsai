@@ -9,6 +9,7 @@ import { scheduleUserProfileRefresh } from "@/lib/synthesis/profileRefresh";
 import type { NotePage } from "@/components/notes/NotesPanel";
 import { notifyBlocksCapIfApplicable } from "@/lib/lyknChat/blocksCapError";
 import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
+import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 import { getThreadSnapshot, shouldPreferRuntimeSnapshot } from "@/lib/chat/chatThreadRuntime";
 import { isDemoLyknChatId, getDemoLyknChatSnapshot } from "@/lib/demoLyknChats";
 
@@ -137,6 +138,11 @@ export interface UseLyknChatPersistenceParams {
   chatModelKeyRef?: MutableRefObject<string | null>;
   /** Apply the board's saved model key to the picker when a chat hydrates. */
   onChatModelKeyHydrated?: (key: string | null) => void;
+  /** Studio mode session this chat belongs to ("build" / "imagine" /
+   *  "research", null for plain chat) — saved into the snapshot so pulling
+   *  the chat back up reopens the matching Studio page. */
+  studioModeRef?: MutableRefObject<string | null>;
+  onStudioModeHydrated?: (mode: string | null) => void;
 }
 
 export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
@@ -149,9 +155,13 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
     savedMediaUrls, savedYouTubeIds,
     chatModelKeyRef,
     onChatModelKeyHydrated,
+    studioModeRef,
+    onStudioModeHydrated,
   } = params;
   const onChatModelKeyHydratedRef = useRef(onChatModelKeyHydrated);
   onChatModelKeyHydratedRef.current = onChatModelKeyHydrated;
+  const onStudioModeHydratedRef = useRef(onStudioModeHydrated);
+  onStudioModeHydratedRef.current = onStudioModeHydrated;
 
   /* ------------------------------------------------------------------ */
   /*  State                                                              */
@@ -227,6 +237,9 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
       aiThread: aiThreadRef.current,
       notesPages: notesPagesRef.current,
       ...(chatModelKey ? { chatModelKey } : {}),
+      // Studio mode session tag — restores the Build / Imagine / Research
+      // page when the chat is pulled back up in the Studio.
+      ...(studioModeRef?.current ? { studioMode: studioModeRef.current } : {}),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -346,6 +359,26 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         onChatModelKeyHydratedRef.current?.(hydratedModelKey);
       } catch {
         /* picker sync must not block hydration */
+      }
+
+      const hydratedStudioMode =
+        typeof snapshot.studioMode === "string" && snapshot.studioMode.trim()
+          ? snapshot.studioMode.trim()
+          : null;
+      // Only sync the Studio mode when this snapshot represents a real saved
+      // chat. Fresh chats hydrate an empty default snapshot (no messages, no
+      // mode) — pushing null there would kick an active Build / Imagine /
+      // Research page back to plain Chat mid-session.
+      const snapshotHasChat =
+        (Array.isArray(snapshot.chatMessages) && snapshot.chatMessages.length > 0) ||
+        (Array.isArray(snapshot.aiThread) && snapshot.aiThread.length > 0);
+      if (hydratedStudioMode || snapshotHasChat) {
+        if (studioModeRef) studioModeRef.current = hydratedStudioMode;
+        try {
+          onStudioModeHydratedRef.current?.(hydratedStudioMode);
+        } catch {
+          /* mode restore must not block hydration */
+        }
       }
 
       (async () => {
@@ -601,7 +634,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
               localStorage.removeItem("lyknchat_active_id");
             }
           } catch { /* ignore */ }
-          window.dispatchEvent(new Event("lykinsai_chats_changed"));
+          notifyLyknChatsChanged();
         } catch (err) {
           if (import.meta.env.DEV) console.error("[LYKN] Empty board cleanup failed:", err);
         } finally {
@@ -746,7 +779,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         lastSaveTimeRef.current = now;
         lastSavedTitleRef.current = savedTitle;
         try { localStorage.removeItem(`lyknchat_draft_${chatId}`); } catch { /* ignore */ }
-        window.dispatchEvent(new Event("lykinsai_chats_changed"));
+        notifyLyknChatsChanged();
         try {
           const embedText = snapshotToSynthesisText(snapshot as Parameters<typeof snapshotToSynthesisText>[0]);
           scheduleSynthesisReindex({
@@ -807,7 +840,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
         .eq("id", chatId)
         .eq("user_id", userId);
     }
-    window.dispatchEvent(new Event("lykinsai_chats_changed"));
+    notifyLyknChatsChanged();
   }, [chatId, setTitleTracked, userId]);
 
   /* ------------------------------------------------------------------ */
@@ -1149,7 +1182,7 @@ export function useLyknChatPersistence(params: UseLyknChatPersistenceParams) {
       hydratedRef.current = true;
 
       if (id && boardRowExistsRef.current) {
-        window.dispatchEvent(new Event("lykinsai_chats_changed"));
+        notifyLyknChatsChanged();
       }
     };
     loadBoard();

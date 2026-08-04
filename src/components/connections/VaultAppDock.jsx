@@ -391,11 +391,11 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
       <div className="pointer-events-auto">
         <div className={innerCls}>
           {/* LYKN home — always at the leading edge, always available.
-              Routes to the chat surface (/app) which is the canonical
-              "open LYKN" destination. Rendered with the same white-card
-              shell as the connected-app DockIcons so it reads as "the
-              first app in the row" rather than a special anchor. */}
-          <LyknDockTile onClick={() => navigate("/app")} vertical={isVertical} />
+              Routes to Studio, the canonical "open LYKN" destination.
+              Rendered with the same white-card shell as the connected-app
+              DockIcons so it reads as "the first app in the row" rather
+              than a special anchor. */}
+          <LyknDockTile onClick={() => navigate("/studio")} vertical={isVertical} />
 
           {tiles.map((tile) => (
             <DockIcon

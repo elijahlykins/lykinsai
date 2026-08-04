@@ -67,8 +67,10 @@ export const webFetchTool = {
   scope: 'read',
   description: [
     'Fetch a single URL and extract readable article/body text.',
-    'Use when the user pasted a link and wants it read, summarized, or',
-    'quoted — or when you have a specific URL from search results to deep-read.',
+    'Use when the user pasted a link, when Glass already knows the open-tab',
+    'URL and they ask about more of that site than the screenshot shows, or',
+    'when you have a specific URL from search results to deep-read.',
+    'Never ask them to paste a link you already have from page context.',
     'Do NOT invent page content if fetch fails; say the page could not be read.',
   ].join('\n'),
   inputSchema: {

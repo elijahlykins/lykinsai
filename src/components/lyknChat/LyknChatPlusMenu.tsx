@@ -1,31 +1,12 @@
 import React from "react";
 import * as Popover from "@radix-ui/react-popover";
 import {
-  Code,
-  FileText,
   FolderKanban,
-  Globe,
-  ImagePlus,
   Library,
   Link as LinkIcon,
   Paperclip,
   Plus,
-  Telescope,
 } from "lucide-react";
-
-// NOTE: We intentionally surface only "document" creation in the menu for now
-// while we perfect the document build experience. The other kinds remain in
-// this union (and in the server's ARTIFACT_BUILD_SPEC) so they can be
-// re-enabled without rewiring the pipeline.
-export type ArtifactKind =
-  | "deck"
-  | "study"
-  | "document"
-  | "worksheet"
-  | "spreadsheet"
-  | "chart"
-  | "diagram"
-  | "webapp";
 
 export type LyknChatPlusMenuProps = {
   iconBtnCls: string;
@@ -34,12 +15,6 @@ export type LyknChatPlusMenuProps = {
   onAddLink: () => void;
   onPullVault: () => void;
   onProjects: () => void;
-  onCreate: (kind: ArtifactKind) => void;
-  onGenerateImage: () => void;
-  /** Build mode — the AI codes the request out as a live React artifact. */
-  onBuildMode: () => void;
-  onDeepResearch: () => void;
-  onWebSearch: () => void;
 };
 
 const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
@@ -49,11 +24,6 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
   onAddLink,
   onPullVault,
   onProjects,
-  onCreate,
-  onGenerateImage,
-  onBuildMode,
-  onDeepResearch,
-  onWebSearch,
 }: LyknChatPlusMenuProps) {
   const [open, setOpen] = React.useState(false);
 
@@ -84,7 +54,7 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
           side="top"
           align="start"
           sideOffset={8}
-          className="z-[260] w-[15rem] rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg p-1.5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95"
+          className="lykn-chat-bar-menu z-[260] w-[15rem] rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg p-1.5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95"
         >
           <button type="button" className={itemCls} onClick={() => run(onAddFiles)}>
             <span className={iconWrapCls}><Paperclip className="w-[1.05rem] h-[1.05rem]" /></span>
@@ -101,29 +71,6 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
           <button type="button" className={itemCls} onClick={() => run(onProjects)}>
             <span className={iconWrapCls}><FolderKanban className="w-[1.05rem] h-[1.05rem]" /></span>
             Projects
-          </button>
-
-          <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
-
-          <button type="button" className={itemCls} onClick={() => run(() => onCreate("document"))}>
-            <span className={iconWrapCls}><FileText className="w-[1.05rem] h-[1.05rem]" /></span>
-            Create document
-          </button>
-          <button type="button" className={itemCls} onClick={() => run(onGenerateImage)}>
-            <span className={iconWrapCls}><ImagePlus className="w-[1.05rem] h-[1.05rem]" /></span>
-            Generate image
-          </button>
-          <button type="button" className={itemCls} onClick={() => run(onBuildMode)}>
-            <span className={iconWrapCls}><Code className="w-[1.05rem] h-[1.05rem]" /></span>
-            Build mode
-          </button>
-          <button type="button" className={itemCls} onClick={() => run(onDeepResearch)}>
-            <span className={iconWrapCls}><Telescope className="w-[1.05rem] h-[1.05rem]" /></span>
-            Deep research
-          </button>
-          <button type="button" className={itemCls} onClick={() => run(onWebSearch)}>
-            <span className={iconWrapCls}><Globe className="w-[1.05rem] h-[1.05rem]" /></span>
-            Web search
           </button>
         </Popover.Content>
       </Popover.Portal>

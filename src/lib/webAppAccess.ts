@@ -2,7 +2,7 @@
  * Web-app access gate.
  *
  * LYKN is shipping as a downloadable desktop app. The full product UI
- * (/app, /vault, /login in a browser, …) stays in the codebase but is
+ * (/studio, /vault, /login in a browser, …) stays in the codebase but is
  * unreachable from a normal browser. The Electron shell always has access
  * via `window.lykn.desktop` (see electron/preload.cjs).
  *
@@ -100,7 +100,7 @@ export function isWebPublicPath(pathname: string): boolean {
  * URLs, even when the web app is enabled (open-redirect hardening).
  */
 export function resolvePostAuthPath(dest: string): string {
-  const raw = String(dest || "").trim() || "/app";
+  const raw = String(dest || "").trim() || "/studio";
   // Inline the internal-path check (avoid coupling marketing gate to URL utils
   // in a way that surprises tests). Same rules as safeInternalPath.
   const trimmed = raw;
@@ -109,17 +109,17 @@ export function resolvePostAuthPath(dest: string): string {
     !trimmed.startsWith("//") &&
     !trimmed.includes("\\") &&
     !/[\u0000-\u001f]/.test(trimmed);
-  if (!isInternal) return canUseWebApp() ? "/app" : "/download";
+  if (!isInternal) return canUseWebApp() ? "/studio" : "/download";
 
   let pathWithQuery = trimmed;
   try {
     const url = new URL(trimmed, "https://lykn.local");
     if (url.origin !== "https://lykn.local") {
-      return canUseWebApp() ? "/app" : "/download";
+      return canUseWebApp() ? "/studio" : "/download";
     }
     pathWithQuery = `${url.pathname}${url.search}${url.hash}`;
   } catch {
-    return canUseWebApp() ? "/app" : "/download";
+    return canUseWebApp() ? "/studio" : "/download";
   }
 
   if (canUseWebApp()) return pathWithQuery;

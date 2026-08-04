@@ -142,11 +142,50 @@
       .chat-a-actions {
         display: flex;
         align-items: center;
+        justify-content: flex-end;
         gap: 6px;
         margin-top: 10px;
         padding-top: 2px;
       }
       .chat-a-actions[hidden] { display: none !important; }
+      .agent-choice-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+        -webkit-app-region: no-drag;
+      }
+      .agent-choice-row[hidden] { display: none !important; }
+      .agent-choice-btn {
+        -webkit-app-region: no-drag;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.12s ease, opacity 0.12s ease;
+      }
+      .agent-choice-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .agent-choice-btn.primary {
+        color: #0b0b0f;
+        background: #60a5fa;
+      }
+      .agent-choice-btn.primary:hover:not(:disabled) {
+        background: #93c5fd;
+      }
+      .agent-choice-btn.secondary {
+        color: rgba(255, 255, 255, 0.82);
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+      .agent-choice-btn.secondary:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.14);
+      }
       .chat-copy {
         -webkit-app-region: no-drag;
         display: inline-flex;
@@ -168,9 +207,10 @@
         border-color: rgba(255, 255, 255, 0.16);
       }
       .chat-copy.copied {
-        color: #3b82f6;
-        border-color: rgba(59, 130, 246, 0.4);
-        background: rgba(59, 130, 246, 0.14);
+        color: #fff;
+        border-color: #1d4ed8;
+        background: #2563eb;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
       }
       .chat-copy svg { width: 14px; height: 14px; flex: none; }
       .chat.collapsed .chat-a { display: none; }
@@ -472,6 +512,114 @@
         background: #000;
       }
       /* Vault / neuron pull-up card (lykn_loadNeuron → Open in app). */
+      .chat-a .md-step {
+        display: block;
+        width: 100%;
+        margin: 6px 0;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.045);
+        color: inherit;
+        overflow: hidden;
+      }
+      .chat-a .md-step + .md-step {
+        margin-top: 5px;
+      }
+      .chat-a .md-step[open] {
+        background: rgba(96, 165, 250, 0.08);
+        border-color: rgba(96, 165, 250, 0.28);
+      }
+      .chat-a .md-step-summary {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        list-style: none;
+        min-height: 34px;
+        padding: 7px 10px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .chat-a .md-step-summary::-webkit-details-marker { display: none; }
+      .chat-a .md-step-summary::marker { content: ""; }
+      .chat-a .md-step-summary:hover {
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .chat-a .md-step-chevron {
+        flex: none;
+        width: 10px;
+        height: 10px;
+        border-right: 1.5px solid rgba(255, 255, 255, 0.45);
+        border-bottom: 1.5px solid rgba(255, 255, 255, 0.45);
+        transform: rotate(-45deg);
+        margin: 0 2px 0 1px;
+        transition: transform 0.15s ease;
+      }
+      .chat-a .md-step[open] > .md-step-summary .md-step-chevron {
+        transform: rotate(45deg);
+        margin-top: -2px;
+      }
+      .chat-a .md-step-num {
+        flex: none;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        border-radius: 6px;
+        display: inline-grid;
+        place-items: center;
+        font-size: 11px;
+        font-weight: 700;
+        color: rgba(191, 219, 254, 0.95);
+        background: rgba(96, 165, 250, 0.18);
+      }
+      .chat-a .md-step-title {
+        flex: 1;
+        min-width: 0;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.92);
+        line-height: 1.25;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .chat-a .md-step-kind {
+        flex: none;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(147, 197, 253, 0.85);
+      }
+      .chat-a .md-step-body {
+        padding: 2px 12px 10px 30px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: rgba(226, 232, 240, 0.88);
+      }
+      .chat-a .md-step-body p {
+        margin: 8px 0 0;
+      }
+      .chat-a .md-step-body .md-h {
+        margin: 8px 0 0;
+        font-size: 12.5px;
+        font-weight: 650;
+      }
+      .chat-a .md-step-li {
+        margin: 4px 0 0;
+        padding-left: 0.9em;
+        position: relative;
+      }
+      .chat-a .md-step-li::before {
+        content: "·";
+        position: absolute;
+        left: 0;
+        color: rgba(148, 163, 184, 0.9);
+      }
+      .chat-a .md-step-empty {
+        color: rgba(154, 163, 181, 0.9);
+        font-size: 12px;
+      }
       .chat-a .md-vault {
         margin: 8px 0;
         border: 1px solid rgba(255, 255, 255, 0.12);
@@ -538,13 +686,16 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 2px 0 4px;
+        padding: 4px 0 8px;
+        overflow: visible;
+        min-height: 26px;
       }
       /* Shown under the model's description while a build/tool is still
          running — same spinner as the initial thinking state. */
       .building-under {
         margin-top: 12px;
         padding-top: 4px;
+        overflow: visible;
       }
       .lykn-outline-spinner {
         color: #f4f6fb;
@@ -552,6 +703,8 @@
         transform-origin: center;
         animation: lyknOutlinePop 3.6s ease-in-out infinite;
         flex: none;
+        width: 20px;
+        height: 20px;
       }
       .lykn-outline-spinner path {
         stroke-dasharray: 1;
@@ -572,9 +725,17 @@
         100% { transform: scale(0.9); }
       }
       .thinking-text {
+        /* Extra vertical padding so descenders (g/y/p) aren't clipped by
+           background-clip:text — that was cutting letters off at the bottom. */
         display: inline-block;
+        flex: 1;
+        min-width: 0;
         font-size: 13px;
         font-weight: 500;
+        line-height: 1.5;
+        padding: 2px 0 4px;
+        overflow: visible;
+        white-space: normal;
         background: linear-gradient(
           100deg,
           rgba(255, 255, 255, 0.40) 0%,
@@ -667,9 +828,31 @@
         letter-spacing: 0.02em;
         cursor: pointer;
       }
-      .mode-pill.project-pill:hover { background: rgba(96, 165, 250, 0.24); }
-      .mode-pill.project-pill[hidden] { display: none; }
-      .mode-pill.project-pill svg { width: 11px; height: 11px; opacity: 0.85; }
+      .mode-pill.project-pill:hover,
+      .mode-pill.voice-pill:hover { background: rgba(96, 165, 250, 0.24); }
+      .mode-pill.project-pill[hidden],
+      .mode-pill.voice-pill[hidden] { display: none; }
+      .mode-pill.project-pill svg,
+      .mode-pill.voice-pill svg { width: 11px; height: 11px; opacity: 0.85; }
+      /* Live voice session chip — click (or Esc) to stop without opening More. */
+      .mode-pill.voice-pill {
+        -webkit-app-region: no-drag;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        align-self: flex-start;
+        margin: 2px 0 0 2px;
+        padding: 3px 8px 3px 10px;
+        border: 1px solid rgba(96, 165, 250, 0.45);
+        border-radius: 999px;
+        background: rgba(96, 165, 250, 0.14);
+        color: #93c5fd;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        animation: micPulse 1.4s ease-in-out infinite;
+      }
       /* Target language picker — only visible while Translate mode is armed.
          Custom menu (not native <select>) so the list scrolls at a fixed height
          without growing the composer. */
@@ -884,7 +1067,6 @@
       .bar-btn.collapse-all { display: none; }
       .bar-btn.collapse-all.show { display: grid; }
       .bar-btn.collapse-all.active { color: #60a5fa; background: rgba(96, 165, 250, 0.14); }
-
       /* The three-dot menu now lives in its OWN vibrancy window (menu.html)
          floating next to the bar — window vibrancy fills the whole window
          rect, so an in-window panel could never float on a transparent gap.
@@ -1392,12 +1574,15 @@
       }
       .mic.transcribing .ico-mic { display: none; }
       .mic.transcribing .ico-mic-spin { display: block; }
+      .mic .ico-voice-stop { display: none; }
       .mic.voice-active {
         color: #60a5fa;
         border-color: rgba(96, 165, 250, 0.4);
         background: rgba(96, 165, 250, 0.1);
         animation: micPulse 1.4s ease-in-out infinite;
       }
+      .mic.voice-active .ico-mic { display: none; }
+      .mic.voice-active .ico-voice-stop { display: block; }
       @keyframes micPulse {
         0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.0); }
         50% { box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.18); }
@@ -1790,6 +1975,13 @@
               <path d="m6 6 12 12" />
             </svg>
           </button>
+          <button class="mode-pill voice-pill" id="voice-pill" type="button" hidden title="Stop voice mode (Esc)" aria-label="Stop voice mode">
+            <span>Voice</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 6 6 18" />
+              <path d="m6 6 12 12" />
+            </svg>
+          </button>
           <div class="lang-pill" id="translate-lang-pill" hidden>
             <button type="button" class="lang-pill-btn" id="translate-lang-btn" aria-haspopup="listbox" aria-expanded="false" title="Output language">
               <span class="lang-prefix">To</span>
@@ -1867,6 +2059,18 @@
               </svg>
               Build mode
               <span class="menu-state" id="build-state">Off</span>
+            </button>
+            <button class="menu-item" id="menu-agent" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 8V4H8" />
+                <rect width="16" height="12" x="4" y="8" rx="2" />
+                <path d="M2 14h2" />
+                <path d="M20 14h2" />
+                <path d="M15 13v2" />
+                <path d="M9 13v2" />
+              </svg>
+              Agent mode
+              <span class="menu-state" id="agent-state">Off</span>
             </button>
             <button class="menu-item" id="menu-research" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1978,6 +2182,9 @@
               <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
               <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
               <line x1="12" x2="12" y1="19" y2="22" />
+            </svg>
+            <svg class="ico-voice-stop" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="1.5" />
             </svg>
             <svg class="ico-mic-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M21 12a9 9 0 1 1-6.219-8.56" />

@@ -235,7 +235,7 @@ export default function Login() {
   const fromLocation = location.state?.from;
   const from = fromLocation?.pathname
     ? `${fromLocation.pathname}${fromLocation.search || ""}${fromLocation.hash || ""}`
-    : "/app";
+    : "/studio";
   const prefilledEmail = location.state?.email;
 
   useEffect(() => {
@@ -289,7 +289,7 @@ export default function Login() {
     } catch {
       /* storage may be blocked */
     }
-    let dest = "/app";
+    let dest = "/studio";
     if (hasExplicitFrom) {
       dest = from;
     } else if (pendingShareDest) {

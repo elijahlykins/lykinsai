@@ -31,9 +31,10 @@ import Settings from "./pages/Settings";
 // the initial bundle too, so first-paint on every other route gets
 // faster — not just first-paint on /synthesis-layer.
 const SynthesisLayer = React.lazy(() => import("./pages/SynthesisLayer"));
-import AppSidebar from "./components/AppSidebar";
-import MobileTabBar from "./components/MobileTabBar";
-import MobileExperienceNotice from "./components/MobileExperienceNotice";
+// LYKN Studio: the liquid-glass workspace (widget dashboard + embedded
+// product surfaces). Primary post-login shell; lazy so it doesn't weigh
+// down marketing / auth routes.
+const Studio = React.lazy(() => import("./pages/Studio"));
 import VaultConnectionsShell from "./pages/VaultConnectionsShell";
 import TagManagement from "./pages/TagManagement";
 import Billing from "./pages/Billing";
@@ -42,6 +43,7 @@ import {
   isEmbeddedSurfacePath,
   readEmbeddedPreviewParams,
 } from "@/lib/embeddedPreview";
+import { applyTheme, readSavedTheme } from "@/lib/theme";
 import {
   SYNTHESIS_LAYER_UI_ENABLED,
   SYNTHESIS_LAYER_FALLBACK_PATH,
@@ -64,7 +66,6 @@ import DPA from "./pages/DPA";
 import Support from "./pages/Support";
 import BillingSuccess from "./pages/BillingSuccess";
 import BillingCancel from "./pages/BillingCancel";
-import { useIsMobile } from "@/hooks/useViewportTier";
 import ProjectsPage from "./pages/ProjectsPage";
 import ProjectDetailPage from "./pages/ProjectDetailPage";
 
@@ -114,10 +115,10 @@ function AdminOnly({ children }) {
 }
 
 // Guest-only route wrapper. Used to gate the wake landing so signed-in
-// users never see it — they always bounce into the app (or whatever path is
+// users never see it — they always bounce into Studio (or whatever path is
 // passed in). Returns null while auth is still resolving so we don't flash the
 // landing UI to a user who's about to be redirected.
-function GuestOnly({ children, to = "/app" }) {
+function GuestOnly({ children, to = "/studio" }) {
   const { user, loading } = useAuth();
   const location = useLocation();
   if (loading) return null;
@@ -142,6 +143,16 @@ function GuestOnly({ children, to = "/app" }) {
     return <Navigate to="/login" replace />;
   }
   return children;
+}
+
+// Legacy product routes that used to live under AppSidebar. Studio is the
+// only top-level product chrome now — keep the page components available for
+// same-origin embeds (`?embedded=1`) and redirect everything else home.
+function LegacyProductToStudio({ children }) {
+  const location = useLocation();
+  const { isEmbedded } = readEmbeddedPreviewParams(location.search);
+  if (isEmbedded) return children;
+  return <Navigate to="/studio" replace />;
 }
 
 async function fetchBillingMeForGate() {
@@ -218,12 +229,16 @@ function useSubscriptionGate() {
 function AppShell() {
   const location = useLocation();
   const subscriptionGate = useSubscriptionGate();
-  const isMobile = useIsMobile();
-  const { isEmbedded: isEmbeddedSurface } = readEmbeddedPreviewParams(
-    location.search,
-  );
+  const { isEmbedded: isEmbeddedSurface, isGlass: isGlassSurface } =
+    readEmbeddedPreviewParams(location.search);
   const isEmbeddedRoute =
     isEmbeddedSurface && isEmbeddedSurfacePath(location.pathname);
+  // Embedded inside LYKN Studio's glass shell — or the Studio document
+  // itself, which now mounts the product pages in-document: every surface
+  // swaps to its glass skin (html.lykn-glass-embed, src/index.css) in the
+  // dark "Glass" theme and the regular light UI in "Neutral".
+  const isGlassEmbed =
+    (isEmbeddedRoute && isGlassSurface) || location.pathname === "/studio";
   const isLoginPage =
     location.pathname === "/login" ||
     location.pathname === "/reset-password" ||
@@ -247,6 +262,8 @@ function AppShell() {
     location.pathname === "/billing/cancel" ||
     location.pathname.startsWith("/apps/");
   const isSharePage = location.pathname === "/share";
+  // LYKN Studio draws its own glass chrome (rail + dock) — hide the app shell.
+  const isStudioPage = location.pathname === "/studio";
 
   useEffect(() => {
     initAnalyticsConsent();
@@ -268,8 +285,25 @@ function AppShell() {
     };
   }, [isEmbeddedRoute]);
 
+  useEffect(() => {
+    document.documentElement.classList.toggle("lykn-glass-embed", isGlassEmbed);
+    if (!isGlassEmbed) return;
+    // Glass embeds follow the Studio's Glass/Neutral toggle: Glass = dark
+    // frosted skin, Neutral = the light theme. The toggle lives in the parent
+    // Studio document, which writes the shared settings key — that write
+    // fires a storage event here, so every embedded surface re-themes live.
+    applyTheme(readSavedTheme());
+    const syncTheme = () => applyTheme(readSavedTheme());
+    window.addEventListener("storage", syncTheme);
+    return () => {
+      document.documentElement.classList.remove("lykn-glass-embed");
+      window.removeEventListener("storage", syncTheme);
+      applyTheme(readSavedTheme());
+    };
+  }, [isGlassEmbed]);
+
   const isStandalone =
-    isLoginPage || isStartTrialPage || isLandingPage || isSharePage;
+    isLoginPage || isStartTrialPage || isLandingPage || isSharePage || isStudioPage;
   const chromeHidden = isEmbeddedRoute || isStandalone;
   // The marketing landing page has its own header with a Sign in button, so
   // the floating top-left pill is redundant there. The legal/docs pages reached
@@ -290,13 +324,13 @@ function AppShell() {
     location.pathname === "/news" ||
     location.pathname.startsWith("/news/") ||
     location.pathname.startsWith("/product/");
-  // On mobile the account lives in the More menu (MobileTabBar), so the
-  // floating top-left pill is only needed on chrome-less standalone pages.
+  // Floating top-left pill for chrome-less standalone pages (e.g. share).
   const showSignInPillGlobally =
     !isLoginPage &&
     !isStartTrialPage &&
     !isEmbeddedRoute &&
     !isMarketingLanding &&
+    !isStudioPage &&
     chromeHidden;
 
   if (subscriptionGate.loading) {
@@ -332,9 +366,6 @@ function AppShell() {
 
   return (
     <>
-      {!chromeHidden && !isMobile && <AppSidebar />}
-      {!chromeHidden && isMobile && <MobileTabBar />}
-      {!chromeHidden && isMobile && <MobileExperienceNotice />}
       {!isEmbeddedRoute && <CookieConsentBanner />}
 
       {showSignInPillGlobally && (
@@ -342,7 +373,9 @@ function AppShell() {
           <SignInPill className="lykn-wake-signin-fade" />
         </div>
       )}
-      <div className={isStandalone ? "" : "app-content"}>
+      {/* Studio (and other chrome-less pages) own their layout. The old
+          AppSidebar padding on `.app-content` is gone with that shell. */}
+      <div>
         <RouteErrorBoundary>
           <Routes>
             {/* Login stays available on the website for share-target / email
@@ -395,25 +428,65 @@ function AppShell() {
             <Route path="/glass" element={<GuestOnly><GlassLanding /></GuestOnly>} />
             <Route path="/" element={<GuestOnly><GlassLanding /></GuestOnly>} />
             <Route path="/landing" element={<GuestOnly><GlassLanding /></GuestOnly>} />
-            <Route path="/app" element={<ProtectedRoute><LyknChat /></ProtectedRoute>} />
-            <Route path="/dashboard" element={<Navigate to="/app" replace />} />
-            <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-            <Route path="/chat/:chatId" element={<ProtectedRoute><LyknChat /></ProtectedRoute>} />
-            <Route path="/omnia" element={<Navigate to="/app" replace />} />
+            {/* LYKN Studio: primary product shell after login. Also opened in
+                its own frameless vibrancy window by the desktop shell. */}
+            <Route
+              path="/studio"
+              element={
+                <ProtectedRoute>
+                  <Suspense fallback={loadingFallback}>
+                    <Studio />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            {/* Legacy AppSidebar home — Studio replaced it. Embeds still work. */}
+            <Route
+              path="/app"
+              element={
+                <ProtectedRoute>
+                  <LegacyProductToStudio>
+                    <LyknChat />
+                  </LegacyProductToStudio>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/dashboard" element={<Navigate to="/studio" replace />} />
+            <Route path="/omnia" element={<Navigate to="/studio" replace />} />
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute>
+                  <LegacyProductToStudio>
+                    <Settings />
+                  </LegacyProductToStudio>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/chat/:chatId"
+              element={
+                <ProtectedRoute>
+                  <LegacyProductToStudio>
+                    <LyknChat />
+                  </LegacyProductToStudio>
+                </ProtectedRoute>
+              }
+            />
             <Route
               element={
                 <ProtectedRoute>
-                  <VaultConnectionsShell />
+                  <LegacyProductToStudio>
+                    <VaultConnectionsShell />
+                  </LegacyProductToStudio>
                 </ProtectedRoute>
               }
             >
               <Route path="/vault" element={null} />
             </Route>
-            {/* Connections moved into Settings → Connections. Redirect any
-                lingering /connections links (load-in greeting, bookmarks)
-                straight to the connect surface. */}
-            <Route path="/connections" element={<Navigate to="/settings?section=connections" replace />} />
-            <Route path="/connections/*" element={<Navigate to="/settings?section=connections" replace />} />
+            {/* Connections live in Studio → Settings. Old bookmarks bounce home. */}
+            <Route path="/connections" element={<Navigate to="/studio" replace />} />
+            <Route path="/connections/*" element={<Navigate to="/studio" replace />} />
             <Route path="/share" element={<ShareReceiver />} />
             <Route
               path="/onboarding/connect"
@@ -441,7 +514,9 @@ function AppShell() {
               path="/projects"
               element={
                 <ProtectedRoute>
-                  <ProjectsPage />
+                  <LegacyProductToStudio>
+                    <ProjectsPage />
+                  </LegacyProductToStudio>
                 </ProtectedRoute>
               }
             />
@@ -449,7 +524,9 @@ function AppShell() {
               path="/projects/:projectId"
               element={
                 <ProtectedRoute>
-                  <ProjectDetailPage />
+                  <LegacyProductToStudio>
+                    <ProjectDetailPage />
+                  </LegacyProductToStudio>
                 </ProtectedRoute>
               }
             />
@@ -461,8 +538,8 @@ function AppShell() {
                 </ProtectedRoute>
               }
             />
-            <Route path="/vaultchat" element={<Navigate to="/vault" replace />} />
-            <Route path="/vault-chat" element={<Navigate to="/vault" replace />} />
+            <Route path="/vaultchat" element={<Navigate to="/studio" replace />} />
+            <Route path="/vault-chat" element={<Navigate to="/studio" replace />} />
             <Route
               path="/billing"
               element={

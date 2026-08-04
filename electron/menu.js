@@ -66,6 +66,11 @@ async function refreshState() {
     buildState.textContent = s.buildModeOn ? "On" : "Off";
     buildState.classList.toggle("on", !!s.buildModeOn);
   }
+  const agentState = document.getElementById("agent-state");
+  if (agentState) {
+    agentState.textContent = s.agentModeOn ? "On" : "Off";
+    agentState.classList.toggle("on", !!s.agentModeOn);
+  }
   const researchState = document.getElementById("research-state");
   if (researchState) {
     researchState.textContent = s.researchModeOn ? "On" : "Off";

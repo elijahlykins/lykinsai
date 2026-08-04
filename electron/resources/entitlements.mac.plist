@@ -19,6 +19,12 @@
   <key>com.apple.security.network.client</key>
   <true/>
 
+  <!-- Send Apple events so the browser-sync feature can read the user's open
+       tabs from Chrome/Brave/Edge via AppleScript. macOS still shows the
+       per-target Automation consent prompt on first use. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+
   <!-- TODO(jarvis): screen recording is granted at runtime via the system
        Screen Recording privacy permission, not an entitlement, so nothing to
        add here for screen capture itself. -->

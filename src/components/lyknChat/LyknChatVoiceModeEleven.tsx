@@ -614,7 +614,7 @@ export default function LyknChatVoiceModeEleven(props: LyknChatVoiceModeElevenPr
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="fixed inset-0 z-[67] flex flex-col items-center justify-center bg-background"
+          className="lykn-voice-overlay fixed inset-0 z-[67] flex flex-col items-center justify-center bg-background"
           role="dialog"
           aria-modal="false"
           aria-label="Voice Mode"

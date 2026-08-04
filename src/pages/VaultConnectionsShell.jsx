@@ -16,7 +16,10 @@ import { useAuth } from "@/lib/SupabaseAuth";
 // We hide the dock when Vault is rendered in iframe-embedded mode
 // (?embedded=1) — that's the Omnia overlay use case, where the host
 // page already provides chrome and a floating launcher would collide.
-export default function VaultConnectionsShell() {
+// `studioSurface` does the same for the LYKN Studio, which mounts this
+// shell in-document and draws its own chrome (also hides the Vault's
+// floating drag-to-delete trash can).
+export default function VaultConnectionsShell({ studioSurface = false }) {
   const { search } = useLocation();
   const { user } = useAuth();
   const isEmbedded = useMemo(
@@ -26,8 +29,8 @@ export default function VaultConnectionsShell() {
 
   return (
     <>
-      <Vault />
-      {!isEmbedded && <VaultAppDock user={user} />}
+      <Vault studioSurface={studioSurface} />
+      {!isEmbedded && !studioSurface && <VaultAppDock user={user} />}
     </>
   );
 }

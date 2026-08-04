@@ -77,9 +77,52 @@ function humaniseToolName(name: string): string {
   return `Working on ${cleaned}…`;
 }
 
+function truncateForStatus(text: string, max: number): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/**
+ * Arg-aware detail line matching the deep-research narration style —
+ * "Searching: lykn pricing…", "Reading nytimes.com…", "Building Landing
+ * page…" — so every mode's status bubble shows WHAT the AI is working on,
+ * not just the activity verb. Returns "" when the args carry nothing worth
+ * surfacing (the generic verb map covers those).
+ */
+function toolDetailStatus(name: string, args?: Record<string, unknown>): string {
+  if (!args || typeof args !== "object") return "";
+  if (name === "lykn_web_search") {
+    const q = typeof args.query === "string" ? args.query.trim() : "";
+    return q ? `Searching: ${truncateForStatus(q, 48)}` : "";
+  }
+  if (name === "lykn_web_fetch" || name === "lykn_http_request") {
+    const url = typeof args.url === "string" ? args.url : "";
+    if (!url) return "";
+    try {
+      return `Reading ${new URL(url).hostname.replace(/^www\./, "")}…`;
+    } catch {
+      return "";
+    }
+  }
+  if (
+    name === "lykn_build_react_artifact" ||
+    name === "lykn_build_template" ||
+    name === "lykn_build_spreadsheet"
+  ) {
+    const title = typeof args.title === "string" ? args.title.trim() : "";
+    return title ? `Building ${truncateForStatus(title, 40)}…` : "";
+  }
+  if (name === "lykn_render_video") {
+    const title = typeof args.title === "string" ? args.title.trim() : "";
+    return title ? `Rendering ${truncateForStatus(title, 40)}…` : "";
+  }
+  return "";
+}
+
 /**
  * Status line for the chat "thinking" bubble while `name` is running.
+ * Pass the tool call's args to get a detail-rich line (query / URL / title).
  */
-export function toolRunningStatus(name: string): string {
-  return TOOL_RUNNING_STATUS[name] || humaniseToolName(name);
+export function toolRunningStatus(name: string, args?: Record<string, unknown>): string {
+  return toolDetailStatus(name, args) || TOOL_RUNNING_STATUS[name] || humaniseToolName(name);
 }

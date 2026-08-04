@@ -13,6 +13,13 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   ask: (text, history, attachments, opts) =>
     ipcRenderer.send("lykn:ask", { text, history, attachments, ...(opts || {}) }),
   onShown: (cb) => ipcRenderer.on("lykn:overlay-shown", () => cb()),
+  // Re-key the glass bar so typing works after another app / agent stage stole focus.
+  focusComposer: () => ipcRenderer.send("lykn:focus-overlay-composer"),
+  onFocusComposer: (cb) => ipcRenderer.on("lykn:overlay-focus-composer", () => cb()),
+  // Snap the bar back to bottom-center if it got clipped under the dock.
+  resetPosition: () => ipcRenderer.send("lykn:reset-overlay-position"),
+  // Main forwards Escape via before-input-event so panel windows still receive it.
+  onEscape: (cb) => ipcRenderer.on("lykn:overlay-escape", () => cb()),
   // Thinking / tool-use status updates ("Searching the web…").
   onStatus: (cb) => ipcRenderer.on("lykn:answer-status", (_e, p) => cb(p)),
   onDelta: (cb) => ipcRenderer.on("lykn:answer-delta", (_e, p) => cb(p)),
@@ -121,7 +128,7 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     ipcRenderer.on("lykn:browser-progress", fn);
     return () => ipcRenderer.removeListener("lykn:browser-progress", fn);
   },
-  // Open a URL in the default browser (source links, answer links).
+  // Open a URL — Agent Mode: LYKN agent browser; otherwise OS default browser.
   openUrl: (url) => ipcRenderer.send("lykn:open-url", url),
   // Download a generated image / Build-mode artifact into ~/Downloads and
   // reveal it in Finder; also saves a copy into the user's Vault (best-effort).
@@ -152,4 +159,77 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   },
   openExtensionInstall: () => ipcRenderer.invoke("lykn:open-extension-install"),
   getNightBriefs: () => ipcRenderer.invoke("lykn:get-night-briefs"),
+  // Agent Mode — parallel cowork agents (owned browser sessions).
+  agentCreate: (payload) => ipcRenderer.invoke("lykn:agent-create", payload || {}),
+  agentList: () => ipcRenderer.invoke("lykn:agent-list"),
+  agentSwitch: (agentId) => ipcRenderer.invoke("lykn:agent-switch", agentId),
+  agentStop: (agentId) => ipcRenderer.invoke("lykn:agent-stop", agentId),
+  agentClose: (agentId) => ipcRenderer.invoke("lykn:agent-close", agentId),
+  agentResetMain: () => ipcRenderer.invoke("lykn:agent-reset-main"),
+  agentSend: (agentId, text, attachments) =>
+    ipcRenderer.invoke("lykn:agent-send", { agentId, text, attachments }),
+  agentChoiceResolve: (agentId, choiceId, buttonId) =>
+    ipcRenderer.invoke("lykn:agent-choice-resolve", { agentId, choiceId, buttonId }),
+  agentModeSet: (open) => ipcRenderer.invoke("lykn:agent-mode-set", { open: !!open }),
+  agentHistory: (agentId) => ipcRenderer.invoke("lykn:agent-history", agentId),
+  agentShowBrowser: (agentId, visible) =>
+    ipcRenderer.invoke("lykn:agent-show-browser", { agentId, visible: visible !== false }),
+  agentBrowserVisible: () => ipcRenderer.invoke("lykn:agent-browser-visible"),
+  agentShowStep: (agentId, stepIndex) =>
+    ipcRenderer.invoke("lykn:agent-show-step", { agentId, stepIndex }),
+  onAgentBrowserVisibility: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-browser-visibility", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-browser-visibility", fn);
+  },
+  onAgentList: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-list", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-list", fn);
+  },
+  onAgentProgress: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-progress", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-progress", fn);
+  },
+  onAgentSwitched: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-switched", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-switched", fn);
+  },
+  onAgentStatus: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-status", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-status", fn);
+  },
+  onAgentDelta: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-delta", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-delta", fn);
+  },
+  onAgentDone: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-done", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-done", fn);
+  },
+  onAgentChoice: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-choice", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-choice", fn);
+  },
+  onAgentToast: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-toast", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-toast", fn);
+  },
+  onAgentError: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-error", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-error", fn);
+  },
+  onAgentSources: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-sources", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-sources", fn);
+  },
 });

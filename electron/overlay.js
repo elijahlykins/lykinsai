@@ -118,7 +118,12 @@ function renderInline(s) {
     // Only http(s) links, no whitespace/quotes in the URL (the &quot;/&#39;
     // entities from escapeHtml contain no raw quote, and \s already excludes
     // spaces), and force them through the external browser with rel guards.
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)"']+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>');
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)"']+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>')
+    // Bare https URLs (agent finish messages often dump the Docs/Sheets link).
+    .replace(
+      /(^|[\s(>])(https?:\/\/[^\s<)"']+)/g,
+      '$1<a href="$2" rel="noopener noreferrer">$2</a>',
+    );
 }
 
 function renderMarkdown(md) {
@@ -138,7 +143,46 @@ function renderMarkdown(md) {
       para = [];
     }
   };
-  for (const raw of lines) {
+  const stepMarkerRe =
+    /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+|lykn-vault:\/\/[^\s)]+|lykn-artifact:\/\/[^\s)]+|lykn-agent-step:\/\/[^\s)]+)(?:\s+(?:&quot;|")(.+?)(?:&quot;|"))?\)$/;
+  const isStepMarkerLine = (rawLine) => {
+    const mm = stepMarkerRe.exec(String(rawLine || "").trim());
+    if (!mm) return false;
+    const alt = unescapeHtml(mm[1]).toLowerCase();
+    const url = unescapeHtml(mm[2]);
+    return /^lykn[-_]step\s*:/.test(alt) || /^lykn-agent-step:\/\//i.test(url);
+  };
+  const renderStepBody = (bodyLines) => {
+    const chunks = [];
+    let buf = [];
+    const flush = () => {
+      if (!buf.length) return;
+      chunks.push(`<p>${renderInline(buf.join(" "))}</p>`);
+      buf = [];
+    };
+    for (const bl of bodyLines) {
+      const t = String(bl || "").trim();
+      if (!t) {
+        flush();
+        continue;
+      }
+      if (/^#{1,6}\s+/.test(t)) {
+        flush();
+        chunks.push(`<div class="md-h">${renderInline(t.replace(/^#{1,6}\s+/, ""))}</div>`);
+        continue;
+      }
+      if (/^\s*[-*•]\s+/.test(t)) {
+        flush();
+        chunks.push(`<div class="md-step-li">${renderInline(t.replace(/^\s*[-*•]\s+/, ""))}</div>`);
+        continue;
+      }
+      buf.push(t);
+    }
+    flush();
+    return chunks.join("") || `<p class="md-step-empty">Open this step in the agent browser.</p>`;
+  };
+  for (let li = 0; li < lines.length; li++) {
+    const raw = lines[li];
     const line = raw.replace(/\s+$/, "");
     if (!line.trim()) {
       flushPara();
@@ -148,9 +192,7 @@ function renderMarkdown(md) {
     // Standalone image / card line — generated images, artifacts, videos,
     // and Vault pull-ups (lykn_vault: → Open card in Glass).
     // Lines are escapeHtml'd first, so optional title attrs use &quot; not ".
-    let m = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+|lykn-vault:\/\/[^\s)]+|lykn-artifact:\/\/[^\s)]+)(?:\s+(?:&quot;|")(.+?)(?:&quot;|"))?\)$/.exec(
-      line.trim(),
-    );
+    let m = stepMarkerRe.exec(line.trim());
     if (m) {
       flushPara();
       closeList();
@@ -163,7 +205,65 @@ function renderMarkdown(md) {
       // Accept lykn_artifact:, lykn-artifact:, LYKN-artifact:, etc.
       const isArtifact = /^lykn[-_]artifact\s*:/.test(altLower);
       const isVideo = /^lykn[-_]video\s*:/.test(altLower);
+      const isStep = /^lykn[-_]step\s*:/.test(altLower) || /^lykn-agent-step:\/\//i.test(mediaUrl);
       const isVault = /^lykn[-_]vault\s*:/.test(altLower) || /^lykn-vault:\/\//i.test(mediaUrl);
+      if (isStep) {
+        let stepKind = "text";
+        let stepTitle = altText.replace(/^lykn[-_]step\s*:/i, "").trim() || "Step";
+        const kindTitle = altText.match(/^lykn[-_]step\s*:([^:]+):(.+)$/i);
+        if (kindTitle) {
+          stepKind = (kindTitle[1] || "text").trim();
+          stepTitle = (kindTitle[2] || stepTitle).trim();
+        }
+        let stepAgentId = "";
+        let stepIndex = "";
+        const stepMatch = /^lykn-agent-step:\/\/([^/]+)\/(\d+)/i.exec(mediaUrl);
+        if (stepMatch) {
+          stepAgentId = stepMatch[1] || "";
+          stepIndex = stepMatch[2] || "";
+        }
+        const kindLabel =
+          stepKind === "report"
+            ? "Report"
+            : stepKind === "artifact"
+              ? "Presentation"
+              : stepKind === "browse"
+                ? "Browser"
+                : stepKind === "image"
+                  ? "Image"
+                  : "Step";
+        const stepNum =
+          /^\s*step\s+(\d+)/i.exec(stepTitle)?.[1] ||
+          (stepIndex !== "" ? String(Number(stepIndex) + 1) : "");
+        const shortTitle = stepTitle
+          .replace(/^\s*step\s+\d+\s*[—–\-·:]\s*/i, "")
+          .trim() || stepTitle;
+        // Fold following prose into the dropdown until --- or the next step.
+        const bodyLines = [];
+        let j = li + 1;
+        while (j < lines.length) {
+          const peek = lines[j].replace(/\s+$/, "");
+          if (/^\s*---+\s*$/.test(peek)) {
+            j += 1;
+            break;
+          }
+          if (isStepMarkerLine(peek)) break;
+          bodyLines.push(peek);
+          j += 1;
+        }
+        li = j - 1;
+        html +=
+          `<details class="md-step" data-agent-id="${escapeAttr(stepAgentId)}" data-step-index="${escapeAttr(stepIndex)}" data-kind="${escapeAttr(stepKind)}">` +
+          `<summary class="md-step-summary" title="Open this step">` +
+          `<span class="md-step-chevron" aria-hidden="true"></span>` +
+          (stepNum ? `<span class="md-step-num">${escapeHtml(stepNum)}</span>` : "") +
+          `<span class="md-step-title">${escapeHtml(shortTitle)}</span>` +
+          `<span class="md-step-kind">${escapeHtml(kindLabel)}</span>` +
+          `</summary>` +
+          `<div class="md-step-body">${renderStepBody(bodyLines)}</div>` +
+          `</details>`;
+        continue;
+      }
       if (isVault) {
         let kind = "vault";
         let itemId = "";
@@ -614,6 +714,7 @@ function clearSide() {
   sideInnerEl.innerHTML = "";
   sideContext = null;
   lastAnswerText = "";
+  researchSources = [];
   sidePanelView = "";
   closeSidePickerMenu();
   updateSidePickerLabel();
@@ -621,14 +722,14 @@ function clearSide() {
   syncSidePickerState();
 }
 
-// Reset sources/tasks side data for a new chat turn. The panel card stays
+// Reset per-turn research state for a new chat turn. The panel card stays
 // OPEN on whatever view the user picked (it only closes from its X or the
-// picker) — the previous turn's content remains visible until the new
-// answer's sources/notes arrive and re-render it in place.
+// picker) — prior sources remain in sideContext until the new answer
+// delivers its own (onSources / requestSuggestions) or the user starts a
+// new chat (clearSide).
 let researchSources = [];
 
 function resetSideForNewTurn() {
-  sideContext = null;
   lastAnswerText = "";
   researchSources = [];
   if (liveWatchEnabled && !sidePanelView) setSidePanelView("watch");
@@ -687,7 +788,8 @@ function appendSourcesSection(data, target) {
   }
   if (data.links.length) {
     const { sec, list } = sideSection("Sources");
-    for (const l of data.links.slice(0, 5)) list.appendChild(sourceCard(l));
+    // Show every collected source (stream/deep-research caps upstream).
+    for (const l of data.links) list.appendChild(sourceCard(l));
     target.appendChild(sec);
     added = true;
   }
@@ -963,19 +1065,27 @@ async function requestSuggestions(question, answer) {
     data = null;
   }
   const suggested = (data && Array.isArray(data.links) ? data.links : []).filter((l) => l && l.url);
-  const links = mergeSourceLinks(researchSources, suggested);
+  const priorLinks = (sideContext && sideContext.links) || [];
+  // This turn's deep-research sources replace the list; otherwise keep prior
+  // sources so a follow-up prompt doesn't wipe the Sources panel.
+  const links = researchSources.length
+    ? mergeSourceLinks(researchSources, suggested)
+    : mergeSourceLinks(priorLinks, suggested);
   const followups = (data && Array.isArray(data.followups) ? data.followups : []).filter(Boolean);
 
   lastAnswerText = answer;
   sideContext = {
-    pageSource: currentPageSource && currentPageSource.url ? currentPageSource : null,
+    pageSource:
+      (currentPageSource && currentPageSource.url && currentPageSource) ||
+      (sideContext && sideContext.pageSource) ||
+      null,
     links,
-    followups,
+    followups: followups.length ? followups : (sideContext && sideContext.followups) || [],
   };
 
   syncSidePickerState();
+  // Keep Sources data ready, but never auto-open the panel — user picks it.
   if (sidePanelView && sidePanelView !== "watch") renderSidePanel();
-  else if (researchSources.length && !sidePanelView) setSidePanelView("sources");
 }
 
 // Width must match the main process constant (OVERLAY_WIDTH); the panel card
@@ -1193,6 +1303,8 @@ function rebuildThreadFromHistory(openLast) {
   });
   threadEl.classList.toggle("show", pairs.length > 0);
   reportHeight();
+  // Unpaired trailing user message (in-flight agent turn) — caller may resume it.
+  return pendingQ;
 }
 
 async function loadOverlaySession(session) {
@@ -1213,7 +1325,30 @@ async function loadOverlaySession(session) {
   askEl.focus();
 }
 
+async function startNewMainAgentChat() {
+  if (!window.lyknOverlay?.agentResetMain) return false;
+  try {
+    const res = await window.lyknOverlay.agentResetMain();
+    if (!res?.ok) return false;
+    activeAgentId = res.agentId || activeAgentId;
+    applyAgentTranscript(res.history || [], res.agent || null);
+    clearSide();
+    setHistoryOpen(false);
+    setMenuOpen(false);
+    askEl.focus();
+    reportHeight();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function startNewOverlayChat() {
+  // In Agent Mode, New chat resets Main (orchestrator thread) — stay armed.
+  if (agentModeArmed || composerMode === "agent") {
+    const ok = await startNewMainAgentChat();
+    if (ok) return;
+  }
   await persistCurrentSession();
   try {
     const res = await window.lyknOverlay.newOverlaySession();
@@ -1319,6 +1454,104 @@ function updateAnswer(text) {
   reportHeight();
 }
 
+/** Choice buttons under an agent answer (e.g. complex software → artifact vs stop). */
+let pendingAgentChoice = null;
+
+function clearAgentChoiceButtons(answerEl) {
+  const el = answerEl || currentAnswerEl;
+  if (!el) return;
+  el.querySelectorAll(":scope > .agent-choice-row").forEach((n) => n.remove());
+}
+
+function showAgentChoiceButtons(choice, answerEl) {
+  const el = answerEl || currentAnswerEl;
+  if (!el || !choice || !Array.isArray(choice.buttons) || !choice.buttons.length) return;
+  clearAgentChoiceButtons(el);
+  pendingAgentChoice = {
+    agentId: choice.agentId || activeAgentId,
+    choiceId: choice.choiceId || choice.id || "",
+    buttons: choice.buttons,
+  };
+  const row = document.createElement("div");
+  row.className = "agent-choice-row";
+  for (const btn of choice.buttons) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className =
+      "agent-choice-btn " + (btn.primary ? "primary" : "secondary");
+    b.textContent = String(btn.label || btn.id || "Choose");
+    b.dataset.choiceId = String(pendingAgentChoice.choiceId || "");
+    b.dataset.buttonId = String(btn.id || "");
+    b.addEventListener("click", () => {
+      void resolveAgentChoiceClick(b.dataset.choiceId, b.dataset.buttonId, row);
+    });
+    row.appendChild(b);
+  }
+  const actions = el.querySelector(":scope > .chat-a-actions");
+  if (actions) el.insertBefore(row, actions);
+  else el.appendChild(row);
+  reportHeight();
+}
+
+async function resolveAgentChoiceClick(choiceId, buttonId, rowEl) {
+  const agentId = pendingAgentChoice?.agentId || activeAgentId;
+  if (!agentId || !buttonId) return;
+  if (rowEl) {
+    rowEl.querySelectorAll("button").forEach((b) => {
+      b.disabled = true;
+    });
+  }
+  setBusy(true);
+  setThinkingStatus(
+    buttonId === "use-artifact" ? "Building custom artifact…" : "Stopping…",
+  );
+  try {
+    const res = await window.lyknOverlay.agentChoiceResolve(
+      agentId,
+      choiceId,
+      buttonId,
+    );
+    pendingAgentChoice = null;
+    clearAgentChoiceButtons();
+    if (res?.ok && res?.spawned && res?.agentId) {
+      activeAgentId = res.agentId;
+      setBusy(true);
+      reportHeight();
+      return;
+    }
+    if (res?.ok && res?.text) {
+      if (!currentAnswerEl) {
+        startTurn("Choice");
+      }
+      updateAnswer(res.text);
+      const last = history[history.length - 1];
+      if (!(last && last.role === "assistant" && last.content === res.text)) {
+        history.push({
+          role: "assistant",
+          content: res.text,
+          at: new Date().toISOString(),
+        });
+      }
+    } else if (!res?.ok) {
+      updateAnswer(res?.error || "Couldn't apply that choice.");
+    }
+    // use-artifact starts a build — stream handlers finish the turn.
+    if (res?.ok && buttonId === "use-artifact" && !res?.stopped) {
+      setBusy(true);
+      answerStillWorking = true;
+      reportHeight();
+      return;
+    }
+  } catch (e) {
+    updateAnswer(e?.message || "Couldn't apply that choice.");
+  }
+  answerStillWorking = false;
+  clearBuildingUnder();
+  setBusy(false);
+  reportHeight();
+  askEl.focus();
+}
+
 const DEFAULT_ASK_PLACEHOLDER = "Ask LYKN about your screen…";
 let browserActArmed = false;
 // Image generation is explicit-opt-in (menu → "Create an image"), mirroring
@@ -1335,12 +1568,17 @@ let buildModeArmed = false;
 let researchModeArmed = false;
 let translateModeArmed = false;
 let transcribeModeArmed = false;
+let agentModeArmed = false;
+/** Active Glass Agent Mode agent id (main owns the registry). */
+let activeAgentId = null;
+/** Partial stream text for the active agent turn. */
+let agentStreamingText = "";
 /** Live system+mic capture for Transcribe mode (declared early for mode sync). */
 let listening = false;
 /** Prevent setComposerMode ↔ start/stopListen feedback loops. */
 let syncingTranscribeMode = false;
 
-// ── Composer mode (chat / image / build / research / translate / transcribe)
+// ── Composer mode (chat / image / build / agent / research / translate / transcribe)
 // One switch owns the armed flags, the placeholder, the composer pill, and
 // the drawer badges, so every entry point (menu toggle, pill ✕, new chat,
 // Escape) stays consistent.
@@ -1349,6 +1587,8 @@ const MODE_ICON_SVG = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>',
   build:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+  agent:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>',
   research:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
   translate:
@@ -1366,12 +1606,16 @@ const COMPOSER_MODES = {
     placeholder: "Describe what to build, then Send…",
     title: "Build mode — click to exit",
   },
+  agent: {
+    placeholder: "Agent goal — research, build, browse, or monitor…",
+    title: "Agent mode — click to exit",
+  },
   research: {
     placeholder: "Deep research a topic — multi-source analysis…",
     title: "Deep research — click to exit",
   },
   translate: {
-    placeholder: "Type or dictate what to translate…",
+    placeholder: "Translate your screen, or type text…",
     title: "Translate mode — click to exit",
   },
   transcribe: {
@@ -1485,7 +1729,7 @@ function setTranslateTargetLang(lang) {
   } catch (_) {}
   renderTranslateLangMenu();
   if (composerMode === "translate") {
-    askEl.placeholder = `Translate to ${next}…`;
+    askEl.placeholder = `Translate screen to ${next}, or type text…`;
   }
 }
 
@@ -1564,12 +1808,13 @@ function setComposerMode(mode) {
   composerMode = COMPOSER_MODES[mode] ? mode : "chat";
   imageGenArmed = composerMode === "image";
   buildModeArmed = composerMode === "build";
+  agentModeArmed = composerMode === "agent";
   researchModeArmed = composerMode === "research";
   translateModeArmed = composerMode === "translate";
   transcribeModeArmed = composerMode === "transcribe";
   askEl.placeholder =
     composerMode === "translate"
-      ? `Translate to ${getTranslateTargetLang()}…`
+      ? `Translate screen to ${getTranslateTargetLang()}, or type text…`
       : COMPOSER_MODES[composerMode].placeholder;
   if (modeBadgeEl) {
     const active = composerMode !== "chat";
@@ -1595,10 +1840,19 @@ function setComposerMode(mode) {
   }
   renderModeBadge("image-gen-state", composerMode === "image");
   renderModeBadge("build-state", composerMode === "build");
+  renderModeBadge("agent-state", composerMode === "agent");
   renderModeBadge("research-state", composerMode === "research");
   renderModeBadge("translate-state", composerMode === "translate");
   renderModeBadge("transcribe-state", composerMode === "transcribe" || listening);
   reportHeight();
+
+  // Agent Mode: open Cursor-style agent sidebar + browser stage; leave → hide.
+  if (composerMode === "agent" && prev !== "agent") {
+    void enterAgentMode();
+  } else if (prev === "agent" && composerMode !== "agent") {
+    void leaveAgentMode();
+  } else {
+  }
 
   // Transcribe mode = live system+mic capture (same pipeline as former
   // "Live meeting notes"). Arm → start listening; leave → stop.
@@ -1608,6 +1862,63 @@ function setComposerMode(mode) {
     } else if (prev === "transcribe" && composerMode !== "transcribe") {
       if (listening) stopListen();
     }
+  }
+}
+
+async function enterAgentMode() {
+  try {
+    const res = await window.lyknOverlay.agentModeSet(true);
+    if (res?.activeAgentId) activeAgentId = res.activeAgentId;
+    const snap = await window.lyknOverlay.agentHistory(activeAgentId);
+    applyAgentTranscript(snap?.history || [], snap?.agent || snap || null);
+  } catch (_) {}
+}
+
+async function leaveAgentMode() {
+  try {
+    await window.lyknOverlay.agentModeSet(false);
+  } catch (_) {}
+}
+
+/**
+ * Paint an agent's transcript in Glass. If the agent is mid-run, reopen the
+ * pending user turn with spinner / partial stream text (history alone drops
+ * unpaired user messages).
+ */
+function applyAgentTranscript(nextHistory, agentMeta) {
+  history.length = 0;
+  if (Array.isArray(nextHistory)) history.push(...nextHistory);
+  const pendingQ = rebuildThreadFromHistory(true);
+  currentAnswerEl = null;
+  currentChatEl = null;
+  streamingText = "";
+  agentStreamingText = "";
+
+  const busy = !!(agentMeta && (agentMeta.busy || agentMeta.status === "running"));
+  const partial = String(
+    (agentMeta && (agentMeta.partialText || agentMeta.partial_text)) || "",
+  ).trim();
+  const step = String((agentMeta && agentMeta.step) || "").trim() || "Thinking…";
+
+  if (busy || pendingQ) {
+    const q =
+      pendingQ ||
+      String((agentMeta && agentMeta.title) || "").trim() ||
+      "Working…";
+    startTurn(q);
+    // history already contains the user message from the registry — don't push again
+    setBusy(true);
+    answerStillWorking = true;
+    if (partial) {
+      agentStreamingText = partial;
+      updateAnswer(partial);
+      if (answerStillWorking) setThinkingStatus(step);
+    } else {
+      setThinkingStatus(step);
+    }
+  } else {
+    setBusy(false);
+    answerStillWorking = false;
   }
 }
 
@@ -1686,6 +1997,44 @@ async function copyAnswerText(btn) {
   btn.title = "Copied";
   btn.setAttribute("aria-label", "Copied");
 }
+
+/** Selected text from the dark glass UI — paste targets get black, not white. */
+function selectionPlainText() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return "";
+  return String(sel.toString());
+}
+
+function blackHtmlFromPlain(text) {
+  const escaped = escapeHtml(text).replace(/\r\n|\r|\n/g, "<br>");
+  return (
+    `<meta charset="utf-8">` +
+    `<div style="color:#000000; -webkit-text-fill-color:#000000;">${escaped}</div>`
+  );
+}
+
+function writeBlackTransferData(transfer, text) {
+  if (!transfer || !text) return false;
+  transfer.setData("text/plain", text);
+  transfer.setData("text/html", blackHtmlFromPlain(text));
+  return true;
+}
+
+// Select-to-copy / drag-copy keeps the overlay's light text color in HTML
+// clipboard data, so paste into Docs/Word/email looks invisible. Rewrite as
+// plain text + black HTML.
+document.addEventListener("copy", (e) => {
+  const text = selectionPlainText();
+  if (!text || !e.clipboardData) return;
+  e.preventDefault();
+  writeBlackTransferData(e.clipboardData, text);
+});
+
+document.addEventListener("dragstart", (e) => {
+  const text = selectionPlainText();
+  if (!text || !e.dataTransfer) return;
+  writeBlackTransferData(e.dataTransfer, text);
+});
 
 // Mode icon in the titlebar — click exits back to chat.
 if (modeBadgeEl) {
@@ -2140,24 +2489,38 @@ async function clearWatchRules(q) {
 }
 
 function ask() {
-  const q = askEl.value.trim();
+  const qRaw = askEl.value.trim();
   if (browserActArmed) {
-    if (!q || busy || executingBrowser) return;
-    void runBrowserAct(q);
+    if (!qRaw || busy || executingBrowser) return;
+    void runBrowserAct(qRaw);
     return;
   }
-  if ((!q && attachments.length === 0) || busy) return;
+  // Agent Mode: per-agent streams (parallel) — never share lykn:ask abort.
+  if (agentModeArmed) {
+    if (!qRaw && attachments.length === 0) return;
+    if (busy) return;
+    void askAgent(qRaw);
+    return;
+  }
+  if (busy) return;
   // Image mode armed (menu → "Create an image"): this send is an image
   // prompt — skip the watch/save/voice shortcut heuristics and route it to
   // the streamed chat with forceImage so the server forces GPT Image 2.
   // Attachment-only sends count too ("remix this picture" with no caption).
-  const imageAsk = imageGenArmed && (!!q || attachments.length > 0);
+  const imageAsk = imageGenArmed && (!!qRaw || attachments.length > 0);
   // Build mode armed (menu → "Build mode"): this send is a build brief —
   // route it straight to the streamed chat with buildMode so the server
   // forces the React artifact builder (Claude-style coded artifact).
-  const buildAsk = !imageAsk && buildModeArmed && (!!q || attachments.length > 0);
-  const researchAsk = !imageAsk && !buildAsk && researchModeArmed && !!q;
-  const translateAsk = !imageAsk && !buildAsk && !researchAsk && translateModeArmed && (!!q || attachments.length > 0);
+  const buildAsk = !imageAsk && buildModeArmed && (!!qRaw || attachments.length > 0);
+  const researchAsk = !imageAsk && !buildAsk && researchModeArmed && !!qRaw;
+  // Translate mode: empty send = translate what's on screen into the target lang.
+  const translateAsk = !imageAsk && !buildAsk && !researchAsk && translateModeArmed;
+  if (!qRaw && attachments.length === 0 && !translateAsk) return;
+  const q =
+    qRaw ||
+    (translateAsk && attachments.length === 0
+      ? `Translate what's on my screen into ${getTranslateTargetLang()}`
+      : "");
   // Modes are STICKY — they stay armed across sends (follow-up edits are the
   // normal flow: "same but darker", "now add a header…"). The user leaves a
   // mode via the composer pill's ✕, the menu toggle, or a new chat.
@@ -2224,6 +2587,123 @@ function ask() {
     sentAttachments,
     Object.keys(askOpts).length ? askOpts : undefined,
   );
+}
+
+async function ensureActiveAgentId(goal) {
+  try {
+    const list = await window.lyknOverlay.agentList();
+    const agents = Array.isArray(list?.agents) ? list.agents : [];
+    const ids = new Set(agents.map((a) => a.id));
+    if (activeAgentId && ids.has(activeAgentId)) return activeAgentId;
+    if (list?.activeAgentId && ids.has(list.activeAgentId)) {
+      activeAgentId = list.activeAgentId;
+      return activeAgentId;
+    }
+    if (agents[0]?.id) {
+      activeAgentId = agents[0].id;
+      return activeAgentId;
+    }
+  } catch (_) {}
+  try {
+    const created = await window.lyknOverlay.agentCreate({ goal: goal || "New agent" });
+    if (created?.agentId) {
+      activeAgentId = created.agentId;
+      return activeAgentId;
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function askAgent(qRaw) {
+  const q = String(qRaw || "").trim();
+  const sentAttachments = attachments.slice();
+  askEl.value = "";
+  askEl.style.height = "52px";
+  attachments.length = 0;
+  attachmentsEl.innerHTML = "";
+  attachmentsEl.classList.remove("show");
+  setBusy(true);
+  const label = q || (sentAttachments.length ? `Sent ${sentAttachments.length} attachment(s)` : "");
+  startTurn(label);
+  history.push({ role: "user", content: q, at: new Date().toISOString() });
+  // Pin the agent id for this send — user may switch agents while we await.
+  let sendAgentId = null;
+  try {
+    sendAgentId = await ensureActiveAgentId(q);
+    let res = await window.lyknOverlay.agentSend(sendAgentId, q, sentAttachments);
+    // Stale id after restart/close — recreate once and retry.
+    if (!res?.ok && res?.error === "not_found") {
+      activeAgentId = null;
+      sendAgentId = await ensureActiveAgentId(q);
+      res = await window.lyknOverlay.agentSend(sendAgentId, q, sentAttachments);
+    }
+    if (res?.agentId) sendAgentId = res.agentId;
+    if (res?.ok && res?.spawned && res?.agentId) {
+      // Main spawned a worker and switched Glass to it — stream handlers take over.
+      activeAgentId = res.agentId;
+      setBusy(true);
+      reportHeight();
+      return;
+    }
+    // Background finish must not clobber whichever agent is now active in Glass.
+    if (activeAgentId && sendAgentId && activeAgentId !== sendAgentId) {
+      // Still clear THIS send's composer busy if we left the spinner armed locally.
+      answerStillWorking = false;
+      clearBuildingUnder();
+      setBusy(false);
+      return;
+    }
+    if (res?.agentId) activeAgentId = res.agentId;
+    if (!res?.ok && res?.error && res.error !== "superseded") {
+      updateAnswer(res.error === "not_found" ? "No agent available — try Agent mode again." : res.error);
+      answerStillWorking = false;
+      clearBuildingUnder();
+      setBusy(false);
+    } else if (res?.ok && res?.skill === "delegate" && res?.text) {
+      // Main kickoff report — always surface even if stream events raced.
+      updateAnswer(res.text);
+      const last = history[history.length - 1];
+      if (!(last && last.role === "assistant" && last.content === res.text)) {
+        history.push({
+          role: "assistant",
+          content: res.text,
+          at: new Date().toISOString(),
+        });
+      }
+      answerStillWorking = false;
+      clearBuildingUnder();
+      setBusy(false);
+      reportHeight();
+      askEl.focus();
+    } else if (res?.ok) {
+      // Invoke returns after the run finishes; clear spinner even if agent-done
+      // IPC is delayed or was filtered (agent switch / race).
+      answerStillWorking = false;
+      clearBuildingUnder();
+      setBusy(false);
+      if (res.text && !currentHasText) updateAnswer(res.text);
+      if (res.waitingChoice && res.choice?.buttons?.length) {
+        showAgentChoiceButtons({
+          ...res.choice,
+          agentId: res.agentId || sendAgentId || activeAgentId,
+        });
+      }
+      reportHeight();
+      askEl.focus();
+    }
+    // Stream handlers (onAgentDelta/Done) also finish the turn for the active agent.
+  } catch (e) {
+    if (activeAgentId && sendAgentId && activeAgentId !== sendAgentId) {
+      answerStillWorking = false;
+      clearBuildingUnder();
+      setBusy(false);
+      return;
+    }
+    updateAnswer(e?.message || "Agent failed.");
+    answerStillWorking = false;
+    clearBuildingUnder();
+    setBusy(false);
+  }
 }
 
 // Accordion: clicking a turn's header opens it and collapses every other turn,
@@ -2353,6 +2833,15 @@ threadEl.addEventListener("click", (e) => {
     } catch (_) {}
     return;
   }
+  const stepEl = e.target.closest(".md-step");
+  if (stepEl) {
+    // Let the native <details> toggle; also open the step in the agent tab.
+    const stepAgentId = stepEl.getAttribute("data-agent-id") || activeAgentId || "";
+    const stepIndex = stepEl.getAttribute("data-step-index");
+    if (stepIndex == null || stepIndex === "") return;
+    void window.lyknOverlay.agentShowStep?.(stepAgentId, Number(stepIndex));
+    return;
+  }
   // Edit on a vault/generated artifact → Build mode (source already seeded
   // in main when the artifact was built or loaded via loadNeuron).
   const editBuildBtn = e.target.closest(".md-edit-build");
@@ -2444,14 +2933,14 @@ threadEl.addEventListener("click", (e) => {
     })();
     return;
   }
-  // Markdown links in answers open in the default browser, never in the overlay.
+  // Markdown links: Agent Mode → LYKN browser; otherwise OS default. Never the overlay chrome.
   const link = e.target.closest("a[href]");
   if (link) {
     e.preventDefault();
     window.lyknOverlay.openUrl(link.getAttribute("href"));
     return;
   }
-  // Generated images open full-size in the default browser.
+  // Generated images open full-size (Agent Mode → LYKN browser).
   const genImg = e.target.closest(".md-img img");
   if (genImg && genImg.src) {
     e.preventDefault();
@@ -2470,31 +2959,32 @@ threadEl.addEventListener("click", (e) => {
 
 let streamingText = "";
 window.lyknOverlay.onStatus((p) => {
+  if (agentModeArmed) return;
   setThinkingStatus((p && p.status) || "Thinking…");
 });
 window.lyknOverlay.onSources((p) => {
   const list = Array.isArray(p?.sources) ? p.sources : [];
-  researchSources = list.filter((s) => s && s.url).slice(0, 24);
+  researchSources = list.filter((s) => s && s.url).slice(0, 40);
   if (!researchSources.length) return;
+  // New research results replace the Sources list for this turn.
   sideContext = {
     pageSource:
       (currentPageSource && currentPageSource.url && currentPageSource) ||
       (sideContext && sideContext.pageSource) ||
       null,
-    links: mergeSourceLinks(researchSources, sideContext && sideContext.links),
+    links: mergeSourceLinks(researchSources, []),
     followups: (sideContext && sideContext.followups) || [],
   };
   syncSidePickerState();
-  if (!sidePanelView || sidePanelView === "sources" || sidePanelView === "all") {
-    if (!sidePanelView) setSidePanelView("sources");
-    else renderSidePanel();
-  }
+  if (sidePanelView === "sources" || sidePanelView === "all") renderSidePanel();
 });
 window.lyknOverlay.onDelta((p) => {
+  if (agentModeArmed) return;
   streamingText = p && p.text ? p.text : streamingText;
   updateAnswer(streamingText);
 });
 window.lyknOverlay.onDone((p) => {
+  if (agentModeArmed) return;
   answerStillWorking = false;
   const finalText = (p && p.text) || streamingText;
   if (finalText) {
@@ -2517,10 +3007,159 @@ window.lyknOverlay.onDone((p) => {
   askEl.focus();
 });
 window.lyknOverlay.onError((p) => {
+  if (agentModeArmed) return;
   answerStillWorking = false;
   updateAnswer((p && p.message) || "Something went wrong.");
   clearBuildingUnder();
   streamingText = "";
+  setBusy(false);
+  reportHeight();
+});
+
+// Agent Mode streams — scoped by agentId; only the active agent paints Glass.
+window.lyknOverlay.onAgentSwitched((p) => {
+  activeAgentId = p?.agentId || null;
+  if (!agentModeArmed) return;
+  const meta = {
+    ...(p?.agent || {}),
+    busy: p?.busy != null ? p.busy : p?.agent?.busy,
+    partialText: p?.partialText != null ? p.partialText : p?.agent?.partialText,
+    step: p?.step || p?.agent?.step,
+    status: p?.agent?.status,
+  };
+  applyAgentTranscript(p?.history || [], meta);
+  askEl.focus();
+});
+window.lyknOverlay.onAgentStatus((p) => {
+  if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
+  // Late status after the turn finished must not reopen a thinking spinner.
+  if (!answerStillWorking && !busy) return;
+  // Ensure an in-flight turn exists (e.g. switched back before first status).
+  if (!currentAnswerEl && p?.agentId === activeAgentId) {
+    const lastUser = [...history].reverse().find((m) => m.role === "user");
+    startTurn(lastUser?.content || "Working…");
+    setBusy(true);
+  }
+  setThinkingStatus((p && p.status) || "Working…");
+});
+window.lyknOverlay.onAgentDelta((p) => {
+  if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
+  if (!currentAnswerEl) {
+    // Don't invent a new turn from a stray delta after the run already finished.
+    if (!answerStillWorking && !busy) return;
+    const lastUser = [...history].reverse().find((m) => m.role === "user");
+    startTurn(lastUser?.content || "Working…");
+    setBusy(true);
+  }
+  const status = String(p?.status || "").trim();
+  const text = String(p?.text || "").trim();
+  // Always paint the body when we have real text — working-through narrative,
+  // streamed wrap-up, or final summary. Status/writing only drive the spinner.
+  if (text) {
+    agentStreamingText = text;
+    updateAnswer(text);
+    // Only treat as final when explicitly marked, or the close clearly landed.
+    // Do NOT key off "## What I did" — that appears in the mid-run draft too.
+    const looksFinal =
+      !!p?.final ||
+      (/!\[[^\]]*\]\(lykn-agent-step:/i.test(text) &&
+        /\bAll \d+ steps finished\b/i.test(text)) ||
+      (/\bwant me to\b/i.test(text) &&
+        /\b(finished|shared with|opened \*\*|here's what|## summary)\b/i.test(text));
+    if (looksFinal) {
+      answerStillWorking = false;
+      clearBuildingUnder();
+    } else if (answerStillWorking) {
+      const n = Number(p.chars) || text.length;
+      const under =
+        status ||
+        (p?.writing
+          ? n > 0
+            ? `Writing output… (${n.toLocaleString()} chars)`
+            : "Writing output…"
+          : lastThinkingStatus || "Working…");
+      ensureBuildingUnder(under);
+    }
+    return;
+  }
+  if (status) {
+    setThinkingStatus(status);
+    return;
+  }
+  if (p?.writing) {
+    const n = Number(p.chars) || 0;
+    setThinkingStatus(n > 0 ? `Writing output… (${n.toLocaleString()} chars)` : "Writing output…");
+  }
+});
+window.lyknOverlay.onAgentSources((p) => {
+  if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
+  const list = Array.isArray(p?.sources) ? p.sources : [];
+  researchSources = list.filter((s) => s && s.url).slice(0, 40);
+  if (!researchSources.length) return;
+  sideContext = {
+    pageSource: (sideContext && sideContext.pageSource) || null,
+    links: mergeSourceLinks(researchSources, []),
+    followups: (sideContext && sideContext.followups) || [],
+  };
+  syncSidePickerState();
+  if (sidePanelView === "sources" || sidePanelView === "all") renderSidePanel();
+});
+window.lyknOverlay.onAgentDone((p) => {
+  if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
+  answerStillWorking = false;
+  const finalText = (p && p.text) || agentStreamingText;
+  if (!currentAnswerEl && finalText) {
+    const lastUser = [...history].reverse().find((m) => m.role === "user");
+    startTurn(lastUser?.content || "Done");
+  }
+  if (finalText) {
+    updateAnswer(finalText);
+    clearBuildingUnder();
+    // History is owned by main agent registry; keep local transcript in sync.
+    const last = history[history.length - 1];
+    if (!(last && last.role === "assistant" && last.content === finalText)) {
+      history.push({ role: "assistant", content: finalText, at: new Date().toISOString() });
+    }
+    if (p?.choice?.buttons?.length) {
+      showAgentChoiceButtons({ ...p.choice, agentId: p.agentId || activeAgentId });
+    } else if (!p?.monitoring) {
+      void requestSuggestions(currentQuestion, finalText);
+    }
+  } else if (!currentHasText && currentAnswerEl && !p?.stopped) {
+    currentHasText = true;
+    updateAnswer("No response.");
+  } else {
+    clearBuildingUnder();
+  }
+  agentStreamingText = "";
+  setBusy(false);
+  reportHeight();
+  askEl.focus();
+});
+window.lyknOverlay.onAgentChoice((p) => {
+  if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
+  if (!p?.buttons?.length) return;
+  if (!currentAnswerEl && p?.message) {
+    const lastUser = [...history].reverse().find((m) => m.role === "user");
+    startTurn(lastUser?.content || "Choice");
+    updateAnswer(p.message);
+  }
+  showAgentChoiceButtons(p);
+  answerStillWorking = false;
+  clearBuildingUnder();
+  setBusy(false);
+  reportHeight();
+});
+window.lyknOverlay.onAgentError((p) => {
+  if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
+  answerStillWorking = false;
+  if (!currentAnswerEl) {
+    const lastUser = [...history].reverse().find((m) => m.role === "user");
+    startTurn(lastUser?.content || "Error");
+  }
+  updateAnswer((p && p.message) || "Agent error.");
+  clearBuildingUnder();
+  agentStreamingText = "";
   setBusy(false);
   reportHeight();
 });
@@ -2597,14 +3236,67 @@ if (nightBriefCloseEl) {
 }
 
 window.lyknOverlay.onShown(() => {
-  setTimeout(() => askEl.focus(), 40);
+  // Remeasure after show — a stale height leaves the composer buttons clipped.
+  lastReportedHeight = -1;
+  lastReportedWidth = -1;
+  reportHeight();
+  setTimeout(() => {
+    lastReportedHeight = -1;
+    reportHeight();
+    askEl.focus();
+  }, 40);
+  setTimeout(() => {
+    lastReportedHeight = -1;
+    reportHeight();
+  }, 220);
   void refreshNightBriefBanner();
+});
+
+// Clicking back into the bar after Cursor/another app often leaves the macOS
+// panel non-key — caret looks focused but keys go nowhere. Re-key via main.
+function ensureComposerKeyboard() {
+  try {
+    window.lyknOverlay.focusComposer?.();
+  } catch (_) {}
+  try {
+    askEl.focus({ preventScroll: true });
+  } catch (_) {
+    askEl.focus();
+  }
+}
+if (typeof window.lyknOverlay.onFocusComposer === "function") {
+  window.lyknOverlay.onFocusComposer(() => {
+    try {
+      askEl.focus({ preventScroll: true });
+    } catch (_) {
+      askEl.focus();
+    }
+  });
+}
+askEl.addEventListener("pointerdown", () => {
+  ensureComposerKeyboard();
+});
+window.addEventListener("focus", () => {
+  // Returning to the overlay window — restore caret without fighting menus.
+  if (document.activeElement === askEl || !document.activeElement || document.activeElement === document.body) {
+    setTimeout(() => {
+      try {
+        askEl.focus({ preventScroll: true });
+      } catch (_) {
+        askEl.focus();
+      }
+    }, 0);
+  }
 });
 
 // Drag the panel via the titlebar handle (or the collapsed bubble). Electron
 // panel windows sometimes drop pointerup while setBounds is racing the cursor
 // — without a buttons check / lostpointercapture handler the bar stays glued
 // to the mouse and every move floods IPC (which stalls the cursor badly).
+// True while any overlay drag handle is mid-gesture (Esc cancels drag first).
+let overlayDragActive = false;
+const overlayDragEnders = new Set();
+
 function bindOverlayDrag(el, { ignoreTarget, onClick, dragClass } = {}) {
   if (!el) return;
   let dragging = false;
@@ -2629,6 +3321,7 @@ function bindOverlayDrag(el, { ignoreTarget, onClick, dragClass } = {}) {
   const end = (e) => {
     if (!dragging) return;
     dragging = false;
+    overlayDragActive = false;
     const id = e && e.pointerId != null ? e.pointerId : pointerId;
     pointerId = null;
     if (dragClass) el.classList.remove(dragClass);
@@ -2651,10 +3344,13 @@ function bindOverlayDrag(el, { ignoreTarget, onClick, dragClass } = {}) {
     moved = false;
   };
 
+  overlayDragEnders.add(end);
+
   el.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     if (ignoreTarget && ignoreTarget(e.target)) return;
     dragging = true;
+    overlayDragActive = true;
     moved = false;
     pointerId = e.pointerId;
     lastX = e.screenX;
@@ -2697,9 +3393,6 @@ function bindOverlayDrag(el, { ignoreTarget, onClick, dragClass } = {}) {
   window.addEventListener("blur", () => end());
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) end();
-  });
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && dragging) end();
   });
 }
 
@@ -2758,8 +3451,17 @@ const RECORD_MIME = (() => {
 function setMicState() {
   micEl.classList.toggle("recording", recording);
   micEl.classList.toggle("transcribing", transcribing);
+  // Voice mode owns the mic button (stop control) — don't overwrite its title
+  // or the composer placeholder while a session is live / connecting.
+  if (voiceActive || voiceStarting) {
+    micEl.disabled = false;
+    micEl.title = "Stop voice mode";
+    micEl.setAttribute("aria-label", "Stop voice mode");
+    return;
+  }
   micEl.disabled = transcribing;
   micEl.title = recording ? "Stop recording" : transcribing ? "Transcribing…" : "Dictate";
+  micEl.setAttribute("aria-label", micEl.title);
   askEl.placeholder = recording
     ? "Listening… click the mic to stop"
     : transcribing
@@ -2831,6 +3533,11 @@ function stopDictation() {
 }
 
 micEl.addEventListener("click", () => {
+  // During voice, the mic is a one-click stop — no need to open More.
+  if (voiceActive || voiceStarting) {
+    void stopVoice();
+    return;
+  }
   if (recording) stopDictation();
   else startDictation();
 });
@@ -3018,6 +3725,11 @@ window.__lyknMenuCmd = (name, arg) => {
       if (b) b.click();
       break;
     }
+    case "menu-agent": {
+      const b = document.getElementById("menu-agent");
+      if (b) b.click();
+      break;
+    }
     case "menu-research": {
       const b = document.getElementById("menu-research");
       if (b) b.click();
@@ -3085,6 +3797,7 @@ window.__lyknMenuState = () => {
     stealthState: text("stealth-state"),
     imageModeOn: composerMode === "image",
     buildModeOn: composerMode === "build",
+    agentModeOn: composerMode === "agent",
     researchModeOn: composerMode === "research",
     translateModeOn: composerMode === "translate",
     transcribeModeOn: composerMode === "transcribe" || listening,
@@ -3309,6 +4022,15 @@ if (menuBuildEl) {
   menuBuildEl.addEventListener("click", () => {
     setMenuOpen(false);
     setComposerMode(composerMode === "build" ? "chat" : "build");
+    askEl.focus();
+  });
+}
+
+const menuAgentEl = document.getElementById("menu-agent");
+if (menuAgentEl) {
+  menuAgentEl.addEventListener("click", () => {
+    setMenuOpen(false);
+    setComposerMode(composerMode === "agent" ? "chat" : "agent");
     askEl.focus();
   });
 }
@@ -3598,6 +4320,25 @@ function clearVoiceTimer() {
   }
 }
 
+// Voice turns start with the same thinking spinner as typed chat. When voice
+// ends (or an answer lands), that spinner must be cleared — otherwise it keeps
+// animating until the thread is wiped by a new chat.
+function finalizeVoiceTurn({ removeEmpty = false } = {}) {
+  voiceAwaitingAnswer = false;
+  answerStillWorking = false;
+  clearBuildingUnder();
+  if (removeEmpty && currentAnswerEl && !currentHasText) {
+    const chat = currentAnswerEl.closest(".chat");
+    if (chat) chat.remove();
+    currentAnswerEl = null;
+    currentChatEl = null;
+    currentQuestion = "";
+    currentHasText = false;
+    if (!threadEl.querySelector(".chat")) threadEl.classList.remove("show");
+  }
+  reportHeight();
+}
+
 // Feed the current screen to the live agent as contextual text, so voice mode
 // "sees" the screen like the typed chat does. Throttled (vision calls are slow)
 // and non-interrupting; the agent silently absorbs it for the next user turn.
@@ -3644,14 +4385,28 @@ function buildVoiceTools() {
   return tools;
 }
 
+const voicePillEl = document.getElementById("voice-pill");
+
 function setVoiceUi(state) {
   // state: 'connecting' | 'listening' | 'thinking' | 'speaking' | 'off'
   const on = state !== "off";
+  const pillWasHidden = !voicePillEl || voicePillEl.hidden;
   voiceEl.classList.toggle("voice-active", on);
+  micEl.classList.toggle("voice-active", on);
+  if (voicePillEl) voicePillEl.hidden = !on;
   dotEl.classList.toggle("busy", on && state !== "listening");
   voiceEl.title = on ? "Stop voice mode" : "Voice mode";
   const voiceLabel = document.getElementById("voice-label");
   if (voiceLabel) voiceLabel.textContent = on ? "Stop voice mode" : "Voice mode";
+  // Mic doubles as a stop button while voice is live (square icon via CSS).
+  if (on) {
+    micEl.title = "Stop voice mode";
+    micEl.setAttribute("aria-label", "Stop voice mode");
+    micEl.disabled = false;
+  } else if (!recording && !transcribing) {
+    micEl.title = "Dictate";
+    micEl.setAttribute("aria-label", "Dictate");
+  }
   // The composer stays ENABLED during voice — typed prompts/links route into
   // the live voice session via sendTextToVoice() instead of the streamed chat.
   askEl.disabled = false;
@@ -3667,6 +4422,16 @@ function setVoiceUi(state) {
   } else {
     askEl.placeholder = COMPOSER_MODES[composerMode].placeholder;
   }
+  // Resize only when the Voice chip appears/disappears.
+  if (pillWasHidden === on) reportHeight();
+}
+
+if (voicePillEl) {
+  voicePillEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (voiceActive || voiceStarting) void stopVoice();
+  });
 }
 
 function voiceUserMessage(text) {
@@ -3732,12 +4497,13 @@ function voiceAiMessage(text) {
   updateAnswer(t);
   history.push({ role: "assistant", content: t, at: new Date().toISOString() });
   void persistCurrentSession();
-  voiceAwaitingAnswer = false;
+  finalizeVoiceTurn();
 }
 
 function voiceError(message) {
   startTurn("Voice mode");
   updateAnswer(message);
+  finalizeVoiceTurn();
   reportHeight();
 }
 
@@ -3770,6 +4536,7 @@ async function startVoice() {
     voiceConvo = null;
     try { if (c && typeof c.endSession === "function") c.endSession(); } catch (_) {}
     setVoiceUi("off");
+    finalizeVoiceTurn({ removeEmpty: true });
     voiceError("Voice connection timed out. Please try again.");
   }, 15000);
 
@@ -3842,6 +4609,7 @@ async function startVoice() {
       voiceConvo = null;
       voiceSessionToken = "";
       setVoiceUi("off");
+      finalizeVoiceTurn({ removeEmpty: true });
     },
     onError: (e) => {
       if (cancelled()) return;
@@ -3853,6 +4621,7 @@ async function startVoice() {
       voiceConvo = null;
       voiceSessionToken = "";
       setVoiceUi("off");
+      finalizeVoiceTurn({ removeEmpty: true });
       voiceError(msg);
     },
     onModeChange: ({ mode }) => {
@@ -3945,6 +4714,9 @@ async function stopVoice() {
   const c = voiceConvo;
   voiceConvo = null;
   setVoiceUi("off");
+  // Drop any in-flight "Thinking…" turn so the spinner doesn't keep running
+  // after the user leaves voice mode.
+  finalizeVoiceTurn({ removeEmpty: true });
   try {
     if (c && typeof c.endSession === "function") await c.endSession();
   } catch (_) {}
@@ -3955,14 +4727,120 @@ voiceEl.addEventListener("click", () => {
   else void startVoice();
 });
 
-// Escape ends voice mode (the composer's own Escape handler defers to this
-// while voice is live); otherwise the input's handler hides the overlay.
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && (voiceActive || voiceStarting)) {
-    e.preventDefault();
-    void stopVoice();
+// ── Shared Escape handling ─────────────────────────────────────────────────
+// Priority: cancel drag → stop voice → close floating menus → stop listen →
+// hide overlay. askEl used to "defer" voice-stop to a document listener and
+// often did nothing; main also forwards Escape via before-input-event for
+// macOS panel key-window quirks.
+let escapeHandledAt = 0;
+
+function isEscapeEvent(e) {
+  return !!(e && (e.key === "Escape" || e.code === "Escape" || e.keyCode === 27));
+}
+
+function handleOverlayEscape(e) {
+  const now = Date.now();
+  // keydown + before-input IPC can both arrive for one keypress — run once so
+  // we don't stop voice and then immediately hide the bar.
+  if (now - escapeHandledAt < 300) {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    return true;
   }
-});
+
+  if (overlayDragActive) {
+    escapeHandledAt = now;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    for (const end of overlayDragEnders) {
+      try {
+        end();
+      } catch (_) {}
+    }
+    return true;
+  }
+
+  if (voiceActive || voiceStarting) {
+    escapeHandledAt = now;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    void stopVoice();
+    return true;
+  }
+
+  if (moreUserOpen) {
+    escapeHandledAt = now;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setMenuOpen(false);
+    return true;
+  }
+
+  if (panelPickerOpen) {
+    escapeHandledAt = now;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setPanelPickerOpen(false);
+    return true;
+  }
+
+  if (translateLangPillEl && translateLangPillEl.classList.contains("open")) {
+    escapeHandledAt = now;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    try {
+      window.lyknOverlay.setLangPicker(false);
+    } catch (_) {}
+    translateLangPillEl.classList.remove("open");
+    if (translateLangBtnEl) translateLangBtnEl.setAttribute("aria-expanded", "false");
+    return true;
+  }
+
+  if (listening) {
+    escapeHandledAt = now;
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    stopListen();
+    return true;
+  }
+
+  escapeHandledAt = now;
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  try {
+    window.lyknOverlay.hide();
+  } catch (_) {}
+  return true;
+}
+
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!isEscapeEvent(e)) return;
+    handleOverlayEscape(e);
+  },
+  true,
+);
+
+if (typeof window.lyknOverlay.onEscape === "function") {
+  window.lyknOverlay.onEscape(() => handleOverlayEscape(null));
+}
 
 // ── Live listen: capture system (meeting) audio → rolling transcript ────────
 // Uses getDisplayMedia with loopback audio (ScreenCaptureKit on macOS 13+, wired
@@ -5012,13 +5890,6 @@ listenEl.addEventListener("click", () => {
 // The card's own controls (tabs, close, copy, save, toast) live in the
 // detached window and arrive as commands via window.__lyknLiveCmd above.
 
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && listening) {
-    e.preventDefault();
-    stopListen();
-  }
-});
-
 // NOTE: In Electron, file drop/dragover events frequently won't fire unless a
 // dragover listener is registered on `document` (a long-standing quirk). We bind
 // to document, window, and body, and always preventDefault so the OS doesn't just
@@ -5089,10 +5960,10 @@ askEl.addEventListener("keydown", (e) => {
     // Enter sends; Shift+Enter inserts a newline (handled by default).
     e.preventDefault();
     ask();
-  } else if (e.key === "Escape") {
-    // While voice is live, Escape stops voice (the document-level handler
-    // below takes it); only hide the overlay when voice is off.
-    if (!(voiceActive || voiceStarting)) window.lyknOverlay.hide();
+  } else if (isEscapeEvent(e)) {
+    // Capture-phase handler also runs; this keeps Esc reliable when focus is
+    // in the composer (the common case during voice).
+    handleOverlayEscape(e);
   }
 });
 
