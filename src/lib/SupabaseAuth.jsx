@@ -188,17 +188,44 @@ export function SupabaseAuthProvider({ children }) {
     if (typeof window === 'undefined') return;
     const bridge = window.lykn;
     if (!bridge?.desktop || typeof bridge.onAuthTokens !== 'function') return;
+    /** @type {string | null} */
+    let handoffInFlightKey = null;
     bridge.onAuthTokens(async (tokens) => {
       const access_token = tokens?.access_token;
       const refresh_token = tokens?.refresh_token;
       if (!access_token || !refresh_token) return;
+      // Auto-handoff + Open LYKN / pagehide can deliver the same tokens twice.
+      // A second setSession after refresh-token rotation fails with
+      // "Already Used" and can wipe a session that just succeeded.
+      const key = `${access_token.slice(0, 24)}:${refresh_token.slice(0, 16)}`;
+      if (handoffInFlightKey === key) return;
       try {
+        const existing = (await supabase.auth.getSession())?.data?.session;
+        if (existing?.access_token === access_token && existing?.user) {
+          setAuthError(null);
+          return;
+        }
+        handoffInFlightKey = key;
         const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-        if (error) throw error;
+        if (error) {
+          const again = (await supabase.auth.getSession())?.data?.session;
+          if (again?.user) {
+            setAuthError(null);
+            return;
+          }
+          throw error;
+        }
         setAuthError(null);
       } catch (err) {
-        if (import.meta.env.DEV) console.error('[Auth] desktop token hand-off failed:', err);
-        setAuthError('Sign-in failed. Please try again.');
+        console.error('[Auth] desktop token hand-off failed:', err);
+        const msg = String(err?.message || '');
+        setAuthError(
+          /refresh token|already used|invalid jwt|session/i.test(msg)
+            ? 'Sign-in expired during handoff. Click Continue with Google once more.'
+            : 'Sign-in failed. Please try again.',
+        );
+      } finally {
+        if (handoffInFlightKey === key) handoffInFlightKey = null;
       }
     });
   }, []);

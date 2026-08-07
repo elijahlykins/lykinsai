@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  CalendarClock,
   CheckCircle2,
   Circle,
   Flag,
@@ -13,6 +14,15 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { toast } from "@/components/ui/use-toast";
 import { listUserProjects } from "@/lib/userProjects";
+import DatePickerPopover from "@/components/ui/DatePickerPopover";
+import MenuSelectPopover from "@/components/ui/MenuSelectPopover";
+import { dateInputToText } from "@/lib/projectWorkspace";
+
+const PRIORITY_OPTIONS = [
+  { value: "low", label: "Low priority", dot: "bg-black/25 dark:bg-white/30" },
+  { value: "normal", label: "Normal priority", dot: "bg-blue-500 dark:bg-blue-400" },
+  { value: "high", label: "High priority", dot: "bg-red-500" },
+];
 
 // ────────────────────────────────────────────────────────────────────────
 // LyknTodosPanel — the to-do list body (add form + list + footer), with NO
@@ -375,18 +385,28 @@ export default function LyknTodosPanel({ active = true }) {
 
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           {projects.length > 0 ? (
-            <select
+            <MenuSelectPopover
               value={todo.project_id || ""}
               disabled={isBusy}
-              onChange={(e) => setProject(todo, e.target.value)}
-              className="max-w-[7rem] truncate bg-transparent border border-black/10 dark:border-white/10 rounded-md px-1.5 py-1 text-[0.6875rem] text-black/60 dark:text-white/60 focus:outline-none focus:ring-1 focus:ring-blue-500/50 disabled:opacity-50"
+              onChange={(id) => setProject(todo, id)}
               title="Assign to a project"
-            >
-              <option value="">No project</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+              icon={<FolderClosed className="w-3 h-3" />}
+              active={Boolean(todo.project_id)}
+              className="max-w-[7.5rem] text-[0.6875rem] px-1.5 py-1"
+              triggerLabel={
+                todo.project_id
+                  ? (projectsById.get(todo.project_id) || "Project")
+                  : "Project"
+              }
+              options={[
+                { value: "", label: "No project", icon: <FolderClosed className="w-3.5 h-3.5" /> },
+                ...projects.map((p) => ({
+                  value: p.id,
+                  label: p.name,
+                  icon: <FolderClosed className="w-3.5 h-3.5" />,
+                })),
+              ]}
+            />
           ) : null}
           {!done ? (
             <button
@@ -451,36 +471,57 @@ export default function LyknTodosPanel({ active = true }) {
             Add
           </button>
         </div>
-        <div className="flex items-center gap-2 text-[0.75rem]">
-          <select
+        <div className="flex flex-wrap items-center gap-2">
+          <MenuSelectPopover
             value={draftPriority}
-            onChange={(e) => setDraftPriority(e.target.value)}
-            className="bg-black/[0.04] dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md px-2 py-1 text-black/80 dark:text-white/80 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+            onChange={setDraftPriority}
+            options={PRIORITY_OPTIONS}
             title="Priority"
-          >
-            <option value="low">Low priority</option>
-            <option value="normal">Normal priority</option>
-            <option value="high">High priority</option>
-          </select>
-          <input
-            type="date"
+            icon={<Flag className="w-3.5 h-3.5" />}
+            active={draftPriority !== "normal"}
+            triggerLabel={
+              (PRIORITY_OPTIONS.find((o) => o.value === draftPriority)?.label) || "Priority"
+            }
+          />
+          <DatePickerPopover
             value={draftDue}
-            onChange={(e) => setDraftDue(e.target.value)}
-            className="bg-black/[0.04] dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md px-2 py-1 text-black/80 dark:text-white/80 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-            title="Optional due date"
+            onChange={setDraftDue}
+            trigger={
+              <button
+                type="button"
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[0.75rem] transition-colors ${
+                  draftDue
+                    ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                    : "border-black/10 dark:border-white/10 bg-black/[0.04] dark:bg-white/5 text-black/55 dark:text-white/55 hover:border-blue-500/40"
+                }`}
+                title="Optional due date"
+              >
+                <CalendarClock className="w-3.5 h-3.5" />
+                {draftDue ? dateInputToText(draftDue) : "Deadline"}
+              </button>
+            }
           />
           {projects.length > 0 ? (
-            <select
+            <MenuSelectPopover
               value={draftProjectId}
-              onChange={(e) => setDraftProjectId(e.target.value)}
-              className="max-w-[10rem] truncate bg-black/[0.04] dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-md px-2 py-1 text-black/80 dark:text-white/80 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+              onChange={setDraftProjectId}
               title="Assign to a project"
-            >
-              <option value="">No project</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+              icon={<FolderClosed className="w-3.5 h-3.5" />}
+              active={Boolean(draftProjectId)}
+              triggerLabel={
+                draftProjectId
+                  ? (projectsById.get(draftProjectId) || "Project")
+                  : "No project"
+              }
+              options={[
+                { value: "", label: "No project", icon: <FolderClosed className="w-3.5 h-3.5" /> },
+                ...projects.map((p) => ({
+                  value: p.id,
+                  label: p.name,
+                  icon: <FolderClosed className="w-3.5 h-3.5" />,
+                })),
+              ]}
+            />
           ) : null}
         </div>
       </div>

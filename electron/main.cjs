@@ -396,6 +396,11 @@ function isAuthNavigation(url) {
 let pendingAuthTokens = null;
 /** @type {{ state: string, expiresAt: number } | null} */
 let pendingDesktopAuthState = null;
+// After a successful accept we clear one-time desktop_state immediately so
+// concurrent HTTP POSTs can't double-accept. Keep the last tokens briefly so
+// a second "Open LYKN" / pagehide retry with the SAME tokens still works.
+/** @type {{ access_token: string, refresh_token: string, expiresAt: number } | null} */
+let lastAcceptedAuthHandoff = null;
 const DESKTOP_AUTH_STATE_TTL_MS = 15 * 60 * 1000;
 
 function desktopAuthStatePath() {
@@ -441,40 +446,41 @@ function clearDesktopAuthState() {
   }
 }
 
-function isLocalAppUrl() {
-  try {
-    const host = new URL(APP_URL).hostname;
-    return host === "localhost" || host === "127.0.0.1";
-  } catch {
-    return false;
-  }
-}
-
-// Unpackaged Electron must not steal lykn:// from the installed LYKN.app
-// (Launch Services would relaunch Electron.app with no main script). For local
-// Vite shells we hand tokens back over a loopback HTTP POST instead.
-const DEV_AUTH_HANDOFF_PORT = Number(process.env.LYKN_DEV_AUTH_PORT || 38472);
+// Loopback auth handoff: after Google finishes in the system browser,
+// /desktop-auth POSTs tokens to 127.0.0.1 so the Mac app can sign in without
+// requiring a click on "Open LYKN". lykn://auth remains a manual fallback.
+// Also used in unpackaged/local shells so we never steal lykn:// from the
+// installed LYKN.app (Launch Services would relaunch Electron.app with no main).
+const AUTH_HANDOFF_PORT = Number(process.env.LYKN_DEV_AUTH_PORT || 38472);
 /** @type {import('node:http').Server | null} */
 let authHandoffServer = null;
 
-function shouldUseHttpAuthHandoff() {
-  return !app.isPackaged && isLocalAppUrl();
+function authHandoffAllowedOrigin(origin) {
+  const o = String(origin || "");
+  if (!o) return "";
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o)) return o;
+  if (/^https:\/\/(www\.)?lykn\.io$/i.test(o)) return o;
+  try {
+    const appOrigin = new URL(APP_URL).origin;
+    if (o === appOrigin) return o;
+  } catch {
+    /* ignore */
+  }
+  return "";
 }
 
-function acceptAuthHandoffPayload(body) {
-  const access_token = String(body?.access_token || "");
-  const refresh_token = String(body?.refresh_token || "");
-  const state = String(body?.state || "");
-  if (!access_token || !refresh_token) {
-    return { ok: false, error: "missing_tokens" };
-  }
-  const expected = loadDesktopAuthState();
-  if (!expected?.state || !state || expected.state !== state) {
-    console.warn("[auth] localhost handoff rejected — missing or mismatched desktop_state");
-    return { ok: false, error: "bad_state" };
-  }
+function isReplayOfLastAuthHandoff(access_token, refresh_token) {
+  return Boolean(
+    lastAcceptedAuthHandoff &&
+      lastAcceptedAuthHandoff.expiresAt > Date.now() &&
+      lastAcceptedAuthHandoff.access_token === access_token &&
+      lastAcceptedAuthHandoff.refresh_token === refresh_token,
+  );
+}
+
+function deliverAuthTokensToRenderer(access_token, refresh_token) {
   pendingAuthTokens = { access_token, refresh_token };
-  if (!app.isReady()) return { ok: true };
+  if (!app.isReady()) return;
   if (!mainWindow || mainWindow.isDestroyed()) {
     createMainWindow();
   } else {
@@ -488,24 +494,50 @@ function acceptAuthHandoffPayload(body) {
   } catch (_) {
     /* best-effort */
   }
+}
+
+function acceptAuthHandoffPayload(body) {
+  const access_token = String(body?.access_token || "");
+  const refresh_token = String(body?.refresh_token || "");
+  const state = String(body?.state || "");
+  if (!access_token || !refresh_token) {
+    return { ok: false, error: "missing_tokens" };
+  }
+  if (!isReplayOfLastAuthHandoff(access_token, refresh_token)) {
+    const expected = loadDesktopAuthState();
+    if (!expected?.state || !state || expected.state !== state) {
+      console.warn("[auth] localhost handoff rejected — missing or mismatched desktop_state");
+      return { ok: false, error: "bad_state" };
+    }
+    // Consume one-time state before any window work so a concurrent POST
+    // with the same mint can't both pass the state check.
+    clearDesktopAuthState();
+    lastAcceptedAuthHandoff = {
+      access_token,
+      refresh_token,
+      expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS,
+    };
+  }
+  deliverAuthTokensToRenderer(access_token, refresh_token);
   return { ok: true };
 }
 
-function startDevAuthHandoffServer() {
-  if (!shouldUseHttpAuthHandoff() || authHandoffServer) return;
+function startAuthHandoffServer() {
+  if (authHandoffServer) return;
   try {
     authHandoffServer = http.createServer((req, res) => {
       const origin = String(req.headers.origin || "");
-      const allowOrigin =
-        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin) ? origin : "";
+      const allowOrigin = authHandoffAllowedOrigin(origin);
       if (allowOrigin) {
         res.setHeader("Access-Control-Allow-Origin", allowOrigin);
         res.setHeader("Vary", "Origin");
       }
+      // Chrome Private Network Access: https://lykn.io → http://127.0.0.1
+      res.setHeader("Access-Control-Allow-Private-Network", "true");
       res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
       if (req.method === "OPTIONS") {
-        res.writeHead(204);
+        res.writeHead(allowOrigin ? 204 : 403);
         res.end();
         return;
       }
@@ -519,6 +551,11 @@ function startDevAuthHandoffServer() {
       if (req.method !== "POST" || pathname !== "/auth-handoff") {
         res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("not found");
+        return;
+      }
+      if (!allowOrigin) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "bad_origin" }));
         return;
       }
 
@@ -545,9 +582,9 @@ function startDevAuthHandoffServer() {
       console.warn("[auth] localhost handoff server error:", err?.message || err);
       authHandoffServer = null;
     });
-    authHandoffServer.listen(DEV_AUTH_HANDOFF_PORT, "127.0.0.1", () => {
+    authHandoffServer.listen(AUTH_HANDOFF_PORT, "127.0.0.1", () => {
       console.log(
-        `[auth] localhost handoff listening on http://127.0.0.1:${DEV_AUTH_HANDOFF_PORT}/auth-handoff`,
+        `[auth] localhost handoff listening on http://127.0.0.1:${AUTH_HANDOFF_PORT}/auth-handoff`,
       );
     });
   } catch (err) {
@@ -558,15 +595,15 @@ function startDevAuthHandoffServer() {
 
 function mintDesktopAuthUrl(baseUrl) {
   const state = crypto.randomBytes(24).toString("base64url");
+  // New Google round-trip — don't accept replays from a prior attempt.
+  lastAcceptedAuthHandoff = null;
   persistDesktopAuthState({ state, expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS });
   try {
     const u = new URL(baseUrl);
     u.searchParams.set("desktop_state", state);
-    // Tell /desktop-auth to POST tokens back to this unpackaged shell instead
-    // of opening lykn:// (which always launches the installed LYKN.app).
-    if (shouldUseHttpAuthHandoff()) {
-      u.searchParams.set("handoff_port", String(DEV_AUTH_HANDOFF_PORT));
-    }
+    // Prefer loopback POST so /desktop-auth can auto-handoff without a click.
+    // lykn://auth stays available as the Open LYKN button fallback.
+    u.searchParams.set("handoff_port", String(AUTH_HANDOFF_PORT));
     return u.toString();
   } catch {
     return baseUrl;
@@ -580,8 +617,7 @@ function flushPendingAuthTokens() {
   if (wc.isLoading()) return; // did-finish-load will re-flush
   wc.send("lykn:auth-tokens", pendingAuthTokens);
   pendingAuthTokens = null;
-  // Tokens reached the renderer — consume the one-time desktop_state so a
-  // later unrelated lykn://auth can't replay the handoff.
+  // State is consumed at accept-time; this is a safety clear for older paths.
   clearDesktopAuthState();
 }
 
@@ -603,38 +639,31 @@ function handleAuthDeepLink(rawUrl) {
   const state = frag.get("state") || "";
   if (!access_token || !refresh_token) return;
 
-  const expected = loadDesktopAuthState();
-  if (!expected?.state || !state || expected.state !== state) {
-    console.warn("[auth] lykn://auth rejected — missing or mismatched desktop_state");
-    // Still raise the app so the user isn't left staring at a dead browser tab
-    // when Launch Services delivered the link to us but state was already used.
-    if (app.isReady() && mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
+  if (!isReplayOfLastAuthHandoff(access_token, refresh_token)) {
+    const expected = loadDesktopAuthState();
+    if (!expected?.state || !state || expected.state !== state) {
+      console.warn("[auth] lykn://auth rejected — missing or mismatched desktop_state");
+      // Still raise the app so the user isn't left staring at a dead browser tab
+      // when Launch Services delivered the link to us but state was already used.
+      if (app.isReady() && mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+      return;
     }
-    return;
+    // Consume immediately; same-token retries use lastAcceptedAuthHandoff.
+    clearDesktopAuthState();
+    lastAcceptedAuthHandoff = {
+      access_token,
+      refresh_token,
+      expiresAt: Date.now() + DESKTOP_AUTH_STATE_TTL_MS,
+    };
   }
-  // Keep desktop_state until tokens are delivered to the renderer so a second
-  // "Open LYKN" click still works if the browser swallowed the first navigation.
-  pendingAuthTokens = { access_token, refresh_token };
   // Cold start via the deep link: open-url can fire before whenReady, and
   // BrowserWindow can't be created yet. whenReady's createMainWindow (deep-link
   // launches are not login launches) will flush the tokens on did-finish-load.
-  if (!app.isReady()) return;
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createMainWindow(); // flushes on did-finish-load
-  } else {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-    flushPendingAuthTokens();
-  }
-  try {
-    app.focus({ steal: true });
-  } catch (_) {
-    /* focus is best-effort */
-  }
+  deliverAuthTokensToRenderer(access_token, refresh_token);
 }
 
 // macOS delivers custom-scheme URLs here (both cold start and while running).
@@ -826,6 +855,10 @@ function createMainWindow() {
     // macOS: hiddenInset traffic lights. Windows: standard frame so the web
     // app doesn't need a custom drag region yet (titleBarOverlay can land later).
     titleBarStyle: IS_MAC ? "hiddenInset" : "default",
+    // Keep close/minimize/zoom findable — without an explicit position, native
+    // fullscreen often parks the lights under the auto-hidden menu bar and
+    // they never reveal on top-edge hover.
+    ...(IS_MAC ? { trafficLightPosition: { x: 16, y: 18 } } : {}),
     autoHideMenuBar: IS_WIN,
     show: false,
     webPreferences: {
@@ -843,8 +876,31 @@ function createMainWindow() {
     },
   });
 
-  // Avoid a white flash before the remote app paints.
-  mainWindow.once("ready-to-show", () => mainWindow && mainWindow.show());
+  // macOS native fullscreen + hiddenInset can swallow the traffic lights so
+  // close/minimize never appear. Force them visible whenever we enter or leave
+  // fullscreen (and once on first show).
+  if (IS_MAC) {
+    const ensureTrafficLights = () => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.setWindowButtonVisibility(true);
+        }
+      } catch (_) {
+        /* ignore */
+      }
+    };
+    mainWindow.on("enter-full-screen", ensureTrafficLights);
+    mainWindow.on("leave-full-screen", ensureTrafficLights);
+    mainWindow.on("enter-html-full-screen", ensureTrafficLights);
+    mainWindow.on("leave-html-full-screen", ensureTrafficLights);
+    mainWindow.once("ready-to-show", () => {
+      ensureTrafficLights();
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+    });
+  } else {
+    // Avoid a white flash before the remote app paints.
+    mainWindow.once("ready-to-show", () => mainWindow && mainWindow.show());
+  }
 
   // Local Vite can lag Electron on boot (or briefly refuse while restarting).
   // Retry instead of leaving the black backgroundColor window stuck empty.
@@ -1186,6 +1242,7 @@ function createOverlayWindow() {
     overlayAnchorBottomY = b.y + b.height;
     positionMenuWindow();
     positionPickerWindow();
+    positionLangPickerWindow();
     positionLiveWindow();
     positionPanelWindow();
   });
@@ -1256,6 +1313,7 @@ function setOverlayCollapsed(collapsed) {
   if (collapsed) {
     hideMenuWindow();
     hidePickerWindow();
+    hideLangPickerWindow();
     hideLiveWindow();
     hidePanelWindow();
   }
@@ -1294,6 +1352,7 @@ function setOverlaySize(width, height) {
   // Keep the floating menu/picker/live/panel cards glued to the bar's edges as it grows.
   positionMenuWindow();
   positionPickerWindow();
+  positionLangPickerWindow();
   positionLiveWindow();
   positionPanelWindow();
 }
@@ -1305,6 +1364,7 @@ function hideOverlay() {
   // And the floating three-dot menu + picker + live notes + side-panel cards.
   hideMenuWindow();
   hidePickerWindow();
+  hideLangPickerWindow();
   hideLiveWindow();
   hidePanelWindow();
 }
@@ -1335,6 +1395,39 @@ async function withOverlayHiddenForClick(fn) {
 // screenCaptureStatus() which stays allowed unless a probe explicitly failed.
 /** @type {"granted"|"denied"|null} */
 let screenProbeCache = null;
+
+// Serialize macOS TCC / Automation Allow dialogs so one Glass ask never stacks
+// Screen Recording + System Events + N browser prompts at once.
+let permissionPromptChain = Promise.resolve();
+async function withPermissionPrompt(_label, fn) {
+  const prev = permissionPromptChain;
+  let release;
+  permissionPromptChain = new Promise((resolve) => {
+    release = resolve;
+  });
+  try {
+    await prev.catch(() => {});
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+// Session cache for Apple Events / Automation. macOS has no query API; we learn
+// from osascript success / errAEEventNotPermitted (-1743) and avoid re-probing
+// denied targets (and stop fanning out to every open browser in one action).
+const automationOk = {
+  /** @type {null|boolean} */
+  systemEvents: null,
+  /** @type {Record<string, boolean>} */
+  browsers: Object.create(null),
+};
+
+function isAutomationDeniedError(msg) {
+  return /-1743|not authoriz|not allowed to send|user declined|osascript is not allowed/i.test(
+    String(msg || ""),
+  );
+}
 
 // Returns 'granted' | 'denied' | 'not-determined' | 'restricted' | 'unknown'.
 // Used to gate overlay asks / live watch — on Windows defaults to allowed.
@@ -1381,11 +1474,29 @@ function openMicrophoneSettings() {
   }
 }
 
-function openScreenPrivacySettings() {
+/**
+ * Open System Settings → Screen Recording.
+ *
+ * macOS only adds LYKN to that list after a real capture/TCC probe. Opening the
+ * pane too early (or before TCC has flushed) shows an empty/stale list until the
+ * user closes and reopens Settings — so callers should probe first, then pass
+ * `{ afterTccRegister: true }` so we wait a beat before opening.
+ */
+async function openScreenPrivacySettings({ afterTccRegister = false } = {}) {
   if (IS_MAC) {
-    shell.openExternal(
-      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-    );
+    if (afterTccRegister) {
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    // Ventura+ Settings app; fall back to the legacy pref-pane URL.
+    try {
+      await shell.openExternal(
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture",
+      );
+    } catch {
+      await shell.openExternal(
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+      );
+    }
     return;
   }
   // Windows has no Screen Recording TCC pane like macOS; privacy hub is closest.
@@ -1394,33 +1505,8 @@ function openScreenPrivacySettings() {
   }
 }
 
-/**
- * Make sure Screen Recording is available before Glass / capture features run.
- *
- * macOS only shows the "Allow LYKN to record this computer's screen?" dialog when
- * we actually attempt a capture (or call the TCC prompt via getSources). There is
- * no askForMediaAccess("screen"). Previously Glass failed fast with a Settings
- * message whenever status !== granted — so users who skipped onboarding (or whose
- * older Mac never showed the dialog) never got the system prompt.
- *
- * @returns {Promise<{ok:boolean,status:string,prompted?:boolean,needsSettings?:boolean}>}
- */
-async function ensureScreenRecordingAccess() {
-  if (!IS_MAC) {
-    const st = screenCaptureStatus();
-    return { ok: st !== "denied", status: st };
-  }
-
-  let status = screenCaptureStatus();
-  if (status === "granted") return { ok: true, status };
-
-  // Already denied/restricted — macOS will not show the dialog again.
-  if (status === "denied" || status === "restricted") {
-    openScreenPrivacySettings();
-    return { ok: false, status, needsSettings: true };
-  }
-
-  // not-determined / unknown — attempt a tiny capture to surface the system dialog.
+/** Tiny capture so TCC registers LYKN under Screen Recording before Settings opens. */
+async function probeScreenRecordingTcc() {
   try {
     await Promise.race([
       capturePrimaryScreen({ maxWidth: 320, format: "jpeg", quality: 40 }),
@@ -1434,16 +1520,54 @@ async function ensureScreenRecordingAccess() {
       console.log("[screen] permission probe:", e?.message || e);
     }
   }
+}
 
-  status = screenCaptureStatus();
-  if (status === "granted") return { ok: true, status, prompted: true };
-  if (status === "denied" || status === "restricted") {
-    openScreenPrivacySettings();
-    return { ok: false, status, needsSettings: true, prompted: true };
+/**
+ * Make sure Screen Recording is available before Glass / capture features run.
+ *
+ * macOS only shows the "Allow LYKN to record this computer's screen?" dialog when
+ * we actually attempt a capture (or call the TCC prompt via getSources). There is
+ * no askForMediaAccess("screen"). Previously Glass failed fast with a Settings
+ * message whenever status !== granted — so users who skipped onboarding (or whose
+ * older Mac never showed the dialog) never got the system prompt.
+ *
+ * Always probe before opening Settings so LYKN appears in the list (opening the
+ * pane without a prior capture leaves LYKN missing until Settings is relaunched).
+ *
+ * @returns {Promise<{ok:boolean,status:string,prompted?:boolean,needsSettings?:boolean}>}
+ */
+async function ensureScreenRecordingAccess() {
+  if (!IS_MAC) {
+    const st = screenCaptureStatus();
+    return { ok: st !== "denied", status: st };
   }
 
-  // Still not determined — dialog may be on screen, or this Mac failed to present it.
-  return { ok: false, status, prompted: true };
+  let status = screenCaptureStatus();
+  if (status === "granted") return { ok: true, status };
+
+  // Mutex keeps this from stacking with Mic / Automation prompts.
+  // Always probe first — even when status already looks denied — so TCC has
+  // registered the app before we open Settings.
+  return withPermissionPrompt("screen", async () => {
+    status = screenCaptureStatus();
+    if (status === "granted") return { ok: true, status };
+
+    await probeScreenRecordingTcc();
+
+    status = screenCaptureStatus();
+    if (status === "granted") return { ok: true, status, prompted: true };
+
+    if (status === "denied" || status === "restricted") {
+      // Probe above registered LYKN with TCC; wait before opening so the list is fresh.
+      await openScreenPrivacySettings({ afterTccRegister: true });
+      return { ok: false, status, needsSettings: true, prompted: true };
+    }
+
+    // Still not determined — system Allow dialog should be on screen.
+    // Do NOT open Settings here; that races the dialog and shows a stale list
+    // without LYKN until the user closes and reopens Settings.
+    return { ok: false, status, prompted: true };
+  });
 }
 
 function screenRecordingDeniedMessage({ needsSettings, prompted } = {}) {
@@ -1487,7 +1611,7 @@ function captureInteractiveSnip() {
       resolve(null);
       return;
     }
-    const display = screen.getPrimaryDisplay();
+    const display = getTargetCaptureDisplay();
     const { bounds, scaleFactor } = display;
     const physW = Math.round(bounds.width * scaleFactor);
     const physH = Math.round(bounds.height * scaleFactor);
@@ -1590,36 +1714,80 @@ function captureInteractiveSnip() {
   });
 }
 
-// Capture the primary display and return a PNG data URL. desktopCapturer fails
+// Display the overlay (or cursor) is on — so capture / burst cover the screen
+// the user is actually looking at, not always the primary (external monitors,
+// Sidecar, resolution changes).
+function getTargetCaptureDisplay() {
+  try {
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      const b = overlayWindow.getBounds();
+      return screen.getDisplayNearestPoint({
+        x: b.x + Math.round(b.width / 2),
+        y: b.y + Math.round(b.height / 2),
+      });
+    }
+  } catch (_) {
+    /* fall through */
+  }
+  try {
+    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  } catch (_) {
+    /* fall through */
+  }
+  return screen.getPrimaryDisplay();
+}
+
+// Capture the full target display and return a data URL. Always scales the
+// WHOLE screen (never a cropped sub-rectangle). desktopCapturer fails
 // ("Failed to get sources") when asked for a very large thumbnail (e.g. full
 // Retina resolution), so we try a ladder of decreasing sizes and take the
-// first that succeeds — sharp when possible, reliable always.
+// first that succeeds — sharp when possible, reliable always. Sizes are based
+// on physical pixels (bounds × scaleFactor) so Retina / HiDPI / ultrawide
+// Macs still yield a full-frame image.
 async function capturePrimaryScreen({ maxWidth, format = "png", quality = 80 } = {}) {
-  const display = screen.getPrimaryDisplay();
-  const { width: w, height: h } = display.size;
-  const aspect = h / w;
+  const display = getTargetCaptureDisplay();
+  const scale = Number(display.scaleFactor) || 1;
+  const dipW = Math.max(1, display.bounds.width);
+  const dipH = Math.max(1, display.bounds.height);
+  const physW = Math.max(1, Math.round(dipW * scale));
+  const physH = Math.max(1, Math.round(dipH * scale));
+  const aspect = physH / physW;
   // When a caller only needs a smaller image (e.g. the browser thumbnail), ask
-  // the compositor for it directly instead of grabbing 2048px and downscaling —
-  // capturing fewer pixels is meaningfully faster.
-  const cap = maxWidth ? Math.min(w, maxWidth) : Math.min(w, 2048);
-  const widths = maxWidth
-    ? [cap, Math.round(cap * 0.8), 960]
-    : [cap, 1600, 1280, 960];
-  const sizes = widths.map((width) => ({ width, height: Math.round(width * aspect) }));
+  // the compositor for it directly instead of grabbing full Retina and
+  // downscaling — capturing fewer pixels is meaningfully faster.
+  const cap = maxWidth ? Math.min(physW, maxWidth) : Math.min(physW, 2560);
+  const rawWidths = maxWidth
+    ? [cap, Math.round(cap * 0.8), Math.min(960, cap)]
+    : [cap, Math.min(2048, cap), Math.min(1600, cap), Math.min(1280, cap), 960];
+  const widths = [...new Set(rawWidths.map((w) => Math.max(320, Math.round(w))))];
+  const sizes = widths.map((width) => ({
+    width,
+    height: Math.max(1, Math.round(width * aspect)),
+  }));
 
   let lastErr = null;
   for (const thumbnailSize of sizes) {
     try {
       const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize });
-      const primary =
-        sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
-      if (primary && !primary.thumbnail.isEmpty()) {
+      const matched =
+        sources.find((s) => String(s.display_id) === String(display.id)) ||
+        sources.find((s) => {
+          // Some Electron builds leave display_id blank — pick the source whose
+          // thumbnail aspect is closest to the target display.
+          if (!s || s.thumbnail.isEmpty()) return false;
+          const sz = s.thumbnail.getSize();
+          if (!sz.width || !sz.height) return false;
+          const a = sz.height / sz.width;
+          return Math.abs(a - aspect) < 0.08;
+        }) ||
+        sources[0];
+      if (matched && !matched.thumbnail.isEmpty()) {
         // JPEG is 5–10× smaller than PNG for a screenshot — much faster to upload
         // and for the vision model to ingest, at no meaningful cost to OCR quality.
         if (format === "jpeg") {
-          return `data:image/jpeg;base64,${primary.thumbnail.toJPEG(quality).toString("base64")}`;
+          return `data:image/jpeg;base64,${matched.thumbnail.toJPEG(quality).toString("base64")}`;
         }
-        return primary.thumbnail.toDataURL();
+        return matched.thumbnail.toDataURL();
       }
     } catch (e) {
       lastErr = e;
@@ -1644,14 +1812,13 @@ async function captureBrowserScreenThumbnail() {
   }
 }
 
-// ── "LYKN is on" glass ───────────────────────────────────────────────────
-// A full-screen, transparent, click-through window that fades in a subtle
-// frosted-glass wash (pink→blue, with a glowing rim) across the WHOLE screen
-// while the overlay is active — an unmistakable "LYKN is live" cue. It sits
-// behind the glass bar, never steals focus, and stays up until the overlay is
-// dismissed (then hideOverlayGlass() fades it out).
+// ── Summon burst ─────────────────────────────────────────────────────────
+// A full-screen, transparent, click-through window that plays a brief color
+// wash across the WHOLE screen when the overlay is summoned. No persistent
+// outline — capture reads the full display on its own. The window covers the
+// display the overlay is on (not always primary) and hides after the anim.
 function createBurstWindow() {
-  const { bounds } = screen.getPrimaryDisplay();
+  const { bounds } = getTargetCaptureDisplay();
   burstWindow = new BrowserWindow({
     x: bounds.x,
     y: bounds.y,
@@ -1706,7 +1873,7 @@ function createBurstWindow() {
     if (!burstWindow || burstWindow.isDestroyed() || burstWindowWarmed) return;
     burstWindowWarmed = true;
     try {
-      const { bounds } = screen.getPrimaryDisplay();
+      const { bounds } = getTargetCaptureDisplay();
       // Park the window one full screen-height above the display.
       burstWindow.setBounds({
         x: bounds.x,
@@ -1739,9 +1906,14 @@ function createBurstWindow() {
 function playOverlayBurst() {
   try {
     if (!burstWindow || burstWindow.isDestroyed()) createBurstWindow();
-    // Re-cover the (possibly changed) primary display each time.
-    const { bounds } = screen.getPrimaryDisplay();
-    burstWindow.setBounds(bounds);
+    // Cover the display the overlay is on (handles external / scaled screens).
+    const { bounds } = getTargetCaptureDisplay();
+    burstWindow.setBounds({
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+    });
     burstWindow.setIgnoreMouseEvents(true, { forward: true });
     // Show without activating so the overlay keeps key focus for typing.
     burstWindow.showInactive();
@@ -1756,20 +1928,22 @@ function playOverlayBurst() {
     } else {
       fire();
     }
-    // The glass PERSISTS while the overlay is active (it's the "LYKN is on"
-    // cue); the one-shot color burst plays once on summon (see burst.html).
-    // hideOverlayGlass() fades everything out when the overlay is dismissed.
+    // One-shot summon cue only — hide once the wash finishes (no persistent rim).
     if (burstHideTimer) {
       clearTimeout(burstHideTimer);
       burstHideTimer = null;
     }
+    burstHideTimer = setTimeout(() => {
+      burstHideTimer = null;
+      hideOverlayGlass();
+    }, 1400);
   } catch (_) {
     /* the burst is purely cosmetic — never block showing the overlay */
   }
 }
 
-// Fade the full-screen glass back out, then hide its window once the CSS
-// transition has finished. Called whenever the overlay is dismissed.
+// Stop the summon animation and hide its window. Called after the one-shot
+// wash finishes, or immediately when the overlay is dismissed.
 function hideOverlayGlass() {
   try {
     if (!burstWindow || burstWindow.isDestroyed()) return;
@@ -1999,6 +2173,120 @@ function showPickerWindow() {
 function hidePickerWindow() {
   if (pickerWindow && !pickerWindow.isDestroyed() && pickerWindow.isVisible()) pickerWindow.hide();
   notifyPickerVisibility(false);
+}
+
+// ── Detached Translate-mode language picker ─────────────────────────────
+// Same vibrancy-window pattern as menu/picker: can't hang inside the overlay
+// HWND or macOS paints a blurred slab under the list.
+const LANG_PICKER_WIDTH = 180;
+const LANG_PICKER_MIN_HEIGHT = 72;
+const LANG_PICKER_MAX_HEIGHT = 180;
+const LANG_PICKER_GAP = 6;
+let langPickerWindow = null;
+let langPickerHeight = 160;
+/** Pill rect relative to the overlay window content (from renderer). */
+let langPickerAnchor = null;
+
+function createLangPickerWindow() {
+  langPickerWindow = new BrowserWindow({
+    width: LANG_PICKER_WIDTH,
+    height: langPickerHeight,
+    show: false,
+    frame: false,
+    ...floatingGlassChrome(),
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    focusable: false,
+    acceptFirstMouse: true,
+    alwaysOnTop: true,
+    ...(IS_MAC ? { type: "panel" } : {}),
+    webPreferences: {
+      preload: path.join(__dirname, "lang-picker-preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  try {
+    langPickerWindow.setContentProtection(isContentProtectionEnabled());
+  } catch (_) {}
+  hardenFloatingGlass(langPickerWindow);
+  langPickerWindow.setVisibleOnAllWorkspaces(true, {
+    visibleOnFullScreen: true,
+    skipTransformProcessType: true,
+  });
+  langPickerWindow.setFullScreenable(false);
+  langPickerWindow.setAlwaysOnTop(true, "screen-saver");
+  langPickerWindow.loadFile(path.join(__dirname, "lang-picker.html"));
+  langPickerWindow.on("closed", () => {
+    langPickerWindow = null;
+  });
+}
+
+function langPickerTargetBounds() {
+  const ob = overlayWindow.getBounds();
+  const { workArea } = screen.getPrimaryDisplay();
+  const h = Math.max(
+    LANG_PICKER_MIN_HEIGHT,
+    Math.min(langPickerHeight, LANG_PICKER_MAX_HEIGHT, workArea.height - 16),
+  );
+  const a = langPickerAnchor || { left: 12, bottom: 40, width: LANG_PICKER_WIDTH };
+  let x = Math.round(ob.x + Number(a.left || 0));
+  let y = Math.round(ob.y + Number(a.bottom || 0) + LANG_PICKER_GAP);
+  x = Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - LANG_PICKER_WIDTH));
+  if (y + h > workArea.y + workArea.height) {
+    // Flip above the pill when there's no room below.
+    y = Math.round(ob.y + Number(a.top || a.bottom || 0) - LANG_PICKER_GAP - h);
+  }
+  y = Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - h));
+  return { x, y, width: LANG_PICKER_WIDTH, height: h };
+}
+
+function positionLangPickerWindow() {
+  if (!langPickerWindow || langPickerWindow.isDestroyed() || !langPickerWindow.isVisible()) return;
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  setFloatingBounds(langPickerWindow, langPickerTargetBounds());
+}
+
+function notifyLangPickerVisibility(visible) {
+  try {
+    if (overlayWindow && !overlayWindow.isDestroyed())
+      overlayWindow.webContents.send("lykn:lang-picker-visible", !!visible);
+  } catch (_) {}
+}
+
+function showLangPickerWindow(anchor) {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  if (anchor && typeof anchor === "object") langPickerAnchor = anchor;
+  hideMenuWindow();
+  hidePickerWindow();
+  if (!langPickerWindow || langPickerWindow.isDestroyed()) createLangPickerWindow();
+  const fire = () => {
+    if (!langPickerWindow || langPickerWindow.isDestroyed()) return;
+    setFloatingBounds(langPickerWindow, langPickerTargetBounds());
+    langPickerWindow.showInactive();
+    langPickerWindow.moveTop();
+    langPickerWindow.webContents.send("lykn:lang-picker-shown");
+    notifyLangPickerVisibility(true);
+  };
+  if (langPickerWindow.webContents.isLoading()) {
+    langPickerWindow.webContents.once("did-finish-load", fire);
+  } else fire();
+}
+
+function hideLangPickerWindow() {
+  if (
+    langPickerWindow &&
+    !langPickerWindow.isDestroyed() &&
+    langPickerWindow.isVisible()
+  ) {
+    langPickerWindow.hide();
+  }
+  notifyLangPickerVisibility(false);
 }
 
 // ── Detached live meeting notes window ──────────────────────────────────
@@ -2258,8 +2546,7 @@ function showOverlay() {
   // Re-assert content protection on every show — like the window level, it can
   // be dropped after a restart or Space/full-screen transition.
   applyContentProtection();
-  // Fade in the full-screen glass behind the bar so the user gets an
-  // unmistakable "LYKN is on" cue for as long as the overlay is up.
+  // Brief summon wash behind the bar (no persistent outline).
   playOverlayBurst();
   overlayWindow.show();
   // Re-assert the level AFTER show too — ordering a window onto a full-screen
@@ -2381,6 +2668,9 @@ function stripHiddenTags(s) {
 // Declared above the vault marker helpers that write them.
 let lastOverlayReactArtifact = null; // { toolName, title, code }
 let lastOverlayVaultImage = null; // { url, title }
+// Last page fingerprint for Glass asks — when the screen/URL changes mid-chat,
+// keep the screenshot even on text-rich pages so we don't go blind.
+let lastOverlayPageFingerprint = "";
 
 /**
  * Parse `[ATTACHMENTS_JSON:…]` from vault note content (CJS twin of
@@ -3234,7 +3524,15 @@ function isContentProtectionEnabled() {
 // window. Safe to call repeatedly (we re-assert it on show).
 function applyContentProtection(enabled) {
   const on = enabled === undefined ? isContentProtectionEnabled() : !!enabled;
-  for (const win of [overlayWindow, burstWindow, menuWindow, pickerWindow, liveWindow, panelWindow]) {
+  for (const win of [
+    overlayWindow,
+    burstWindow,
+    menuWindow,
+    pickerWindow,
+    langPickerWindow,
+    liveWindow,
+    panelWindow,
+  ]) {
     try {
       if (win && !win.isDestroyed()) win.setContentProtection(on);
     } catch {
@@ -3826,6 +4124,11 @@ async function liveWatchTextPass(snap, { textSim = 0, rulesOnly = false } = {}) 
 }
 
 async function tryLiveWatchBrowserScrape() {
+  // Don't poke Automation while Screen Recording is still unsettled, or after
+  // the user already denied System Events — Live Watch can rely on vision alone.
+  if (screenCaptureStatus() !== "granted") return null;
+  if (automationOk.systemEvents === false) return null;
+
   const now = Date.now();
   if (now - liveWatchLastScrapeAt < LIVE_WATCH_SCRAPE_MIN_MS) return null;
   liveWatchLastScrapeAt = now;
@@ -4249,6 +4552,8 @@ const BROWSER_PICK_PRIORITY = {
 const DEPRIORITIZED_BROWSERS = new Set(["Safari Technology Preview"]);
 
 async function listRunningBrowserApps() {
+  if (automationOk.systemEvents === false) return [];
+
   const listLiteral = `{${BROWSER_APP_NAMES.map((n) => `"${n}"`).join(", ")}}`;
   // Match running *process* names — never `tell application "Arc"` unless Arc is
   // actually open. Probing every app in the allowlist triggers macOS "Where is Arc?"
@@ -4270,10 +4575,15 @@ repeat with b in allBrowsers
 end repeat
 return out
 `;
-  const pick = await runOsascript(pickScript, 8000);
+  const runPick = () => runOsascript(pickScript, 8000);
+  const pick =
+    automationOk.systemEvents === true
+      ? await runPick()
+      : await withPermissionPrompt("automation:system-events", runPick);
   if (pick.error) {
     console.log("[scrape] browser-detect error:", pick.error);
-    if (/-1743|not authoriz/i.test(pick.error)) {
+    if (isAutomationDeniedError(pick.error)) {
+      automationOk.systemEvents = false;
       console.log(
         "[scrape] → Grant Automation permission: System Settings → Privacy & " +
           "Security → Automation → enable System Events for LYKN/Electron.",
@@ -4281,13 +4591,16 @@ return out
     }
     return [];
   }
+  automationOk.systemEvents = true;
   return String(pick.out || "")
     .split("|")
     .map((s) => s.trim())
     .filter(Boolean);
 }
 
-async function readBrowserFrontTabUrl(appName, { anyScheme = false } = {}) {
+async function readBrowserFrontTabUrl(appName, { anyScheme = false, allowPrompt = true } = {}) {
+  if (automationOk.browsers[appName] === false) return null;
+
   const accept = (u) => {
     const url = String(u || "").trim();
     if (!url) return null;
@@ -4298,19 +4611,30 @@ async function readBrowserFrontTabUrl(appName, { anyScheme = false } = {}) {
   const script = isSafari
     ? `tell application "${appName}" to get URL of current tab of front window`
     : `tell application "${appName}" to get URL of active tab of front window`;
-  const r = await runOsascript(script, 6000);
+
+  const run = () => runOsascript(script, 6000);
+  // Known-allowed browsers skip the mutex; first contact (or unknown) is serialized.
+  const r =
+    automationOk.browsers[appName] === true || !allowPrompt
+      ? await run()
+      : await withPermissionPrompt(`automation:${appName}`, run);
+
   if (r.error) {
     console.log(`[scrape] url-read error (${appName}):`, r.error);
-    if (/-1743|not authoriz/i.test(r.error)) {
+    if (isAutomationDeniedError(r.error)) {
+      automationOk.browsers[appName] = false;
       console.log(`[scrape] → Grant Automation permission for ${appName} under LYKN/Electron.`);
     }
     return null;
   }
+  automationOk.browsers[appName] = true;
   return accept(r.out);
 }
 
-async function readBrowserTabUrl(appName, { anyScheme = false } = {}) {
-  const front = await readBrowserFrontTabUrl(appName, { anyScheme });
+async function readBrowserTabUrl(appName, { anyScheme = false, allowPrompt = true } = {}) {
+  if (automationOk.browsers[appName] === false) return null;
+
+  const front = await readBrowserFrontTabUrl(appName, { anyScheme, allowPrompt });
   if (front) return front;
   if (/^Safari/.test(appName)) return null;
 
@@ -4320,6 +4644,10 @@ async function readBrowserTabUrl(appName, { anyScheme = false } = {}) {
     if (anyScheme) return url;
     return /^https?:\/\//i.test(url) ? url : null;
   };
+  // Follow-up window walk: only after front-tab already marked this browser allowed
+  // (or we're retrying without a new prompt). Avoids a second Allow dialog.
+  if (automationOk.browsers[appName] !== true && allowPrompt) return null;
+
   const r = await runOsascript(
     `tell application "${appName}"
       if (count of windows) is 0 then return ""
@@ -4335,38 +4663,77 @@ async function readBrowserTabUrl(appName, { anyScheme = false } = {}) {
   );
   if (r.error) {
     console.log(`[scrape] url-read error (${appName}):`, r.error);
+    if (isAutomationDeniedError(r.error)) {
+      automationOk.browsers[appName] = false;
+    }
     return null;
   }
+  automationOk.browsers[appName] = true;
   const url = accept(r.out);
   if (url) return url;
   if (anyScheme && String(r.out || "").trim()) return String(r.out).trim();
   return null;
 }
 
-async function listBrowserHttpTargets({ frontWindowOnly = false } = {}) {
-  const candidates = await listRunningBrowserApps();
-  const out = [];
-  for (const appName of candidates) {
-    const url = frontWindowOnly
-      ? await readBrowserFrontTabUrl(appName)
-      : await readBrowserTabUrl(appName);
-    if (url) out.push({ appName, url });
+function rankBrowserCandidates(candidates) {
+  let pool = candidates.slice();
+  const hasMainBrowser = pool.some((n) => !DEPRIORITIZED_BROWSERS.has(n));
+  if (hasMainBrowser) {
+    pool = pool.filter((n) => !DEPRIORITIZED_BROWSERS.has(n));
   }
-  return out;
+  pool.sort(
+    (a, b) => (BROWSER_PICK_PRIORITY[b] ?? 40) - (BROWSER_PICK_PRIORITY[a] ?? 40),
+  );
+  return pool;
 }
 
 function pickBestBrowserTarget(targets) {
   if (!targets.length) return null;
-  let pool = targets;
-  const hasMainBrowser = pool.some((t) => !DEPRIORITIZED_BROWSERS.has(t.appName));
-  if (hasMainBrowser) {
-    pool = pool.filter((t) => !DEPRIORITIZED_BROWSERS.has(t.appName));
-  }
-  pool.sort(
-    (a, b) =>
-      (BROWSER_PICK_PRIORITY[b.appName] ?? 40) - (BROWSER_PICK_PRIORITY[a.appName] ?? 40),
+  const ranked = rankBrowserCandidates(targets.map((t) => t.appName));
+  const order = new Map(ranked.map((name, i) => [name, i]));
+  return targets.slice().sort((a, b) => (order.get(a.appName) ?? 99) - (order.get(b.appName) ?? 99))[0];
+}
+
+/**
+ * Try at most one not-yet-denied browser for a URL in this action.
+ * Prevents Chrome + Safari + Arc each showing their own Allow dialog at once.
+ * Known-allowed browsers may be checked without a new dialog; only one unknown
+ * browser may prompt per call.
+ */
+async function resolveOneBrowserHttpTarget(candidates, { frontWindowOnly = false } = {}) {
+  const ranked = rankBrowserCandidates(candidates).filter(
+    (name) => automationOk.browsers[name] !== false,
   );
-  return pool[0];
+  if (!ranked.length) return null;
+
+  // Prefer browsers already allowed this session (no new dialog).
+  const known = ranked.filter((name) => automationOk.browsers[name] === true);
+  const unknown = ranked.filter((name) => automationOk.browsers[name] !== true);
+  const tryOrder = [...known, ...unknown];
+
+  let promptedUnknown = false;
+  for (const appName of tryOrder) {
+    const alreadyOk = automationOk.browsers[appName] === true;
+    if (!alreadyOk && promptedUnknown) break;
+    if (!alreadyOk) promptedUnknown = true;
+
+    const url = frontWindowOnly
+      ? await readBrowserFrontTabUrl(appName, { allowPrompt: !alreadyOk })
+      : await readBrowserTabUrl(appName, { allowPrompt: !alreadyOk });
+    if (url) return { appName, url };
+
+    // Denied mid-attempt — do not immediately blast the next browser.
+    if (automationOk.browsers[appName] === false) break;
+    // Unknown prompt burned with no URL — stop; next user action can try another.
+    if (!alreadyOk) break;
+  }
+  return null;
+}
+
+async function listBrowserHttpTargets({ frontWindowOnly = false } = {}) {
+  const candidates = await listRunningBrowserApps();
+  const one = await resolveOneBrowserHttpTarget(candidates, { frontWindowOnly });
+  return one ? [one] : [];
 }
 
 async function describeBrowserTabProblem() {
@@ -4377,10 +4744,18 @@ async function describeBrowserTabProblem() {
       message: "Open Chrome (or another browser) with a website loaded, then try again.",
     };
   }
-  for (const appName of candidates) {
-    const httpUrl = await readBrowserTabUrl(appName);
-    if (httpUrl) return null;
-    const raw = await readBrowserTabUrl(appName, { anyScheme: true });
+  // One browser only — same fan-out guard as Glass scrape.
+  const httpTarget = await resolveOneBrowserHttpTarget(candidates, { frontWindowOnly: false });
+  if (httpTarget?.url) return null;
+  const ranked = rankBrowserCandidates(candidates).filter(
+    (name) => automationOk.browsers[name] !== false,
+  );
+  const probe = ranked.find((name) => automationOk.browsers[name] === true) || ranked[0];
+  if (probe) {
+    const raw = await readBrowserTabUrl(probe, {
+      anyScheme: true,
+      allowPrompt: automationOk.browsers[probe] !== true,
+    });
     if (raw && /^(chrome|about|edge|brave|arc):/i.test(raw)) {
       return {
         error: "new_tab",
@@ -4417,17 +4792,22 @@ async function getActiveBrowserTarget() {
   }
 
   // Two-step so the AppleScript always compiles:
-  //   1) list running browsers (frontmost browser first when applicable),
-  //   2) a literal `tell application "<name>"` reads its active tab's URL.
+  //   1) list running browsers (System Events — at most one Automation prompt),
+  //   2) read URL from one preferred browser (at most one more Allow dialog).
+  if (automationOk.systemEvents === false) {
+    console.log("[scrape] System Events Automation previously denied — skip AppleScript");
+    return null;
+  }
   const candidates = await listRunningBrowserApps();
   if (!candidates.length) {
     console.log("[scrape] no browser frontmost or running");
     return null;
   }
-  // Prefer front-window tabs in Chrome/Arc/etc. over stale STP background tabs.
-  let best = pickBestBrowserTarget(await listBrowserHttpTargets({ frontWindowOnly: true }));
-  if (!best) {
-    best = pickBestBrowserTarget(await listBrowserHttpTargets({ frontWindowOnly: false }));
+  // Prefer front-window tabs; if those are empty, widen to any window on the
+  // same already-allowed browser (no second Allow dialog).
+  let best = await resolveOneBrowserHttpTarget(candidates, { frontWindowOnly: true });
+  if (!best && candidates.some((n) => automationOk.browsers[n] === true)) {
+    best = await resolveOneBrowserHttpTarget(candidates, { frontWindowOnly: false });
   }
   if (!best) {
     console.log("[scrape] browsers running but none have an http(s) tab:", candidates.join(", "));
@@ -4449,6 +4829,7 @@ async function getBrowserPageText(appName) {
   }
 
   if (!IS_MAC) return null;
+  if (automationOk.browsers[appName] === false) return null;
 
   // No double quotes or backslashes in this JS so it embeds cleanly in the
   // AppleScript double-quoted string (AppleScript treats \n etc. as escapes).
@@ -4459,8 +4840,17 @@ async function getBrowserPageText(appName) {
   const script = isSafari
     ? `tell application "${appName}" to do JavaScript "${js}" in current tab of front window`
     : `tell application "${appName}" to execute active tab of front window javascript "${js}"`;
-  const r = await runOsascript(script, 6000);
+
+  const run = () => runOsascript(script, 6000);
+  const r =
+    automationOk.browsers[appName] === true
+      ? await run()
+      : await withPermissionPrompt(`automation-dom:${appName}`, run);
+
   if (r.error) {
+    if (isAutomationDeniedError(r.error)) {
+      automationOk.browsers[appName] = false;
+    }
     if (/turned off|not allowed|Allow JavaScript|Apple Events/i.test(r.error)) {
       console.log(
         `[scrape] live-DOM read off for ${appName} — enable "Allow JavaScript from ` +
@@ -4471,6 +4861,7 @@ async function getBrowserPageText(appName) {
     }
     return null;
   }
+  automationOk.browsers[appName] = true;
   const out = (r.out || "").trim();
   return out.length > 40 ? out : null;
 }
@@ -4669,11 +5060,20 @@ function parseYouTubeCaptionBody(body) {
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 
-// Same backend stack the in-app chat uses (captions → Whisper). Local in-tab
-// / timedtext fetches often fail from the Electron shell (bot checks, empty
-// session-bound URLs), which used to leave Glass with only the YouTube
-// description — and the model would invent a "transcript fetch error".
-async function fetchYouTubeTranscriptViaApi(videoId, { onStatus } = {}) {
+/** Explicit ask to spend Whisper on video audio — not ordinary "what's this about?". */
+function overlayMessageWantsVideoTranscribe(msg) {
+  const t = String(msg || "");
+  if (!t.trim()) return false;
+  return (
+    /\b(?:transcribe(?:\s+(?:this|the|it|video|audio|that))?|transcription)\b/i.test(t) ||
+    /\b(?:full\s+transcript|(?:get|fetch|pull|download|grab)\s+(?:me\s+)?(?:the\s+)?transcript)\b/i.test(t) ||
+    /\b(?:from\s+(?:the\s+)?(?:spoken\s+)?audio|whisper\s+(?:it|this|the\s+video))\b/i.test(t)
+  );
+}
+
+// Captions-only by default (in-tab → timedtext → API fast). Whisper is slow and
+// opt-in — only when the user explicitly asks to transcribe.
+async function fetchYouTubeTranscriptViaApi(videoId, { onStatus, allowWhisper } = {}) {
   const token = await getAuthToken().catch(() => null);
   if (!token) {
     console.log("[scrape] yt api transcript skipped — no auth token");
@@ -4700,19 +5100,28 @@ async function fetchYouTubeTranscriptViaApi(videoId, { onStatus } = {}) {
   };
 
   try {
-    // Fast captions-only pass first (matches in-app chat).
+    // Fast captions-only pass first.
     let data = await pull("&fast=1", "Reading the video transcript…");
     let text = String(data?.transcript || "").trim();
     let source = String(data?.source || "").toLowerCase();
 
-    // Description-only is NOT a transcript — run Whisper like the web app does.
-    if ((!text || source === "description_fallback") && source !== "whisper_full") {
+    // Whisper only when the user explicitly asked — never auto on caption miss.
+    if (
+      allowWhisper &&
+      (!text || source === "description_fallback") &&
+      source !== "whisper_full"
+    ) {
       data = await pull(
         "&retryWhisper=1",
         "No captions found — transcribing the video audio…",
       );
       text = String(data?.transcript || "").trim();
       source = String(data?.source || "").toLowerCase();
+    } else if (
+      !allowWhisper &&
+      (!text || source === "description_fallback")
+    ) {
+      console.log("[scrape] yt api: no captions — skipping Whisper (not requested)");
     }
 
     // Still only a description → don't pretend we have spoken content.
@@ -4731,8 +5140,8 @@ async function fetchYouTubeTranscriptViaApi(videoId, { onStatus } = {}) {
 
 // Fetch a YouTube video's caption transcript. Tries the in-page method first
 // (reliable, uses the user's session), then a local timedtext fetch, then the
-// LYKN backend (captions + Whisper) — same path as in-app chat.
-async function fetchYouTubeTranscript(videoId, appName, { onStatus } = {}) {
+// LYKN backend captions path. Whisper only when allowWhisper is set.
+async function fetchYouTubeTranscript(videoId, appName, { onStatus, allowWhisper } = {}) {
   const inPage = await getBrowserYouTubeTranscript(appName);
   if (inPage && inPage.text) {
     console.log("[scrape] yt transcript via live tab");
@@ -4824,10 +5233,8 @@ async function fetchYouTubeTranscript(videoId, appName, { onStatus } = {}) {
     }
   }
 
-  // 3) LYKN backend — captions + Whisper. This is what makes in-app chat
-  //    reliable; Glass was missing it, so caption failures became vague
-  //    description-only answers ("transcript not accessible due to a fetch error").
-  const viaApi = await fetchYouTubeTranscriptViaApi(videoId, { onStatus });
+  // 3) LYKN backend captions (fast). Whisper only if the user asked to transcribe.
+  const viaApi = await fetchYouTubeTranscriptViaApi(videoId, { onStatus, allowWhisper });
   if (viaApi && viaApi.text) {
     console.log(`[scrape] yt transcript via API (${viaApi.source || "unknown"})`);
     if (title && !viaApi.title) viaApi.title = title;
@@ -4972,17 +5379,27 @@ async function errorFromAiResponse(res) {
 function overlayUserWantsVaultSurface(userText, history) {
   const t = String(userText || "").trim();
   if (!t) return false;
+  // Require an explicit vault/saved cue — bare "my notes" while Notes is open
+  // is screen talk, not a Vault surface ask.
   const saved =
-    /\b(?:vault|saved|artifact|artifacts|my\s+(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|documents?|links?|articles?|bookmarks?|artifacts?|stuff)|from\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise)|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved)\b/i.test(
+    /\b(?:vault|saved|artifact|artifacts|from\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise)|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved|what\s+i\s+saved)\b/i.test(
       t,
     );
   const view =
     /\b(show|see|view|open|pull\s*(?:up|in)|bring\s*(?:up|in)|display|load|find|grab)\b/i.test(t);
   if (saved && view) return true;
   if (
-    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|vault|saved|links?|articles?|artifacts?)\b/i.test(
+    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:vault|saved|artifact|artifacts)\b/i.test(
       t,
     )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|links?|articles?)\b/i.test(
+      t,
+    ) &&
+    /\b(?:vault|saved)\b/i.test(t)
   ) {
     return true;
   }
@@ -5040,6 +5457,16 @@ async function readOverlayStreamResponse(res, send, opts = {}) {
           });
         } else if (typeof j.status === "string" && j.status.trim()) {
           send("lykn:answer-status", { status: j.status.trim() });
+        } else if (Array.isArray(j.sources) && j.sources.length) {
+          send("lykn:answer-sources", {
+            sources: j.sources
+              .filter((s) => s && typeof s.url === "string" && s.url.trim())
+              .slice(0, 24)
+              .map((s) => ({
+                title: String(s.title || "Source").trim().slice(0, 160),
+                url: String(s.url).trim(),
+              })),
+          });
         } else if (j.tool_call && typeof j.tool_call === "object") {
           const tc = j.tool_call;
           maybeNotifyProjectsChangedFromTool(tc.name, tc.status, tc.result);
@@ -5230,11 +5657,19 @@ function overlayMessageWantsVisualGuidance(text) {
   if (!t) return false;
   // "do/can you see...", "are you seeing my screen", "look at this".
   if (/\b(do|can|are) you see(ing)?\b/.test(t)) return true;
-  if (/\b(on (my|the) screen|look at (my|the|this)|screenshot)\b/.test(t)) return true;
+  if (/\b(on (my|the) screen|look at (my|the|this)|screenshot|read (the |my )?screen)\b/.test(t)) return true;
   // Naming a concrete UI element ("the run button", "that settings icon") is
   // about LAYOUT — the page text can't answer where it is or whether it shows.
   if (
     /\b(button|icon|tab|toolbar|menu|sidebar|panel|modal|dialog|field|input|toggle|checkbox|dropdown|slider)\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // Ads / analytics UI nouns — often charts and creatives the scrape misses.
+  if (
+    /\bthe (ad|ads|creative|campaign|graph|chart|plot|preview|audience|bid|budget|metric|ctr|cpc)\b/.test(
       t,
     )
   ) {
@@ -5256,6 +5691,38 @@ function overlayMessageWantsVisualGuidance(text) {
     return true;
   }
   return false;
+}
+
+// Short deictic follow-ups mid-chat ("what about this?", "and that one?")
+// usually point at the screen after a UI change — keep pixels, don't go text-only.
+function overlayMessageLooksScreenDeictic(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t || t.length > 280) return false;
+  if (/\b(compare|vs\.?|versus)\b/.test(t)) return true;
+  if (
+    /\b(this|that|these|those)\b/.test(t) &&
+    /\b(ad|ads|creative|campaign|graph|chart|plot|one|metric|number|result|results|preview|audience|bid|budget|option|setting)\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // Bare short deixis with history is almost always about the screen.
+  if (t.length <= 80 && /\b(this|that|these|those|here)\b/.test(t)) return true;
+  return false;
+}
+
+function overlayPageFingerprint(pageContext) {
+  if (!pageContext) return "";
+  const url = String(pageContext.url || "").trim();
+  const title = String(pageContext.title || "").trim();
+  if (!url && !title) return "";
+  // Include a short text head so SPA route changes without URL churn still count.
+  const head = String(pageContext.text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return `${url}|${title}|${head}`;
 }
 
 function overlayMessageIsPhatic(text) {
@@ -5307,7 +5774,7 @@ function overlayMessageIsConversationFollowUp(text, history) {
 // conversation about that same page. Factored out of streamScreenAnswer so it can
 // run CONCURRENTLY with the screenshot + auth fetch (it was the slowest serial
 // step). Returns best-effort; never throws.
-async function gatherOverlayPageContext({ send, superseded }) {
+async function gatherOverlayPageContext({ send, superseded, userText, forceTranscribeVideo } = {}) {
   let pageContext = null;
   try {
     const target = await getActiveBrowserTarget();
@@ -5327,14 +5794,19 @@ async function gatherOverlayPageContext({ send, superseded }) {
       let kind = "page";
       let videoTranscriptMissing = false;
 
-      // YouTube (or other video): the spoken content isn't in the page text,
-      // so fetch the caption transcript instead (in-tab → timedtext → LYKN API
-      // with Whisper). No hard 12s race — Whisper can legitimately take longer
-      // and aborting early was leaving Glass with only the video description.
+      // YouTube: try captions (fast). Whisper audio transcription is opt-in
+      // only — "transcribe this" / "get the transcript" — not every ask.
       const ytId = parseYouTubeId(target.url);
       if (ytId) {
-        send("lykn:answer-status", { status: "Reading the video transcript…" });
+        const allowWhisper =
+          !!forceTranscribeVideo || overlayMessageWantsVideoTranscribe(userText);
+        send("lykn:answer-status", {
+          status: allowWhisper
+            ? "Reading / transcribing the video…"
+            : "Reading the video transcript…",
+        });
         const yt = await fetchYouTubeTranscript(ytId, target.appName, {
+          allowWhisper,
           onStatus: (status) => {
             if (!superseded()) send("lykn:answer-status", { status });
           },
@@ -5414,7 +5886,20 @@ async function gatherOverlayPageContext({ send, superseded }) {
   return { pageContext, pastPageSection };
 }
 
-async function streamScreenAnswer(event, { text, history, attachments, forceImage, buildMode }) {
+async function streamScreenAnswer(event, {
+  text,
+  history,
+  attachments,
+  forceImage,
+  buildMode,
+  deepResearch,
+  translateMode,
+  translateTargetLang,
+  transcribeVideo,
+  scopedProjectId,
+  scopedProjectName,
+}) {
+  const targetLang = String(translateTargetLang || "").trim().slice(0, 64);
   const wc = event.sender;
   const askGen = ++overlayAskGeneration;
   if (overlayAskAbort) {
@@ -5475,49 +5960,64 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
     conversationFollowUp && imageAtts.length === 0 && textAtts.length === 0;
   const liveWatchSummary = !skipScreenContext ? getFreshLiveWatchSummary(4000) : "";
 
-  // Screen Recording: trigger the macOS Allow dialog when still not-determined
-  // instead of only telling the user to dig through Privacy settings.
-  const needScreen = !skipScreenContext && imageAtts.length === 0;
-  if (needScreen) {
-    const access = await ensureScreenRecordingAccess();
-    if (!access.ok) {
+  // Screen Recording only when we likely need pixels (explicit visual ask, or
+  // page scrape unavailable). Text-rich browser asks scrape via Automation and
+  // must not block on Screen Recording permission / capture.
+  const explicitVisualAskEarly = overlayMessageWantsVisualGuidance(text);
+  const pageScrapeLikelyBlocked =
+    imageAtts.length > 0 ||
+    skipScreenContext ||
+    automationOk.systemEvents === false;
+  const likelyNeedsPixels =
+    !skipScreenContext &&
+    imageAtts.length === 0 &&
+    (explicitVisualAskEarly || pageScrapeLikelyBlocked);
+  let screenAccess = { ok: true, status: screenCaptureStatus(), prompted: false };
+  if (likelyNeedsPixels) {
+    screenAccess = await ensureScreenRecordingAccess();
+    if (!screenAccess.ok) {
       send("lykn:answer-error", {
-        message: screenRecordingDeniedMessage(access),
+        message: screenRecordingDeniedMessage(screenAccess),
       });
       return;
     }
   }
 
-  // Gather everything the backend needs CONCURRENTLY. The screenshot, the page
-  // scrape, and the auth token are independent of each other, so running them in
-  // parallel (instead of one-after-another) is the single biggest win for
-  // time-to-first-token — pre-fetch latency drops from sum() to max().
-  const capturePromise =
-    !skipScreenContext && screenCaptureStatus() === "granted"
-      ? liveWatchSummary && liveWatchLastFrameUrl
-        ? Promise.resolve(liveWatchLastFrameUrl)
-        : capturePrimaryScreen({ maxWidth: 1536, format: "jpeg", quality: 82 }).catch(() => null)
-      : Promise.resolve(null);
-  const pageContextPromise =
-    imageAtts.length === 0 && !skipScreenContext
-      ? gatherOverlayPageContext({ send, superseded })
-      : Promise.resolve({ pageContext: null, pastPageSection: "" });
-  const tokenPromise = getAuthToken().catch(() => null);
+  // Immediate UI feedback while scrape/token run — don't wait for TTFT.
+  if (!skipScreenContext) {
+    send("lykn:answer-status", {
+      status: likelyNeedsPixels ? "Reading screen…" : "Reading page…",
+    });
+  } else {
+    send("lykn:answer-status", { status: "Thinking…" });
+  }
 
-  const [dataURL, pageBundle, token] = await Promise.all([
-    capturePromise,
-    pageContextPromise,
-    tokenPromise,
-  ]);
+  // Auth + page scrape first. Capture ONLY if we still need pixels after scrape
+  // — text-rich browser pages used to pay encode+upload cost for a screenshot
+  // we then threw away. Native apps / thin pages still capture as before.
+  const skipPageScrape =
+    imageAtts.length > 0 ||
+    skipScreenContext ||
+    !!screenAccess.prompted ||
+    automationOk.systemEvents === false;
+  const pageContextPromise = !skipPageScrape
+    ? gatherOverlayPageContext({
+        send,
+        superseded,
+        userText: text,
+        // Menu → Transcribe video always allows Whisper even if wording is thin.
+        forceTranscribeVideo: !!transcribeVideo,
+      })
+    : Promise.resolve({ pageContext: null, pastPageSection: "" });
+  const tokenPromise = getAuthToken().catch(() => null);
+  const explicitVisualAsk = explicitVisualAskEarly;
+
+  const [pageBundle, token] = await Promise.all([pageContextPromise, tokenPromise]);
   if (superseded()) return;
 
   const pageContext = pageBundle?.pageContext || null;
   const pastPageSection = pageBundle?.pastPageSection || "";
 
-  if (needScreen && !dataURL) {
-    send("lykn:answer-error", { message: "Couldn't capture the screen." });
-    return;
-  }
   if (!token) {
     send("lykn:answer-error", {
       message: "Sign in to LYKN first. Open the main LYKN window and log in, then try again.",
@@ -5529,9 +6029,8 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
   // If we scraped substantial page text, the text IS the context — so drop the
   // screenshot and let the request go text-only. That keeps the backend on the
   // fast model (no nano→gpt-4.1 vision upgrade) and shrinks the upload to almost
-  // nothing — the single biggest "feels instant" win for reading pages. We still
-  // captured the screenshot above as a fallback for thin pages / non-browser apps.
-  const RICH_PAGE_TEXT_CHARS = 1200;
+  // nothing — the single biggest "feels instant" win for reading pages.
+  const RICH_PAGE_TEXT_CHARS = 600;
   const hasRichPageText =
     !!pageContext &&
     pageContext.kind !== "video" &&
@@ -5539,8 +6038,57 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
   // A message that clearly wants VISUAL help ("do you see this?", "how do I
   // run this?", "where do I click?") must keep the pixels even when the page
   // is text-rich — the text-only fast path leaves the model blind to layout.
+  // Page fingerprint changes alone do NOT force a screenshot upload anymore;
+  // that was a common "every navigation feels slow" tax when page text is enough.
+  const pageFingerprint = overlayPageFingerprint(pageContext);
+  const hasChatHistory = Array.isArray(history) && history.length > 0;
   const wantsVisualGuidance =
-    !skipScreenContext && overlayMessageWantsVisualGuidance(text);
+    !skipScreenContext &&
+    (explicitVisualAsk ||
+      (!hasRichPageText && hasChatHistory && overlayMessageLooksScreenDeictic(text)));
+  const shouldCapture =
+    !skipScreenContext &&
+    imageAtts.length === 0 &&
+    !hasVideoTranscript &&
+    !(forceImage && imageAtts.length) &&
+    (wantsVisualGuidance || (!hasRichPageText && !liveWatchSummary));
+
+  let dataURL = null;
+  if (shouldCapture && screenCaptureStatus() === "granted") {
+    if (liveWatchSummary && liveWatchLastFrameUrl && !wantsVisualGuidance) {
+      dataURL = liveWatchLastFrameUrl;
+    } else {
+      send("lykn:answer-status", { status: "Reading screen…" });
+      dataURL = await capturePrimaryScreen({
+        maxWidth: 1536,
+        format: "jpeg",
+        quality: 82,
+      }).catch(() => null);
+    }
+  } else if (
+    !skipScreenContext &&
+    !hasRichPageText &&
+    !hasVideoTranscript &&
+    liveWatchSummary &&
+    liveWatchLastFrameUrl &&
+    !wantsVisualGuidance
+  ) {
+    // Thin page + live watch: reuse last frame without a fresh capture.
+    dataURL = liveWatchLastFrameUrl;
+  }
+  if (superseded()) return;
+
+  // Capture failure is only fatal when we have nothing else to ground on.
+  const hasPageGrounding =
+    !!(pageContext && (pageContext.text || pageContext.title || pageContext.url)) ||
+    !!liveWatchSummary ||
+    imageAtts.length > 0 ||
+    textAtts.length > 0;
+  if (shouldCapture && !dataURL && !hasPageGrounding) {
+    send("lykn:answer-error", { message: "Couldn't capture the screen." });
+    return;
+  }
+
   // Live Watch already ran a recent vision pass — skip the screenshot upload when
   // there's no scraped page text (games, native apps) to stay fast.
   let attachScreenshot =
@@ -5552,93 +6100,51 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
   // model about which image the user means (and could bleed screen content
   // into the generation). Drop it; the attachment carries the pixels.
   if (forceImage && imageAtts.length) attachScreenshot = false;
-  if (hasRichPageText && dataURL && !attachScreenshot) {
+  if (!skipScreenContext && pageFingerprint) {
+    lastOverlayPageFingerprint = pageFingerprint;
+  }
+  if (hasRichPageText && !attachScreenshot) {
     console.log(
-      `[overlay-ask] text-rich page (${pageContext.text.length} chars) — dropping screenshot, staying on fast model`,
+      `[overlay-ask] text-rich page (${pageContext.text.length} chars) — skip screenshot capture/upload, staying on fast model`,
     );
   } else if (hasRichPageText && attachScreenshot) {
     console.log(
       `[overlay-ask] text-rich page (${pageContext.text.length} chars) but message wants visual guidance — keeping screenshot`,
     );
   }
+  // Keep this prompt tiny — server injects LYKN_GLASS_STREAM_PERSONA_SLIM
+  // (voice, vault/project/build gates, markdown). Here we only name the
+  // context modality so the model knows what the attachments/scrapes are.
   let prompt = skipScreenContext
-    ? "You are LYKN, a helpful assistant. The user is continuing an ongoing conversation " +
-      "with you — respond naturally to their latest message. Do NOT describe their screen, " +
-      "do NOT say 'on your screen I see', and do NOT re-introduce context they already know. " +
-      "Keep it brief and conversational unless they ask for more detail."
+    ? "Glass follow-up. Answer the latest message only — no screen re-brief."
     : hasVideoTranscript
-    ? "You are LYKN, a helpful assistant. The user is watching a video and its " +
-      "caption transcript is provided below. Answer their question using that " +
-      "transcript as the authoritative source — summarize, explain, or quote from it. " +
-      "Be concise and specific. Do NOT ask them to paste the video link."
+    ? "Glass: video transcript below is authoritative. Answer from it; don't ask for the link."
     : attachScreenshot
-    ? "You are LYKN, a helpful assistant that CAN see the user's screen. The attached " +
-      "image is a screenshot of their current screen, provided as CONTEXT. " +
-      "The user is looking at their screen while talking to you, so when their message " +
-      "is ambiguous or uses words like 'this', 'that', 'it', 'here', 'the question', " +
-      "'the answer', or 'this one' without a clear referent earlier in the conversation, " +
-      "ASSUME they mean what is currently on their screen and use the screenshot to answer " +
-      "specifically. Only treat the message as unrelated to the screen when it is clearly a " +
-      "general question or normal conversation — in that case answer normally and do NOT " +
-      "describe what's on screen. When in doubt, look at the screen first. " +
-      "If the user's message is just small talk, an acknowledgement, or a thank-you " +
-      "(e.g. 'gotcha thanks', 'cool', 'makes sense'), reply briefly and warmly in one line " +
-      "and do NOT read or describe the screen. Match the user's energy — short messages get short replies. " +
-      "Be concise and specific. " +
+    ? "Glass: attached image is the user's screen. Deictic asks ('this'/'that'/'here') → screen. " +
+      "General/small-talk → answer normally, don't narrate the screen. " +
       OVERLAY_IGNORE_NOTE
     : hasRichPageText
-    ? "You are LYKN, a helpful assistant. The user is reading the web page whose full text " +
-      "is provided below — treat that text as your view of their screen and answer from it " +
-      "directly and specifically. When their message is ambiguous or uses words like 'this', " +
-      "'that', 'it', 'the question', or 'the answer', assume they mean something on this page. " +
-      "If their message is clearly a general question or just small talk, answer normally and " +
-      "do NOT summarize the page. If they ask about something purely visual that isn't in the " +
-      "text, say briefly you can't see it this time. Be concise and specific."
-    : "You are LYKN, a helpful assistant. Use the attached image(s) and any files below " +
-      "if they're relevant to the user's question; otherwise just answer normally. " +
-      "Be concise and specific.";
-  prompt +=
-    "\n\nFormat your answer in clean Markdown: use short ## headers to group " +
-    "sections when helpful, '- ' bullet points for lists, **bold** for key terms, " +
-    "and `code` for code/identifiers. Keep it scannable — don't write one long " +
-    "paragraph when bullets or headers would read better." +
-    "\n\nSimple formatting does NOT need Build mode: for a standalone chart or " +
-    "graph, call lykn_generate_chart (Glass shows the image automatically — do " +
-    "NOT invent or paste QuickChart URLs). For a flowchart/diagram, call " +
-    "lykn_generate_diagram. Lists, headers, and bold are just Markdown in your " +
-    "reply. Reserve Build mode for live coded apps / dashboards / interactive tools.";
-  if (!hasVideoTranscript) {
-    // Tools are on for this turn (see useTools below), which includes live web
-    // search. Without this note the screen-first framing above makes the model
-    // claim it "can't browse the web" instead of just calling the tool.
+    ? "Glass: page text below is your view of their screen. Deictic asks → page. General/small-talk → normal answer."
+    : "Glass: use attached image(s)/files if relevant; otherwise answer normally.";
+  if (deepResearch) {
     prompt +=
-      "\n\nYou CAN search the live web: when the user asks about current events, " +
-      "news, prices, scores, weather, latest AI/LLM models, model comparisons, " +
-      "or anything requiring up-to-date information beyond their screen, call " +
-      "lykn_web_search (and lykn_web_fetch to read a specific page) BEFORE " +
-      "answering — never invent a stale model landscape from memory. Never say " +
-      "you can't browse the web or suggest connecting external tools for it.";
+      "\n\nRESEARCH MODE: Multi-step deep research with citations. Prefer " +
+      "[DEEP_RESEARCH_EVIDENCE] / [RESEARCH_REPORT_INSTRUCTIONS] (or [WEB_SEARCH_RESULTS] " +
+      "fallback). Write a structured report with ## headers, key findings, caveats, then " +
+      "Sources as markdown links. Never invent URLs.";
   }
-  if (attachScreenshot) {
-    // Describe UI locations in words only — do NOT claim to highlight, glow,
-    // or light up anything on the user's screen (that feature was removed).
-    prompt +=
-      "\n\nWhen the user asks where something is on screen, describe its location " +
-      "in plain language (e.g. 'top-right of the toolbar, blue button labeled Run'). " +
-      "Do NOT say you have highlighted, lit up, glowed, or ringed anything on their " +
-      "screen, and do NOT emit [[HIGHLIGHT: …]] tags.";
+  if (translateMode) {
+    prompt += targetLang
+      ? `\n\nTRANSLATE MODE: Translate the user's text (typed, dictated, or on-screen content they point at) into ${targetLang}. ` +
+        `Target language is already chosen (${targetLang}) — do not ask which language. Lead with the translation; keep extras minimal.`
+      : "\n\nTRANSLATE MODE: Translate the user's text (typed or dictated) into the target " +
+        "language they name. If no target language is named, ask once briefly. If they point " +
+        "at screen/page content, translate that. Lead with the translation; keep extras minimal.";
   }
-  // Three-bucket memory — Glass should feel like it knows the person, not a
-  // generic screen Q&A bot. Server also injects WHO_I_AM / WHAT_IM_ON /
-  // WHAT_IVE_SAVED; this keeps the overlay prompt aligned when those land.
-  if (!skipScreenContext) {
+  if (transcribeVideo) {
     prompt +=
-      "\n\nHow you know this person (use lightly — one personal anchor max unless they ask): " +
-      "WHO THEY ARE = preferences/facts/beliefs in context; " +
-      "WHAT THEY'RE ON = connect this screen to the best-fit project when clear; " +
-      "WHAT THEY'VE SAVED = Vault — pull only when they need something saved or one hit clearly helps. " +
-      "Keep learning them: if they reveal or contradict something about themselves, remember/update it. " +
-      "Answer the screen first; don't brief them with everything you know.";
+      "\n\nTRANSCRIBE VIDEO: Provide the spoken content from the transcript below (or say " +
+      "plainly if unavailable). Offer a clean transcript and a short summary.";
   }
   if (textAtts.length) {
     prompt +=
@@ -5649,25 +6155,17 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
   }
   if (pageContext && pageContext.kind === "video") {
     prompt +=
-      "\n\nFor context, the user is currently watching this video and its spoken " +
-      "transcript (from captions) is provided below. If their question is about the " +
-      "video, use this transcript as the authoritative source — summarize, answer, or " +
-      "quote from it directly without asking them to paste anything. If their question " +
-      "is NOT about the video, ignore this and answer normally.\n" +
+      "\n\nVideo transcript (authoritative; ignore if ask is unrelated):\n" +
       `URL: ${pageContext.url}\n` +
-      (pageContext.title ? `Video title: ${pageContext.title}\n` : "") +
-      `--- VIDEO TRANSCRIPT ---\n${pageContext.text}\n--- END VIDEO TRANSCRIPT ---`;
+      (pageContext.title ? `Title: ${pageContext.title}\n` : "") +
+      `--- VIDEO TRANSCRIPT ---\n${pageContext.text}\n--- END ---`;
   } else if (pageContext && pageContext.videoTranscriptMissing) {
     prompt +=
-      "\n\nFor context, the user is watching a YouTube video but LYKN could not " +
-      "retrieve its spoken transcript (no captions and audio transcription unavailable). " +
-      "You only have the page text / description below — NOT the spoken content. " +
-      "Do NOT invent a transcript, do NOT claim a 'fetch error', and do NOT pretend " +
-      "you watched the video. Say plainly that the transcript isn't available and " +
-      "answer from the title/description only, or ask them to try again.\n" +
+      "\n\nYouTube open but no captions/transcript — answer from title/description only; don't invent spoken content. " +
+      "If they need the spoken words, tell them briefly to ask you to \"transcribe\" the video.\n" +
       `URL: ${pageContext.url}\n` +
-      (pageContext.title ? `Video title: ${pageContext.title}\n` : "") +
-      `--- PAGE TEXT (not a transcript) ---\n${pageContext.text}\n--- END PAGE TEXT ---`;
+      (pageContext.title ? `Title: ${pageContext.title}\n` : "") +
+      `--- PAGE TEXT (not a transcript) ---\n${pageContext.text}\n--- END ---`;
   } else if (pageContext) {
     // When the screenshot rides along (visual-guidance asks), the image is the
     // primary context — cap the scraped text hard so the prompt stays small
@@ -5676,29 +6174,19 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
       ? String(pageContext.text || "").slice(0, 3000)
       : pageContext.text;
     prompt += attachScreenshot
-      ? "\n\nFor context, the user has this web page open — the SCREENSHOT is your " +
-        "primary view of it; the excerpt below is just supporting text.\n" +
+      ? "\n\nPage open (screenshot primary; text supporting):\n" +
         `URL: ${pageContext.url}\n` +
-        (pageContext.title ? `Page title: ${pageContext.title}\n` : "") +
-        `--- PAGE TEXT (EXCERPT) ---\n${pageBody}\n--- END PAGE TEXT ---`
-      : "\n\nFor context, the user currently has this web page open and its full text " +
-        "was scraped below. If their question is about this page/article, use this text " +
-        "as the primary, authoritative source (it's more complete than the screenshot) " +
-        "and answer directly without asking for a link. If their question is NOT about " +
-        "this page, ignore it and just answer normally.\n" +
+        (pageContext.title ? `Title: ${pageContext.title}\n` : "") +
+        `--- PAGE TEXT ---\n${pageBody}\n--- END ---`
+      : "\n\nPage open (text primary):\n" +
         `URL: ${pageContext.url}\n` +
-        (pageContext.title ? `Page title: ${pageContext.title}\n` : "") +
-        `--- PAGE CONTENT ---\n${pageBody}\n--- END PAGE CONTENT ---`;
+        (pageContext.title ? `Title: ${pageContext.title}\n` : "") +
+        `--- PAGE CONTENT ---\n${pageBody}\n--- END ---`;
   }
   if (pastPageSection) {
     prompt +=
-      "\n\nYou (LYKN) have spoken with this user about this exact page before. " +
-      "Below are excerpts from those earlier conversations. Use them for continuity: " +
-      "remember what you already explained, build on it, and avoid repeating yourself. " +
-      "If the user's new question is unrelated to this prior context, ignore it.\n" +
-      "--- EARLIER CONVERSATIONS ON THIS PAGE ---\n" +
-      pastPageSection +
-      "\n--- END EARLIER CONVERSATIONS ---";
+      "\n\nEarlier chats on this page (continuity; ignore if unrelated):\n" +
+      pastPageSection;
   }
   if (!skipScreenContext) {
     const liveSection = getLiveWatchContextSection();
@@ -5735,13 +6223,22 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
     // done") silently no-op while the model claims success. The backend's
     // casual-turn gate still turns tools off for pure chit-chat.
     useTools: !hasVideoTranscript,
-    // Web search: explicit asks OR live-freshness (latest models / news /
-    // prices / landscape charts) arm Serper pre-fetch. Everything else stays
-    // skipWebSearch: true for latency — the model can still call
-    // lykn_web_search via the agent loop when needed.
-    ...(overlayShouldForceWebSearch(String(text || ""))
-      ? { skipWebSearch: false, forceWebSearch: true }
+    // Web search: Deep research / explicit asks / live-freshness arm Serper.
+    // Everything else stays skipWebSearch for latency — the model can still
+    // call lykn_web_search via the agent loop when needed.
+    ...(deepResearch || overlayShouldForceWebSearch(String(text || ""))
+      ? {
+          skipWebSearch: false,
+          forceWebSearch: true,
+          ...(deepResearch ? { deepResearch: true } : {}),
+        }
       : { skipWebSearch: true }),
+    ...(translateMode
+      ? {
+          translateMode: true,
+          ...(targetLang ? { translateTargetLang: targetLang } : {}),
+        }
+      : {}),
     // Image mode (menu → "Create an image"): the server forces the
     // lykn_generate_image tool (GPT Image 2), same as the web app's "+" →
     // Generate image. Only ever set by an explicit user toggle.
@@ -5765,10 +6262,21 @@ async function streamScreenAnswer(event, { text, history, attachments, forceImag
       return { forceArtifact: true, artifactType: "webapp", useTools: true };
     })(),
     overlayAsk: true,
-    // Scope writes to the project the user is working in (sniffed from the
-    // active browser tab). Lets "add this task to my project" land on the
-    // project they're looking at instead of unfiled.
-    ...(overlayActiveProjectId ? { projectId: overlayActiveProjectId } : {}),
+    // Server uses this to strip chart/diagram/webapp builders when the turn
+    // has live screen/page context and no explicit Create/Build ask.
+    overlayScreenContext: !skipScreenContext,
+    // Explicit project scope from the Glass Projects menu — not ambient URL
+    // sniffing. Server only injects [WHAT_IM_ON] / project tools when scoped
+    // or the user asked about a project in their message.
+    ...(scopedProjectId
+      ? {
+          scopedProjectId: String(scopedProjectId).trim(),
+          projectId: String(scopedProjectId).trim(),
+          ...(scopedProjectName
+            ? { scopedProjectName: String(scopedProjectName).trim().slice(0, 120) }
+            : {}),
+        }
+      : {}),
     ...(attachmentsMeta.length ? { attachments: attachmentsMeta } : {}),
     ...(Array.isArray(history) && history.length ? { conversation: history.slice(-8) } : {}),
   };
@@ -6370,8 +6878,10 @@ function registerOverlayIpc() {
   ipcMain.on("lykn:collapse", (_e, collapsed) => setOverlayCollapsed(!!collapsed));
   // ── Detached three-dot menu window ────────────────────────────────────
   ipcMain.on("lykn:menu-set", (_e, { open } = {}) => {
-    if (open) showMenuWindow();
-    else hideMenuWindow();
+    if (open) {
+      hideLangPickerWindow();
+      showMenuWindow();
+    } else hideMenuWindow();
   });
   ipcMain.on("lykn:menu-close", () => hideMenuWindow());
   // The menu card reports its content height (menu vs past-chats view).
@@ -6384,10 +6894,45 @@ function registerOverlayIpc() {
   });
   // ── Detached side-panel picker window ─────────────────────────────────
   ipcMain.on("lykn:picker-set", (_e, { open } = {}) => {
-    if (open) showPickerWindow();
-    else hidePickerWindow();
+    if (open) {
+      hideLangPickerWindow();
+      showPickerWindow();
+    } else hidePickerWindow();
   });
   ipcMain.on("lykn:picker-close", () => hidePickerWindow());
+  // Translate-mode language picker (detached vibrancy card under the To pill).
+  ipcMain.on("lykn:lang-picker-set", (_e, { open, anchor } = {}) => {
+    if (open) showLangPickerWindow(anchor);
+    else hideLangPickerWindow();
+  });
+  ipcMain.on("lykn:lang-picker-close", () => hideLangPickerWindow());
+  ipcMain.on("lykn:lang-picker-resize", (_e, { height } = {}) => {
+    const h = Math.round(Number(height) || 0);
+    if (h > 0) {
+      langPickerHeight = h;
+      positionLangPickerWindow();
+    }
+  });
+  ipcMain.on("lykn:lang-picker-select", (_e, { lang } = {}) => {
+    try {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.webContents.send("lykn:lang-picker-select", {
+          lang: String(lang || ""),
+        });
+      }
+    } catch (_) {}
+  });
+  ipcMain.handle("lykn:lang-picker-state", async () => {
+    try {
+      if (!overlayWindow || overlayWindow.isDestroyed()) return null;
+      return await overlayWindow.webContents.executeJavaScript(
+        "window.__lyknLangPickerState ? window.__lyknLangPickerState() : null",
+        true,
+      );
+    } catch (_) {
+      return null;
+    }
+  });
   // The picker card reports its content height (varies with option count).
   ipcMain.on("lykn:picker-resize", (_e, { height } = {}) => {
     const h = Math.round(Number(height) || 0);
@@ -6553,21 +7098,54 @@ function registerOverlayIpc() {
       return { ok: false, briefs: [], error: e?.message || "fetch_failed" };
     }
   });
+  // During drag, only move the bar. Repositioning menu/picker/live/panel on
+  // every pixel was stalling the cursor; those catch up on lykn:move-end.
+  let overlayMoveSideTimer = null;
+  const followOverlaySideWindows = () => {
+    if (overlayMoveSideTimer) {
+      clearTimeout(overlayMoveSideTimer);
+      overlayMoveSideTimer = null;
+    }
+    positionMenuWindow();
+    positionPickerWindow();
+    positionLangPickerWindow();
+    positionLiveWindow();
+    positionPanelWindow();
+  };
   ipcMain.on("lykn:move-by", (_e, { dx, dy }) => {
-    if (!overlayWindow) return;
+    if (!overlayWindow || overlayWindow.isDestroyed()) return;
+    const rdx = Math.round(dx || 0);
+    const rdy = Math.round(dy || 0);
+    if (!rdx && !rdy) return;
     const b = overlayWindow.getBounds();
-    const nx = b.x + Math.round(dx || 0);
-    const ny = b.y + Math.round(dy || 0);
+    const nx = b.x + rdx;
+    const ny = b.y + rdy;
     overlayProgrammaticMove = true;
-    setFloatingBounds(overlayWindow, { x: nx, y: ny, width: b.width, height: b.height });
+    try {
+      overlayWindow.setBounds(
+        { x: nx, y: ny, width: b.width, height: b.height },
+        false,
+      );
+    } catch (_) {
+      try {
+        overlayWindow.setBounds({ x: nx, y: ny, width: b.width, height: b.height });
+      } catch (_) {
+        /* ignore */
+      }
+    }
     overlayProgrammaticMove = false;
     overlayUserPositioned = true;
     overlayAnchorLeft = nx;
     overlayAnchorBottomY = ny + b.height;
-    positionMenuWindow();
-    positionPickerWindow();
-    positionLiveWindow();
-    positionPanelWindow();
+    // Safety net if the renderer never sends move-end (stuck drag / crash).
+    if (overlayMoveSideTimer) clearTimeout(overlayMoveSideTimer);
+    overlayMoveSideTimer = setTimeout(() => {
+      overlayMoveSideTimer = null;
+      followOverlaySideWindows();
+    }, 120);
+  });
+  ipcMain.on("lykn:move-end", () => {
+    followOverlaySideWindows();
   });
   ipcMain.on("lykn:ask", (event, args) => {
     streamScreenAnswer(event, args || {});
@@ -6719,6 +7297,36 @@ function registerOverlayIpc() {
       currentSessionId: store.currentSessionId,
       error: appResult.error || null,
     };
+  });
+
+  ipcMain.handle("lykn:list-projects", async () => {
+    const token = await getAuthToken().catch(() => null);
+    if (!token) return { projects: [], error: "not_signed_in" };
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/synthesis/projects?status=active&limit=40`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401 || res.status === 403) {
+        return { projects: [], error: "not_signed_in" };
+      }
+      if (!res.ok) {
+        return { projects: [], error: `Could not load projects (${res.status}).` };
+      }
+      const data = await res.json().catch(() => ({}));
+      const projects = Array.isArray(data?.projects) ? data.projects : [];
+      return {
+        projects: projects.map((p) => ({
+          id: p.id,
+          name: p.name || "Untitled project",
+          description: p.description || "",
+          last_active_at: p.last_active_at || null,
+          is_focus: !!p.is_focus,
+        })),
+        error: null,
+      };
+    } catch (err) {
+      return { projects: [], error: err?.message || "Could not load projects." };
+    }
   });
 
   ipcMain.handle("lykn:get-overlay-session", async (_e, sessionId) => {
@@ -6892,7 +7500,9 @@ function registerOverlayIpc() {
       if (status === "granted") return true;
       if (IS_MAC) {
         if (status === "not-determined") {
-          return await systemPreferences.askForMediaAccess("microphone");
+          return await withPermissionPrompt("microphone", () =>
+            systemPreferences.askForMediaAccess("microphone"),
+          );
         }
         openMicrophoneSettings();
         return false;
@@ -7422,7 +8032,9 @@ function registerOverlayIpc() {
     if (goal) {
       const trusted = systemPreferences.isTrustedAccessibilityClient(false);
       if (!trusted) {
-        systemPreferences.isTrustedAccessibilityClient(true);
+        await withPermissionPrompt("accessibility", async () => {
+          systemPreferences.isTrustedAccessibilityClient(true);
+        });
       }
       if (!systemPreferences.isTrustedAccessibilityClient(false)) {
         return {
@@ -7935,7 +8547,9 @@ function registerOnboardingIpc() {
       if (status === "granted") return true;
       if (IS_MAC) {
         if (status === "not-determined") {
-          return await systemPreferences.askForMediaAccess("microphone");
+          return await withPermissionPrompt("microphone", () =>
+            systemPreferences.askForMediaAccess("microphone"),
+          );
         }
         openMicrophoneSettings();
         return false;
@@ -7973,7 +8587,13 @@ function registerOnboardingIpc() {
   });
 
   ipcMain.on("lykn:onboarding-open-screen-settings", () => {
-    openScreenPrivacySettings();
+    // Fire-and-forget: probe first so LYKN is in the TCC list, then open Settings.
+    void (async () => {
+      if (IS_MAC && screenCaptureStatus() !== "granted") {
+        await withPermissionPrompt("screen", () => probeScreenRecordingTcc());
+      }
+      await openScreenPrivacySettings({ afterTccRegister: true });
+    })();
   });
 
   ipcMain.on("lykn:onboarding-open-automation-settings", () => {
@@ -7992,10 +8612,12 @@ function registerOnboardingIpc() {
     }
   });
 
-  ipcMain.handle("lykn:onboarding-request-accessibility", () => {
+  ipcMain.handle("lykn:onboarding-request-accessibility", async () => {
     if (!IS_MAC) return "granted";
     try {
-      systemPreferences.isTrustedAccessibilityClient(true);
+      await withPermissionPrompt("accessibility", async () => {
+        systemPreferences.isTrustedAccessibilityClient(true);
+      });
       return systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied";
     } catch {
       return "unknown";
@@ -8241,7 +8863,7 @@ function initAutoUpdate() {
       `(KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`;
 
   claimLyknProtocol();
-  startDevAuthHandoffServer();
+  startAuthHandoffServer();
 
   installPermissionHandler();
   setupSystemAudioCapture();

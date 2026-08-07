@@ -24,6 +24,10 @@ import {
   listUserProjects,
   type UserProject,
 } from "@/lib/userProjects";
+import {
+  SYNTHESIS_LAYER_UI_ENABLED,
+  synthesisLayerHref,
+} from "@/lib/synthesisLayerUi";
 
 // ============================================================================
 // ChatNeuronCard — a neuron/vault item the AI has "brought into the chat"
@@ -363,14 +367,28 @@ function titleFor(payload: ChatNeuronPayload): string {
   return "Neuron";
 }
 
-function hrefFor(payload: ChatNeuronPayload): { href: string; label: string } {
+function hrefFor(payload: ChatNeuronPayload): { href: string; label: string } | null {
   if (payload.kind === "vault" && payload.note?.id) {
     return {
       href: `/vault?note=${encodeURIComponent(payload.note.id)}`,
       label: "Open in vault",
     };
   }
-  return { href: "/synthesis-layer", label: "Open in synthesis" };
+  // Soft-unplug: hide graph deep-links until the Memory surface ships.
+  if (!SYNTHESIS_LAYER_UI_ENABLED) return null;
+  const focus =
+    payload.kind === "belief" && payload.belief?.id
+      ? `belief_${payload.belief.id}`
+      : payload.kind === "fact" && payload.fact?.id
+        ? `fact_${payload.fact.id}`
+        : payload.node_id
+          ? payload.node_id
+          : null;
+  if (!focus) return null;
+  return {
+    href: synthesisLayerHref(`focus=${encodeURIComponent(focus)}`),
+    label: "Open in Synthesis Layer",
+  };
 }
 
 /**
@@ -673,12 +691,12 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
   const Icon = (KIND_ICON as Record<string, typeof FileText>)[kind] || FileText;
   const kindLabel = KIND_LABEL[kind] || "Neuron";
   const title = titleFor(payload);
-  const { href, label: openLabel } = hrefFor(payload);
+  const openTarget = hrefFor(payload);
 
   return (
     <>
       <div
-        className={`mt-2 rounded-xl border border-black/10 dark:border-white/12 bg-white/55 dark:bg-white/[0.04] backdrop-blur-sm shadow-[0_2px_10px_rgba(0,0,0,0.04)] overflow-hidden ${className}`}
+        className={`mt-2 rounded-xl border border-black/10 dark:border-white/12 bg-white dark:bg-[#1a1a1c] shadow-[0_2px_10px_rgba(0,0,0,0.04)] overflow-hidden ${className}`}
       >
         <div className="flex items-center gap-2 px-3 py-2 border-b border-black/5 dark:border-white/8 bg-black/[0.015] dark:bg-white/[0.02]">
           <Icon size={12} className="text-black/55 dark:text-white/55 flex-shrink-0" />
@@ -690,7 +708,7 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
             {title}
           </span>
           {/* Vault items expand into the full embedded reader; everything else
-              keeps the lightweight "jump to source" arrow. */}
+              keeps the lightweight "jump to source" arrow when a destination exists. */}
           {isVault ? (
             <button
               type="button"
@@ -702,17 +720,17 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
               <Expand size={11} />
               Pull up
             </button>
-          ) : (
+          ) : openTarget ? (
             <button
               type="button"
-              onClick={() => flushAndNavigate(navigate, href)}
+              onClick={() => flushAndNavigate(navigate, openTarget.href)}
               className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.625rem] text-black/55 dark:text-white/55 hover:text-black/90 dark:hover:text-white/95 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-              title={openLabel}
-              aria-label={openLabel}
+              title={openTarget.label}
+              aria-label={openTarget.label}
             >
               <ArrowUpRight size={11} />
             </button>
-          )}
+          ) : null}
         </div>
         {/* The body is a click target for vault items so the whole card reads
             as "tap to open the full thing". Use a div (not <button>) — vault

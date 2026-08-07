@@ -296,16 +296,16 @@ export default function ProjectPanel({
           animate={{ x: 0, opacity: 1 }}
           exit={{ x: 380, opacity: 0 }}
           transition={{ type: "spring", stiffness: 280, damping: 32 }}
-          className="fixed top-0 right-0 z-[90] h-full w-[380px] max-w-[92vw] flex flex-col bg-[rgba(15,15,18,0.92)] backdrop-blur-xl border-l border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.45)]"
+          className="fixed top-0 right-0 z-[90] h-full w-[380px] max-w-[92vw] flex flex-col bg-panel backdrop-blur-xl border-l border-black/[0.08] dark:border-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.12)] dark:shadow-[0_0_60px_rgba(0,0,0,0.45)] text-black/85 dark:text-white/90"
           role="dialog"
           aria-label="Project details"
         >
           {/* Header — type chip; the page-level close chevron lives
               outside this component (z-[100], right-4) so we just
               leave room for it on the right, same as NeuronPanel. */}
-          <header className="pl-5 pr-12 py-4 border-b border-white/8 flex items-center gap-2">
-            <FolderPlus size={14} className="text-white/70" />
-            <h2 className="text-[0.65rem] uppercase tracking-[0.18em] font-semibold text-white/55">
+          <header className="pl-5 pr-12 py-4 border-b border-black/8 dark:border-white/8 flex items-center gap-2">
+            <FolderPlus size={14} className="text-black/70 dark:text-white/70" />
+            <h2 className="text-[0.65rem] uppercase tracking-[0.18em] font-semibold text-black/55 dark:text-white/55">
               Project
             </h2>
           </header>
@@ -313,11 +313,11 @@ export default function ProjectPanel({
           <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5 scrollbar-hide">
             {/* Name */}
             <section>
-              <h3 className="text-[1rem] leading-snug text-white/95 font-medium">
+              <h3 className="text-[1rem] leading-snug text-black/95 dark:text-white/95 font-medium">
                 {project.name}
               </h3>
               {project.description ? (
-                <p className="text-[0.75rem] text-white/70 leading-relaxed mt-2">
+                <p className="text-[0.75rem] text-black/70 dark:text-white/70 leading-relaxed mt-2">
                   {project.description}
                 </p>
               ) : null}
@@ -326,42 +326,42 @@ export default function ProjectPanel({
             {/* Meta */}
             <section className="grid grid-cols-2 gap-x-4 gap-y-3">
               <div>
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-1">
                   Last activity
                 </p>
-                <p className="text-[0.75rem] text-white/75">
+                <p className="text-[0.75rem] text-black/75 dark:text-white/75">
                   {formatRelative(project.lastActiveAt)}
                 </p>
               </div>
               <div>
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-1">
                   Status
                 </p>
-                <p className="text-[0.75rem] text-white/75 capitalize">
+                <p className="text-[0.75rem] text-black/75 dark:text-white/75 capitalize">
                   {project.status}
                 </p>
               </div>
               <div>
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-1">
                   Started in
                 </p>
-                <p className="text-[0.75rem] text-white/75">
+                <p className="text-[0.75rem] text-black/75 dark:text-white/75">
                   {project.createdByClient || "—"}
                 </p>
               </div>
               <div>
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-1">
                   AI pushes
                 </p>
-                <p className="text-[0.75rem] text-white/75">
+                <p className="text-[0.75rem] text-black/75 dark:text-white/75">
                   {project.pushCount || 0}
                 </p>
               </div>
               <div>
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-1">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-1">
                   Members
                 </p>
-                <p className="text-[0.75rem] text-white/75">
+                <p className="text-[0.75rem] text-black/75 dark:text-white/75">
                   {project.members.length}
                 </p>
               </div>
@@ -373,16 +373,16 @@ export default function ProjectPanel({
 
             {/* Updates — kv-cards from lykn_project_state */}
             <section>
-              <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-2">
+              <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-2">
                 Updates ({displayUpdates.length})
               </p>
               {updatesLoading ? (
-                <div className="flex items-center gap-2 text-[0.7rem] text-white/45 py-2">
+                <div className="flex items-center gap-2 text-[0.7rem] text-black/45 dark:text-white/45 py-2">
                   <Loader2 size={11} className="animate-spin" />
                   Loading updates…
                 </div>
               ) : displayUpdates.length === 0 ? (
-                <p className="text-[0.7rem] text-white/40 leading-relaxed">
+                <p className="text-[0.7rem] text-black/40 dark:text-white/40 leading-relaxed">
                   No updates yet. When a model in LYKN chat, Claude, Cursor,
                   or any connected client records a decision about this
                   project, it lands here: working memory the whole brain
@@ -393,21 +393,21 @@ export default function ProjectPanel({
                   {displayUpdates.map((u) => (
                     <div
                       key={`${u.stateKey}-${u.setAt}`}
-                      className="px-2.5 py-2 rounded-md bg-white/[0.03] border border-white/8"
+                      className="px-2.5 py-2 rounded-md bg-black/[0.03] dark:bg-white/[0.03] border border-black/8 dark:border-white/8"
                     >
                       <div className="flex items-center justify-between gap-2 mb-1">
-                        <span className="text-[0.65rem] font-medium text-white/85 truncate">
+                        <span className="text-[0.65rem] font-medium text-black/85 dark:text-white/85 truncate">
                           {u.stateKey}
                         </span>
-                        <span className="text-[0.55rem] uppercase tracking-[0.12em] text-white/40 shrink-0">
+                        <span className="text-[0.55rem] uppercase tracking-[0.12em] text-black/40 dark:text-white/40 shrink-0">
                           {formatRelative(u.setAt)}
                         </span>
                       </div>
-                      <p className="text-[0.72rem] text-white/75 leading-snug whitespace-pre-wrap break-words">
+                      <p className="text-[0.72rem] text-black/75 dark:text-white/75 leading-snug whitespace-pre-wrap break-words">
                         {u.value}
                       </p>
                       {u.setByClient ? (
-                        <p className="mt-1.5 text-[0.55rem] uppercase tracking-[0.12em] text-white/35">
+                        <p className="mt-1.5 text-[0.55rem] uppercase tracking-[0.12em] text-black/35 dark:text-white/35">
                           via {formatPushClientLabel(u.setByClient)}
                         </p>
                       ) : null}
@@ -419,11 +419,11 @@ export default function ProjectPanel({
 
             {/* Connected neurons */}
             <section>
-              <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-2">
+              <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-2">
                 Connected neurons ({project.members.length})
               </p>
               {sortedMembers.length === 0 ? (
-                <p className="text-[0.7rem] text-white/40">
+                <p className="text-[0.7rem] text-black/40 dark:text-white/40">
                   No neurons clustered yet. Tap "Add neurons" below
                   to connect a few.
                 </p>
@@ -435,13 +435,13 @@ export default function ProjectPanel({
                       <button
                         key={m.nodeId}
                         onClick={() => onSelectNode(m.nodeId)}
-                        className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md bg-white/[0.025] hover:bg-white/[0.06] border border-white/8 hover:border-white/14 text-left transition-colors"
+                        className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md bg-black/[0.025] dark:bg-white/[0.025] hover:bg-black/[0.06] dark:hover:bg-white/[0.06] border border-black/8 dark:border-white/8 hover:border-black/14 dark:hover:border-white/14 text-left transition-colors"
                       >
-                        <Icon size={11} className="shrink-0 text-white/55" />
-                        <span className="flex-1 min-w-0 text-[0.74rem] text-white/85 truncate">
+                        <Icon size={11} className="shrink-0 text-black/55 dark:text-white/55" />
+                        <span className="flex-1 min-w-0 text-[0.74rem] text-black/85 dark:text-white/85 truncate">
                           {m.label || "(unlabeled)"}
                         </span>
-                        <span className="shrink-0 text-[0.55rem] uppercase tracking-[0.12em] text-white/35">
+                        <span className="shrink-0 text-[0.55rem] uppercase tracking-[0.12em] text-black/35 dark:text-white/35">
                           {kindLabel(m.kind)}
                         </span>
                       </button>
@@ -463,7 +463,7 @@ export default function ProjectPanel({
                   {onAddNeurons && (
                     <button
                       onClick={() => onAddNeurons(project.id)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-white/70 hover:text-white/95 text-[0.7rem] font-medium transition-colors"
+                      className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.08] dark:hover:bg-white/[0.08] border border-black/10 dark:border-white/10 hover:border-black/20 dark:hover:border-white/20 text-black/70 dark:text-white/70 hover:text-black/95 dark:hover:text-white/95 text-[0.7rem] font-medium transition-colors"
                       aria-label="Add neurons to this project"
                       title="Add neurons to this project"
                     >
@@ -474,7 +474,7 @@ export default function ProjectPanel({
                   {onCreateNeuron && (
                     <button
                       onClick={() => onCreateNeuron(project.id)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-white/70 hover:text-white/95 text-[0.7rem] font-medium transition-colors"
+                      className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.08] dark:hover:bg-white/[0.08] border border-black/10 dark:border-white/10 hover:border-black/20 dark:hover:border-white/20 text-black/70 dark:text-white/70 hover:text-black/95 dark:hover:text-white/95 text-[0.7rem] font-medium transition-colors"
                       aria-label="Create a new neuron in this project"
                       title="Create a new neuron in this project"
                     >
@@ -499,8 +499,8 @@ export default function ProjectPanel({
                 server-side rows; localStorage-only guests can't
                 produce a meaningful preview. */}
             {userId && mergeCandidates.length > 0 && (
-              <section className="border-t border-white/8 pt-4">
-                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-white/40 mb-2">
+              <section className="border-t border-black/8 dark:border-white/8 pt-4">
+                <p className="text-[0.58rem] uppercase tracking-[0.18em] text-black/40 dark:text-white/40 mb-2">
                   Manage
                 </p>
 
@@ -514,7 +514,7 @@ export default function ProjectPanel({
                 {!mergePickerOpen && (
                   <button
                     onClick={() => setMergePickerOpen(true)}
-                    className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-white/70 hover:text-white/95 text-[0.7rem] font-medium transition-colors"
+                    className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.08] dark:hover:bg-white/[0.08] border border-black/10 dark:border-white/10 hover:border-black/20 dark:hover:border-white/20 text-black/70 dark:text-white/70 hover:text-black/95 dark:hover:text-white/95 text-[0.7rem] font-medium transition-colors"
                     aria-label="Merge this project into another"
                     title="Fold this project's neurons + state into another project"
                   >
@@ -530,12 +530,12 @@ export default function ProjectPanel({
                 {mergePickerOpen && !mergeTargetId && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-[0.7rem] text-white/65">
+                      <p className="text-[0.7rem] text-black/65 dark:text-white/65">
                         Pick a project to fold "{project.name}" into:
                       </p>
                       <button
                         onClick={resetMerge}
-                        className="shrink-0 p-1 rounded text-white/45 hover:text-white/85 hover:bg-white/8 transition-colors"
+                        className="shrink-0 p-1 rounded text-black/45 dark:text-white/45 hover:text-black/85 dark:hover:text-white/85 hover:bg-black/[0.06] dark:hover:bg-white/8 transition-colors"
                         aria-label="Cancel merge"
                         title="Cancel"
                       >
@@ -548,14 +548,14 @@ export default function ProjectPanel({
                           key={cand.id}
                           onClick={() => startPreview(cand.id)}
                           disabled={previewing}
-                          className="w-full text-left px-2.5 py-2 rounded-md bg-white/[0.025] hover:bg-white/[0.06] border border-white/8 hover:border-white/14 transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-start gap-2"
+                          className="w-full text-left px-2.5 py-2 rounded-md bg-black/[0.025] dark:bg-white/[0.025] hover:bg-black/[0.06] dark:hover:bg-white/[0.06] border border-black/8 dark:border-white/8 hover:border-black/14 dark:hover:border-white/14 transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-start gap-2"
                         >
-                          <FolderPlus size={11} className="mt-0.5 shrink-0 text-white/45" />
+                          <FolderPlus size={11} className="mt-0.5 shrink-0 text-black/45 dark:text-white/45" />
                           <div className="min-w-0 flex-1">
-                            <div className="text-[0.72rem] text-white/85 truncate">
+                            <div className="text-[0.72rem] text-black/85 dark:text-white/85 truncate">
                               {cand.name}
                             </div>
-                            <div className="text-[0.6rem] text-white/45 mt-0.5">
+                            <div className="text-[0.6rem] text-black/45 dark:text-white/45 mt-0.5">
                               {cand.members.length} neuron
                               {cand.members.length === 1 ? "" : "s"}
                               {" · "}
@@ -565,7 +565,7 @@ export default function ProjectPanel({
                           </div>
                           <ChevronDown
                             size={11}
-                            className="shrink-0 text-white/35 -rotate-90 mt-1.5"
+                            className="shrink-0 text-black/35 dark:text-white/35 -rotate-90 mt-1.5"
                           />
                         </button>
                       ))}
@@ -582,26 +582,26 @@ export default function ProjectPanel({
                 {mergePickerOpen && mergeTargetId && (
                   <div className="space-y-3">
                     {previewing && (
-                      <div className="flex items-center gap-2 text-[0.7rem] text-white/55 py-1">
+                      <div className="flex items-center gap-2 text-[0.7rem] text-black/55 dark:text-white/55 py-1">
                         <Loader2 size={11} className="animate-spin" />
                         Calculating preview…
                       </div>
                     )}
 
                     {mergePreview && !previewing && (
-                      <div className="rounded-md bg-white/[0.03] border border-white/10 px-2.5 py-2.5 space-y-1.5">
-                        <p className="text-[0.7rem] text-white/85 leading-snug">
+                      <div className="rounded-md bg-black/[0.03] dark:bg-white/[0.03] border border-black/10 dark:border-white/10 px-2.5 py-2.5 space-y-1.5">
+                        <p className="text-[0.7rem] text-black/85 dark:text-white/85 leading-snug">
                           Folding{" "}
-                          <span className="font-medium text-white/95">
+                          <span className="font-medium text-black/95 dark:text-white/95">
                             "{project.name}"
                           </span>{" "}
                           into{" "}
-                          <span className="font-medium text-white/95">
+                          <span className="font-medium text-black/95 dark:text-white/95">
                             "{mergePreview.target?.name || "target"}"
                           </span>
                           .
                         </p>
-                        <ul className="text-[0.66rem] text-white/65 space-y-0.5 leading-snug pl-3 list-disc marker:text-white/30">
+                        <ul className="text-[0.66rem] text-black/65 dark:text-white/65 space-y-0.5 leading-snug pl-3 list-disc marker:text-black/30 dark:marker:text-white/30">
                           <li>
                             {mergePreview.stateRowsMoved} state row
                             {mergePreview.stateRowsMoved === 1 ? "" : "s"} moved
@@ -633,7 +633,7 @@ export default function ProjectPanel({
                               target.
                             </li>
                           )}
-                          <li className="text-rose-300/85">
+                          <li className="text-rose-600 dark:text-rose-300/85">
                             "{project.name}" will be permanently deleted.
                           </li>
                         </ul>
@@ -641,7 +641,7 @@ export default function ProjectPanel({
                     )}
 
                     {mergeError && (
-                      <p className="text-[0.7rem] text-rose-300/90 leading-snug">
+                      <p className="text-[0.7rem] text-rose-600 dark:text-rose-300/90 leading-snug">
                         {mergeError}
                       </p>
                     )}
@@ -650,14 +650,14 @@ export default function ProjectPanel({
                       <button
                         onClick={resetMerge}
                         disabled={committing}
-                        className="flex-1 px-2.5 py-1.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 text-white/70 hover:text-white/95 text-[0.7rem] font-medium transition-colors disabled:opacity-60"
+                        className="flex-1 px-2.5 py-1.5 rounded-md bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.08] dark:hover:bg-white/[0.08] border border-black/10 dark:border-white/10 hover:border-black/20 dark:hover:border-white/20 text-black/70 dark:text-white/70 hover:text-black/95 dark:hover:text-white/95 text-[0.7rem] font-medium transition-colors disabled:opacity-60"
                       >
                         Cancel
                       </button>
                       <button
                         onClick={commitMerge}
                         disabled={committing || previewing || !mergePreview}
-                        className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/30 hover:border-rose-400/50 text-rose-100 hover:text-white text-[0.7rem] font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/30 hover:border-rose-400/50 text-rose-700 dark:text-rose-100 hover:text-rose-900 dark:hover:text-white text-[0.7rem] font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {committing ? (
                           <>

@@ -13,10 +13,16 @@ import lyknWordmark from "@/assets/FINAL/LYKN-WORDMARK/PNGs/LYKN-Wordmark-BLUE-w
 //   1. Fresh desktop_state from the Mac app → clear any leftover browser
 //      Supabase session (Mac sign-out does NOT clear the system browser),
 //      then Google OAuth with prompt=select_account.
-//   2. Back from Google with a session → hand it to the app via the
-//      lykn://auth deep link (tokens in the URL fragment, never in query/logs).
+//   2. Back from Google with a session → hand it to the app via loopback POST
+//      or lykn://auth (tokens in the URL fragment, never in query/logs).
 //   3. The app's main process forwards the tokens to the renderer, which calls
 //      supabase.auth.setSession() — signed in, no embedded Google page ever.
+//   4. After copying tokens, wipe THIS tab's local Supabase state WITHOUT calling
+//      the logout API. auth-js signOut({ scope:"local" }) still hits
+//      POST /logout?scope=local, which revokes that session's refresh token —
+//      the same token we just handed to Electron — so the Mac app signs in for
+//      a moment then bounces back to /login. We stop auto-refresh and clear
+//      storage only; tokens stay in a memory cache so "Open LYKN" still works.
 //
 // Machine-specific "works on the second Try again" was usually:
 //   • Double navigation (Supabase redirect + our backup assign) racing PKCE
@@ -162,7 +168,7 @@ function buildDeepLink(session) {
 }
 
 /** Navigate to lykn:// with a real click target when possible (user gesture). */
-function navigateToDeepLink(url) {
+function navigateToDeepLink(url, { soft = false } = {}) {
   try {
     const a = document.createElement("a");
     a.href = url;
@@ -174,34 +180,52 @@ function navigateToDeepLink(url) {
   } catch {
     /* fall through */
   }
-  window.location.href = url;
+  // Soft mode keeps the success page up (auto-handoff / pagehide) so the
+  // Open LYKN button still works if the browser blocked the custom scheme.
+  if (!soft) window.location.href = url;
 }
 
 /**
- * Local unpackaged Electron can't safely own lykn:// (that opens the installed
- * LYKN.app). When the Mac app minted `handoff_port`, POST tokens to the
- * loopback handoff server instead.
+ * Prefer loopback POST when the Mac app minted `handoff_port` (works without a
+ * click, and unpackaged shells can't safely own lykn://). Fall back to
+ * lykn://auth if the local server isn't reachable.
  */
-async function handoffSessionToApp(session) {
+async function handoffSessionToApp(session, { softProtocol = false } = {}) {
   const port = readHandoffPort();
   if (port && /^\d+$/.test(port)) {
-    const res = await fetch(`http://127.0.0.1:${port}/auth-handoff`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        access_token: session.access_token,
-        refresh_token: session.refresh_token,
-        state: readDesktopState(),
-      }),
-    });
-    if (!res.ok) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/auth-handoff`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          access_token: session.access_token,
+          refresh_token: session.refresh_token,
+          state: readDesktopState(),
+        }),
+      });
+      if (res.ok) return { mode: "http" };
       const data = await res.json().catch(() => ({}));
-      throw new Error(data?.error || `handoff_failed_${res.status}`);
+      // Unpackaged/local shells must not fall through to lykn:// — that opens
+      // the installed production app instead of the dev window.
+      if (isLocalHandoffOnly()) {
+        throw new Error(data?.error || `handoff_failed_${res.status}`);
+      }
+    } catch (err) {
+      if (isLocalHandoffOnly()) throw err;
+      // Packaged: browser may block private-network fetch; use deep link.
     }
-    return { mode: "http" };
   }
-  navigateToDeepLink(buildDeepLink(session));
+  navigateToDeepLink(buildDeepLink(session), { soft: softProtocol });
   return { mode: "protocol" };
+}
+
+function isLocalHandoffOnly() {
+  try {
+    const host = window.location.hostname;
+    return host === "localhost" || host === "127.0.0.1";
+  } catch {
+    return false;
+  }
 }
 
 export default function DesktopAuth() {
@@ -212,8 +236,51 @@ export default function DesktopAuth() {
   const [errorMsg, setErrorMsg] = useState(null);
   const [finishing, setFinishing] = useState(false);
   const [httpHandoffDone, setHttpHandoffDone] = useState(false);
+  const [autoHandoffStarted, setAutoHandoffStarted] = useState(false);
+  // Survives browser local sign-out so the success UI can still show email.
+  const [handoffEmail, setHandoffEmail] = useState("");
   const startedRef = useRef(false);
-  const httpHandoffAttemptedRef = useRef(false);
+  const handoffAttemptedRef = useRef(false);
+  const handoffTokensRef = useRef(null);
+  const browserSessionReleasedRef = useRef(false);
+  const handoffInFlightRef = useRef(false);
+  const handoffSucceededRef = useRef(false);
+
+  // Drop the browser tab's Supabase client state without revoking the refresh
+  // token on the server (that token now belongs to the Mac app). Idempotent.
+  const releaseBrowserSession = async () => {
+    if (browserSessionReleasedRef.current) return;
+    browserSessionReleasedRef.current = true;
+    try {
+      supabase.auth.stopAutoRefresh();
+    } catch {
+      /* older clients */
+    }
+    // Block only the logout endpoint for this call. auth-js always POSTs
+    // /logout?scope=local before clearing storage; that revoke is what kicks
+    // the Mac app back to the login screen after a successful handoff.
+    const prevFetch = window.fetch.bind(window);
+    const blockedFetch = async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof Request
+            ? input.url
+            : String(input?.url || "");
+      if (/\/auth\/v1\/logout\b/i.test(url)) {
+        return new Response(null, { status: 204 });
+      }
+      return prevFetch(input, init);
+    };
+    window.fetch = blockedFetch;
+    try {
+      await supabase.auth.signOut({ scope: "local" });
+    } catch {
+      /* cosmetic — Mac already has / is receiving the tokens */
+    } finally {
+      if (window.fetch === blockedFetch) window.fetch = prevFetch;
+    }
+  };
 
   const oauthError = (() => {
     if (typeof window === "undefined") return null;
@@ -262,42 +329,102 @@ export default function DesktopAuth() {
     setPhase("error");
   };
 
-  const openApp = async () => {
-    setErrorMsg(null);
+  const openApp = async ({ silent = false } = {}) => {
+    if (!silent) setErrorMsg(null);
+    if (handoffSucceededRef.current) return true;
+    if (handoffInFlightRef.current) return false;
     const { data } = await supabase.auth.getSession();
-    const session = data?.session;
+    // Prefer live session; fall back to in-memory tokens after we released the
+    // browser session so "Open LYKN" / pagehide retries still work.
+    const session = data?.session?.access_token
+      ? data.session
+      : handoffTokensRef.current;
     if (!session?.access_token || !session?.refresh_token) {
-      setErrorMsg("Your session expired. Please sign in again.");
-      setPhase("error");
-      return;
+      if (!silent) {
+        setErrorMsg("Your session expired. Please sign in again.");
+        setPhase("error");
+      }
+      return false;
     }
     if (!readDesktopState()) {
-      setErrorMsg(
-        "Open Google sign-in from the LYKN Mac app (Continue with Google there), then use Open LYKN here.",
-      );
-      setPhase("error");
-      return;
+      if (!silent) {
+        setErrorMsg(
+          "Open Google sign-in from the LYKN Mac app (Continue with Google there), then use Open LYKN here.",
+        );
+        setPhase("error");
+      }
+      return false;
     }
+    handoffTokensRef.current = {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+    };
+    const email =
+      session.user?.email ||
+      user?.email ||
+      handoffEmail ||
+      "";
+    if (email) setHandoffEmail(email);
     clearAutoRetry();
+    handoffInFlightRef.current = true;
     try {
-      const result = await handoffSessionToApp(session);
+      // Stop browser refresh + clear local state BEFORE handoff so this tab
+      // cannot rotate/revoke the token family while Electron adopts it.
+      await releaseBrowserSession();
+      const result = await handoffSessionToApp(handoffTokensRef.current, {
+        softProtocol: silent,
+      });
       if (result.mode === "http") setHttpHandoffDone(true);
+      handoffSucceededRef.current = true;
+      return true;
     } catch {
-      setErrorMsg(
-        "Couldn't reach the local LYKN window. Make sure `npm run dev:overlay` is still running, then try Open LYKN again.",
-      );
-      setPhase("error");
+      if (!silent) {
+        setErrorMsg(
+          readHandoffPort()
+            ? "Couldn't reach the LYKN Mac app automatically. Make sure LYKN is still open, then click Open LYKN."
+            : "Couldn't open the LYKN Mac app. Click Open LYKN to try again.",
+        );
+      }
+      return false;
+    } finally {
+      handoffInFlightRef.current = false;
     }
   };
 
-  // Local-dev HTTP handoff: auto-send tokens so we never open lykn:// into the
-  // installed production app.
+  // Auto-handoff as soon as Google finishes — loopback POST when handoff_port
+  // is present (packaged + local), otherwise lykn://auth. Keeps "Open LYKN" as
+  // a fallback if the browser blocks the first navigation.
   useEffect(() => {
     if (phase !== "handoff") return;
-    if (!readHandoffPort()) return;
-    if (httpHandoffAttemptedRef.current) return;
-    httpHandoffAttemptedRef.current = true;
-    void openApp();
+    if (handoffAttemptedRef.current) return;
+    handoffAttemptedRef.current = true;
+    setAutoHandoffStarted(true);
+    void openApp({ silent: true }).then((ok) => {
+      if (ok) return;
+      // One delayed retry — Chrome sometimes needs a beat after paint, and
+      // the Mac app may still be raising its handoff listener.
+      window.setTimeout(() => {
+        void openApp({ silent: true });
+      }, 1200);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  // Last chance: user closes/hides the tab after sign-in without clicking.
+  useEffect(() => {
+    if (phase !== "handoff") return;
+    const onLeave = () => {
+      void openApp({ silent: true });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") onLeave();
+    };
+    window.addEventListener("pagehide", onLeave);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", onLeave);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
@@ -305,6 +432,14 @@ export default function DesktopAuth() {
     startedRef.current = true;
     setFinishing(false);
     setPhase("starting");
+    setHttpHandoffDone(false);
+    setHandoffEmail("");
+    handoffTokensRef.current = null;
+    browserSessionReleasedRef.current = false;
+    handoffAttemptedRef.current = false;
+    handoffInFlightRef.current = false;
+    handoffSucceededRef.current = false;
+    setAutoHandoffStarted(false);
     clearAutoRetry();
     const desktopState = readDesktopState();
     if (desktopState) writeBootMarker(desktopState);
@@ -319,6 +454,7 @@ export default function DesktopAuth() {
   // Late session arrival after a slow exchange → handoff (never stay on error).
   useEffect(() => {
     if (!user) return;
+    if (user.email) setHandoffEmail(user.email);
     if (phase === "error" || finishing) {
       clearAutoRetry();
       setErrorMsg(null);
@@ -471,36 +607,33 @@ export default function DesktopAuth() {
             {phase === "handoff" && (
               <>
                 <h1 className="text-lg font-semibold text-slate-900">
-                  You&apos;re signed in{user?.email ? ` as ${user.email}` : ""}
+                  You&apos;re signed in
+                  {(handoffEmail || user?.email)
+                    ? ` as ${handoffEmail || user?.email}`
+                    : ""}
                 </h1>
                 <p className="mt-2 text-sm text-slate-500">
-                  {httpHandoffDone || readHandoffPort()
-                    ? httpHandoffDone
-                      ? "Signed in to your local LYKN window. You can close this tab."
-                      : "Sending your session to the local LYKN window…"
-                    : (
-                      <>
-                        Click <span className="font-medium text-slate-700">Open LYKN</span> to
-                        return to the Mac app you signed in from. You can close this tab afterwards.
-                      </>
-                    )}
+                  {httpHandoffDone
+                    ? "You're signed in to the LYKN Mac app. You can close this tab."
+                    : autoHandoffStarted
+                      ? "Opening LYKN… If the app didn’t update, click Open LYKN below."
+                      : (
+                        <>
+                          Click <span className="font-medium text-slate-700">Open LYKN</span> to
+                          return to the Mac app. You can close this tab afterwards.
+                        </>
+                      )}
                 </p>
-                {!readHandoffPort() && (
+                {errorMsg && (
+                  <p className="mt-2 text-sm text-red-600">{errorMsg}</p>
+                )}
+                {!httpHandoffDone && (
                   <button
                     type="button"
-                    onClick={openApp}
+                    onClick={() => void openApp()}
                     className="mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white transition-colors duration-200 bg-gradient-to-b from-[#6ea8ff] to-[#2563eb] shadow-[0_12px_26px_-10px_rgba(37,99,235,0.65),inset_0_1px_0_rgba(255,255,255,0.45)] hover:from-[#5b9bff] hover:to-[#1e40af]"
                   >
                     Open LYKN
-                  </button>
-                )}
-                {readHandoffPort() && !httpHandoffDone && (
-                  <button
-                    type="button"
-                    onClick={openApp}
-                    className="mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white transition-colors duration-200 bg-gradient-to-b from-[#6ea8ff] to-[#2563eb] shadow-[0_12px_26px_-10px_rgba(37,99,235,0.65),inset_0_1px_0_rgba(255,255,255,0.45)] hover:from-[#5b9bff] hover:to-[#1e40af]"
-                  >
-                    Retry local handoff
                   </button>
                 )}
                 <button

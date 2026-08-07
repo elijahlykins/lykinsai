@@ -146,11 +146,7 @@ export const CHAT_TOOL_NAMES = [
   'lykn_createStewardItem',
   'lykn_listStewardItems',
   'lykn_updateStewardItem',
-  // ── Custom models (read the user's Model Builder creations) ──────
-  'lykn_listCustomModels',
-  // Talk to ANY published model (sub-agent), main agent or not — sends a
-  // message and returns the model's report. Always available.
-  'lykn_communicate_with_model',
+  // Custom models / sub-agents soft-unplugged — see lib/customModelsEnabled.js.
   // Hand a coding task to a Cursor cloud agent (opens a PR) and check on it.
   // Async — the server poller surfaces completion; deploy stays manual.
   'lykn_build_with_cursor',
@@ -199,10 +195,7 @@ export const CHAT_TOOL_NAMES = [
   'lykn_build_template',
   'lykn_translate',
   'lykn_http_request',
-  // Main-agent orchestration (enabled per-turn when a main agent is active)
-  'lykn_delegate_to_sub_model',
-  'lykn_list_sub_model_tasks',
-  'lykn_get_sub_model_task',
+  // Main-agent orchestration soft-unplugged with custom models.
 ];
 
 export const CHAT_TOOLS = CHAT_TOOL_NAMES

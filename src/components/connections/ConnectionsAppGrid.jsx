@@ -18,6 +18,7 @@ import TokenConnectDialog from "@/components/connections/TokenConnectDialog";
 import CustomApiDialog from "@/components/connections/CustomApiDialog";
 import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
+import { SYNTHESIS_LAYER_UI_ENABLED } from "@/lib/synthesisLayerUi";
 
 // Unified "app store" view for the Connections page. Everything LYKN
 // can plug into - AI tools (Claude, Cursor, ChatGPT, …) and input
@@ -720,14 +721,14 @@ export default function ConnectionsAppGrid({
                     label: `${counts.notes} note${counts.notes === 1 ? "" : "s"}`,
                     onClick: () => navigate(`/vault${primarySlug ? `?source=${encodeURIComponent(primarySlug)}` : ""}`),
                   },
-                  ...(counts.facts > 0
+                  ...(SYNTHESIS_LAYER_UI_ENABLED && counts.facts > 0
                     ? [{
                         key: "facts",
                         label: `${counts.facts} fact${counts.facts === 1 ? "" : "s"}`,
                         onClick: () => navigate(`/synthesis-layer${primarySlug ? `?source=${encodeURIComponent(primarySlug)}&focus=facts` : "?focus=facts"}`),
                       }]
                     : []),
-                  ...(counts.beliefs > 0
+                  ...(SYNTHESIS_LAYER_UI_ENABLED && counts.beliefs > 0
                     ? [{
                         key: "beliefs",
                         label: `${counts.beliefs} belief${counts.beliefs === 1 ? "" : "s"}`,

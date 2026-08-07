@@ -1,10 +1,10 @@
 import { useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { DayPicker } from "react-day-picker";
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
 // A small, modern single-date picker: a Radix popover wrapping react-day-picker,
-// styled with Tailwind so it matches LYKN's glassy light/dark surfaces. Values
+// styled to match LYKN's panel surfaces and the project month calendar. Values
 // are plain "YYYY-MM-DD" strings (local), so callers don't deal with Date math.
 //
 //   <DatePickerPopover
@@ -37,6 +37,11 @@ export default function DatePickerPopover({
   const [open, setOpen] = useState(false);
   const selected = parseYmd(value);
 
+  const pick = (date) => {
+    onChange(date ? toYmd(date) : "");
+    setOpen(false);
+  };
+
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>{trigger}</Popover.Trigger>
@@ -44,9 +49,10 @@ export default function DatePickerPopover({
         <Popover.Content
           align={align}
           side={side}
-          sideOffset={6}
+          sideOffset={8}
+          collisionPadding={12}
           onClick={(e) => e.stopPropagation()}
-          className="z-[300] rounded-2xl border border-black/10 dark:border-white/10 bg-white/95 dark:bg-[rgba(24,24,28,0.97)] backdrop-blur-xl shadow-xl p-3 text-black dark:text-white animate-in fade-in-0 zoom-in-95 duration-150"
+          className="z-[300] w-[17.5rem] rounded-[1.25rem] border border-black/[0.08] dark:border-white/[0.1] bg-panel shadow-[0_8px_30px_-12px_rgba(0,0,0,0.18),0_2px_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.65),0_1px_0_rgba(255,255,255,0.04)_inset] p-3.5 text-black dark:text-white data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 duration-150"
         >
           <DayPicker
             mode="single"
@@ -58,49 +64,54 @@ export default function DatePickerPopover({
               IconLeft: () => <ChevronLeft className="w-4 h-4" />,
               IconRight: () => <ChevronRight className="w-4 h-4" />,
             }}
-            onSelect={(date) => {
-              onChange(date ? toYmd(date) : "");
-              setOpen(false);
-            }}
+            onSelect={(date) => pick(date)}
             classNames={{
               months: "flex flex-col",
               month: "flex flex-col gap-3",
-              caption: "flex justify-center pt-1 relative items-center",
-              caption_label: "text-sm font-medium",
-              nav: "flex items-center gap-1",
+              caption: "flex justify-center items-center relative px-8 pb-0.5",
+              caption_label:
+                "text-[0.8125rem] font-semibold tracking-tight text-black/90 dark:text-white/90",
+              nav: "flex items-center",
               nav_button:
-                "h-7 w-7 inline-flex items-center justify-center rounded-md text-black/60 dark:text-white/60 opacity-70 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/10 transition-colors",
-              nav_button_previous: "absolute left-1",
-              nav_button_next: "absolute right-1",
+                "h-7 w-7 inline-flex items-center justify-center rounded-full text-black/50 dark:text-white/50 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/[0.05] dark:hover:bg-white/[0.08] transition-colors",
+              nav_button_previous: "absolute left-0",
+              nav_button_next: "absolute right-0",
               table: "w-full border-collapse",
-              head_row: "flex",
+              head_row: "flex w-full",
               head_cell:
-                "text-black/40 dark:text-white/40 rounded-md w-9 font-normal text-[0.7rem]",
-              row: "flex w-full mt-1",
-              cell: "relative p-0 text-center text-sm",
-              day: "h-9 w-9 p-0 font-normal rounded-lg inline-flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors aria-selected:opacity-100",
+                "flex-1 text-center text-[0.625rem] font-medium tracking-wide text-black/35 dark:text-white/35 pb-0.5",
+              row: "flex w-full mt-0.5",
+              cell: "relative flex-1 p-0 text-center text-sm flex items-center justify-center",
+              day: "h-9 w-9 p-0 font-normal rounded-full inline-flex items-center justify-center text-[0.8125rem] text-black/70 dark:text-white/70 hover:bg-black/[0.05] dark:hover:bg-white/[0.08] transition-colors aria-selected:opacity-100",
               day_selected:
-                "bg-blue-500 text-white hover:bg-blue-500 hover:text-white focus:bg-blue-500",
-              day_today: "border border-blue-500/50 font-semibold",
-              day_outside: "text-black/25 dark:text-white/20",
-              day_disabled: "opacity-40",
+                "bg-blue-500 text-white font-medium shadow-sm hover:bg-blue-500 hover:text-white focus:bg-blue-500 focus:text-white",
+              day_today:
+                "font-semibold text-black dark:text-white ring-1 ring-inset ring-black/15 dark:ring-white/20 aria-selected:ring-0",
+              day_outside:
+                "text-black/25 dark:text-white/20 aria-selected:text-white/80",
+              day_disabled: "opacity-35 pointer-events-none",
               day_hidden: "invisible",
             }}
           />
-          {value ? (
-            <div className="mt-1 pt-2 border-t border-black/10 dark:border-white/10 flex justify-end">
+
+          <div className="mt-2.5 pt-2.5 border-t border-black/[0.06] dark:border-white/[0.08] flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => pick(new Date())}
+              className="flex-1 text-[0.6875rem] font-medium px-2.5 py-1.5 rounded-full text-black/60 dark:text-white/60 hover:text-black/90 dark:hover:text-white/90 hover:bg-black/[0.05] dark:hover:bg-white/[0.08] transition-colors"
+            >
+              Today
+            </button>
+            {value ? (
               <button
                 type="button"
-                onClick={() => {
-                  onChange("");
-                  setOpen(false);
-                }}
-                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md text-black/55 dark:text-white/55 hover:text-red-500 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                onClick={() => pick(null)}
+                className="flex-1 text-[0.6875rem] font-medium px-2.5 py-1.5 rounded-full text-black/45 dark:text-white/45 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-500/10 transition-colors"
               >
-                <X className="w-3 h-3" /> Clear deadline
+                Clear
               </button>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

@@ -45,7 +45,6 @@ import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/c
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { snapshotToSynthesisText } from "@/lib/synthesis/sourceText";
 import { fetchLoadInUpdatesMessage } from "@/lib/synthesis/loadInUpdates";
-import DailyDocketCard from "@/components/projects/DailyDocketCard";
 import { useProjectFiles } from "@/hooks/useProjectFiles";
 import LyknChatToolbar from "@/components/lyknChat/LyknChatToolbar";
 import LyknChatToasts from "@/components/lyknChat/LyknChatToasts";
@@ -57,7 +56,6 @@ import LyknChatVoiceMode from "@/components/lyknChat/LyknChatVoiceMode";
 import VaultDocumentViewer from "@/components/lyknChat/VaultDocumentViewer";
 import type { ChatNeuronVaultPayload } from "@/components/lyknChat/ChatNeuronCard";
 import SubAgentTasksStrip from "@/components/lyknChat/SubAgentTasksStrip";
-import LoadInBriefingPanel from "@/components/lyknChat/LoadInBriefingPanel";
 import MobileLyknChat from "@/components/lyknChat/MobileLyknChat";
 import { useLyknChatPersistence, makeDefaultNotesPages } from "@/hooks/useLyknChatPersistence";
 import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
@@ -71,10 +69,12 @@ import {
   customModelSelectValue,
   parseCustomModelSelectValue,
 } from "@/lib/modelBuilder/customModelSelect";
+import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
 import { fromChatModelKey, toChatModelKey } from "@/lib/lyknChat/chatModelKey";
 import { patchThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
 import LyknChatPlusMenu from "@/components/lyknChat/LyknChatPlusMenu";
 import LyknChatProjectPicker, { type LyknChatScopedProject } from "@/components/lyknChat/LyknChatProjectPicker";
+import AddLinkDialog, { type AddLinkPreview } from "@/components/AddLinkDialog";
 // Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
 // Keep this `true` to make the focused chat the main interface across `/app`,
 // `/chat/:chatId`, and `/omnia`. Flip back to `false` to re-enable the
@@ -811,6 +811,7 @@ export default function LyknChat() {
   const reset = useLyknChatStore((s) => s.reset);
   const gridSize = useLyknChatStore((s) => s.gridSize);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [showAddLinkDialog, setShowAddLinkDialog] = useState(false);
   const [showVaultSidebar, setShowVaultSidebar] = useState(false);
   const [vaultDragActive, setVaultDragActive] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
@@ -902,8 +903,12 @@ export default function LyknChat() {
     { id: string; name: string; baseModelId?: string }[]
   >([]);
   const refreshPublishedCustomModels = useCallback(async () => {
-    if (!user?.id) {
+    if (!CUSTOM_MODELS_ENABLED || !user?.id) {
       setPublishedCustomModels([]);
+      if (!CUSTOM_MODELS_ENABLED) {
+        saveActiveCustomModelId(null);
+        setActiveCustomModelId(null);
+      }
       return;
     }
     try {
@@ -922,6 +927,7 @@ export default function LyknChat() {
     void refreshPublishedCustomModels();
   }, [refreshPublishedCustomModels]);
   useEffect(() => {
+    if (!CUSTOM_MODELS_ENABLED) return undefined;
     const onRefresh = () => void refreshPublishedCustomModels();
     window.addEventListener("lykn_custom_models_changed", onRefresh);
     window.addEventListener("lykn_active_custom_model_changed", onRefresh);
@@ -1097,10 +1103,6 @@ export default function LyknChat() {
   const convoSummaryRef = useRef<string>("");
   const convoTurnsSinceSummaryRef = useRef(0);
   const [typedWelcome, setTypedWelcome] = useState("");
-  // "Today's briefing" — a toggle chip that's always present in the chat so
-  // the user can pull up their calendar + task rundown any time. Starts
-  // collapsed; only the user opens it (never auto-expands on entry / first chat).
-  const [showDocketCard, setShowDocketCard] = useState(false);
   const [showAiSuggestionToast, setShowAiSuggestionToast] = useState(false);
   const lastSuggestionKeyRef = useRef<string>("");
   const [connectionCards, setConnectionCards] = useState<Array<{ title: string; sourceType: "board" | "media"; reason: string }>>([]);
@@ -1224,15 +1226,6 @@ export default function LyknChat() {
     const firstName = fullName ? fullName.split(/\s+/)[0] : "";
     const preferredName = String(firstName || emailName || "").trim();
     return preferredName ? `Welcome back, ${preferredName}` : "Start a new chat";
-  }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
-
-  const docketGreetingName = useMemo(() => {
-    const emailName = String(user?.email || "").split("@")[0].trim();
-    const fullName = String(
-      user?.user_metadata?.full_name || user?.user_metadata?.name || "",
-    ).trim();
-    const firstName = fullName ? fullName.split(/\s+/)[0] : "";
-    return (firstName || emailName || "").trim() || null;
   }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name]);
 
   useEffect(() => {
@@ -1862,24 +1855,6 @@ export default function LyknChat() {
   } = chatEngine;
   const thinkingStatus = useThinkingStatus(isChatLoading, chatStatusText);
 
-  // Retire the "on your plate today" bubble the moment the user starts a
-  // turn so it doesn't linger beneath the fresh exchange. Declared here (not
-  // beside the trigger) because `isChatLoading` is destructured just above.
-  useEffect(() => {
-    if (showDocketCard && isChatLoading) setShowDocketCard(false);
-  }, [showDocketCard, isChatLoading]);
-
-  // If the user had the briefing open, collapse it when they switch chats —
-  // each conversation starts with the chip only; they reopen via the toggle.
-  const docketPrevChatIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    const id = chatId ?? null;
-    if (docketPrevChatIdRef.current && id && id !== docketPrevChatIdRef.current) {
-      setShowDocketCard(false);
-    }
-    if (id) docketPrevChatIdRef.current = id;
-  }, [chatId]);
-
   const clampChatRailWidth = useCallback((raw: number, vw: number) => {
     const width = Math.max(0, Math.floor(vw || 0));
     if (width < 640) return width;
@@ -2357,6 +2332,27 @@ export default function LyknChat() {
     return () => window.removeEventListener("message", handler);
   }, [applyVaultDropToChat]);
 
+  // Vault page "Chat" on a pulled-up card: stash payload, navigate here, then
+  // attach it with the same path as embedded click-to-add.
+  useEffect(() => {
+    let raw = "";
+    try {
+      raw = sessionStorage.getItem("lykn_pending_vault_chat_add") || "";
+      if (raw) sessionStorage.removeItem("lykn_pending_vault_chat_add");
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      if (data && typeof data === "object") {
+        void applyVaultDropToChat({ ...data, timestamp: Date.now() });
+      }
+    } catch {
+      /* ignore bad payload */
+    }
+  }, [applyVaultDropToChat]);
+
   const saveAiImageToMedia = useCallback(async (imageUrl: string, promptText?: string) => {
     if (!imageUrl) return;
     if (!user?.id) { requireSignIn("save to the vault"); return; }
@@ -2521,27 +2517,41 @@ export default function LyknChat() {
   }, [user?.id, routeChatId, chatId, requireSignIn]);
 
   // Add a URL as a focused chat attachment. Shows the chip instantly, then
-  // unfurls Open Graph metadata in the background so the sent message renders
-  // the same rich LinkPreview card the Vault shows (hero image, site name,
-  // title, description) rather than a bare file chip. YouTube URLs stay as
-  // an embeddable youtube attachment.
-  const addLinkToChat = useCallback((rawUrl: string) => {
-    const trimmedUrl = String(rawUrl || "").trim();
+  // unfurls Open Graph metadata in the background (unless the Add Link
+  // dialog already provided a preview) so the sent message renders the
+  // same rich LinkPreview card the Vault shows.
+  const addLinkToChat = useCallback((rawUrl: string, preview?: AddLinkPreview | null) => {
+    const trimmedUrl = String(rawUrl || preview?.url || "").trim();
     if (!trimmedUrl) return;
     const urlType = inferUrlAttachmentType(trimmedUrl);
     const videoId = urlType === "youtube" ? (extractYouTubeVideoId(trimmedUrl) || "") : "";
     const attId = makeAttId();
+    const hasPreviewMeta = Boolean(
+      preview && (preview.title || preview.description || preview.image || preview.siteName),
+    );
     addFocusedAttachment({
       id: attId,
       type: urlType,
       url: trimmedUrl,
-      name: trimmedUrl,
+      name: preview?.title || trimmedUrl,
       mime: "",
       size: 0,
       ...(videoId ? { videoId } : {}),
+      ...(hasPreviewMeta
+        ? {
+            linkTitle: preview?.title || "",
+            linkDescription: preview?.description || "",
+            linkImage: preview?.image || "",
+            linkSiteName: preview?.siteName || "",
+            linkFavicon: preview?.favicon || "",
+            oembedType: preview?.oembedType || "",
+            authorName: preview?.authorName || "",
+            authorHandle: preview?.authorHandle || "",
+          }
+        : {}),
     });
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
-    if (urlType === "link") {
+    if (urlType === "link" && !hasPreviewMeta) {
       void (async () => {
         try {
           const { API_BASE_URL } = await import("@/lib/api-config");
@@ -2577,14 +2587,19 @@ export default function LyknChat() {
   }, []);
 
   const handleAddLinkClick = useCallback(() => {
-    const url = prompt("Enter any URL:");
-    const trimmedUrl = String(url || "").trim();
-    if (!trimmedUrl) return;
+    // Same panel as Vault → Add link. Electron blocks window.prompt().
+    setShowAddLinkDialog(true);
+  }, []);
+
+  const handleConfirmAddLink = useCallback((preview: AddLinkPreview) => {
+    const url = String(preview?.url || "").trim();
+    if (!url) return;
     if (chatMode) {
-      addLinkToChat(trimmedUrl);
+      addLinkToChat(url, preview);
     } else {
-      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: trimmedUrl } }));
+      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url, preview } }));
     }
+    setShowAddLinkDialog(false);
   }, [chatMode, addLinkToChat]);
 
   // Open the same vault pullout the top-right "+" uses, so the user can browse
@@ -4470,15 +4485,6 @@ export default function LyknChat() {
           onChatInputChange={handleChatInputChange}
           onSend={handleChatSend}
           typedWelcome={typedWelcome}
-          docketBubble={
-            !isEmbeddedMode ? (
-              <DailyDocketCard
-                greetingName={docketGreetingName}
-                expanded={showDocketCard}
-                onToggle={() => setShowDocketCard((v) => !v)}
-              />
-            ) : null
-          }
           isMobileGrid={isMobileGrid}
           isMobilePhone={isMobilePhone}
           isDictating={isDictating}
@@ -4519,43 +4525,31 @@ export default function LyknChat() {
           onActiveArtifactChange={setActiveArtifact}
           onSaveArtifact={saveArtifactToVault}
           chatKey={chatId || routeChatId || ""}
+          onFactNeuronChange={(msgId, next) => {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === msgId
+                  ? { ...m, factNeuron: next || undefined }
+                  : m,
+              ),
+            );
+          }}
           composerAbove={
-            chatMode && isMainAgentChat ? (
+            chatMode && isMainAgentChat && CUSTOM_MODELS_ENABLED ? (
               <SubAgentTasksStrip chatId={chatId} enabled={isMainAgentChat} />
             ) : null
           }
         />
       )}
 
-      {/* Floating load-in briefing panel — anchored to the far right
-          of the viewport, outside the chat column. Visible only while
-          the user is sitting on a fresh load-in greeting (single
-          unprompted assistant message) on a screen wide enough to
-          fit the panel without crowding the chat surface. */}
-      {chatMode && !isMobilePhone && !isMobileGrid && (() => {
-        const greeting =
-          chatMessages.length === 1 && chatMessages[0]?.kind === "load-in-greeting"
-            ? chatMessages[0]
-            : null;
-        if (!greeting?.aiResponseStats) return null;
-        return (
-          <div
-            // 2xl breakpoint: below ~1536px the fixed 20rem card overlaps the
-            // centered greeting column it's meant to accompany. overflow-y so
-            // the panel content scrolls on short viewports instead of clipping.
-            className="hidden 2xl:block fixed right-4 xl:right-8 top-20 z-[80] overflow-y-auto"
-            style={{
-              maxHeight: "calc(100vh - 6rem)",
-              width: "20rem",
-            }}
-          >
-            <LoadInBriefingPanel
-              stats={greeting.aiResponseStats}
-              greetingName={(greeting as any).greetingName}
-            />
-          </div>
-        );
-      })()}
+      <AddLinkDialog
+        open={showAddLinkDialog}
+        onClose={() => setShowAddLinkDialog(false)}
+        title="Add link to chat"
+        confirmLabel="Add to chat"
+        confirmingLabel="Adding..."
+        onConfirm={handleConfirmAddLink}
+      />
 
       <DialogAny open={showAttachMenu} onOpenChange={setShowAttachMenu}>
         <DialogContentAny className="rounded-2xl border border-white/30 bg-[#f2f2f7]/65 backdrop-blur-md text-black shadow-lg">
@@ -4570,15 +4564,8 @@ export default function LyknChat() {
             <button
               type="button"
               onClick={() => {
-                const url = prompt("Enter any URL:");
-                const trimmedUrl = String(url || "").trim();
-                if (!trimmedUrl) return;
-                if (chatMode) {
-                  addLinkToChat(trimmedUrl);
-                } else {
-                  window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: trimmedUrl } }));
-                }
                 setShowAttachMenu(false);
+                setShowAddLinkDialog(true);
               }}
               className="w-full flex items-center gap-3 justify-start rounded-xl px-3 py-2 bg-white/35 border border-white/30 backdrop-blur-sm hover:opacity-90"
             >

@@ -4,12 +4,12 @@
  *
  * On upload of an image or video we keep the compressed original AND derive two
  * smaller renditions:
- *   - `medium` — web thumbnail / mobile expanded view (longest side ≤ 1280)
- *   - `thumb`  — mobile grid thumbnail (longest side ≤ 400)
+ *   - `medium` — vault grid / inline preview (longest side ≤ 2048)
+ *   - `thumb`  — tiny posters / dense lists only (longest side ≤ 400)
  *
- * Both are JPEG (small, universally decodable). The grid/list can load the tiny
- * `thumb` instead of a multi-MB original, and the expanded view loads `medium`
- * — big bandwidth/latency wins, especially on mobile.
+ * Both are JPEG (small, universally decodable). The vault grid loads `medium`
+ * so collage tiles stay sharp on retina; expanded / chat views load the
+ * original. `thumb` is reserved for video posters and other compact chrome.
  *
  * For video we capture a single poster frame and downscale that. All work is
  * best-effort: any decode/encode failure returns null for that variant and the
@@ -24,10 +24,10 @@ export interface MediaVariantBlobs {
   height: number | null;
 }
 
-const MEDIUM_MAX_DIM = 1280;
+const MEDIUM_MAX_DIM = 2048;
 const THUMB_MAX_DIM = 400;
-const MEDIUM_QUALITY = 0.82;
-const THUMB_QUALITY = 0.7;
+const MEDIUM_QUALITY = 0.9;
+const THUMB_QUALITY = 0.75;
 
 /** Scales (w,h) so its longest side is at most maxDim. Never upscales. */
 function fitWithin(width: number, height: number, maxDim: number): { w: number; h: number } {

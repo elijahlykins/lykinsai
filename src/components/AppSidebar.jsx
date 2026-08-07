@@ -35,6 +35,8 @@ import {
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useQueryClient } from "@tanstack/react-query";
 import SignInPill from "@/components/SignInPill";
+import { SYNTHESIS_LAYER_UI_ENABLED } from "@/lib/synthesisLayerUi";
+import { isDesktopShell } from "@/lib/webAppAccess";
 
 // LYKN icon mark — blue in light mode, neutral (near-white) in dark mode.
 function LyknMark({ className = "", draggable = false }) {
@@ -55,6 +57,10 @@ export default function AppSidebar({
   const nav = useNavigate();
   const location = useLocation();
   const { user, signOut } = useAuth();
+  // Electron hiddenInset traffic lights sit at ~y:18 in the top-left. Keep the
+  // logo/toggle below that zone so close/minimize stay visible in fullscreen.
+  const desktopShell = isDesktopShell();
+  const titleChromeTop = desktopShell ? "top-12" : "top-3";
 
   const effectiveHighlightSynthesis = highlightSynthesis;
   const lockedDestination = restrictToSynthesis ? "/synthesis-layer" : null;
@@ -340,18 +346,22 @@ export default function AppSidebar({
 
   const userMenuItems = (
     <>
-      <button
-        type="button"
-        onClick={() => { setUserMenuOpen(false); nav("/synthesis-layer"); }}
-        title="Synthesis Layer"
-        className={`w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors ${
-          effectiveHighlightSynthesis ? "lykn-sidebar-synthesis-glow" : ""
-        }`}
-      >
-        <Brain className={`w-3.5 h-3.5 ${effectiveHighlightSynthesis ? "text-blue-400" : "text-black/50 dark:text-white/50"}`} />
-        Synthesis Layer
-      </button>
-      <div className="my-1 border-t border-black/5 dark:border-white/5" />
+      {SYNTHESIS_LAYER_UI_ENABLED ? (
+        <>
+          <button
+            type="button"
+            onClick={() => { setUserMenuOpen(false); nav("/synthesis-layer"); }}
+            title="Synthesis Layer"
+            className={`w-full text-left rounded-lg px-3 py-1.5 flex items-center gap-2 hover:bg-black/[0.06] dark:hover:bg-white/10 transition-colors ${
+              effectiveHighlightSynthesis ? "lykn-sidebar-synthesis-glow" : ""
+            }`}
+          >
+            <Brain className={`w-3.5 h-3.5 ${effectiveHighlightSynthesis ? "text-blue-400" : "text-black/50 dark:text-white/50"}`} />
+            Synthesis Layer
+          </button>
+          <div className="my-1 border-t border-black/5 dark:border-white/5" />
+        </>
+      ) : null}
       <button
         type="button"
         onClick={() => { setUserMenuOpen(false); goTo("/settings"); }}
@@ -395,7 +405,7 @@ export default function AppSidebar({
           logo fades in with a short delay so it lands as the panel finishes
           sliding open instead of popping in over the still-opening panel
           (the previous instant conditional swap caused that glitch). */}
-      <div className="fixed left-2.5 top-3 z-[80] grid h-9 items-center">
+      <div className={`fixed left-2.5 ${titleChromeTop} z-[80] grid h-9 items-center`}>
         <span
           className={`col-start-1 row-start-1 flex items-center pl-1 select-none pointer-events-none transition-opacity duration-200 ${
             open ? "opacity-100 delay-150" : "opacity-0"
@@ -432,7 +442,9 @@ export default function AppSidebar({
 
       {/* ── Collapsed icon rail (cross-fades in over the panel as it collapses) ── */}
       <div
-        className={`fixed top-0 left-0 z-[72] h-[100svh] w-14 bg-panel pt-16 pb-3 flex flex-col items-center transition-opacity duration-200 ease-out ${
+        className={`fixed top-0 left-0 z-[72] h-[100svh] w-14 bg-[hsl(var(--sidebar-surface))] ${
+          desktopShell ? "pt-24" : "pt-16"
+        } pb-3 flex flex-col items-center transition-opacity duration-200 ease-out ${
           open ? "opacity-0 pointer-events-none" : "opacity-100"
         }`}
         aria-hidden={open}
@@ -510,19 +522,23 @@ export default function AppSidebar({
       </div>
 
       <div
-        className={`fixed top-0 left-0 z-[70] h-[100svh] overflow-hidden bg-panel transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] ${
+        className={`fixed top-0 left-0 z-[70] h-[100svh] overflow-hidden bg-[hsl(var(--sidebar-surface))] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] ${
           open ? "w-[12rem]" : "w-0"
         } ${isLocked ? "lykn-sidebar-locked" : ""}`}
       >
        <div
-         className={`relative w-[12rem] h-full p-3 pt-14 flex flex-col transition-opacity duration-200 ease-out ${
+         className={`relative w-[12rem] h-full p-3 ${
+           desktopShell ? "pt-20" : "pt-14"
+         } flex flex-col transition-opacity duration-200 ease-out ${
            open ? "opacity-100" : "opacity-0"
          }`}
        >
         <button
           type="button"
           onClick={() => setOpen(false)}
-          className="absolute top-3 right-2 z-10 w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center"
+          className={`absolute ${
+            desktopShell ? "top-12" : "top-3"
+          } right-2 z-10 w-7 h-7 rounded-md hover:bg-blue-500/15 transition-colors flex items-center justify-center`}
           title="Close panel"
           aria-label="Close panel"
         >

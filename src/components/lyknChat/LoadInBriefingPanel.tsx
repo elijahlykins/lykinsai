@@ -29,6 +29,10 @@ import {
   X,
 } from "lucide-react";
 import type { LoadInUpdatesStats } from "@/lib/synthesis/loadInUpdates";
+import {
+  SYNTHESIS_LAYER_UI_ENABLED,
+  synthesisLayerHref,
+} from "@/lib/synthesisLayerUi";
 
 interface Props {
   stats: LoadInUpdatesStats;
@@ -299,8 +303,10 @@ const LoadInBriefingPanel: React.FC<Props> = ({ stats, greetingName }) => {
                 ? `${stats.approvals.newFacts} new neurons`
                 : undefined
           }
-          href="/synthesis-layer"
-          onInternalClick={goInternal("/synthesis-layer")}
+          href={SYNTHESIS_LAYER_UI_ENABLED ? "/synthesis-layer" : "/projects"}
+          onInternalClick={goInternal(
+            SYNTHESIS_LAYER_UI_ENABLED ? "/synthesis-layer" : "/projects",
+          )}
         />
       </div>
 
@@ -483,40 +489,30 @@ const LoadInBriefingPanel: React.FC<Props> = ({ stats, greetingName }) => {
         </div>
       </div>
 
-      {/* Synthesis footer — quiet status if nothing pending. The whole
-          row is a link to the synthesis layer with a hover sheen and
-          arrow reveal. */}
+      {/* Footer — projects status (synthesis graph soft-unplugged). */}
       <a
-        href="/synthesis-layer"
-        onClick={goInternal("/synthesis-layer")}
+        href={SYNTHESIS_LAYER_UI_ENABLED ? synthesisLayerHref() : "/projects"}
+        onClick={goInternal(
+          SYNTHESIS_LAYER_UI_ENABLED ? synthesisLayerHref() : "/projects",
+        )}
         title={
-          approvalsTotal > 0
-            ? `${approvalsTotal} pending in the synthesis layer`
-            : "Open the synthesis layer"
+          stats.projects > 0
+            ? `${stats.projects} active project${stats.projects === 1 ? "" : "s"}`
+            : "Open chat"
         }
         className="group/foot relative border-t border-white/40 dark:border-white/10 bg-white/30 dark:bg-white/[0.02] hover:bg-white/55 dark:hover:bg-white/[0.05] px-5 py-3 flex items-center justify-between transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/40"
       >
         <div className="flex items-center gap-2 text-[11px] text-black/70 dark:text-white/70 group-hover/foot:text-black/95 dark:group-hover/foot:text-white/95 transition-colors">
           <span className="relative flex h-2 w-2">
-            {approvalsTotal > 0 ? (
-              <>
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-fuchsia-400 opacity-60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-fuchsia-500 group-hover/foot:scale-125 transition-transform" />
-              </>
-            ) : (
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500 group-hover/foot:scale-125 transition-transform" />
-            )}
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500 group-hover/foot:scale-125 transition-transform" />
           </span>
           <span className="font-medium">
-            {approvalsTotal > 0
-              ? `${approvalsTotal} pending`
-              : "Synthesis layer is steady"}
+            {stats.projects > 0
+              ? `${stats.projects} project${stats.projects === 1 ? "" : "s"} active`
+              : "You're caught up"}
           </span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="text-[10.5px] tabular-nums text-black/45 dark:text-white/45 group-hover/foot:text-black/70 dark:group-hover/foot:text-white/70 transition-colors">
-            {stats.projects} project{stats.projects === 1 ? "" : "s"} active
-          </span>
           <ArrowUpRight className="w-3 h-3 text-black/30 dark:text-white/30 group-hover/foot:text-black/70 dark:group-hover/foot:text-white/70 opacity-0 group-hover/foot:opacity-100 -translate-x-1 group-hover/foot:translate-x-0 transition-all" />
         </div>
       </a>

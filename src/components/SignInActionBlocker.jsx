@@ -20,7 +20,7 @@ export default function SignInActionBlocker({
     <div
       className={`${
         contained ? "absolute" : "fixed"
-      } inset-0 z-[320] bg-[#f8f7f3] dark:bg-[#0f0f0f] overflow-y-auto`}
+      } inset-0 z-[320] bg-[var(--app-background,#ececeb)] overflow-y-auto`}
     >
       <button
         type="button"

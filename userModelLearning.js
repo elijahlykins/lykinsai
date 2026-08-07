@@ -53,7 +53,9 @@ export const FACT_KINDS = [
 
 const FACT_KIND_SET = new Set(FACT_KINDS);
 
-const FACT_STATUSES = new Set(['inferred', 'stated', 'confirmed', 'corrected', 'dismissed']);
+const FACT_STATUSES = new Set([
+  'pending', 'inferred', 'stated', 'confirmed', 'corrected', 'dismissed',
+]);
 
 // Reconciliation tuning — keep conservative; user-visible confidence numbers
 // should move slowly so they feel earned.
@@ -395,7 +397,9 @@ Rules:
   · 0.60–0.80 if strongly implied by multiple sources
   · 0.40–0.55 if reasonably inferred from one source
   · do not invent confidence — if it's a guess, say 0.40
+  · vault_note-only or connector-synced notes: cap confidence ≤0.65 — these become soft User Facts until the user confirms in chat
 - Always include ≥1 evidence entry per fact. The "snippet" must be quoted from the actual source text — do not paraphrase.
+- Prefer extracting identity/preference/style/relationship claims from vault notes tagged about the person (profiles, bios, "about me") — still soft until chat ratification.
 - DO NOT re-emit anything in <do_not_re_emit>. The user has explicitly rejected those.
 - Refine, do not duplicate, anything in <known_facts>. If existing knowledge is still supported, restate the same "text" so the reconciler can match by key.
 - No biographical guessing not grounded in evidence. No content moralizing.`;
@@ -480,7 +484,7 @@ function sanitizeIncomingFact(raw) {
   if (!text) return null;
   const key = normalizeFactKey(text);
   if (!key) return null;
-  const confidence = clamp(Number(raw.confidence), 0.05, 1);
+  let confidence = clamp(Number(raw.confidence), 0.05, 1);
   const evidence = Array.isArray(raw.evidence)
     ? raw.evidence
       .map((e) => {
@@ -494,6 +498,10 @@ function sanitizeIncomingFact(raw) {
       .filter(Boolean)
       .slice(0, MAX_EVIDENCE_PER_FACT)
     : [];
+  // Soft-cap vault-only candidates so they never outrank chat-confirmed facts.
+  const sources = new Set(evidence.map((e) => e.source_type));
+  const vaultOnly = sources.size > 0 && [...sources].every((s) => s === 'vault_note');
+  if (vaultOnly) confidence = Math.min(confidence, 0.65);
   return { fact_kind: kind, fact_text: text, fact_key: key, confidence, evidence };
 }
 
@@ -840,6 +848,26 @@ export async function recordLearnedFactFromChat(client, userId, payload) {
 async function createOrReinforceFact(client, userId, ctx) {
   const { text, fact_kind, fact_key, reason, sourceId, existing, now, provenance } = ctx;
   const dupKey = `${fact_kind}::${fact_key}`;
+  const dismissed = existing.find(
+    (f) => f.status === 'dismissed' && `${f.fact_kind}::${f.fact_key}` === dupKey,
+  );
+  if (dismissed) {
+    return {
+      ok: true,
+      blocked: true,
+      reason: 'dismissed',
+      fact: {
+        id: dismissed.id,
+        fact_kind: dismissed.fact_kind,
+        fact_text: dismissed.fact_text,
+        status: 'dismissed',
+        confidence: 0,
+        reason: null,
+        isNew: false,
+        isUpdate: false,
+      },
+    };
+  }
   const wasNew = !existing.some((f) => `${f.fact_kind}::${f.fact_key}` === dupKey);
 
   const incoming = [{
@@ -1175,6 +1203,11 @@ function normalizeFactRow(row) {
     project_id: row.project_id || null,
     first_seen_at: row.first_seen_at,
     last_seen_at: row.last_seen_at,
+    confirmed_at: row.confirmed_at || null,
+    pending_confirm: Boolean(row.pending_confirm),
+    evidence_quote: row.evidence_quote || null,
+    supersedes_fact_id: row.supersedes_fact_id || null,
+    updated_at: row.updated_at || null,
   };
 }
 
@@ -1435,9 +1468,10 @@ export async function listActiveFactsForUser(client, userId, opts = {}) {
   const limit = Math.min(Math.max(opts.limit || 200, 1), 500);
   const { data, error } = await client
     .from('lykn_user_model_facts')
-    .select('id, fact_kind, fact_text, confidence, status, correction_text, evidence, evidence_count, source_types, first_seen_at, last_seen_at')
+    .select('id, fact_kind, fact_text, fact_key, confidence, status, correction_text, evidence, evidence_count, source_types, first_seen_at, last_seen_at, confirmed_at, pending_confirm, evidence_quote, updated_at')
     .eq('user_id', userId)
     .neq('status', 'dismissed')
+    .neq('status', 'pending')
     .gte('confidence', minConfidence)
     .order('confidence', { ascending: false })
     .order('last_seen_at', { ascending: false })
@@ -1453,16 +1487,23 @@ export async function listActiveFactsForUser(client, userId, opts = {}) {
  * Render a compact line-per-fact block suitable for the [USER_MODEL] prompt
  * section. Caps at maxChars. Prioritizes confirmed/stated > high-confidence
  * inferred. Skips facts below a soft confidence floor.
+ *
+ * Prefer `packUserFactsForPrompt` for chat turns — it ranks by confirmed +
+ * recency + query relevance so new ratified facts are not truncated behind
+ * ancient high-confidence noise.
  */
 export function formatFactsForPrompt(facts, maxChars = 1800) {
   if (!Array.isArray(facts) || !facts.length) return '';
   const ranked = facts
     .slice()
-    .filter((f) => f.status !== 'dismissed' && (f.confidence ?? 0) >= 0.4)
+    .filter((f) => f.status !== 'dismissed' && f.status !== 'pending' && (f.confidence ?? 0) >= 0.4)
     .sort((a, b) => {
-      const sr = { stated: 4, confirmed: 3, corrected: 2, inferred: 1 };
+      const sr = { confirmed: 5, stated: 4, corrected: 3, inferred: 1, pending: 0 };
       const ds = (sr[b.status] || 0) - (sr[a.status] || 0);
       if (ds !== 0) return ds;
+      const ta = Date.parse(b.confirmed_at || b.last_seen_at || 0) || 0;
+      const tb = Date.parse(a.confirmed_at || a.last_seen_at || 0) || 0;
+      if (ta !== tb) return ta - tb;
       return (b.confidence || 0) - (a.confidence || 0);
     });
 
@@ -1487,6 +1528,634 @@ export function formatFactsForPrompt(facts, maxChars = 1800) {
   let out = lines.join('\n').trim();
   if (out.length > maxChars) out = `${out.slice(0, maxChars)}…`;
   return out;
+}
+
+function factRecencyMs(f) {
+  return (
+    Date.parse(f?.confirmed_at || '') ||
+    Date.parse(f?.last_seen_at || '') ||
+    Date.parse(f?.updated_at || '') ||
+    Date.parse(f?.first_seen_at || '') ||
+    0
+  );
+}
+
+function tokenizeQuery(q) {
+  return String(q || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s_-]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length >= 3)
+    .slice(0, 12);
+}
+
+function factRelevanceScore(fact, tokens) {
+  if (!tokens.length) return 0;
+  const hay = `${fact.fact_text || ''} ${fact.fact_kind || ''}`.toLowerCase();
+  let hits = 0;
+  for (const t of tokens) {
+    if (hay.includes(t)) hits += 1;
+  }
+  return hits / tokens.length;
+}
+
+/** How much of this fact already appeared in prior assistant prose (0–1). */
+function factOverlapWithText(fact, priorText) {
+  const hay = String(priorText || '').toLowerCase();
+  if (!hay) return 0;
+  const words = String(fact?.fact_text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s_-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 4);
+  if (!words.length) return 0;
+  let hits = 0;
+  for (const w of words) {
+    if (hay.includes(w)) hits += 1;
+  }
+  return hits / words.length;
+}
+
+/**
+ * Tiered User-Fact prompt packer (Synthesis v2).
+ *
+ *   1. Core — recent confirmed facts (always-on / slim turns)
+ *   2. Relevant — soft + confirmed facts matching the user message
+ *   3. Soft fill — remaining stated/inferred by recency
+ *
+ * Confirmed + recent always win over ancient high-confidence noise.
+ * Returns `{ text, relevantIds }` — relevantIds matched this turn's query
+ * (for last_seen_at touch / reinforce).
+ */
+export function packUserFactsForPrompt(facts, opts = {}) {
+  const slim = !!opts.slim;
+  const recall = !!opts.recall;
+  const deepen = !!opts.deepen;
+  const queryText = String(opts.queryText || '');
+  const deprioritizeText = String(opts.deprioritizeText || '');
+  // Recall turns ("what do you know about me?") need a wider pack so the
+  // model isn't forced to fall back on [WHAT_IM_ON] project context.
+  // Deepen packs even wider and prefers facts not already said aloud.
+  const coreMax = slim ? 6 : deepen ? 24 : recall ? 18 : 10;
+  const relevantMax = slim ? 0 : deepen ? 16 : recall ? 12 : 8;
+  const softMax = slim ? 2 : deepen ? 16 : recall ? 12 : 6;
+  const maxChars = slim
+    ? 900
+    : (opts.maxChars || (deepen ? 4800 : recall ? 3600 : 2200));
+
+  const active = (facts || []).filter(
+    (f) => f && f.status !== 'dismissed' && f.status !== 'pending' && String(f.fact_text || '').trim(),
+  );
+  if (!active.length) return { text: '', relevantIds: [] };
+
+  const tokens = tokenizeQuery(queryText);
+  const picked = [];
+  const seen = new Set();
+  const relevantIds = [];
+
+  const push = (f, { relevant = false } = {}) => {
+    if (!f?.id && !f?.fact_text) return;
+    const key = f.id || `${f.fact_kind}:${f.fact_key || f.fact_text}`;
+    if (seen.has(key)) {
+      if (relevant && f.id && !relevantIds.includes(f.id)) relevantIds.push(f.id);
+      return;
+    }
+    seen.add(key);
+    picked.push(f);
+    if (relevant && f.id) relevantIds.push(f.id);
+  };
+
+  const sortForRecall = (a, b) => {
+    if (deprioritizeText) {
+      const oa = factOverlapWithText(a, deprioritizeText);
+      const ob = factOverlapWithText(b, deprioritizeText);
+      if (Math.abs(oa - ob) > 0.05) return oa - ob; // less-said first
+    }
+    return factRecencyMs(b) - factRecencyMs(a);
+  };
+
+  const confirmed = active
+    .filter((f) => f.status === 'confirmed')
+    .sort(sortForRecall);
+  for (const f of confirmed.slice(0, coreMax)) push(f);
+
+  if (!slim && tokens.length) {
+    const relevant = active
+      .map((f) => ({ f, score: factRelevanceScore(f, tokens) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return factRecencyMs(b.f) - factRecencyMs(a.f);
+      });
+    for (const { f } of relevant) {
+      const key = f.id || `${f.fact_kind}:${f.fact_key}`;
+      if (picked.length >= coreMax + relevantMax && !seen.has(key)) break;
+      push(f, { relevant: true });
+    }
+  }
+
+  const soft = active
+    .filter((f) => f.status === 'stated' || f.status === 'inferred' || f.status === 'corrected')
+    .sort(sortForRecall);
+  for (const f of soft) {
+    if (picked.length >= coreMax + relevantMax + softMax) break;
+    push(f);
+  }
+
+  if (!picked.length) return { text: '', relevantIds: [] };
+
+  const lines = [
+    '[WHO_I_AM]',
+    deepen
+      ? 'User Facts — go beyond what was already said in chat. Prefer under-covered kinds (people, style, constraints, goals) and facts not yet mentioned.'
+      : 'User Facts — ratified claims (✓) and softer prefs (· / ?). Prefer ✓. When they contradict a fact, propose an update for them to confirm in chat.',
+    '',
+  ];
+
+  // People & places: surface relationship + location-ish identity facts first
+  // so the model can treat them as entities, not just flat preference lines.
+  const placeRe = /\b(lives?|based|from|in|near|city|town|brooklyn|berlin|london|nyc|seattle|austin|tokyo|paris)\b/i;
+  const people = picked.filter((f) => f.fact_kind === 'relationship');
+  const places = picked.filter(
+    (f) =>
+      f.fact_kind === 'identity' &&
+      placeRe.test(String(f.fact_text || '')),
+  );
+  if (people.length || places.length) {
+    lines.push('People & places:');
+    for (const f of people.slice(0, deepen ? 10 : 6)) {
+      const tag = f.status === 'confirmed' ? '✓' : '·';
+      lines.push(`  ${tag} [person] ${String(f.fact_text).replace(/\s+/g, ' ').trim()}`);
+    }
+    for (const f of places.slice(0, deepen ? 6 : 4)) {
+      const tag = f.status === 'confirmed' ? '✓' : '·';
+      lines.push(`  ${tag} [place] ${String(f.fact_text).replace(/\s+/g, ' ').trim()}`);
+    }
+    lines.push('');
+  }
+
+  const byKind = new Map();
+  for (const f of picked) {
+    const arr = byKind.get(f.fact_kind) || [];
+    arr.push(f);
+    byKind.set(f.fact_kind, arr);
+  }
+  // Voice / style profile — how to write TO them (separate from who they are).
+  const styleFacts = byKind.get('style') || [];
+  if (styleFacts.length) {
+    lines.push('Voice & style (how to reply):');
+    for (const f of styleFacts.slice(0, deepen ? 10 : 6)) {
+      const tag = f.status === 'confirmed' ? '✓' : f.status === 'stated' || f.status === 'corrected' ? '·' : '?';
+      lines.push(`  ${tag} ${String(f.fact_text).replace(/\s+/g, ' ').trim()}`);
+    }
+    lines.push('');
+  }
+
+  // Deepen leads with nuance kinds first so the model isn't re-anchored on
+  // the same identity headline it already used.
+  const order = deepen
+    ? ['constraint', 'goal', 'preference', 'style', 'relationship', 'theme', 'focus', 'identity']
+    : ['identity', 'focus', 'goal', 'theme', 'preference', 'constraint', 'relationship'];
+  for (const kind of order) {
+    const arr = byKind.get(kind);
+    if (!arr?.length) continue;
+    lines.push(`${capitalize(kind)}:`);
+    for (const f of arr) {
+      const tag = f.status === 'confirmed' ? '✓' : f.status === 'stated' || f.status === 'corrected' ? '·' : '?';
+      lines.push(`  ${tag} ${String(f.fact_text).replace(/\s+/g, ' ').trim()}`);
+    }
+  }
+  let out = lines.join('\n').trim();
+  if (out.length > maxChars) {
+    // Truncate from soft tail: rebuild with confirmed-first until budget fits.
+    const confirmedOnly = picked.filter((f) => f.status === 'confirmed');
+    const rest = picked.filter((f) => f.status !== 'confirmed');
+    const trimmed = [];
+    for (const f of [...confirmedOnly, ...rest]) {
+      trimmed.push(f);
+      const trial = formatFactsForPrompt(trimmed, maxChars);
+      const packed = [
+        '[WHO_I_AM]',
+        'User Facts — ratified claims (✓) and softer prefs (· / ?). Prefer ✓.',
+        '',
+        trial,
+      ].join('\n').trim();
+      if (packed.length > maxChars && trimmed.length > 1) {
+        trimmed.pop();
+        break;
+      }
+    }
+    out = [
+      '[WHO_I_AM]',
+      'User Facts — ratified claims (✓) and softer prefs (· / ?). Prefer ✓.',
+      '',
+      formatFactsForPrompt(trimmed, maxChars),
+    ].join('\n').trim();
+  }
+  return { text: out, relevantIds };
+}
+
+/** Bump last_seen_at for facts that matched this turn (recency reinforcement). */
+export async function touchUserFacts(client, userId, factIds = []) {
+  const ids = [...new Set((factIds || []).filter(Boolean))].slice(0, 24);
+  if (!client || !userId || !ids.length) return { ok: false, touched: 0 };
+  const now = new Date().toISOString();
+  const { error } = await client
+    .from('lykn_user_model_facts')
+    .update({ last_seen_at: now, updated_at: now })
+    .eq('user_id', userId)
+    .in('id', ids)
+    .neq('status', 'dismissed')
+    .neq('status', 'pending');
+  if (error) {
+    console.warn('⚠️ touchUserFacts:', error.message);
+    return { ok: false, touched: 0 };
+  }
+  return { ok: true, touched: ids.length };
+}
+
+/**
+ * Propose a User Fact for in-chat ratification (status=pending).
+ * When `replacesText` is set, links the pending row via supersedes_fact_id
+ * so Yes retires the old claim (contradiction / refine flow).
+ */
+export async function proposePendingFactFromChat(client, userId, payload = {}) {
+  try {
+    if (!client || !userId) return { ok: false, reason: 'no_db' };
+    const text = String(payload.text || '').trim().slice(0, 240);
+    if (!text) return { ok: false, reason: 'empty_text' };
+    const rawKind = String(payload.kind || 'identity').trim().toLowerCase();
+    const fact_kind = FACT_KIND_SET.has(rawKind) ? rawKind : 'identity';
+    const reason = String(payload.reason || payload.evidenceQuote || '').trim().slice(0, 240) || null;
+    const evidenceQuote = String(payload.evidenceQuote || reason || '').trim().slice(0, 240) || null;
+    const sourceMessageId = payload.sourceMessageId
+      ? String(payload.sourceMessageId).slice(0, 128)
+      : null;
+    const replacesText = String(payload.replacesText || '').trim().slice(0, 240);
+    const fact_key = normalizeFactKey(text);
+    if (!fact_key) return { ok: false, reason: 'unkeyable_text' };
+
+    const existing = await fetchAllFacts(client, userId);
+
+    // Do-not-relearn: user dismissed this exact claim — never re-prompt.
+    // (Replacements of a different claim still allowed via replacesText.)
+    const dismissedBlock = existing.find(
+      (f) =>
+        f.status === 'dismissed' &&
+        f.fact_kind === fact_kind &&
+        f.fact_key === fact_key,
+    );
+    if (dismissedBlock && !replacesText) {
+      return {
+        ok: true,
+        blocked: true,
+        reason: 'dismissed',
+        fact: {
+          id: dismissedBlock.id,
+          fact_kind: dismissedBlock.fact_kind,
+          fact_text: dismissedBlock.fact_text,
+          status: 'dismissed',
+          confidence: 0,
+          reason: null,
+          needsConfirm: false,
+          isNew: false,
+          isUpdate: false,
+          previousText: null,
+        },
+      };
+    }
+
+    // Resolve which existing fact this proposal would replace.
+    let supersedesId = null;
+    let previousText = null;
+    if (replacesText) {
+      const oldKey = normalizeFactKey(replacesText);
+      if (oldKey) {
+        let oldRow = existing.find(
+          (f) => f.fact_key === oldKey && f.fact_kind === fact_kind && f.status !== 'dismissed',
+        );
+        if (!oldRow) {
+          oldRow = existing.find((f) => f.fact_key === oldKey && f.status !== 'dismissed');
+        }
+        if (oldRow) {
+          // Same text + same key → nothing to replace; treat as already known.
+          if (oldRow.fact_key === fact_key && oldRow.fact_kind === fact_kind) {
+            if (oldRow.status === 'confirmed') {
+              return {
+                ok: true,
+                alreadyConfirmed: true,
+                fact: {
+                  id: oldRow.id,
+                  fact_kind: oldRow.fact_kind,
+                  fact_text: oldRow.fact_text,
+                  status: oldRow.status,
+                  confidence: oldRow.confidence,
+                  reason,
+                  needsConfirm: false,
+                  isNew: false,
+                  isUpdate: false,
+                  previousText: null,
+                },
+              };
+            }
+          } else {
+            supersedesId = oldRow.id;
+            previousText = oldRow.fact_text;
+          }
+        }
+      }
+    }
+
+    const dup = existing.find(
+      (f) => f.fact_kind === fact_kind && f.fact_key === fact_key && f.status !== 'dismissed',
+    );
+    if (dup && !supersedesId) {
+      if (dup.status === 'confirmed') {
+        return {
+          ok: true,
+          alreadyConfirmed: true,
+          fact: {
+            id: dup.id,
+            fact_kind: dup.fact_kind,
+            fact_text: dup.fact_text,
+            status: dup.status,
+            confidence: dup.confidence,
+            reason,
+            needsConfirm: false,
+            isNew: false,
+            isUpdate: false,
+            previousText: null,
+          },
+        };
+      }
+      // Re-open confirm on an existing soft/pending row.
+      const now = new Date().toISOString();
+      const { data, error } = await client
+        .from('lykn_user_model_facts')
+        .update({
+          pending_confirm: true,
+          status: 'pending',
+          evidence_quote: evidenceQuote,
+          source_message_id: sourceMessageId,
+          last_seen_at: now,
+          updated_at: now,
+          confidence: Math.max(dup.confidence || 0.5, 0.7),
+          supersedes_fact_id: null,
+        })
+        .eq('id', dup.id)
+        .eq('user_id', userId)
+        .select('id, fact_kind, fact_text, status, confidence, evidence_quote, pending_confirm, supersedes_fact_id')
+        .maybeSingle();
+      if (error) return { ok: false, reason: error.message };
+      return {
+        ok: true,
+        fact: {
+          id: data.id,
+          fact_kind: data.fact_kind,
+          fact_text: data.fact_text,
+          status: data.status,
+          confidence: data.confidence,
+          reason: data.evidence_quote || reason,
+          needsConfirm: true,
+          isNew: false,
+          isUpdate: false,
+          previousText: null,
+        },
+      };
+    }
+
+    // Reuse an existing pending replace for the same supersedes target + new key.
+    if (supersedesId) {
+      const pendingReplace = existing.find(
+        (f) =>
+          f.status === 'pending' &&
+          f.supersedes_fact_id === supersedesId &&
+          f.fact_kind === fact_kind &&
+          f.fact_key === fact_key,
+      );
+      if (pendingReplace) {
+        const now = new Date().toISOString();
+        const { data, error } = await client
+          .from('lykn_user_model_facts')
+          .update({
+            fact_text: text,
+            evidence_quote: evidenceQuote,
+            source_message_id: sourceMessageId,
+            pending_confirm: true,
+            last_seen_at: now,
+            updated_at: now,
+          })
+          .eq('id', pendingReplace.id)
+          .eq('user_id', userId)
+          .select('id, fact_kind, fact_text, status, confidence, evidence_quote, pending_confirm, supersedes_fact_id')
+          .maybeSingle();
+        if (error) return { ok: false, reason: error.message };
+        return {
+          ok: true,
+          fact: {
+            id: data.id,
+            fact_kind: data.fact_kind,
+            fact_text: data.fact_text,
+            status: data.status,
+            confidence: data.confidence,
+            reason: data.evidence_quote || reason,
+            needsConfirm: true,
+            isNew: false,
+            isUpdate: true,
+            previousText,
+          },
+        };
+      }
+    }
+
+    // If new text collides with another active row while replacing, reopen that
+    // row as pending and point supersedes at the old claim.
+    if (dup && supersedesId && dup.id !== supersedesId) {
+      const now = new Date().toISOString();
+      const { data, error } = await client
+        .from('lykn_user_model_facts')
+        .update({
+          pending_confirm: true,
+          status: 'pending',
+          fact_text: text,
+          evidence_quote: evidenceQuote,
+          source_message_id: sourceMessageId,
+          supersedes_fact_id: supersedesId,
+          last_seen_at: now,
+          updated_at: now,
+          confidence: Math.max(dup.confidence || 0.5, 0.75),
+        })
+        .eq('id', dup.id)
+        .eq('user_id', userId)
+        .select('id, fact_kind, fact_text, status, confidence, evidence_quote, pending_confirm, supersedes_fact_id')
+        .maybeSingle();
+      if (error) return { ok: false, reason: error.message };
+      return {
+        ok: true,
+        fact: {
+          id: data.id,
+          fact_kind: data.fact_kind,
+          fact_text: data.fact_text,
+          status: data.status,
+          confidence: data.confidence,
+          reason: data.evidence_quote || reason,
+          needsConfirm: true,
+          isNew: false,
+          isUpdate: true,
+          previousText,
+        },
+      };
+    }
+
+    const now = new Date().toISOString();
+    const row = {
+      user_id: userId,
+      fact_kind,
+      fact_text: text,
+      fact_key,
+      confidence: 0.75,
+      status: 'pending',
+      pending_confirm: true,
+      evidence_quote: evidenceQuote,
+      source_message_id: sourceMessageId,
+      supersedes_fact_id: supersedesId,
+      evidence: [{
+        source_type: 'conversation',
+        source_id: payload.sourceId || 'live_chat',
+        snippet: (evidenceQuote || text).slice(0, 240),
+        observed_at: now,
+      }],
+      evidence_count: 1,
+      source_types: ['conversation'],
+      first_seen_at: now,
+      last_seen_at: now,
+      updated_at: now,
+    };
+    const { data, error } = await client
+      .from('lykn_user_model_facts')
+      .insert(row)
+      .select('id, fact_kind, fact_text, status, confidence, evidence_quote, pending_confirm, supersedes_fact_id')
+      .maybeSingle();
+    if (error) return { ok: false, reason: error.message };
+    return {
+      ok: true,
+      fact: {
+        id: data.id,
+        fact_kind: data.fact_kind,
+        fact_text: data.fact_text,
+        status: data.status,
+        confidence: data.confidence,
+        reason: data.evidence_quote || reason,
+        needsConfirm: true,
+        isNew: !supersedesId,
+        isUpdate: Boolean(supersedesId),
+        previousText,
+      },
+    };
+  } catch (e) {
+    return { ok: false, reason: `internal: ${e?.message || e}`.slice(0, 240) };
+  }
+}
+
+export async function confirmUserFact(client, userId, factId, opts = {}) {
+  if (!client || !userId || !factId) return { ok: false, reason: 'bad_args' };
+  const now = new Date().toISOString();
+
+  // Load first so we can retire a superseded fact after confirm.
+  const { data: before, error: beforeErr } = await client
+    .from('lykn_user_model_facts')
+    .select('id, supersedes_fact_id, fact_text')
+    .eq('id', factId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (beforeErr) return { ok: false, reason: beforeErr.message };
+  if (!before) return { ok: false, reason: 'not_found' };
+
+  const patch = {
+    status: 'confirmed',
+    pending_confirm: false,
+    confirmed_at: now,
+    confidence: 1,
+    last_seen_at: now,
+    updated_at: now,
+  };
+  const edited = String(opts.factText || '').trim().slice(0, 240);
+  if (edited) {
+    const key = normalizeFactKey(edited);
+    if (!key) return { ok: false, reason: 'unkeyable_text' };
+    patch.fact_text = edited;
+    patch.fact_key = key;
+  }
+  const { data, error } = await client
+    .from('lykn_user_model_facts')
+    .update(patch)
+    .eq('id', factId)
+    .eq('user_id', userId)
+    .select('id, fact_kind, fact_text, status, confidence, confirmed_at, evidence_quote, supersedes_fact_id')
+    .maybeSingle();
+  if (error) return { ok: false, reason: error.message };
+  if (!data) return { ok: false, reason: 'not_found' };
+
+  // Retire the old claim so packing / re-learn won't keep the stale ✓ fact.
+  const supersededId = data.supersedes_fact_id || before.supersedes_fact_id;
+  let previousText = null;
+  if (supersededId) {
+    const { data: oldRow } = await client
+      .from('lykn_user_model_facts')
+      .select('fact_text')
+      .eq('id', supersededId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    previousText = oldRow?.fact_text || null;
+    await client
+      .from('lykn_user_model_facts')
+      .update({
+        status: 'dismissed',
+        pending_confirm: false,
+        correction_text: data.fact_text,
+        updated_at: now,
+        last_seen_at: now,
+      })
+      .eq('id', supersededId)
+      .eq('user_id', userId)
+      .neq('status', 'dismissed');
+  }
+
+  return {
+    ok: true,
+    fact: {
+      id: data.id,
+      fact_kind: data.fact_kind,
+      fact_text: data.fact_text,
+      status: data.status,
+      confidence: data.confidence,
+      reason: data.evidence_quote || null,
+      needsConfirm: false,
+      isNew: false,
+      isUpdate: Boolean(edited) || Boolean(supersededId),
+      previousText,
+    },
+  };
+}
+
+export async function dismissUserFact(client, userId, factId) {
+  if (!client || !userId || !factId) return { ok: false, reason: 'bad_args' };
+  const now = new Date().toISOString();
+  const { data, error } = await client
+    .from('lykn_user_model_facts')
+    .update({
+      status: 'dismissed',
+      pending_confirm: false,
+      updated_at: now,
+      last_seen_at: now,
+    })
+    .eq('id', factId)
+    .eq('user_id', userId)
+    .select('id, fact_kind, fact_text, status')
+    .maybeSingle();
+  if (error) return { ok: false, reason: error.message };
+  if (!data) return { ok: false, reason: 'not_found' };
+  return { ok: true, fact: data };
 }
 
 function capitalize(s) { return String(s || '').replace(/^./, (c) => c.toUpperCase()); }

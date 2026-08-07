@@ -33,21 +33,40 @@ function inferAttachmentType(att: VaultAttachmentData): string {
   const mime = String((att as any)?.mimeType || "").toLowerCase().split(";")[0].trim();
   const extSource = name || rawUrl.split("?")[0].split("/").pop() || "";
   const ext = extSource.split(".").pop()?.toLowerCase() || "";
-  if (rawUrl.startsWith("data:image/")) return "image";
-  if (rawUrl.startsWith("data:video/")) return "video";
-  if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  if (rawUrl.startsWith("data:image/") || mime.startsWith("image/") || IMAGE_EXTENSIONS.has(ext)) {
+    return "image";
+  }
+  if (rawUrl.startsWith("data:video/") || mime.startsWith("video/")) return "video";
   if (["html", "htm"].includes(ext) || mime === "text/html") return "html";
   if (rawUrl.includes("youtube.com") || rawUrl.includes("youtu.be")) return "youtube";
   return explicit || "file";
 }
 
 function linkLabel(att: VaultAttachmentData, rawUrl: string, name: string): string {
-  if (name) return name;
-  if (isSupabaseStorageUrl(rawUrl)) {
-    const pathTail = String(att?.storagePath || rawUrl.split("/").pop() || "").split("/").pop();
-    return pathTail || "View file";
+  const cleanedName = String(name || "").trim();
+  if (cleanedName && !isSupabaseStorageUrl(cleanedName) && !/^https?:\/\//i.test(cleanedName)) {
+    return cleanedName;
   }
-  return rawUrl;
+  if (isSupabaseStorageUrl(rawUrl) || isSupabaseStorageUrl(cleanedName)) {
+    const pathTail = String(att?.storagePath || rawUrl.split("?")[0].split("/").pop() || "")
+      .split("/")
+      .pop();
+    try {
+      const decoded = decodeURIComponent(pathTail || "");
+      if (decoded && !isSupabaseStorageUrl(decoded) && !/^https?:\/\//i.test(decoded)) {
+        return decoded;
+      }
+    } catch { /* ignore */ }
+    return "View file";
+  }
+  if (/^https?:\/\//i.test(cleanedName)) {
+    try {
+      return new URL(cleanedName).hostname.replace(/^www\./, "") || "Link";
+    } catch {
+      return "Link";
+    }
+  }
+  return cleanedName || "Link";
 }
 
 export default function VaultAttachment({ att, full = false }: { att: VaultAttachmentData; full?: boolean }) {
@@ -57,22 +76,24 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
-  // Images can load a smaller rendition (Phase 3 variants): thumb in the
-  // compact card, medium in the full view. Video keeps the original (its
-  // variant is a poster image, not a playable file).
-  const variantPrefer: "thumb" | "medium" | undefined =
-    type === "image" ? (full ? "medium" : "thumb") : undefined;
-  const storageTarget = useMemo(
-    () => resolveStorageTarget(att, variantPrefer ? { prefer: variantPrefer } : undefined),
-    [att, variantPrefer],
-  );
+  // Always resolve the ORIGINAL storage object for images. Thumb/medium
+  // variants are for the Vault grid only — chat cards + Pull-up stretch a
+  // ≤400/≤1280 JPEG and it reads as soft/fuzzy, especially on retina.
+  // Video also keeps the original (its variant is a poster JPEG, not a
+  // playable file).
+  const storageTarget = useMemo(() => resolveStorageTarget(att), [att]);
+  const storageKey = storageTarget
+    ? `${storageTarget.bucket}:${storageTarget.path}`
+    : "";
   // Re-resolve whenever we have a storage path — saved URLs expire, and HTML
   // artifacts need a branded file-proxy URL (correct MIME + frame-ancestors)
   // rather than a raw Supabase signed link.
   const needsSigning = !!storageTarget?.path && !!storageTarget?.bucket;
-  const displayUrl = signedUrl || rawUrl;
+  const displayUrl = signedUrl || (!needsSigning ? rawUrl : "");
 
   useEffect(() => {
+    setSignedUrl(null);
+    setFailed(false);
     if (!needsSigning || !storageTarget) return;
     let cancelled = false;
     (async () => {
@@ -120,7 +141,7 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
     return () => {
       cancelled = true;
     };
-  }, [needsSigning, storageTarget, type, name]);
+  }, [needsSigning, storageKey, storageTarget, type, name]);
 
   if (type === "image") {
     if (needsSigning && !signedUrl) {
@@ -136,13 +157,19 @@ export default function VaultAttachment({ att, full = false }: { att: VaultAttac
         </div>
       );
     }
+    if (!displayUrl) return null;
     return (
-      <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8">
+      <div className="rounded-lg overflow-hidden border border-black/5 dark:border-white/8 bg-black/[0.03] dark:bg-white/[0.04]">
         <img
           src={displayUrl}
           alt={name}
-          className={full ? "w-full max-h-[78vh] object-contain bg-black/5 dark:bg-white/5" : "w-full max-h-[240px] object-cover"}
+          className={
+            full
+              ? "w-full max-h-[78vh] object-contain"
+              : "w-full max-h-[320px] object-contain"
+          }
           loading="lazy"
+          decoding="async"
         />
         {name && !full && (
           <p className="text-[0.625rem] text-gray-400 dark:text-gray-500 px-2 py-1 truncate">

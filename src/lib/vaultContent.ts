@@ -100,9 +100,9 @@ export function resolveStorageTarget(
   // Prefer a smaller rendition when asked and available (Phase 3 variants).
   // thumb → medium → original; medium → original.
   const prefer = opts?.prefer;
+  const thumb = String(att?.variantThumbPath || "").trim();
+  const medium = String(att?.variantMediumPath || "").trim();
   if (prefer) {
-    const thumb = String(att?.variantThumbPath || "").trim();
-    const medium = String(att?.variantMediumPath || "").trim();
     const variantPath = prefer === "thumb" ? thumb || medium : medium;
     if (variantPath) return { bucket, path: variantPath };
   }
@@ -113,6 +113,11 @@ export function resolveStorageTarget(
       bucket,
       path: explicitPath,
     };
+  }
+  // Fall back to a variant path when the original was lost so the UI can
+  // still re-sign and offer "Try again" instead of a raw storage URL.
+  if (medium || thumb) {
+    return { bucket, path: medium || thumb };
   }
   const url = String(att?.url || "").trim();
   if (!url || url.startsWith("data:")) return null;

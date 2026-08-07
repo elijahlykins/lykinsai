@@ -1387,7 +1387,7 @@ const AUTO_LOAD_MAX = 3;
 const VIEW_INTENT_RE =
   /\b(show|see|view|open|display|render|pull\s*(?:up|in)|bring\s*(?:up|in)|drop\s+in|load)\b/i;
 const SAVED_CONTEXT_RE =
-  /\b(?:vault|saved|artifact|artifacts|my\s+(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|documents?|links?|articles?|bookmarks?|artifacts?|stuff)|from\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise)|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved)\b/i;
+  /\b(?:vault|saved|artifact|artifacts|from\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise)|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved|what\s+i\s+saved)\b/i;
 const VAULT_AFFIRMATION_RE =
   /^(?:\s*(?:yes|yep|yeah|yup|ya|sure|ok|okay|k|please|do\s*it|go(?:\s*ahead)?|go\s*for\s*it|sounds?\s*good|that\s*one|those|them|all\s*(?:of\s*)?(?:them|those))\b[\s.,!]*)+$/i;
 const VAULT_SURFACE_OFFER_RE =
@@ -1434,11 +1434,19 @@ function userAskedToViewSavedItems(userText, priorTurns) {
   const t = String(userText || '').trim();
   if (!t) return false;
   if (VIEW_INTENT_RE.test(t) && SAVED_CONTEXT_RE.test(t)) return true;
-  // "pull up my porsche pics" / "show me the note on X"
+  // "pull up my porsche pics from the vault" / "show my saved notes on X"
   if (
-    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|vault|saved|links?|articles?|artifacts?)\b/i.test(
+    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:vault|saved|artifact|artifacts)\b/i.test(
       t,
     )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|links?|articles?)\b/i.test(
+      t,
+    ) &&
+    /\b(?:vault|saved)\b/i.test(t)
   ) {
     return true;
   }

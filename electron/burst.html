@@ -156,55 +156,9 @@
         100% { opacity: 0; }
       }
 
-      /* ── "LYKN is on" glass ──────────────────────────────────────────────
-         On summon the whole screen flashes blue, then the fill dissolves to
-         fully transparent — leaving only a persistent blue outline glowing
-         around the edge so the user always knows the overlay is live.
-
-         #glass = the persistent blue EDGE OUTLINE (no fill); stays while on. */
-      #glass {
-        position: fixed;
-        inset: 0;
-        opacity: 0;
-        background: transparent;
-        pointer-events: none;
-        transition: opacity 320ms cubic-bezier(0.4, 0, 0.2, 1);
-        /* Soft inward glow behind the outline. */
-        box-shadow: inset 0 0 60px rgba(46, 87, 255, 0.06);
-      }
-      #glass.active { opacity: 1; }
-      /* A thin border that cycles through the burst's blue hues all the way
-         around the screen edge (conic gradient masked to just the frame). */
-      #glass::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        padding: 2px; /* border thickness */
-        background: conic-gradient(
-          from 0deg at 50% 50%,
-          rgba(135, 206, 255, 0.55),
-          rgba(32, 176, 255, 0.55),
-          rgba(60, 126, 255, 0.60),
-          rgba(46, 110, 255, 0.62),
-          rgba(30, 79, 224, 0.60),
-          rgba(15, 82, 186, 0.58),
-          rgba(39, 71, 216, 0.60),
-          rgba(143, 179, 255, 0.55),
-          rgba(135, 206, 255, 0.55)
-        );
-        -webkit-mask:
-          linear-gradient(#fff 0 0) content-box,
-          linear-gradient(#fff 0 0);
-        -webkit-mask-composite: xor;
-        mask:
-          linear-gradient(#fff 0 0) content-box,
-          linear-gradient(#fff 0 0);
-        mask-composite: exclude;
-        filter: drop-shadow(0 0 5px rgba(60, 126, 255, 0.45));
-      }
-
       /* #glassFill = the transient blue WASH that flashes over the whole screen
-         on summon, then fades out to nothing (leaving just the outline). */
+         on summon, then fades out to nothing. No persistent outline — screen
+         capture covers the full display independently of this cue. */
       #glassFill {
         position: fixed;
         inset: 0;
@@ -230,9 +184,7 @@
     <div class="burst-side right" id="burstRight"></div>
     <div id="grain"></div>
     <div id="glassFill"></div>
-    <div id="glass"></div>
     <script>
-      const glass = document.getElementById("glass");
       const glassFill = document.getElementById("glassFill");
       const grain = document.getElementById("grain");
       const burstSides = [
@@ -240,10 +192,8 @@
         document.getElementById("burstRight"),
       ];
 
-      // Summon: fire the one-shot side bursts + grain, flash the blue fill
-      // (which then dissolves), and light the persistent edge outline.
+      // Summon: one-shot side bursts + grain + blue fill wash (then dissolves).
       window.__lyknBurst = function () {
-        glass.classList.add("active");
         glassFill.classList.remove("play");
         grain.classList.remove("play");
         burstSides.forEach((s) => s.classList.remove("play"));
@@ -254,9 +204,8 @@
         burstSides.forEach((s) => s.classList.add("play"));
       };
 
-      // Dismiss: drop the edge outline + fill + grain (caller hides after).
+      // Dismiss: drop fill + grain (caller hides the window after).
       window.__lyknBurstOff = function () {
-        glass.classList.remove("active");
         glassFill.classList.remove("play");
         grain.classList.remove("play");
         burstSides.forEach((s) => s.classList.remove("play"));

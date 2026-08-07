@@ -138,7 +138,9 @@ export default function OAuthConsent() {
     setError(null);
     try {
       const returnTo = window.location.href;
-      await supabase.auth.signOut();
+      // Local only — bare signOut() defaults to scope:'global' and would
+      // revoke the Mac app's refresh token if the user is also signed in there.
+      await supabase.auth.signOut({ scope: "local" });
       signInWithOAuth?.("google", {
         redirectTo: returnTo,
         queryParams: { prompt: "select_account" },

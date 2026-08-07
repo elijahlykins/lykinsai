@@ -27,6 +27,7 @@ import { ocrImageAttachments } from "@/lib/ai/imageOcr";
 import { toolRunningStatus } from "@/lib/ai/toolStatusVerbs";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { loadActiveCustomModelId } from "@/lib/modelBuilder/activeCustomModelStorage";
+import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
 import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
 import {
@@ -392,6 +393,7 @@ export type PromptMessage = {
      */
     isUpdate?: boolean;
     previousText?: string | null;
+    needsConfirm?: boolean;
   };
   /**
    * Set on this message when the AI's reply ended with a hidden
@@ -2338,36 +2340,58 @@ async function postProcessResponse(
   //
   // Two paths, mutually exclusive per turn:
   //
-  //   • PRIMARY (learned !== null) — chat model emitted the hidden
-  //     <learned>/<updated> tag; we trust it and POST /api/learned.
+  //   • PRIMARY (learned !== null) — model emitted <fact_confirm> /
+  //     <learned> / <updated>; POST propose or /api/learned.
   //
   //   • FALLBACK (learned === null) — the chat model forgot to tag.
-  //     Cheaper models skip the tag a noticeable fraction of the time
-  //     even when the user clearly disclosed something personal, so we
-  //     POST the raw user message + assistant reply to /api/learned/auto
-  //     and let the server-side gpt-4.1-nano classifier decide whether
-  //     to mint a neuron anyway. Same factNeuron shape comes back, so
-  //     the pill renders identically for either source.
+  //     POST /api/learned/auto classifier as a soft learn (no confirm chip).
+  //
+  // Confirm-chip budget: at most one *new* Yes/Edit/No prompt every
+  // CONFIRM_CHIP_COOLDOWN_TURNS user turns. Replacements (contradictions)
+  // always bypass the budget — stale ✓ facts are worse than a second chip.
+  const CONFIRM_CHIP_COOLDOWN_TURNS = 4;
+  const confirmChipOnCooldown = (() => {
+    const msgs = p.chatMessages || [];
+    let userTurnsSeen = 0;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i] as PromptMessage & { factNeuron?: { needsConfirm?: boolean } };
+      if (m?.id === promptId) continue;
+      if (m?.role !== "user") continue;
+      userTurnsSeen += 1;
+      if (m.factNeuron?.needsConfirm) return true;
+      if (userTurnsSeen >= CONFIRM_CHIP_COOLDOWN_TURNS) break;
+    }
+    return false;
+  })();
+
   if (learned && identity.userId) {
     void (async () => {
       try {
         const { API_BASE_URL: apiBase } = await import("@/lib/api-config");
+        // Contradictions / refinements of WHO_I_AM always go through the
+        // confirm chip (propose + supersedes) so Yes retires the old claim.
+        const replaceText =
+          learned.mode === "update"
+            ? learned.previousText
+            : learned.mode === "confirm"
+              ? learned.previousText || undefined
+              : undefined;
+        const isReplace = Boolean(replaceText);
+        const wantsConfirm = learned.mode === "confirm" || isReplace;
+        // Soft-learn instead of chip when budget is spent (non-replace only).
+        const needsConfirm = wantsConfirm && (isReplace || !confirmChipOnCooldown);
         const result = await postLearnedFact(apiBase, {
           text: learned.text,
           kind: learned.kind,
           reason: learned.reason,
           sourceId: identity.routeChatId || identity.chatId || "live_chat",
-          // Only set replacesText for the update path — the server treats
-          // an undefined replacesText as the plain create-or-reinforce flow.
-          replacesText: learned.mode === "update" ? learned.previousText : undefined,
+          sourceMessageId: promptId,
+          needsConfirm,
+          replacesText: replaceText,
         });
         if (!result) return;
-        // Surface the pill in two cases:
-        //   • Brand-new neuron (isNew === true)            → "Neuron created"
-        //   • Existing neuron refined in place (isUpdate)  → "Neuron updated"
-        // Plain reinforcements (same text, same kind) get neither — there's
-        // nothing visually new in the synthesis layer to nudge toward.
-        if (!result.isNew && !result.isUpdate) return;
+        // Confirm chip always surfaces. Soft learn pills only for new/update.
+        if (!result.needsConfirm && !result.isNew && !result.isUpdate) return;
         state.setChatMessages((prev) => prev.map((m) => (m.id === promptId
           ? { ...m, factNeuron: result }
           : m)));
@@ -2680,7 +2704,14 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     content: m.content.length > 1500 ? m.content.slice(0, 1500) + "…" : m.content,
   }));
   const truncatedConversation = p.conversationSummary
-    ? [{ role: "system", content: `[CONVERSATION_SUMMARY]\n${p.conversationSummary}` }, ...recentConvo]
+    ? [{
+        role: "system",
+        content: [
+          "[WORKING_MEMORY]",
+          "Short-lived thread state (not durable User Facts). Prefer this for continuity in THIS chat — goals, open questions, decisions, next step.",
+          p.conversationSummary,
+        ].join("\n"),
+      }, ...recentConvo]
     : recentConvo;
 
   const wsContext = context.getCachedWorkspaceSummary();
@@ -2730,8 +2761,22 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       text,
     );
 
+  // Skip cross-chat memory fetch on short/phatic turns — it was a common
+  // pre-stream await even when the server would ignore conversationMemory.
+  const skipMemoryPrefetch =
+    !identity.userId ||
+    cappedText.trim().length < 12 ||
+    /^(?:hi|hello|hey|yo|sup|thanks|thank you|ok|okay|sure|yes|no|yep|nope|got it|cool|nice|great|bye)[\s!.?…]*$/i.test(
+      cappedText.trim(),
+    );
   const [memoryText, vaultNotesForAi] = await Promise.all([
-    identity.userId ? getMemoryForPrompt(identity.userId, identity.routeChatId || identity.chatId || null) : Promise.resolve(""),
+    skipMemoryPrefetch
+      ? Promise.resolve("")
+      : getMemoryForPrompt(
+          identity.userId,
+          identity.routeChatId || identity.chatId || null,
+          cappedText,
+        ),
     identity.userId && wantsVaultDetail
       ? fetchNotesForVaultAi(identity.userId)
       : Promise.resolve([] as VaultAiNoteRow[]),
@@ -2771,8 +2816,9 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   // serialising either across the wire — both branches on the server then
   // skip context-sized prompt budgets and stay on the lighter chat path.
   const trimmedCanvasContext = (canvasContext || "").slice(0, 14000);
-  const customModelId =
-    identity.customModelId ?? (identity.userId ? loadActiveCustomModelId() : null);
+  const customModelId = CUSTOM_MODELS_ENABLED
+    ? identity.customModelId ?? (identity.userId ? loadActiveCustomModelId() : null)
+    : null;
   const requestBody = {
     model: identity.selectedModel,
     ...(customModelId ? { customModelId } : {}),

@@ -105,7 +105,7 @@ const LyknChatProjectPicker = React.memo(function LyknChatProjectPicker({
             <p className="text-[12px] text-amber-700 dark:text-amber-400 px-3 py-3">Could not load projects.</p>
           ) : projects.length === 0 ? (
             <p className="text-[12px] text-black/50 dark:text-white/50 px-3 py-4">
-              No projects yet. Create one in the Synthesis Layer.
+              No projects yet. Create one from Projects.
             </p>
           ) : (
             projects.map((project) => {

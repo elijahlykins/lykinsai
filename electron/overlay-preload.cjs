@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   onDelta: (cb) => ipcRenderer.on("lykn:answer-delta", (_e, p) => cb(p)),
   onDone: (cb) => ipcRenderer.on("lykn:answer-done", (_e, p) => cb(p)),
   onError: (cb) => ipcRenderer.on("lykn:answer-error", (_e, p) => cb(p)),
+  // Deep research / stream-provided source list for the Sources side panel.
+  onSources: (cb) => ipcRenderer.on("lykn:answer-sources", (_e, p) => cb(p)),
   // The page LYKN scraped to answer (so the UI can show it as a source).
   onPageSource: (cb) => ipcRenderer.on("lykn:page-source", (_e, p) => cb(p)),
   // Tell main the current content width + height so it can resize the panel.
@@ -25,6 +27,8 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     ipcRenderer.send("lykn:resize", { width, height, ...(opts || {}) }),
   // Drag the floating bar by a screen-pixel delta.
   moveBy: (dx, dy) => ipcRenderer.send("lykn:move-by", { dx, dy }),
+  // Drag finished — main can catch side panels up without doing it every pixel.
+  moveEnd: () => ipcRenderer.send("lykn:move-end"),
   // Collapse the panel to a small LYKN icon bubble (true) or expand it (false).
   collapse: (v) => ipcRenderer.send("lykn:collapse", !!v),
   hide: () => ipcRenderer.send("lykn:hide-overlay"),
@@ -34,6 +38,13 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   // Detached side-panel picker window (floats next to the bar, like the menu).
   setPicker: (open) => ipcRenderer.send("lykn:picker-set", { open: !!open }),
   onPickerVisible: (cb) => ipcRenderer.on("lykn:picker-visible", (_e, v) => cb(!!v)),
+  // Detached Translate-mode language list (floats under the To pill).
+  setLangPicker: (open, anchor) =>
+    ipcRenderer.send("lykn:lang-picker-set", { open: !!open, anchor: anchor || null }),
+  onLangPickerVisible: (cb) =>
+    ipcRenderer.on("lykn:lang-picker-visible", (_e, v) => cb(!!v)),
+  onLangPickerSelect: (cb) =>
+    ipcRenderer.on("lykn:lang-picker-select", (_e, p) => cb(p || {})),
   // Detached live meeting notes window — this renderer owns the audio capture
   // and transcript state, and pushes render snapshots to the floating card.
   setLive: (open) => ipcRenderer.send("lykn:live-set", { open: !!open }),

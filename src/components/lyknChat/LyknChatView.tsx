@@ -16,6 +16,7 @@ import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/lykn
 import LyknChatArtifactPanel, { ARTIFACT_PANEL_WIDTH } from "@/components/lyknChat/LyknChatArtifactPanel";
 import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact, type ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ChatNeuronCard from "@/components/lyknChat/ChatNeuronCard";
+import FactConfirmChip from "@/components/lyknChat/FactConfirmChip";
 import LinkPreview from "@/components/LinkPreview";
 import type {
   ToolCallEvent,
@@ -142,13 +143,10 @@ type PromptMessage = {
   kind?: "prompt" | "load-in-greeting";
   attachments?: FocusedChatAttachment[];
   /**
-   * Set when the AI's reply ended with a hidden <learned>/<reason> or
-   * <updated old="..."> tag pair — meaning a neuron was either minted OR
-   * refined in the synthesis layer during this exact turn. Also set when
-   * the model forgot to tag but the server-side /api/learned/auto
-   * classifier detected a personal disclosure as a fallback. Renders the
-   * glowing "Neuron created" / "Neuron updated" pill underneath the AI
-   * response so the user sees LYKN learning about them in real time.
+   * Set when the AI's reply ended with a hidden <fact_confirm>,
+   * <learned>/<reason>, or <updated> tag — or when /api/learned/auto
+   * soft-learned as a fallback. Renders FactConfirmChip (Yes/Edit/No
+   * for pending facts, or a quiet "saved" pill for soft learns).
    */
   factNeuron?: FactNeuron;
   /**
@@ -303,9 +301,6 @@ export interface LyknChatViewProps {
   typedWelcome: string;
   /** Optional line under the centered welcome heading (empty-state only). */
   welcomeSubtitle?: React.ReactNode;
-  /** Ephemeral "on your plate today" bubble rendered as the newest turn on
-   *  app open. Not part of `chatMessages`, so it never persists. */
-  docketBubble?: React.ReactNode;
   isMobileGrid: boolean;
   isMobilePhone?: boolean;
 
@@ -402,6 +397,9 @@ export interface LyknChatViewProps {
   ) => Promise<boolean> | boolean | void;
   /** Identifier for the currently-shown chat — switching it closes the panel. */
   chatKey?: string;
+
+  /** Patch / clear `factNeuron` after in-chat Yes / Edit / No. */
+  onFactNeuronChange?: (msgId: string, next: FactNeuron | null) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -452,6 +450,8 @@ type MessageItemProps = {
   onLoadInGreetingRefresh?: () => void | Promise<void>;
   /** Open an artifact in the side pullout panel (Claude-style). */
   onOpenArtifact?: (art: ChatArtifact) => void;
+  /** Patch / clear `factNeuron` after in-chat ratification. */
+  onFactNeuronChange?: (msgId: string, next: FactNeuron | null) => void;
   /**
    * When set, render the thinking/building spinner under this turn's
    * streamed description (build mode: description first, then the tool
@@ -940,6 +940,7 @@ const MessageItem = React.memo(function MessageItem({
   handleChunkClick, getSelectedText, registerChunks,
   onLoadInGreetingRefresh,
   onOpenArtifact,
+  onFactNeuronChange,
   inlineThinkingStatus,
 }: MessageItemProps) {
   const aiResponse = msg.aiResponse || "";
@@ -1772,6 +1773,14 @@ const MessageItem = React.memo(function MessageItem({
                 ))}
               </div>
             )}
+            {msg.factNeuron ? (
+              <div className="px-1 max-w-[min(100%,28rem)]">
+                <FactConfirmChip
+                  fact={msg.factNeuron}
+                  onChange={(next) => onFactNeuronChange?.(msg.id, next)}
+                />
+              </div>
+            ) : null}
           </div>
         </div>
       )}
@@ -1903,7 +1912,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onSend,
   typedWelcome,
   welcomeSubtitle,
-  docketBubble,
   isMobileGrid,
   isMobilePhone = false,
   isDictating,
@@ -1948,6 +1956,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onActiveArtifactChange,
   onSaveArtifact,
   chatKey,
+  onFactNeuronChange,
 }) {
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const chunkMapRef = useRef<Map<string, string>>(new Map());
@@ -2160,7 +2169,6 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
               ) : null}
             </div>
             <div className="w-full flex flex-col gap-1">
-              {docketBubble ? <div className="mb-2">{docketBubble}</div> : null}
               {composerAbove}
               <div className="lykn-chat-neu-chat-shell lykn-chat-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
               {focusedChatAttachments.length > 0 && (
@@ -2259,15 +2267,13 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     registerChunks={registerChunks}
                     onLoadInGreetingRefresh={onLoadInGreetingRefresh}
                     onOpenArtifact={onOpenArtifact}
+                    onFactNeuronChange={onFactNeuronChange}
                     inlineThinkingStatus={isInFlightUserTurn ? thinkingStatus : undefined}
                   />
                   );
                 })}
                 {threadFooter}
               </div>
-            ) : null}
-            {docketBubble ? (
-              <div className={chatMessages.length > 0 ? "mt-4" : ""}>{docketBubble}</div>
             ) : null}
             {isChatLoading &&
               !(

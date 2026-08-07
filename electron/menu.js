@@ -8,6 +8,7 @@ if (window.lyknMenu?.platform && window.lyknMenu.platform !== "darwin") {
 
 const menuEl = document.getElementById("menu");
 const historyListEl = document.getElementById("history-list");
+const projectsListEl = document.getElementById("projects-list");
 
 function escapeHtml(s) {
   return String(s || "").replace(
@@ -19,11 +20,17 @@ function escapeHtml(s) {
 /* ── Sizing — tell main how tall the card wants to be ──────────────────── */
 
 const HISTORY_HEIGHT = 400;
+const PROJECTS_HEIGHT = 360;
 
 function reportSize() {
   const inHistory = document.body.classList.contains("history");
+  const inProjects = document.body.classList.contains("projects");
   // Card padding (6 top + 6 bottom) + 2px border around the content.
-  const h = inHistory ? HISTORY_HEIGHT : menuEl.scrollHeight + 14;
+  const h = inHistory
+    ? HISTORY_HEIGHT
+    : inProjects
+      ? PROJECTS_HEIGHT
+      : menuEl.scrollHeight + 14;
   window.lyknMenu.resize(h);
 }
 
@@ -43,9 +50,6 @@ async function refreshState() {
   const voice = document.getElementById("mi-voice");
   voice.classList.toggle("voice-active", !!s.voiceActive);
   document.getElementById("voice-label").textContent = s.voiceLabel || "Voice mode";
-  const listen = document.getElementById("mi-listen");
-  listen.classList.toggle("listening", !!s.listening);
-  document.getElementById("listen-label").textContent = s.listenLabel || "Live meeting notes";
   const watchState = document.getElementById("watch-state");
   watchState.textContent = s.watchState || (s.watchOn ? "On" : "Off");
   watchState.classList.toggle("on", !!s.watchOn);
@@ -61,6 +65,29 @@ async function refreshState() {
   if (buildState) {
     buildState.textContent = s.buildModeOn ? "On" : "Off";
     buildState.classList.toggle("on", !!s.buildModeOn);
+  }
+  const researchState = document.getElementById("research-state");
+  if (researchState) {
+    researchState.textContent = s.researchModeOn ? "On" : "Off";
+    researchState.classList.toggle("on", !!s.researchModeOn);
+  }
+  const translateState = document.getElementById("translate-state");
+  if (translateState) {
+    translateState.textContent = s.translateModeOn ? "On" : "Off";
+    translateState.classList.toggle("on", !!s.translateModeOn);
+  }
+  const transcribeState = document.getElementById("transcribe-state");
+  if (transcribeState) {
+    const on = !!(s.transcribeModeOn || s.listening);
+    transcribeState.textContent = on ? "On" : "Off";
+    transcribeState.classList.toggle("on", on);
+  }
+  const projectState = document.getElementById("project-scope-state");
+  if (projectState) {
+    const name = String(s.scopedProjectName || "").trim();
+    projectState.textContent = name ? name.slice(0, 18) : "None";
+    projectState.classList.toggle("on", !!name);
+    projectState.title = name || "No project scoped";
   }
 }
 
@@ -190,14 +217,106 @@ document.getElementById("history-new").addEventListener("click", () => {
   window.lyknMenu.close();
 });
 
+/* ── Projects sub-view ──────────────────────────────────────────────────── */
+
+let currentScopedProjectId = null;
+
+function setProjectsView(open) {
+  if (open) setHistoryView(false);
+  document.body.classList.toggle("projects", open);
+  reportSize();
+}
+
+function renderProjectsList(data) {
+  projectsListEl.innerHTML = "";
+  if (data && data.error === "not_signed_in") {
+    const sign = document.createElement("div");
+    sign.className = "history-signin";
+    sign.innerHTML = "Sign in to LYKN to see projects.<br>";
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.textContent = "Open LYKN to sign in";
+    openBtn.addEventListener("click", () => {
+      window.lyknMenu.cmd("menu-open");
+      window.lyknMenu.close();
+    });
+    sign.appendChild(openBtn);
+    projectsListEl.appendChild(sign);
+    return;
+  }
+  if (data && data.error && !Array.isArray(data.projects)) {
+    projectsListEl.innerHTML = `<div class="history-empty">${escapeHtml(data.error)}</div>`;
+    return;
+  }
+
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "history-item" + (!currentScopedProjectId ? " active" : "");
+  clearBtn.innerHTML =
+    '<span class="hi-dot" aria-hidden="true"></span>' +
+    '<span class="hi-title">No project (general chat)</span>';
+  clearBtn.addEventListener("click", () => {
+    window.lyknMenu.cmd("select-project", null);
+    window.lyknMenu.close();
+  });
+  projectsListEl.appendChild(clearBtn);
+
+  const projects = Array.isArray(data?.projects) ? data.projects : [];
+  if (!projects.length) {
+    const empty = document.createElement("div");
+    empty.className = "history-empty";
+    empty.textContent = "No projects yet. Create one in the LYKN app.";
+    projectsListEl.appendChild(empty);
+    return;
+  }
+
+  const g = document.createElement("div");
+  g.className = "history-group";
+  g.textContent = "Your projects";
+  projectsListEl.appendChild(g);
+
+  for (const p of projects) {
+    const id = String(p.id || "").trim();
+    if (!id) continue;
+    const active = id === currentScopedProjectId;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "history-item" + (active ? " active" : "");
+    btn.innerHTML =
+      '<span class="hi-dot" aria-hidden="true"></span>' +
+      `<span class="hi-title">${escapeHtml(p.name || "Untitled project")}</span>`;
+    btn.addEventListener("click", () => {
+      window.lyknMenu.cmd("select-project", { id, name: p.name || "Project" });
+      window.lyknMenu.close();
+    });
+    projectsListEl.appendChild(btn);
+  }
+}
+
+document.getElementById("menu-projects").addEventListener("click", async () => {
+  setProjectsView(true);
+  projectsListEl.innerHTML = '<div class="history-empty">Loading…</div>';
+  try {
+    const s = await window.lyknMenu.getState();
+    currentScopedProjectId = s?.scopedProjectId || null;
+    renderProjectsList(await window.lyknMenu.listProjects());
+  } catch (_) {
+    projectsListEl.innerHTML = '<div class="history-empty">Could not load projects.</div>';
+  }
+});
+
+document.getElementById("projects-back").addEventListener("click", () => setProjectsView(false));
+
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
 
 // Every time main shows the window, reset to the top-level menu view with
 // fresh state so it never reopens on a stale sub-view.
 window.lyknMenu.onShown(() => {
   setHistoryView(false);
+  setProjectsView(false);
   void refreshState();
 });
 
 setHistoryView(false);
+setProjectsView(false);
 void refreshState();

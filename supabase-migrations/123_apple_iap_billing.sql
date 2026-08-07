@@ -1,6 +1,6 @@
 -- ============================================
 -- Apple in-app purchase as a second billing channel
--- Migration: 122_apple_iap_billing.sql
+-- Migration: 123_apple_iap_billing.sql
 -- ============================================
 --
 -- App Review requires the iOS app to offer in-app purchase alongside the web

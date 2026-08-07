@@ -19,21 +19,21 @@ html {
    ========================================================= */
 @layer base {
   :root {
-    /* Base Theme */
-    --background: 0 0% 100%;
+    /* Base Theme — soft gray stage matching the Projects page (#ececeb). */
+    --background: 60 3% 92.5%;
     --foreground: 0 0% 3.9%;
 
     /* Shared chrome surface for sidebar, menus, modals, popovers, sheets.
-       Match the light-mode chat bar (#f6f6f6 → #f0f0f0) as a solid midtone. */
-    --panel: 0 0% 95.3%;
-    --sidebar-surface: 0 0% 95.3%;
+       Secondary to the #ececeb stage - same muted gray as project cards. */
+    --panel: 60 3% 89.4%;
+    --sidebar-surface: 60 3% 89.4%;
 
     /* Responsive header height — used by fixed chrome offsets */
     --header-height: 4.9rem;
     --header-height-sm: 4.2rem;
 
     /* App background (customizable) */
-    --app-background: hsl(var(--background));
+    --app-background: #ececeb;
 
     /* Layout density multiplier (set via Settings; default = comfortable) */
     --layout-density: 1;

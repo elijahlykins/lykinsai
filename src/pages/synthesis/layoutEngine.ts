@@ -289,7 +289,7 @@ export function simulateLayout(
       // distance of ~460, and PARENT_MAX_RADIUS=200, so each category's
       // bubble stays comfortably disjoint and the scene actually reads
       // as "sectioned off" instead of one big force-directed blob.
-      const dist = mode === "section" ? 460 : mode === "topic" ? 140 : 160;
+      const dist = mode === "section" ? 520 : mode === "topic" ? 160 : 200;
       return {
         ...n,
         x: cx + Math.cos(angle) * dist,
@@ -315,15 +315,9 @@ export function simulateLayout(
       const ring = Math.floor(idx / 10);
       const dist = 120 + ring * 80;
       const catNode = filtered.find((f) => f.id === n.categoryId);
-      // Must mirror the section-mode category radius set above (460).
-      // Previously hard-coded to 220 — when the category radius was
-      // bumped this stayed stale, so children were seeded 240 units
-      // off-center from their fixed parent and the strong parent-
-      // gravity (0.005) had to drag every child a quarter screen
-      // every layout pass. That created the position thrash that
-      // read as the scene blinking on every realtime tick.
-      const catX = catNode ? cx + Math.cos(parentAngle) * 460 : cx;
-      const catY = catNode ? cy + Math.sin(parentAngle) * 460 : cy;
+      // Must mirror the section-mode category radius set above (520).
+      const catX = catNode ? cx + Math.cos(parentAngle) * 520 : cx;
+      const catY = catNode ? cy + Math.sin(parentAngle) * 520 : cy;
       return {
         ...n,
         x: catX + Math.cos(angle) * dist,
@@ -373,10 +367,10 @@ export function simulateLayout(
     const jitter = (idHash01(n.id) - 0.5) * 1.2;
     const angle = parentAngle + jitter;
     const catNodeC = filtered.find((f) => f.id === n.categoryId);
-    const catAnchorX = catNodeC ? cx + Math.cos(parentAngle) * 160 : cx;
-    const catAnchorY = catNodeC ? cy + Math.sin(parentAngle) * 160 : cy;
-    const minDist = 90;
-    const maxDist = 360;
+    const catAnchorX = catNodeC ? cx + Math.cos(parentAngle) * 200 : cx;
+    const catAnchorY = catNodeC ? cy + Math.sin(parentAngle) * 200 : cy;
+    const minDist = 100;
+    const maxDist = 420;
     const dist =
       minDist + ratio * (maxDist - minDist) + (idHash01(n.id + "_d") - 0.5) * 40;
     return {
@@ -399,7 +393,9 @@ export function simulateLayout(
   );
   const map = new Map(simNodes.map((n) => [n.id, n]));
 
-  const REPULSION = mode === "section" ? 4500 : mode === "topic" ? 6000 : 8000;
+  // Slightly stronger repulsion in overview mode so clusters separate on
+  // the flat Obsidian-style 2D plane (3D depth used to fake separation).
+  const REPULSION = mode === "section" ? 5200 : mode === "topic" ? 6500 : 9800;
   const EDGE_ATTRACTION = 0.001;
   const DAMPING = 0.85;
   // Iteration count scales with graph size so the inner O(n²) loop's
@@ -418,11 +414,9 @@ export function simulateLayout(
   // outermost children of every category back inward and re-merge
   // them into the central blob the bigger seed radius was meant
   // to break apart.
-  const MAX_RADIUS = mode === "section" ? 1100 : 900;
-  // Tightened 340 → 200 so each category's child cloud stays inside
-  // its own bubble and adjacent categories visibly separate. Only
-  // the section-mode integration block applies this clamp.
-  const PARENT_MAX_RADIUS = 200;
+  const MAX_RADIUS = mode === "section" ? 1200 : 1000;
+  // Slightly roomier category bubbles for the flatter 2D readout.
+  const PARENT_MAX_RADIUS = 220;
 
   for (let iter = 0; iter < ITERATIONS; iter++) {
     for (let i = 0; i < simNodes.length; i++) {

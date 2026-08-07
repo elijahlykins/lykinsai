@@ -1,5 +1,5 @@
 export const DEFAULT_BG_DARK = '#1e1e1e';
-export const DEFAULT_BG_LIGHT = '#ffffff';
+export const DEFAULT_BG_LIGHT = '#ececeb';
 
 const STORAGE_KEY = 'lykinsai_settings';
 const VALID_THEMES = new Set(['light', 'dark', 'system']);
