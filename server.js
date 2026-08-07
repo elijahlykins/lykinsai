@@ -834,6 +834,25 @@ const STRIPE_PRICE_MAP = {
   },
 };
 
+// App Store product ids -> plan tier. The Apple analogue of STRIPE_PRICE_MAP.
+//
+// Hardcoded rather than env-driven on purpose: unlike Stripe price ids these
+// are identical in every environment, and they must match the iOS client
+// byte-for-byte (StaticPlanPricing.swift in LYKN-iOS documents the same
+// table). An env indirection here would only give the two sides a way to
+// drift apart silently.
+//
+// No `studio_pro` / `studio_max` entries: those are legacy Stripe billing
+// rows that were never sold through the App Store.
+const APPLE_PRODUCT_MAP = {
+  'io.lykn.app.sub.student.month': { plan: 'student', period: 'monthly' },
+  'io.lykn.app.sub.student.year': { plan: 'student', period: 'annual' },
+  'io.lykn.app.sub.pro.month': { plan: 'studio', period: 'monthly' },
+  'io.lykn.app.sub.pro.year': { plan: 'studio', period: 'annual' },
+  'io.lykn.app.sub.max.month': { plan: 'max', period: 'monthly' },
+  'io.lykn.app.sub.max.year': { plan: 'max', period: 'annual' },
+};
+
 // ============================================
 // COMPED ACCOUNTS — internal team / friends-of-house
 // ============================================
@@ -23568,10 +23587,27 @@ async function resolveUserPlan(userId, email = null) {
   return { planId: effectivePlan, modelTier: tier };
 }
 
+// Statuses that mean "this subscription is currently granting access". Apple
+// notifications are normalised onto the same Stripe vocabulary by
+// syncAppleSubscriptionToBilling so every consumer below stays channel-blind.
+const ACCESS_GRANTING_STATUSES = ['trialing', 'active', 'past_due'];
+
+// Which channel currently holds an access-granting subscription, or null.
+//
+// A user may hold an active subscription on exactly ONE channel — the checkout
+// paths refuse to open a second one (see assertChannelEligibility) — so this
+// never has to arbitrate a tie.
+function activeSubscriptionChannel(row) {
+  if (!row) return null;
+  const status = String(row.status || '').toLowerCase();
+  if (!ACCESS_GRANTING_STATUSES.includes(status)) return null;
+  if (row.provider === 'apple' && row.apple_original_transaction_id) return 'apple';
+  if (row.stripe_subscription_id) return 'stripe';
+  return null;
+}
+
 function hasSubscriptionAccess(row) {
-  if (!row?.stripe_subscription_id) return false;
-  const status = String(row?.status || '').toLowerCase();
-  return ['trialing', 'active', 'past_due'].includes(status);
+  return activeSubscriptionChannel(row) !== null;
 }
 
 // Authoritative "may this user use the app?" check (revoke-on-period-end).
@@ -23600,11 +23636,21 @@ function subscriptionPeriodStillActive(row) {
 function hasAppAccessRow(row) {
   if (!row) return false;
   const status = String(row.status || '').toLowerCase();
+
+  // Apple subscriptions revoke on period end exactly like Stripe ones. This
+  // branch must come FIRST: an Apple row has no stripe_subscription_id, so it
+  // would otherwise fall into the manual-grant branch below and be treated as
+  // a comped account with access forever, surviving cancellation and refund.
+  if (row.provider === 'apple' && row.apple_original_transaction_id) {
+    if (ACCESS_GRANTING_STATUSES.includes(status)) return true;
+    return subscriptionPeriodStillActive(row);
+  }
+
   if (!row.stripe_subscription_id) {
     const plan = String(row.plan || 'free').toLowerCase();
     return plan !== 'free' && Boolean(PLAN_LIMITS[plan]);
   }
-  if (['trialing', 'active', 'past_due'].includes(status)) return true;
+  if (ACCESS_GRANTING_STATUSES.includes(status)) return true;
   return subscriptionPeriodStillActive(row);
 }
 
@@ -23678,8 +23724,16 @@ function billingMePayload(row, extra = {}) {
     has_stripe_customer: hasStripeCustomer,
     stripe_subscription_id: row?.stripe_subscription_id || null,
     has_active_subscription: hasActive,
+    // Which channel owns the subscription: 'stripe' | 'apple' | null.
+    // Clients MUST branch on this to route "manage subscription" — Apple
+    // requires IAP subscriptions be managed through the App Store, so sending
+    // an Apple subscriber to the Stripe portal is both broken and a review
+    // risk. `null` means nothing to manage.
+    provider: row?.provider || null,
     needs_trial_checkout: !hasAccess,
     trial_days: STRIPE_TRIAL_DAYS,
+    // Must stay LAST: the comped-account path passes needs_trial_checkout /
+    // status overrides through `extra` and relies on them winning.
     ...extra,
   };
 }
@@ -24029,6 +24083,220 @@ async function syncSubscriptionToBilling(subscription) {
   }
 }
 
+// ============================================
+// APPLE IN-APP PURCHASE — second billing channel
+// ============================================
+
+function planFromAppleProductId(productId) {
+  if (!productId) return null;
+  return APPLE_PRODUCT_MAP[productId] || null;
+}
+
+/**
+ * Normalises an App Store Server Notification V2 into the Stripe status
+ * vocabulary `user_billing.status` already uses, so every downstream consumer
+ * (hasAppAccessRow, the plan cache, /api/billing/me, the iOS client) stays
+ * channel-blind.
+ *
+ * Apple models "still paid up but the renewal failed" as a billing-retry /
+ * grace-period state, which is exactly Stripe's `past_due`. Refunds
+ * (REVOKED) and lapses (EXPIRED) both land on `canceled`.
+ */
+function appleStatusFor(notificationType, subtype) {
+  const type = String(notificationType || '').toUpperCase();
+  const sub = String(subtype || '').toUpperCase();
+  switch (type) {
+    case 'SUBSCRIBED':
+    case 'DID_RENEW':
+    case 'OFFER_REDEEMED':
+    case 'DID_CHANGE_RENEWAL_PREF':
+      return 'active';
+    case 'DID_CHANGE_RENEWAL_STATUS':
+      // AUTO_RENEW_DISABLED is Apple's "cancel at period end" — access
+      // continues to expiresDate, so the subscription is still active.
+      return 'active';
+    case 'DID_FAIL_TO_RENEW':
+      // With GRACE_PERIOD the user keeps access while Apple retries.
+      return sub === 'GRACE_PERIOD' ? 'past_due' : 'past_due';
+    case 'GRACE_PERIOD_EXPIRED':
+    case 'EXPIRED':
+    case 'REFUND':
+    case 'REVOKE':
+      return 'canceled';
+    default:
+      return null;
+  }
+}
+
+/**
+ * Writes a verified Apple subscription into `user_billing`.
+ *
+ * Deliberately mirrors syncSubscriptionToBilling's disciplines, because every
+ * one of them exists to prevent a real failure mode we have already hit on the
+ * Stripe side (see migration 119 — users charged in Stripe but 'free' in the
+ * app):
+ *
+ *   • the plan is STICKY — only written while the subscription is
+ *     access-granting and the product is one we recognise. There is no branch
+ *     writing plan='free', so a refund or an expiry can never phantom-downgrade
+ *     a tier that admin set by hand;
+ *   • an unlinkable but access-granting subscription THROWS, so the route
+ *     500s and Apple redelivers rather than the activation being dropped;
+ *   • status / period end / cancel flag always update so the billing UI stays
+ *     honest even when the plan doesn't move.
+ *
+ * @param {object} apple Verified, decoded notification payload:
+ *   {string}  originalTransactionId  stable subscription identity
+ *   {string}  productId              maps through APPLE_PRODUCT_MAP
+ *   {number}  expiresDateMs          epoch ms, may be null
+ *   {string}  appAccountToken        the Supabase user id set at purchase time
+ *   {string}  status                 from appleStatusFor()
+ *   {boolean} autoRenewOff           true when the user turned off renewal
+ */
+async function syncAppleSubscriptionToBilling(apple) {
+  if (!supabaseAdmin) return;
+
+  const originalTransactionId = String(apple?.originalTransactionId || '').trim();
+  if (!originalTransactionId) return;
+
+  const status = String(apple?.status || '').toLowerCase();
+  const isActive = ACCESS_GRANTING_STATUSES.includes(status);
+  const match = planFromAppleProductId(apple?.productId);
+
+  // Resolve the user. `apple_original_transaction_id` is the durable link
+  // (set on the first notification); `appAccountToken` is the Apple analogue
+  // of Stripe's metadata.supabase_user_id and is what bootstraps it. StoreKit
+  // requires appAccountToken to be a UUID, which Supabase user ids already are.
+  const { data: existingRows } = await supabaseAdmin
+    .from('user_billing')
+    .select('user_id, plan, provider, status, stripe_subscription_id')
+    .eq('apple_original_transaction_id', originalTransactionId);
+
+  let rows = existingRows || [];
+
+  if (!rows.length) {
+    const linkedUserId = String(apple?.appAccountToken || '').trim();
+    if (linkedUserId) {
+      const existing = await loadBillingRow(linkedUserId);
+      const { error: upsertErr } = await supabaseAdmin
+        .from('user_billing')
+        .upsert(
+          {
+            user_id: linkedUserId,
+            plan: existing?.plan || 'free',
+            status: existing?.status || 'inactive',
+          },
+          { onConflict: 'user_id' },
+        );
+      if (upsertErr) {
+        throw new Error(`syncAppleSubscriptionToBilling link upsert failed: ${upsertErr.message}`);
+      }
+      rows = [{
+        user_id: linkedUserId,
+        plan: existing?.plan || 'free',
+        provider: existing?.provider || null,
+        status: existing?.status || 'inactive',
+        stripe_subscription_id: existing?.stripe_subscription_id || null,
+      }];
+    }
+  }
+
+  if (!rows.length) {
+    // Same rule as the Stripe path: swallowing an access-granting event is how
+    // activations get dropped, so throw and let Apple retry.
+    if (isActive) {
+      throw new Error(
+        `syncAppleSubscriptionToBilling: no user linked for originalTransactionId ${originalTransactionId}`,
+      );
+    }
+    console.warn(
+      `⚠️ syncAppleSubscriptionToBilling: unlinked ${status} subscription ${originalTransactionId} — skipping`,
+    );
+    return;
+  }
+
+  const baseUpdates = {
+    provider: 'apple',
+    apple_original_transaction_id: originalTransactionId,
+    apple_product_id: apple?.productId || null,
+    status,
+    cancel_at_period_end: Boolean(apple?.autoRenewOff),
+    current_period_end: apple?.expiresDateMs
+      ? new Date(apple.expiresDateMs).toISOString()
+      : null,
+  };
+  if (match) baseUpdates.billing_period = match.period;
+
+  let lastError = null;
+  const touched = [];
+  for (const existing of rows) {
+    if (!existing.user_id) continue;
+
+    // Channel exclusivity is enforced BEFORE purchase (assertChannelEligibility
+    // on the Stripe side, /api/billing/iap-eligibility on the Apple side), so
+    // reaching here with a live Stripe subscription means a genuine race —
+    // two purchases in flight at once. Apple has already taken the money, so
+    // refusing the write would recreate charged-but-not-activated. Record it
+    // and shout, so the double-billed user can be refunded on one channel.
+    if (existing.provider === 'stripe'
+      && existing.stripe_subscription_id
+      && ACCESS_GRANTING_STATUSES.includes(String(existing.status || '').toLowerCase())
+      && isActive) {
+      console.error(
+        `🚨 DUAL-CHANNEL SUBSCRIPTION for user ${existing.user_id}: Apple ${originalTransactionId} `
+        + `activated while Stripe ${existing.stripe_subscription_id} is still live. `
+        + 'Honouring Apple; one channel needs a manual refund.',
+      );
+    }
+
+    const updates = { ...baseUpdates };
+    if (match && isActive) updates.plan = match.plan;
+
+    const writeRes = await supabaseAdmin
+      .from('user_billing')
+      .update(updates)
+      .eq('user_id', existing.user_id)
+      .select('user_id');
+
+    if (writeRes.error) {
+      lastError = writeRes.error;
+      console.error('❌ syncAppleSubscriptionToBilling row update failed:', writeRes.error.message);
+      continue;
+    }
+    for (const r of writeRes.data || []) touched.push(r.user_id);
+  }
+
+  for (const userId of touched) invalidateUserPlanCache(userId);
+
+  if (lastError && touched.length === 0) {
+    throw new Error(`syncAppleSubscriptionToBilling: all row updates failed: ${lastError.message}`);
+  }
+}
+
+/**
+ * Cross-channel guard. A user may hold an active subscription on exactly one
+ * channel (product decision, 2026-08-05): stacking Stripe and Apple would
+ * double-bill, and the two webhook writers would fight over one `user_billing`
+ * row with the sticky-plan rule leaving the loser's tier behind.
+ *
+ * Returns null when `channel` may proceed, or a { code, message } to refuse
+ * with. Callers turn that into a 409.
+ */
+function channelConflict(row, channel) {
+  const active = activeSubscriptionChannel(row);
+  if (!active || active === channel) return null;
+  if (active === 'apple') {
+    return {
+      code: 'apple_subscription_active',
+      message: 'You already subscribe through the App Store. Manage or cancel that subscription in iOS Settings before subscribing on the web.',
+    };
+  }
+  return {
+    code: 'stripe_subscription_active',
+    message: 'You already subscribe on lykn.io. Cancel that subscription before subscribing through the App Store.',
+  };
+}
+
 async function handleStripeEvent(event) {
   if (!supabaseAdmin) {
     console.warn('⚠️ Stripe event received but supabaseAdmin unavailable — skipping');
@@ -24132,6 +24400,41 @@ app.get('/api/billing/me', requireAuth, async (req, res) => {
   }
 });
 
+// ── /api/billing/iap-eligibility ────────────────────────────────────────────
+// The Apple-side half of the one-channel rule. The iOS app calls this BEFORE
+// presenting the StoreKit purchase sheet: once Apple has taken the money the
+// only remedies are a refund or a double-billed user, so the block has to
+// happen before the sheet, not after the transaction.
+//
+// Deliberately a plain GET with no side effects — it is safe to call on every
+// presentation of the upgrade sheet.
+app.get('/api/billing/iap-eligibility', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+    // Comped accounts have no subscription to conflict with, but also nothing
+    // to sell — report ineligible so the app doesn't offer a pointless purchase.
+    if (isCompedProEmail(req.user?.email)) {
+      return res.json({
+        eligible: false,
+        reason: 'comped_account',
+        message: 'Your account already has full access.',
+      });
+    }
+
+    const row = await loadBillingRow(userId);
+    const conflict = channelConflict(row, 'apple');
+    if (conflict) {
+      return res.json({ eligible: false, reason: conflict.code, message: conflict.message });
+    }
+    return res.json({ eligible: true, reason: null, message: null });
+  } catch (err) {
+    console.error('❌ /api/billing/iap-eligibility error:', err);
+    return res.status(500).json({ error: 'Failed to check eligibility' });
+  }
+});
+
 // ── /api/billing/checkout (subscription) ────────────────────────────────────
 // SECURITY (Agent 04): Zod-narrow planId + period to the declared sets BEFORE
 // the handler runs. PLAN_IDS / BILLING_PERIODS are still consulted below as
@@ -24160,6 +24463,19 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
     }
 
     const row = await loadBillingRow(user.id);
+
+    // Cross-channel guard FIRST. An App Store subscriber also trips the
+    // already_subscribed branch below, but that reply tells them to open the
+    // Stripe billing portal — which cannot manage an Apple subscription and
+    // would strand them. Answer with the channel-correct instruction instead.
+    const conflict = channelConflict(row, 'stripe');
+    if (conflict) {
+      return res.status(409).json({
+        error: conflict.code,
+        use_portal: false,
+        message: conflict.message,
+      });
+    }
 
     // A user with a live subscription must change plans through the Stripe
     // billing portal (prorated update on the EXISTING subscription). Letting
@@ -24241,6 +24557,13 @@ app.post('/api/billing/trial-checkout', requireAuth, async (req, res) => {
     }
 
     const row = await loadBillingRow(user.id);
+    const trialConflict = channelConflict(row, 'stripe');
+    if (trialConflict) {
+      return res.status(409).json({
+        error: trialConflict.code,
+        message: trialConflict.message,
+      });
+    }
     if (hasSubscriptionAccess(row)) {
       return res.status(400).json({ error: 'already_subscribed' });
     }
