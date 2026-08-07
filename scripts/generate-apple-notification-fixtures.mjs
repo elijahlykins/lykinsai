@@ -157,7 +157,12 @@ try {
     signedDate: SIGNED_DATE_MS,
     data: {
       bundleId,
-      appAppleId: 6765728365,
+      // Sandbox notifications from Apple carry NO appAppleId — verified
+      // against a real captured payload, see apple-sandbox-test-notification.json.
+      // The first version of these fixtures set it in both environments, which
+      // made the sandbox tests pass against a payload shape Apple never sends
+      // and hid a bug that rejected every real sandbox notification.
+      ...(environment === 'Sandbox' ? {} : { appAppleId: 6765728365 }),
       bundleVersion: '9',
       environment,
       signedTransactionInfo: txn ?? transaction(environment),

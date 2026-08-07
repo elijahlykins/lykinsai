@@ -63,3 +63,6 @@ gitleaks-report.json
 
 # macOS Spotlight saved-search bundles
 *.cannedSearch/
+
+# Apple signing keys must never be committed.
+*.p8
