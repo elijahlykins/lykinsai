@@ -37,6 +37,11 @@ import { mimeTypeForFilename, persistCapabilityArtifact } from './lib/exterior/c
 import { buildAttachmentColumns } from './lib/vault/attachmentType.js';
 import { inferAttachmentKind } from './lib/vaultAttachment.js';
 import { exchangeAppleAuthorizationCode, revokeAppleToken, appleAuthConfigured } from './lib/appleAuth.js';
+import {
+  createAppleNotificationVerifiers,
+  verifyAppleNotification,
+  appleSyncInputFrom,
+} from './lib/billing/appleNotifications.js';
 import { chunkTextForSynthesis } from './synthesis-service.js';
 import { contextualizeChunks } from './lib/rag/contextualize.js';
 import {
@@ -24092,41 +24097,9 @@ function planFromAppleProductId(productId) {
   return APPLE_PRODUCT_MAP[productId] || null;
 }
 
-/**
- * Normalises an App Store Server Notification V2 into the Stripe status
- * vocabulary `user_billing.status` already uses, so every downstream consumer
- * (hasAppAccessRow, the plan cache, /api/billing/me, the iOS client) stays
- * channel-blind.
- *
- * Apple models "still paid up but the renewal failed" as a billing-retry /
- * grace-period state, which is exactly Stripe's `past_due`. Refunds
- * (REVOKED) and lapses (EXPIRED) both land on `canceled`.
- */
-function appleStatusFor(notificationType, subtype) {
-  const type = String(notificationType || '').toUpperCase();
-  const sub = String(subtype || '').toUpperCase();
-  switch (type) {
-    case 'SUBSCRIBED':
-    case 'DID_RENEW':
-    case 'OFFER_REDEEMED':
-    case 'DID_CHANGE_RENEWAL_PREF':
-      return 'active';
-    case 'DID_CHANGE_RENEWAL_STATUS':
-      // AUTO_RENEW_DISABLED is Apple's "cancel at period end" — access
-      // continues to expiresDate, so the subscription is still active.
-      return 'active';
-    case 'DID_FAIL_TO_RENEW':
-      // With GRACE_PERIOD the user keeps access while Apple retries.
-      return sub === 'GRACE_PERIOD' ? 'past_due' : 'past_due';
-    case 'GRACE_PERIOD_EXPIRED':
-    case 'EXPIRED':
-    case 'REFUND':
-    case 'REVOKE':
-      return 'canceled';
-    default:
-      return null;
-  }
-}
+// appleStatusFor — the notification-type → billing-status mapping — lives in
+// lib/billing/appleNotifications.js alongside the verification it belongs to,
+// where it is unit tested. It is used by handleAppleNotification below.
 
 /**
  * Writes a verified Apple subscription into `user_billing`.
@@ -24152,6 +24125,7 @@ function appleStatusFor(notificationType, subtype) {
  *   {string}  appAccountToken        the Supabase user id set at purchase time
  *   {string}  status                 from appleStatusFor()
  *   {boolean} autoRenewOff           true when the user turned off renewal
+ *   {string}  environment            'Production' | 'Sandbox'
  */
 async function syncAppleSubscriptionToBilling(apple) {
   if (!supabaseAdmin) return;
@@ -24219,6 +24193,11 @@ async function syncAppleSubscriptionToBilling(apple) {
     provider: 'apple',
     apple_original_transaction_id: originalTransactionId,
     apple_product_id: apple?.productId || null,
+    // Recorded so a sandbox-granted subscription stays identifiable forever.
+    // Sandbox purchases cost nothing, so if one ever has to be clawed back
+    // this column is the only way to find them without replaying every
+    // notification.
+    apple_environment: apple?.environment || null,
     status,
     cancel_at_period_end: Boolean(apple?.autoRenewOff),
     current_period_end: apple?.expiresDateMs
@@ -24296,6 +24275,148 @@ function channelConflict(row, channel) {
     message: 'You already subscribe on lykn.io. Cancel that subscription before subscribing through the App Store.',
   };
 }
+
+// ── App Store Server Notifications V2 ───────────────────────────────────────
+// Apple's equivalent of the Stripe webhook, and the ONLY thing that turns an
+// in-app purchase into access: StoreKit takes the money on device, then tells
+// this server about it out of band. Without this route a purchase completes,
+// the customer is charged, and nothing changes in their account.
+//
+// Configure the URL in App Store Connect under App Information → App Store
+// Server Notifications, for BOTH the production and sandbox environments
+// (same URL is fine — the payload identifies which one it came from).
+
+// Both identify the one app this server bills for, are identical in every
+// environment, and are not secret — so they default in code rather than
+// waiting on an env var that, if forgotten, would make every production
+// notification fail as INVALID_APP_IDENTIFIER with no purchase ever landing.
+// The env vars remain as an override.
+const APPLE_BUNDLE_ID = process.env.APPLE_BUNDLE_ID || 'io.lykn.app';
+const APPLE_APP_APPLE_ID = Number(process.env.APPLE_APP_APPLE_ID || 6765728365);
+
+// Sandbox notifications are accepted by default because App Review runs its
+// purchase test there — refusing them is a rejection under Guideline 3.1.1,
+// the exact rejection this whole channel exists to clear. TestFlight builds
+// also transact in sandbox, so anyone with a build can grant themselves a
+// paid plan for free; that is bounded (TestFlight is invite-only, sandbox
+// testers can only be created inside our own App Store Connect account) and
+// every grant is logged and stamped with apple_environment. Set
+// APPLE_ALLOW_SANDBOX_NOTIFICATIONS=false once the app is live to close it.
+const APPLE_ALLOW_SANDBOX = process.env.APPLE_ALLOW_SANDBOX_NOTIFICATIONS !== 'false';
+
+const appleNotificationVerifiers = createAppleNotificationVerifiers({
+  bundleId: APPLE_BUNDLE_ID,
+  appAppleId: APPLE_APP_APPLE_ID,
+});
+console.log(
+  '  Apple IAP notifications:',
+  appleNotificationVerifiers
+    ? `✅ ${APPLE_BUNDLE_ID} (${APPLE_APP_APPLE_ID})${APPLE_ALLOW_SANDBOX ? ' + sandbox' : ''}`
+    : '❌ Disabled — no Apple root certificates in certs/apple',
+);
+
+/**
+ * Applies one VERIFIED notification. Callers must not invoke this with
+ * anything that has not been through verifyAppleNotification.
+ *
+ * Idempotency and retry semantics mirror handleStripeEvent exactly:
+ * `apple_notifications` is checked first and written LAST, so any throw
+ * between the two leaves the notification unrecorded, returns a 500, and
+ * Apple redelivers it. Apple retries for up to three days.
+ */
+async function handleAppleNotification({ environment, payload, transaction, renewalInfo }) {
+  if (!supabaseAdmin) {
+    console.warn('⚠️ Apple notification received but supabaseAdmin unavailable — skipping');
+    return;
+  }
+
+  const uuid = payload?.notificationUUID;
+  const type = payload?.notificationType || 'UNKNOWN';
+  const subtype = payload?.subtype || null;
+
+  // A notification with no UUID can't be deduplicated, and Apple always sends
+  // one. Treat its absence as malformed rather than processing it repeatedly.
+  if (!uuid) throw new Error('Apple notification missing notificationUUID');
+
+  const { data: seen } = await supabaseAdmin
+    .from('apple_notifications')
+    .select('notification_uuid')
+    .eq('notification_uuid', uuid)
+    .maybeSingle();
+  if (seen) return;
+
+  console.log(`🍎 Apple notification: ${type}${subtype ? `/${subtype}` : ''} (${uuid}) [${environment}]`);
+
+  const sync = appleSyncInputFrom({ payload, transaction, renewalInfo });
+
+  if (!sync) {
+    // TEST, CONSUMPTION_REQUEST, PRICE_INCREASE and friends: real events that
+    // say nothing about entitlement. Recorded below, billing untouched.
+    console.log(`   ↳ no entitlement change for ${type}`);
+  } else if (environment === 'Sandbox' && !APPLE_ALLOW_SANDBOX) {
+    console.warn(`   ↳ sandbox notification ignored (APPLE_ALLOW_SANDBOX_NOTIFICATIONS=false)`);
+  } else {
+    if (environment === 'Sandbox') {
+      console.warn(
+        `   ↳ ⚠️ SANDBOX grant: ${sync.status} ${sync.productId} for appAccountToken `
+        + `${sync.appAccountToken || 'none'} — no money changed hands`,
+      );
+    }
+    // Throws on an access-granting subscription it cannot attribute, which is
+    // what makes Apple retry instead of the activation being dropped.
+    await syncAppleSubscriptionToBilling({ ...sync, environment });
+  }
+
+  // Written only after the billing work succeeded — see the retry note above.
+  // The payload column keeps the decoded notification for audit; the signed
+  // original is not stored because it is unreadable without re-verification
+  // and the decoded form is what every question gets asked of.
+  const { error: logErr } = await supabaseAdmin
+    .from('apple_notifications')
+    .insert({
+      notification_uuid: uuid,
+      notification_type: type,
+      subtype,
+      environment,
+      payload: { ...payload, decodedTransaction: transaction, decodedRenewalInfo: renewalInfo },
+    });
+  if (logErr && !String(logErr.message).includes('duplicate')) {
+    console.error('⚠️ apple_notifications insert failed:', logErr.message);
+  }
+}
+
+app.post('/api/billing/apple/notifications', async (req, res) => {
+  if (!appleNotificationVerifiers) {
+    console.error('❌ Apple notification received but verification is not configured');
+    return res.status(503).json({ error: 'Apple notifications not configured' });
+  }
+
+  const signedPayload = req.body?.signedPayload;
+  if (typeof signedPayload !== 'string' || !signedPayload) {
+    return res.status(400).json({ error: 'Missing signedPayload' });
+  }
+
+  let verified;
+  try {
+    verified = await verifyAppleNotification(signedPayload, appleNotificationVerifiers);
+  } catch (err) {
+    // 400, never 500: the signature is bad, so redelivering the identical
+    // bytes cannot help. Apple retries on 5xx, and a forged payload must not
+    // be able to make us retry a workload on demand.
+    console.warn('🔒 Apple notification verification failed:', err?.message || err);
+    return res.status(400).json({ error: 'verification_failed' });
+  }
+
+  try {
+    await handleAppleNotification(verified);
+    return res.json({ received: true });
+  } catch (err) {
+    console.error('❌ Apple notification handler threw:', err);
+    // 500 so Apple redelivers — the notification is unrecorded, so the retry
+    // runs the whole handler again.
+    return res.status(500).json({ error: 'handler_failed' });
+  }
+});
 
 async function handleStripeEvent(event) {
   if (!supabaseAdmin) {

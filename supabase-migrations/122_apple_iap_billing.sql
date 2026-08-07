@@ -31,13 +31,17 @@
 ALTER TABLE public.user_billing
   ADD COLUMN IF NOT EXISTS provider                       text,
   ADD COLUMN IF NOT EXISTS apple_original_transaction_id  text,
-  ADD COLUMN IF NOT EXISTS apple_product_id               text;
+  ADD COLUMN IF NOT EXISTS apple_product_id               text,
+  ADD COLUMN IF NOT EXISTS apple_environment              text;
 
 COMMENT ON COLUMN public.user_billing.provider IS
   'Which channel owns the current subscription: ''stripe'' | ''apple''. NULL means the user has never subscribed on either channel. Determines where the client sends the user to manage or cancel — Apple requires IAP subscriptions be managed through the App Store, not a web portal.';
 
 COMMENT ON COLUMN public.user_billing.apple_original_transaction_id IS
   'Apple''s originalTransactionId — stable across renewals, the Apple analogue of stripe_subscription_id.';
+
+COMMENT ON COLUMN public.user_billing.apple_environment IS
+  '''Production'' | ''Sandbox''. Sandbox subscriptions are free test purchases — App Review and TestFlight both transact there — so grants made from them must stay identifiable after the fact. Nothing reads this for entitlement; it exists so the free grants can be found and revoked.';
 
 -- `provider` is intentionally NULLABLE rather than NOT NULL DEFAULT ''stripe'':
 -- a free user who never subscribed has no owning channel, and claiming
@@ -78,9 +82,17 @@ CREATE TABLE IF NOT EXISTS public.apple_notifications (
   notification_uuid  text PRIMARY KEY,
   notification_type  text NOT NULL,
   subtype            text,
+  environment        text,
   received_at        timestamptz NOT NULL DEFAULT now(),
   payload            jsonb
 );
+
+-- Idempotent for databases that already ran an earlier copy of this migration.
+ALTER TABLE public.apple_notifications
+  ADD COLUMN IF NOT EXISTS environment text;
+
+COMMENT ON TABLE public.apple_notifications IS
+  'Decoded App Store Server Notifications, after signature and certificate-chain verification. The primary key is the dedupe: the handler inserts here only once the billing write has succeeded, so a failed sync stays unrecorded and Apple redelivers it.';
 
 ALTER TABLE public.apple_notifications ENABLE ROW LEVEL SECURITY;
 
