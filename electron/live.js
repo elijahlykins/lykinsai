@@ -67,7 +67,10 @@ toastEl.addEventListener("click", () => window.lyknLive.cmd("vault"));
 panes.ask.addEventListener("click", (e) => {
   const src = e.target.closest(".assist-src");
   if (src && src.dataset.url) {
-    window.lyknLive.cmd("url", src.dataset.url);
+    window.lyknLive.cmd("url", {
+      url: src.dataset.url,
+      title: src.dataset.title || undefined,
+    });
     return;
   }
   const btn = e.target.closest(".meeting-question");

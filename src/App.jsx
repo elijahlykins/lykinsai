@@ -1,6 +1,7 @@
 import '@/lib/installAuthFetch';
 import React, { Suspense, useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { queryClientInstance } from '@/lib/query-client';
 import { API_BASE_URL } from '@/lib/api-config';
@@ -37,6 +38,7 @@ const SynthesisLayer = React.lazy(() => import("./pages/SynthesisLayer"));
 const Studio = React.lazy(() => import("./pages/Studio"));
 import VaultConnectionsShell from "./pages/VaultConnectionsShell";
 import TagManagement from "./pages/TagManagement";
+import LyknCalendarPage from "@/components/calendar/LyknCalendarPage";
 import Billing from "./pages/Billing";
 import SignInPill from "./components/SignInPill";
 import {
@@ -54,6 +56,7 @@ import Pricing from "./pages/Pricing";
 import DownloadLykn from "./pages/DownloadLykn";
 import CapabilityPage from "./pages/CapabilityPage";
 import News, { NewsArticle } from "./pages/News";
+import Templates from "./pages/Templates";
 import AdminUsage from "./pages/AdminUsage";
 import AdminBilling from "./pages/AdminBilling";
 import OAuthConsent from "./pages/OAuthConsent";
@@ -80,6 +83,17 @@ function DesktopProductOnly({ children }) {
   return children;
 }
 
+// The desktop welcome walkthrough deliberately ends in a usable Studio
+// preview instead of the retired sign-in flow. This is limited to Electron;
+// the web app and every ordinary desktop navigation remain user-gated.
+function isDesktopWalkthrough(location) {
+  return (
+    typeof window !== "undefined" &&
+    window.lykn?.desktop &&
+    new URLSearchParams(location.search).get("walkthrough") === "1"
+  );
+}
+
 function ProtectedRoute({ children }) {
   const { user, loading, signingOut } = useAuth();
   const location = useLocation();
@@ -92,6 +106,7 @@ function ProtectedRoute({ children }) {
   // (the walkthrough) completes. Render blank instead of bouncing to /login,
   // otherwise the legacy login page flashes for a frame mid-logout.
   if (signingOut) return null;
+  if (isDesktopWalkthrough(location)) return children;
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
@@ -181,7 +196,14 @@ async function fetchBillingMeForGate() {
 function useSubscriptionGate() {
   const { user, loading: authLoading } = useAuth();
   const location = useLocation();
-  const exempt = isSubscriptionGateExempt(location.pathname);
+  // The desktop walkthrough ends in a usable Studio preview: a freshly
+  // signed-up account has needs_trial_checkout=true, and without this
+  // exemption the gate would yank the hidden studio off to /start-trial
+  // mid-walkthrough — the final reveal then lands on the paywall spinner
+  // instead of the studio. Server-side enforcement on metered endpoints
+  // still applies; this gate is UX only.
+  const exempt =
+    isSubscriptionGateExempt(location.pathname) || isDesktopWalkthrough(location);
 
   const { data, isLoading, isError, refetch, isFetching, error } = useQuery({
     queryKey: ["billing-me", user?.id || "guest"],
@@ -256,6 +278,7 @@ function AppShell() {
     location.pathname === "/dpa" ||
     location.pathname === "/news" ||
     location.pathname.startsWith("/news/") ||
+    location.pathname === "/templates" ||
     location.pathname.startsWith("/product/") ||
     location.pathname === "/support" ||
     location.pathname === "/billing/success" ||
@@ -323,6 +346,7 @@ function AppShell() {
     location.pathname === "/billing/cancel" ||
     location.pathname === "/news" ||
     location.pathname.startsWith("/news/") ||
+    location.pathname === "/templates" ||
     location.pathname.startsWith("/product/");
   // Floating top-left pill for chrome-less standalone pages (e.g. share).
   const showSignInPillGlobally =
@@ -418,10 +442,12 @@ function AppShell() {
             <Route path="/billing/cancel" element={<BillingCancel />} />
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/download" element={<DownloadLykn />} />
-            {/* Capability product pages: Chat / Build / Imagine / Voice. */}
+            {/* Capability product pages: Chat / Build / Imagine / Voice /
+                Research / Browser / Drive / Glass. */}
             <Route path="/product/:capId" element={<CapabilityPage />} />
             <Route path="/news" element={<News />} />
             <Route path="/news/:slug" element={<NewsArticle />} />
+            <Route path="/templates" element={<Templates />} />
             {/* LYKN Glass is now the primary landing page. "/glass" stays as an
                 alias; "/" and "/landing" serve the same page so every home /
                 logo link lands on the Glass hero. */}
@@ -531,6 +557,16 @@ function AppShell() {
               }
             />
             <Route
+              path="/calendar"
+              element={
+                <ProtectedRoute>
+                  <LegacyProductToStudio>
+                    <LyknCalendarPage />
+                  </LegacyProductToStudio>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/tag-management"
               element={
                 <ProtectedRoute>
@@ -597,8 +633,10 @@ function App() {
     <QueryClientProvider client={queryClientInstance}>
       <SupabaseAuthProvider>
         <IntakeProvider>
-          <AppRoutes />
-          <Toaster />
+          <TooltipProvider delayDuration={420} skipDelayDuration={200}>
+            <AppRoutes />
+            <Toaster />
+          </TooltipProvider>
         </IntakeProvider>
       </SupabaseAuthProvider>
     </QueryClientProvider>

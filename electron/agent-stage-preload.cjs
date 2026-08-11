@@ -16,19 +16,21 @@ contextBridge.exposeInMainWorld("lyknAgentStage", {
   back: () => ipcRenderer.invoke("lykn:agent-stage-back"),
   forward: () => ipcRenderer.invoke("lykn:agent-stage-forward"),
   reload: () => ipcRenderer.invoke("lykn:agent-stage-reload"),
+  downloadPage: () => ipcRenderer.invoke("lykn:agent-stage-download"),
   selectTab: (agentId) => ipcRenderer.invoke("lykn:agent-stage-select", { agentId }),
   closeTab: (agentId) => ipcRenderer.invoke("lykn:agent-stage-close-tab", { agentId }),
   newTab: () => ipcRenderer.invoke("lykn:agent-stage-new-tab"),
   toggleIncognito: () => ipcRenderer.invoke("lykn:agent-stage-toggle-incognito"),
-  listBookmarks: () => ipcRenderer.invoke("lykn:agent-bookmarks-list"),
-  toggleBookmark: (payload) => ipcRenderer.invoke("lykn:agent-bookmarks-toggle", payload || {}),
-  removeBookmark: (payload) => ipcRenderer.invoke("lykn:agent-bookmarks-remove", payload || {}),
-  renameBookmark: (payload) => ipcRenderer.invoke("lykn:agent-bookmarks-rename", payload || {}),
+  listHistory: () => ipcRenderer.invoke("lykn:agent-browser-history-list"),
+  removeRecent: (payload) => ipcRenderer.invoke("lykn:agent-recents-remove", payload || {}),
   resizeChrome: (height) => ipcRenderer.send("lykn:agent-stage-chrome-height", { height }),
-  // Saved-links dropdown open/closed — main raises the chrome over the page.
+  // Dropdown open/closed — main raises the chrome over the page.
   setMenuOverlay: (open) => ipcRenderer.send("lykn:agent-stage-menu-overlay", { open }),
   // Chrome / Chromium sync (import logins + open tabs).
   chromeSyncStatus: () => ipcRenderer.invoke("lykn:chrome-sync-status"),
   chromeSyncRun: (opts) => ipcRenderer.invoke("lykn:chrome-sync-run", opts || {}),
+  // Toggle / set the Studio agent chat panel (Use LYKN pill).
+  toggleAgentChat: () => ipcRenderer.invoke("lykn:agent-chat-set", { toggle: true }),
+  setAgentChat: (open) => ipcRenderer.invoke("lykn:agent-chat-set", { open: !!open }),
   close: () => ipcRenderer.send("lykn:agent-stage-set", { open: false }),
 });

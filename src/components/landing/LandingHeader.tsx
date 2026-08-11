@@ -56,15 +56,8 @@ interface LandingHeaderProps {
   onBrandClick?: () => void;
 }
 
-/** Entries in the Product dropdown. The four capability pages plus the
-    LYKN Glass overlay (which lives as a section on the landing page). */
+/** Entries in the Product dropdown — each capability's product page. */
 const PRODUCT_ITEMS = [
-  {
-    id: "glass",
-    name: "LYKN Glass",
-    desc: `The ${HOTKEY} overlay, AI on every screen you work on.`,
-    to: null as string | null,
-  },
   {
     id: "chat",
     name: "Chat",
@@ -89,10 +82,34 @@ const PRODUCT_ITEMS = [
     desc: "A real-time conversation, hands-free.",
     to: "/product/voice",
   },
+  {
+    id: "research",
+    name: "Research",
+    desc: "Deep digs into sources, structured as a report.",
+    to: "/product/research",
+  },
+  {
+    id: "browser",
+    name: "Browser",
+    desc: "An agent that browses and acts on the web for you.",
+    to: "/product/browser",
+  },
+  {
+    id: "drive",
+    name: "Drive",
+    desc: "Your vault — every file, note, and artifact in one place.",
+    to: "/product/drive",
+  },
+  {
+    id: "glass",
+    name: "Glass",
+    desc: `The ${HOTKEY} overlay, AI on every screen you work on.`,
+    to: "/product/glass",
+  },
 ];
 
 /** The single shared marketing header used across every landing page (Glass,
-    Pricing, Download, ...). Keeps the nav, buttons, and styling
+    Pricing, Templates, Download, ...). Keeps the nav, buttons, and styling
     identical everywhere so the header looks the same no matter the page. */
 export default function LandingHeader({
   scrolled = true,
@@ -245,6 +262,9 @@ export default function LandingHeader({
           <button type="button" className="lkn-nav-link" onClick={() => navigate("/pricing")}>
             Pricing
           </button>
+          <button type="button" className="lkn-nav-link" onClick={() => navigate("/templates")}>
+            Templates
+          </button>
           <button type="button" className="lkn-nav-link" onClick={() => navigate("/news")}>
             News
           </button>
@@ -303,6 +323,13 @@ export default function LandingHeader({
               onClick={() => menuGo(() => navigate("/pricing"))}
             >
               <span className="lkn-mobile-link-name">Pricing</span>
+            </button>
+            <button
+              type="button"
+              className="lkn-mobile-link"
+              onClick={() => menuGo(() => navigate("/templates"))}
+            >
+              <span className="lkn-mobile-link-name">Templates</span>
             </button>
             <button
               type="button"

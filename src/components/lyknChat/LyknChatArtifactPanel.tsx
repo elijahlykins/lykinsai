@@ -9,7 +9,12 @@ import {
   safeExternalUrl,
   safeHtmlPreviewUrl,
 } from "@/lib/safeExternalUrl";
-import { openInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
+import { openArtifactInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
+import {
+  downloadArtifactAsPdf,
+  downloadArtifactToComputer,
+  listArtifactDownloadOptions,
+} from "@/lib/lyknChat/downloadArtifact";
 
 export type LyknChatArtifactPanelProps = {
   artifact: ChatArtifact | null;
@@ -70,26 +75,6 @@ function isTrustedArtifactMessage(
     return false;
   }
 }
-
-// Print stylesheet injected into a throwaway iframe so "Save as PDF" matches
-// the on-screen preview exactly (the browser's own engine renders it). It also
-// flattens slideshows so every slide prints (instead of just the active one)
-// and forces a light background for dark decks.
-const PRINT_CSS = `<style>@media print {
-  @page { margin: 16mm 14mm; }
-  html, body { background: #fff !important; overflow: visible !important;
-    height: auto !important; width: auto !important; }
-  .deck { position: static !important; width: auto !important; height: auto !important;
-    display: block !important; }
-  .slide { position: static !important; inset: auto !important; display: block !important;
-    opacity: 1 !important; height: auto !important; min-height: 0 !important;
-    page-break-after: always; break-after: page; padding: 0 0 12mm !important; }
-  .slide:last-child { page-break-after: auto; break-after: auto; }
-  .slide h2 { color: #111 !important; }
-  .slide .body, .slide .body strong { color: #1a1a1a !important; }
-  .slide .body { max-width: none !important; }
-  .toolbar, .progress, #prev, #next { display: none !important; }
-}</style>`;
 
 function badgeFor(artifact: ChatArtifact): string {
   if (artifact.kind === "html") {
@@ -291,14 +276,17 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
 
   const handleDownloadCode = useCallback(() => {
     if (!shown) return;
-    const base = (shown.filename || shown.title || "artifact").replace(/\.[a-z0-9]+$/i, "");
-    const blob = new Blob([draft], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${base}.jsx`;
-    a.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+    void downloadArtifactToComputer(shown, "source").catch(() => {
+      // Fallback: current editor buffer only.
+      const base = (shown.filename || shown.title || "artifact").replace(/\.[a-z0-9]+$/i, "");
+      const blob = new Blob([draft], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${base}.jsx`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+    });
   }, [draft, shown]);
 
   const handleApplyCode = useCallback(async () => {
@@ -365,13 +353,10 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
   const openUrl =
     safeAttachmentUrl(shown?.previewUrl || shown?.downloadUrl) ||
     safeExternalUrl(shown?.previewUrl || shown?.downloadUrl);
-  const downloads = shown?.downloads && shown.downloads.length
-    ? shown.downloads
-    : shown?.downloadUrl
-      ? [{ format: shown.format || "file", url: shown.downloadUrl, filename: shown.filename }]
-      : [];
+  const downloadOptions = shown ? listArtifactDownloadOptions(shown) : [];
 
   const [dlMenuOpen, setDlMenuOpen] = useState(false);
+  const [dlBusy, setDlBusy] = useState(false);
   const dlRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!dlMenuOpen) return;
@@ -383,58 +368,33 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
   }, [dlMenuOpen]);
   useEffect(() => { setDlMenuOpen(false); }, [artifact?.id]);
 
-  // Browser-accurate "Save as PDF": render the artifact's own HTML in a hidden
-  // iframe and print it, so the PDF is pixel-identical to the preview the user
-  // sees (the browser engine does the layout — fonts, tables, symbols, CSS).
-  // Sandboxed allow-same-origin + allow-modals only: the parent can call
-  // print() but the artifact's scripts never execute in our origin (the print
-  // CSS handles slideshow flattening, so no script is needed).
-  const handleSavePdf = useCallback(async () => {
-    if (!artifact || artifact.kind !== "html") return;
-    let html = artifact.srcDoc || "";
-    if (!html && artifact.previewUrl) {
+  const handleDownloadOption = useCallback(
+    async (optionId?: string) => {
+      if (!shown || dlBusy) return;
+      setDlBusy(true);
+      setDlMenuOpen(false);
       try {
-        const res = await fetch(artifact.previewUrl);
-        html = res.ok ? await res.text() : "";
-      } catch {
-        html = "";
+        await downloadArtifactToComputer(shown, optionId);
+      } catch (err) {
+        console.warn("Artifact download failed:", err);
+      } finally {
+        setDlBusy(false);
       }
-    }
-    if (!html) {
-      if (artifact.previewUrl) window.open(artifact.previewUrl, "_blank", "noopener");
-      return;
-    }
-    const withCss = html.includes("</head>")
-      ? html.replace("</head>", `${PRINT_CSS}</head>`)
-      : `${PRINT_CSS}${html}`;
+    },
+    [shown, dlBusy],
+  );
 
-    const frame = document.createElement("iframe");
-    frame.setAttribute("aria-hidden", "true");
-    frame.setAttribute("sandbox", "allow-same-origin allow-modals");
-    frame.style.cssText =
-      "position:fixed; right:0; bottom:0; width:794px; height:1123px; border:0; opacity:0; pointer-events:none; z-index:-1;";
-    let cleaned = false;
-    const cleanup = () => {
-      if (cleaned) return;
-      cleaned = true;
-      window.setTimeout(() => { try { frame.remove(); } catch { /* gone */ } }, 1500);
-    };
-    frame.onload = () => {
-      const win = frame.contentWindow;
-      if (!win) { cleanup(); return; }
-      // Let the document settle (web fonts, layout) before invoking print.
-      window.setTimeout(() => {
-        try {
-          win.focus();
-          win.addEventListener("afterprint", cleanup);
-          win.print();
-        } catch { /* ignore */ }
-        window.setTimeout(cleanup, 60000);
-      }, 350);
-    };
-    frame.srcdoc = withCss;
-    document.body.appendChild(frame);
-  }, [artifact]);
+  const handleSavePdf = useCallback(async () => {
+    if (!shown || dlBusy) return;
+    setDlBusy(true);
+    try {
+      await downloadArtifactAsPdf(shown);
+    } catch (err) {
+      console.warn("Artifact PDF export failed:", err);
+    } finally {
+      setDlBusy(false);
+    }
+  }, [shown, dlBusy]);
 
   return (
     <aside
@@ -497,10 +457,10 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     rel="noopener noreferrer"
                     onClick={(e) => {
                       // Inside the Studio: open in its docked browser, not the OS browser.
-                      if (openInStudioBrowser(openUrl, shown?.title)) e.preventDefault();
+                      if (shown && openArtifactInStudioBrowser(shown)) e.preventDefault();
                     }}
                     className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
-                    title="Open in new tab"
+                    title="Open in LYKN browser"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
                     Open
@@ -528,65 +488,58 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     {saveState === "saved" ? "Saved" : "Save"}
                   </button>
                 ) : null}
-                {/* React artifacts render via JS — the scriptless print iframe
-                    would produce a blank PDF, so hide the button for them
-                    (use "Open" → the browser's own print instead). */}
-                {shown.kind === "html" && shown.toolName !== "lykn_build_react_artifact" && (shown.srcDoc || shown.previewUrl) ? (
+                {/* Quick PDF — also listed under Download. Print dialog → Save as PDF
+                    for apps/decks; images export a real .pdf file. */}
+                {(shown.kind === "html" || shown.kind === "image") && (shown.srcDoc || shown.previewUrl || shown.downloadUrl) ? (
                   <button
                     type="button"
-                    onClick={handleSavePdf}
-                    className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
-                    title="Save as PDF (matches this preview exactly)"
+                    onClick={() => void handleSavePdf()}
+                    disabled={dlBusy}
+                    className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06] disabled:opacity-50"
+                    title="Download as PDF"
                   >
-                    <FileDown className="h-3.5 w-3.5" />
+                    {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
                     PDF
                   </button>
                 ) : null}
-                {downloads.length === 1 && safeAttachmentUrl(downloads[0].url) ? (
-                  <a
-                    href={safeAttachmentUrl(downloads[0].url)!}
-                    download={downloads[0].filename}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
-                    title="Download"
+                {downloadOptions.length === 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleDownloadOption(downloadOptions[0].id)}
+                    disabled={dlBusy}
+                    className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06] disabled:opacity-50"
+                    title={`Download ${downloadOptions[0].label} to your computer`}
                   >
-                    <Download className="h-3.5 w-3.5" />
-                    {(downloads[0].format || "file").toUpperCase()}
-                  </a>
-                ) : downloads.length > 1 ? (
+                    {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                    Download
+                  </button>
+                ) : downloadOptions.length > 1 ? (
                   <div className="relative" ref={dlRef}>
                     <button
                       type="button"
                       onClick={() => setDlMenuOpen((v) => !v)}
-                      className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
-                      title="Download"
+                      disabled={dlBusy}
+                      className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06] disabled:opacity-50"
+                      title="Download to your computer"
                     >
-                      <Download className="h-3.5 w-3.5" />
+                      {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                       Download
                       <ChevronDown className="h-3 w-3 opacity-60" />
                     </button>
                     {dlMenuOpen ? (
-                      <div className="absolute right-0 top-full z-10 mt-1 min-w-[10rem] overflow-hidden rounded-xl border border-black/10 bg-panel py-1 shadow-lg dark:border-white/12">
-                        {downloads.map((d, i) => {
-                          const href = safeAttachmentUrl(d.url);
-                          if (!href) return null;
-                          return (
-                            <a
-                              key={`${d.url}:${i}`}
-                              href={href}
-                              download={d.filename}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={() => setDlMenuOpen(false)}
-                              className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-foreground transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
-                            >
-                              <Download className="h-3.5 w-3.5 opacity-60" />
-                              <span className="truncate">{d.filename || `${(d.format || "file").toUpperCase()} file`}</span>
-                              <span className="ml-auto text-[10px] uppercase text-muted-foreground">{d.format}</span>
-                            </a>
-                          );
-                        })}
+                      <div className="absolute right-0 top-full z-10 mt-1 min-w-[11rem] overflow-hidden rounded-xl border border-black/10 bg-panel py-1 shadow-lg dark:border-white/12">
+                        {downloadOptions.map((d) => (
+                          <button
+                            key={d.id}
+                            type="button"
+                            onClick={() => void handleDownloadOption(d.id)}
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-foreground transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+                          >
+                            <Download className="h-3.5 w-3.5 opacity-60" />
+                            <span className="truncate">{d.label}</span>
+                            <span className="ml-auto text-[10px] uppercase text-muted-foreground">{d.format}</span>
+                          </button>
+                        ))}
                       </div>
                     ) : null}
                   </div>

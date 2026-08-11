@@ -1,8 +1,6 @@
 /* ============================================================================
-   Capability product pages (/product/chat|build|imagine|voice)
-   Split layout on the landing's living backdrop: the story scrolls on the
-   left while the capability's live demo holds in a sticky dark card on the
-   right, with the blue glow + frosted panels behind everything.
+   Capability product pages — split layout: short copy on the left,
+   the capability's animation / image on the right. No scrollytelling.
    ========================================================================== */
 
 .cappg-main {
@@ -18,10 +16,14 @@
   display: grid;
   grid-template-columns: 1.05fr 1fr;
   gap: clamp(2.5rem, 6vw, 5.5rem);
-  align-items: start;
+  align-items: center;
+  min-height: min(70vh, 720px);
 }
 
-/* ── Left: the scrolling story ─────────────────────────────── */
+/* ── Left: headline + a couple paragraphs ──────────────────── */
+.cappg-copy {
+  max-width: 34rem;
+}
 .cappg-headline {
   margin: 0;
   max-width: 14ch;
@@ -32,21 +34,22 @@
   color: #0f172a;
   animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-/* Headlines with hand-placed line breaks (\n in the data) opt out of the
-   ch-based wrapping so they render exactly as authored. Slightly smaller
-   type so the longest authored line still fits the column on one line. */
 .cappg-headline--manual {
   max-width: none;
   white-space: pre-line;
   font-size: clamp(2.2rem, 4vw, 3.3rem);
 }
-.cappg-lede {
+.cappg-lede,
+.cappg-body {
   margin: clamp(1.1rem, 2.6vh, 1.5rem) 0 0;
-  max-width: 34rem;
   font-size: clamp(1rem, 1.35vw, 1.14rem);
   line-height: 1.65;
   color: #475569;
   animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both;
+}
+.cappg-body {
+  color: #64748b;
+  animation-delay: 140ms;
 }
 .cappg-ctas {
   display: flex;
@@ -55,82 +58,15 @@
   margin-top: clamp(1.6rem, 3.5vh, 2.25rem);
   animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 180ms both;
 }
-/* The hero CTA styles carry their own top margin + entrance; the row above
-   handles both here. */
 .cappg-ctas .gl-hero-cta {
   margin-top: 0;
   animation: none;
 }
 
-/* Feature walkthrough — scrollytelling: each point fills a tall block so
-   only one sits in view at a time beside the pinned demo. JS marks the block
-   spanning the viewport center .is-active; the next waits translated down
-   and invisible (poised to float up), passed ones drift up and fade out. */
-.cappg-features {
-  margin-top: clamp(2rem, 5vh, 3.5rem);
-}
-.cappg-feature {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: clamp(1rem, 2.4vw, 1.75rem);
-  align-content: center;
-  /* Tall + contiguous: exactly one block always spans the viewport center. */
-  min-height: 38vh;
-  opacity: 0;
-  transform: translateY(52px);
-  transition: opacity 0.65s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.65s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.cappg-feature.is-active {
-  opacity: 1;
-  transform: none;
-}
-/* The point queued below the active one stays faintly visible as a scroll
-   hint — a ghost peeking up from the bottom of the column. */
-.cappg-feature.is-next {
-  opacity: 0.22;
-}
-.cappg-feature.is-past {
-  transform: translateY(-52px);
-}
-@media (prefers-reduced-motion: reduce) {
-  /* No scroll choreography: every point simply reads in a compact list. */
-  .cappg-feature {
-    opacity: 1;
-    transform: none;
-    transition: none;
-    min-height: 0;
-    padding: clamp(2.25rem, 6vh, 3.75rem) 0;
-    border-top: 1px solid rgba(15, 23, 42, 0.08);
-  }
-}
-.cappg-feature-num {
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: #2563eb;
-  padding-top: 0.35rem;
-}
-.cappg-feature h2 {
-  margin: 0;
-  font-size: clamp(1.25rem, 1.9vw, 1.6rem);
-  font-weight: 650;
-  letter-spacing: -0.015em;
-  line-height: 1.2;
-  color: #0f172a;
-}
-.cappg-feature p {
-  margin: 0.7rem 0 0;
-  max-width: 30rem;
-  font-size: 0.98rem;
-  line-height: 1.65;
-  color: #64748b;
-}
-
 /* Cross-links to the other capability pages. */
 .cappg-more {
-  margin-top: clamp(1.5rem, 4vh, 2.5rem);
-  padding-top: clamp(1.75rem, 4vh, 2.5rem);
+  margin-top: clamp(1.75rem, 4vh, 2.75rem);
+  padding-top: clamp(1.4rem, 3vh, 2rem);
   border-top: 1px solid rgba(15, 23, 42, 0.08);
 }
 .cappg-more-label {
@@ -146,8 +82,6 @@
   flex-wrap: wrap;
   gap: 0.6rem;
 }
-/* Solid white pills with blue text (same treatment as the landing's white
-   Download button) so they hold their color over the roaming blue glow. */
 .cappg-more-links a {
   display: inline-flex;
   align-items: center;
@@ -168,24 +102,17 @@
   transform: translateY(-1px);
 }
 
-/* ── Right: the pinned product demo ────────────────────────── */
+/* ── Right: the product demo ───────────────────────────────── */
 .cappg-stagecol {
-  /* Full height of the grid row so the sticky frame has room to travel. */
-  align-self: stretch;
+  align-self: center;
 }
 .cappg-stage {
-  position: sticky;
-  top: clamp(6rem, 14vh, 8.5rem);
   animation: gl-fade-up 900ms cubic-bezier(0.22, 1, 0.36, 1) 140ms both;
 }
-/* The landing's capability card, grown to page scale. */
 .cappg-card.gl-cap-card {
   height: clamp(380px, 58vh, 580px);
 }
 
-/* Voice page: the live "Hear it" walkthrough fills the card above the
-   footer strip. It carries the app's .dark class so the surface renders
-   the dark Voice Mode chrome regardless of the visitor's theme. */
 .cappg-voice-live {
   flex: 1 1 auto;
   min-height: 0;
@@ -196,22 +123,20 @@
 @media (prefers-reduced-motion: reduce) {
   .cappg-headline,
   .cappg-lede,
+  .cappg-body,
   .cappg-ctas,
   .cappg-stage {
     animation: none;
   }
 }
 
-/* ── Small screens: demo first, then the story ─────────────── */
 @media (max-width: 960px) {
   .cappg-grid {
     grid-template-columns: 1fr;
+    min-height: 0;
   }
   .cappg-stagecol {
     order: -1;
-  }
-  .cappg-stage {
-    position: static;
   }
   .cappg-card.gl-cap-card {
     height: clamp(300px, 48vw, 420px);

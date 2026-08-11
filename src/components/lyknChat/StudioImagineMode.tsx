@@ -15,7 +15,6 @@ import {
   X as XIcon,
 } from "lucide-react";
 import { API_BASE_URL } from "@/lib/api-config";
-import { supabase } from "@/lib/supabase";
 // Same AI-generated pool as the landing page Imagine collage.
 import imagineSneaker from "@/assets/imagine-sneaker.png";
 import imaginePorsche from "@/assets/imagine-porsche-gt3.png";
@@ -95,6 +94,8 @@ type ImagineSlot = {
   id: string;
   status: SlotStatus;
   url?: string;
+  /** Durable user-files path from /api/ai/imagine-image — required for vault save. */
+  storagePath?: string;
   error?: string;
 };
 
@@ -106,6 +107,11 @@ export type ImagineBatch = {
   label: string;
   /** Full prompt sent to the model. */
   prompt: string;
+  /**
+   * Stable creative brief without edit-instruction wrappers. Refine / vary
+   * batches keep the prior concept so new notes stay the delta the model sees.
+   */
+  concept: string;
   kind: BatchKind;
   /** Pixel references: attached images and/or the generation being refined. */
   referenceUrls?: string[];
@@ -153,21 +159,110 @@ function newId() {
     : `im-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function authHeader(): Promise<Record<string, string>> {
-  try {
-    const session = (await supabase.auth.getSession())?.data?.session;
-    return session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
-  } catch {
-    return {};
-  }
-}
-
-function friendlyError(err: string): string {
+function friendlyError(err: string, httpStatus?: number): string {
   const e = String(err || "");
-  if (/quota|limit/i.test(e)) return "Monthly image limit reached";
+  if (httpStatus === 401 || /unauthoriz|invalid or expired|missing or invalid auth|jwt|sign in/i.test(e)) {
+    return "Sign in again to generate";
+  }
+  if (httpStatus === 413 || /payload|too large|entity too large/i.test(e)) {
+    return "Reference image too large — try a smaller one";
+  }
+  if (/quota|limit|subscription_required|402/i.test(e) || httpStatus === 402 || httpStatus === 429) {
+    if (/rate/i.test(e) || httpStatus === 429) return "Too fast — wait a moment";
+    if (/subscription|402/i.test(e) || httpStatus === 402) return "Subscription required";
+    return "Monthly image limit reached";
+  }
   if (/moderation|safety/i.test(e)) return "Prompt was blocked — try rephrasing";
   if (/rate/i.test(e)) return "Too fast — wait a moment";
   return "Generation failed";
+}
+
+/** Errors worth silently retrying — provider blips when 4 slots fire together. */
+function isTransientImagineFailure(err: string, httpStatus?: number): boolean {
+  if (httpStatus === 429 || httpStatus === 502 || httpStatus === 503 || httpStatus === 504) return true;
+  if (httpStatus === 401 || httpStatus === 402 || httpStatus === 403 || httpStatus === 413) return false;
+  const e = String(err || "");
+  if (
+    /moderation|safety|prompt_too_long|unauthoriz|subscription|monthly.?limit|image_gen_monthly|payload|too large|model_returned_no_image|prompt was blocked/i.test(
+      e,
+    )
+  ) {
+    return false;
+  }
+  return (
+    !httpStatus ||
+    httpStatus >= 500 ||
+    /rate|overloaded|timeout|network|econnreset|fetch failed|temporarily|unavailable|capacity|resource.?exhaust|try again|image_generation_failed|gemini_http|openai_http|openai_network/i.test(
+      e,
+    )
+  );
+}
+
+const SLOT_STAGGER_MS = 280;
+const SLOT_MAX_ATTEMPTS = 3;
+/** Keep edit notes intact; only trim inherited concept if the prompt grows large. */
+const IMAGINE_PROMPT_BUDGET = 3500;
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+}
+
+function truncateMiddle(text: string, max: number): string {
+  const s = String(text || "").trim();
+  if (s.length <= max) return s;
+  if (max < 40) return s.slice(0, max);
+  const head = Math.floor(max * 0.65);
+  const tail = max - head - 5;
+  return `${s.slice(0, head)} … ${s.slice(-tail)}`;
+}
+
+/** Build the model prompt for an edit / remix batch — user notes lead. */
+function buildEditPrompt(opts: {
+  concept: string;
+  overallNotes?: string;
+  regions?: Array<{ x: number; y: number; note: string }>;
+  mode: "refine" | "variations";
+}): string {
+  const concept = String(opts.concept || "").trim();
+  const overall = String(opts.overallNotes || "").trim();
+  const regions = Array.isArray(opts.regions) ? opts.regions : [];
+
+  const instructionParts: string[] = [];
+  if (opts.mode === "refine") {
+    instructionParts.push(
+      "EDIT THE REFERENCE IMAGE.",
+      "Apply the directed changes below precisely. Keep subject, style, composition, and lighting intact unless a note asks otherwise.",
+    );
+  } else {
+    instructionParts.push(
+      "Create a fresh variation of the REFERENCE IMAGE.",
+      "Keep the subject, overall style, and composition, but vary details, pose, angle, or background.",
+    );
+  }
+
+  if (overall) {
+    instructionParts.push("", "User direction (highest priority):", overall);
+  }
+
+  if (regions.length) {
+    instructionParts.push(
+      "",
+      "Region-specific changes (percent coordinates from the top-left of the reference image):",
+      ...regions.map(
+        (p, i) =>
+          `${i + 1}. Around (${Math.round(p.x)}% from left, ${Math.round(p.y)}% from top): ${p.note}`,
+      ),
+    );
+  }
+
+  const instructions = instructionParts.join("\n");
+  const reserved = instructions.length + 48;
+  const conceptBudget = Math.max(200, IMAGINE_PROMPT_BUDGET - reserved);
+  const conceptBlock = concept
+    ? `\n\nOriginal concept (context only — do not ignore the edits above):\n${truncateMiddle(concept, conceptBudget)}`
+    : "";
+
+  return `${instructions}${conceptBlock}`.slice(0, IMAGINE_PROMPT_BUDGET);
 }
 
 /** Aspect-ratio → CSS ratio for the grid cells ("3:2" → "3 / 2"). */
@@ -179,14 +274,26 @@ function cssAspect(ar: string): string {
 export type StudioImagineModeProps = {
   /** Keys the session batch memory (per chat). */
   chatKey: string;
-  /** Optional Save-to-vault for a generated image (url, prompt). */
-  onSaveImage?: (url: string, prompt?: string) => void;
+  /** Optional Save-to-vault for a generated image (url, prompt, storage meta). */
+  onSaveImage?: (
+    url: string,
+    prompt?: string,
+    meta?: { storagePath?: string; mimeType?: string },
+  ) => void | Promise<boolean | void>;
   savedUrls?: Set<string>;
 };
 
 export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: StudioImagineModeProps) {
   const key = chatKey || "unkeyed";
-  const [batches, setBatches] = useState<ImagineBatch[]>(() => sessionBatches.get(key) || []);
+  const [batches, setBatches] = useState<ImagineBatch[]>(() => {
+    const raw = sessionBatches.get(key) || [];
+    // Older session batches (pre-concept field) still need a stable brief.
+    return raw.map((b) =>
+      b.concept
+        ? b
+        : { ...b, concept: String(b.label || b.prompt || "").trim() },
+    );
+  });
   const batchesRef = useRef(batches);
   batchesRef.current = batches;
   useEffect(() => {
@@ -194,7 +301,14 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
   }, [key, batches]);
   // Chat switch: swap in that chat's session batches.
   useEffect(() => {
-    setBatches(sessionBatches.get(key) || []);
+    const raw = sessionBatches.get(key) || [];
+    setBatches(
+      raw.map((b) =>
+        b.concept
+          ? b
+          : { ...b, concept: String(b.label || b.prompt || "").trim() },
+      ),
+    );
   }, [key]);
 
   const [prompt, setPrompt] = useState("");
@@ -208,6 +322,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
   const [pins, setPins] = useState<ImagePin[]>([]);
   const [activePinId, setActivePinId] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState<Set<string>>(new Set());
+  const [savingUrl, setSavingUrl] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -249,12 +364,14 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
   }, []);
 
   const runSlot = useCallback(
-    async (batch: ImagineBatch, slot: ImagineSlot) => {
+    async (batch: ImagineBatch, slot: ImagineSlot, attempt = 0) => {
       try {
-        const headers = { "Content-Type": "application/json", ...(await authHeader()) };
+        // Do NOT attach Authorization here — installAuthFetch injects a
+        // refreshed JWT and retries on 401. A stale getSession() token would
+        // lock out that refresh path and every slot would land as failed.
         const res = await fetch(`${API_BASE_URL}/api/ai/imagine-image`, {
           method: "POST",
-          headers,
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             prompt: batch.prompt,
             aspectRatio: batch.aspectRatio === "1:1" ? undefined : batch.aspectRatio,
@@ -263,17 +380,32 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
         });
         const data = await res.json().catch(() => null);
         if (!res.ok || !data?.ok || !data.imageUrl) {
+          const rawErr = String(data?.error || `http_${res.status}`);
+          // Keep the tile spinning and retry transient provider/rate blips
+          // automatically — firing 4 parallel gens often trips one slot.
+          if (attempt + 1 < SLOT_MAX_ATTEMPTS && isTransientImagineFailure(rawErr, res.status)) {
+            await sleep(900 * (attempt + 1) + Math.floor(Math.random() * 400));
+            return runSlot(batch, slot, attempt + 1);
+          }
           patchSlot(batch.id, slot.id, {
             status: "error",
-            error: friendlyError(data?.error || `http_${res.status}`),
+            error: friendlyError(rawErr, res.status),
           });
           return;
         }
-        patchSlot(batch.id, slot.id, { status: "done", url: data.imageUrl });
+        patchSlot(batch.id, slot.id, {
+          status: "done",
+          url: data.imageUrl,
+          storagePath: typeof data.storagePath === "string" ? data.storagePath : undefined,
+        });
         if (data.monthlyRemaining !== undefined && data.monthlyRemaining !== "unlimited") {
           setQuotaNote(`${data.monthlyRemaining} image${data.monthlyRemaining === 1 ? "" : "s"} left this month`);
         }
       } catch {
+        if (attempt + 1 < SLOT_MAX_ATTEMPTS) {
+          await sleep(900 * (attempt + 1) + Math.floor(Math.random() * 400));
+          return runSlot(batch, slot, attempt + 1);
+        }
         patchSlot(batch.id, slot.id, { status: "error", error: "Network error" });
       }
     },
@@ -281,11 +413,19 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
   );
 
   const startBatch = useCallback(
-    (opts: { label: string; prompt: string; kind: BatchKind; referenceUrls?: string[]; aspectRatio: string }) => {
+    (opts: {
+      label: string;
+      prompt: string;
+      concept: string;
+      kind: BatchKind;
+      referenceUrls?: string[];
+      aspectRatio: string;
+    }) => {
       const batch: ImagineBatch = {
         id: newId(),
         label: opts.label,
         prompt: opts.prompt,
+        concept: opts.concept,
         kind: opts.kind,
         referenceUrls: opts.referenceUrls,
         aspectRatio: opts.aspectRatio,
@@ -296,8 +436,13 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
         createdAt: Date.now(),
       };
       setBatches((prev) => [...prev, batch]);
-      // Fire all slots in parallel — each lands independently.
-      for (const slot of batch.slots) void runSlot(batch, slot);
+      // Stagger starts so four identical provider calls don't collide on the
+      // same rate-limit window; each slot still lands independently.
+      batch.slots.forEach((slot, i) => {
+        window.setTimeout(() => {
+          void runSlot(batch, slot);
+        }, i * SLOT_STAGGER_MS);
+      });
       window.setTimeout(() => {
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
       }, 60);
@@ -316,6 +461,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
       prompt: refs.length
         ? `${text}\n\nUse the attached reference image${refs.length > 1 ? "s" : ""} as the visual base.`
         : text,
+      concept: text,
       kind: "generate",
       referenceUrls: refs.length ? refs : undefined,
       aspectRatio: aspect,
@@ -443,6 +589,8 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
   }, []);
 
   // Submit overall remarks + region flags → new batch grounded in this image.
+  // User notes lead the prompt so the model treats them as the edit brief,
+  // not a buried footnote under the stacked original prompt.
   const handleRefine = useCallback(() => {
     if (!lightboxBatch || !lightboxUrl) return;
     const note = remarks.trim();
@@ -451,27 +599,17 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
       .filter((p) => p.note.length > 0);
     if (!note && !flagged.length) return;
 
-    const regionBlock = flagged.length
-      ? "\n\nRegion flags on the reference image (percent from top-left origin). " +
-        "Apply each note to that area specifically:\n" +
-        flagged
-          .map(
-            (p, i) =>
-              `${i + 1}. Around (${Math.round(p.x)}% from left, ${Math.round(p.y)}% from top): ${p.note}`,
-          )
-          .join("\n")
-      : "";
+    const concept =
+      String(lightboxBatch.concept || "").trim() ||
+      String(lightboxBatch.label || "").trim() ||
+      "the reference image";
 
-    const overallBlock = note
-      ? `\n\nOverall edit notes (apply across the image): ${note}`
-      : "";
-
-    const combined =
-      `${lightboxBatch.prompt}\n\n` +
-      `Edit the reference image with the following directed changes. ` +
-      `Keep everything else (subject, style, composition, lighting) intact unless a note asks otherwise.` +
-      regionBlock +
-      overallBlock;
+    const combined = buildEditPrompt({
+      concept,
+      overallNotes: note,
+      regions: flagged,
+      mode: "refine",
+    });
 
     const label =
       note ||
@@ -482,34 +620,83 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
     startBatch({
       label,
       prompt: combined,
+      // Keep the original creative brief stable across edit rounds.
+      concept,
       kind: "refine",
       referenceUrls: [lightboxUrl],
       aspectRatio: lightboxBatch.aspectRatio,
     });
   }, [lightboxBatch, lightboxUrl, remarks, pins, startBatch, resetEditNotes]);
 
-  // Midjourney "V" — variations of the selected image, no remarks needed.
+  // Midjourney "V" — variations of the selected image. If the user already
+  // typed overall notes / pin notes, fold those in so the AI still hears them.
   const handleVariations = useCallback(() => {
     if (!lightboxBatch || !lightboxUrl) return;
+    const note = remarks.trim();
+    const flagged = pins
+      .map((p) => ({ ...p, note: p.note.trim() }))
+      .filter((p) => p.note.length > 0);
+
+    const concept =
+      String(lightboxBatch.concept || "").trim() ||
+      String(lightboxBatch.label || "").trim() ||
+      "the reference image";
+
+    const combined = buildEditPrompt({
+      concept,
+      overallNotes: note || undefined,
+      regions: flagged.length ? flagged : undefined,
+      mode: "variations",
+    });
+
+    resetEditNotes();
     setLightbox(null);
     startBatch({
-      label: "Variations",
-      prompt:
-        `${lightboxBatch.prompt}\n\n` +
-        "Create a fresh variation of the reference image: keep the subject, overall style and composition, but vary the details, pose, angle or background.",
+      label: note || (flagged.length ? "Variations + edits" : "Variations"),
+      prompt: combined,
+      concept,
       kind: "variations",
       referenceUrls: [lightboxUrl],
       aspectRatio: lightboxBatch.aspectRatio,
     });
-  }, [lightboxBatch, lightboxUrl, startBatch]);
+  }, [lightboxBatch, lightboxUrl, remarks, pins, startBatch, resetEditNotes]);
 
   const handleSave = useCallback(() => {
-    if (!lightboxUrl || !onSaveImage || !lightboxBatch) return;
-    onSaveImage(lightboxUrl, lightboxBatch.prompt);
-    setSavedFlash((p) => new Set(p).add(lightboxUrl));
-  }, [lightboxUrl, lightboxBatch, onSaveImage]);
+    // Only the open lightbox slot — never the rest of the batch.
+    if (!lightboxUrl || !onSaveImage || !lightboxBatch || !lightboxSlot) return;
+    if (lightboxSlot.status !== "done" || !lightboxSlot.url) return;
+    const url = lightboxSlot.url;
+    if (savingUrl === url || savedFlash.has(url) || savedUrls?.has(url)) return;
+
+    setSavingUrl(url);
+    void (async () => {
+      try {
+        const result = await onSaveImage(
+          url,
+          // Short concept/label only — full batch prompt is shared by all 4 slots.
+          lightboxBatch.concept || lightboxBatch.label,
+          {
+            storagePath: lightboxSlot.storagePath,
+          },
+        );
+        if (result === false) return;
+        setSavedFlash((p) => new Set(p).add(url));
+      } finally {
+        setSavingUrl((cur) => (cur === url ? null : cur));
+      }
+    })();
+  }, [
+    lightboxUrl,
+    lightboxBatch,
+    lightboxSlot,
+    onSaveImage,
+    savingUrl,
+    savedFlash,
+    savedUrls,
+  ]);
 
   const isSaved = !!lightboxUrl && (savedUrls?.has(lightboxUrl) || savedFlash.has(lightboxUrl));
+  const isSaving = !!lightboxUrl && savingUrl === lightboxUrl;
 
   const canRefine =
     remarks.trim().length > 0 || pins.some((p) => p.note.trim().length > 0);
@@ -643,7 +830,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
               type="button"
               onClick={handleSend}
               disabled={!prompt.trim()}
-              className={`h-9 w-9 lykn-chat-neu-chat-send-btn flex items-center justify-center shrink-0 ${
+              className={`h-9 w-9 !rounded-full lykn-chat-neu-chat-send-btn flex items-center justify-center shrink-0 ${
                 !prompt.trim()
                   ? "opacity-40 cursor-not-allowed"
                   : "text-blue-600 dark:text-blue-400"
@@ -972,15 +1159,15 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
                 <button
                   type="button"
                   onClick={handleSave}
-                  disabled={isSaved}
+                  disabled={isSaved || isSaving}
                   className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors ${
                     isSaved
                       ? "text-emerald-700 dark:text-emerald-300"
                       : "text-black/45 hover:bg-black/[0.05] hover:text-black/75 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-white/85"
                   }`}
-                  title={isSaved ? "Saved" : "Save"}
+                  title={isSaved ? "Saved" : isSaving ? "Saving…" : "Save this image only"}
                 >
-                  {isSaved ? <Check className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}
+                  {isSaved ? <Check className="h-4 w-4" /> : isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bookmark className="h-4 w-4" />}
                 </button>
               ) : null}
             </div>

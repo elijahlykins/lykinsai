@@ -46,18 +46,41 @@ const STREAM_OPENERS: RegExp[] = [
 const STREAM_PARTIAL_TAIL =
   /(?:<t(?:o(?:o(?:l(?:_(?:u(?:s(?:e)?)?)?)?)?)?)?|<f(?:u(?:n(?:c(?:t(?:i(?:o(?:n)?)?)?)?)?)?)?|\[(?:\s*lykn_)?|lykn_\w*)$/i;
 
+// `local_pull_file` uploads land under a `/local-pull/` storage path and are
+// the ONE kind of storage URL that is SUPPOSED to appear in reply text — the
+// local tool executor explicitly tells the model to embed it (e.g.
+// `![photo](signed-url)`). Every other *.supabase.co URL is still a leak.
+const LOCAL_PULL_ALLOWED_RE =
+  /!?\[[^\]]*\]\(\s*https?:\/\/[a-z0-9-]+\.supabase\.co\/[^)]*\/local-pull\/[^)]*\)|https?:\/\/[a-z0-9-]+\.supabase\.co\/[^\s)>\]]*\/local-pull\/[^\s)>\]]*/gi;
+
+// Same-length mask (private-use char run) so indices in the masked copy map
+// 1:1 onto the original — used by the opener scan, never emitted.
+function maskAllowedUrlsForScan(text: string): string {
+  return text.replace(LOCAL_PULL_ALLOWED_RE, (m) => "\uE000".repeat(m.length));
+}
+
 function applyStripPatterns(text: string): string {
-  let out = text;
+  // Tokenize allowed local-pull embeds out of the way, strip, then restore.
+  const kept: string[] = [];
+  let out = text.replace(LOCAL_PULL_ALLOWED_RE, (m) => {
+    kept.push(m);
+    return `\uE000${kept.length - 1}\uE001`;
+  });
   for (const re of STRIP_PATTERNS) {
     out = out.replace(re, "");
   }
-  return out;
+  return out.replace(/\uE000(\d+)\uE001/g, (_m, i) => kept[Number(i)] ?? "");
 }
 
 function cutAtEarliestOpener(text: string): number {
+  // Scan a masked copy: a COMPLETE allowed local-pull embed must not trip the
+  // Supabase-URL openers (the embed would be held back and never shown).
+  // Incomplete embeds don't match the mask, so a half-streamed URL is still
+  // held until its closing token arrives.
+  const scan = maskAllowedUrlsForScan(text);
   let earliest = -1;
   for (const re of STREAM_OPENERS) {
-    const m = re.exec(text);
+    const m = re.exec(scan);
     if (m && (earliest < 0 || m.index < earliest)) earliest = m.index;
   }
   return earliest;

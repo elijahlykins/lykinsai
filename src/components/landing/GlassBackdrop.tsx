@@ -27,8 +27,9 @@ interface GlassBackdropProps {
   startAtTop?: boolean;
   /** Shape of the wandering path. "serpentine" (default) swings edge to edge
       across the middle of the screen; "perimeter" orbits the viewport edges —
-      up one side, across the top, down the other — hugging the sides. */
-  wanderPath?: "serpentine" | "perimeter";
+      up one side, across the top, down the other — hugging the sides;
+      "right" keeps the glow parked on the right edge with a soft vertical bob. */
+  wanderPath?: "serpentine" | "perimeter" | "right";
 }
 
 /** The marketing pages' fixed page-wide backdrop: white, carrying the drifting
@@ -228,6 +229,14 @@ export default function GlassBackdrop({
               x: 50 + 62 * Math.cos(Math.PI / 2 + t * 0.125) + 3 * Math.sin(t * 0.43),
               y: 50 + 46 * Math.sin(Math.PI / 2 + t * 0.125) + 3 * Math.sin(t * 0.31),
             }
+          : wanderPath === "right" && wandering
+            ? // Parked on the right edge (only the left half of the glow on
+              // screen), gently bobbing up and down — used on short product
+              // pages so the orb stays behind the demo column.
+              {
+                x: 100 + 2 * Math.sin(t * 0.21),
+                y: 48 + 14 * Math.sin(t * 0.18) + 3 * Math.sin(t * 0.37),
+              }
           : // Serpentine path swinging edge to edge: the glow's center starts
             // ON the right edge (only its left half on screen, like the old
             // hero art), sweeps across to hang off the left edge, and back

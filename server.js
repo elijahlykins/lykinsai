@@ -206,6 +206,7 @@ import { EXTERIOR_TOOLS_BY_NAME } from './mcp-tools/exterior/index.js';
 import { generateChatImage } from './lib/exterior/generateImage.js';
 import { communicateWithModelTool } from './mcp-tools/communicateWithModel.js';
 import { CHAT_TOOLS, buildChatToolCtx, providerForModel, resolveChatModelLabel, supportsTools } from './mcp-tools/chatTools.js';
+import { LOCAL_TOOL_NAMES, looksLikeLocalSystemAsk } from './mcp-tools/localTools.js';
 import {
   formatBoundProjectGuidance,
   loadWritableProject,
@@ -279,6 +280,11 @@ if (process.env.HAI_API_KEY || process.env.BROWSER_CONTROL_PROVIDER) {
     console.log(`  Browser pipeline: ${process.env.BROWSER_SCREEN_READER_MODEL || 'gpt-5.6-luna'} read → Holo act → ${process.env.BROWSER_REPORT_MODEL || 'gpt-4.1-nano'} report`);
   }
 }
+console.log(
+  `  Browser agent (modular): ${process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra'} plan/decide → ` +
+  `${process.env.BROWSER_AGENT_VERIFY_MODEL || process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra'} verify` +
+  ` (reasoning: ${process.env.BROWSER_AGENT_REASONING || 'none'})`,
+);
 
 const app = express();
 
@@ -952,6 +958,7 @@ const imageJsonParser = express.json({ limit: '12mb' });
 const IMAGE_BEARING_AI_ROUTES = new Set([
   '/api/ai/stream',
   '/api/ai/invoke',
+  '/api/ai/imagine-image',
   '/api/desktop/browser-plan',
   '/api/desktop/browser-plan-next',
   '/api/desktop/browser-report',
@@ -1722,11 +1729,14 @@ const OUTPUT_CAPS = {
   // the tool's MAX_CODE_LEN. clampForProvider still bounds this per provider
   // (grok/gemini 32k ceilings pass it through; openai/claude clamp lower).
   coded_artifact: 30000,
-  // `max` is the hard ceiling for caller `override` values — bumped from
-  // 8,192 (old Gemini Flash 2.0 ceiling) to 16,384, the smallest modern
-  // ceiling we still hit (GPT-4o). Per-provider clamping at the actual
-  // call sites keeps requests inside each provider's true limit.
-  max: 16384,
+  // Deep research reports are long markdown with stock/chart/sheet embeds.
+  // 12k was truncating mid-fence so the client rendered raw embed JSON.
+  // 24k + continue-on-length in chat-agent-loop finishes the Sources section.
+  deep_research: 24576,
+  // `max` is the hard ceiling for caller `override` values — aligned with
+  // modern provider ceilings (Gemini/Claude/Grok 32k). OpenAI still clamps
+  // lower via PROVIDER_OUTPUT_CEILINGS; research continues when that hits.
+  max: 32768,
 };
 
 // Per-provider single-call output ceilings. Used to clamp our caps right
@@ -1758,13 +1768,14 @@ function clampForProvider(cap, model) {
   return Math.min(Math.floor(cap), ceiling);
 }
 
-function pickOutputCap({ wantsActions = false, hasImages = false, intent, override } = {}) {
+function pickOutputCap({ wantsActions = false, hasImages = false, intent, override, deepResearch = false } = {}) {
   // Explicit caller override always wins, bounded by the hard ceiling so a
   // bad caller can't reintroduce the runaway-cost problem we just fixed.
   if (Number.isFinite(override) && override > 0) {
     return Math.min(Math.floor(override), OUTPUT_CAPS.max);
   }
   if (wantsActions) return OUTPUT_CAPS.json_action;
+  if (deepResearch) return OUTPUT_CAPS.deep_research;
   if (intent && OUTPUT_CAPS[intent]) return OUTPUT_CAPS[intent];
   if (hasImages) return OUTPUT_CAPS.image_analysis;
   return OUTPUT_CAPS.chat;
@@ -5410,6 +5421,9 @@ const LYKN_GLASS_MEMORY_ADDENDUM = [
   '    an id. Never load a different hit than the one you just named.',
   '  • If they did not ask for Vault content: zero vault tools this turn.',
   '  • If search is empty, say so — do not pull a random other vault item.',
+  '  • NEVER offer to save their screen / a screenshot / what is on screen to the',
+  '    Vault. No "do you want me to save this screen to your vault?" — ever.',
+  '    Save something only when they explicitly ask you to save it.',
   'Keep learning: if they reveal or contradict something about themselves, update [WHO_I_AM] via <learned>/<updated>.',
   'Do not narrate the memory system. Just feel like you know them.',
   '=== END GLASS ===',
@@ -5460,6 +5474,45 @@ function messageWantsPageFetch(msg) {
   ) {
     return true;
   }
+  return false;
+}
+
+/**
+ * True only when the user wants OAuth / API connected-app tools
+ * (lykn_list_apps / lykn_call_app) — not when they want the browser to open
+ * Notion/Gmail/etc. and click through on screen.
+ */
+function messageWantsConnectedAppApis(msg) {
+  const t = String(msg || '');
+  if (!t.trim()) return false;
+  if (/\bconnected apps?\b/i.test(t)) return true;
+  if (/\b(?:lykn_)?(?:list|call)_apps?\b/i.test(t)) return true;
+  if (
+    /\b(?:notion|gmail|slack|todoist|linear|outlook|google\s*sheets?)\s+(?:api|connection|integration|oauth)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:use|via|through|with)\s+my\s+(?:notion|gmail|slack|todoist|linear|outlook)\s*(?:connection|integration|oauth|api)?\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // On-screen / browse work — never route to connected-app APIs.
+  if (
+    /\b(?:go\s+to|open|visit|navigate|pull\s+up|launch|browser|tab|click|type|write|share|sign[- ]?in|log[- ]?in|on\s+(?:the\s+)?screen|in\s+(?:the\s+)?browser|create\s+(?:a\s+)?(?:new\s+)?page|new\s+page)\b/i.test(
+      t,
+    ) ||
+    /https?:\/\//i.test(t) ||
+    /\bnotion\.so\b/i.test(t)
+  ) {
+    return false;
+  }
+  // Slack/Todoist/Linear without browse verbs → API is a reasonable default.
+  if (/\b(?:slack|todoist|linear)\b/i.test(t)) return true;
   return false;
 }
 
@@ -5531,7 +5584,11 @@ function resolveIntentChatToolNames(msg, opts = {}) {
         t,
       ));
   const wantsCalc = /\b(?:calculate|compute|solve|integrate|derivative|differentiate|exact\s+math)\b/i.test(t);
-  const wantsApps = /\b(?:send|email|slack|notion|todoist|linear|gmail|outlook|connected app)\b/i.test(t);
+  // Connected-app APIs (Notion/Gmail OAuth, custom keys) — NOT the same as
+  // "open Notion and create a page". Browse/UI asks must use the browser screen.
+  const wantsApps =
+    opts.forceConnectedApps === true ||
+    messageWantsConnectedAppApis(t);
   const wantsCursor =
     typeof AGENTS_APPS_CODE_INTENT_RE !== 'undefined' &&
     AGENTS_APPS_CODE_INTENT_RE.test(t);
@@ -6357,6 +6414,7 @@ const LYKN_GLASS_STREAM_PERSONA_SLIM = [
   'Markdown: short ## headers, bullets, **bold** when helpful. Match length to the ask — short Q → short A.',
   'Do NOT invent chart/image URLs, claim you highlighted the screen, or dump vault/project briefings.',
   'Vault: only if they asked for something saved. Projects: only if this chat is scoped or they asked — never "Want me to add this to a project?".',
+  'NEVER offer to save their screen, a screenshot, or what is on screen to the Vault (no "want me to save this screen/this to your vault?"). No unprompted save offers of any kind — save only when they explicitly ask.',
   'Charts / coded apps: Build mode only. Images: Generate-image mode only. If mode is not armed, one short line telling them how.',
   'When tools are available and they need live facts, use web search — never invent a stale landscape.',
   'OPEN TAB / PAGE TEXT: answer only from PAGE CONTENT / FULL_PAGE text actually in the prompt. ' +
@@ -6384,6 +6442,40 @@ const LYKN_CHAT_STREAM_PERSONA_SLIM = [
   '',
   LYKN_NO_VENDOR_DISCLOSURE,
 ].join('\n');
+
+// ---------------------------------------------------------------------------
+// Local Mode — pending client-executed tool calls.
+// ---------------------------------------------------------------------------
+// Local tools (file / terminal) run in the user's desktop app, not here. When
+// the agent loop hits a local tool call it registers a pending entry keyed by
+// a per-turn streamId, emits an `awaiting_client` tool_call event, and awaits
+// the result the desktop posts back to /api/ai/local-tool-result. Entries are
+// scoped to the authenticated user and time out with the turn.
+const LOCAL_TOOL_WAIT_MS = 5 * 60 * 1000;
+const localToolStreams = new Map(); // streamId → { userId, pending: Map<toolCallId, resolve> }
+
+function registerLocalToolStream(streamId, userId) {
+  localToolStreams.set(streamId, { userId, pending: new Map() });
+}
+
+function releaseLocalToolStream(streamId) {
+  const entry = localToolStreams.get(streamId);
+  if (!entry) return;
+  for (const resolve of entry.pending.values()) {
+    try { resolve({ ok: false, error: 'Local mode stream closed before the tool finished.' }); } catch { /* noop */ }
+  }
+  localToolStreams.delete(streamId);
+}
+
+function resolveLocalToolResult(streamId, userId, toolCallId, result) {
+  const entry = localToolStreams.get(streamId);
+  if (!entry || entry.userId !== userId) return false;
+  const resolve = entry.pending.get(toolCallId);
+  if (!resolve) return false;
+  entry.pending.delete(toolCallId);
+  try { resolve(result && typeof result === 'object' ? result : { ok: false, error: 'malformed local tool result' }); } catch { /* noop */ }
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // In-app tool-calling guidance — appended to the system prompt ONLY when
@@ -7420,7 +7512,14 @@ function buildChatToolGuidance(userMessage, opts = {}) {
       // Coded artifacts follow a named design system (DESIGN.md-style brief,
       // format adapted from open-design). Picked from the request wording —
       // "fun quiz" → Playful, "dashboard" → Dark Dashboard — default LYKN.
-      parts.push(formatDesignSystemBlock(pickDesignSystem(userMessage)));
+      parts.push(
+        formatDesignSystemBlock(pickDesignSystem(userMessage, {
+          hasReferenceImages: Boolean(opts.hasReferenceImages),
+        }), {
+          userMessage,
+          hasReferenceImages: Boolean(opts.hasReferenceImages),
+        }),
+      );
       // Plus the per-FORMAT style guide (design-guides/*.md): website section
       // order, slide-deck mechanics, dashboard layout, document typography,
       // app interaction craft. Only when the format is discernible.
@@ -14821,6 +14920,24 @@ ${t}
   }
 });
 
+// Local Mode result relay — the desktop app posts the outcome of a local
+// tool (file / terminal) it ran here so the in-flight /api/ai/stream turn can
+// resume. Matched to the awaiting call by (streamId, toolCallId); scoped to
+// the authenticated user. The server never runs the tool itself.
+app.post('/api/ai/local-tool-result', requireAuth, async (req, res) => {
+  const streamId = String(req.body?.streamId || '');
+  const toolCallId = String(req.body?.toolCallId || '');
+  const result = req.body?.result;
+  if (!streamId || !toolCallId) {
+    return res.status(400).json({ ok: false, error: 'streamId and toolCallId are required' });
+  }
+  const delivered = resolveLocalToolResult(streamId, req.user?.id, toolCallId, result);
+  if (!delivered) {
+    return res.status(404).json({ ok: false, error: 'No local tool call is waiting for this result.' });
+  }
+  return res.json({ ok: true });
+});
+
 app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsageLimit, async (req, res) => {
   // ─── Latency diagnostics ─────────────────────────────────────────
   // We are chasing a "first message takes 20-30s" report and the
@@ -14880,7 +14997,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // Research/web/image/translate: no Create at all.
     const lockOutArtifactBuilds = !!exclusiveComposerMode;
     // Regular chat (Create/Build NOT armed): never auto-start a new artifact.
-    // Open-panel refine still works; new builds require "+" → Create / Glass Build.
+    // Open-panel refine only runs while Create/Build is armed; Chat mode may
+    // send a discussOnly stub so the model can talk about the open panel.
     const allowNewArtifactBuild = forceArtifact === true;
     // "+" → Create / Glass Build is the ONLY way to force a new artifact build.
     // Typed "build me a deck" in regular chat used to auto-infer Create and
@@ -14909,15 +15027,35 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         activeArtifact = null;
       }
     }
+    // Chat mode discuss stub: title-only context, never an edit session.
+    const activeArtifactDiscussOnly =
+      !!activeArtifact && activeArtifact.discussOnly === true;
+    if (activeArtifactDiscussOnly && activeArtifact) {
+      // Drop any accidental source payloads so editable gates stay false.
+      activeArtifact = {
+        toolName: String(activeArtifact.toolName || ''),
+        title: String(activeArtifact.title || 'Untitled').slice(0, 200),
+        sourceChatId: artifactSourceChatId || undefined,
+        discussOnly: true,
+        templateType:
+          typeof activeArtifact.templateType === 'string'
+            ? activeArtifact.templateType
+            : undefined,
+      };
+      console.log(
+        `💬 Stream: open artifact "${String(activeArtifact.title || '').slice(0, 60)}" is discuss-only (Chat mode — no edits)`,
+      );
+    }
     // Exclusive non-Create modes: ignore open-panel refine so research/web/
     // translate/image turns cannot get trapped into builder edits.
-    if (lockOutArtifactBuilds && activeArtifact) {
+    // discussOnly stubs are fine to keep (read-only context).
+    if (lockOutArtifactBuilds && activeArtifact && !activeArtifactDiscussOnly) {
       console.log(
         `🔒 Stream: exclusive mode (research=${deepResearch}, web=${forceWebSearch && !deepResearch}, image=${forceImage}, translate=${translateMode}) — ignoring open artifact "${String(activeArtifact.title || '').slice(0, 60)}"`,
       );
       activeArtifact = null;
     }
-    const hasActiveArtifactBody = !!activeArtifact;
+    const hasActiveArtifactBody = !!activeArtifact && !activeArtifactDiscussOnly;
 
     // Image parity first: "generate an image of a dog" typed into the chat
     // forces lykn_generate_image exactly like the armed "+" → Generate image
@@ -15018,6 +15156,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     }
     const activeArtifactHasSource =
       !!activeArtifact &&
+      !activeArtifactDiscussOnly &&
       (
         (activeArtifact.toolName === 'lykn_build_template' &&
           (Array.isArray(activeArtifact.sections) || typeof activeArtifact.content === 'string')) ||
@@ -15070,9 +15209,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       /\b(?:font|typeface|typography|colou?r|theme|accent|palette|recolou?r|background|neutral|gr[ae]yscale|monochrome)\b/i.test(
         askText,
       ) || redesignArtifactAsk;
+    // Edit/add asks against an open artifact — keep in sync with useChatEngine.
     const looksLikeSurgicalTweak =
-      askText.trim().length < 140 &&
-      /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme)\b/i.test(
+      askText.trim().length < 400 &&
+      /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i.test(
         askText,
       ) &&
       !redesignArtifactAsk &&
@@ -15115,17 +15255,60 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       !typedNewDeliverableAsk &&
       !insistFreshBuildAsk &&
       !regularChatBuildAsk;
+    const openBuilderTool = String(activeArtifact?.toolName || '');
+    const sameBuilderOpen =
+      activeArtifactHasSource &&
+      !!artifactToolName &&
+      openBuilderTool === artifactToolName;
+    const differentDeliverableAsk =
+      /\b(?:different|brand[- ]?new|entirely new|fresh|whole new|completely new)\s+(?:game|app|build|artifact|world|deck|site|page)\b/i.test(
+        askText,
+      );
+    const referencePhraseAsk =
+      /\b(?:like this|like that|from this|based on this|from the (?:image|screenshot|picture|reference)|as shown|in the (?:image|screenshot|picture))\b/i.test(
+        askText,
+      );
+    // With the same builder open, broad "make/build + game/app" must NOT force
+    // a fresh rebuild ("make the game harder" is a refine). Only clear NEW
+    // commissions / reference rebuilds / image webapp asks wipe the panel.
+    const freshWebappForcesNew =
+      freshWebappAsk &&
+      (!sameBuilderOpen ||
+        differentDeliverableAsk ||
+        referenceRebuildAsk ||
+        imageUrls.length > 0 ||
+        /\bcopy of\b/i.test(askText) ||
+        /\b(?:from scratch|start over|brand[- ]?new|entirely new|another\s+(?:game|app)|new\s+(?:game|app)\s+entirely)\b/i.test(
+          askText,
+        ));
+    // Clear new-build signals only. Build mode + same open artifact ⇒ refine
+    // by default (edits), not a full rebuild of every add/edit ask.
+    const clearFreshBuildIntent =
+      referenceRebuildAsk ||
+      imageWebappAsk ||
+      freshWebappForcesNew ||
+      openReactRebuildAsk ||
+      insistFreshBuildAsk ||
+      differentDeliverableAsk ||
+      (typedNewDeliverableAsk && activeArtifactHasSource && !looksLikeSurgicalTweak);
     const buildModeFresh =
       allowNewArtifactBuild &&
       !lockOutArtifactBuilds &&
-      ((forceArtifact &&
-        artifactType === 'webapp' &&
-        (imageUrls.length > 0 || !looksLikeSurgicalTweak)) ||
-        referenceRebuildAsk ||
-        imageWebappAsk ||
-        freshWebappAsk ||
-        insistFreshBuildAsk ||
-        (typedNewDeliverableAsk && activeArtifactHasSource && !looksLikeSurgicalTweak));
+      (clearFreshBuildIntent ||
+        (forceArtifact &&
+          artifactType === 'webapp' &&
+          !activeArtifactHasSource &&
+          (imageUrls.length > 0 || !looksLikeSurgicalTweak)) ||
+        (forceArtifact &&
+          artifactType === 'webapp' &&
+          activeArtifactHasSource &&
+          !sameBuilderOpen &&
+          (imageUrls.length > 0 || !looksLikeSurgicalTweak)) ||
+        (forceArtifact &&
+          artifactType === 'webapp' &&
+          sameBuilderOpen &&
+          imageUrls.length > 0 &&
+          (referenceRebuildAsk || freshWebappAsk || referencePhraseAsk)));
     // Force the React builder only when Create/Build is armed.
     if (
       allowNewArtifactBuild &&
@@ -15141,24 +15324,22 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         '🎨 Stream: fresh webapp/game ask — forcing lykn_build_react_artifact (ignoring open panel for this turn)',
       );
     }
-    // Only defer Create/Build → surgical refine when the OPEN artifact is the
-    // SAME builder AND the ask is a short tweak. Otherwise an open React game
-    // used to strip Create → Deck: the model narrated "Done. Built an 11-slide
-    // deck…" without ever calling lykn_build_template (phantom build).
-    const openBuilderTool = String(activeArtifact?.toolName || '');
-    const sameBuilderOpen =
-      activeArtifactHasSource &&
-      !!artifactToolName &&
-      openBuilderTool === artifactToolName;
+    // Prefer refine when the OPEN artifact is the SAME builder and the user
+    // is not clearly commissioning a new deliverable. Build mode stays armed
+    // as sticky UI, but add/edit asks must patch the open panel — not rebuild.
+    // (Still refuse to strip Create→Deck when a React game is open.)
     const preferSurgicalRefine =
       sameBuilderOpen &&
       !redesignArtifactAsk &&
       !buildModeFresh &&
       !openTemplateRestyleAsk &&
-      looksLikeSurgicalTweak;
+      !differentDeliverableAsk &&
+      (looksLikeSurgicalTweak ||
+        (forceArtifact && artifactType === 'webapp') ||
+        (forceArtifact && sameBuilderOpen && !typedNewDeliverableAsk));
     if (preferSurgicalRefine && artifactBuildSpec) {
       console.log(
-        `🎨 Stream: same-kind open artifact + surgical tweak — ignoring forceArtifact/${artifactToolName}`,
+        `🎨 Stream: same-kind open artifact + refine ask — ignoring forceArtifact/${artifactToolName}`,
       );
       artifactBuildSpec = null;
       artifactToolName = null;
@@ -15319,6 +15500,12 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     let useTools = req.body?.useTools === true && CHAT_TOOLS.length > 0;
     /** undefined = full in-app whitelist; array = custom-model subset */
     let streamChatToolNames;
+    // Local Mode — the desktop app sets this true when the user flipped the
+    // Vault switch. Local tools (file / terminal) execute client-side in the
+    // Electron main process; the server only ships the schemas and relays the
+    // result. Ignored unless tools are on for the turn.
+    const streamLocalMode = req.body?.localMode === true;
+    if (streamLocalMode) console.log('🖥️ Stream: Local Mode armed (desktop client)');
     /** True when resolveIntentChatToolNames produced a tiny allowlist. */
     let streamLeanToolSet = false;
     let model = normalizedModel;
@@ -15550,6 +15737,23 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           );
       }
     }
+    // Agent Mode / owned browser: never use OAuth "connected apps" APIs —
+    // work happens by clicking the live browser screen.
+    if (
+      (agentMode || toolDraft || req.body?.ownedBrowser === true) &&
+      Array.isArray(streamChatToolNames)
+    ) {
+      const beforeApps = streamChatToolNames.length;
+      streamChatToolNames = streamChatToolNames.filter(
+        (n) =>
+          n !== 'lykn_list_apps' &&
+          n !== 'lykn_call_app' &&
+          n !== 'lykn_recommendTools',
+      );
+      if (streamChatToolNames.length !== beforeApps) {
+        console.log('🧭 Stream: stripped connected-app tools (agent browser uses the screen)');
+      }
+    }
     // Regular chat / exclusive modes / brainstorm: strip Create/Build makers
     // unless this turn is refining an already-open artifact (or Create is armed).
     const brainstormBuildMention =
@@ -15740,7 +15944,15 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       } catch { /* socket closed */ }
     };
     try {
-      res.write(`data: ${JSON.stringify({ status: deepResearch ? 'Planning research\u2026' : 'Thinking\u2026' })}\n\n`);
+      res.write(
+        `data: ${JSON.stringify({
+          status: deepResearch
+            ? 'Planning research\u2026'
+            : forceArtifact
+              ? 'Designing the build\u2026'
+              : 'Thinking\u2026',
+        })}\n\n`,
+      );
       if (typeof res.flush === 'function') res.flush();
     } catch { /* socket closed before first write — handled by stallCheck/cleanup below */ }
     _ck('SSE headers flushed + Thinking heartbeat sent');
@@ -15876,8 +16088,20 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // must keep tools enabled so lykn_pushProjectState can run on short
     // confirmations ("yes", "ship it") — otherwise the project panel
     // stays empty while the model claims it saved working memory.
+    // Local Mode asks ("what's in my downloads folder", "run npm install")
+    // don't look like agent-tool intent to the casual/lean heuristics below,
+    // but they need the tool loop so the local file/terminal tools get
+    // offered. Only computed when the desktop sent localMode: true.
+    const streamLocalIntent =
+      streamLocalMode && looksLikeLocalSystemAsk(streamPureUserMessage || text);
+    if (streamLocalIntent) {
+      console.log('🖥️ Stream: local-mode ask detected — keeping tools on');
+    }
     if (useTools && streamEnrichTier === 'none') {
-      if (forceImage) {
+      if (streamLocalIntent) {
+        streamEnrichTierEffective = 'light';
+        console.log('🖥️ Stream: local-mode ask — keeping tools on despite casual tier');
+      } else if (forceImage) {
         streamEnrichTierEffective = 'light';
         console.log('🖼 Stream: forced image generation — keeping tools on despite casual tier');
       } else if (artifactToolName) {
@@ -15937,6 +16161,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     if (
       useTools &&
       !streamActionIntent &&
+      // Local Mode keeps the tool loop armed for EVERY substantive turn — the
+      // model decides when to touch the user's files. Keyword-guessing here
+      // made "can you see my projects folder?" randomly lose local access.
+      // (Greeting-tier turns are still stripped by the casual gate above.)
+      !streamLocalMode &&
       !forceImage &&
       !artifactToolName &&
       !activeArtifactEditable &&
@@ -16342,7 +16571,23 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         `. Infer the topic and full contents from the user's message and any context above; make it complete, well-structured, and visually clean — don't ask a clarifying question first unless the request is truly unusable. ` +
         `After the tool returns, reply with just a 1-2 sentence summary of what you built; do NOT paste the raw HTML, code, or chart config into the chat (the artifact renders on its own).]`;
     }
-    if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact') {
+    if (activeArtifactDiscussOnly && activeArtifact) {
+      const kindHint =
+        activeArtifact.toolName === 'lykn_build_react_artifact'
+          ? 'coded React app/page'
+          : activeArtifact.toolName === 'lykn_build_template'
+            ? String(activeArtifact.templateType || 'document')
+            : activeArtifact.toolName === 'lykn_build_spreadsheet'
+              ? 'spreadsheet'
+              : 'artifact';
+      prompt +=
+        `\n\n[ARTIFACT_VISIBLE — The user has "${String(activeArtifact.title || 'Untitled').slice(0, 200)}" ` +
+        `(${kindHint}) open in the side panel, but they are in Chat mode — not Build/Create. ` +
+        `You may discuss, explain, critique, brainstorm about, or answer questions about this artifact using conversation context. ` +
+        `Do NOT call lykn_build_react_artifact, lykn_build_template, lykn_build_spreadsheet, lykn_manage_file, or any other build/edit tool, ` +
+        `and do NOT modify the open artifact. If they ask you to change, add to, or rebuild it, tell them in one short line to switch to ` +
+        `**Build** using the pills at the top of the page and resend.]`;
+    } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact') {
       const a = activeArtifact;
       const multiFiles = Array.isArray(a.files) ? a.files.filter((f) => f && typeof f.path === 'string') : [];
       const isMulti = multiFiles.length > 0;
@@ -16391,12 +16636,14 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         todosBlock +
         runtimeBlock +
         `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
+        `Build mode does NOT mean rebuild — with this panel open, add/edit/fix requests are ALWAYS in-place patches, never a new artifact from scratch. ` +
         `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, colors, radii, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. Swapping a color palette or font "while you're at it" is a FAILURE. ` +
         `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
         (isMulti
           ? `REQUIRED: call ONCE with \`edits\` ({path, find, replace}) and/or \`file_ops\` ({op:"write"|"delete", path, content?}) covering EVERY change in this message. The server REJECTS full \`files\`/\`code\` unless the user explicitly said redesign/rebuild/start over (then full_rewrite: true). `
           : `REQUIRED: call ONCE with \`edits\` ONLY — an array of {find, replace} patches covering EVERY change in this message. Each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. The server REJECTS full \`code\` and ignores full_rewrite unless the user explicitly said redesign/rebuild/start over. `) +
         `Do NOT call this tool multiple times in one turn — batch all patches into that single call, then summarize. ` +
+        `If the tool returns compile_error / edits_required / edit_target_not_found, fix and retry silently before telling the user you're done — never leave them with a broken preview. ` +
         `Never change THEME, colors, fonts, or layout on a refine. Update \`todos\` statuses on longer builds. ` +
         `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
         `If the message is NOT about the artifact, ignore this and answer normally.]`;
@@ -16643,6 +16890,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           // Pins the [STYLE_GUIDE] pick for Create-menu builds that map to a
           // known format (study/document/worksheet); wording decides otherwise.
           artifactType: artifactToolName === 'lykn_build_react_artifact' ? artifactType : null,
+          // Color is opt-in: neutrals by default unless the user attached a
+          // reference idea (image/screenshot) or asked for color in text.
+          hasReferenceImages: Array.isArray(imageUrls) && imageUrls.length > 0,
         });
       }
     }
@@ -16816,9 +17066,13 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // cancels the in-flight provider request instead of silently burning
     // tokens for minutes against a socket nobody is reading.
     let abortCurrentAgentAttempt = null;
+    // Local Mode per-turn stream id (assigned below once we know the turn
+    // uses tools + Local Mode). Declared here so cleanup can release it.
+    let localToolStreamId = null;
     const cleanup = () => {
       clearInterval(stallCheck); clearInterval(heartbeat); clearTimeout(hardKill);
       try { abortCurrentAgentAttempt?.(); } catch { /* already settled */ }
+      try { if (localToolStreamId) releaseLocalToolStream(localToolStreamId); } catch { /* noop */ }
     };
     const _streamTextStripper = makeToolSyntaxStripper((text) => {
       if (!res.writableEnded) {
@@ -16915,7 +17169,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // the provider works — 90s was killing healthy GPT Image / Remotion /
     // grok builds mid-flight. Give them 240s; the 10min hardKill still bounds
     // the whole turn. Tool-batch keepalives also ping streamActivity.
-    const longToolTurn = codedArtifactTurn || videoRenderLikelyTurn || forceImage;
+    // Deep research: evidence + long report write can pause between tokens
+    // (and OpenAI's 16k clamp often needs a continue hop). Treat like builds
+    // so the 90s stall watchdog doesn't kill a healthy mid-report stream.
+    const longToolTurn = codedArtifactTurn || videoRenderLikelyTurn || forceImage || deepResearch;
     const streamStallMs = longToolTurn ? 240000 : 90000;
     stallCheck = setInterval(() => {
       if (Date.now() - streamActivity > streamStallMs) {
@@ -17158,6 +17415,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         oaiMessages.push({ role: 'user', content: userContent });
         const _strmOaiCap = clampForProvider(pickOutputCap({
           hasImages: imageUrls.length > 0,
+          deepResearch,
           // No intent: pre-generation classifyActionType always returns
           // 'chat_short' (2500 cap), which was the actual cause of MAX_TOKENS
           // hitting on long replies. Falling through to OUTPUT_CAPS.chat
@@ -17258,6 +17516,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         }
         const _strmClaudeCap = clampForProvider(pickOutputCap({
           hasImages: imageUrls.length > 0,
+          deepResearch,
           // No intent: pre-generation classifyActionType always returns
           // 'chat_short' (2500 cap), which was the actual cause of MAX_TOKENS
           // hitting on long replies. Falling through to OUTPUT_CAPS.chat
@@ -17367,6 +17626,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         }
         const _strmGemCap = clampForProvider(pickOutputCap({
           hasImages: imageUrls.length > 0,
+          deepResearch,
           // No intent: pre-generation classifyActionType always returns
           // 'chat_short' (2500 cap), which was the actual cause of MAX_TOKENS
           // hitting on long replies. Falling through to OUTPUT_CAPS.chat
@@ -17548,6 +17808,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         strmGrokMsgs.push({ role: 'user', content: grokContent });
         const _strmGrokCap = clampForProvider(pickOutputCap({
           hasImages: imageUrls.length > 0,
+          deepResearch,
           // No intent: pre-generation classifyActionType always returns
           // 'chat_short' (2500 cap), which was the actual cause of MAX_TOKENS
           // hitting on long replies. Falling through to OUTPUT_CAPS.chat
@@ -17643,9 +17904,48 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // impl (openai / grok / anthropic / gemini) based on `provider`,
     // so we don't branch on model id here — providerForModel does it.
     const toolProvider = useTools ? providerForModel(actualModel) : null;
+    // Local Mode: when the desktop app enabled it, offer the file/terminal
+    // tools alongside the regular chat tools. They execute client-side; the
+    // server only relays. Register a per-turn stream so the desktop can post
+    // results back and match them to the awaiting call.
+    const streamLocalToolsEnabled = useTools && !!toolProvider && streamLocalMode;
+    if (streamLocalToolsEnabled) {
+      localToolStreamId = `lt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+    let effectiveChatToolNames = streamChatToolNames;
+    if (streamLocalToolsEnabled) {
+      const base = Array.isArray(streamChatToolNames)
+        ? [...streamChatToolNames]
+        : [...CHAT_TOOLS.map((t) => t.name)];
+      effectiveChatToolNames = [...base, ...LOCAL_TOOL_NAMES];
+      if (req.user?.id) registerLocalToolStream(localToolStreamId, req.user.id);
+    }
     if (useTools && toolProvider) {
       _ck(`entering agent loop (${toolProvider})`);
-      const { system: agentSys, user: agentUser } = splitPromptForProvider(prompt);
+      const { system: rawAgentSys, user: agentUser } = splitPromptForProvider(prompt);
+      // Local Mode system guidance. Without this the model has the local_*
+      // schemas but nothing in the prompt saying access is LIVE — and if an
+      // earlier turn errored (e.g. a declined permission prompt), the
+      // conversation history is full of its own "local access isn't enabled"
+      // claims, which it will keep parroting instead of retrying the tools.
+      const agentSys = streamLocalToolsEnabled
+        ? rawAgentSys +
+          '\n\n[LOCAL MODE — ACTIVE]\n' +
+          'Local Mode is ON for this turn. You HAVE live access to the user\'s Mac through the ' +
+          'local_* tools: local_list_dir, local_read_file, local_search_files, local_pull_file ' +
+          '(brings any file — including images — into the chat), local_write_file, and ' +
+          'local_run_command. Reads may show the user a one-time permission prompt; writes and ' +
+          'risky commands always ask them per action. When the user asks about their files, ' +
+          'folders, or system, CALL THE TOOLS — never claim local access is unavailable or ask ' +
+          'them to enable it (the switch is already on). Ignore any earlier statements in this ' +
+          'conversation that said local access was off; those were transient errors. If a tool ' +
+          'returns an error, relay that exact error honestly instead of inventing a reason.'
+        : rawAgentSys;
+      if (streamLocalToolsEnabled) {
+        console.log(
+          `🖥️ local tools offered: ${LOCAL_TOOL_NAMES.filter((n) => effectiveChatToolNames?.includes?.(n)).length}/${LOCAL_TOOL_NAMES.length}`,
+        );
+      }
 
       // Build provider-correct user content shape. Multimodal image
       // attachments need provider-native parts; text-only turns just
@@ -17759,12 +18059,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
             ? clampForProvider(OUTPUT_CAPS.coded_artifact, attemptModel)
             : clampForProvider(pickOutputCap({
                 hasImages: imageUrls.length > 0,
+                deepResearch,
               }), attemptModel),
           // Longer tool loops for fresh coded builds. Open-panel refine uses
           // the short edit hop cap instead (one batched patch, not 28 hops).
           codingMode: Boolean(codedArtifactTurn && !activeArtifactEditable),
+          // Research reports must finish embeds + Sources even when a
+          // provider's per-call ceiling truncates mid-fence.
+          continueIncompleteResearch: Boolean(deepResearch),
           promptCacheKey: agentCacheKey,
-          chatToolNames: streamChatToolNames,
+          chatToolNames: effectiveChatToolNames,
           forceToolName: forcedToolNameForTurn,
           env: process.env,
           ctx: (() => {
@@ -17848,6 +18152,57 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
                 sendStatus(`Rendering video… ${Math.round((Number(progress) || 0) * 100)}%`);
               }
             };
+            // Local Mode: mark the local tools so the loop hands them to the
+            // desktop client instead of executing them here, and provide the
+            // awaiter that ships the call out and waits for the posted result.
+            if (streamLocalToolsEnabled && localToolStreamId) {
+              base.localToolNames = LOCAL_TOOL_NAMES;
+              base.awaitLocalTool = (call, record) =>
+                new Promise((resolve) => {
+                  const start = Date.now();
+                  const finish = (payload) => {
+                    const result = payload && typeof payload === 'object'
+                      ? payload
+                      : { ok: false, error: 'malformed local tool result' };
+                    const isError = result.ok === false;
+                    console.log(
+                      `🖥️ local tool ${call.name} ← ${isError ? `ERROR: ${String(result.error || '').slice(0, 120)}` : 'ok'} (${Date.now() - start}ms)`,
+                    );
+                    record({
+                      id: call.id,
+                      name: call.name,
+                      args: call.args,
+                      status: isError ? 'error' : 'done',
+                      result,
+                      latencyMs: Date.now() - start,
+                    });
+                    resolve({ payload: result, isError, latencyMs: Date.now() - start });
+                  };
+                  const entry = localToolStreams.get(localToolStreamId);
+                  if (!entry) {
+                    finish({ ok: false, error: 'Local mode session is no longer active.' });
+                    return;
+                  }
+                  // Tell the desktop client to run this tool now.
+                  console.log(`🖥️ local tool ${call.name} → awaiting desktop client`);
+                  record({
+                    id: call.id,
+                    name: call.name,
+                    args: call.args,
+                    status: 'awaiting_client',
+                    localStreamId: localToolStreamId,
+                  });
+                  noteStreamActivity();
+                  const timer = setTimeout(() => {
+                    entry.pending.delete(call.id);
+                    finish({ ok: false, error: 'The desktop app did not return a result in time.' });
+                  }, LOCAL_TOOL_WAIT_MS);
+                  entry.pending.set(call.id, (posted) => {
+                    clearTimeout(timer);
+                    finish(posted);
+                  });
+                });
+            }
             if (!streamOrchestrationCtx?.isMainAgent) return base;
             const mainModelId = streamOrchestrationCtx.mainModelId;
             const chatId = streamChatId;
@@ -19206,6 +19561,7 @@ app.post('/api/ai/suggest', requireAuth, requireAppAccess, aiLimiter, async (req
     if (!question && !answer) return res.json(empty);
 
     const liveWatchMode = mode === 'live_watch';
+    const agentBrowserMode = mode === 'agent_browser';
     const systemPrompt = liveWatchMode
       ? 'You help a desktop AI assistant suggest follow-up questions while the user has live screen feedback on. ' +
         'Given context about what page or app they are on and what LYKN observed, return ONLY a JSON object:\n' +
@@ -19216,6 +19572,19 @@ app.post('/api/ai/suggest', requireAuth, requireAppAccess, aiLimiter, async (req
         'Examples: "Summarize this article", "Compare these prices", "What does this error mean?"\n' +
         '- searchQuery: a web search query for sources related to their current page or task when ' +
         'external reference info would help. Empty string if the context is purely personal/on-screen.\n\n' +
+        'Output only the JSON.'
+      : agentBrowserMode
+      ? 'You help a desktop browser agent suggest the next useful actions after it finishes a task. ' +
+        'Given the user\'s ask and what the agent just did/found, return ONLY a JSON object:\n' +
+        '{"followups": string[], "searchQuery": string}\n\n' +
+        '- followups: exactly 3 short, specific next actions the USER would ask the browser agent to do next. ' +
+        'Make them concrete to THIS finished task (page, product, email, campaign, doc, etc.) — never generic ' +
+        '("keep going", "dig deeper", "what\'s next"). Phrase as first-person commands under ~12 words. ' +
+        'Assume the agent continues on the SAME open tab and clicks through the UI — tip wording should ' +
+        'sound like a continuation, not a cold start. ' +
+        'Examples: "Open the top campaign and review spend", "Draft a reply to that email", ' +
+        '"Compare the two cheapest options".\n' +
+        '- searchQuery: empty string unless a web lookup would clearly help beyond the current tab.\n\n' +
         'Output only the JSON.'
       : 'You help a desktop AI assistant suggest next steps after it answers a user. ' +
         'Given the user\'s question and the assistant\'s answer, return ONLY a JSON object:\n' +
@@ -19999,6 +20368,115 @@ app.post('/api/desktop/browser-plan', requireAuth, requireAppAccess, aiLimiter, 
   }
 });
 
+// Generic structured-model endpoint for the modular browser agent
+// (electron/browser-agent). One provider-agnostic contract for its planner /
+// executor / verifier stages: { stage, system, user, imageUrl?, schema,
+// maxTokens? } -> { ok, json }. Keeps API keys server-side and lets the
+// provider/model change without touching browser control, state, or skills.
+app.post('/api/desktop/agent-model', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
+  try {
+    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'AI not configured' });
+    const stage = String(req.body?.stage || 'decide').slice(0, 24);
+    const system = String(req.body?.system || '').slice(0, 60000);
+    const user = String(req.body?.user || '').slice(0, 60000);
+    const imageUrl = String(req.body?.imageUrl || '').trim();
+    const schema = req.body?.schema && typeof req.body.schema === 'object' ? req.body.schema : null;
+    const maxTokens = Math.min(Math.max(Number(req.body?.maxTokens) || 900, 100), 2000);
+    if (!user || !schema) return res.status(400).json({ error: 'Missing user content or schema' });
+
+    // gpt-5.6-terra by default — 4.1-mini misread element catalogs (random
+    // clicks, wrong fields) and mis-verified steps. Verify can still be
+    // pointed at a cheaper model via BROWSER_AGENT_VERIFY_MODEL.
+    const model =
+      stage === 'verify'
+        ? String(process.env.BROWSER_AGENT_VERIFY_MODEL || process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra').trim()
+        : String(process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra').trim();
+
+    const userContent = imageUrl.startsWith('data:image/')
+      ? [{ type: 'text', text: user }, { type: 'image_url', image_url: { url: imageUrl, detail: 'low' } }]
+      : user;
+    const messages = [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      { role: 'user', content: userContent },
+    ];
+
+    // gpt-5.6 family: max_completion_tokens, no temperature, explicit
+    // reasoning effort (reasoning tokens count against the cap, so give
+    // headroom when effort is enabled). Older models keep the classic params.
+    const isGpt5 = /^gpt-5/.test(model);
+    const effort = String(process.env.BROWSER_AGENT_REASONING || 'none').trim().toLowerCase();
+    const tokenParams = isGpt5
+      ? {
+          max_completion_tokens: effort !== 'none' ? maxTokens + 2000 : maxTokens,
+          reasoning_effort: effort,
+        }
+      : { temperature: 0.15, max_tokens: maxTokens };
+
+    const callOnce = async (responseFormat) => {
+      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          ...tokenParams,
+          response_format: responseFormat,
+          messages,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      return { ok: r.ok, status: r.status, data };
+    };
+
+    // Prefer strict-ish structured output; fall back to json_object with the
+    // schema embedded in the prompt if the model/provider rejects json_schema.
+    let out = await callOnce({
+      type: 'json_schema',
+      json_schema: { name: `browser_agent_${stage}`.slice(0, 60), schema, strict: false },
+    });
+    if (!out.ok) {
+      messages[messages.length - 1] = {
+        role: 'user',
+        content:
+          typeof userContent === 'string'
+            ? `${user}\n\nRespond with a single JSON object matching this schema:\n${JSON.stringify(schema)}`
+            : [
+                { type: 'text', text: `${user}\n\nRespond with a single JSON object matching this schema:\n${JSON.stringify(schema)}` },
+                ...userContent.slice(1),
+              ],
+      };
+      out = await callOnce({ type: 'json_object' });
+    }
+    if (!out.ok) {
+      const msg = String(out.data?.error?.message || 'model call failed').slice(0, 300);
+      return res.status(502).json({ ok: false, error: msg });
+    }
+    let parsed = null;
+    try {
+      parsed = JSON.parse(out.data?.choices?.[0]?.message?.content || 'null');
+    } catch {
+      parsed = null;
+    }
+    if (parsed == null) return res.status(502).json({ ok: false, error: 'model returned unparseable output' });
+
+    const usage = out.data?.usage || {};
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: `browser_agent_${stage}`,
+        model, provider: 'openai',
+        inputTokens: usage.prompt_tokens || 0, outputTokens: usage.completion_tokens || 0,
+      });
+    }).catch(() => {});
+
+    return res.json({ ok: true, json: parsed, model });
+  } catch (err) {
+    console.error('❌ /api/desktop/agent-model:', err?.message || err);
+    return res.status(500).json({ ok: false, error: 'Agent model call failed' });
+  }
+});
+
 // Next-step planner for adaptive browser control — re-scan after each action.
 app.post('/api/desktop/browser-plan-next', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
@@ -20038,7 +20516,13 @@ app.post('/api/desktop/browser-plan-next', requireAuth, requireAppAccess, aiLimi
     ].filter(Boolean).join('\n');
     const complexTaskHolo = userWantsComplexTask(intent);
     const multiQuestionHolo = wantsMultiQuestion(intent);
-    const okCompletedSteps = completedSteps.filter((s) => s?.ok !== false).length;
+    // Passive actions (scroll/wait/hover) are not evidence of real task work —
+    // don't let them satisfy the minimum-steps-before-done guards.
+    const okCompletedSteps = completedSteps.filter(
+      (s) =>
+        s?.ok !== false &&
+        !/^(?:scroll|wait|hover|mouseover)$/i.test(String(s?.type || '')),
+    ).length;
     const pickNextTaskPlan = (readerResult, fallback = taskPlan) => {
       const fromBrief = String(readerResult?.brief?.stepByStepPlan || '').trim();
       const fromReader = String(readerResult?.taskPlan || '').trim();

@@ -53,7 +53,7 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   lykn_generate_diagram: "Drawing the diagram…",
   lykn_generate_image: "Creating the image…",
   lykn_build_template: "Building the template…",
-  lykn_build_react_artifact: "Building…",
+  lykn_build_react_artifact: "Building the app…",
   lykn_render_video: "Rendering the video…",
   lykn_build_spreadsheet: "Building the spreadsheet…",
   lykn_manage_file: "Preparing the file…",
@@ -63,6 +63,14 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   lykn_generate_speech: "Generating the audio…",
   lykn_translate: "Translating…",
   lykn_get_current_time: "Checking the time…",
+
+  // ── Local Mode (file + terminal access on the user's machine) ──
+  local_list_dir: "Looking through your files…",
+  local_read_file: "Reading the file…",
+  local_search_files: "Searching your files…",
+  local_pull_file: "Pulling it into the chat…",
+  local_write_file: "Writing the file…",
+  local_run_command: "Running it on your Mac…",
 };
 
 /**
@@ -115,6 +123,33 @@ function toolDetailStatus(name: string, args?: Record<string, unknown>): string 
   if (name === "lykn_render_video") {
     const title = typeof args.title === "string" ? args.title.trim() : "";
     return title ? `Rendering ${truncateForStatus(title, 40)}…` : "";
+  }
+  if (name === "local_run_command") {
+    const cmd = typeof args.command === "string" ? args.command.trim() : "";
+    return cmd ? `Running: ${truncateForStatus(cmd, 48)}` : "";
+  }
+  if (
+    name === "local_read_file" ||
+    name === "local_write_file" ||
+    name === "local_list_dir" ||
+    name === "local_pull_file"
+  ) {
+    const path = typeof args.path === "string" ? args.path.trim() : "";
+    if (!path) return "";
+    const leaf = path.split("/").filter(Boolean).pop() || path;
+    if (name === "local_write_file") return `Writing ${truncateForStatus(leaf, 40)}…`;
+    if (name === "local_read_file") return `Reading ${truncateForStatus(leaf, 40)}…`;
+    if (name === "local_pull_file") return `Pulling in ${truncateForStatus(leaf, 40)}…`;
+    return `Opening ${truncateForStatus(leaf, 40)}…`;
+  }
+  if (name === "local_search_files") {
+    const q =
+      typeof args.query === "string" && args.query.trim()
+        ? args.query.trim()
+        : typeof args.namePattern === "string"
+          ? args.namePattern.trim()
+          : "";
+    return q ? `Searching your files: ${truncateForStatus(q, 40)}` : "";
   }
   return "";
 }

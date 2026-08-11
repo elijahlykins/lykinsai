@@ -28,6 +28,14 @@ interface SaveFileToVaultOptions {
     cols: number;
     cells: Record<string, string[]>;
   } | null;
+  /** Override default `project_upload` source (e.g. studio_imagine). */
+  source?: string;
+  /** Override default `[fileType, "uploaded"]` tags. */
+  tags?: string[];
+  /** Optional vault folder (e.g. Generated). */
+  folder?: string;
+  /** Optional prose line before the ATTACHMENTS_JSON marker. */
+  contentPrefix?: string;
 }
 
 interface SaveLinkToVaultOptions {
@@ -130,6 +138,10 @@ export async function saveFileToVault(
     projectName,
     extractedText,
     spreadsheetData,
+    source,
+    tags: tagsOverride,
+    folder,
+    contentPrefix,
   } = opts;
 
   const dedupKey = fileDedupKey(userId, storagePath, filename);
@@ -187,17 +199,24 @@ export async function saveFileToVault(
 
     // Attachment-only body — renderers pull filename/type/url from the
     // JSON payload; no prose line and no storage URL in the body.
-    const noteContent = `[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
+    // Optional contentPrefix lets Studio-generated images keep a short caption.
+    const prefix = String(contentPrefix || "").trim();
+    const noteContent = prefix
+      ? `${prefix}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`
+      : `[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
 
-    const tags: string[] = [fileType, "uploaded"];
-    if (projectName) tags.push(projectName);
+    const tags: string[] = Array.isArray(tagsOverride) && tagsOverride.length
+      ? [...tagsOverride]
+      : [fileType, "uploaded"];
+    if (projectName && !tags.includes(projectName)) tags.push(projectName);
 
     const richInsert: Record<string, unknown> = {
       user_id: userId,
       title: noteTitle,
       content: noteContent,
-      source: "project_upload",
+      source: source || "project_upload",
       tags,
+      ...(folder ? { folder } : {}),
       ...buildAttachmentColumns(attachmentPayload[0]),
     };
 
@@ -488,6 +507,158 @@ export async function saveLinkToVault(
     return { ok: true, id: insertedNote.id, note: insertedNote };
   } catch (err) {
     if (import.meta.env.DEV) console.error("[saveToVault] Unexpected error:", err);
+    const classified = classifyError(err);
+    return { ok: false, reason: classified.reason, message: classified.message };
+  }
+}
+
+interface SaveGeneratedImageToVaultOptions {
+  userId: string;
+  imageUrl: string;
+  /** Existing object path under user-files (from Imagine / generate_image). */
+  storagePath?: string;
+  mimeType?: string;
+  promptText?: string;
+  /** Vault `source` column. Default: studio_imagine */
+  source?: string;
+  folder?: string;
+}
+
+/**
+ * Persist an AI-generated Studio/chat image as a durable vault card.
+ *
+ * Always copies into a unique `{userId}/{fileId}/original.*` vault layout —
+ * even when a `generated/` storagePath already exists. Imagine batches share
+ * the flat `…/generated/` folder; keeping that path would make every saved
+ * sibling overwrite the same medium.jpg/thumb.jpg and look like the whole
+ * batch landed in the vault.
+ */
+export async function saveGeneratedImageToVault(
+  opts: SaveGeneratedImageToVaultOptions,
+): Promise<SaveToVaultResult> {
+  const {
+    userId,
+    imageUrl,
+    promptText,
+    source = "studio_imagine",
+    folder = "Generated",
+  } = opts;
+
+  if (!userId || !imageUrl) {
+    return { ok: false, reason: "error", message: "Missing image or user." };
+  }
+
+  const existingPath = String(opts.storagePath || "").trim();
+  let mimeType = String(opts.mimeType || "").trim() || "image/jpeg";
+  let fileUrl = imageUrl;
+  let fileSize = 0;
+  let ext = mimeType.includes("png")
+    ? "png"
+    : mimeType.includes("webp")
+      ? "webp"
+      : "jpg";
+
+  try {
+    // Prefer downloading the already-persisted object when we have a path;
+    // otherwise fetch the preview URL.
+    let blob: Blob | null = null;
+    if (existingPath) {
+      try {
+        const { data: signedData } = await supabase.storage
+          .from("user-files")
+          .createSignedUrl(existingPath, 60 * 60);
+        const src = signedData?.signedUrl || imageUrl;
+        const res = await fetch(src);
+        if (res.ok) blob = await res.blob();
+      } catch {
+        /* fall through to imageUrl fetch */
+      }
+      const pathExt = existingPath.split(".").pop()?.toLowerCase();
+      if (pathExt === "png" || pathExt === "webp" || pathExt === "jpg" || pathExt === "jpeg") {
+        ext = pathExt === "jpeg" ? "jpg" : pathExt;
+        if (!opts.mimeType) {
+          mimeType =
+            ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+        }
+      }
+    }
+
+    if (!blob) {
+      const res = await fetch(imageUrl);
+      if (!res.ok) {
+        return {
+          ok: false,
+          reason: "error",
+          message: "Couldn't download the image to save it.",
+        };
+      }
+      blob = await res.blob();
+    }
+
+    if (!blob.size) {
+      return { ok: false, reason: "error", message: "Image was empty." };
+    }
+    if (blob.type) mimeType = blob.type;
+    ext = mimeType.includes("png")
+      ? "png"
+      : mimeType.includes("webp")
+        ? "webp"
+        : mimeType.includes("jpeg") || mimeType.includes("jpg")
+          ? "jpg"
+          : ext;
+
+    // One vault card → one private directory (same as normal uploads).
+    const fileId = crypto.randomUUID();
+    const storagePath = `${userId}/${fileId}/original.${ext}`;
+    const { error: uploadError } = await supabase.storage
+      .from("user-files")
+      .upload(storagePath, blob, {
+        cacheControl: "3600",
+        upsert: false,
+        contentType: mimeType,
+      });
+    if (uploadError) {
+      const classified = classifyError(uploadError);
+      return { ok: false, reason: classified.reason, message: classified.message };
+    }
+    fileSize = blob.size;
+    const { data: signedData } = await supabase.storage
+      .from("user-files")
+      .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+    fileUrl = signedData?.signedUrl || imageUrl;
+
+    const shortId = fileId.slice(0, 8);
+    const filename = `AI Generated ${new Date().toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })}-${shortId}.${ext}`;
+
+    // Keep the caption short — the full Imagine batch prompt is shared by all
+    // four slots and must not make this card look like a batch dump.
+    const caption = String(promptText || "").trim().slice(0, 120);
+    const promptLine = caption
+      ? `AI-generated image: "${caption}"`
+      : "AI-generated image";
+
+    return await saveFileToVault({
+      userId,
+      filename,
+      fileType: "image",
+      fileUrl,
+      storagePath,
+      storageBucket: "user-files",
+      fileSize,
+      mimeType,
+      source,
+      folder,
+      tags: ["image", "ai-generated", "generated"],
+      contentPrefix: promptLine,
+    });
+  } catch (err) {
+    if (import.meta.env.DEV) {
+      console.error("[saveToVault] saveGeneratedImageToVault error:", err);
+    }
     const classified = classifyError(err);
     return { ok: false, reason: classified.reason, message: classified.message };
   }

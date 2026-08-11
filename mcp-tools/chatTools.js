@@ -43,6 +43,10 @@ import { uploadToProjectTool } from './uploadToProject.js';
 // persisted client-side to the user's custom instructions. Voice parity for
 // update_voice_instructions; external MCP clients have no settings store.
 import { updateAssistantInstructionsTool } from './updateAssistantInstructions.js';
+// Schema-only "Local Mode" tools (file + terminal). The server NEVER runs
+// these — they execute in the Electron main process. Included in the tool
+// schemas only when the caller enables Local Mode for the turn.
+import { LOCAL_CHAT_TOOLS_BY_NAME, LOCAL_TOOL_NAMES } from './localTools.js';
 
 const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   ...MCP_TOOLS_BY_NAME,
@@ -311,8 +315,15 @@ export function resolveChatTools(toolNames) {
     return [];
   }
   const set = new Set(toolNames);
-  return CHAT_TOOL_NAMES.filter((n) => set.has(n))
-    .map((n) => ALL_CHAT_TOOLS_BY_NAME[n])
+  // Local Mode tools are resolvable only when explicitly requested by name;
+  // they are never part of the default whitelist. Order them after the
+  // regular chat tools so they don't steal salience from core tools.
+  const order = set.size && LOCAL_TOOL_NAMES.some((n) => set.has(n))
+    ? [...CHAT_TOOL_NAMES, ...LOCAL_TOOL_NAMES]
+    : CHAT_TOOL_NAMES;
+  return order
+    .filter((n) => set.has(n))
+    .map((n) => ALL_CHAT_TOOLS_BY_NAME[n] || LOCAL_CHAT_TOOLS_BY_NAME[n])
     .filter(Boolean);
 }
 

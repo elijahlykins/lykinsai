@@ -29,7 +29,7 @@ const PRIORITY_OPTIONS = [
 // Dialog wrapper. It owns its own data: reads/writes the user's lykn_todos
 // rows through the RLS-protected Supabase client and subscribes to realtime
 // so tasks the AI adds / completes in text or voice appear live. Hosted by
-// both the standalone LyknTodosDialog and the combined LyknCalendarDialog
+// both the standalone to-do surfaces and the combined LyknCalendarPage
 // (under its Calendar / To-dos toggle). Loads only while `active`.
 // ────────────────────────────────────────────────────────────────────────
 

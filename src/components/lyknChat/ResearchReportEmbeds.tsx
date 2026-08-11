@@ -16,6 +16,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { tryRepairJsonText } from "@/lib/ai/researchReportFinalize";
 
 /** Balanced neutrals — white/grey base, with beige, dark green, black accents. */
 const SERIES_COLORS = [
@@ -90,11 +91,16 @@ function EmbedShell({
   );
 }
 
-function EmbedFallback({ code }: { code: string }) {
+function EmbedFallback() {
+  // Incomplete / unparseable research embeds used to dump raw fence JSON into
+  // the chat. Prefer an empty placeholder over a code dump.
   return (
-    <pre className="my-3 overflow-x-auto rounded-xl border border-black/10 bg-black/[0.03] p-3 text-xs text-black/70 dark:border-white/10 dark:bg-white/[0.04] dark:text-white/70">
-      {code}
-    </pre>
+    <div
+      className="my-3 rounded-xl border border-dashed border-black/10 px-3 py-2 text-[11px] text-black/40 dark:border-white/10 dark:text-white/35"
+      role="status"
+    >
+      Embed couldn’t finish rendering
+    </div>
   );
 }
 
@@ -158,7 +164,7 @@ export function ResearchStockEmbed({ code }: { code: string }) {
     return `https://s.tradingview.com/embed-widget/symbol-overview/?locale=en#${encodeURIComponent(JSON.stringify(config))}`;
   }, [symbol, isDark]);
 
-  if (!symbol || !src) return <EmbedFallback code={code} />;
+  if (!symbol || !src) return <EmbedFallback />;
 
   return (
     <EmbedShell label={symbol} hint="Live market">
@@ -269,8 +275,10 @@ function ChartTooltip({
 
 export function ResearchChartEmbed({ code }: { code: string }) {
   const chart = useMemo(() => {
+    const raw = String(code || "").trim();
+    const repaired = tryRepairJsonText(raw) || raw;
     try {
-      const parsed = JSON.parse(String(code || "").trim()) as ChartSpec;
+      const parsed = JSON.parse(repaired) as ChartSpec;
       return normalizeChartSpec(parsed);
     } catch {
       return null;
@@ -281,7 +289,7 @@ export function ResearchChartEmbed({ code }: { code: string }) {
   const axisColor = isDark ? "rgba(168,162,158,0.7)" : "rgba(82,82,91,0.7)";
   const gridColor = isDark ? "rgba(168,162,158,0.12)" : "rgba(28,25,23,0.08)";
 
-  if (!chart) return <EmbedFallback code={code} />;
+  if (!chart) return <EmbedFallback />;
 
   const isPie = chart.type === "pie" || chart.type === "doughnut";
   const key = chart.seriesKeys[0];
@@ -465,8 +473,9 @@ function normalizeSheetSpec(raw: string): { title: string; columns: string[]; ro
 
   let spec: SheetSpec | null = null;
   if (text.startsWith("{")) {
+    const repaired = tryRepairJsonText(text) || text;
     try {
-      spec = JSON.parse(text) as SheetSpec;
+      spec = JSON.parse(repaired) as SheetSpec;
     } catch {
       spec = null;
     }
@@ -504,7 +513,7 @@ function looksNumeric(value: string): boolean {
 
 export function ResearchSheetEmbed({ code }: { code: string }) {
   const sheet = useMemo(() => normalizeSheetSpec(code), [code]);
-  if (!sheet) return <EmbedFallback code={code} />;
+  if (!sheet) return <EmbedFallback />;
 
   return (
     <EmbedShell label={sheet.title} hint="Mini sheet">

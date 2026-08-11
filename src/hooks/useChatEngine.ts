@@ -23,6 +23,7 @@ import {
   type ChatSendParams,
 } from "@/lib/ai/chatSendOrchestrator";
 import { type ChatArtifact, toArtifactEditContext, isEditableArtifact } from "@/lib/ai/chatArtifacts";
+import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
 import {
   isInsistFreshBuildAsk,
   isRedesignAsk,
@@ -705,7 +706,35 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     blockquote: ({ children }: any) => React.createElement("blockquote", { className: "border-l-2 border-black/20 dark:border-white/20 pl-3 my-2 text-black/70 dark:text-white/70 italic" }, children),
     code: (props: any) => React.createElement(ChatCodeBlock, props),
     pre: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    table: ({ children }: any) =>
+    // Inline markdown images — e.g. files the AI pulled in from the user's
+    // Mac in Local Mode, or any other ![alt](url) in a reply.
+    img: ({ src, alt }: any) =>
+      React.createElement("img", {
+        src,
+        alt: alt || "",
+        loading: "lazy",
+        className:
+          "my-3 max-h-[24rem] max-w-full rounded-xl border border-black/[0.08] dark:border-white/[0.08] shadow-sm object-contain",
+      }),
+    a: ({ href, children, ...rest }: any) => {
+      const url = String(href || "").trim();
+      const isHttp = /^https?:\/\//i.test(url);
+      return React.createElement(
+        "a",
+        {
+          ...rest,
+          href: url || undefined,
+          target: isHttp ? "_blank" : undefined,
+          rel: isHttp ? "noopener noreferrer" : undefined,
+          className: "underline underline-offset-2 decoration-black/25 dark:decoration-white/25 hover:decoration-black/60 dark:hover:decoration-white/60",
+          onClick: (e: React.MouseEvent) => {
+            if (!isHttp) return;
+            handleLyknBrowserClick(e, url);
+          },
+        },
+        children,
+      );
+    },    table: ({ children }: any) =>
       React.createElement(
         "div",
         {
@@ -2212,11 +2241,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       const hasAttachedImage = sentAttachments.some(
         (a) => (a.type || "").toLowerCase() === "image" && !!a.url,
       );
-      // Short tweak while Build is still armed → surgical. Otherwise Build
-      // mode is a FRESH coded artifact (reference-image games, new apps) —
-      // never strip Create or ship Smash Arena as activeArtifact.
-      // Regular chat never starts a new build from wording — Create/Build must
-      // be armed. (Server also enforces this and asks the user to switch modes.)
+      // Build mode with an open same-kind artifact → refine (edits) by default.
+      // Fresh rebuild only on clear new-commission / redesign / reference-image
+      // signals. Regular chat never starts a new build from wording alone —
+      // Create/Build must be armed (server also enforces this).
       const createArmed =
         typeof sendMode === "string" && sendMode.startsWith("create:");
       const typedNewDeliverableAsk =
@@ -2226,9 +2254,11 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         !createArmed &&
         (isTypedNewDeliverableAsk(text) || isInsistFreshBuildAsk(text));
       const redesignAsk = isRedesignAsk(text);
+      // Edit/add asks against an open artifact — keep in sync with server.js.
+      // Length cap is soft: longer "add X and fix Y" messages still refine.
       const looksLikeSurgicalTweak =
-        text.trim().length < 140 &&
-        /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme)\b/i.test(
+        text.trim().length < 400 &&
+        /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i.test(
           text,
         ) &&
         !redesignAsk &&
@@ -2262,35 +2292,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           text,
         );
       const visualOverhaulAsk = redesignAsk;
-      const freshWebappAsk =
-        createArmed &&
-        (differentDeliverable ||
-          (makingVerb && (webappNoun || copyOfWebapp)) ||
-          (hasAttachedImage && makingVerb && referencePhrase) ||
-          (hasAttachedImage && (webappNoun || copyOfWebapp) && referencePhrase));
-      // "make it look just like Castle Crashers" with an open game = full
-      // rebuild, not a surgical refine (which rejects full_rewrite and dies).
-      const openReactRebuildAsk =
-        visualOverhaulAsk &&
-        artifactBelongsHere &&
-        String(editArtifact?.toolName || "") === "lykn_build_react_artifact";
-      // Style rematch of the OPEN deck — still send activeArtifact so the
-      // server can authorize full_rewrite; do NOT treat as a brand-new build.
-      const openTemplateRestyleAsk =
-        visualOverhaulAsk &&
-        artifactBelongsHere &&
-        String(editArtifact?.toolName || "") === "lykn_build_template" &&
-        !typedNewDeliverableAsk &&
-        !insistFreshBuildAsk;
-      const buildModeFresh =
-        (isBuildMode && (hasAttachedImage || !looksLikeSurgicalTweak)) ||
-        referenceRebuildAsk ||
-        freshWebappAsk ||
-        openReactRebuildAsk ||
-        insistFreshBuildAsk ||
-        (typedNewDeliverableAsk && artifactBelongsHere && !looksLikeSurgicalTweak);
-      // Map "+" → Create kinds to their builder tools (must stay aligned with
-      // server ARTIFACT_BUILD_SPEC). An open game must not swallow Create → Deck.
+      // Map "+" → Create kinds early so open-panel refine can gate fresh-webapp.
       const CREATE_TOOL_BY_KIND: Record<string, string> = {
         deck: "lykn_build_template",
         study: "lykn_build_react_artifact",
@@ -2310,26 +2312,95 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       const openToolName = String(editArtifact?.toolName || "");
       const sameCreateBuilder =
         !!createToolName && !!openToolName && createToolName === openToolName;
-      // Thread the open panel for context / surgical tweaks / style rematches.
-      // Regular chat build asks: do NOT send the open artifact (avoids patching
-      // Columbus into a "new" deck) — server will ask them to arm Create/Build.
+      const broadFreshWebappAsk =
+        differentDeliverable ||
+        (makingVerb && (webappNoun || copyOfWebapp)) ||
+        (hasAttachedImage && makingVerb && referencePhrase) ||
+        (hasAttachedImage && (webappNoun || copyOfWebapp) && referencePhrase);
+      // With the same-kind artifact open, "make the game harder" / "build a
+      // settings panel" must refine — only force fresh on clear NEW commissions.
+      const freshWebappAsk =
+        createArmed &&
+        (artifactBelongsHere && sameCreateBuilder
+          ? differentDeliverable ||
+            copyOfWebapp ||
+            (hasAttachedImage &&
+              (referencePhrase || webappNoun) &&
+              (makingVerb || referencePhrase)) ||
+            (makingVerb &&
+              (webappNoun || copyOfWebapp) &&
+              /\b(?:new|another|different|separate|from scratch|start over|brand[- ]?new)\b/i.test(
+                text,
+              ))
+          : broadFreshWebappAsk);
+      // "make it look just like Castle Crashers" with an open game = full
+      // rebuild, not a surgical refine (which rejects full_rewrite and dies).
+      const openReactRebuildAsk =
+        visualOverhaulAsk &&
+        artifactBelongsHere &&
+        String(editArtifact?.toolName || "") === "lykn_build_react_artifact";
+      // Style rematch of the OPEN deck — still send activeArtifact so the
+      // server can authorize full_rewrite; do NOT treat as a brand-new build.
+      const openTemplateRestyleAsk =
+        visualOverhaulAsk &&
+        artifactBelongsHere &&
+        String(editArtifact?.toolName || "") === "lykn_build_template" &&
+        !typedNewDeliverableAsk &&
+        !insistFreshBuildAsk;
+      // Clear new-build signals only. When Build is armed AND the same-kind
+      // artifact is already open, prefer refine — do NOT treat every non-short
+      // ask as a fresh rebuild (that was wiping add/edit requests).
+      const clearFreshBuildIntent =
+        referenceRebuildAsk ||
+        freshWebappAsk ||
+        openReactRebuildAsk ||
+        insistFreshBuildAsk ||
+        (typedNewDeliverableAsk && artifactBelongsHere && !looksLikeSurgicalTweak) ||
+        differentDeliverable;
+      const buildModeFresh =
+        clearFreshBuildIntent ||
+        (isBuildMode &&
+          !artifactBelongsHere &&
+          (hasAttachedImage || !looksLikeSurgicalTweak)) ||
+        (isBuildMode &&
+          artifactBelongsHere &&
+          !sameCreateBuilder &&
+          (hasAttachedImage || !looksLikeSurgicalTweak)) ||
+        (isBuildMode &&
+          artifactBelongsHere &&
+          sameCreateBuilder &&
+          hasAttachedImage &&
+          (referenceRebuildAsk || freshWebappAsk || referencePhrase));
+      // Thread the open panel for context / edits / style rematches.
+      // Build / Create armed → refine open panel with edits.
+      // Chat mode (composer none) → discuss only; never auto-edit.
       const refiningOpenArtifact =
+        createArmed &&
         artifactBelongsHere &&
         isEditableArtifact(editArtifact) &&
         !buildModeFresh &&
         !openReactRebuildAsk &&
-        !typedNewDeliverableAsk &&
         !insistFreshBuildAsk &&
         !regularChatBuildAsk &&
+        !differentDeliverable &&
         (openTemplateRestyleAsk ||
-          !createToolName ||
-          (sameCreateBuilder && looksLikeSurgicalTweak));
+          (sameCreateBuilder &&
+            (looksLikeSurgicalTweak ||
+              isBuildMode ||
+              (!typedNewDeliverableAsk && !freshWebappAsk))));
+      // Back in Chat with the panel still open: let the model talk about the
+      // artifact without shipping edits / ARTIFACT_OPEN refine instructions.
+      const discussOpenArtifact =
+        !createArmed &&
+        !refiningOpenArtifact &&
+        artifactBelongsHere &&
+        !!editArtifact;
       const effectiveComposerMode =
         refiningOpenArtifact &&
         typeof sendMode === "string" &&
         sendMode.startsWith("create:") &&
         sameCreateBuilder &&
-        looksLikeSurgicalTweak
+        (looksLikeSurgicalTweak || isBuildMode)
           ? "none"
           : sendMode;
       if (
@@ -2352,11 +2423,23 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         // prompt injected server-side into [ACTIVE_MODE] on every turn.
         modeInstructions: studioModeInstructionsRef?.current || undefined,
         researchSourcePref: researchSourcePrefsRef?.current || undefined,
-        // Thread the open panel artifact for surgical edits — same chat only.
-        // Build-mode fresh turns send null so the server cannot force edits.
+        // Thread the open panel for surgical edits only while Create/Build is
+        // armed. Chat mode sends a discuss-only stub (title, no source) so the
+        // model can talk about it without patching.
         activeArtifact: refiningOpenArtifact
           ? toArtifactEditContext(editArtifact as ChatArtifact)
-          : null,
+          : discussOpenArtifact
+            ? {
+                toolName: String(editArtifact.toolName || ""),
+                title: String(editArtifact.title || "Untitled"),
+                sourceChatId: String(editArtifact.sourceChatId || "").trim() || undefined,
+                discussOnly: true,
+                templateType:
+                  typeof editArtifact.templateType === "string"
+                    ? editArtifact.templateType
+                    : undefined,
+              }
+            : null,
         sentAttachments,
         brickActionData,
         // Pull conversation context from THIS board's snapshot so chats

@@ -53,7 +53,10 @@ closeEl.addEventListener("click", () => window.lyknPanel.cmd("close"));
 bodyEl.addEventListener("click", (e) => {
   const link = e.target.closest(".suggest-link");
   if (link && link.dataset.url) {
-    window.lyknPanel.cmd("url", link.dataset.url);
+    window.lyknPanel.cmd("url", {
+      url: link.dataset.url,
+      title: link.dataset.title || undefined,
+    });
     return;
   }
   if (e.target.closest(".watch-install-btn")) {

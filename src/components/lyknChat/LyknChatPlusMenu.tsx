@@ -7,6 +7,8 @@ import {
   Paperclip,
   Plus,
 } from "lucide-react";
+import LocalModeToggle from "@/components/vault/LocalModeToggle";
+import { isLocalModeAvailable } from "@/lib/localMode";
 
 export type LyknChatPlusMenuProps = {
   iconBtnCls: string;
@@ -72,6 +74,14 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
             <span className={iconWrapCls}><FolderKanban className="w-[1.05rem] h-[1.05rem]" /></span>
             Projects
           </button>
+          {/* Local Mode — desktop shell only. Grants LYKN file/terminal access
+              on this Mac; risky actions still ask for approval per action. */}
+          {isLocalModeAvailable() && (
+            <>
+              <div className="my-1.5 h-px bg-black/[0.08] dark:bg-white/[0.08]" />
+              <LocalModeToggle variant="menu" />
+            </>
+          )}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

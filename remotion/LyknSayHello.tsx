@@ -77,7 +77,12 @@ const makeSpecks = (seed: number, count: number) =>
 const SPECKS_L = makeSpecks(1, 16);
 const SPECKS_R = makeSpecks(2, 16);
 
-export const LyknSayHello: React.FC<{ black?: boolean }> = ({ black = false }) => {
+export const LyknSayHello: React.FC<{ black?: boolean; transparent?: boolean }> = ({
+  black = false,
+  // Transparent renders the type/braces/lockup alone (alpha video for the
+  // desktop welcome splash) — no backdrop, no ambient light pools.
+  transparent = false,
+}) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
@@ -213,12 +218,12 @@ export const LyknSayHello: React.FC<{ black?: boolean }> = ({ black = false }) =
   return (
     <AbsoluteFill
       style={{
-        background: black ? "#000000" : BG,
+        background: transparent ? "transparent" : black ? "#000000" : BG,
         fontFamily: "Inter, system-ui, sans-serif",
         overflow: "hidden",
       }}
     >
-      {!black ? (
+      {!black && !transparent ? (
         <>
           {/* deep blue studio-gradient backdrop */}
           <Img

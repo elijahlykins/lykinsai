@@ -23,8 +23,11 @@ import {
   stripToolSyntaxFromStream,
   stripToolSyntaxFromFinal,
 } from "@/lib/ai/toolSyntaxStrip";
+import { finalizeResearchReport } from "@/lib/ai/researchReportFinalize";
 import { ocrImageAttachments } from "@/lib/ai/imageOcr";
 import { toolRunningStatus } from "@/lib/ai/toolStatusVerbs";
+import { isLocalModeAvailable, refreshLocalMode } from "@/lib/localMode";
+import { executeAwaitingLocalTool } from "@/lib/ai/localToolExecutor";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { loadActiveCustomModelId } from "@/lib/modelBuilder/activeCustomModelStorage";
 import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
@@ -178,7 +181,12 @@ export type ToolCallEvent = {
   id: string;
   name: string;
   args: Record<string, unknown>;
-  status: "running" | "done" | "error";
+  /**
+   * running → done | error for server-run tools. Local Mode tools add
+   * `awaiting_client` (the desktop app must run the file/terminal tool) and
+   * `awaiting_approval` (the client is showing the user an approval prompt).
+   */
+  status: "running" | "done" | "error" | "awaiting_client" | "awaiting_approval";
   result?: any;
   error?: string;
   latencyMs?: number;
@@ -630,14 +638,18 @@ export interface ChatSendParams {
   /** Studio Research source focus (all / web / academic / news / social / finance). */
   researchSourcePref?: string;
   /**
-   * Artifact currently open in the side panel. When present, the server forces
-   * surgical patches (edits / section_edits / cell_edits) instead of a full rebuild.
+   * Artifact currently open in the side panel. When present with source, the
+   * server forces surgical patches (edits / section_edits / cell_edits) instead
+   * of a full rebuild. When `discussOnly` is true (Chat mode), the server only
+   * injects read-only context — no edits.
    */
   activeArtifact?: {
     toolName: string;
     title: string;
     /** Board that owns this artifact — ignored when it doesn't match chatId. */
     sourceChatId?: string;
+    /** Chat mode: talk about the open panel; do not edit. */
+    discussOnly?: boolean;
     templateType?: string;
     sections?: any[];
     content?: string;
@@ -1172,10 +1184,9 @@ async function handleStreamingResponse(
   // this turn (strict subset of the surface gate above). When false the card
   // still renders; the user pulls it up with one tap.
   const autoOpenVaultViewer = userRequestedVaultDisplay(userText, p.aiThread);
-  // 90s inactivity. The server sends a `data: ` heartbeat every ~15s
-  // during long thinking gaps so this should only fire on a truly
-  // stuck network connection or wedged provider.
-  const STREAM_INACTIVITY_MS = 90000;
+  // 90s inactivity for normal chat. Research reports can pause between
+  // continue hops / long writes — match the server's longToolTurn window.
+  const STREAM_INACTIVITY_MS = p.composerMode === "research" ? 240000 : 90000;
 
   if (reader) {
     let inactivityTimer = setTimeout(() => { reader.cancel(); p.abortController.abort(); }, STREAM_INACTIVITY_MS);
@@ -1239,12 +1250,32 @@ async function handleStreamingResponse(
                 id: string;
                 name: string;
                 args?: Record<string, unknown>;
-                status: "running" | "done" | "error";
+                status: "running" | "done" | "error" | "awaiting_client" | "awaiting_approval";
                 result?: any;
                 error?: string;
                 latencyMs?: number;
+                localStreamId?: string;
               };
               const now = Date.now();
+              // Local Mode: the server can't run file/terminal tools, so it
+              // asks the desktop client to. Run it here (with approval for
+              // risky actions) and post the result back so the turn resumes.
+              const isInFlightLocal =
+                tc.status === "awaiting_client" || tc.status === "awaiting_approval";
+              if (tc.status === "awaiting_client") {
+                void (async () => {
+                  const { API_BASE_URL: localApiBase } = await import("@/lib/api-config");
+                  await executeAwaitingLocalTool(
+                    {
+                      id: tc.id,
+                      name: tc.name,
+                      args: tc.args,
+                      localStreamId: tc.localStreamId,
+                    },
+                    localApiBase,
+                  );
+                })();
+              }
               // When a `lykn_loadNeuron` or `lykn_loadNeurons` call lands
               // with ok:true we want each loaded neuron to render as a
               // real card in the chat (not just as a pill). Build the
@@ -1344,7 +1375,8 @@ async function handleStreamingResponse(
                           error: tc.error,
                           latencyMs: tc.latencyMs,
                           startedAt: now,
-                          finishedAt: tc.status === "running" ? undefined : now,
+                          finishedAt:
+                            tc.status === "running" || isInFlightLocal ? undefined : now,
                         },
                       ],
                       aiNeurons: neuronsNext,
@@ -1359,7 +1391,10 @@ async function handleStreamingResponse(
                     result: tc.result !== undefined ? tc.result : merged[idx].result,
                     error: tc.error !== undefined ? tc.error : merged[idx].error,
                     latencyMs: tc.latencyMs ?? merged[idx].latencyMs,
-                    finishedAt: tc.status === "running" ? merged[idx].finishedAt : now,
+                    finishedAt:
+                      tc.status === "running" || isInFlightLocal
+                        ? merged[idx].finishedAt
+                        : now,
                   };
                   return { ...m, toolCalls: merged, aiNeurons: neuronsNext };
                 }),
@@ -1370,6 +1405,10 @@ async function handleStreamingResponse(
               // "Creating the image…") instead of leaking the raw tool name.
               if (tc.status === "running") {
                 state.setChatStatusText(toolRunningStatus(tc.name, tc.args));
+              } else if (tc.status === "awaiting_client") {
+                state.setChatStatusText(toolRunningStatus(tc.name, tc.args));
+              } else if (tc.status === "awaiting_approval") {
+                state.setChatStatusText("Waiting for your approval…");
               } else if (
                 shouldEmitProjectsChanged(tc.name, tc.status, tc.result)
               ) {
@@ -1536,9 +1575,11 @@ async function handleStreamingResponse(
             ),
           ),
         );
-        const finalVisibleText = stripStreamingActionJson(
-          stripTrailingSourcesBlockIfHasLinks(finalAccumulatedForView)
-            .replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "")
+        const finalVisibleText = finalizeResearchReport(
+          stripStreamingActionJson(
+            stripTrailingSourcesBlockIfHasLinks(finalAccumulatedForView)
+              .replace(/\s*\[TAG_NOTES:[^\]]*\]/g, "")
+          ),
         ).trimEnd();
         streamRefs.streamTargetTextRef.current = finalVisibleText;
       } catch {}
@@ -2203,9 +2244,11 @@ async function postProcessResponse(
   // finalizeVisibleReply runs so the dangling-tail repair acts on the
   // model's last real sentence rather than on the truncation marker.
   const aiTextWithoutLearnedTag = finalizeVisibleReply(
-    stripModelTruncationNote(
-      stripToolSyntaxFromFinal(
-        stripAppliedTagFromFinal(stripLearnedTagsFromFinal(aiTextRaw)),
+    finalizeResearchReport(
+      stripModelTruncationNote(
+        stripToolSyntaxFromFinal(
+          stripAppliedTagFromFinal(stripLearnedTagsFromFinal(aiTextRaw)),
+        ),
       ),
     ),
   );
@@ -2852,6 +2895,10 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   const customModelId = CUSTOM_MODELS_ENABLED
     ? identity.customModelId ?? (identity.userId ? loadActiveCustomModelId() : null)
     : null;
+  // Local Mode must be read from main over IPC at send time: the module-level
+  // cache starts false and primes asynchronously, so the first send after a
+  // window load would silently drop the flag if we trusted the cache alone.
+  const localModeOn = isLocalModeAvailable() ? await refreshLocalMode() : false;
   const requestBody = {
     model: identity.selectedModel,
     ...(customModelId ? { customModelId } : {}),
@@ -2904,6 +2951,9 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     // events with text deltas. Server forces an OpenAI tool-capable model
     // when this is on; X-Tool-Route header announces the swap.
     useTools: true,
+    // Local Mode — when the user flipped the Vault switch AND we're in the
+    // desktop shell, offer file/terminal tools that execute on their machine.
+    ...(localModeOn ? { localMode: true } : {}),
     // The user's IANA timezone (browser-resolved) so the server can give the
     // model the user's LOCAL "now" + offset. Without this, scheduling tools
     // (createEvent/createReminder) land events at the wrong time because the
@@ -2987,7 +3037,16 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     streamRefs.streamPromptIdRef.current = null;
   };
 
-  const streamResponse = await fetchChatStream();
+  let streamResponse = await fetchChatStream();
+  if (!streamResponse && !signal.aborted) {
+    // The first attempt can land exactly while the backend is restarting
+    // (dev-server watch reboots, deploys). An immediate retry would hit the
+    // same dead socket — a short pause rides out the gap before giving up
+    // to the non-streaming fallback.
+    state.setChatStatusText("Reconnecting…");
+    await new Promise((r) => setTimeout(r, 2500));
+    streamResponse = await fetchChatStream();
+  }
 
   if (streamResponse) {
     let streamResult = await handleStreamingResponse(p, streamResponse, promptId, responseBlockId, text);

@@ -2,6 +2,7 @@ import React, { memo, useEffect, useMemo, useState } from "react";
 import { ExternalLink, Globe } from "lucide-react";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { safeExternalUrl } from "@/lib/safeExternalUrl";
+import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
 
 export interface LinkPreviewProps {
   url: string;
@@ -537,6 +538,7 @@ function Shell({
       className={className}
       draggable={draggable}
       title={safeHref}
+      onClick={(e) => handleLyknBrowserClick(e, safeHref)}
     >
       {children}
     </a>

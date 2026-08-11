@@ -1,14 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Maximize2, Minimize2 } from "lucide-react";
-import type { ArtifactDownload, ChatArtifact } from "@/lib/ai/chatArtifacts";
+import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Loader2, Maximize2, Minimize2 } from "lucide-react";
+import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
+import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { safeAttachmentUrl, safeHtmlPreviewUrl } from "@/lib/safeExternalUrl";
-import { openInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
+import { openArtifactInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
+import {
+  downloadArtifactToComputer,
+  listArtifactDownloadOptions,
+} from "@/lib/lyknChat/downloadArtifact";
 
-/** Download control that exposes every available format (png/svg/pdf/pptx/md…). */
-function ArtifactDownloads({ downloads }: { downloads: ArtifactDownload[] }) {
+/** Download control — always saves a real file (blob), not a new-tab open. */
+function ArtifactDownloads({ artifact }: { artifact: ChatArtifact }) {
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+  const options = useMemo(() => listArtifactDownloadOptions(artifact), [artifact]);
+
   useEffect(() => {
     if (!open) return;
     const onDocClick = (e: MouseEvent) => {
@@ -18,51 +26,66 @@ function ArtifactDownloads({ downloads }: { downloads: ArtifactDownload[] }) {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
-  if (!downloads.length) return null;
+  if (!options.length) return null;
 
   const btnCls =
-    "inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors";
+    "inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors disabled:opacity-50";
 
-  if (downloads.length === 1) {
-    const d = downloads[0];
-    const href = safeAttachmentUrl(d.url);
-    if (!href) return null;
+  const run = async (id?: string) => {
+    if (busy) return;
+    setBusy(true);
+    setOpen(false);
+    try {
+      await downloadArtifactToComputer(artifact, id);
+    } catch (err) {
+      console.warn("Artifact download failed:", err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (options.length === 1) {
     return (
-      <a href={href} download={d.filename} target="_blank" rel="noopener noreferrer" className={btnCls} title="Download">
-        <Download className="h-3.5 w-3.5" />
-        {(d.format || "file").toUpperCase()}
-      </a>
+      <button
+        type="button"
+        onClick={() => void run(options[0].id)}
+        disabled={busy}
+        className={btnCls}
+        title={`Download ${options[0].label} to your computer`}
+      >
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+        Download
+      </button>
     );
   }
 
   return (
     <div className="relative" ref={ref}>
-      <button type="button" onClick={() => setOpen((v) => !v)} className={btnCls} title="Download">
-        <Download className="h-3.5 w-3.5" />
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy}
+        className={btnCls}
+        title="Download to your computer"
+      >
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
         Download
         <ChevronDown className="h-3 w-3 opacity-60" />
       </button>
       {open ? (
-        <div className="absolute right-0 top-full z-20 mt-1 min-w-[10rem] overflow-hidden rounded-xl border border-black/10 bg-panel py-1 shadow-lg dark:border-white/12">
-          {downloads.map((d, i) => {
-            const href = safeAttachmentUrl(d.url);
-            if (!href) return null;
-            return (
-              <a
-                key={`${d.url}:${i}`}
-                href={href}
-                download={d.filename}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-foreground transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
-              >
-                <Download className="h-3.5 w-3.5 opacity-60" />
-                <span className="truncate">{d.filename || `${(d.format || "file").toUpperCase()} file`}</span>
-                <span className="ml-auto text-[10px] uppercase text-muted-foreground">{d.format}</span>
-              </a>
-            );
-          })}
+        <div className="absolute right-0 top-full z-20 mt-1 min-w-[11rem] overflow-hidden rounded-xl border border-black/10 bg-panel py-1 shadow-lg dark:border-white/12">
+          {options.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => void run(d.id)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-foreground transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+            >
+              <Download className="h-3.5 w-3.5 opacity-60" />
+              <span className="truncate">{d.label}</span>
+              <span className="ml-auto text-[10px] uppercase text-muted-foreground">{d.format}</span>
+            </button>
+          ))}
         </div>
       ) : null}
     </div>
@@ -72,14 +95,16 @@ function ArtifactDownloads({ downloads }: { downloads: ArtifactDownload[] }) {
 /**
  * Shown while the model is still streaming a raw HTML document into the chat,
  * so the user sees a tidy "building" state instead of half-written markup.
- * Uses the same LYKN outline spinner as the thinking indicator.
+ * Uses the same LYKN outline spinner as the thinking indicator (full size,
+ * matching Research mode) and cycles descriptive build phrases.
  */
 export function ArtifactBuildingPlaceholder({ className = "" }: { className?: string }) {
+  const status = useThinkingStatus(true, "Building…");
   return (
     <div
       className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm px-4 py-3 shadow-sm ${className}`}
     >
-      <ThinkingIndicator status="Building…" compact />
+      <ThinkingIndicator status={status || "Designing the build…"} />
     </div>
   );
 }
@@ -112,12 +137,6 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
   const openUrl = safeAttachmentUrl(artifact.previewUrl || artifact.downloadUrl);
   const htmlPreview = artifact.previewUrl ? safeHtmlPreviewUrl(artifact.previewUrl) : null;
   const previewHeight = expanded ? "min(72vh, 640px)" : "min(360px, 52vh)";
-  const downloads: ArtifactDownload[] =
-    artifact.downloads && artifact.downloads.length
-      ? artifact.downloads
-      : artifact.downloadUrl
-        ? [{ format: artifact.format || "file", url: artifact.downloadUrl, filename: artifact.filename }]
-        : [];
 
   const badge = useMemo(() => {
     if (artifact.kind === "html") return "Interactive preview";
@@ -137,7 +156,7 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
             <p className="text-[11px] text-muted-foreground">{badge}</p>
           </div>
           <div className="shrink-0">
-            <ArtifactDownloads downloads={downloads} />
+            <ArtifactDownloads artifact={artifact} />
           </div>
         </div>
       </div>
@@ -156,7 +175,9 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
           className="flex items-center gap-2 min-w-0 text-left enabled:hover:opacity-80 transition-opacity"
           title={onOpen ? "Open in panel" : undefined}
         >
-          <LayoutPanelTop className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-black/80 text-white dark:bg-white/15 dark:text-white">
+            <LayoutPanelTop className="h-3.5 w-3.5" />
+          </span>
           <div className="min-w-0">
             <p className="text-[13px] font-semibold text-foreground truncate">{artifact.title}</p>
             <p className="text-[11px] text-muted-foreground">{badge}</p>
@@ -164,15 +185,15 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
         </button>
         <div className="flex items-center gap-1.5 shrink-0">
           {onOpen ? (
-            <button
-              type="button"
-              onClick={onOpen}
-              className="inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
-              title="Open in panel"
-            >
-              <LayoutPanelTop className="h-3.5 w-3.5" />
-              Open
-            </button>
+          <button
+            type="button"
+            onClick={onOpen}
+            className="inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+            title="Open in LYKN browser"
+          >
+            <LayoutPanelTop className="h-3.5 w-3.5" />
+            Open
+          </button>
           ) : null}
           <button
             type="button"
@@ -189,15 +210,16 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
               rel="noopener noreferrer"
               onClick={(e) => {
                 // Inside the Studio: open in its docked browser, not the OS browser.
-                if (openInStudioBrowser(openUrl, artifact.title)) e.preventDefault();
+                if (openArtifactInStudioBrowser(artifact)) e.preventDefault();
               }}
               className="inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+              title="Open in LYKN browser"
             >
               <ExternalLink className="h-3.5 w-3.5" />
               Open
             </a>
           ) : null}
-          <ArtifactDownloads downloads={downloads} />
+          <ArtifactDownloads artifact={artifact} />
         </div>
       </div>
 
@@ -208,8 +230,8 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
             type="button"
             onClick={onOpen}
             className="absolute inset-0 z-10 cursor-pointer bg-transparent"
-            title="Open in panel"
-            aria-label={`Open ${artifact.title} in panel`}
+            title="Open in LYKN browser"
+            aria-label={`Open ${artifact.title} in LYKN browser`}
           />
         ) : null}
         {artifact.kind === "html" ? (

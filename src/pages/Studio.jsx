@@ -2,10 +2,10 @@
 //
 // A visionOS-style glass panel — the app's primary shell. The Electron main
 // window loads this route over HUD vibrancy (see createMainWindow). The
-// Dashboard tab is a live widget grid; Chat / Projects / Vault / Settings
-// mount the real product pages in-document (each inside its own MemoryRouter
-// so internal navigation stays inside the panel while the window URL stays
-// on /studio).
+// Dashboard tab is a live widget grid; Chat / Projects / Vault / Calendar /
+// Settings mount the real product pages in-document (each inside its own
+// MemoryRouter so internal navigation stays inside the panel while the
+// window URL stays on /studio).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -13,14 +13,13 @@ import {
   ArrowUp,
   Bell,
   BellOff,
-  Bot,
   CalendarDays,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronsDown,
-  ChevronsUp,
+  ChevronUp,
   Clock,
   FolderKanban,
   Globe,
@@ -32,7 +31,6 @@ import {
   Maximize2,
   MessageCircle,
   Minimize2,
-  Minus,
   Newspaper,
   Paperclip,
   Pause,
@@ -43,14 +41,16 @@ import {
   Settings,
   Sparkles,
   SquarePen,
+  Telescope,
   Timer,
+  Link as LinkIcon,
   X,
 } from "lucide-react";
 import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
 import lyknIconBlueUrl from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-BLUE-master.png";
 import lyknLogoUrl from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-NEUTRAL-web.png";
 import lyknLogoBlueUrl from "@/assets/FINAL/LYKN-LOGO-B-Open/PNGs/LYKN-Logo-Primary-B-Open-BLUE-web.png";
-import LyknCalendarDialog from "@/components/calendar/LyknCalendarDialog";
+import LyknCalendarPage from "@/components/calendar/LyknCalendarPage";
 import SettingsModal from "@/components/notes/SettingsModal";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
@@ -84,6 +84,7 @@ import {
   normalizeMathDelimiters,
 } from "@/lib/chat/chatMarkdown";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
+import StudioHoverTips from "@/components/StudioHoverTips";
 
 const THEME_STORAGE_KEY = "lykinsai_settings";
 
@@ -103,6 +104,7 @@ const SECTIONS = [
   { id: "chat", label: "Chat", icon: MessageCircle, src: "/app" },
   { id: "projects", label: "Projects", icon: FolderKanban, src: "/projects" },
   { id: "vault", label: "Vault", icon: Lock, src: "/vault" },
+  { id: "calendar", label: "Calendar / To-do", icon: CalendarDays, src: "/calendar" },
   // Settings has no src: it opens as a dialog over the studio (its page is a
   // portaled modal that would escape a hidden surface wrapper and whose close
   // action navigates the surface away).
@@ -110,15 +112,15 @@ const SECTIONS = [
 ];
 
 // Left rail (icons) + bottom dock (words). "browser" docks the native agent
-// browser into the center panel and "calendar" opens the Calendar / To-do
-// dialog; the rest are embedded-page tabs.
+// browser into the center panel; the rest are embedded-page tabs (Calendar /
+// To-do included — same frost stage as Projects / Vault in Glass mode).
 const NAV_ITEMS = [
   { id: "dashboard", label: "Home", icon: Home, action: "tab" },
   { id: "chat", label: "Chat", icon: MessageCircle, action: "tab" },
   { id: "browser", label: "Browser", icon: Globe, action: "tab" },
   { id: "projects", label: "Projects", icon: FolderKanban, action: "tab" },
   { id: "vault", label: "Vault", icon: Lock, action: "tab" },
-  { id: "calendar", label: "Calendar / To-do", icon: CalendarDays, action: "calendar" },
+  { id: "calendar", label: "Calendar / To-do", icon: CalendarDays, action: "tab" },
   { id: "settings", label: "Settings", icon: Settings, action: "tab" },
 ];
 
@@ -169,6 +171,7 @@ function StudioSurface({ entry }) {
             <Route path="/vault" element={<VaultConnectionsShell studioSurface />} />
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
+            <Route path="/calendar" element={<LyknCalendarPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={null} />
           </Routes>
@@ -271,7 +274,7 @@ function CircleIconButton({ icon: Icon, active, label, onClick, expanded = false
     <button
       type="button"
       onClick={onClick}
-      title={label}
+      title={expanded ? undefined : label}
       aria-label={label}
       style={NO_DRAG}
       className={`flex h-10 flex-shrink-0 items-center overflow-hidden rounded-full transition-all duration-200 ${
@@ -286,6 +289,7 @@ function CircleIconButton({ icon: Icon, active, label, onClick, expanded = false
       {/* Always mounted so the label slides/fades with the width animation
           instead of popping in mid-transition. */}
       <span
+        aria-hidden={!expanded}
         className={`min-w-0 truncate text-[0.78rem] font-medium transition-all duration-150 ${
           expanded ? "ml-2.5 max-w-full opacity-100 delay-75" : "ml-0 max-w-0 opacity-0"
         }`}
@@ -966,29 +970,213 @@ function DashboardGrid({ userId, firstName, onOpen, onOpenCalendar }) {
 
 /* ── Studio-wide search (top bar) ──────────────────────────────────────── */
 
+const SEARCH_INPUT_CLS =
+  "w-full min-w-0 bg-transparent text-[0.8rem] text-inherit outline-none " +
+  "ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 " +
+  "placeholder:text-white/40 caret-white/80";
+
+/** Google-style link guess: "nike" → "nike.com". */
+function studioLinkGuess(raw) {
+  const q = String(raw || "").trim();
+  if (!q || /\s/.test(q) || /^https?:\/\//i.test(q)) return null;
+  if (!/^[a-z0-9][a-z0-9.-]*$/i.test(q)) return null;
+  if (/^[a-z0-9-]+$/i.test(q)) {
+    return {
+      host: `${q}.com`,
+      complete: `${q}.com`,
+      url: `https://${q.toLowerCase()}.com/`,
+    };
+  }
+  const m = q.match(/^([a-z0-9-]+)\.(com?)?$/i);
+  if (m && (!m[2] || m[2].toLowerCase() !== "com")) {
+    return {
+      host: `${m[1]}.com`,
+      complete: `${m[1]}.com`,
+      url: `https://${m[1].toLowerCase()}.com/`,
+    };
+  }
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+/i.test(q)) {
+    return {
+      host: q.replace(/\/$/, ""),
+      complete: q,
+      url: `https://${q.toLowerCase().replace(/^www\./, "")}`,
+    };
+  }
+  return null;
+}
+
+function openStudioLink(url) {
+  const u = String(url || "").trim();
+  if (!u) return;
+  try {
+    if (window.lykn?.studioOpenUrl) {
+      window.lykn.studioOpenUrl(u);
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
+  if (window.lykn?.openExternal) window.lykn.openExternal(u);
+  else window.open(u, "_blank", "noopener");
+}
+
+/** Product icons for Google hosts — S2 returns the same "G" for every *.google.com. */
+const STUDIO_BRAND_ICON_BY_HOST = {
+  "mail.google.com":
+    "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png",
+  "calendar.google.com":
+    "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png",
+  "drive.google.com":
+    "https://www.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
+  "docs.google.com":
+    "https://www.gstatic.com/images/branding/product/2x/docs_2020q4_48dp.png",
+  "sheets.google.com":
+    "https://www.gstatic.com/images/branding/product/2x/sheets_2020q4_48dp.png",
+  "slides.google.com":
+    "https://www.gstatic.com/images/branding/product/2x/slides_2020q4_48dp.png",
+  "keep.google.com":
+    "https://www.gstatic.com/images/branding/product/2x/keep_2020q4_48dp.png",
+  "youtube.com":
+    "https://www.gstatic.com/images/branding/product/2x/youtube_48dp.png",
+  "music.youtube.com":
+    "https://www.gstatic.com/images/branding/product/2x/youtube_music_2020q4_48dp.png",
+};
+
+function studioBrandIconFor(url) {
+  try {
+    const raw = String(url || "");
+    const host = new URL(raw).hostname.replace(/^www\./i, "");
+    if (host === "docs.google.com") {
+      if (raw.includes("/document/")) return STUDIO_BRAND_ICON_BY_HOST["docs.google.com"];
+      if (raw.includes("/spreadsheets/")) return STUDIO_BRAND_ICON_BY_HOST["sheets.google.com"];
+      if (raw.includes("/presentation/")) return STUDIO_BRAND_ICON_BY_HOST["slides.google.com"];
+    }
+    if (host === "google.com" && raw.includes("/calendar/")) {
+      return STUDIO_BRAND_ICON_BY_HOST["calendar.google.com"];
+    }
+    return STUDIO_BRAND_ICON_BY_HOST[host] || "";
+  } catch {
+    return "";
+  }
+}
+
+/** Site favicon URL. Google products use gstatic brand icons; others use S2. */
+function studioFaviconUrl(url) {
+  const brand = studioBrandIconFor(url);
+  if (brand) return brand;
+  try {
+    const host = new URL(String(url || "")).hostname.replace(/^www\./i, "");
+    if (!host) return "";
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`;
+  } catch {
+    return "";
+  }
+}
+
+/** Site favicon with Lucide fallback (browser tabs, search, agent rail, history). */
+function PageFavicon({ url, fallback: Fallback = Globe, className = "h-4 w-4" }) {
+  const [failed, setFailed] = useState(false);
+  const src = studioFaviconUrl(url);
+  if (!src || failed) {
+    return <Fallback className={`flex-none shrink-0 ${className}`} strokeWidth={1.75} />;
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className={`flex-none shrink-0 rounded-[3px] object-contain ${className}`}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function StudioSearch({ userId, onOpen }) {
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
   const needle = q.trim().toLowerCase();
   const debounced = useDebounced(needle);
+  const linkGuess = useMemo(() => studioLinkGuess(q), [q]);
 
+  const { data: recentChats = [] } = useQuery({
+    queryKey: ["studio-search-recent", userId || "guest"],
+    enabled: !!userId && focused,
+    staleTime: 30_000,
+    queryFn: () => fetchLyknChatsWithContext(userId, 6),
+  });
   const { data: chatHits = [] } = useQuery({
     queryKey: ["studio-search-chats", userId || "guest", debounced],
-    enabled: !!userId && debounced.length >= 2,
+    enabled: !!userId && debounced.length >= 1,
     staleTime: 30_000,
     queryFn: () => searchLyknChatsByTitle(userId, debounced, 5),
   });
-  const { data: projects = [] } = useUserProjects(userId, needle.length >= 2);
-  const projectHits =
-    needle.length >= 2
-      ? projects.filter((p) => (p.name || "").toLowerCase().includes(needle)).slice(0, 4)
-      : [];
-  const sectionHits = needle
-    ? SECTIONS.filter((s) => s.label.toLowerCase().includes(needle))
-    : [];
+  const { data: projects = [] } = useUserProjects(userId, focused);
+  const projectHits = needle
+    ? projects.filter((p) => (p.name || "").toLowerCase().includes(needle)).slice(0, 4)
+    : projects.slice(0, 3);
 
-  const showResults = focused && needle.length >= 2;
-  const hasResults = sectionHits.length > 0 || projectHits.length > 0 || chatHits.length > 0;
+  const suggestions = useMemo(() => {
+    const rows = [];
+    const push = (row) => {
+      if (!rows.some((r) => r.key === row.key)) rows.push(row);
+    };
+
+    // Link autofill first — "nike" → open nike.com in the LYKN browser.
+    if (linkGuess) {
+      push({
+        key: `link-${linkGuess.host}`,
+        icon: Globe,
+        faviconUrl: linkGuess.url,
+        primary: linkGuess.host,
+        secondary: "Link",
+        complete: linkGuess.complete,
+        onPick: () => {
+          onOpen?.("browser");
+          openStudioLink(linkGuess.url);
+        },
+      });
+    }
+
+    const sections = needle
+      ? SECTIONS.filter((s) => s.label.toLowerCase().includes(needle))
+      : SECTIONS;
+    for (const s of sections) {
+      push({
+        key: `section-${s.id}`,
+        icon: s.icon,
+        primary: s.label,
+        secondary: "Section",
+        complete: s.label,
+        onPick: () => onOpen?.(s.id),
+      });
+    }
+    for (const p of projectHits) {
+      const name = p.name || "Untitled project";
+      if (needle && !name.toLowerCase().includes(needle)) continue;
+      push({
+        key: `project-${p.id}`,
+        icon: FolderKanban,
+        primary: name,
+        secondary: "Project",
+        complete: name,
+        onPick: () => onOpen?.("projects", `/projects/${encodeURIComponent(p.id)}`),
+      });
+    }
+    const chats = needle.length >= 1 ? chatHits : recentChats;
+    for (const c of chats) {
+      const title = c.title || "Untitled chat";
+      push({
+        key: `chat-${c.id}`,
+        icon: MessageCircle,
+        primary: title,
+        secondary: "Chat",
+        complete: title,
+        onPick: () => onOpen?.("chat", `/chat/${encodeURIComponent(c.id)}`),
+      });
+    }
+    return rows.slice(0, 10);
+  }, [needle, projectHits, chatHits, recentChats, onOpen, linkGuess]);
 
   const choose = (fn) => {
     fn();
@@ -996,82 +1184,92 @@ function StudioSearch({ userId, onOpen }) {
     setFocused(false);
   };
 
-  const Row = ({ icon: Icon, primary, secondary, onPick }) => (
+  const Row = ({ icon: Icon, faviconUrl, primary, secondary, onPick }) => (
     <button
       type="button"
       onClick={() => choose(onPick)}
-      className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left hover:bg-white/10 transition-colors"
+      className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
     >
-      <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-white/10 text-white/70">
-        <Icon className="h-3.5 w-3.5" />
+      {faviconUrl ? (
+        <PageFavicon
+          url={faviconUrl}
+          fallback={Icon || Globe}
+          className="h-[18px] w-[18px] text-black/40 dark:text-white/45"
+        />
+      ) : (
+        <Icon className="h-[18px] w-[18px] shrink-0 text-black/40 dark:text-white/45" strokeWidth={1.75} />
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-normal leading-snug text-black/90 dark:text-white/90">
+          {primary}
+        </span>
+        {secondary ? (
+          <span className="mt-0.5 block truncate text-[12px] font-normal leading-snug text-black/45 dark:text-white/45">
+            {secondary}
+          </span>
+        ) : null}
       </span>
-      <span className="min-w-0 flex-1 truncate text-[0.76rem] text-white/85">{primary}</span>
-      {secondary && <span className="flex-shrink-0 text-[0.6rem] text-white/40">{secondary}</span>}
     </button>
   );
 
   return (
-    <div className={`relative flex min-w-0 flex-1 items-center gap-2.5 rounded-full px-3 py-2 ${BAR}`}>
+    <div
+      className={`relative flex min-w-0 flex-1 items-center gap-2.5 rounded-full px-3 py-2 ${BAR} ${
+        focused ? "ring-0" : ""
+      }`}
+    >
       <Search className="h-4 w-4 flex-shrink-0 text-white/45" />
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setTimeout(() => setFocused(false), 120)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            setQ("");
-            e.currentTarget.blur();
-          }
-        }}
-        placeholder="Search LYKN Studio…"
-        className="w-full min-w-0 bg-transparent text-[0.8rem] outline-none placeholder:text-white/40"
-        style={NO_DRAG}
-      />
-      {showResults && (
+      <div className="relative min-w-0 flex-1">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 140)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setQ("");
+              e.currentTarget.blur();
+              return;
+            }
+            if (e.key === "Enter") {
+              e.preventDefault();
+              if (suggestions[0]) choose(suggestions[0].onPick);
+              else if (linkGuess) {
+                choose(() => {
+                  onOpen?.("browser");
+                  openStudioLink(linkGuess.url);
+                });
+              }
+            }
+          }}
+          placeholder="Search LYKN Studio…"
+          className={SEARCH_INPUT_CLS}
+          style={NO_DRAG}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </div>
+      {focused && (
         <div
-          className={`absolute left-0 right-0 top-full z-[90] mt-2 max-h-[50vh] overflow-y-auto rounded-2xl p-2 scrollbar-hide ${BAR}`}
+          className="lykn-studio-search-menu absolute left-0 right-0 top-[calc(100%+6px)] z-[90] max-h-[min(220px,32vh)] overflow-y-auto overscroll-contain rounded-2xl border border-black/10 bg-white/95 py-1.5 shadow-[0_1px_2px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.12)] dark:border-white/12 dark:bg-[#2a2a2c]/95"
           style={NO_DRAG}
           onMouseDown={(e) => e.preventDefault()}
         >
-          {!hasResults ? (
-            <p className="px-2.5 py-3 text-center text-[0.7rem] text-white/40">
+          {suggestions.length === 0 ? (
+            <p className="px-4 py-3 text-center text-[12px] text-black/40 dark:text-white/40">
               No matches in Studio
             </p>
           ) : (
-            <>
-              {sectionHits.map((s) => (
-                <Row
-                  key={`section-${s.id}`}
-                  icon={s.icon}
-                  primary={s.label}
-                  secondary="Section"
-                  onPick={() => onOpen?.(s.id)}
-                />
-              ))}
-              {projectHits.map((p) => (
-                <Row
-                  key={`project-${p.id}`}
-                  icon={FolderKanban}
-                  primary={p.name || "Untitled project"}
-                  secondary="Project"
-                  onPick={() =>
-                    onOpen?.("projects", `/projects/${encodeURIComponent(p.id)}`)
-                  }
-                />
-              ))}
-              {chatHits.map((c) => (
-                <Row
-                  key={`chat-${c.id}`}
-                  icon={MessageCircle}
-                  primary={c.title || "Untitled chat"}
-                  secondary="Chat"
-                  onPick={() =>
-                    onOpen?.("chat", `/chat/${encodeURIComponent(c.id)}`)
-                  }
-                />
-              ))}
-            </>
+            suggestions.map((s) => (
+              <Row
+                key={s.key}
+                icon={s.icon}
+                faviconUrl={s.faviconUrl}
+                primary={s.primary}
+                secondary={s.secondary}
+                onPick={s.onPick}
+              />
+            ))
           )}
         </div>
       )}
@@ -1133,6 +1331,143 @@ function agentSubLabel(a) {
   const step = String(a.step || a.status || "idle").trim();
   if (skill && step && step !== skill) return `${skill} · ${step}`;
   return skill || step || "idle";
+}
+
+/** Short topic phrase for post-agent suggestion labels. */
+function agentSuggestionTopic(raw, maxLen = 42) {
+  let t = String(raw || "").replace(/\s+/g, " ").trim();
+  t = t
+    .replace(
+      /^(please\s+)?(?:can you\s+)?(?:go\s+)?(?:and\s+)?(?:please\s+)?(?:open|browse|visit|research|find|look up|search|check|monitor|build|create|make|write|do)\s+(?:me\s+)?(?:an?\s+)?/i,
+      "",
+    )
+    .replace(/[.?!]+$/, "")
+    .trim();
+  if (!t) return "this";
+  if (t.length > maxLen) {
+    t = `${t.slice(0, Math.max(12, maxLen - 1)).replace(/\s+\S*$/, "")}…`;
+  }
+  return t;
+}
+
+/** One-tap next steps after an agent turn finishes — same role as Build / Research. */
+function agentFollowUpItems(topic) {
+  const blank = agentSuggestionTopic(topic, 36);
+  const fullTopic = agentSuggestionTopic(topic, 160);
+  return [
+    {
+      key: "continue",
+      label: "Keep going",
+      prompt:
+        "Keep going from here — take the next useful steps and finish anything still open",
+      icon: Sparkles,
+    },
+    {
+      key: "deeper",
+      label: `Dig deeper into ${blank}`,
+      prompt: `Dig deeper into ${fullTopic}: open related pages, pull more detail, and report what matters`,
+      icon: Telescope,
+    },
+    {
+      key: "next",
+      label: "What's the best next step?",
+      prompt: "Based on what you just did, what's the best next step — and do it",
+      icon: MessageCircle,
+    },
+  ];
+}
+
+const AGENT_SUGGEST_ICONS = [Sparkles, Telescope, MessageCircle];
+
+/** Map runtime / LLM follow-up strings into rail chip objects. */
+function mapAgentSuggestionChips(items) {
+  const list = Array.isArray(items) ? items : [];
+  return list
+    .map((raw, i) => {
+      if (raw == null) return null;
+      if (typeof raw === "string") {
+        const prompt = raw.replace(/\s+/g, " ").trim();
+        if (!prompt) return null;
+        return {
+          key: `custom-${i}`,
+          label: prompt.length > 56 ? `${prompt.slice(0, 55).replace(/\s+\S*$/, "")}…` : prompt,
+          prompt,
+          icon: AGENT_SUGGEST_ICONS[i % AGENT_SUGGEST_ICONS.length],
+        };
+      }
+      const prompt = String(raw.prompt || raw.label || "").replace(/\s+/g, " ").trim();
+      if (!prompt) return null;
+      const label = String(raw.label || prompt).replace(/\s+/g, " ").trim();
+      return {
+        key: String(raw.key || `custom-${i}`),
+        label: label.length > 56 ? `${label.slice(0, 55).replace(/\s+\S*$/, "")}…` : label,
+        prompt,
+        icon: AGENT_SUGGEST_ICONS[i % AGENT_SUGGEST_ICONS.length],
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+/** Source links from /api/ai/suggest — open in the Studio browser. */
+function mapAgentSourceLinks(items) {
+  const list = Array.isArray(items) ? items : [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of list) {
+    if (!raw) continue;
+    const url = String(raw.url || raw.href || "").trim();
+    if (!url || !/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    let host = "";
+    try {
+      host = new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+      host = "";
+    }
+    const title = String(raw.title || host || url).replace(/\s+/g, " ").trim();
+    out.push({
+      key: `src-${out.length}`,
+      title: title.length > 56 ? `${title.slice(0, 55).replace(/\s+\S*$/, "")}…` : title,
+      host,
+      url,
+    });
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+/** Pull http(s) URLs out of a finished agent answer (## Link, markdown, bare). */
+function extractSourceLinksFromAnswer(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return [];
+  const found = [];
+  const seen = new Set();
+  const push = (url, title) => {
+    const u = String(url || "").trim().replace(/[),.;]+$/, "");
+    if (!u || !/^https?:\/\//i.test(u) || seen.has(u)) return;
+    if (/lykn-agent-step:\/\//i.test(u)) return;
+    seen.add(u);
+    let host = "";
+    try {
+      host = new URL(u).hostname.replace(/^www\./, "");
+    } catch {
+      return;
+    }
+    const label = String(title || host || u).replace(/\s+/g, " ").trim();
+    found.push({
+      key: `ans-${found.length}`,
+      title: label.length > 56 ? `${label.slice(0, 55).replace(/\s+\S*$/, "")}…` : label,
+      host,
+      url: u,
+    });
+  };
+  const md = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
+  let m;
+  while ((m = md.exec(raw)) !== null) push(m[2], m[1]);
+  const bare = /\bhttps?:\/\/[^\s<>"'`)\]]+/gi;
+  while ((m = bare.exec(raw)) !== null) push(m[0], "");
+  return found.slice(0, 4);
 }
 
 /**
@@ -1228,14 +1563,22 @@ const RAIL_MD_COMPONENTS = {
   h3: (props) => <p className="mb-1 mt-1.5 text-[0.78rem] font-semibold text-white first:mt-0" {...props} />,
   h4: (props) => <p className="mb-1 mt-1.5 text-[0.78rem] font-semibold text-white/90 first:mt-0" {...props} />,
   strong: (props) => <strong className="font-semibold text-white" {...props} />,
-  a: ({ children, ...props }) => (
+  a: ({ children, href, ...props }) => (
     <a
       {...props}
+      href={href}
       target="_blank"
       rel="noreferrer"
-      className="text-sky-300 underline underline-offset-2 hover:text-sky-200"
+      className="inline-flex max-w-full items-center gap-1 text-sky-300 underline underline-offset-2 hover:text-sky-200"
+      onClick={(e) => {
+        const u = String(href || "").trim();
+        if (!u || !/^https?:\/\//i.test(u)) return;
+        e.preventDefault();
+        openStudioLink(u);
+      }}
     >
-      {children}
+      <LinkIcon className="h-3 w-3 shrink-0 opacity-70" aria-hidden="true" />
+      <span className="min-w-0 truncate">{children}</span>
     </a>
   ),
   blockquote: (props) => (
@@ -1289,12 +1632,30 @@ function agentToneClass(a) {
   return "text-white/40";
 }
 
+const AGENT_CHAT_WIDTH_KEY = "lykn-studio-agent-chat-width";
+const AGENT_CHAT_WIDTH_DEFAULT = 330;
+const AGENT_CHAT_WIDTH_MIN = 260;
+const AGENT_CHAT_WIDTH_MAX = 640;
+
+function readAgentChatWidth() {
+  try {
+    const n = Number(localStorage.getItem(AGENT_CHAT_WIDTH_KEY));
+    if (Number.isFinite(n) && n >= AGENT_CHAT_WIDTH_MIN && n <= AGENT_CHAT_WIDTH_MAX) {
+      return Math.round(n);
+    }
+  } catch {
+    /* ignore */
+  }
+  return AGENT_CHAT_WIDTH_DEFAULT;
+}
+
 function StudioAgentRail({ desktop }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [agents, setAgents] = useState([]);
   // Closed tabs/agents, newest first — the "History" list under Agents.
   const [history, setHistory] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(true);
   const [activeId, setActiveId] = useState(null);
   // Active agent's conversation: prompts + finished answers, plus the
   // in-flight streaming draft and a live status line while it works.
@@ -1303,12 +1664,99 @@ function StudioAgentRail({ desktop }) {
   const [liveStep, setLiveStep] = useState("");
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
+  // Custom post-finish chips for the active agent (runtime + LLM). Cleared on send.
+  const [customSuggestions, setCustomSuggestions] = useState([]);
+  const [sourceLinks, setSourceLinks] = useState([]);
+  const suggestGenRef = useRef(0);
+  const [chatWidth, setChatWidth] = useState(readAgentChatWidth);
+  const [resizingChat, setResizingChat] = useState(false);
   const taRef = useRef(null);
   const threadRef = useRef(null);
   const activeIdRef = useRef(null);
+  const chatWidthRef = useRef(chatWidth);
+  const threadSnapshotRef = useRef([]);
   useEffect(() => {
     activeIdRef.current = activeId;
   }, [activeId]);
+  useEffect(() => {
+    chatWidthRef.current = chatWidth;
+  }, [chatWidth]);
+  useEffect(() => {
+    threadSnapshotRef.current = thread;
+  }, [thread]);
+
+  // Chrome-style: chat stays hidden until "Use LYKN" in the browser is clicked.
+  useEffect(() => {
+    if (!desktop || !window.lykn?.onAgentChatVisibility) return;
+    let dead = false;
+    window.lykn
+      .agentChatGet?.()
+      .then((p) => {
+        if (dead) return;
+        if (typeof p?.open === "boolean") setOpen(!!p.open);
+        if (p?.agentId) setActiveId(String(p.agentId));
+      })
+      .catch(() => {});
+    const off = window.lykn.onAgentChatVisibility((p) => {
+      if (typeof p?.open === "boolean") setOpen(!!p.open);
+      // A browser task includes its paired agent id, so this sidebar loads
+      // the exact center-thread conversation rather than whichever agent was
+      // selected previously.
+      if (p?.agentId) setActiveId(String(p.agentId));
+    });
+    return () => {
+      dead = true;
+      try {
+        off?.();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [desktop]);
+
+  const setChatOpen = (next) => {
+    const value = !!next;
+    setOpen(value);
+    try {
+      window.lykn?.agentChatSet?.({ open: value });
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const beginChatResize = (e) => {
+    if (!open) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setResizingChat(true);
+    const startX = e.clientX;
+    const startW = chatWidthRef.current;
+    const onMove = (ev) => {
+      // Left-edge drag: pull left to widen, right to narrow.
+      const next = Math.min(
+        AGENT_CHAT_WIDTH_MAX,
+        Math.max(AGENT_CHAT_WIDTH_MIN, Math.round(startW + (startX - ev.clientX))),
+      );
+      chatWidthRef.current = next;
+      setChatWidth(next);
+    };
+    const onUp = () => {
+      setResizingChat(false);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      try {
+        localStorage.setItem(AGENT_CHAT_WIDTH_KEY, String(chatWidthRef.current));
+      } catch {
+        /* ignore */
+      }
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   // Live agent list + thread — same feeds as Glass and the floating sidebar.
   useEffect(() => {
@@ -1337,6 +1785,10 @@ function StudioAgentRail({ desktop }) {
       setThread(Array.isArray(p?.history) ? p.history : []);
       setDraft(String(p?.partialText || ""));
       setLiveStep(p?.busy ? String(p?.step || "Working…") : "");
+      const chips = mapAgentSuggestionChips(p?.suggestions);
+      setCustomSuggestions(chips.length && !p?.busy ? chips : []);
+      setSourceLinks([]);
+      suggestGenRef.current += 1;
     });
     const offDelta = window.lykn.onAgentDelta?.((p) => {
       if (dead || (p?.agentId && p.agentId !== activeIdRef.current)) return;
@@ -1378,6 +1830,54 @@ function StudioAgentRail({ desktop }) {
           { role: "assistant", content: finalText, at: new Date().toISOString() },
         ];
       });
+      // Skip follow-ups while parked on sign-in / monitoring / mid-choice.
+      if (p?.waitingSignIn || p?.monitoring || p?.waitingChoice || p?.choice) {
+        setCustomSuggestions([]);
+        setSourceLinks([]);
+        return;
+      }
+      const fromRuntime = mapAgentSuggestionChips(p?.suggestions);
+      setCustomSuggestions(fromRuntime);
+      // Answer links first (## Link / markdown) — always show with the links icon.
+      setSourceLinks(extractSourceLinksFromAnswer(finalText));
+      // Upgrade with LLM follow-ups tailored to this finished turn (Glass parity).
+      const gen = ++suggestGenRef.current;
+      void (async () => {
+        try {
+          if (!window.lykn?.suggest) return;
+          const hist = threadSnapshotRef.current || [];
+          let question = "";
+          for (let i = hist.length - 1; i >= 0; i--) {
+            if (hist[i]?.role === "user") {
+              question = String(hist[i].content || "").trim();
+              break;
+            }
+          }
+          const data = await window.lykn.suggest(question, finalText, {
+            mode: "agent_browser",
+          });
+          if (dead || gen !== suggestGenRef.current) return;
+          const fromLlm = mapAgentSuggestionChips(data?.followups);
+          if (fromLlm.length) setCustomSuggestions(fromLlm);
+          const fromSuggest = mapAgentSourceLinks(data?.links);
+          if (fromSuggest.length) {
+            // Prefer answer links, then fill with suggest sources.
+            setSourceLinks((prev) => {
+              const seen = new Set(prev.map((l) => l.url));
+              const merged = [...prev];
+              for (const l of fromSuggest) {
+                if (seen.has(l.url)) continue;
+                seen.add(l.url);
+                merged.push(l);
+                if (merged.length >= 4) break;
+              }
+              return merged;
+            });
+          }
+        } catch {
+          /* keep runtime tips */
+        }
+      })();
     });
     return () => {
       dead = true;
@@ -1412,6 +1912,9 @@ function StudioAgentRail({ desktop }) {
   useEffect(() => {
     if (!desktop || !activeId || !window.lykn?.agentHistory) return;
     let dead = false;
+    setCustomSuggestions([]);
+    setSourceLinks([]);
+    suggestGenRef.current += 1;
     window.lykn
       .agentHistory(activeId)
       .then((snap) => {
@@ -1419,6 +1922,8 @@ function StudioAgentRail({ desktop }) {
         setThread(Array.isArray(snap.history) ? snap.history : []);
         setDraft(String(snap.partialText || ""));
         setLiveStep(snap.busy ? String(snap.step || "Working…") : "");
+        const chips = mapAgentSuggestionChips(snap.suggestions || snap.lastSuggestions);
+        if (chips.length && !snap.busy) setCustomSuggestions(chips);
       })
       .catch(() => {});
     return () => {
@@ -1435,37 +1940,52 @@ function StudioAgentRail({ desktop }) {
   const autoGrow = (el) => {
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.min(120, el.scrollHeight)}px`;
+    const next = Math.min(120, el.scrollHeight);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > 120 ? "auto" : "hidden";
   };
 
-  const send = async () => {
-    const goal = text.trim();
-    if ((!goal && !attachments.length) || !window.lykn?.studioAgentSend) return;
+  const send = async (overrideText, opts = {}) => {
+    const goal = String(overrideText ?? text).trim();
+    const atts = overrideText != null ? [] : attachments;
+    if ((!goal && !atts.length) || !window.lykn?.studioAgentSend) return;
     // Only the ACTIVE agent being mid-run blocks a send — other agents run
     // in parallel, so switching to an idle agent always lets you prompt it.
     const target = agents.find((a) => a.id === activeIdRef.current);
     if (target && (target.busy || target.status === "running")) return;
     const targetId = activeIdRef.current;
-    const atts = attachments;
+    const fromSuggestion = !!opts?.fromSuggestion;
+    // Thread shows the short chip label; runtime still gets the grounded prompt.
+    const display = fromSuggestion
+      ? String(opts?.label || goal).trim() || goal
+      : goal || `(${atts.length} attachment${atts.length === 1 ? "" : "s"})`;
     setText("");
     setAttachments([]);
-    if (taRef.current) taRef.current.style.height = "auto";
+    if (taRef.current) {
+      taRef.current.style.height = "auto";
+      taRef.current.style.overflowY = "hidden";
+    }
     // Show the prompt immediately — the runtime's switch/seed events follow.
     setThread((prev) => [
       ...prev,
       {
         role: "user",
-        content: goal || `(${atts.length} attachment${atts.length === 1 ? "" : "s"})`,
+        content: display,
         at: new Date().toISOString(),
       },
     ]);
+    setCustomSuggestions([]);
+    setSourceLinks([]);
+    suggestGenRef.current += 1;
     setLiveStep("Starting…");
     // Fire and forget: the promise resolves only when the whole run finishes,
     // and awaiting it would freeze the composer for every other agent.
     // Progress/done events stream the run into whichever agent is viewed.
-    window.lykn.studioAgentSend(goal, atts, targetId).catch(() => {
-      if (activeIdRef.current === targetId) setLiveStep("");
-    });
+    window.lykn
+      .studioAgentSend(goal, atts, targetId, { fromSuggestion })
+      .catch(() => {
+        if (activeIdRef.current === targetId) setLiveStep("");
+      });
   };
 
   const attach = async () => {
@@ -1489,18 +2009,50 @@ function StudioAgentRail({ desktop }) {
   const active = agents.find((a) => a.id === activeId) || null;
   // Composer only locks for the agent you're looking at — not the whole rail.
   const activeBusy = !!(active && (active.busy || active.status === "running"));
+  // Topic + visibility for post-finish suggestions (mirrors Build / Research).
+  const latestAgentTopic = (() => {
+    for (let i = thread.length - 1; i >= 0; i--) {
+      const m = thread[i];
+      if (m?.role === "user") {
+        const content = String(m.content || "").trim();
+        if (content) return content;
+      }
+    }
+    return active?.title || "this task";
+  })();
+  // Suggestions panel temporarily disabled for Agent Mode.
+  const showAgentSuggestions = false;
+  const agentSuggestions = showAgentSuggestions
+    ? customSuggestions.length
+      ? customSuggestions
+      : agentFollowUpItems(latestAgentTopic)
+    : [];
+  const agentSourceLinks = showAgentSuggestions ? sourceLinks : [];
 
   return (
     <>
-    {/* Response rail — sits on the studio glass, split off by a hairline. */}
+    {/* Response rail — hidden until Use LYKN is clicked in the browser. */}
+    {open ? (
     <div
-      className={`relative flex h-full flex-none flex-col overflow-hidden border-l border-white/15 text-white/85 transition-all duration-300 ease-out animate-in fade-in-0 slide-in-from-right-4 ${
-        open ? "w-[330px]" : "w-11"
+      className={`relative flex h-full flex-none flex-col overflow-hidden border-l border-white/15 text-white/85 animate-in fade-in-0 slide-in-from-right-4 ${
+        resizingChat ? "" : "transition-[width] duration-300 ease-out"
       }`}
-      style={NO_DRAG}
+      style={{
+        ...NO_DRAG,
+        width: chatWidth,
+      }}
     >
-      {open ? (
-        <>
+          {/* Drag the left edge to widen / narrow the chat panel. */}
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize agent chat"
+            title="Drag to resize"
+            onMouseDown={beginChatResize}
+            className={`absolute inset-y-0 left-0 z-20 w-1.5 -translate-x-1/2 cursor-col-resize touch-none ${
+              resizingChat ? "bg-white/35" : "bg-transparent hover:bg-white/25"
+            }`}
+          />
           <div className="flex flex-shrink-0 items-center gap-1 px-3 pb-1.5 pt-3">
             <span className="min-w-0 truncate text-[0.66rem] font-bold uppercase tracking-[0.09em] text-white/50">
               {active?.title || "LYKN Agent"}
@@ -1516,8 +2068,8 @@ function StudioAgentRail({ desktop }) {
             </button>
             <button
               type="button"
-              onClick={() => setOpen(false)}
-              title="Collapse response panel"
+              onClick={() => setChatOpen(false)}
+              title="Close LYKN chat"
               className="flex h-6 w-6 items-center justify-center rounded-lg text-white/55 transition-colors hover:bg-white/10 hover:text-white"
             >
               <ChevronRight className="h-3.5 w-3.5" />
@@ -1527,7 +2079,7 @@ function StudioAgentRail({ desktop }) {
           {/* Thread — the active agent's prompts + answers, streaming live. */}
           <div
             ref={threadRef}
-            className="mt-1 min-h-0 flex-1 space-y-2.5 overflow-y-auto border-t border-white/15 px-3 py-2.5"
+            className="mt-1 min-h-0 flex-1 space-y-2.5 overflow-y-auto border-t border-white/15 px-3 py-2.5 scrollbar-hide"
           >
             {thread.length === 0 && !draft && !liveStep && (
               <p className="px-2 pt-10 text-center text-xs leading-relaxed text-white/40">
@@ -1580,6 +2132,59 @@ function StudioAgentRail({ desktop }) {
 
           {/* Chat bar — same glass as the thread, split by a hairline. */}
           <div className="flex-shrink-0 border-t border-white/15 px-3 pb-2.5 pt-2">
+            {(agentSuggestions.length > 0 || agentSourceLinks.length > 0) && (
+              <div className="mb-2 rounded-2xl border border-white/15 bg-white/[0.06] px-2.5 py-2">
+                {agentSourceLinks.length > 0 && (
+                  <div className={agentSuggestions.length > 0 ? "mb-2" : ""}>
+                    <p className="mb-1.5 px-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-white/40">
+                      Sources
+                    </p>
+                    <div className="flex flex-col gap-1">
+                      {agentSourceLinks.map(({ key, title, host, url }) => (
+                        <button
+                          key={key}
+                          type="button"
+                          title={url}
+                          onClick={() => openStudioLink(url)}
+                          className="flex min-w-0 items-center gap-2 rounded-xl border border-white/12 bg-white/[0.06] px-2.5 py-1.5 text-left text-[0.72rem] font-medium leading-snug text-white/75 transition-colors hover:bg-white/[0.12] hover:text-white"
+                        >
+                          <LinkIcon className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                          <span className="min-w-0 flex-1 truncate">{title}</span>
+                          {host ? (
+                            <span className="max-w-[40%] shrink-0 truncate text-[0.62rem] font-normal text-white/40">
+                              {host}
+                            </span>
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {agentSuggestions.length > 0 && (
+                  <>
+                    <p className="mb-1.5 px-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-white/40">
+                      Suggestions
+                    </p>
+                    <div className="flex flex-col gap-1">
+                      {agentSuggestions.map(({ key, label, prompt, icon: Icon }) => (
+                        <button
+                          key={key}
+                          type="button"
+                          disabled={activeBusy}
+                          onClick={() =>
+                            void send(prompt, { fromSuggestion: true, label })
+                          }
+                          className="flex min-w-0 items-center gap-2 rounded-xl border border-white/12 bg-white/[0.06] px-2.5 py-1.5 text-left text-[0.72rem] font-medium leading-snug text-white/75 transition-colors hover:bg-white/[0.12] hover:text-white disabled:pointer-events-none disabled:opacity-40"
+                        >
+                          <Icon className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                          <span className="min-w-0 truncate">{label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             {attachments.length > 0 && (
               <div className="mb-1.5 flex flex-wrap gap-1">
                 {attachments.map((att, i) => (
@@ -1608,7 +2213,7 @@ function StudioAgentRail({ desktop }) {
                 ref={taRef}
                 value={text}
                 rows={1}
-                placeholder="Message the agent — chat, or give it a goal…"
+                placeholder="Message the agent…"
                 onChange={(e) => {
                   setText(e.target.value);
                   autoGrow(e.target);
@@ -1619,7 +2224,7 @@ function StudioAgentRail({ desktop }) {
                     void send();
                   }
                 }}
-                className="max-h-[120px] w-full resize-none bg-transparent text-[0.78rem] leading-relaxed text-white/90 outline-none placeholder:text-white/35"
+                className="max-h-[120px] w-full resize-none overflow-hidden bg-transparent text-[0.78rem] leading-relaxed text-white/90 outline-none placeholder:text-white/35 scrollbar-hide"
               />
               <div className="flex items-center gap-1 pt-1">
                 <GlassDot busy={anyRunning} />
@@ -1634,7 +2239,7 @@ function StudioAgentRail({ desktop }) {
                 </button>
                 <button
                   type="button"
-                  onClick={send}
+                  onClick={() => void send()}
                   disabled={activeBusy || !canSend}
                   title="Send"
                   className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
@@ -1652,26 +2257,11 @@ function StudioAgentRail({ desktop }) {
               </div>
             </div>
           </div>
-        </>
-      ) : (
-        <div className="flex h-full flex-col items-center py-2.5">
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            title="Show responses"
-            className="flex h-7 w-7 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-          <Bot className="mt-3 h-4 w-4 flex-none text-white/40" />
-          {anyRunning && (
-            <span className="mt-2 h-1.5 w-1.5 flex-none animate-pulse rounded-full bg-emerald-400" />
-          )}
-        </div>
-      )}
     </div>
+    ) : null}
 
-    {/* Agent strip — a closed sidebar of agents; expands to show titles. */}
+    {/* Agent strip — only with chat (Use LYKN). */}
+    {open ? (
     <div
       className={`relative flex h-full flex-none flex-col overflow-hidden border-l border-white/15 text-white/85 transition-all duration-300 ease-out animate-in fade-in-0 slide-in-from-right-2 ${
         agentsOpen ? "w-[220px]" : "w-11"
@@ -1681,6 +2271,14 @@ function StudioAgentRail({ desktop }) {
       {agentsOpen ? (
         <>
           <div className="flex flex-shrink-0 items-center gap-1 px-3 pb-1.5 pt-3">
+            <button
+              type="button"
+              onClick={() => setAgentsOpen(false)}
+              title="Collapse agents"
+              className="flex h-6 w-6 flex-none items-center justify-center rounded-lg text-white/55 transition-colors hover:bg-white/10 hover:text-white"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
             <span className="text-[0.66rem] font-bold uppercase tracking-[0.09em] text-white/50">
               Agents
             </span>
@@ -1697,7 +2295,7 @@ function StudioAgentRail({ desktop }) {
               <Plus className="h-3.5 w-3.5" />
             </button>
           </div>
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-1">
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-1 scrollbar-hide">
             {agents.length === 0 && (
               <p className="px-2 pt-8 text-center text-xs leading-relaxed text-white/40">
                 No agents yet. Press + to add one.
@@ -1716,7 +2314,9 @@ function StudioAgentRail({ desktop }) {
                     : "hover:bg-white/[0.08]"
                 }`}
               >
-                <Globe className={`h-4 w-4 flex-none ${agentToneClass(a)}`} />
+                <span className={agentToneClass(a)}>
+                  <PageFavicon url={a.url} className="h-4 w-4" />
+                </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[0.76rem] font-medium text-white/90">
                     {a.title || "Agent"}
@@ -1742,67 +2342,88 @@ function StudioAgentRail({ desktop }) {
           {/* History — closed tabs & agents, newest first. Click to reopen
               the page in a fresh agent tab; × removes the entry. */}
           {history.length > 0 && (
-            <div className="flex max-h-[38%] flex-none flex-col border-t border-white/10">
-              <div className="flex flex-shrink-0 items-center gap-1 px-3 pb-1 pt-2.5">
-                <span className="text-[0.66rem] font-bold uppercase tracking-[0.09em] text-white/50">
-                  History
-                </span>
-                <span className="text-[0.66rem] font-semibold text-white/35">
-                  {history.length}
-                </span>
+            <div
+              className={`flex flex-none flex-col border-t border-white/10 ${
+                historyOpen ? "max-h-[38%] min-h-0" : ""
+              }`}
+            >
+              <div className="flex flex-shrink-0 items-center gap-1 px-2 pb-1 pt-2.5">
+                <button
+                  type="button"
+                  onClick={() => setHistoryOpen((v) => !v)}
+                  title={historyOpen ? "Hide history" : "Show history"}
+                  aria-expanded={historyOpen}
+                  className="flex min-w-0 flex-1 items-center gap-1 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-white/[0.06]"
+                >
+                  <span className="text-[0.66rem] font-bold uppercase tracking-[0.09em] text-white/50">
+                    History
+                  </span>
+                  <span className="text-[0.66rem] font-semibold text-white/35">
+                    {history.length}
+                  </span>
+                  <span className="flex-1" />
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 flex-none text-white/45 transition-transform ${
+                      historyOpen ? "" : "-rotate-90"
+                    }`}
+                  />
+                </button>
               </div>
-              <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-1">
-                {history.map((h) => (
-                  <div
-                    key={h.id}
-                    role="button"
-                    tabIndex={0}
-                    title={h.url || h.title}
-                    onClick={() => window.lykn?.agentBrowserHistoryOpen?.(h.id)}
-                    onKeyDown={(e) =>
-                      e.key === "Enter" && window.lykn?.agentBrowserHistoryOpen?.(h.id)
-                    }
-                    className="group flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2 py-1.5 transition-colors hover:bg-white/[0.08]"
-                  >
-                    <Clock className="h-3.5 w-3.5 flex-none text-white/35" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[0.72rem] font-medium text-white/75">
-                        {h.pageTitle || h.title}
-                      </span>
-                      <span className="block truncate text-[0.6rem] text-white/40">
-                        {historySubLabel(h)}
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      title="Remove from history"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void window.lykn?.agentBrowserHistoryRemove?.(h.id);
-                      }}
-                      className="flex h-5 w-5 flex-none items-center justify-center rounded-md text-white/40 opacity-0 transition-all hover:bg-white/15 hover:text-white group-hover:opacity-100"
+              {historyOpen ? (
+                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-1 scrollbar-hide">
+                  {history.map((h) => (
+                    <div
+                      key={h.id}
+                      role="button"
+                      tabIndex={0}
+                      title={h.url || h.title}
+                      onClick={() => window.lykn?.agentBrowserHistoryOpen?.(h.id)}
+                      onKeyDown={(e) =>
+                        e.key === "Enter" && window.lykn?.agentBrowserHistoryOpen?.(h.id)
+                      }
+                      className="group flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2 py-1.5 transition-colors hover:bg-white/[0.08]"
                     >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
+                      <PageFavicon
+                        url={h.url}
+                        fallback={Clock}
+                        className="h-3.5 w-3.5 text-white/35"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[0.72rem] font-medium text-white/75">
+                          {h.pageTitle || h.title}
+                        </span>
+                        <span className="block truncate text-[0.6rem] text-white/40">
+                          {historySubLabel(h)}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        title="Remove from history"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void window.lykn?.agentBrowserHistoryRemove?.(h.id);
+                        }}
+                        className="flex h-5 w-5 flex-none items-center justify-center rounded-md text-white/40 opacity-0 transition-all hover:bg-white/15 hover:text-white group-hover:opacity-100"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           )}
-          {/* Toggle lives at the bottom in both states. */}
-          <div className="flex flex-shrink-0 justify-center py-2.5">
-            <button
-              type="button"
-              onClick={() => setAgentsOpen(false)}
-              title="Collapse agents"
-              className="flex h-7 w-7 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
         </>
       ) : (
-        <div className="flex h-full flex-col items-center gap-1.5 overflow-y-auto py-2.5">
+        <div className="flex h-full flex-col items-center gap-1.5 overflow-y-auto py-2.5 scrollbar-hide">
+          <button
+            type="button"
+            onClick={() => setAgentsOpen(true)}
+            title="Show agents"
+            className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
           <button
             type="button"
             onClick={() => window.lykn?.agentCreate?.({ title: "New agent" })}
@@ -1822,28 +2443,23 @@ function StudioAgentRail({ desktop }) {
                 a.id === activeId ? "bg-white/[0.14] ring-1 ring-white/30" : ""
               }`}
             >
-              <Globe className={`h-4 w-4 ${agentToneClass(a)}`} />
+              <span className={agentToneClass(a)}>
+                <PageFavicon url={a.url} className="h-4 w-4" />
+              </span>
             </button>
           ))}
-          <span className="flex-1" />
-          <button
-            type="button"
-            onClick={() => setAgentsOpen(true)}
-            title="Show agents"
-            className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
         </div>
       )}
     </div>
-    </>
+    ) : null}
+  </>
   );
 }
 
 export default function Studio() {
   const { user } = useAuth();
   const desktop = isDesktopShell();
+  const studioRootRef = useRef(null);
   // Desktop shell IS the vibrancy Studio window now (main window loads
   // /studio?glass=1). Keep treating desktop as glass even if a client-side
   // nav drops the query param. On the web we only go transparent with ?glass=1.
@@ -1864,8 +2480,6 @@ export default function Studio() {
   const [dark, setDark] = useState(() => isDarkTheme(readSavedTheme()));
   const [notifMuted, setNotifMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const [calendarOpen, setCalendarOpen] = useState(false);
-  const [calendarPanel, setCalendarPanel] = useState("calendar"); // "calendar" | "todos"
   const [settingsOpen, setSettingsOpen] = useState(false);
   // While a page (chat/projects/…) is open the studio chrome tucks away and
   // the rail becomes the single full-height sidebar. The tiny toggle in the
@@ -1875,6 +2489,9 @@ export default function Studio() {
   // full app-style sidebar with chat history.
   const [railOpen, setRailOpen] = useState(false);
   const [railSearch, setRailSearch] = useState("");
+  // Browser tab acts like a regular browser: the rail slides fully away and
+  // only peeks back while the cursor rests on the left screen edge.
+  const [browserRailPeek, setBrowserRailPeek] = useState(false);
   const queryClient = useQueryClient();
 
   // The glass window shows native macOS traffic lights in its top-left
@@ -1886,11 +2503,21 @@ export default function Studio() {
   const onPage = tab !== "dashboard";
   const focused = onPage && !chromeShown;
 
+  // Browser mode hides the sidebar entirely so the page gets the full width,
+  // like a regular browser. It comes back two ways: hovering the left screen
+  // edge (peek, tracked below via mousemove) or pressing the top-right
+  // drop-down arrow, which restores the whole studio chrome (focused=false).
+  const browserRail = tab === "browser" && focused;
+  const railWidthPx = railOpen && focused ? 256 : 52;
+  const railHidden = browserRail && !browserRailPeek;
+
   useEffect(() => {
     if (!focused) {
       setRailOpen(false);
       setRailSearch("");
     }
+    document.documentElement.classList.toggle("lykn-studio-focused", focused);
+    return () => document.documentElement.classList.remove("lykn-studio-focused");
   }, [focused]);
 
   const { data: railChats = [] } = useQuery({
@@ -2009,51 +2636,6 @@ export default function Studio() {
     else void document.documentElement.requestFullscreen?.();
   };
 
-  // Fullscreen traffic lights reveal in step with the auto-hidden macOS menu
-  // bar: that bar drops only after the cursor rests against the very top
-  // edge for a beat, so we use the same trigger — edge contact plus a short
-  // dwell — then stay up while the cursor remains near the top.
-  const [lightsRevealed, setLightsRevealed] = useState(false);
-  useEffect(() => {
-    if (!(macTrafficLights && fullscreen)) {
-      setLightsRevealed(false);
-      return undefined;
-    }
-    let shown = false;
-    let dwellTimer = null;
-    const cancelDwell = () => {
-      if (dwellTimer) {
-        clearTimeout(dwellTimer);
-        dwellTimer = null;
-      }
-    };
-    const onMove = (e) => {
-      if (shown) {
-        if (e.clientY > 110) {
-          shown = false;
-          setLightsRevealed(false);
-        }
-        return;
-      }
-      if (e.clientY <= 2) {
-        if (!dwellTimer) {
-          dwellTimer = setTimeout(() => {
-            dwellTimer = null;
-            shown = true;
-            setLightsRevealed(true);
-          }, 250);
-        }
-      } else {
-        cancelDwell();
-      }
-    };
-    window.addEventListener("mousemove", onMove);
-    return () => {
-      cancelDwell();
-      window.removeEventListener("mousemove", onMove);
-    };
-  }, [macTrafficLights, fullscreen]);
-
   // Browser tab: the agent browser is native Electron views, not a web page,
   // so the main process docks them over the browser card (left of the agent
   // rail). Report the card's window-relative rect and keep it fresh while
@@ -2086,6 +2668,26 @@ export default function Studio() {
     };
   }, [tab]);
 
+  // Left-edge hover peek for the hidden browser sidebar. A document-level
+  // mousemove (instead of an invisible hover strip) survives the rail
+  // animating in under the cursor: within ~12px of the left edge the rail
+  // slides in; it slides back out once the cursor moves past it. Moves over
+  // the native browser views don't reach this document, but the cursor must
+  // cross the frost-panel padding (DOM) to get there, which closes the peek.
+  useEffect(() => {
+    if (!browserRail) {
+      setBrowserRailPeek(false);
+      return;
+    }
+    const onMove = (e) => {
+      setBrowserRailPeek((cur) =>
+        cur ? e.clientX <= railWidthPx + 40 : e.clientX <= 12
+      );
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, [browserRail, railWidthPx]);
+
   // Artifact "Open" inside a Studio chat surface routes the URL into the
   // Studio browser (lykn:studio-open-url) and fires this event so the
   // Studio switches to its Browser tab, where the new tab is docked.
@@ -2110,21 +2712,17 @@ export default function Studio() {
   };
 
   const openCalendar = (panel = "calendar") => {
-    setCalendarPanel(panel);
-    setCalendarOpen(true);
+    const src = panel === "todos" ? "/calendar?panel=todos" : "/calendar";
+    openTab("calendar", src);
   };
 
   const handleNavItem = (item) => {
-    if (item.action === "calendar") {
-      openCalendar("calendar");
-      return;
-    }
     openTab(item.id);
   };
 
   const navActive = (item) => {
     if (item.id === "settings") return settingsOpen;
-    return item.action === "tab" ? tab === item.id : item.action === "calendar" && calendarOpen;
+    return item.action === "tab" && tab === item.id;
   };
 
   const setTheme = (nextDark) => {
@@ -2133,7 +2731,11 @@ export default function Studio() {
   };
 
   return (
-    <div className="fixed inset-0 overflow-hidden font-sans text-black/85 dark:text-white/85 select-none">
+    <div
+      ref={studioRootRef}
+      className="fixed inset-0 overflow-hidden font-sans text-black/85 dark:text-white/85"
+    >
+      <StudioHoverTips rootRef={studioRootRef} />
       {/* Backdrop. Glass (dark) in the vibrancy window stays transparent so
           the desktop blurs through; everywhere else — including Neutral,
           which is the regular opaque UI with no glass at all — we paint our
@@ -2171,7 +2773,9 @@ export default function Studio() {
           // Important: do NOT put WebkitAppRegion:drag on this outer row —
           // paddingLeft still counts as a drag hit-target and steals clicks
           // from the native macOS traffic lights (close / minimize).
-          className={`flex w-full flex-shrink-0 items-center gap-3 transition-[max-height,opacity,margin,transform] duration-500 ease-out ${
+          // relative z-30: search suggestions hang below this row and must
+          // paint above the main frost panel (next sibling in the column).
+          className={`relative z-30 flex w-full flex-shrink-0 items-center gap-3 select-none transition-[max-height,opacity,margin,transform] duration-500 ease-out ${
             fullscreen ? "max-w-full" : "max-w-[1240px]"
           } ${
             focused
@@ -2218,6 +2822,9 @@ export default function Studio() {
               <button
                 type="button"
                 onClick={() => setTheme(true)}
+                title="Glass theme"
+                aria-label="Glass theme"
+                aria-pressed={dark}
                 className={`rounded-full px-3 py-1.5 text-[0.7rem] font-medium transition-all ${
                   dark ? "bg-white text-black shadow" : "text-white/60"
                 }`}
@@ -2227,6 +2834,9 @@ export default function Studio() {
               <button
                 type="button"
                 onClick={() => setTheme(false)}
+                title="Neutral theme"
+                aria-label="Neutral theme"
+                aria-pressed={!dark}
                 className={`rounded-full px-3 py-1.5 text-[0.7rem] font-medium transition-all ${
                   !dark ? "bg-black/85 text-white shadow" : "text-white/60"
                 }`}
@@ -2286,13 +2896,33 @@ export default function Studio() {
             fullscreen ? "max-w-full" : "max-w-[1240px]"
           }`}
         >
-          <div className="flex flex-col justify-center">
+          <div
+            className="relative z-20 flex flex-col justify-center"
+            // Browser mode: the rail slides off-screen and gives its layout
+            // space (width + the flex gap) back to the browser via negative
+            // margin, so the frost panel — and with it the native browser
+            // views tracking browserHostRef — stretches edge to edge. The
+            // ResizeObserver on the host keeps the native views in sync
+            // while this animates.
+            style={
+              browserRail
+                ? {
+                    marginRight: railHidden ? -(railWidthPx + 12) : 0,
+                    transform: railHidden ? "translateX(-110%)" : "translateX(0)",
+                    opacity: railHidden ? 0 : 1,
+                    pointerEvents: railHidden ? "none" : "auto",
+                    transition:
+                      "margin-right 320ms cubic-bezier(0.22,1,0.36,1), transform 320ms cubic-bezier(0.22,1,0.36,1), opacity 220ms ease",
+                  }
+                : undefined
+            }
+          >
             {/* Focused: the rail nudges to the side, then stretches to full
                 height (flex-grow is animatable), becoming the app sidebar.
                 The LYKN icon expands it into a full sidebar with chat
                 history, like the actual app. */}
             <div
-              className={`flex flex-col items-stretch gap-1.5 overflow-hidden p-1.5 ${BAR} ${
+              className={`flex flex-col items-stretch gap-1.5 overflow-hidden p-1.5 select-none ${BAR} ${
                 focused ? "grow -translate-x-2" : "grow-0 translate-x-0"
               } ${
                 railOpen && focused
@@ -2386,7 +3016,8 @@ export default function Studio() {
                           }
                         }}
                         placeholder="Search"
-                        className="w-full min-w-0 bg-transparent text-[0.72rem] text-white/85 outline-none placeholder:text-white/35"
+                        autoComplete="off"
+                        className="w-full min-w-0 bg-transparent text-[0.72rem] text-white/85 outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 placeholder:text-white/35"
                       />
                     </div>
                     <button
@@ -2503,7 +3134,7 @@ export default function Studio() {
                 className={`absolute inset-0 h-full w-full ${
                   // Chat manages its own internal scrolling; document-style
                   // pages (vault / projects / settings) scroll in the panel.
-                  id === "chat" ? "overflow-hidden" : "overflow-y-auto"
+                  id === "chat" ? "overflow-hidden" : "overflow-y-auto scrollbar-hide"
                 } ${
                   // `invisible` (visibility:hidden) fully removes warm hidden
                   // tabs from hit-testing — pointer-events-none alone isn't
@@ -2526,7 +3157,7 @@ export default function Studio() {
 
         {/* ── Bottom dock — slides away downward in focused mode ── */}
         <div
-          className={`flex flex-shrink-0 items-center gap-1 rounded-full p-1.5 transition-[max-height,opacity,margin,transform] duration-500 ease-out ${BAR} ${
+          className={`flex flex-shrink-0 items-center gap-1 rounded-full p-1.5 select-none transition-[max-height,opacity,margin,transform] duration-500 ease-out ${BAR} ${
             focused
               ? "mt-0 max-h-0 translate-y-6 opacity-0 pointer-events-none"
               : "mt-3 max-h-14 translate-y-0 opacity-100 delay-200"
@@ -2549,61 +3180,6 @@ export default function Studio() {
         </div>
       </div>
 
-      {/* In-page traffic lights while fullscreen — macOS simple fullscreen
-          strips the native title-bar buttons, so we draw our own in the same
-          spot: close (hide), minimize, and exit fullscreen. */}
-      {macTrafficLights && fullscreen && (
-        <div
-          // Below the strip the auto-hidden menu bar occupies when it drops
-          // down (~25px, ~38px on notched displays) so the system banner can
-          // never cover the buttons, and vertically centered on the top bar
-          // row, which starts at 44px in fullscreen.
-          className={`group absolute left-3 top-[52px] z-[200] flex items-center gap-2.5 transition-all duration-200 ease-out ${
-            lightsRevealed
-              ? "translate-y-0 opacity-100"
-              : "pointer-events-none -translate-y-3 opacity-0"
-          }`}
-          style={NO_DRAG}
-        >
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              window.lykn?.closeStudio?.();
-            }}
-            title="Close"
-            aria-label="Close"
-            className="flex h-3.5 w-3.5 items-center justify-center rounded-full border border-black/[0.12] bg-[#ff5f57] text-black/60"
-          >
-            <X className="h-2 w-2 opacity-0 transition-opacity group-hover:opacity-100" strokeWidth={4} />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              window.lykn?.minimizeStudio?.();
-            }}
-            title="Minimize"
-            aria-label="Minimize"
-            className="flex h-3.5 w-3.5 items-center justify-center rounded-full border border-black/[0.12] bg-[#febc2e] text-black/60"
-          >
-            <Minus className="h-2 w-2 opacity-0 transition-opacity group-hover:opacity-100" strokeWidth={4} />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleFullscreen();
-            }}
-            title="Exit full screen"
-            aria-label="Exit full screen"
-            className="flex h-3.5 w-3.5 items-center justify-center rounded-full border border-black/[0.12] bg-[#28c840] text-black/60"
-          >
-            <Minimize2 className="h-2 w-2 opacity-0 transition-opacity group-hover:opacity-100" strokeWidth={4} />
-          </button>
-        </div>
-      )}
-
       {/* Tiny chrome toggle — pinned to the window's top-right corner, over
           the studio background itself. */}
       {onPage && (
@@ -2617,15 +3193,10 @@ export default function Studio() {
             dark ? "text-white/80 hover:text-white" : "text-black/70 hover:text-black"
           }`}
         >
-          {focused ? <ChevronsDown className="h-3.5 w-3.5" /> : <ChevronsUp className="h-3.5 w-3.5" />}
+          {focused ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
         </button>
       )}
 
-      <LyknCalendarDialog
-        open={calendarOpen}
-        onOpenChange={setCalendarOpen}
-        initialPanel={calendarPanel}
-      />
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );

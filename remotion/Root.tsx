@@ -47,6 +47,13 @@ import { AiAnywhere } from "./AiAnywhere";
 import { GlassBarStill, glassBarStillDefaults } from "./GlassBarStill";
 import { GlassPoster, glassPosterDefaults } from "./GlassPoster";
 import { LyknDmgBackground } from "./LyknDmgBackground";
+import { LyknStudioOpen, STUDIO_OPEN_DURATION, lyknStudioOpenDefaults } from "./LyknStudioOpen";
+import { LyknStudioResearch, STUDIO_RESEARCH_DURATION } from "./LyknStudioResearch";
+import { LyknStudioDemo, STUDIO_DEMO_DURATION } from "./LyknStudioDemo";
+import { LyknStudioChat, STUDIO_CHAT_DURATION } from "./LyknStudioChat";
+import { LyknStudioChatDemo, STUDIO_CHAT_DEMO_DURATION } from "./LyknStudioChatDemo";
+import { LyknStudioBrowser, STUDIO_BROWSER_DURATION } from "./LyknStudioBrowser";
+import { LyknStudioBrowserDemo, STUDIO_BROWSER_DEMO_DURATION } from "./LyknStudioBrowserDemo";
 
 // Every composition you want to render or preview is registered here.
 // Add more <Composition> entries as we build new things.
@@ -445,6 +452,63 @@ export const RemotionRoot: React.FC = () => {
         fps={30}
         width={540}
         height={380}
+      />
+      <Composition
+        id="LyknStudioOpen"
+        component={LyknStudioOpen}
+        durationInFrames={STUDIO_OPEN_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={lyknStudioOpenDefaults}
+      />
+      <Composition
+        id="LyknStudioResearch"
+        component={LyknStudioResearch}
+        durationInFrames={STUDIO_RESEARCH_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknStudioDemo"
+        component={LyknStudioDemo}
+        durationInFrames={STUDIO_DEMO_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknStudioChat"
+        component={LyknStudioChat}
+        durationInFrames={STUDIO_CHAT_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknStudioChatDemo"
+        component={LyknStudioChatDemo}
+        durationInFrames={STUDIO_CHAT_DEMO_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknStudioBrowser"
+        component={LyknStudioBrowser}
+        durationInFrames={STUDIO_BROWSER_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknStudioBrowserDemo"
+        component={LyknStudioBrowserDemo}
+        durationInFrames={STUDIO_BROWSER_DEMO_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
       />
       <Composition
         id="AiAnywhere"

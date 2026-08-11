@@ -5,10 +5,10 @@
 // This page is the list + create dialog. Pressing a project opens its own
 // full page (/projects/:projectId - ProjectDetailPage), the workspace where
 // tasks, calendar deadlines, knowledge, and AI activity for that project live.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Library, Plus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Library, Plus, X } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { supabase } from "@/lib/supabase";
 import { toast } from "@/components/ui/use-toast";
@@ -98,6 +98,9 @@ export default function ProjectsPage() {
   const [vaultItems, setVaultItems] = useState([]); // { id, title }[]
   const [creating, setCreating] = useState(false);
   const [hoveredId, setHoveredId] = useState(null);
+  const [canPagePrev, setCanPagePrev] = useState(false);
+  const [canPageNext, setCanPageNext] = useState(false);
+  const railRef = useRef(null);
   // Studio glass skin (html.lykn-glass-embed) — set for the document's whole
   // lifetime, so reading it once at render is safe.
   const isGlassEmbed =
@@ -106,6 +109,42 @@ export default function ProjectsPage() {
 
   // Only light up a card while hovered/focused - otherwise they all match.
   const featuredId = hoveredId;
+
+  const updatePageAffordance = useCallback(() => {
+    const el = railRef.current;
+    if (!el) {
+      setCanPagePrev(false);
+      setCanPageNext(false);
+      return;
+    }
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    setCanPagePrev(el.scrollLeft > 4);
+    setCanPageNext(maxScroll > 4 && el.scrollLeft < maxScroll - 4);
+  }, []);
+
+  const pageRail = useCallback((direction) => {
+    const el = railRef.current;
+    if (!el) return;
+    // Advance by roughly one viewport of cards so the next set lands in view.
+    const step = Math.max(el.clientWidth * 0.85, 280);
+    el.scrollBy({ left: direction * step, behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    if (isLoading || projects.length === 0) return;
+    const el = railRef.current;
+    if (!el) return;
+    updatePageAffordance();
+    el.addEventListener("scroll", updatePageAffordance, { passive: true });
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePageAffordance) : null;
+    ro?.observe(el);
+    window.addEventListener("resize", updatePageAffordance);
+    return () => {
+      el.removeEventListener("scroll", updatePageAffordance);
+      ro?.disconnect();
+      window.removeEventListener("resize", updatePageAffordance);
+    };
+  }, [isLoading, projects.length, updatePageAffordance]);
 
   const refetch = () => {
     queryClient.invalidateQueries({ queryKey });
@@ -226,23 +265,25 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="lykn-projects-page min-h-screen bg-transparent text-black dark:bg-[#121214] dark:text-white flex items-center">
+    <div className="lykn-projects-page h-full min-h-0 overflow-hidden bg-transparent text-black dark:bg-[#121214] dark:text-white flex flex-col">
       {/* Full-bleed within .app-content so the card-row clip lines up with
           the closed sidebar edge (`padding-left: 3.5rem` on .app-content). */}
-      <div className="w-full py-16">
-        <div className="mx-auto max-w-[88rem] px-6 sm:px-10">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-10">
-            <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] font-semibold tracking-tight text-black/90 dark:text-white/95">
+      <div className="w-full flex-1 min-h-0 flex flex-col justify-center py-10">
+        <div className="w-full px-6 sm:px-10 shrink-0">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <h1 className="lykn-projects-title font-display text-[clamp(1.75rem,3.5vw,2.5rem)] font-semibold tracking-tight text-black/90 dark:text-white/95">
               Your projects
             </h1>
-            <button
-              type="button"
-              onClick={() => setCreateOpen(true)}
-              className="shrink-0 inline-flex items-center gap-1.5 text-sm px-4 py-2.5 rounded-full bg-black text-white dark:bg-white dark:text-black shadow-sm hover:scale-[1.03] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_-8px_rgba(0,0,0,0.35)] dark:hover:shadow-[0_8px_20px_-8px_rgba(255,255,255,0.25)] active:scale-[0.98] active:translate-y-0 transition-all duration-200 ease-out"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              New project
-            </button>
+            <div className="lykn-projects-new shrink-0">
+              <button
+                type="button"
+                onClick={() => setCreateOpen(true)}
+                className="inline-flex items-center gap-1.5 text-sm px-4 py-2.5 rounded-full bg-black text-white dark:bg-white dark:text-black shadow-sm hover:scale-[1.03] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_-8px_rgba(0,0,0,0.35)] dark:hover:shadow-[0_8px_20px_-8px_rgba(255,255,255,0.25)] active:scale-[0.98] active:translate-y-0 transition-all duration-200 ease-out"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                New project
+              </button>
+            </div>
           </div>
 
           {projects.length === 0 ? (
@@ -258,102 +299,134 @@ export default function ProjectsPage() {
         </div>
 
         {projects.length > 0 ? (
-          <div
-            className="overflow-x-auto pt-8 pb-20 snap-x snap-mandatory scrollbar-hide"
-            onMouseLeave={() => setHoveredId(null)}
-          >
-            <div className="flex w-max min-w-full items-stretch justify-center gap-4 sm:gap-5 px-6 sm:px-10">
-            {projects.map((p) => {
-              const isFocus = focusProjectId === p.id;
-              const isFeatured = featuredId === p.id;
-              const isActive = p.status === "active";
-              const initials = projectInitials(p.name);
-              const subtitle = projectSubtitle(p);
-              const roleLine = projectRoleLine(p, isFocus);
+          <div className="relative min-h-0">
+            <div
+              ref={railRef}
+              className="lykn-projects-rail overflow-x-auto overflow-y-hidden pt-6 pb-4 snap-x snap-mandatory"
+              onMouseLeave={() => setHoveredId(null)}
+            >
+              <div className="flex w-max min-w-full items-stretch justify-start gap-4 sm:gap-5 px-6 sm:px-10">
+              {projects.map((p) => {
+                const isFocus = focusProjectId === p.id;
+                const isFeatured = featuredId === p.id;
+                const isActive = p.status === "active";
+                const initials = projectInitials(p.name);
+                const subtitle = projectSubtitle(p);
+                const roleLine = projectRoleLine(p, isFocus);
 
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => navigate(`/projects/${p.id}`)}
-                  onMouseEnter={() => setHoveredId(p.id)}
-                  onFocus={() => setHoveredId(p.id)}
-                  className={`group relative shrink-0 snap-center text-left flex flex-col overflow-hidden rounded-[1.75rem] w-[16.5rem] sm:w-[18rem] min-h-[26rem] sm:min-h-[27.5rem] p-7 sm:p-8 transition-[transform,box-shadow,opacity,background] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] outline-none focus-visible:ring-2 focus-visible:ring-black/20 dark:focus-visible:ring-white/25 ${
-                    isFeatured
-                      ? "scale-[1.04] z-10 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.28)]"
-                      : "scale-100 opacity-[0.92] shadow-[0_8px_24px_-16px_rgba(0,0,0,0.18)]"
-                  } ${!isActive && !isFeatured ? "opacity-70" : ""}`}
-                  style={{
-                    background: isFeatured
-                      ? isDark
-                        ? isGlassEmbed
-                          ? FEATURED_GRADIENT_GLASS
-                          : FEATURED_GRADIENT_DARK
-                        : FEATURED_GRADIENT_LIGHT
-                      : isDark
-                        ? "rgba(255,255,255,0.07)"
-                        : "#e4e4e2",
-                  }}
-                >
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => navigate(`/projects/${p.id}`)}
+                    onMouseEnter={() => setHoveredId(p.id)}
+                    onFocus={() => setHoveredId(p.id)}
+                    className={`group relative shrink-0 snap-center text-left flex flex-col overflow-hidden rounded-[1.75rem] w-[16.5rem] sm:w-[18rem] min-h-[26rem] sm:min-h-[27.5rem] p-7 sm:p-8 transition-[transform,box-shadow,opacity,background] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] outline-none focus-visible:ring-2 focus-visible:ring-black/20 dark:focus-visible:ring-white/25 ${
+                      isFeatured
+                        ? "scale-[1.04] z-10 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.28)]"
+                        : "scale-100 opacity-[0.92] shadow-[0_8px_24px_-16px_rgba(0,0,0,0.18)]"
+                    } ${!isActive && !isFeatured ? "opacity-70" : ""}`}
+                    style={{
+                      background: isFeatured
+                        ? isDark
+                          ? isGlassEmbed
+                            ? FEATURED_GRADIENT_GLASS
+                            : FEATURED_GRADIENT_DARK
+                          : FEATURED_GRADIENT_LIGHT
+                        : isDark
+                          ? "rgba(255,255,255,0.07)"
+                          : "#e4e4e2",
+                    }}
+                  >
 
-                  <div className="relative z-[1] flex flex-col h-full min-h-0">
-                    <h2
-                      className={`font-display text-[1.55rem] sm:text-[1.7rem] font-semibold leading-[1.2] tracking-tight ${
-                        isFeatured
-                          ? "text-black/90 dark:text-white"
-                          : "text-black/85 dark:text-white/90"
-                      }`}
-                    >
-                      {p.name}
-                    </h2>
-
-                    <p
-                      className={`mt-4 text-[0.875rem] leading-relaxed line-clamp-5 ${
-                        isFeatured
-                          ? "text-black/60 dark:text-white/70"
-                          : "text-black/45 dark:text-white/45"
-                      }`}
-                    >
-                      {subtitle}
-                    </p>
-
-                    <div className="mt-auto pt-8 flex items-center gap-3">
-                      <div
-                        className={`shrink-0 w-10 h-10 rounded-[0.7rem] flex items-center justify-center text-[0.75rem] font-semibold tracking-wide ${
+                    <div className="relative z-[1] flex flex-col h-full min-h-0">
+                      <h2
+                        className={`font-display text-[1.55rem] sm:text-[1.7rem] font-semibold leading-[1.2] tracking-tight ${
                           isFeatured
-                            ? "bg-black/85 text-white dark:bg-white/90 dark:text-black"
-                            : "bg-black/10 text-black/70 dark:bg-white/15 dark:text-white/80"
+                            ? "text-black/90 dark:text-white"
+                            : "text-black/85 dark:text-white/90"
                         }`}
                       >
-                        {initials}
-                      </div>
-                      <div className="min-w-0">
+                        {p.name}
+                      </h2>
+
+                      <p
+                        className={`mt-4 text-[0.875rem] leading-relaxed line-clamp-5 ${
+                          isFeatured
+                            ? "text-black/60 dark:text-white/70"
+                            : "text-black/45 dark:text-white/45"
+                        }`}
+                      >
+                        {subtitle}
+                      </p>
+
+                      <div className="mt-auto pt-8 flex items-center gap-3">
                         <div
-                          className={`text-[0.8125rem] font-semibold truncate ${
+                          className={`shrink-0 w-10 h-10 rounded-[0.7rem] flex items-center justify-center text-[0.75rem] font-semibold tracking-wide ${
                             isFeatured
-                              ? "text-black/85 dark:text-white"
-                              : "text-black/75 dark:text-white/85"
+                              ? "bg-black/85 text-white dark:bg-white/90 dark:text-black"
+                              : "bg-black/10 text-black/70 dark:bg-white/15 dark:text-white/80"
                           }`}
                         >
-                          {isFocus ? "AI focus" : isActive ? "Active" : "Paused"}
-                          {p.isShared ? " · Shared" : ""}
+                          {initials}
                         </div>
-                        <div
-                          className={`text-[0.75rem] truncate ${
-                            isFeatured
-                              ? "text-black/50 dark:text-white/55"
-                              : "text-black/40 dark:text-white/40"
-                          }`}
-                        >
-                          {roleLine}
+                        <div className="min-w-0">
+                          <div
+                            className={`text-[0.8125rem] font-semibold truncate ${
+                              isFeatured
+                                ? "text-black/85 dark:text-white"
+                                : "text-black/75 dark:text-white/85"
+                            }`}
+                          >
+                            {isFocus ? "AI focus" : isActive ? "Active" : "Paused"}
+                            {p.isShared ? " · Shared" : ""}
+                          </div>
+                          <div
+                            className={`text-[0.75rem] truncate ${
+                              isFeatured
+                                ? "text-black/50 dark:text-white/55"
+                                : "text-black/40 dark:text-white/40"
+                            }`}
+                          >
+                            {roleLine}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                </button>
-              );
-            })}
+                  </button>
+                );
+              })}
+              </div>
             </div>
+
+            {(canPagePrev || canPageNext) ? (
+              <div className="relative flex items-center justify-between px-6 sm:px-10 pt-1 pb-6 min-h-[2.75rem]">
+                {canPagePrev ? (
+                  <button
+                    type="button"
+                    aria-label="Previous projects"
+                    onClick={() => pageRail(-1)}
+                    className="flex h-11 w-11 items-center justify-center rounded-full border border-black/10 dark:border-white/15 bg-white/45 dark:bg-white/[0.08] text-black/70 dark:text-white/85 backdrop-blur-xl shadow-[0_8px_24px_-10px_rgba(0,0,0,0.35)] hover:bg-white/70 dark:hover:bg-white/[0.14] hover:scale-105 active:scale-95 transition-all duration-200"
+                  >
+                    <ChevronLeft className="w-5 h-5" strokeWidth={2} />
+                  </button>
+                ) : (
+                  <span className="w-11" aria-hidden />
+                )}
+                {canPageNext ? (
+                  <button
+                    type="button"
+                    aria-label="Next projects"
+                    onClick={() => pageRail(1)}
+                    className="flex h-11 w-11 items-center justify-center rounded-full border border-black/10 dark:border-white/15 bg-white/45 dark:bg-white/[0.08] text-black/70 dark:text-white/85 backdrop-blur-xl shadow-[0_8px_24px_-10px_rgba(0,0,0,0.35)] hover:bg-white/70 dark:hover:bg-white/[0.14] hover:scale-105 active:scale-95 transition-all duration-200"
+                  >
+                    <ChevronRight className="w-5 h-5" strokeWidth={2} />
+                  </button>
+                ) : (
+                  <span className="w-11" aria-hidden />
+                )}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -368,7 +441,7 @@ export default function ProjectsPage() {
           handleCreateOpenChange(open);
         }}
       >
-        <DialogContent className="bg-panel border-black/10 dark:border-white/10 text-black dark:text-white max-w-md rounded-2xl">
+        <DialogContent className="lykn-new-project-dialog bg-panel border-black/10 dark:border-white/15 text-black dark:text-white max-w-md rounded-2xl backdrop-blur-xl">
           <DialogHeader>
             <DialogTitle className="font-display text-lg font-semibold tracking-tight">
               New project
@@ -415,7 +488,7 @@ export default function ProjectsPage() {
                 <button
                   type="button"
                   onClick={() => setVaultPickerOpen(true)}
-                  className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-full border border-black/10 dark:border-white/10 text-black/70 dark:text-white/70 hover:border-blue-500/40 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                  className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-full border border-black/10 dark:border-white/15 bg-black/[0.03] dark:bg-white/[0.06] text-black/70 dark:text-white/70 hover:border-blue-500/40 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                 >
                   <Library className="w-3.5 h-3.5" />
                   {vaultItems.length > 0 ? "Edit selection" : "Add from vault"}
@@ -431,7 +504,7 @@ export default function ProjectsPage() {
                   {vaultItems.map((item) => (
                     <li
                       key={item.id}
-                      className="flex items-center gap-2 rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.03] px-2.5 py-2"
+                      className="flex items-center gap-2 rounded-xl border border-black/[0.06] dark:border-white/[0.1] bg-black/[0.03] dark:bg-white/[0.06] px-2.5 py-2"
                     >
                       <Library className="w-3.5 h-3.5 shrink-0 text-black/35 dark:text-white/35" />
                       <span className="flex-1 min-w-0 text-xs text-black/75 dark:text-white/75 truncate">
@@ -455,14 +528,14 @@ export default function ProjectsPage() {
               <button
                 type="button"
                 onClick={() => handleCreateOpenChange(false)}
-                className="text-sm px-3.5 py-2 rounded-full text-black/55 dark:text-white/55 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors"
+                className="text-sm px-3.5 py-2 rounded-full text-black/55 dark:text-white/55 hover:bg-black/[0.05] dark:hover:bg-white/[0.08] transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={!newName.trim() || creating}
-                className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-full bg-blue-500 text-white hover:bg-blue-500/90 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-full bg-black text-white dark:bg-white dark:text-black hover:bg-black/90 dark:hover:bg-white/90 disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" />
                 {creating ? "Creating…" : "Create project"}

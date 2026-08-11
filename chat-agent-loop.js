@@ -149,6 +149,17 @@ function artifactShippedFromResults(results) {
 // doomed attempt costs ~40s of user-visible waiting), then bail with
 // `forced_tool_incomplete` so the server's provider fallback takes over.
 const MAX_TRUNCATED_STREAM_RETRIES = 1;
+// Deep-research reports (markdown + stock/chart/sheet fences) often hit a
+// provider's per-call output ceiling mid-embed. Continue the same turn a
+// few times so the report finishes with closed fences + Sources instead of
+// leaving the client with raw truncated embed JSON.
+const MAX_RESEARCH_CONTINUES = 3;
+const RESEARCH_CONTINUE_PROMPT =
+  '[Continue the research report from exactly where you left off. ' +
+  'Do not restart or repeat completed sections. ' +
+  'If a ```stock / ```chart / ```sheet fence is still open, close it with valid content and ``` first. ' +
+  'Then finish remaining findings and end with the Sources section. ' +
+  'Never leave an open code fence.]';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -157,6 +168,53 @@ const MAX_TRUNCATED_STREAM_RETRIES = 1;
 function safeJsonParse(s) {
   if (!s) return {};
   try { return JSON.parse(s); } catch { return {}; }
+}
+
+/** True when a research report looks truncated mid-embed or missing Sources. */
+export function researchReportLooksIncomplete(text) {
+  const s = String(text || '');
+  if (!s.trim()) return false;
+  // Unclosed markdown fence (odd number of ``` markers).
+  const ticks = s.match(/```/g);
+  if (ticks && ticks.length % 2 !== 0) return true;
+  // Substantial report body without a Sources section yet.
+  if (
+    s.length > 1200 &&
+    !/(?:^|\n)#{1,3}\s*sources\b/i.test(s) &&
+    !/(?:^|\n)\*\*sources\*\*/i.test(s)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isLengthStopReason(reason) {
+  const r = String(reason || '').toLowerCase();
+  return (
+    r === 'length' ||
+    r === 'max_tokens' ||
+    r === 'max_token' ||
+    r === 'model_length'
+  );
+}
+
+/**
+ * After a text-only hop, decide whether to continue a deep-research report.
+ * Returns true when the caller should push a continue user turn and keep looping.
+ */
+function shouldContinueIncompleteResearch({
+  continueIncompleteResearch,
+  researchContinues,
+  accumulatedText,
+  pendingToolCalls,
+}) {
+  if (!continueIncompleteResearch) return false;
+  if (researchContinues >= MAX_RESEARCH_CONTINUES) return false;
+  if (pendingToolCalls) return false;
+  if (!researchReportLooksIncomplete(accumulatedText)) return false;
+  // Incomplete report (open fence / missing Sources) — keep going whether the
+  // provider reported length or a quiet stop mid-fence.
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -275,10 +333,28 @@ const STRIP_OPENERS = [
   /https?:\/\/[a-z0-9-]+\.supabase\.co/i,
 ];
 
+// `local_pull_file` uploads land under a `/local-pull/` storage path and are
+// the ONE kind of storage URL that is SUPPOSED to appear in reply text — the
+// local tool executor explicitly tells the model to embed it (e.g.
+// `![photo](signed-url)`). Every other *.supabase.co URL is still a leak.
+const LOCAL_PULL_ALLOWED_RE =
+  /!?\[[^\]]*\]\(\s*https?:\/\/[a-z0-9-]+\.supabase\.co\/[^)]*\/local-pull\/[^)]*\)|https?:\/\/[a-z0-9-]+\.supabase\.co\/[^\s)>\]]*\/local-pull\/[^\s)>\]]*/gi;
+
+// Same-length mask (private-use char run) so indices in the masked copy map
+// 1:1 onto the original — used by the opener scan, never emitted.
+function maskAllowedUrlsForScan(text) {
+  return text.replace(LOCAL_PULL_ALLOWED_RE, (m) => '\uE000'.repeat(m.length));
+}
+
 function applyStripPatterns(text) {
-  let out = text;
+  // Tokenize allowed local-pull embeds out of the way, strip, then restore.
+  const kept = [];
+  let out = text.replace(LOCAL_PULL_ALLOWED_RE, (m) => {
+    kept.push(m);
+    return `\uE000${kept.length - 1}\uE001`;
+  });
   for (const re of STRIP_PATTERNS) out = out.replace(re, '');
-  return out;
+  return out.replace(/\uE000(\d+)\uE001/g, (_m, i) => kept[Number(i)] ?? '');
 }
 
 /** Strip tool-call syntax from a complete (non-streaming) model response. */
@@ -300,9 +376,14 @@ export function makeToolSyntaxStripper(onTextChunk, MAX_HOLD = 16384) {
   // across chunk boundaries ("Ly" + "kn" → "LYKN", not "Ly" then "kn").
   let brandHold = '';
   const findEarliestOpener = (text) => {
+    // Scan a masked copy: a COMPLETE allowed local-pull embed must not trip
+    // the Supabase-URL openers (it would hold the tail forever and the embed
+    // would never flush). Incomplete embeds don't match the mask, so a
+    // half-streamed URL is still held back until its closing token arrives.
+    const scan = maskAllowedUrlsForScan(text);
     let earliestOpener = -1;
     for (const re of STRIP_OPENERS) {
-      const m = re.exec(text);
+      const m = re.exec(scan);
       if (m && (earliestOpener < 0 || m.index < earliestOpener)) {
         earliestOpener = m.index;
       }
@@ -582,9 +663,24 @@ async function runToolBatch(calls, ctx, record, allowedToolNames, onActivity, ma
   const keepAlive = setInterval(() => {
     try { onActivity?.(); } catch { /* swallow */ }
   }, 8000);
+  // Local Mode tools (file / terminal) never run on the server. When the
+  // turn enabled Local Mode, the ctx carries an awaiter that ships the call
+  // to the desktop client, waits for it to run the tool in the Electron main
+  // process (with any user approval), and resolves with the result.
+  const localToolNames = Array.isArray(ctx?.localToolNames) ? ctx.localToolNames : null;
+  const awaitLocalTool =
+    typeof ctx?.awaitLocalTool === 'function' ? ctx.awaitLocalTool : null;
+  const isLocalCall = (name) =>
+    !!localToolNames && !!awaitLocalTool && localToolNames.includes(name);
+
   let executed;
   try {
     executed = await Promise.all(capped.map(async (call) => {
+      if (isLocalCall(call.name)) {
+        const { payload, isError, latencyMs } = await awaitLocalTool(call, record, onActivity);
+        try { onActivity?.(); } catch { /* swallow */ }
+        return { id: call.id, name: call.name, args: call.args, payload, isError, latencyMs };
+      }
       record({ id: call.id, name: call.name, args: call.args, status: 'running' });
       const { payload, isError, latencyMs } = await runChatTool(call.name, call.args, ctx, toolOpts);
       record({
@@ -764,6 +860,7 @@ async function runOpenAiCompatLoop({
   forceToolName,                // when set, force this tool on the first hop
   maxHops,
   codingMode,
+  continueIncompleteResearch = false,
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: `${providerLabel} API key missing` };
@@ -776,6 +873,9 @@ async function runOpenAiCompatLoop({
   const editingArtifact = isEditArtifactTurn(ctx);
   const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
   const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
+  const effectiveHopLimit = continueIncompleteResearch
+    ? hopLimit + MAX_RESEARCH_CONTINUES
+    : hopLimit;
 
   const messages = [];
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
@@ -797,8 +897,10 @@ async function runOpenAiCompatLoop({
   // we don't emit 5 more "edited versions" as separate cards in one prompt.
   let artifactDelivered = false;
   let truncatedRetries = 0;
+  let researchContinues = 0;
+  let accumulatedAssistantText = '';
 
-  for (let hop = 0; hop < hopLimit; hop++) {
+  for (let hop = 0; hop < effectiveHopLimit; hop++) {
     if (signal?.aborted) {
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
@@ -811,7 +913,7 @@ async function runOpenAiCompatLoop({
       // to 'none' so the model must write its final reply; otherwise
       // subsequent hops go back to 'auto'.
       const forceThisHop = hop === 0 && forceToolName;
-      const toolsLocked = forcedToolDone || artifactDelivered;
+      const toolsLocked = forcedToolDone || artifactDelivered || researchContinues > 0;
       const body = {
         model,
         messages,
@@ -854,6 +956,7 @@ async function runOpenAiCompatLoop({
 
     const pendingCalls = new Map(); // index → { id, name, argsBuf }
     let finishReason = '';
+    let hopText = '';
     const narrate = makeToolArgNarrator(onStatus);
 
     try {
@@ -864,6 +967,7 @@ async function runOpenAiCompatLoop({
         const delta = choice.delta || {};
         if (typeof delta.content === 'string' && delta.content) {
           hadText = true;
+          hopText += delta.content;
           stripper.ingest(delta.content);
         }
         if (Array.isArray(delta.tool_calls)) {
@@ -883,6 +987,8 @@ async function runOpenAiCompatLoop({
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
     }
+
+    if (hopText) accumulatedAssistantText += hopText;
 
     // Truncated stream: the provider closed the connection without ever
     // sending finish_reason. With a forced tool still pending that means
@@ -916,7 +1022,31 @@ async function runOpenAiCompatLoop({
     // every forced call (image gen came back "tools=0, hadText=false").
     if (pendingCalls.size === 0) {
       stripper.flush();
-      return { ok: true, hadText, toolCalls: allToolCalls, reason: 'stop', errorMessage: null };
+      if (
+        shouldContinueIncompleteResearch({
+          continueIncompleteResearch,
+          researchContinues,
+          accumulatedText: accumulatedAssistantText,
+          pendingToolCalls: false,
+        })
+      ) {
+        researchContinues++;
+        console.warn(
+          `[chat-agent-loop] ${providerLabel} research report incomplete ` +
+            `(finish=${finishReason || 'none'}, continues=${researchContinues}/${MAX_RESEARCH_CONTINUES}) — continuing`,
+        );
+        try { onStatus?.('Finishing the report…'); } catch { /* swallow */ }
+        if (hopText) messages.push({ role: 'assistant', content: hopText });
+        messages.push({ role: 'user', content: RESEARCH_CONTINUE_PROMPT });
+        continue;
+      }
+      return {
+        ok: true,
+        hadText,
+        toolCalls: allToolCalls,
+        reason: isLengthStopReason(finishReason) ? 'length' : 'stop',
+        errorMessage: null,
+      };
     }
 
     // Build the assistant turn EXACTLY as OpenAI / Grok expect it.
@@ -936,7 +1066,14 @@ async function runOpenAiCompatLoop({
 
     messages.push({ role: 'assistant', content: null, tool_calls: assistantCalls });
 
-    try { onStatus?.('Running tools…'); } catch { /* swallow */ }
+    try {
+      const firstName = assistantCalls[0]?.function?.name || '';
+      onStatus?.(
+        ARG_STREAM_START_LINES[firstName]
+          ? (ARG_PROGRESS_VERBS[firstName] ? `${ARG_PROGRESS_VERBS[firstName]}…` : ARG_STREAM_START_LINES[firstName])
+          : 'Running tools…',
+      );
+    } catch { /* swallow */ }
 
     const resolved = assistantCalls.map((c) => ({
       id: c.id,
@@ -970,7 +1107,7 @@ async function runOpenAiCompatLoop({
     hadText,
     toolCalls: allToolCalls,
     reason: 'hop_cap',
-    errorMessage: `Tool loop exceeded ${hopLimit} hops`,
+    errorMessage: `Tool loop exceeded ${effectiveHopLimit} hops`,
   };
 }
 
@@ -1011,6 +1148,7 @@ async function runAnthropicLoop({
   forceToolName,                // when set, force this tool on the first hop
   maxHops,
   codingMode,
+  continueIncompleteResearch = false,
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'ANTHROPIC_API_KEY missing' };
@@ -1022,6 +1160,9 @@ async function runAnthropicLoop({
   const editingArtifact = isEditArtifactTurn(ctx);
   const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
   const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
+  const effectiveHopLimit = continueIncompleteResearch
+    ? hopLimit + MAX_RESEARCH_CONTINUES
+    : hopLimit;
 
   // Anthropic messages — `system` is top-level, NOT a message turn. Build
   // the user-content blob (string or array of text/image blocks).
@@ -1038,8 +1179,10 @@ async function runAnthropicLoop({
   // model rebuild the (potentially huge) artifact again.
   let forcedToolDone = false;
   let artifactDelivered = false;
+  let researchContinues = 0;
+  let accumulatedAssistantText = '';
 
-  for (let hop = 0; hop < hopLimit; hop++) {
+  for (let hop = 0; hop < effectiveHopLimit; hop++) {
     if (signal?.aborted) {
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
@@ -1048,7 +1191,7 @@ async function runAnthropicLoop({
     let res;
     try {
       const forceThisHop = hop === 0 && forceToolName;
-      const toolsLocked = forcedToolDone || artifactDelivered;
+      const toolsLocked = forcedToolDone || artifactDelivered || researchContinues > 0;
       const body = {
         model,
         messages,
@@ -1162,25 +1305,62 @@ async function runAnthropicLoop({
     // the input JSON for each tool_use block.
     const assistantContent = [];
     const toolCallsThisHop = [];
+    let hopText = '';
     for (const blk of contentBlocks) {
       if (!blk) continue;
       if (blk.type === 'text') {
-        if (blk.text) assistantContent.push({ type: 'text', text: blk.text });
+        if (blk.text) {
+          hopText += blk.text;
+          assistantContent.push({ type: 'text', text: blk.text });
+        }
       } else if (blk.type === 'tool_use') {
         const input = blk._argsBuf ? safeJsonParse(blk._argsBuf) : (blk.input || {});
         assistantContent.push({ type: 'tool_use', id: blk.id, name: blk.name, input });
         toolCallsThisHop.push({ id: blk.id, name: blk.name, args: input });
       }
     }
+    if (hopText) accumulatedAssistantText += hopText;
 
     if (stopReason !== 'tool_use' || toolCallsThisHop.length === 0) {
       stripper.flush();
-      return { ok: true, hadText, toolCalls: allToolCalls, reason: 'stop', errorMessage: null };
+      if (
+        shouldContinueIncompleteResearch({
+          continueIncompleteResearch,
+          researchContinues,
+          accumulatedText: accumulatedAssistantText,
+          pendingToolCalls: false,
+        })
+      ) {
+        researchContinues++;
+        console.warn(
+          `[chat-agent-loop] anthropic research report incomplete ` +
+            `(stop=${stopReason || 'none'}, continues=${researchContinues}/${MAX_RESEARCH_CONTINUES}) — continuing`,
+        );
+        try { onStatus?.('Finishing the report…'); } catch { /* swallow */ }
+        if (assistantContent.length) messages.push({ role: 'assistant', content: assistantContent });
+        else if (hopText) messages.push({ role: 'assistant', content: hopText });
+        messages.push({ role: 'user', content: RESEARCH_CONTINUE_PROMPT });
+        continue;
+      }
+      return {
+        ok: true,
+        hadText,
+        toolCalls: allToolCalls,
+        reason: isLengthStopReason(stopReason) ? 'length' : 'stop',
+        errorMessage: null,
+      };
     }
 
     messages.push({ role: 'assistant', content: assistantContent });
 
-    try { onStatus?.('Running tools…'); } catch { /* swallow */ }
+    try {
+      const firstName = toolCallsThisHop[0]?.name || '';
+      onStatus?.(
+        ARG_STREAM_START_LINES[firstName]
+          ? (ARG_PROGRESS_VERBS[firstName] ? `${ARG_PROGRESS_VERBS[firstName]}…` : ARG_STREAM_START_LINES[firstName])
+          : 'Running tools…',
+      );
+    } catch { /* swallow */ }
 
     const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames, onActivity, toolCallsPerHop);
     for (const r of results) {
@@ -1210,7 +1390,7 @@ async function runAnthropicLoop({
     hadText,
     toolCalls: allToolCalls,
     reason: 'hop_cap',
-    errorMessage: `Tool loop exceeded ${hopLimit} hops`,
+    errorMessage: `Tool loop exceeded ${effectiveHopLimit} hops`,
   };
 }
 
@@ -1254,6 +1434,7 @@ async function runGeminiLoop({
   forceToolName,                // when set, force this tool on the first hop
   maxHops,
   codingMode,
+  continueIncompleteResearch = false,
 }) {
   if (!apiKey) {
     return { ok: false, hadText: false, toolCalls: [], reason: 'error', errorMessage: 'GOOGLE_API_KEY missing' };
@@ -1265,6 +1446,9 @@ async function runGeminiLoop({
   const editingArtifact = isEditArtifactTurn(ctx);
   const hopLimit = resolveMaxHops({ maxHops, codingMode, editingArtifact });
   const toolCallsPerHop = resolveMaxToolCallsPerHop({ codingMode, editingArtifact });
+  const effectiveHopLimit = continueIncompleteResearch
+    ? hopLimit + MAX_RESEARCH_CONTINUES
+    : hopLimit;
 
   // Build the contents array. Gemini uses role 'model' (not 'assistant')
   // and wraps text in { parts: [{ text }] }.
@@ -1290,8 +1474,10 @@ async function runGeminiLoop({
   // letting the model rebuild the (potentially huge) artifact again.
   let forcedToolDone = false;
   let artifactDelivered = false;
+  let researchContinues = 0;
+  let accumulatedAssistantText = '';
 
-  for (let hop = 0; hop < hopLimit; hop++) {
+  for (let hop = 0; hop < effectiveHopLimit; hop++) {
     if (signal?.aborted) {
       stripper.flush();
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: 'aborted' };
@@ -1300,7 +1486,7 @@ async function runGeminiLoop({
     let res;
     try {
       const forceThisHop = hop === 0 && forceToolName;
-      const toolsLocked = forcedToolDone || artifactDelivered;
+      const toolsLocked = forcedToolDone || artifactDelivered || researchContinues > 0;
       const body = {
         contents,
         tools,
@@ -1346,11 +1532,14 @@ async function runGeminiLoop({
     // Gemini delivers functionCall args whole (no delta stream), so this
     // only fires the opening "Designing…" beat when the call lands.
     const narrate = makeToolArgNarrator(onStatus);
+    let finishReason = '';
+    let hopText = '';
 
     try {
       await readGeminiSseStream(res.body, (parsed) => {
         const cand = parsed?.candidates?.[0];
         if (!cand) return;
+        if (cand.finishReason) finishReason = cand.finishReason;
         const parts = cand?.content?.parts;
         if (!Array.isArray(parts)) return;
         for (const part of parts) {
@@ -1358,6 +1547,7 @@ async function runGeminiLoop({
           if (typeof part?.text === 'string') {
             if (part.text) {
               hadText = true;
+              hopText += part.text;
               stripper.ingest(part.text);
               assistantParts.push({ text: part.text });
             }
@@ -1391,16 +1581,49 @@ async function runGeminiLoop({
       return { ok: false, hadText, toolCalls: allToolCalls, reason: 'error', errorMessage: err?.message || String(err) };
     }
 
+    if (hopText) accumulatedAssistantText += hopText;
+
     if (toolCallsThisHop.length === 0) {
       stripper.flush();
-      return { ok: true, hadText, toolCalls: allToolCalls, reason: 'stop', errorMessage: null };
+      if (
+        shouldContinueIncompleteResearch({
+          continueIncompleteResearch,
+          researchContinues,
+          accumulatedText: accumulatedAssistantText,
+          pendingToolCalls: false,
+        })
+      ) {
+        researchContinues++;
+        console.warn(
+          `[chat-agent-loop] gemini research report incomplete ` +
+            `(finish=${finishReason || 'none'}, continues=${researchContinues}/${MAX_RESEARCH_CONTINUES}) — continuing`,
+        );
+        try { onStatus?.('Finishing the report…'); } catch { /* swallow */ }
+        if (assistantParts.length) contents.push({ role: 'model', parts: assistantParts });
+        contents.push({ role: 'user', parts: [{ text: RESEARCH_CONTINUE_PROMPT }] });
+        continue;
+      }
+      return {
+        ok: true,
+        hadText,
+        toolCalls: allToolCalls,
+        reason: isLengthStopReason(finishReason) ? 'length' : 'stop',
+        errorMessage: null,
+      };
     }
 
     // Push the assistant turn EXACTLY as Gemini produced it (text +
     // functionCall parts, in order).
     contents.push({ role: 'model', parts: assistantParts });
 
-    try { onStatus?.('Running tools…'); } catch { /* swallow */ }
+    try {
+      const firstName = toolCallsThisHop[0]?.name || '';
+      onStatus?.(
+        ARG_STREAM_START_LINES[firstName]
+          ? (ARG_PROGRESS_VERBS[firstName] ? `${ARG_PROGRESS_VERBS[firstName]}…` : ARG_STREAM_START_LINES[firstName])
+          : 'Running tools…',
+      );
+    } catch { /* swallow */ }
 
     const results = await runToolBatch(toolCallsThisHop, ctx, record, chatToolNames, onActivity, toolCallsPerHop);
     for (const r of results) {
@@ -1435,7 +1658,7 @@ async function runGeminiLoop({
     hadText,
     toolCalls: allToolCalls,
     reason: 'hop_cap',
-    errorMessage: `Tool loop exceeded ${hopLimit} hops`,
+    errorMessage: `Tool loop exceeded ${effectiveHopLimit} hops`,
   };
 }
 

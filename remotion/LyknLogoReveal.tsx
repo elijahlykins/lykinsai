@@ -89,6 +89,10 @@ export const LyknLogoReveal: React.FC<LyknLogoRevealProps> = ({
     extrapolateRight: "clamp",
   });
 
+  // "transparent" renders the lockup alone (alpha video for the desktop
+  // welcome splash) — no studio backdrop.
+  const transparent = background === "transparent";
+
   return (
     <AbsoluteFill
       style={{
@@ -97,7 +101,7 @@ export const LyknLogoReveal: React.FC<LyknLogoRevealProps> = ({
         alignItems: "center",
       }}
     >
-      <SceneBackground />
+      {transparent ? null : <SceneBackground />}
       <div
         style={{
           display: "flex",

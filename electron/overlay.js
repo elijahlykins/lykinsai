@@ -40,7 +40,7 @@ const SPINNER_PATH =
 function thinkingHTML(status) {
   return (
     '<div class="thinking">' +
-    '<svg class="lykn-outline-spinner" width="20" height="20" viewBox="0 0 204.29 204.29" ' +
+    '<svg class="lykn-outline-spinner" width="24" height="24" viewBox="0 0 204.29 204.29" ' +
     'fill="none" role="img" aria-label="Loading">' +
     '<path d="' + SPINNER_PATH + '" pathLength="1" fill="currentColor" stroke="currentColor" ' +
     'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />' +
@@ -48,6 +48,111 @@ function thinkingHTML(status) {
     '<span class="thinking-text"></span>' +
     "</div>"
   );
+}
+
+// Client-side status rotation (mirrors src/hooks/useThinkingStatus.js) so Build
+// mode doesn't freeze on a bare "Building…" the way Research narrates steps.
+const THINK_PHASES = [
+  { text: "Thinking…", duration: 1600 },
+  { text: "Reading what you said…", duration: 1800 },
+  { text: "Pulling together context…", duration: 2000 },
+  { text: "Working through it…", duration: 2200 },
+  { text: "Reasoning it out…", duration: 2400 },
+  { text: "Connecting the pieces…", duration: 2600 },
+  { text: "Putting it together…", duration: 2800 },
+  { text: "Almost there…", duration: 3200 },
+  { text: "Polishing the details…", duration: 6000 },
+];
+const BUILD_PHASES = [
+  { text: "Designing the build…", duration: 1800 },
+  { text: "Sketching the layout…", duration: 2000 },
+  { text: "Writing the code…", duration: 2200 },
+  { text: "Wiring the interactions…", duration: 2400 },
+  { text: "Assembling the pieces…", duration: 2600 },
+  { text: "Polishing the details…", duration: 3000 },
+  { text: "Almost ready…", duration: 4000 },
+  { text: "Putting on the finishing touches…", duration: 6000 },
+];
+const GENERIC_THINK_RE =
+  /^(thinking|working(?:\son\sit)?|loading|please\swait|one\smoment|responding)[\s.…]*$/i;
+const GENERIC_BUILD_RE =
+  /^(building(?:\sthe\s(?:app|page|artifact))?|running\stools|designing\sthe\sbuild|sketching\sthe\slayout|writing\sthe\scode|wiring\sthe\sinteractions|assembling\sthe\spieces|drafting\sthe\sdocument|composing\sthe\svideo|laying\sout\sthe\sspreadsheet|almost\sready|putting\son\sthe\sfinishing\stouches)[\s.…]*$/i;
+
+let statusRotateTimer = null;
+let statusRotateIndex = 0;
+let statusRotateLane = "think";
+let statusRotateActive = false;
+
+function stopStatusRotation(opts) {
+  statusRotateActive = false;
+  if (statusRotateTimer) {
+    clearTimeout(statusRotateTimer);
+    statusRotateTimer = null;
+  }
+  statusRotateIndex = 0;
+  if (!opts || opts.resetLane !== false) {
+    statusRotateLane = "think";
+  }
+}
+
+function applyRotatedStatus(text) {
+  lastThinkingStatus = text;
+  if (!currentHasText) {
+    const el = currentAnswerEl && currentAnswerEl.querySelector(".thinking-text");
+    if (el) el.textContent = text;
+  } else if (answerStillWorking) {
+    ensureBuildingUnder(text);
+  }
+}
+
+function tickStatusRotation() {
+  if (!statusRotateActive || !answerStillWorking) {
+    stopStatusRotation({ resetLane: false });
+    return;
+  }
+  const phases = statusRotateLane === "build" ? BUILD_PHASES : THINK_PHASES;
+  if (statusRotateIndex >= phases.length - 1) return;
+  statusRotateTimer = setTimeout(() => {
+    statusRotateIndex = Math.min(statusRotateIndex + 1, phases.length - 1);
+    applyRotatedStatus(phases[statusRotateIndex].text);
+    tickStatusRotation();
+  }, phases[statusRotateIndex].duration);
+}
+
+function startStatusRotation(lane) {
+  const nextLane =
+    lane === "build" || statusRotateLane === "build" ? "build" : "think";
+  if (statusRotateActive && statusRotateLane === nextLane) return;
+  stopStatusRotation({ resetLane: false });
+  statusRotateActive = true;
+  statusRotateLane = nextLane;
+  statusRotateIndex = 0;
+  const phases = nextLane === "build" ? BUILD_PHASES : THINK_PHASES;
+  applyRotatedStatus(phases[0].text);
+  tickStatusRotation();
+}
+
+function maybeRotateFromStatus(text) {
+  const t = String(text || "").trim();
+  if (!t) return;
+  if (
+    GENERIC_BUILD_RE.test(t) ||
+    /^(building|designing|drafting|composing|writing\sthe|laying\sout)/i.test(t)
+  ) {
+    if (GENERIC_BUILD_RE.test(t)) {
+      startStatusRotation("build");
+    } else {
+      // Detail-rich build line — show it, remember the lane, pause rotation.
+      stopStatusRotation({ resetLane: false });
+      statusRotateLane = "build";
+    }
+    return;
+  }
+  if (GENERIC_THINK_RE.test(t)) {
+    startStatusRotation(statusRotateLane === "build" ? "build" : "think");
+    return;
+  }
+  stopStatusRotation({ resetLane: false });
 }
 
 // ── Minimal, safe Markdown → HTML for answers ──────────────────────────────
@@ -693,7 +798,12 @@ window.__lyknPanelCmd = (name, arg) => {
       break;
     case "url":
       try {
-        window.lyknOverlay.openUrl(String(arg || ""));
+        const raw = arg;
+        if (raw && typeof raw === "object") {
+          window.lyknOverlay.openUrl(String(raw.url || ""), raw.title || undefined);
+        } else {
+          window.lyknOverlay.openUrl(String(raw || ""));
+        }
       } catch (_) {}
       break;
     case "ask":
@@ -1008,6 +1118,7 @@ function sourceCard(link) {
   // The detached panel card renders this markup via innerHTML snapshots, so
   // it needs the URL as data (its click delegation can't see this listener).
   a.dataset.url = link.url;
+  if (link.title) a.dataset.title = link.title;
 
   const fav = document.createElement("span");
   fav.className = "suggest-fav";
@@ -1037,7 +1148,9 @@ function sourceCard(link) {
   txt.append(title, dom);
 
   a.append(fav, txt);
-  a.addEventListener("click", () => window.lyknOverlay.openUrl(link.url));
+  a.addEventListener("click", () =>
+    window.lyknOverlay.openUrl(link.url, link.title || host || undefined),
+  );
   return a;
 }
 
@@ -1195,6 +1308,7 @@ function setBusy(on) {
 // question, and return its answer element to stream into.
 function startTurn(question) {
   // A new question is pending — reset sources side data but keep live watch panel open.
+  stopStatusRotation();
   currentPageSource = null;
   resetSideForNewTurn();
   threadEl.querySelectorAll(".chat").forEach((c) => c.classList.add("collapsed"));
@@ -1202,9 +1316,10 @@ function startTurn(question) {
   const item = document.createElement("div");
   item.className = "chat";
 
-  const q = document.createElement("button");
+  const q = document.createElement("div");
   q.className = "chat-q";
-  q.type = "button";
+  q.setAttribute("role", "button");
+  q.tabIndex = 0;
   q.innerHTML = CHEVRON_SVG;
   const qt = document.createElement("span");
   qt.className = "q-text";
@@ -1244,9 +1359,10 @@ function renderHistoricTurn(question, answer, collapsed) {
   const item = document.createElement("div");
   item.className = "chat" + (collapsed ? " collapsed" : "");
 
-  const q = document.createElement("button");
+  const q = document.createElement("div");
   q.className = "chat-q";
-  q.type = "button";
+  q.setAttribute("role", "button");
+  q.tabIndex = 0;
   q.innerHTML = CHEVRON_SVG;
   const qt = document.createElement("span");
   qt.className = "q-text";
@@ -1398,6 +1514,7 @@ function ensureBuildingUnder(status) {
 }
 
 function clearBuildingUnder() {
+  stopStatusRotation();
   const wrap = currentAnswerEl && currentAnswerEl.querySelector(".building-under");
   if (wrap) wrap.remove();
 }
@@ -1408,7 +1525,14 @@ function clearBuildingUnder() {
 // user can see LYKN is still building.
 function setThinkingStatus(text) {
   if (!currentAnswerEl) return;
-  lastThinkingStatus = text || "Thinking…";
+  const next = text || "Thinking…";
+  lastThinkingStatus = next;
+  maybeRotateFromStatus(next);
+  // If rotation claimed this status, it already painted via applyRotatedStatus.
+  if (statusRotateActive && (GENERIC_BUILD_RE.test(next) || GENERIC_THINK_RE.test(next))) {
+    threadEl.scrollTop = threadEl.scrollHeight;
+    return;
+  }
   if (!currentHasText) {
     const el = currentAnswerEl.querySelector(".thinking-text");
     if (el) el.textContent = lastThinkingStatus;
@@ -1503,8 +1627,21 @@ async function resolveAgentChoiceClick(choiceId, buttonId, rowEl) {
   }
   setBusy(true);
   setThinkingStatus(
-    buttonId === "use-artifact" ? "Building custom artifact…" : "Stopping…",
+    buttonId === "use-artifact"
+      ? "Building custom artifact…"
+      : buttonId === "send"
+        ? "Sending…"
+        : buttonId === "approve"
+          ? "Continuing…"
+          : buttonId === "decline"
+            ? "Skipping that step…"
+            : "Stopping…",
   );
+  // The send run streams progress into the current turn while we await it.
+  if (buttonId === "send") answerStillWorking = true;
+  // Local Mode approval: the paused local task resumes (or safely skips the
+  // step) and keeps streaming into this same turn.
+  if (buttonId === "approve" || buttonId === "decline") answerStillWorking = true;
   try {
     const res = await window.lyknOverlay.agentChoiceResolve(
       agentId,
@@ -1537,6 +1674,14 @@ async function resolveAgentChoiceClick(choiceId, buttonId, rowEl) {
     }
     // use-artifact starts a build — stream handlers finish the turn.
     if (res?.ok && buttonId === "use-artifact" && !res?.stopped) {
+      setBusy(true);
+      answerStillWorking = true;
+      reportHeight();
+      return;
+    }
+    // Local Mode approval resolved — the paused task is still running; its
+    // delta/done events finish the turn.
+    if (res?.ok && (buttonId === "approve" || buttonId === "decline")) {
       setBusy(true);
       answerStillWorking = true;
       reportHeight();
@@ -1969,29 +2114,53 @@ function ensureAnswerChrome(answerEl) {
   return body;
 }
 
+/** Strip Glass UI chrome and map display-only markdown nodes to semantic tags. */
+function htmlForClipboardFromBody(body) {
+  if (!body) return "";
+  try {
+    const clone = body.cloneNode(true);
+    clone
+      .querySelectorAll(
+        "button, iframe, script, style, .md-artifact-actions, .md-artifact-code, .md-step-chevron, .md-step-kind, .md-vault-open",
+      )
+      .forEach((n) => n.remove());
+    clone.querySelectorAll(".md-h").forEach((el) => {
+      const h = document.createElement("h2");
+      h.innerHTML = el.innerHTML;
+      el.replaceWith(h);
+    });
+    return clone.innerHTML || "";
+  } catch (_) {
+    return String(body.innerHTML || "");
+  }
+}
+
 async function copyAnswerText(btn) {
   const answerEl = btn?.closest?.(".chat-a");
   if (!answerEl) return;
-  const raw = String(answerEl.dataset.raw || "").trim();
   const body = answerEl.querySelector(":scope > .chat-a-body");
-  const text = raw || String(body?.innerText || body?.textContent || "").trim();
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch (_) {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.left = "-9999px";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-    } catch (_) {
-      return;
+  // Prefer rendered body so paste targets get real headings/bold, not ## / **.
+  // Fall back to converting dataset.raw markdown when the body isn't ready.
+  let plain = String(body?.innerText || body?.textContent || "").trim();
+  let html = "";
+  const fromBody = htmlForClipboardFromBody(body);
+  if (fromBody.trim()) {
+    html = wrapClipboardHtml(fromBody);
+  } else {
+    const raw = String(answerEl.dataset.raw || "").trim();
+    if (raw) {
+      const rendered = renderMarkdown(raw);
+      const tmp = document.createElement("div");
+      tmp.innerHTML = rendered;
+      html = wrapClipboardHtml(htmlForClipboardFromBody(tmp) || rendered);
+      if (!plain) {
+        plain = String(tmp.innerText || tmp.textContent || "").trim() || raw;
+      }
     }
   }
+  if (!plain && !html) return;
+  const ok = await writeRichClipboard(plain, html);
+  if (!ok) return;
   btn.classList.add("copied");
   btn.innerHTML = CHECK_BTN_SVG;
   btn.title = "Copied";
@@ -2005,35 +2174,106 @@ function selectionPlainText() {
   return String(sel.toString());
 }
 
-function blackHtmlFromPlain(text) {
-  const escaped = escapeHtml(text).replace(/\r\n|\r|\n/g, "<br>");
+/** Clone the current selection as HTML so bold/headings survive paste. */
+function selectionRichHtml() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
+  try {
+    const container = document.createElement("div");
+    for (let i = 0; i < sel.rangeCount; i++) {
+      container.appendChild(sel.getRangeAt(i).cloneContents());
+    }
+    container
+      .querySelectorAll(
+        "button, iframe, script, style, .md-artifact-actions, .md-artifact-code, .md-step-chevron, .md-step-kind, .md-vault-open",
+      )
+      .forEach((n) => n.remove());
+    container.querySelectorAll(".md-h").forEach((el) => {
+      const h = document.createElement("h2");
+      h.innerHTML = el.innerHTML;
+      el.replaceWith(h);
+    });
+    return container.innerHTML || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function wrapClipboardHtml(fragmentHtml) {
+  const inner = String(fragmentHtml || "").trim();
+  if (!inner) return "";
   return (
     `<meta charset="utf-8">` +
-    `<div style="color:#000000; -webkit-text-fill-color:#000000;">${escaped}</div>`
+    `<div style="color:#000000; -webkit-text-fill-color:#000000;">${inner}</div>`
   );
 }
 
-function writeBlackTransferData(transfer, text) {
+function blackHtmlFromPlain(text) {
+  const escaped = escapeHtml(text).replace(/\r\n|\r|\n/g, "<br>");
+  return wrapClipboardHtml(escaped);
+}
+
+async function writeRichClipboard(plain, html) {
+  const text = String(plain || "").trim();
+  const rich = String(html || "").trim();
+  if (!text && !rich) return false;
+  if (rich && typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": new Blob([text || ""], { type: "text/plain" }),
+          "text/html": new Blob([rich], { type: "text/html" }),
+        }),
+      ]);
+      return true;
+    } catch (_) {
+      /* fall through */
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+function writeBlackTransferData(transfer, text, htmlFragment) {
   if (!transfer || !text) return false;
   transfer.setData("text/plain", text);
-  transfer.setData("text/html", blackHtmlFromPlain(text));
+  const rich = htmlFragment
+    ? wrapClipboardHtml(htmlFragment)
+    : blackHtmlFromPlain(text);
+  transfer.setData("text/html", rich);
   return true;
 }
 
 // Select-to-copy / drag-copy keeps the overlay's light text color in HTML
-// clipboard data, so paste into Docs/Word/email looks invisible. Rewrite as
-// plain text + black HTML.
+// clipboard data, so paste into Docs/Word/email looks invisible. Rewrite with
+// black text while preserving semantic tags (strong, headings, lists).
 document.addEventListener("copy", (e) => {
   const text = selectionPlainText();
   if (!text || !e.clipboardData) return;
   e.preventDefault();
-  writeBlackTransferData(e.clipboardData, text);
+  writeBlackTransferData(e.clipboardData, text, selectionRichHtml());
 });
 
 document.addEventListener("dragstart", (e) => {
   const text = selectionPlainText();
   if (!text || !e.dataTransfer) return;
-  writeBlackTransferData(e.dataTransfer, text);
+  writeBlackTransferData(e.dataTransfer, text, selectionRichHtml());
 });
 
 // Mode icon in the titlebar — click exits back to chat.
@@ -2352,68 +2592,6 @@ async function saveBrowserTaskToVault({ intent, summary, result, pageUrl }) {
   }
 }
 
-// Heuristic: does this message ask LYKN to save/screenshot something on screen?
-// "save the image of the dune buggy", "screenshot the chart", "save that part of
-// my screen", "can you grab a picture of this", etc. We bail only on clearly
-// informational questions ("how do I save a screenshot?") so those reach chat.
-function looksLikeSaveScreen(text) {
-  const t = String(text || "").toLowerCase().trim();
-  if (!t) return false;
-  // Informational "how/what/why…" questions — let those go to normal chat.
-  if (/^(how|what|why|where|when|who|which)\b/.test(t)) return false;
-  // Must express a capture/save action.
-  const hasAction = /\b(save|screenshot|screen ?shot|screen ?grab|capture|grab|snip|clip|take)\b/.test(t);
-  if (!hasAction) return false;
-  // Any screen/screenshot wording → definitely this flow.
-  if (/\b(screenshot|screen ?shot|screen ?grab|on(-| )?screen|my screen|the screen|this screen)\b/.test(t))
-    return true;
-  // A visual noun being saved → it's on screen ("save the image/picture/chart…").
-  if (/\b(image|picture|photo|pic|screenshot|graphic|logo|diagram|chart|icon|thumbnail|gif|meme)\b/.test(t))
-    return true;
-  // Bare "save this / that part / that region" inside the screen-centric overlay.
-  if (/\bsave (this|that)\b/.test(t)) return true;
-  if (/\b(this|that)\b[\s\S]*\b(part|region|area|section|portion)\b/.test(t)) return true;
-  return false;
-}
-
-// Capture + AI-crop + save flow, rendered as its own turn in the thread.
-async function runSaveScreen(q) {
-  setBusy(true);
-  startTurn(q || "Save my screen");
-  setThinkingStatus("Capturing your screen…");
-  history.push({ role: "user", content: q, at: new Date().toISOString() });
-  let msg;
-  try {
-    const res = await window.lyknOverlay.saveScreenRegion(q);
-    if (res && res.ok) {
-      const what = res.full ? "your full screen" : "that part of your screen";
-      const places = [];
-      if (res.savedToVault) places.push("your **Vault**");
-      if (res.fileName) places.push(`**Downloads** (\`${res.fileName}\`)`);
-      places.push("your clipboard");
-      // Join with commas + "and" before the last destination.
-      const dest =
-        places.length > 1
-          ? `${places.slice(0, -1).join(", ")} and ${places[places.length - 1]}`
-          : places[0];
-      msg = `Saved ${what} to ${dest}.`;
-    } else if (res && res.error === "no_permission") {
-      msg = res.needsSettings
-        ? "LYKN needs Screen Recording permission. Open System Settings → Privacy & Security → Screen Recording, turn on LYKN, then quit and reopen LYKN."
-        : "macOS should be asking for Screen Recording permission — click Allow, then try again. If no dialog appears, enable LYKN under System Settings → Privacy & Security → Screen Recording, then quit and reopen LYKN.";
-    } else {
-      msg = `Couldn't save the screen${res && res.error ? ` (${res.error})` : ""}. Try again in a moment.`;
-    }
-  } catch (_) {
-    msg = "Couldn't save the screen. Try again in a moment.";
-  }
-  updateAnswer(msg);
-  history.push({ role: "assistant", content: msg, at: new Date().toISOString() });
-  void persistCurrentSession();
-  setBusy(false);
-  askEl.focus();
-}
-
 function looksLikeWatchRule(text) {
   const t = String(text || "").trim();
   return (
@@ -2536,13 +2714,6 @@ function ask() {
       askEl.value = "";
       askEl.style.height = "52px";
       void registerWatchRule(q);
-      return;
-    }
-    // "Save that part of my screen" → capture + AI-crop + save, no round-trip ask.
-    if (q && attachments.length === 0 && looksLikeSaveScreen(q)) {
-      askEl.value = "";
-      askEl.style.height = "52px";
-      void runSaveScreen(q);
       return;
     }
     // Voice mode: route typed prompts/links into the LIVE voice session instead
@@ -2933,14 +3104,18 @@ threadEl.addEventListener("click", (e) => {
     })();
     return;
   }
-  // Markdown links: Agent Mode → LYKN browser; otherwise OS default. Never the overlay chrome.
+  // Markdown links / sources / artifacts: always a new LYKN agent browser tab.
   const link = e.target.closest("a[href]");
   if (link) {
     e.preventDefault();
-    window.lyknOverlay.openUrl(link.getAttribute("href"));
+    const href = link.getAttribute("href");
+    const label =
+      (link.getAttribute("title") || link.textContent || "").trim().slice(0, 48) ||
+      undefined;
+    window.lyknOverlay.openUrl(href, label);
     return;
   }
-  // Generated images open full-size (Agent Mode → LYKN browser).
+  // Generated images open full-size in the LYKN browser.
   const genImg = e.target.closest(".md-img img");
   if (genImg && genImg.src) {
     e.preventDefault();
@@ -2949,12 +3124,23 @@ threadEl.addEventListener("click", (e) => {
   }
   const header = e.target.closest(".chat-q");
   if (!header) return;
+  // Don't collapse/expand when the user just drag-highlighted the prompt.
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed && String(sel.toString() || "").trim()) return;
   const item = header.closest(".chat");
   if (!item) return;
   const willOpen = item.classList.contains("collapsed");
   threadEl.querySelectorAll(".chat").forEach((c) => c.classList.add("collapsed"));
   if (willOpen) item.classList.remove("collapsed");
   reportHeight();
+});
+
+threadEl.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const header = e.target.closest?.(".chat-q");
+  if (!header || e.target !== header) return;
+  e.preventDefault();
+  header.click();
 });
 
 let streamingText = "";
@@ -3059,13 +3245,15 @@ window.lyknOverlay.onAgentDelta((p) => {
     agentStreamingText = text;
     updateAnswer(text);
     // Only treat as final when explicitly marked, or the close clearly landed.
-    // Do NOT key off "## What I did" — that appears in the mid-run draft too.
+    // Do NOT key off "## What I did" alone — that appears in the mid-run draft too.
+    // Do NOT key off "want me to" — suggestions live above the chat bar now.
     const looksFinal =
       !!p?.final ||
       (/!\[[^\]]*\]\(lykn-agent-step:/i.test(text) &&
-        /\bAll \d+ steps finished\b/i.test(text)) ||
-      (/\bwant me to\b/i.test(text) &&
-        /\b(finished|shared with|opened \*\*|here's what|## summary)\b/i.test(text));
+        /\bAll \d+ steps finished\b/i.test(text) &&
+        /\b##\s*Summary\b/i.test(text)) ||
+      (/\b##\s*Summary\b/i.test(text) &&
+        /\b##\s*(What I did|Link)\b/i.test(text));
     if (looksFinal) {
       answerStillWorking = false;
       clearBuildingUnder();
@@ -3123,6 +3311,24 @@ window.lyknOverlay.onAgentDone((p) => {
     if (p?.choice?.buttons?.length) {
       showAgentChoiceButtons({ ...p.choice, agentId: p.agentId || activeAgentId });
     } else if (!p?.monitoring) {
+      // Prefer runtime tips for this finished turn; LLM upgrades below.
+      const runtimeTips = Array.isArray(p?.suggestions)
+        ? p.suggestions
+            .map((s) => (typeof s === "string" ? s : s?.prompt || s?.label || ""))
+            .map((s) => String(s || "").trim())
+            .filter(Boolean)
+            .slice(0, 3)
+        : [];
+      if (runtimeTips.length) {
+        sideContext = {
+          ...(sideContext || {}),
+          pageSource: (sideContext && sideContext.pageSource) || null,
+          links: (sideContext && sideContext.links) || [],
+          followups: runtimeTips,
+        };
+        syncSidePickerState();
+        if (sidePanelView && sidePanelView !== "watch") renderSidePanel();
+      }
       void requestSuggestions(currentQuestion, finalText);
     }
   } else if (!currentHasText && currentAnswerEl && !p?.stopped) {
@@ -4945,7 +5151,12 @@ window.__lyknLiveCmd = (name, arg) => {
     }
     case "url":
       try {
-        window.lyknOverlay.openUrl(String(arg || ""));
+        const raw = arg;
+        if (raw && typeof raw === "object") {
+          window.lyknOverlay.openUrl(String(raw.url || ""), raw.title || undefined);
+        } else {
+          window.lyknOverlay.openUrl(String(raw || ""));
+        }
       } catch (_) {}
       break;
   }
@@ -5363,6 +5574,10 @@ function addAssistCard(insight) {
       link.type = "button";
       link.className = "assist-src";
       link.dataset.url = s.url;
+      if (s.title) link.dataset.title = s.title;
+      link.addEventListener("click", () => {
+        window.lyknOverlay.openUrl(s.url, s.title || undefined);
+      });
       try {
         link.textContent = new URL(s.url).hostname.replace(/^www\./, "");
       } catch (_) {

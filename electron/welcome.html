@@ -1,0 +1,2561 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <!-- img https: → app favicons (Google S2 / Clearbit logos).
+         connect autocomplete.clearbit.com → the "+ add your app" search. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'; media-src 'self'; img-src 'self' https:; script-src 'unsafe-inline'; connect-src https://autocomplete.clearbit.com"
+    />
+    <title>Welcome to LYKN</title>
+    <style>
+      /* First-launch welcome: a full-screen glass sheet hosting the first
+         walkthrough stages. macOS paints native "hud" vibrancy behind this
+         page (Windows gets a translucent tint).
+
+         Stage 1 — the Remotion reveal (alpha webm), "Click anywhere to begin".
+         Setup stages — browser import, preferences, and privacy. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        user-select: none;
+        -webkit-user-select: none;
+        cursor: default;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+          "Segoe UI", system-ui, sans-serif;
+        color: #fff;
+      }
+      #card {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        /* Brand-blue wash over the glass (same family as the login gradient:
+           #0e6fff → #6d9bf3), plus a whisper of dark tint for depth. On
+           Windows (no vibrancy) this IS the glass. */
+        background:
+          radial-gradient(120% 90% at 72% 112%, rgba(14, 111, 255, 0.38) 0%, transparent 62%),
+          radial-gradient(90% 70% at 18% -12%, rgba(109, 155, 243, 0.28) 0%, transparent 58%),
+          rgba(8, 10, 16, 0.3);
+        opacity: 0;
+        transition: opacity 500ms ease;
+      }
+      body.win #card {
+        background:
+          radial-gradient(120% 90% at 72% 112%, rgba(14, 111, 255, 0.4) 0%, transparent 62%),
+          radial-gradient(90% 70% at 18% -12%, rgba(109, 155, 243, 0.3) 0%, transparent 58%),
+          rgba(8, 10, 16, 0.85);
+      }
+      body.shown #card {
+        opacity: 1;
+      }
+      body.leaving #card {
+        opacity: 0;
+      }
+
+      .stage {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 480ms ease;
+      }
+      .stage.active {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      /* Progress bar across the top — appears once the walkthrough begins. */
+      #progress {
+        position: absolute;
+        top: 26px;
+        left: 34px;
+        right: 34px;
+        height: 6px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.14);
+        opacity: 0;
+        transition: opacity 400ms ease;
+        z-index: 2;
+      }
+      body.setup #progress {
+        opacity: 1;
+      }
+      #progress .fill {
+        height: 100%;
+        width: 0%;
+        border-radius: 99px;
+        background: linear-gradient(90deg, #0e6fff, #60a5fa);
+        transition: width 650ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      /* ── Stage 1: reveal ── */
+      #stage-reveal video {
+        width: min(72vw, 1400px);
+        max-height: 70vh;
+        object-fit: contain;
+        pointer-events: none;
+        /* VP8's lossy alpha plane leaves a faint (1–8/255) white halo around
+           the lockup — over the dark glass it reads as a glow. Snap that
+           near-zero alpha to fully transparent; real edges are untouched. */
+        filter: url(#dehalo);
+      }
+      #hint {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 12vh;
+        text-align: center;
+        font-size: 15px;
+        font-weight: 500;
+        letter-spacing: 0.04em;
+        color: rgba(255, 255, 255, 0.75);
+        text-shadow: 0 1px 12px rgba(0, 0, 0, 0.4);
+        opacity: 0;
+        transition: opacity 700ms ease;
+      }
+      body.ready #hint {
+        opacity: 1;
+        animation: breathe 2600ms ease-in-out 700ms infinite;
+      }
+      @keyframes breathe {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.45;
+        }
+      }
+
+      /* ── shared setup-stage layout ── */
+      .setup-inner {
+        display: flex;
+        align-items: center;
+        gap: 6vw;
+        width: min(1120px, 84vw);
+      }
+      .setup-copy {
+        flex: 1 1 55%;
+        min-width: 0;
+      }
+      .setup-copy h1 {
+        margin: 0 0 40px;
+        font-size: clamp(28px, 3vw, 40px);
+        line-height: 1.2;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: rgba(255, 255, 255, 0.94);
+      }
+      .cta {
+        position: absolute;
+        /* Flush with the right edge of the image column (.setup-inner is
+           min(1120px, 84vw) wide and centered — this is the leftover margin). */
+        right: calc((100% - min(1120px, 84vw)) / 2);
+        bottom: 7vh;
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 13px 26px;
+        border: none;
+        border-radius: 12px;
+        font: inherit;
+        font-size: 15px;
+        font-weight: 600;
+        color: #0b0c10;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+        cursor: pointer;
+        transition: transform 120ms ease, background 150ms ease, opacity 150ms ease;
+      }
+      .cta:hover {
+        background: #fff;
+        transform: scale(1.03);
+      }
+      .cta:disabled {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+      .cta .key {
+        font-size: 14px;
+        opacity: 0.55;
+      }
+
+      /* ── Stage 2: essentials ── */
+      .opt {
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        padding: 14px 0;
+        cursor: pointer;
+      }
+      .opt input {
+        display: none;
+      }
+      .opt .box {
+        flex: none;
+        width: 24px;
+        height: 24px;
+        margin-top: 2px;
+        border-radius: 7px;
+        border: 1.5px solid rgba(255, 255, 255, 0.45);
+        background: rgba(255, 255, 255, 0.08);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 150ms ease, border-color 150ms ease;
+      }
+      .opt .box svg {
+        opacity: 0;
+        transition: opacity 120ms ease;
+      }
+      .opt input:checked + .box {
+        background: #fff;
+        border-color: #fff;
+      }
+      .opt input:checked + .box svg {
+        opacity: 1;
+      }
+      .opt .label b {
+        display: block;
+        font-size: 17px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.94);
+      }
+      .opt .label span {
+        display: block;
+        margin-top: 3px;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+
+      /* Right-side glass preview cards. */
+      .setup-preview {
+        flex: 1 1 45%;
+        aspect-ratio: 1.15;
+        max-width: 460px;
+        border-radius: 24px;
+        background: linear-gradient(
+          180deg,
+          rgba(14, 111, 255, 0.16) 0%,
+          rgba(255, 255, 255, 0.06) 60%,
+          rgba(255, 255, 255, 0.03) 100%
+        );
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.1),
+          0 30px 80px rgba(0, 0, 0, 0.35);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        overflow: hidden;
+      }
+      .setup-preview img {
+        width: 38%;
+        filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.45));
+      }
+      /* Zoomed-in Dock: LYKN front and center, neighbors fading off-frame. */
+      .dock-scene {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .dock-scene .dock-tray {
+        position: absolute;
+        left: -16%;
+        right: -16%;
+        top: 16%;
+        bottom: 22%;
+        border-radius: 40px;
+        background: rgba(255, 255, 255, 0.05);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+      }
+      .dock-scene .dock-tile {
+        position: absolute;
+        top: 27%;
+        width: 38%;
+        aspect-ratio: 1;
+        border-radius: 24%;
+        background: rgba(255, 255, 255, 0.05);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+      }
+      .dock-scene .dock-tile.left {
+        left: -22%;
+      }
+      .dock-scene .dock-tile.right {
+        right: -22%;
+      }
+      .dock-scene .dock-icon {
+        width: 42% !important;
+        position: relative;
+        z-index: 1;
+        filter: drop-shadow(0 22px 50px rgba(0, 0, 0, 0.55));
+      }
+      .dock-scene .dock-dot {
+        position: absolute;
+        bottom: 15%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 7px;
+        height: 7px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.75);
+      }
+
+      /* ── App search field ── */
+      .field {
+        width: min(440px, 100%);
+        box-sizing: border-box;
+        padding: 15px 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        font: inherit;
+        font-size: 16px;
+        outline: none;
+        caret-color: #60a5fa;
+        transition: border-color 150ms ease, background 150ms ease;
+      }
+      .field::placeholder {
+        color: rgba(255, 255, 255, 0.35);
+      }
+      .field:focus {
+        border-color: rgba(96, 165, 250, 0.7);
+        background: rgba(255, 255, 255, 0.11);
+      }
+      .account-form {
+        width: min(440px, 100%);
+      }
+      .account-form label {
+        display: block;
+        margin: 16px 0 8px;
+        font-size: 14px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.65);
+      }
+      .account-form label:first-child {
+        margin-top: 0;
+      }
+      .account-form .field {
+        width: 100%;
+      }
+      .password-field {
+        position: relative;
+      }
+      .password-field .field {
+        padding-right: 48px;
+      }
+      .password-toggle {
+        position: absolute;
+        top: 50%;
+        right: 10px;
+        transform: translateY(-50%);
+        display: grid;
+        place-items: center;
+        border: 0;
+        padding: 6px;
+        border-radius: 7px;
+        color: rgba(255, 255, 255, 0.6);
+        background: transparent;
+        cursor: pointer;
+      }
+      .password-toggle svg {
+        width: 18px;
+        height: 18px;
+        display: block;
+      }
+      .password-toggle .eye-on {
+        display: none;
+      }
+      .password-toggle.is-showing .eye-on {
+        display: block;
+      }
+      .password-toggle.is-showing .eye-off {
+        display: none;
+      }
+      .password-toggle:hover {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .account-form .field:disabled {
+        opacity: 0.62;
+      }
+      .account-form .account-terms {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 18px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      .account-terms input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .account-check {
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        border: 1.5px solid rgba(255, 255, 255, 0.5);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .account-check svg {
+        width: 14px;
+        opacity: 0;
+        color: #fff;
+      }
+      .account-terms input:checked + .account-check {
+        border-color: #fff;
+        background: rgba(255, 255, 255, 0.22);
+      }
+      .account-terms input:checked + .account-check svg {
+        opacity: 1;
+      }
+      .account-error {
+        min-height: 20px;
+        margin-top: 12px;
+        font-size: 14px;
+        color: #fca5a5;
+      }
+      .account-link {
+        color: rgba(255, 255, 255, 0.82);
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      .existing-account {
+        display: inline-block;
+        margin-top: 18px;
+        border: 0;
+        padding: 0;
+        color: rgba(255, 255, 255, 0.82);
+        background: transparent;
+        font: inherit;
+        font-size: 14px;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      .sub {
+        margin: 0 0 14px;
+        font-size: 17px;
+        color: rgba(255, 255, 255, 0.72);
+      }
+
+      /* ── Stage 6: import ── */
+      .browser-row {
+        display: flex;
+        gap: 16px;
+        margin-top: 8px;
+      }
+      .browser-card {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 18px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.07);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+        cursor: pointer;
+        transition: background 150ms ease, box-shadow 150ms ease;
+      }
+      .browser-card:hover {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      .browser-card input {
+        display: none;
+      }
+      .browser-card .b-icon {
+        width: 44px;
+        height: 44px;
+        flex: none;
+      }
+      .browser-card .b-name {
+        flex: 1;
+        min-width: 0;
+      }
+      .browser-card .b-name b {
+        display: block;
+        font-size: 16px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.94);
+      }
+      .browser-card .b-name span {
+        display: block;
+        margin-top: 2px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .browser-card .radio {
+        flex: none;
+        width: 26px;
+        height: 26px;
+        border-radius: 99px;
+        border: 2px solid rgba(255, 255, 255, 0.45);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: border-color 150ms ease;
+      }
+      .browser-card .radio::after {
+        content: "";
+        width: 14px;
+        height: 14px;
+        border-radius: 99px;
+        background: #fff;
+        transform: scale(0);
+        transition: transform 150ms ease;
+      }
+      .browser-card input:checked ~ .radio {
+        border-color: #fff;
+      }
+      .browser-card input:checked ~ .radio::after {
+        transform: scale(1);
+      }
+      #import-skip,
+      #logins-skip {
+        position: absolute;
+        left: calc((100% - min(1120px, 84vw)) / 2);
+        bottom: 6.4vh;
+        padding: 12px 22px;
+        border: none;
+        border-radius: 12px;
+        font: inherit;
+        font-size: 15px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.85);
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+        cursor: pointer;
+        transition: background 150ms ease;
+      }
+      #import-skip:hover,
+      #logins-skip:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+
+      /* Orbit illustration: LYKN icon ringed by what comes with the import. */
+      .orbit {
+        position: relative;
+        width: 84%;
+        aspect-ratio: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .orbit .ring {
+        position: absolute;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .orbit .ring.r1 {
+        inset: 18%;
+      }
+      .orbit .ring.r2 {
+        inset: 4%;
+      }
+      .orbit > img {
+        width: 38%;
+        border-radius: 24%;
+        filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.45));
+      }
+      .orbit .sat {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.09);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+          0 14px 34px rgba(0, 0, 0, 0.4);
+        color: rgba(255, 255, 255, 0.75);
+      }
+      .orbit .sat.round {
+        width: 15%;
+        aspect-ratio: 1;
+      }
+      .orbit .sat.pill {
+        top: 6%;
+        right: -2%;
+        padding: 3.4% 4.6%;
+      }
+      .orbit .sat.pill i {
+        width: 6px;
+        height: 6px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.75);
+      }
+      .orbit .clock {
+        top: 14%;
+        left: 4%;
+      }
+      .orbit .folder {
+        top: 44%;
+        right: -4%;
+      }
+      .orbit .puzzle {
+        bottom: 12%;
+        left: 6%;
+      }
+      .orbit .bookmark {
+        bottom: 4%;
+        right: 16%;
+      }
+
+      /* ── Stage 7: import logins ── */
+      .sub b {
+        color: rgba(255, 255, 255, 0.95);
+      }
+      /* Mock macOS keychain prompt, dimmed, with a loupe over "Allow". */
+      .kc-scene {
+        position: relative;
+        width: 100%;
+        height: 100%;
+      }
+      .kc-card {
+        position: absolute;
+        top: 12%;
+        left: 10%;
+        right: -14%;
+        padding: 26px 28px;
+        border-radius: 16px;
+        background: rgba(24, 26, 32, 0.92);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1),
+          0 30px 70px rgba(0, 0, 0, 0.5);
+        opacity: 0.55;
+      }
+      .kc-card p {
+        margin: 0 0 18px;
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .kc-card .kc-field {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.55);
+        margin-bottom: 6px;
+      }
+      .kc-card .kc-input {
+        height: 26px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        border-bottom: 2px solid #3b82f6;
+        margin-bottom: 22px;
+      }
+      .kc-card .kc-buttons {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+      .kc-card .kc-btn {
+        padding: 7px 22px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.8);
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .loupe {
+        position: absolute;
+        top: 34%;
+        right: -4%;
+        width: 46%;
+        aspect-ratio: 1;
+        border-radius: 999px;
+        background: rgba(16, 18, 24, 0.96);
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.85),
+          0 30px 80px rgba(0, 0, 0, 0.65);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+      }
+      .loupe .l-input {
+        width: 72%;
+        height: 14px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.12);
+        border-bottom: 3px solid #3b82f6;
+      }
+      .loupe .l-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .loupe .l-deny {
+        padding: 10px 10px 10px 22px;
+        border-radius: 9px;
+        font-size: 16px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.7);
+        background: rgba(255, 255, 255, 0.1);
+        clip-path: inset(0 0 0 30%);
+      }
+      .loupe .l-allow {
+        padding: 10px 26px;
+        border-radius: 9px;
+        font-size: 17px;
+        font-weight: 600;
+        color: #0b0c10;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+      }
+      .loupe .cursor {
+        position: absolute;
+        bottom: 12%;
+        right: 18%;
+      }
+
+      /* ── Stage 8: favorite apps (icon-tile grid) ── */
+      .apps-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(88px, 112px));
+        gap: 20px;
+        margin-top: 6px;
+      }
+      .tile {
+        aspect-ratio: 1;
+        border: none;
+        border-radius: 28%;
+        background: rgba(255, 255, 255, 0.06);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        padding: 0;
+        transition: background 180ms ease, box-shadow 180ms ease, transform 120ms ease;
+      }
+      .tile:hover {
+        transform: scale(1.05);
+      }
+      .tile img {
+        width: 52%;
+        height: 52%;
+        object-fit: contain;
+        filter: grayscale(1) brightness(1.4) opacity(0.38);
+        transition: filter 180ms ease;
+      }
+      .tile.picked {
+        background: linear-gradient(165deg, #f7f8fc 0%, #dfe5f2 100%);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9),
+          0 14px 34px rgba(0, 0, 0, 0.4);
+      }
+      .tile.picked img {
+        filter: none;
+      }
+      .tile.add {
+        background: transparent;
+        box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.22);
+        border-radius: 28%;
+        color: rgba(255, 255, 255, 0.55);
+        font-size: 34px;
+        font-weight: 300;
+      }
+      .tile.add:hover {
+        color: #fff;
+        box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.5);
+      }
+      /* app search (opens from the + tile) */
+      .app-add {
+        position: relative;
+        margin-top: 22px;
+        display: none;
+      }
+      .app-add.searching {
+        display: block;
+      }
+      #app-search {
+        width: 100%;
+        padding: 12px 15px;
+        font-size: 15px;
+      }
+      #app-suggest {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        right: 0;
+        z-index: 6;
+        border-radius: 12px;
+        background: rgba(20, 22, 28, 0.98);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+          0 20px 50px rgba(0, 0, 0, 0.5);
+        overflow: hidden;
+        display: none;
+      }
+      #app-suggest.open {
+        display: block;
+      }
+      .suggest-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 11px 14px;
+        cursor: pointer;
+        transition: background 120ms ease;
+      }
+      .suggest-row:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .suggest-row img {
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        object-fit: contain;
+      }
+      .suggest-row b {
+        font-size: 14.5px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .suggest-row span {
+        margin-left: auto;
+        font-size: 12.5px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      /* Browser window hanging off the right edge, like the reference. */
+      .hang-window {
+        position: absolute;
+        top: 7%;
+        bottom: -8%;
+        left: 10%;
+        right: -20%;
+        border-radius: 18px;
+        background: rgba(9, 11, 16, 0.82);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+          0 30px 80px rgba(0, 0, 0, 0.55);
+      }
+      .hang-window .dots {
+        display: flex;
+        gap: 7px;
+        padding: 16px;
+      }
+      .hang-window .dots i {
+        width: 10px;
+        height: 10px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.18);
+      }
+      .hang-window .hw-tab {
+        position: absolute;
+        top: 11px;
+        left: 66px;
+        width: 38%;
+        height: 22px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      /* Hot-links grid inside the apps-stage mockup — the picks, as they'll
+         appear in the browser. Sticks to the visible (left) part of the
+         window since it hangs off the right edge. */
+      .hang-window .hw-links {
+        position: absolute;
+        top: 20%;
+        left: 9%;
+        right: 30%;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 16px;
+      }
+      .hang-window .hw-app {
+        aspect-ratio: 1;
+        border-radius: 26%;
+        background: rgba(255, 255, 255, 0.09);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        animation: hw-pop 340ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+      }
+      .hang-window .hw-app img {
+        width: 54%;
+        height: 54%;
+        object-fit: contain;
+      }
+      /* Nothing picked yet → show the suggestions dimmed, as a hint. */
+      .hang-window .hw-links.dim .hw-app img {
+        filter: grayscale(1) brightness(1.4) opacity(0.35);
+      }
+      @keyframes hw-pop {
+        from {
+          transform: scale(0.55);
+          opacity: 0;
+        }
+      }
+
+      /* ── Stage 12: privacy ── */
+      .opt .label a {
+        color: rgba(255, 255, 255, 0.85);
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      /* article mock inside the hanging browser window */
+      .hw-page {
+        position: absolute;
+        inset: 46px 0 0;
+        padding: 24px 8% 0 9%;
+        overflow: hidden;
+      }
+      .hw-page .masthead {
+        font-size: clamp(34px, 4.6vw, 62px);
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        color: #fff;
+        font-stretch: condensed;
+      }
+      .hw-page .headline {
+        margin-top: 26px;
+        font-size: clamp(20px, 2.2vw, 30px);
+        font-weight: 700;
+        letter-spacing: -0.015em;
+        color: rgba(255, 255, 255, 0.95);
+        white-space: nowrap;
+      }
+      .hw-page .kicker {
+        margin-top: 12px;
+        font-size: 12px;
+        letter-spacing: 0.22em;
+        color: rgba(255, 255, 255, 0.55);
+        font-family: ui-monospace, "SF Mono", monospace;
+      }
+      .hw-page .photo {
+        margin-top: 22px;
+        height: 46%;
+        border-radius: 10px 0 0 10px;
+        margin-right: -8%;
+        background:
+          radial-gradient(120% 60% at 20% 0%, rgba(214, 208, 196, 0.9) 0%, rgba(178, 170, 156, 0.9) 45%, rgba(120, 112, 100, 0.95) 75%, rgba(72, 66, 58, 1) 100%);
+        position: relative;
+        overflow: hidden;
+      }
+      .hw-page .photo::after {
+        content: "";
+        position: absolute;
+        left: -10%;
+        right: -10%;
+        bottom: -30%;
+        height: 70%;
+        border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+        background: linear-gradient(180deg, #4c463e 0%, #2e2a25 100%);
+      }
+      .hw-page .caption {
+        margin-top: 16px;
+        height: 10px;
+        width: 82%;
+        border-radius: 5px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+
+      /* Privacy-stage browser preview. */
+      .privacy-scene {
+        position: absolute;
+        inset: 58px 8% 8% 9%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .privacy-lock {
+        width: 48px;
+        height: 48px;
+        color: #fff;
+      }
+      .privacy-copy b {
+        display: block;
+        font-size: 21px;
+        color: rgba(255, 255, 255, 0.96);
+      }
+
+      /* ── Stage 13: finish — the full LYKN logo reveal (same animation as
+         the app's LyknLogoRevealLoader): the icon traces its outline on,
+         fills to solid, then the wordmark wipes open. One full 4.5s cycle
+         plays while the studio boots behind this window. ── */
+      .lykn-reveal-loader {
+        --word-w: 223px;
+        --word-gap: 10px;
+        display: inline-flex;
+        align-items: center;
+        color: #f4f6fb;
+      }
+      .lykn-reveal-loader__icon {
+        display: block;
+        transform-origin: center;
+        animation: lyknRevealPop 4.5s ease-in-out infinite;
+      }
+      .lykn-reveal-loader__icon path {
+        stroke-dasharray: 1;
+        animation: lyknRevealIcon 4.5s ease-in-out infinite;
+      }
+      .lykn-reveal-loader__word {
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        width: 0;
+        animation: lyknRevealWord 4.5s ease-in-out infinite;
+      }
+      .lykn-reveal-loader__word svg {
+        display: block;
+        flex: 0 0 auto;
+      }
+      @keyframes lyknRevealIcon {
+        0%   { stroke-dashoffset: 1; stroke-opacity: 1; fill-opacity: 0; }
+        30%  { stroke-dashoffset: 0; stroke-opacity: 1; fill-opacity: 0; }  /* traced */
+        42%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }  /* filled */
+        85%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }  /* hold */
+        95%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 0; }  /* fade out */
+        100% { stroke-dashoffset: 1; stroke-opacity: 0; fill-opacity: 0; }  /* reset */
+      }
+      @keyframes lyknRevealPop {
+        0%   { transform: scale(0.84); }
+        30%  { transform: scale(1); }
+        85%  { transform: scale(1); }
+        100% { transform: scale(0.84); }
+      }
+      @keyframes lyknRevealWord {
+        0%   { width: 0; margin-left: 0; opacity: 0; }
+        38%  { width: 0; margin-left: 0; opacity: 0; }
+        58%  { width: var(--word-w); margin-left: var(--word-gap); opacity: 1; }  /* wipe open */
+        85%  { width: var(--word-w); margin-left: var(--word-gap); opacity: 1; }  /* hold */
+        95%  { width: var(--word-w); margin-left: var(--word-gap); opacity: 0; }  /* fade out */
+        100% { width: 0; margin-left: 0; opacity: 0; }                            /* reset */
+      }
+      .app-row .a-name {
+        flex: 1;
+        font-size: 17px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.94);
+      }
+      .app-pill {
+        padding: 9px 20px;
+        border: none;
+        border-radius: 10px;
+        font: inherit;
+        font-size: 13.5px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.85);
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+        cursor: pointer;
+        transition: background 150ms ease, color 150ms ease;
+      }
+      .app-pill:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .app-pill.picked {
+        color: #0b0c10;
+        background: rgba(255, 255, 255, 0.92);
+      }
+      .fine-print {
+        position: absolute;
+        left: 34px;
+        bottom: 6.8vh;
+        max-width: 46%;
+        font-size: 13px;
+        line-height: 1.5;
+        color: rgba(255, 255, 255, 0.5);
+      }
+
+      /* App-orbit satellites hold brand marks on soft glass tiles. */
+      .orbit .sat.brand {
+        background: rgba(255, 255, 255, 0.94);
+        color: #111;
+      }
+      .orbit .sat svg.brand-mark,
+      .orbit .sat img.brand-mark,
+      .orbit .sat .brand-glyph {
+        width: 52%;
+        height: 52%;
+        object-fit: contain;
+      }
+      .orbit .notion {
+        top: 8%;
+        left: 12%;
+      }
+      .orbit .drive {
+        top: 2%;
+        right: 20%;
+      }
+      .orbit .gcal {
+        top: 42%;
+        right: -5%;
+      }
+      .orbit .slack-sat {
+        bottom: 10%;
+        left: 4%;
+      }
+      .orbit .gmail-sat {
+        bottom: 2%;
+        right: 22%;
+      }
+      .brand-glyph {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 800;
+        font-size: 20px;
+        color: #111;
+      }
+
+      /* ── Stages 9–11: Make LYKN Yours ── */
+      .section-label {
+        margin: 0 0 16px;
+        font-size: 16px;
+        color: rgba(255, 255, 255, 0.72);
+      }
+      .swatches {
+        display: flex;
+        gap: 20px;
+        margin: 4px 0 36px;
+      }
+      .swatch {
+        width: 42px;
+        height: 42px;
+        border-radius: 99px;
+        border: none;
+        cursor: pointer;
+        transition: transform 120ms ease;
+      }
+      .swatch:hover {
+        transform: scale(1.12);
+      }
+      .swatch.sel {
+        outline: 3px solid rgba(255, 255, 255, 0.95);
+        outline-offset: 3px;
+      }
+      .choice-row {
+        display: flex;
+        gap: 18px;
+      }
+      .choice {
+        cursor: pointer;
+        text-align: center;
+      }
+      .choice .mini {
+        width: 180px;
+        aspect-ratio: 16/10.5;
+        border-radius: 12px;
+        background: #191b20;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+        position: relative;
+        overflow: hidden;
+        transition: box-shadow 150ms ease;
+      }
+      .choice.sel .mini {
+        box-shadow: 0 0 0 2.5px rgba(255, 255, 255, 0.95),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+      }
+      .choice .c-label {
+        margin-top: 12px;
+        font-size: 14.5px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .mini .m-dots {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        display: flex;
+        gap: 4px;
+      }
+      .mini .m-dots i {
+        width: 7px;
+        height: 7px;
+        border-radius: 99px;
+      }
+      .mini .m-dots i:nth-child(1) {
+        background: #ff5f57;
+      }
+      .mini .m-dots i:nth-child(2) {
+        background: #febc2e;
+      }
+      .mini .m-dots i:nth-child(3) {
+        background: #28c840;
+      }
+      /* appearance minis */
+      .mini.light {
+        background: #d9dde3;
+      }
+      .mini.auto {
+        background: linear-gradient(105deg, #191b20 50%, #d9dde3 50%);
+      }
+      /* tab-layout minis */
+      .mini .m-tabs {
+        position: absolute;
+        top: 7px;
+        left: 46px;
+        right: 10px;
+        display: flex;
+        gap: 5px;
+      }
+      .mini .m-tabs i {
+        flex: 1;
+        max-width: 34%;
+        height: 12px;
+        border-radius: 4px 4px 0 0;
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .mini .m-rail {
+        position: absolute;
+        top: 24px;
+        left: 8px;
+        bottom: 8px;
+        width: 26%;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .mini .m-rail i {
+        height: 10px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .mini .m-page {
+        position: absolute;
+        inset: 24px 8px 8px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.05);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+      }
+      .mini.has-rail .m-page {
+        left: calc(26% + 14px);
+      }
+      /* start-view minis */
+      .mini .m-grid {
+        position: absolute;
+        inset: 26px 12px 10px;
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 6px;
+      }
+      .mini .m-grid i {
+        border-radius: 5px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .mini .m-chat {
+        position: absolute;
+        inset: 26px 12px 10px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        gap: 6px;
+      }
+      .mini .m-chat i {
+        height: 12px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .mini .m-chat i.me {
+        width: 55%;
+        align-self: flex-end;
+        background: var(--accent, #0e6fff);
+      }
+      .mini .m-chat i.bar {
+        height: 16px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+      }
+      .mini .m-url {
+        position: absolute;
+        top: 26px;
+        left: 12px;
+        right: 12px;
+        height: 13px;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .mini .m-lines {
+        position: absolute;
+        inset: 48px 12px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .mini .m-lines i {
+        height: 8px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.09);
+      }
+      .mini .m-lines i:nth-child(2) {
+        width: 80%;
+      }
+      .mini .m-lines i:nth-child(3) {
+        width: 60%;
+      }
+
+      /* Live preview window (right side of the personalization slides). */
+      .pv-window {
+        position: relative;
+        width: 88%;
+        height: 84%;
+        border-radius: 18px;
+        background: rgba(12, 14, 19, 0.72);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.07),
+          0 30px 70px rgba(0, 0, 0, 0.5);
+        overflow: hidden;
+      }
+      .pv-window .dots {
+        display: flex;
+        gap: 7px;
+        padding: 14px;
+      }
+      .pv-window .dots i {
+        width: 10px;
+        height: 10px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.2);
+      }
+      .pv-tabs {
+        position: absolute;
+        top: 10px;
+        left: 62px;
+        right: 16px;
+        display: flex;
+        gap: 7px;
+      }
+      .pv-tabs i {
+        flex: 1;
+        max-width: 30%;
+        height: 18px;
+        border-radius: 6px 6px 0 0;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .pv-rail {
+        position: absolute;
+        top: 44px;
+        left: 14px;
+        bottom: 14px;
+        width: 22%;
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .pv-rail i {
+        height: 16px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .pv-window.sidebar .pv-rail {
+        display: flex;
+      }
+      .pv-window.sidebar .pv-tabs {
+        display: none;
+      }
+      .pv-bubble {
+        position: absolute;
+        top: 20%;
+        right: 8%;
+        max-width: 56%;
+        padding: 13px 16px;
+        border-radius: 14px 14px 4px 14px;
+        font-size: 13.5px;
+        line-height: 1.45;
+        color: #fff;
+        background: var(--accent, #0e6fff);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+        transition: background 200ms ease;
+      }
+      .pv-reply {
+        position: absolute;
+        top: 44%;
+        left: 8%;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 70%;
+      }
+      .pv-reply .pv-avatar {
+        flex: none;
+        width: 34px;
+        height: 34px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .pv-reply .pv-line {
+        flex: 1;
+        height: 14px;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .pv-ask {
+        position: absolute;
+        left: 7%;
+        right: 7%;
+        bottom: 9%;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 16px;
+        border-radius: 14px;
+        font-size: 14px;
+        color: rgba(255, 255, 255, 0.5);
+        background: rgba(255, 255, 255, 0.08);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+      }
+      .pv-ask .pv-send {
+        margin-left: auto;
+        width: 30px;
+        height: 30px;
+        border-radius: 99px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        color: #fff;
+        background: var(--accent, #0e6fff);
+        transition: background 200ms ease;
+      }
+      /* light appearance preview */
+      .pv-window.light {
+        background: rgba(238, 240, 244, 0.92);
+      }
+      .pv-window.light .pv-reply .pv-avatar,
+      .pv-window.light .pv-reply .pv-line,
+      .pv-window.light .pv-tabs i,
+      .pv-window.light .pv-rail i {
+        background: rgba(0, 0, 0, 0.1);
+      }
+      .pv-window.light .pv-ask {
+        background: rgba(0, 0, 0, 0.06);
+        color: rgba(0, 0, 0, 0.45);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+      }
+      .pv-window.light .dots i {
+        background: rgba(0, 0, 0, 0.15);
+      }
+
+    </style>
+  </head>
+  <body>
+    <div id="card">
+      <div id="progress"><div class="fill"></div></div>
+
+      <!-- Stage 1: the reveal animation -->
+      <div class="stage active" id="stage-reveal">
+        <!-- Alpha cleanup for the reveal video: a' = 1.15a − 0.05, so any
+             pixel under ~4.5% alpha (encoder halo) becomes fully transparent. -->
+        <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+          <filter id="dehalo" color-interpolation-filters="sRGB">
+            <feComponentTransfer>
+              <feFuncA type="linear" slope="1.15" intercept="-0.05" />
+            </feComponentTransfer>
+          </filter>
+        </svg>
+        <video id="reveal" src="welcome-anim.webm" autoplay muted playsinline></video>
+        <!-- Reveal sound — swap the file at electron/sounds/welcome-reveal.mp3
+             to change it. Kept separate from the webm so no re-render needed. -->
+        <audio id="reveal-sound" src="sounds/welcome-reveal.mp3" preload="auto"></audio>
+        <div id="hint">Click anywhere to begin</div>
+      </div>
+
+      <!-- Stage 2: essentials (shown last — the closer before the app opens) -->
+      <div class="stage" id="stage-setup">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1>Fast, secure, and packed with<br />all your browser essentials</h1>
+            <label class="opt">
+              <input type="checkbox" id="opt-browser" checked />
+              <span class="box">
+                <svg width="14" height="11" viewBox="0 0 14 11" fill="none">
+                  <path d="M1 5.5 5 9.5 13 1.5" stroke="#0b0c10" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="label">
+                <b>Set LYKN as your default browser</b>
+                <span>Open links and web pages in LYKN by default</span>
+              </span>
+            </label>
+            <label class="opt">
+              <input type="checkbox" id="opt-dock" checked />
+              <span class="box">
+                <svg width="14" height="11" viewBox="0 0 14 11" fill="none">
+                  <path d="M1 5.5 5 9.5 13 1.5" stroke="#0b0c10" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="label">
+                <b>Add LYKN to Dock</b>
+                <span>Quick access to LYKN whenever you need it</span>
+              </span>
+            </label>
+            <label class="opt">
+              <input type="checkbox" id="opt-login" checked />
+              <span class="box">
+                <svg width="14" height="11" viewBox="0 0 14 11" fill="none">
+                  <path d="M1 5.5 5 9.5 13 1.5" stroke="#0b0c10" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="label">
+                <b>Open LYKN at login</b>
+                <span>Automatically open LYKN when you sign in</span>
+              </span>
+            </label>
+          </div>
+          <div class="setup-preview">
+            <div class="dock-scene">
+              <div class="dock-tray"></div>
+              <div class="dock-tile left"></div>
+              <div class="dock-tile right"></div>
+              <img class="dock-icon" src="resources/icon-rounded.png" alt="LYKN" />
+              <span class="dock-dot"></span>
+            </div>
+          </div>
+        </div>
+        <button class="cta" id="get-started">Get started <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 3: account email -->
+      <div class="stage" id="stage-email">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1>Set up your LYKN account</h1>
+            <p class="sub">Start with the email you want to use with LYKN.</p>
+            <div class="account-form">
+              <label for="email">Email</label>
+              <input class="field" id="email" type="email" placeholder="you@company.com" spellcheck="false" autocomplete="email" />
+            </div>
+            <div class="account-error" id="email-error"></div>
+            <button class="existing-account" id="have-account-email">I already have an account</button>
+          </div>
+          <div class="setup-preview"><div class="pv-window pv"><div class="dots"><i></i><i></i><i></i></div><div class="pv-bubble">Your workspace, ready when you are.</div><div class="pv-ask">Ask LYKN anything <span class="pv-send">&#8593;</span></div></div></div>
+        </div>
+        <button class="cta" id="email-next" disabled>Next <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 4: create account -->
+      <div class="stage" id="stage-account">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1>Create your account</h1>
+            <div class="account-form">
+              <label for="acct-email">Email</label>
+              <input class="field" id="acct-email" type="email" disabled />
+              <label for="password">Password</label>
+              <div class="password-field"><input class="field" id="password" type="password" autocomplete="new-password" /><button class="password-toggle" type="button" aria-label="Show password"><svg class="eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></svg><svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" /><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68" /><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.39-1.61" /><line x1="2" x2="22" y1="2" y2="22" /></svg></button></div>
+              <label for="password2">Confirm password</label>
+              <div class="password-field"><input class="field" id="password2" type="password" autocomplete="new-password" /><button class="password-toggle" type="button" aria-label="Show password"><svg class="eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></svg><svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" /><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68" /><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.39-1.61" /><line x1="2" x2="22" y1="2" y2="22" /></svg></button></div>
+              <label class="account-terms">
+                <input type="checkbox" id="opt-terms" />
+                <span class="account-check"><svg viewBox="0 0 14 11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5.5 5 9.5 13 1.5" /></svg></span>
+                <span>
+                  I accept LYKN's
+                  <a class="account-link" id="terms-link" href="#">Terms of Use</a>
+                  and
+                  <a class="account-link" id="privacy-link-2" href="#">Privacy Policy</a>.
+                </span>
+              </label>
+            </div>
+            <div class="account-error" id="signup-error"></div>
+            <button class="existing-account" id="have-account-signup">I already have an account</button>
+          </div>
+          <div class="setup-preview"><div class="pv-window pv"><div class="dots"><i></i><i></i><i></i></div><div class="pv-bubble">A private workspace for your work.</div><div class="pv-ask">Ask LYKN anything <span class="pv-send">&#8593;</span></div></div></div>
+        </div>
+        <button class="cta" id="signup" disabled>Create account <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Existing account: sign in, then resume setup. -->
+      <div class="stage" id="stage-login">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1>Welcome back</h1>
+            <p class="sub">Sign in to continue setting up LYKN.</p>
+            <div class="account-form">
+              <label for="login-email">Email</label>
+              <input class="field" id="login-email" type="email" placeholder="you@company.com" autocomplete="email" />
+              <label for="login-password">Password</label>
+              <div class="password-field"><input class="field" id="login-password" type="password" autocomplete="current-password" /><button class="password-toggle" type="button" aria-label="Show password"><svg class="eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></svg><svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" /><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68" /><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.39-1.61" /><line x1="2" x2="22" y1="2" y2="22" /></svg></button></div>
+            </div>
+            <div class="account-error" id="login-error"></div>
+            <button class="existing-account" id="login-back">&#8592; Back</button>
+          </div>
+          <div class="setup-preview"><div class="pv-window pv"><div class="dots"><i></i><i></i><i></i></div><div class="pv-bubble">Pick up where you left off.</div><div class="pv-ask">Ask LYKN anything <span class="pv-send">&#8593;</span></div></div></div>
+        </div>
+        <button class="cta" id="login-next" disabled>Sign in <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 5: confirm email -->
+      <div class="stage" id="stage-confirm">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1>Confirm your email</h1>
+            <p class="sub">Enter the 6-digit code we sent to your email.</p>
+            <div class="account-form">
+              <label for="confirm-email">Email</label>
+              <input class="field" id="confirm-email" type="email" disabled />
+              <label for="code">Confirmation code</label>
+              <input class="field" id="code" type="text" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" />
+            </div>
+            <p><span class="account-link" id="resend-code">Resend code</span></p>
+            <div class="account-error" id="confirm-error"></div>
+          </div>
+          <div class="setup-preview"><div class="pv-window pv"><div class="dots"><i></i><i></i><i></i></div><div class="pv-bubble">Almost there.</div><div class="pv-ask">Ask LYKN anything <span class="pv-send">&#8593;</span></div></div></div>
+        </div>
+        <button class="cta" id="confirm" disabled>Confirm <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 6: import from another browser -->
+      <div class="stage" id="stage-import">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Import now to get connected</h1>
+            <p class="sub" style="margin-bottom: 28px">
+              Import once and stay in your flow. Your apps, tabs, passwords,<br />
+              bookmarks and extensions come with you.
+            </p>
+            <div class="browser-row" id="browser-row"></div>
+          </div>
+          <div class="setup-preview">
+            <div class="orbit">
+              <div class="ring r1"></div>
+              <div class="ring r2"></div>
+              <img src="resources/icon-rounded.png" alt="LYKN" />
+              <div class="sat pill">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="8" cy="14" r="4" />
+                  <path d="M10.8 11.2 20 2m-4 4 3 3" />
+                </svg>
+                <i></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <div class="sat round clock">
+                <svg width="45%" height="45%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 7v5l3 2" />
+                </svg>
+              </div>
+              <div class="sat round folder">
+                <svg width="45%" height="45%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+                </svg>
+              </div>
+              <div class="sat round puzzle">
+                <svg width="45%" height="45%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M10 3h4v3.5a1.5 1.5 0 0 0 3 0V6h4v4h-2.5a1.5 1.5 0 0 0 0 3H21v4h-4v2.5a1.5 1.5 0 0 1-3 0V17h-4v-3.5a1.5 1.5 0 0 0-3 0V17H3v-4h2.5a1.5 1.5 0 0 0 0-3H3V6h4v-.5A1.5 1.5 0 0 1 8.5 4" />
+                </svg>
+              </div>
+              <div class="sat round bookmark">
+                <svg width="42%" height="42%" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6 3h12v18l-6-4.5L6 21Z" />
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button id="import-skip">Skip</button>
+        <button class="cta" id="import-next" disabled>Next <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 7: securely sync the selected browser -->
+      <div class="stage" id="stage-logins">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Bring your browser with you</h1>
+            <p class="sub" style="margin-bottom: 22px">
+              LYKN will securely sync your signed-in sessions, open tabs, and<br />
+              recent browsing context from the browser you selected.
+            </p>
+            <p class="sub">
+              When macOS asks, approve the secure system prompt. LYKN never sees or stores your Mac password.
+            </p>
+            <p class="sub" id="logins-status" aria-live="polite"></p>
+          </div>
+          <div class="setup-preview">
+            <div class="kc-scene">
+              <div class="kc-card">
+                <p>
+                  LYKN wants to use your confidential information stored in
+                  &ldquo;Chrome Safe Storage&rdquo; in your keychain.
+                </p>
+                <div class="kc-field">Enter the &ldquo;login&rdquo; keychain password</div>
+                <div class="kc-input"></div>
+                <div class="kc-buttons">
+                  <span class="kc-btn">Deny</span>
+                  <span class="kc-btn">Allow</span>
+                </div>
+              </div>
+              <div class="loupe">
+                <div class="l-input"></div>
+                <div class="l-row">
+                  <span class="l-deny">Deny</span>
+                  <span class="l-allow">Allow</span>
+                </div>
+                <svg class="cursor" width="34" height="38" viewBox="0 0 34 38" fill="none">
+                  <path d="M6 2 28 20l-11 1 6 12-5 2.4L12 23l-6 8Z" fill="#fff" stroke="#0b0c10" stroke-width="2.4" stroke-linejoin="round" />
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button id="logins-skip">Skip</button>
+        <button class="cta" id="logins-import">Sync browser <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 8: favorite apps -->
+      <div class="stage" id="stage-apps">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Keep your favorite apps handy</h1>
+            <p class="sub" style="margin-bottom: 26px">
+              Pin important apps so they're always available when you open<br />
+              LYKN.
+            </p>
+            <div id="apps-grid" class="apps-grid"></div>
+            <div class="app-add" id="app-add">
+              <input class="field" id="app-search" type="text" placeholder="Search for an app (Figma, Linear, Spotify&hellip;)" spellcheck="false" />
+              <div id="app-suggest"></div>
+            </div>
+          </div>
+          <div class="setup-preview">
+            <div class="hang-window">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <span class="hw-tab"></span>
+              <!-- Hot links preview — mirrors the picks on the left, live. -->
+              <div class="hw-links dim" id="hw-links"></div>
+            </div>
+          </div>
+        </div>
+        <button class="cta" id="apps-next">Next <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 9: Make LYKN Yours — color & appearance -->
+      <div class="stage" id="stage-theme">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Make LYKN yours</h1>
+            <p class="section-label">Pick the theme color that feels right for you.</p>
+            <div class="swatches" id="swatches"></div>
+            <p class="section-label">Appearance:</p>
+            <div class="choice-row" id="appearance-row">
+              <div class="choice sel" data-value="dark">
+                <div class="mini"><span class="m-dots"><i></i><i></i><i></i></span><span class="m-page"></span></div>
+                <div class="c-label">Dark</div>
+              </div>
+              <div class="choice" data-value="light">
+                <div class="mini light"><span class="m-dots"><i></i><i></i><i></i></span><span class="m-page"></span></div>
+                <div class="c-label">Light</div>
+              </div>
+              <div class="choice" data-value="auto">
+                <div class="mini auto"><span class="m-dots"><i></i><i></i><i></i></span><span class="m-page"></span></div>
+                <div class="c-label">Auto</div>
+              </div>
+            </div>
+          </div>
+          <div class="setup-preview">
+            <div class="pv-window pv">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <div class="pv-bubble">My tomato looks a bit more yellow than the others&hellip;</div>
+              <div class="pv-reply"><span class="pv-avatar"></span><span class="pv-line"></span></div>
+              <div class="pv-ask">Ask a question <span class="pv-send">&#8593;</span></div>
+            </div>
+          </div>
+        </div>
+        <button class="cta" id="theme-next">Next <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 10: Make LYKN Yours — tab layout -->
+      <div class="stage" id="stage-tabs">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Tabs, your way</h1>
+            <p class="section-label">Choose how you would like to view your tabs:</p>
+            <div class="choice-row" id="tabs-row">
+              <div class="choice sel" data-value="top">
+                <div class="mini">
+                  <span class="m-dots"><i></i><i></i><i></i></span>
+                  <span class="m-tabs"><i></i><i></i><i></i></span>
+                  <span class="m-page"></span>
+                </div>
+                <div class="c-label">Top of Window</div>
+              </div>
+              <div class="choice" data-value="sidebar">
+                <div class="mini has-rail">
+                  <span class="m-dots"><i></i><i></i><i></i></span>
+                  <span class="m-rail"><i></i><i></i><i></i></span>
+                  <span class="m-page"></span>
+                </div>
+                <div class="c-label">Sidebar</div>
+              </div>
+            </div>
+          </div>
+          <div class="setup-preview">
+            <div class="pv-window pv" id="pv-tabs">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <div class="pv-tabs"><i></i><i></i><i></i></div>
+              <div class="pv-rail"><i></i><i></i><i></i><i></i></div>
+              <div class="pv-reply" style="top: 40%"><span class="pv-avatar"></span><span class="pv-line"></span></div>
+              <div class="pv-ask">Ask a question <span class="pv-send">&#8593;</span></div>
+            </div>
+          </div>
+        </div>
+        <button class="cta" id="tabs-next">Next <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 11: Make LYKN Yours — how it opens -->
+      <div class="stage" id="stage-start">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Start your way</h1>
+            <p class="section-label">Choose what LYKN opens to. You can change this anytime.</p>
+            <div class="choice-row" id="start-row">
+              <div class="choice sel" data-value="studio">
+                <div class="mini">
+                  <span class="m-dots"><i></i><i></i><i></i></span>
+                  <span class="m-grid"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+                </div>
+                <div class="c-label">Studio</div>
+              </div>
+              <div class="choice" data-value="chat">
+                <div class="mini">
+                  <span class="m-dots"><i></i><i></i><i></i></span>
+                  <span class="m-chat"><i class="me"></i><i style="width: 70%"></i><i class="bar"></i></span>
+                </div>
+                <div class="c-label">Chat</div>
+              </div>
+              <div class="choice" data-value="browser">
+                <div class="mini">
+                  <span class="m-dots"><i></i><i></i><i></i></span>
+                  <span class="m-url"></span>
+                  <span class="m-lines"><i></i><i></i><i></i></span>
+                </div>
+                <div class="c-label">Browser</div>
+              </div>
+            </div>
+          </div>
+          <div class="setup-preview">
+            <div class="pv-window pv">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <div class="pv-bubble" style="top: 24%">Ready when you are.</div>
+              <div class="pv-ask">Ask a question <span class="pv-send">&#8593;</span></div>
+            </div>
+          </div>
+        </div>
+        <button class="cta" id="start-next">Next <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 12: privacy -->
+      <div class="stage" id="stage-privacy">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Privacy in LYKN, you're in control</h1>
+            <p class="sub" style="margin-bottom: 30px">
+              You decide what LYKN can see and share. <b>Nothing you browse or
+              ask is shared to improve LYKN unless you opt in below</b>&mdash;and
+              you can change these choices anytime in Settings.
+            </p>
+            <label class="opt">
+              <input type="checkbox" id="opt-trackers" checked />
+              <span class="box">
+                <svg width="14" height="11" viewBox="0 0 14 11" fill="none">
+                  <path d="M1 5.5 5 9.5 13 1.5" stroke="#0b0c10" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="label">
+                <b>Block third-party ads and trackers</b>
+                <span>You won't see them. And they won't see you.</span>
+              </span>
+            </label>
+            <label class="opt">
+              <input type="checkbox" id="opt-share" checked />
+              <span class="box">
+                <svg width="14" height="11" viewBox="0 0 14 11" fill="none">
+                  <path d="M1 5.5 5 9.5 13 1.5" stroke="#0b0c10" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="label">
+                <b>Help improve LYKN by sharing content data</b>
+                <span><a id="privacy-learn-more">Learn more</a> about our commitment to privacy.</span>
+              </span>
+            </label>
+          </div>
+          <div class="setup-preview">
+            <div class="hang-window">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <span class="hw-tab"></span>
+              <div class="privacy-scene">
+                <svg class="privacy-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="6.5" y="10.5" width="11" height="8.5" rx="2" />
+                  <path d="M9 10.5V8a3 3 0 0 1 6 0v2.5" />
+                </svg>
+                <div class="privacy-copy">
+                  <b>Your data protected</b>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button class="cta" id="privacy-next">Next <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage 13: finish — loader while the studio boots behind us -->
+      <div class="stage" id="stage-finish">
+        <div class="lykn-reveal-loader" role="img" aria-label="Loading LYKN">
+          <svg class="lykn-reveal-loader__icon" width="120" height="120" viewBox="0 0 204.29 204.29" fill="none">
+            <path
+              d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z"
+              pathLength="1" fill="currentColor" stroke="currentColor" stroke-width="1.75"
+              stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
+          </svg>
+          <div class="lykn-reveal-loader__word">
+            <svg width="223" height="98" viewBox="38.92 0 441.35 194.53" fill="none">
+              <path
+                d="M113.42,136.31h-39.19c-2.23,0-4.05-1.82-4.05-4.05V39.72c0-.45-.36-.81-.81-.81h-29.64c-.45,0-.81.36-.81.81v86.71c0,20.57,11.2,29.2,27.65,29.2h46.86c.45,0,.81-.36.81-.81v-17.69c0-.45-.36-.81-.81-.81ZM403.29,36.25c-15.94,0-26.62,7.59-32.83,15.64-1.48,1.92-2.75,1.47-2.75-.96v-11.21c0-.45-.36-.81-.81-.81h-27.94c-.45,0-.81.36-.81.81v115.09c0,.45.36.81.81.81h29.57c.45,0,.81-.36.81-.81v-62.28c0-24.75,10.56-34.37,22.16-34.37s18.66,7.86,18.66,22.14v74.51c0,.45.36.81.81.81h29.57c.45,0,.81-.36.81-.81v-79.75c0-25.52-16.91-38.81-38.08-38.81ZM285.84,84.42c-.54-.9-.4-2.28.31-3.05l37.57-41.1c.48-.52.11-1.36-.6-1.36h-26.05c-.48,0-.93.21-1.24.57l-43.12,50.89c-1.5,1.77-2.72,1.32-2.72-1v-49.65c0-.45-.36-.81-.81-.81h-29.64c-.45,0-.81.36-.81.81v115.09c0,.45.36.81.81.81h29.64c.45,0,.81-.36.81-.81v-31.5c0-1.32.73-3.19,1.61-4.16l10.7-11.72c.79-.86,1.91-.74,2.48.28l26.64,47.09c.29.51.83.82,1.41.82h34.13c.63,0,1.02-.69.7-1.23l-41.83-69.98ZM210.32,38.91h-23.32c-.61,0-1.17.34-1.45.89l-23.86,47.1c-.77,1.51-2.01,1.51-2.76-.01l-23.23-47.07c-.27-.55-.84-.91-1.46-.91h-33.97c-.62,0-1.01.66-.71,1.2l39.62,72.63v42.08c0,.45.36.81.81.81h29.64c.45,0,.81-.36.81-.81v-42.4l40.57-72.29c.3-.54-.09-1.21-.71-1.21Z"
+                fill="currentColor" />
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+      if (navigator.platform.startsWith("Win")) document.body.classList.add("win");
+
+      // Fade the glass in once the first video frame is ready (avoids a
+      // beat of empty sheet while the webm decodes).
+      const video = document.getElementById("reveal");
+      const show = () => document.body.classList.add("shown");
+      video.addEventListener("loadeddata", show, { once: true });
+      setTimeout(show, 400); // fallback if the video never loads
+
+      // Reveal sound, synced to the first rendered video frame. Best-effort:
+      // a missing file or blocked autoplay must never stall the walkthrough.
+      const sound = document.getElementById("reveal-sound");
+      sound.volume = 0.65;
+      video.addEventListener(
+        "playing",
+        () => {
+          sound.currentTime = 0;
+          sound.play().catch(() => {});
+        },
+        { once: true },
+      );
+
+      // Reveal lands → click gate.
+      let armed = false;
+      const arm = () => {
+        if (armed) return;
+        armed = true;
+        setTimeout(() => document.body.classList.add("ready"), 400);
+      };
+      video.addEventListener("ended", arm);
+      // Safety net: if playback stalls, still hand the user the click gate.
+      setTimeout(arm, 8000);
+
+      // ── stages ──
+      const stages = {
+        1: document.getElementById("stage-reveal"),
+        2: document.getElementById("stage-setup"),
+        3: document.getElementById("stage-email"),
+        4: document.getElementById("stage-account"),
+        login: document.getElementById("stage-login"),
+        5: document.getElementById("stage-confirm"),
+        6: document.getElementById("stage-import"),
+        7: document.getElementById("stage-logins"),
+        8: document.getElementById("stage-apps"),
+        9: document.getElementById("stage-theme"),
+        10: document.getElementById("stage-tabs"),
+        11: document.getElementById("stage-start"),
+        12: document.getElementById("stage-privacy"),
+        13: document.getElementById("stage-finish"),
+      };
+      // Progress across the welcome stages. Stage 2 (essentials) hands off to
+      // the finish animation (stage 13), which fills the bar to 100.
+      const PROGRESS = { 3: 8, 4: 18, 5: 28, 6: 38, 7: 48, 8: 58, 9: 68, 10: 78, 11: 86, 12: 92, 2: 96 };
+      let stage = 1;
+      const setStage = (n) => {
+        stages[stage].classList.remove("active");
+        stage = n;
+        stages[stage].classList.add("active");
+        try {
+          window.lyknWelcome.stageChanged(n);
+        } catch {
+          /* level drop is best-effort */
+        }
+        if (PROGRESS[n] !== undefined) {
+          document.body.classList.add("setup");
+          document.querySelector("#progress .fill").style.width = PROGRESS[n] + "%";
+        }
+        if (n === 3) setTimeout(() => document.getElementById("email").focus(), 450);
+        if (n === 4) {
+          document.getElementById("acct-email").value = document.getElementById("email").value.trim();
+          setTimeout(() => document.getElementById("password").focus(), 450);
+        }
+        if (n === 5) {
+          document.getElementById("confirm-email").value = document.getElementById("email").value.trim();
+          setTimeout(() => document.getElementById("code").focus(), 450);
+        }
+        if (n === "login") {
+          const loginEmail = document.getElementById("login-email");
+          loginEmail.value = document.getElementById("email").value.trim();
+          refreshLogin();
+          setTimeout(() => loginEmail.focus(), 450);
+        }
+        if (n === 6) void loadBrowsers();
+        if (n === 13) {
+          // Fill the bar and hand off right away: finish() loads the studio
+          // behind this window while the spinner plays, holds for at least one
+          // full spinner cycle, then the main process fades us out.
+          document.querySelector("#progress .fill").style.width = "100%";
+          setTimeout(() => leave(), 150);
+        }
+      };
+      stages[1].addEventListener("pointerdown", () => setStage(3));
+
+      // ── stage 2: essentials — the closer. Apply the picks, then roll the
+      // Welcome to LYKN finale. ──
+      let applying = false;
+      const getStarted = async () => {
+        if (applying || stage !== 2) return;
+        applying = true;
+        try {
+          await window.lyknWelcome.getStarted({
+            defaultBrowser: document.getElementById("opt-browser").checked,
+            dock: document.getElementById("opt-dock").checked,
+            login: document.getElementById("opt-login").checked,
+          });
+        } catch {
+          /* best-effort — keep the walkthrough moving */
+        }
+        setStage(13);
+      };
+      document.getElementById("get-started").addEventListener("click", getStarted);
+
+      // ── stages 3–5: account setup ──
+      const emailInput = document.getElementById("email");
+      const emailNext = document.getElementById("email-next");
+      const emailError = document.getElementById("email-error");
+      const validEmail = () => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput.value.trim());
+      emailInput.addEventListener("input", () => {
+        emailNext.disabled = !validEmail();
+        emailError.textContent = "";
+      });
+      emailNext.addEventListener("click", () => {
+        if (!validEmail()) return;
+        setStage(4);
+      });
+
+      document.querySelectorAll(".password-toggle").forEach((button) => {
+        button.addEventListener("click", () => {
+          const input = button.closest(".password-field").querySelector("input");
+          const showing = input.type === "password";
+          input.type = showing ? "text" : "password";
+          button.classList.toggle("is-showing", showing);
+          button.setAttribute("aria-label", showing ? "Hide password" : "Show password");
+          input.focus();
+        });
+      });
+
+      const password = document.getElementById("password");
+      const password2 = document.getElementById("password2");
+      const terms = document.getElementById("opt-terms");
+      const signupBtn = document.getElementById("signup");
+      const signupError = document.getElementById("signup-error");
+      const accountValid = () => password.value.length >= 8 && password.value === password2.value && terms.checked;
+      const refreshSignup = () => {
+        signupBtn.disabled = !accountValid();
+        if (password2.value && password.value !== password2.value) signupError.textContent = "Passwords don't match.";
+        else if (password.value && password.value.length < 8) signupError.textContent = "Password must be at least 8 characters.";
+        else signupError.textContent = "";
+      };
+      password.addEventListener("input", refreshSignup);
+      password2.addEventListener("input", refreshSignup);
+      terms.addEventListener("change", refreshSignup);
+      document.getElementById("terms-link").addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        window.lyknWelcome.openTerms();
+      });
+      document.getElementById("privacy-link-2").addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        window.lyknWelcome.openPrivacyPolicy();
+      });
+      let loginReturnStage = 3;
+      const openExistingAccount = () => {
+        loginReturnStage = stage === 4 ? 4 : 3;
+        setStage("login");
+      };
+      document.getElementById("have-account-email").addEventListener("click", openExistingAccount);
+      document.getElementById("have-account-signup").addEventListener("click", openExistingAccount);
+      let signingUp = false;
+      const signUp = async () => {
+        if (signingUp || !accountValid()) return;
+        signingUp = true;
+        signupBtn.disabled = true;
+        signupBtn.firstChild.textContent = "Creating account\u2026 ";
+        try {
+          const res = await window.lyknWelcome.signUp(emailInput.value.trim(), password.value);
+          if (!res?.ok) throw new Error(res?.error || "Could not create account.");
+          setStage(5);
+        } catch (error) {
+          signupError.textContent = error?.message || "Could not create account.";
+          signupBtn.firstChild.textContent = "Create account ";
+          signingUp = false;
+          refreshSignup();
+        }
+      };
+      signupBtn.addEventListener("click", signUp);
+
+      const loginEmail = document.getElementById("login-email");
+      const loginPassword = document.getElementById("login-password");
+      const loginBtn = document.getElementById("login-next");
+      const loginError = document.getElementById("login-error");
+      const refreshLogin = () => {
+        loginBtn.disabled = !validEmailFor(loginEmail.value) || !loginPassword.value;
+        loginError.textContent = "";
+      };
+      const validEmailFor = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+      loginEmail.addEventListener("input", refreshLogin);
+      loginPassword.addEventListener("input", refreshLogin);
+      let signingIn = false;
+      const signIn = async () => {
+        if (signingIn || loginBtn.disabled) return;
+        signingIn = true;
+        loginBtn.disabled = true;
+        loginBtn.firstChild.textContent = "Signing in\u2026 ";
+        try {
+          const res = await window.lyknWelcome.signIn(loginEmail.value.trim(), loginPassword.value);
+          if (!res?.ok) throw new Error(res?.error || "Could not sign in.");
+          setStage(6);
+        } catch (error) {
+          loginError.textContent = error?.message || "Could not sign in.";
+          loginBtn.firstChild.textContent = "Sign in ";
+          signingIn = false;
+          refreshLogin();
+        }
+      };
+      loginBtn.addEventListener("click", signIn);
+      document.getElementById("login-back").addEventListener("click", () => setStage(loginReturnStage));
+
+      const codeInput = document.getElementById("code");
+      const confirmBtn = document.getElementById("confirm");
+      const confirmError = document.getElementById("confirm-error");
+      codeInput.addEventListener("input", () => {
+        codeInput.value = codeInput.value.replace(/\D/g, "").slice(0, 6);
+        confirmBtn.disabled = codeInput.value.length !== 6;
+      });
+      let confirming = false;
+      const confirm = async () => {
+        if (confirming || codeInput.value.length !== 6) return;
+        confirming = true;
+        confirmBtn.disabled = true;
+        confirmBtn.firstChild.textContent = "Confirming\u2026 ";
+        try {
+          const res = await window.lyknWelcome.verifyCode(emailInput.value.trim(), codeInput.value);
+          if (!res?.ok) throw new Error(res?.error || "Could not verify code.");
+          setStage(6);
+        } catch (error) {
+          confirmError.textContent = error?.message || "Could not verify code.";
+          confirmBtn.firstChild.textContent = "Confirm ";
+          confirming = false;
+          confirmBtn.disabled = codeInput.value.length !== 6;
+        }
+      };
+      confirmBtn.addEventListener("click", confirm);
+      document.getElementById("resend-code").addEventListener("click", async () => {
+        try {
+          const res = await window.lyknWelcome.resendCode(emailInput.value.trim());
+          if (!res?.ok) throw new Error(res?.error || "Could not resend code.");
+          confirmError.textContent = "A new code has been sent.";
+        } catch (error) {
+          confirmError.textContent = error?.message || "Could not resend code.";
+        }
+      });
+
+      // ── stage 6: import from another browser ──
+      const BROWSER_ICONS = {
+        chrome: `<svg class="b-icon" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="#fff"/><path d="M24 2a22 22 0 0 1 19.05 11H24a11 11 0 0 0-9.53 5.5L7.6 6.86A21.94 21.94 0 0 1 24 2Z" fill="#ea4335"/><path d="M46 24a22 22 0 0 1-22 22l9.53-16.5A11 11 0 0 0 34.4 15L43.05 13A21.9 21.9 0 0 1 46 24Z" fill="#fbbc05"/><path d="M24 46A22 22 0 0 1 6.16 9.34l8.31 14.16.02.06A11 11 0 0 0 33.53 29.5Z" fill="#34a853"/><circle cx="24" cy="24" r="10" fill="#fff"/><circle cx="24" cy="24" r="8" fill="#4285f4"/></svg>`,
+        safari: `<svg class="b-icon" viewBox="0 0 48 48"><defs><linearGradient id="saf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3fb4f5"/><stop offset="1" stop-color="#1c6ee8"/></linearGradient></defs><circle cx="24" cy="24" r="22" fill="url(#saf)" stroke="#e6e8ec" stroke-width="2"/><path d="M34 14 20.5 20.5 14 34l13.5-6.5Z" fill="#fff"/><path d="M34 14 20.5 20.5l7 7Z" fill="#ff3b30"/></svg>`,
+      };
+      const browserRow = document.getElementById("browser-row");
+      const importNext = document.getElementById("import-next");
+      let browsersLoaded = false;
+      const loadBrowsers = async () => {
+        if (browsersLoaded) return;
+        browsersLoaded = true;
+        let list = [];
+        try {
+          list = (await window.lyknWelcome.getBrowsers()) || [];
+        } catch {
+          list = [{ id: "safari", name: "Safari" }];
+        }
+        browserRow.innerHTML = list
+          .map(
+            (b) => `
+          <label class="browser-card">
+            <input type="radio" name="import-browser" value="${b.id}" />
+            ${BROWSER_ICONS[b.id] || ""}
+            <span class="b-name"><b>${b.name}</b>${b.profiles ? `<span>${b.profiles} profile${b.profiles === 1 ? "" : "s"}</span>` : ""}</span>
+            <span class="radio"></span>
+          </label>`,
+          )
+          .join("");
+        browserRow.querySelectorAll("input").forEach((r) => {
+          // Radios can't be unchecked by clicking, and preventDefault on a
+          // radio click restores its pre-click state (undoing a manual
+          // uncheck). So the card intercepts the click and toggles manually.
+          r.closest(".browser-card").addEventListener("click", (event) => {
+            event.preventDefault();
+            r.checked = !r.checked;
+            importNext.disabled = !r.checked;
+          });
+        });
+      };
+      // Hand off to the studio. The main process waits for the studio to
+      // finish loading, fades this window out, and closes it — so the loader
+      // stays up (not a faded-out blank) however long the boot takes.
+      let leaving = false;
+      const leave = async () => {
+        if (leaving) return;
+        leaving = true;
+        try {
+          await window.lyknWelcome.finish();
+        } catch {
+          document.body.classList.add("leaving");
+          setTimeout(() => window.close(), 500);
+        }
+      };
+      importNext.addEventListener("click", async () => {
+        const sel = browserRow.querySelector("input:checked");
+        if (!sel) return;
+        try {
+          await window.lyknWelcome.setImportBrowser(sel.value);
+        } catch {
+          /* stored best-effort */
+        }
+        setStage(7); // logins come from the chosen browser's keychain store
+      });
+      // No import source → nothing to pull logins from; straight to apps.
+      document.getElementById("import-skip").addEventListener("click", () => setStage(8));
+
+      // ── stage 7: securely sync the selected browser ──
+      document.getElementById("logins-skip").addEventListener("click", () => setStage(8));
+      const syncBrowserBtn = document.getElementById("logins-import");
+      const syncStatus = document.getElementById("logins-status");
+      let browserSyncing = false;
+      document.getElementById("logins-import").addEventListener("click", async () => {
+        if (browserSyncing) return;
+        const selected = browserRow.querySelector("input:checked");
+        if (!selected) {
+          syncStatus.textContent = "Choose a browser to sync first.";
+          return;
+        }
+        browserSyncing = true;
+        syncBrowserBtn.disabled = true;
+        syncBrowserBtn.firstChild.textContent = "Syncing\u2026 ";
+        syncStatus.textContent = "Approve any macOS prompts to continue.";
+        try {
+          const result = await window.lyknWelcome.syncBrowser({
+            browserId: selected.value,
+            importCookies: true,
+            importTabs: true,
+            importHistory: true,
+          });
+          if (!result?.ok) {
+            throw new Error(result?.error || "Browser sync could not start.");
+          }
+          const blockers = (result.warnings || []).filter((warning) =>
+            /^(keychain_denied|db_read_failed|cookie_read_failed|cookie_import_failed|automation_denied|applescript_failed|tab_read_failed|history_read_failed|unsupported_platform)/.test(
+              String(warning || ""),
+            ),
+          );
+          if (blockers.length) {
+            throw new Error("Browser sync needs your macOS approval. Approve the system prompt, then try again.");
+          }
+          await window.lyknWelcome.setImportLogins(true);
+          const imported = Number(result.cookies?.imported || 0);
+          const tabs = Number(result.tabs?.opened || 0);
+          const context = result.habits?.learned ? " and browsing context" : "";
+          syncStatus.textContent =
+            `Synced ${imported} signed-in session${imported === 1 ? "" : "s"} and ` +
+            `${tabs} tab${tabs === 1 ? "" : "s"}${context}.`;
+          syncBrowserBtn.firstChild.textContent = "Synced ";
+          setTimeout(() => setStage(8), 700);
+        } catch (error) {
+          syncStatus.textContent =
+            error?.message || "Browser sync could not finish. Approve the macOS prompt and try again.";
+          syncBrowserBtn.firstChild.textContent = "Try again ";
+          syncBrowserBtn.disabled = false;
+          browserSyncing = false;
+        }
+      });
+
+      // ── stage 8: favorite apps ──
+      // Picks become browser hot links, so every app carries a real URL and
+      // its real favicon (same Google S2 service the studio uses).
+      const favicon = (domain) =>
+        `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`;
+      // Google's S2 favicon service returns the generic "G" for google.com
+      // subdomains, so Google products carry their real product icons.
+      const APPS = [
+        {
+          id: "gcal",
+          name: "Google Calendar",
+          domain: "calendar.google.com",
+          url: "https://calendar.google.com",
+          icon: "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png",
+        },
+        {
+          id: "gmail",
+          name: "Gmail",
+          domain: "mail.google.com",
+          url: "https://mail.google.com",
+          icon: "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png",
+        },
+        { id: "canva", name: "Canva", domain: "canva.com", url: "https://www.canva.com" },
+        { id: "slack", name: "Slack", domain: "slack.com", url: "https://app.slack.com" },
+        { id: "notion", name: "Notion", domain: "notion.so", url: "https://www.notion.so" },
+        { id: "github", name: "GitHub", domain: "github.com", url: "https://github.com" },
+        { id: "figma", name: "Figma", domain: "figma.com", url: "https://www.figma.com" },
+        { id: "spotify", name: "Spotify", domain: "spotify.com", url: "https://open.spotify.com" },
+      ];
+      const appsGrid = document.getElementById("apps-grid");
+      const esc = (s) =>
+        String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+      const tileHtml = (a, picked) => `
+        <button type="button" class="tile${picked ? " picked" : ""}" title="${esc(a.name)}"
+          data-app="${esc(a.id)}" data-name="${esc(a.name)}" data-url="${esc(a.url)}" data-icon="${esc(a.icon)}">
+          <img src="${esc(a.icon)}" alt="${esc(a.name)}" />
+        </button>`;
+      // The browser mockup on the right mirrors the picks as hot links, live.
+      // Until anything is picked it previews the suggestions, dimmed.
+      const hwLinks = document.getElementById("hw-links");
+      const renderHwLinks = () => {
+        const picked = [...appsGrid.querySelectorAll(".tile.picked")];
+        const shown = picked.length
+          ? picked
+          : [...appsGrid.querySelectorAll(".tile:not(.add)")];
+        hwLinks.classList.toggle("dim", picked.length === 0);
+        hwLinks.innerHTML = shown
+          .slice(0, 8)
+          .map(
+            (t, i) =>
+              `<span class="hw-app" style="animation-delay:${i * 35}ms"><img src="${esc(t.dataset.icon)}" alt="" /></span>`,
+          )
+          .join("");
+      };
+      const wireTile = (tile) =>
+        tile.addEventListener("click", () => {
+          tile.classList.toggle("picked");
+          renderHwLinks();
+        });
+      appsGrid.innerHTML =
+        APPS.map((a) => tileHtml({ ...a, icon: a.icon || favicon(a.domain) }, false)).join("") +
+        `<button type="button" class="tile add" id="add-app-btn" aria-label="Add an app">+</button>`;
+      appsGrid.querySelectorAll(".tile:not(.add)").forEach(wireTile);
+      const addTile = document.getElementById("add-app-btn");
+      renderHwLinks();
+
+      // "+" → search any app (Clearbit company autocomplete, no key needed).
+      const appAdd = document.getElementById("app-add");
+      const appSearch = document.getElementById("app-search");
+      const appSuggest = document.getElementById("app-suggest");
+      addTile.addEventListener("click", () => {
+        appAdd.classList.add("searching");
+        appSearch.focus();
+      });
+      const closeSearch = () => {
+        appAdd.classList.remove("searching");
+        appSuggest.classList.remove("open");
+        appSearch.value = "";
+      };
+      const addApp = (s) => {
+        const id = s.domain.toLowerCase();
+        const existing = appsGrid.querySelector(`.tile[data-app="${CSS.escape(id)}"]`);
+        if (existing) {
+          existing.classList.add("picked");
+        } else {
+          // New tile lands before the + so adding stays one tap away.
+          addTile.insertAdjacentHTML(
+            "beforebegin",
+            tileHtml(
+              { id, name: s.name, url: `https://${s.domain}`, icon: s.logo || favicon(s.domain) },
+              true, // just searched for it — obviously a favorite
+            ),
+          );
+          wireTile(addTile.previousElementSibling);
+        }
+        renderHwLinks();
+        closeSearch();
+      };
+      let searchSeq = 0;
+      let suggestions = [];
+      appSearch.addEventListener("input", async () => {
+        const q = appSearch.value.trim();
+        if (q.length < 2) {
+          appSuggest.classList.remove("open");
+          return;
+        }
+        const seq = ++searchSeq;
+        let results = [];
+        try {
+          const res = await fetch(
+            `https://autocomplete.clearbit.com/v1/companies/suggest?query=${encodeURIComponent(q)}`,
+          );
+          results = (await res.json()) || [];
+        } catch {
+          results = [];
+        }
+        if (seq !== searchSeq) return; // a newer keystroke owns the dropdown
+        // Fallback: treat "figma.com"-style input as a direct domain.
+        if (!results.length && /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(q)) {
+          results = [{ name: q.split(".")[0], domain: q.toLowerCase(), logo: "" }];
+        }
+        suggestions = results.slice(0, 5);
+        appSuggest.innerHTML = suggestions
+          .map(
+            (s, i) => `
+          <div class="suggest-row" data-i="${i}">
+            <img src="${esc(s.logo || favicon(s.domain))}" alt="" />
+            <b>${esc(s.name)}</b><span>${esc(s.domain)}</span>
+          </div>`,
+          )
+          .join("");
+        appSuggest.classList.toggle("open", suggestions.length > 0);
+        appSuggest.querySelectorAll(".suggest-row").forEach((r) =>
+          r.addEventListener("click", () => addApp(suggestions[Number(r.dataset.i)])),
+        );
+      });
+      appSearch.addEventListener("keydown", (e) => {
+        e.stopPropagation(); // keep Enter from tripping the stage handler
+        if (e.key === "Enter" && suggestions.length) addApp(suggestions[0]);
+        else if (e.key === "Escape") closeSearch();
+      });
+
+      document.getElementById("apps-next").addEventListener("click", async () => {
+        // Full link objects — the browser turns these into hot links.
+        const picks = [...appsGrid.querySelectorAll(".tile.picked")].map((t) => ({
+          id: t.dataset.app,
+          name: t.dataset.name,
+          url: t.dataset.url,
+          icon: t.dataset.icon,
+        }));
+        try {
+          await window.lyknWelcome.setFavoriteApps(picks);
+        } catch {
+          /* stored best-effort */
+        }
+        setStage(9); // on to Make LYKN Yours
+      });
+
+      // ── stages 9–11: Make LYKN Yours ──
+      const prefs = { accent: "#0e6fff", appearance: "dark", tabLayout: "top", startView: "studio" };
+
+      // Theme swatches — LYKN blue first (default).
+      const ACCENTS = ["#0e6fff", "#9aa3b2", "#10b981", "#7c6df2", "#f59e0b", "#ec6a9c", "#e8506e", "#f0562a"];
+      const swatches = document.getElementById("swatches");
+      swatches.innerHTML = ACCENTS.map(
+        (c, i) => `<button type="button" class="swatch${i === 0 ? " sel" : ""}" data-color="${c}" style="background:${c}" aria-label="Theme color"></button>`,
+      ).join("");
+      const applyAccent = () => {
+        document.querySelectorAll(".pv").forEach((w) => w.style.setProperty("--accent", prefs.accent));
+        document.querySelectorAll(".mini .m-chat").forEach((c) => c.style.setProperty("--accent", prefs.accent));
+      };
+      swatches.querySelectorAll(".swatch").forEach((s) =>
+        s.addEventListener("click", () => {
+          swatches.querySelector(".sel")?.classList.remove("sel");
+          s.classList.add("sel");
+          prefs.accent = s.dataset.color;
+          applyAccent();
+        }),
+      );
+      applyAccent();
+
+      // Single-select card groups.
+      const choiceGroup = (rowId, onPick) => {
+        const row = document.getElementById(rowId);
+        row.querySelectorAll(".choice").forEach((c) =>
+          c.addEventListener("click", () => {
+            row.querySelector(".sel")?.classList.remove("sel");
+            c.classList.add("sel");
+            onPick(c.dataset.value);
+          }),
+        );
+      };
+      choiceGroup("appearance-row", (v) => {
+        prefs.appearance = v;
+        // "auto" previews as dark — matches the app tonight, at least.
+        document.querySelectorAll(".pv").forEach((w) => w.classList.toggle("light", v === "light"));
+      });
+      choiceGroup("tabs-row", (v) => {
+        prefs.tabLayout = v;
+        document.getElementById("pv-tabs").classList.toggle("sidebar", v === "sidebar");
+      });
+      choiceGroup("start-row", (v) => {
+        prefs.startView = v;
+      });
+
+      document.getElementById("theme-next").addEventListener("click", () => setStage(10));
+      document.getElementById("tabs-next").addEventListener("click", () => setStage(11));
+      document.getElementById("start-next").addEventListener("click", async () => {
+        try {
+          await window.lyknWelcome.setPrefs(prefs);
+        } catch {
+          /* stored best-effort */
+        }
+        setStage(12); // privacy choices close out the welcome stages
+      });
+
+      // ── stage 12: privacy ──
+      const openPrivacy = () => window.lyknWelcome.openPrivacyPolicy();
+      document.getElementById("privacy-learn-more").addEventListener("click", (e) => {
+        // Inside the checkbox label — don't let the click toggle it.
+        e.preventDefault();
+        e.stopPropagation();
+        openPrivacy();
+      });
+      document.getElementById("privacy-next").addEventListener("click", async () => {
+        try {
+          await window.lyknWelcome.setPrivacy({
+            blockTrackers: document.getElementById("opt-trackers").checked,
+            shareContentData: document.getElementById("opt-share").checked,
+          });
+        } catch {
+          /* stored best-effort */
+        }
+        setStage(2); // essentials close out the flow
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if (stage === 1) setStage(3);
+        else if (e.key === "Enter" && stage === 2) getStarted();
+        else if (e.key === "Enter" && stage === 3) emailNext.click();
+        else if (e.key === "Enter" && stage === 4) signUp();
+        else if (e.key === "Enter" && stage === "login") signIn();
+        else if (e.key === "Enter" && stage === 5) confirm();
+        else if (e.key === "Enter" && stage === 6) importNext.click();
+        else if (e.key === "Enter" && stage === 7) document.getElementById("logins-import").click();
+        else if (e.key === "Enter" && stage === 8) document.getElementById("apps-next").click();
+        else if (e.key === "Enter" && stage === 9) setStage(10);
+        else if (e.key === "Enter" && stage === 10) setStage(11);
+        else if (e.key === "Enter" && stage === 11) document.getElementById("start-next").click();
+        else if (e.key === "Enter" && stage === 12) document.getElementById("privacy-next").click();
+      });
+    </script>
+  </body>
+</html>

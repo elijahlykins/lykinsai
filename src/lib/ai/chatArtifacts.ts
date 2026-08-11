@@ -60,6 +60,11 @@ export type ArtifactEditContext = {
   title: string;
   /** Board that owns this panel artifact — server drops mismatches. */
   sourceChatId?: string;
+  /**
+   * Chat mode (not Build/Create): artifact is visible for discussion only.
+   * Server must not force edits or inject ARTIFACT_OPEN refine instructions.
+   */
+  discussOnly?: boolean;
   templateType?: string;
   sections?: any[];
   content?: string;
@@ -567,6 +572,10 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
     case "lykn_generate_image": {
       const url = typeof call.result.image_url === "string" ? call.result.image_url : "";
       if (!url) return [];
+      const storagePath =
+        typeof call.result.storage_path === "string" && call.result.storage_path.trim()
+          ? call.result.storage_path.trim()
+          : undefined;
       return [
         {
           id: `${call.id}:image`,
@@ -575,6 +584,8 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
           previewUrl: url,
           downloadUrl: url,
           format: "png",
+          storagePath,
+          storageBucket: storagePath ? "user-files" : undefined,
           toolName: call.name,
           downloads: [{ format: "png", url, filename: "generated-image.png" }],
         },
@@ -588,6 +599,10 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
             ? call.result.download_url
             : "";
       if (!url) return [];
+      const storagePath =
+        typeof call.result.storage_path === "string" && call.result.storage_path.trim()
+          ? call.result.storage_path.trim()
+          : undefined;
       return [
         {
           id: `${call.id}:image`,
@@ -596,6 +611,8 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
           previewUrl: url,
           downloadUrl: url,
           format: "png",
+          storagePath,
+          storageBucket: storagePath ? "user-files" : undefined,
           toolName: call.name,
           downloads: [{ format: "png", url, filename: "edited-image.png" }],
         },

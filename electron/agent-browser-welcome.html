@@ -3,31 +3,35 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Agent browser</title>
+    <title>New tab</title>
     <style>
-      /* Match Mac app theme.js: light #ececeb · dark #1e1e1e */
       :root,
       html[data-theme="light"] {
-        --bg: #ececeb;
-        --text: rgba(15, 15, 15, 0.92);
-        --muted: rgba(15, 15, 15, 0.5);
-        /* Deboss / stamp lighting (light from top-left) */
-        --stamp-hi: rgba(255, 255, 255, 0.92);
-        --stamp-lo: rgba(0, 0, 0, 0.18);
-        --stamp-hi-soft: rgba(255, 255, 255, 0.45);
-        --stamp-lo-soft: rgba(0, 0, 0, 0.08);
-        --grain: rgba(0, 0, 0, 0.035);
+        --bg: #f3f2f0;
+        --bg-grad: #f3f2f0;
+        --text: #1f2328;
+        --muted: rgba(31, 35, 40, 0.5);
+        --card: #ffffff;
+        --card-border: rgba(20, 40, 70, 0.06);
+        --card-shadow: 0 2px 6px rgba(30, 64, 120, 0.06), 0 18px 50px rgba(30, 64, 120, 0.12);
+        --item-hover: rgba(0, 0, 0, 0.05);
+        --app-card: rgba(255, 255, 255, 0.72);
+        --go-bg: #1f2328;
+        --go-fg: #ffffff;
       }
       html[data-theme="incognito"],
       html[data-theme="dark"] {
         --bg: #1e1e1e;
+        --bg-grad: #1e1e1e;
         --text: rgba(250, 250, 250, 0.92);
-        --muted: rgba(250, 250, 250, 0.55);
-        --stamp-hi: rgba(255, 255, 255, 0.16);
-        --stamp-lo: rgba(0, 0, 0, 0.78);
-        --stamp-hi-soft: rgba(255, 255, 255, 0.07);
-        --stamp-lo-soft: rgba(0, 0, 0, 0.42);
-        --grain: rgba(255, 255, 255, 0.03);
+        --muted: rgba(250, 250, 250, 0.5);
+        --card: #24262b;
+        --card-border: rgba(255, 255, 255, 0.08);
+        --card-shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 18px 50px rgba(0, 0, 0, 0.4);
+        --item-hover: rgba(255, 255, 255, 0.08);
+        --app-card: rgba(255, 255, 255, 0.06);
+        --go-bg: #fafafa;
+        --go-fg: #16181c;
       }
       * {
         box-sizing: border-box;
@@ -45,143 +49,1189 @@
       }
       .stage {
         position: relative;
-        min-height: 100%;
-        display: grid;
-        place-items: center;
-        padding: 40px 24px 48px;
-        background: var(--bg);
-      }
-      /* Fine paper grain so the stamp reads as pressed into a surface */
-      .stage::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-        opacity: 1;
-        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-        background-size: 180px 180px;
-        mix-blend-mode: soft-light;
-        opacity: 0.45;
-      }
-      .mark {
-        position: relative;
-        z-index: 1;
+        height: 100%;
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 22px;
+        justify-content: center;
+        background: var(--bg-grad);
+        overflow: hidden;
+      }
+      .hero {
+        position: relative;
+        z-index: 2;
+        width: min(680px, 92vw);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        /* Optical center: nudge up slightly so the icon + bar block reads
+           centered even with the apps row hanging below. */
+        transform: translateY(-3vh);
+      }
+      /* A conversational prompt turns the welcome view into a compact chat:
+         messages occupy the page and the composer settles at the bottom. */
+      body.chat-active .stage {
+        justify-content: flex-start;
+        padding: 24px 0 22px;
+      }
+      body.chat-active .hero {
+        height: 100%;
+        transform: none;
+      }
+      body.chat-active .drop-follow,
+      body.chat-active .agent-heading,
+      body.chat-active .apps { display: none; }
+      .chat-thread {
+        width: 100%;
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px 16px 24px;
+        scrollbar-width: thin;
+      }
+      .chat-message {
+        max-width: min(680px, 100%);
+        margin: 0 auto 14px;
+        color: var(--text);
+        font-size: 14px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        animation: chat-message-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+      .chat-message.user {
+        width: fit-content;
+        max-width: min(80%, 540px);
+        margin-right: 0;
+        padding: 12px 16px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 16px 16px 4px 16px;
+        background: var(--card);
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+      }
+      .chat-message.assistant {
+        padding: 5px 2px 12px;
+        color: rgba(22, 22, 26, 0.9);
+      }
+      .chat-message.pending {
+        color: var(--muted);
+      }
+      .chat-thinking {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .chat-thinking-mark {
+        width: 24px;
+        height: 24px;
+        flex: none;
+        color: #2563eb;
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: lykn-loader-pop 3.6s ease-in-out infinite;
+      }
+      .chat-thinking-mark path {
+        fill: currentColor;
+        stroke: currentColor;
+        stroke-width: 1.75;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-dasharray: 1;
+        animation: lykn-loader-draw 3.6s ease-in-out infinite;
+      }
+      .chat-thinking-text {
+        display: inline-block;
+        --thinking-dim: rgba(0, 0, 0, 0.42);
+        --thinking-bright: rgba(0, 0, 0, 0.82);
+        background: linear-gradient(
+          100deg,
+          var(--thinking-dim) 0%,
+          var(--thinking-dim) 42%,
+          var(--thinking-bright) 50%,
+          var(--thinking-dim) 58%,
+          var(--thinking-dim) 100%
+        );
+        background-size: 220% 100%;
+        background-clip: text;
+        -webkit-background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        animation: chat-thinking-shimmer 2.4s linear infinite;
+      }
+      @keyframes chat-thinking-shimmer {
+        from { background-position: 130% 0; }
+        to { background-position: -130% 0; }
+      }
+      }
+      @keyframes chat-message-in {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes chat-composer-settle {
+        from { opacity: 0; transform: translateY(14px) scale(0.985); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      body.chat-active .ask-card {
+        animation: chat-composer-settle 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+      html[data-theme="incognito"] .chat-message.user,
+      html[data-theme="dark"] .chat-message.user {
+        border-color: rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.06);
+      }
+      html[data-theme="incognito"] .chat-message.assistant,
+      html[data-theme="dark"] .chat-message.assistant {
+        color: rgba(255, 255, 255, 0.9);
+      }
+      html[data-theme="incognito"] .chat-thinking-text,
+      html[data-theme="dark"] .chat-thinking-text {
+        --thinking-dim: rgba(255, 255, 255, 0.4);
+        --thinking-bright: rgba(255, 255, 255, 0.9);
+      }
+      /* Glass LYKN loading mark — same trace → fill → hold loop as the
+         product loader, rendered with clear-glass highlights. */
+      .drop-follow {
+        margin-bottom: 26px;
+      }
+      .agent-heading {
+        margin: 0 0 18px;
+        color: var(--text);
+        font-size: clamp(20px, 2.2vw, 27px);
+        font-weight: 610;
+        letter-spacing: -0.035em;
+        line-height: 1.1;
         text-align: center;
-        max-width: 420px;
       }
-      /*
-        Stamped / debossed mark: fill = page bg, form only from highlight + shadow
-        (same idea as letterpress inset — not a chrome render).
-      */
-      .stamp {
-        width: min(300px, 58vw);
-        height: min(300px, 58vw);
-        color: var(--bg);
-        filter:
-          drop-shadow(1.4px 1.4px 0.4px var(--stamp-hi))
-          drop-shadow(-1.6px -1.6px 0.7px var(--stamp-lo))
-          drop-shadow(2.8px 2.8px 1.6px var(--stamp-hi-soft))
-          drop-shadow(-2.8px -2.8px 2.2px var(--stamp-lo-soft));
+      html[data-theme="incognito"] .agent-heading,
+      html[data-theme="dark"] .agent-heading {
+        color: rgba(255, 255, 255, 0.92);
       }
-      .stamp svg {
+      .drop {
+        width: 88px;
+        height: 88px;
+      }
+      .drop svg {
         display: block;
         width: 100%;
         height: 100%;
         overflow: visible;
+        filter:
+          drop-shadow(0 15px 24px rgba(41, 46, 54, 0.18))
+          drop-shadow(0 3px 7px rgba(255, 255, 255, 0.72));
+        transform-origin: 50% 60%;
       }
-      .stamp path {
-        fill: currentColor;
+      #orb-svg {
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: lykn-loader-pop 3.6s ease-in-out infinite;
       }
-      .copy h1 {
-        margin: 0 0 8px;
+      #orb-svg > use:not(.glass-loader-path),
+      #orb-svg > g { display: none; }
+      .glass-loader-path {
+        stroke-dasharray: 1;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        filter:
+          drop-shadow(0 0 5px rgba(41, 125, 255, 0.9))
+          drop-shadow(0 0 14px rgba(41, 125, 255, 0.32));
+        animation: lykn-loader-draw 3.6s ease-in-out infinite;
+      }
+      html[data-theme="incognito"] .drop svg,
+      html[data-theme="dark"] .drop svg {
+        filter:
+          drop-shadow(0 14px 26px rgba(0, 0, 0, 0.45))
+          drop-shadow(0 2px 6px rgba(0, 0, 0, 0.3));
+      }
+      @keyframes lykn-loader-draw {
+        0%   { stroke-dashoffset: 1; stroke-opacity: 1; fill-opacity: 0; }
+        40%  { stroke-dashoffset: 0; stroke-opacity: 1; fill-opacity: 0; }
+        55%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }
+        82%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }
+        96%  { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 0; }
+        100% { stroke-dashoffset: 1; stroke-opacity: 0; fill-opacity: 0; }
+      }
+      @keyframes lykn-loader-pop {
+        0%   { transform: scale(0.9); }
+        40%  { transform: scale(1); }
+        82%  { transform: scale(1); }
+        100% { transform: scale(0.9); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #orb-svg, .glass-loader-path { animation: none; }
+        .glass-loader-path { stroke-dashoffset: 0; stroke-opacity: 0; fill-opacity: 1; }
+      }
+
+      /* ── Chat bar — same neumorphic composer as the regular LYKN chat
+         (lykn-chat-neu-chat-shell / -field / -icon-plain / -send-btn). ── */
+      .ask-wrap {
+        position: relative;
+        width: 100%;
+      }
+      .ask-card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 12px;
+        border-radius: 14px;
+        background: linear-gradient(145deg, #f6f6f6, #f0f0f0);
+        border: 1px solid rgba(0, 0, 0, 0.04);
+        box-shadow:
+          0 6px 20px rgba(0, 0, 0, 0.12),
+          0 2px 6px rgba(0, 0, 0, 0.07),
+          inset 0 1px 0 rgba(255, 255, 255, 0.6);
+      }
+      html[data-theme="incognito"] .ask-card,
+      html[data-theme="dark"] .ask-card {
+        background: linear-gradient(145deg, #343840, #282c32);
+        border-color: rgba(255, 255, 255, 0.05);
+        box-shadow:
+          0 4px 16px rgba(0, 0, 0, 0.45),
+          0 1.5px 4px rgba(0, 0, 0, 0.25),
+          inset 0 1px 0 rgba(255, 255, 255, 0.07);
+      }
+      /* Flush with shell: no inner box — same surface as the card. */
+      .ask-input {
+        display: block;
+        width: 100%;
+        min-height: 52px;
+        max-height: 180px;
+        border: none;
+        border-radius: 0;
+        background: transparent;
+        color: #16161a;
+        font: inherit;
+        font-size: 13px;
+        line-height: 1.35;
+        outline: none;
+        box-shadow: none;
+        -webkit-appearance: none;
+        resize: none;
+        padding: 8px 12px 0;
+      }
+      html[data-theme="incognito"] .ask-input,
+      html[data-theme="dark"] .ask-input {
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .ask-input::placeholder { color: rgba(0, 0, 0, 0.5); }
+      html[data-theme="incognito"] .ask-input::placeholder,
+      html[data-theme="dark"] .ask-input::placeholder {
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .ask-row {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 6px;
+        padding-top: 4px;
+      }
+      .model-picker { position: relative; margin-right: auto; }
+      .model-trigger {
+        height: 36px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 0 8px;
+        border: 0;
+        border-radius: 10px;
+        background: transparent;
+        color: rgba(0, 0, 0, 0.78);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        cursor: pointer;
+      }
+      .model-trigger:hover { background: rgba(0, 0, 0, 0.045); }
+      .model-trigger svg { width: 13px; height: 13px; opacity: 0.48; }
+      .model-menu {
+        position: absolute;
+        z-index: 5;
+        bottom: calc(100% + 8px);
+        left: 0;
+        width: 218px;
+        padding: 5px;
+        border: 1px solid rgba(0, 0, 0, 0.09);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 16px 38px rgba(21, 24, 30, 0.16);
+        backdrop-filter: blur(18px);
+      }
+      .model-menu[hidden] { display: none; }
+      .model-option {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 9px;
+        border: 0;
+        border-radius: 9px;
+        background: transparent;
+        color: #191a1d;
+        font: inherit;
+        font-size: 12px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .model-option:hover, .model-option.selected { background: rgba(0, 0, 0, 0.055); }
+      .model-option .provider { color: rgba(0, 0, 0, 0.46); font-size: 11px; }
+      .model-menu-label {
+        padding: 7px 9px 4px;
+        color: rgba(0, 0, 0, 0.42);
+        font-size: 10px;
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      html[data-theme="incognito"] .model-trigger,
+      html[data-theme="dark"] .model-trigger { color: rgba(255, 255, 255, 0.84); }
+      html[data-theme="incognito"] .model-trigger:hover,
+      html[data-theme="dark"] .model-trigger:hover { background: rgba(255, 255, 255, 0.08); }
+      html[data-theme="incognito"] .model-menu,
+      html[data-theme="dark"] .model-menu {
+        border-color: rgba(255, 255, 255, 0.12);
+        background: rgba(37, 40, 47, 0.96);
+        box-shadow: 0 16px 38px rgba(0, 0, 0, 0.35);
+      }
+      html[data-theme="incognito"] .model-option,
+      html[data-theme="dark"] .model-option { color: rgba(255, 255, 255, 0.9); }
+      html[data-theme="incognito"] .model-option:hover,
+      html[data-theme="incognito"] .model-option.selected,
+      html[data-theme="dark"] .model-option:hover,
+      html[data-theme="dark"] .model-option.selected { background: rgba(255, 255, 255, 0.1); }
+      html[data-theme="incognito"] .model-option .provider,
+      html[data-theme="dark"] .model-option .provider,
+      html[data-theme="incognito"] .model-menu-label,
+      html[data-theme="dark"] .model-menu-label { color: rgba(255, 255, 255, 0.48); }
+      /* Icon-only toolbar control (plus menu in the app). */
+      .ask-hint {
+        flex: none;
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border: none;
+        border-radius: 10px;
+        background: transparent;
+        color: rgba(0, 0, 0, 0.75);
+        cursor: pointer;
+        box-shadow: none;
+        transition:
+          background-color 0.18s ease,
+          box-shadow 0.18s ease,
+          color 0.18s ease;
+      }
+      .ask-hint:hover {
+        background-color: rgba(59, 130, 246, 0.1);
+        box-shadow: 0 0 12px rgba(59, 130, 246, 0.14);
+      }
+      html[data-theme="incognito"] .ask-hint,
+      html[data-theme="dark"] .ask-hint {
+        color: rgba(255, 255, 255, 0.8);
+      }
+      html[data-theme="incognito"] .ask-hint:hover,
+      html[data-theme="dark"] .ask-hint:hover {
+        background-color: rgba(59, 130, 246, 0.14);
+      }
+      .ask-hint svg { width: 14px; height: 14px; display: block; }
+      /* Neumorphic send button — raised, blue arrow when ready. */
+      .ask-go {
+        flex: none;
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        background: linear-gradient(145deg, #fafafa, #f0f0f2);
+        box-shadow:
+          4px 4px 9px rgba(0, 0, 0, 0.05),
+          -2px -2px 6px rgba(255, 255, 255, 0.9);
+        color: #2563eb;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        opacity: 0.4;
+        transition:
+          box-shadow 0.18s ease,
+          transform 0.15s ease,
+          background 0.18s ease,
+          border-color 0.18s ease,
+          opacity 0.18s ease;
+      }
+      .ask-go.ready { opacity: 1; }
+      .ask-go.ready:hover {
+        background: linear-gradient(145deg, #e8f1fc, #dceaf8);
+        border-color: rgba(59, 130, 246, 0.28);
+        box-shadow:
+          3px 3px 8px rgba(0, 0, 0, 0.06),
+          -2px -2px 6px rgba(255, 255, 255, 0.82),
+          0 0 14px rgba(59, 130, 246, 0.14);
+      }
+      .ask-go.ready:active {
+        box-shadow:
+          inset 2px 2px 5px rgba(0, 0, 0, 0.1),
+          inset -1px -1px 4px rgba(255, 255, 255, 0.5),
+          0 0 0 1px rgba(59, 130, 246, 0.12);
+      }
+      html[data-theme="incognito"] .ask-go,
+      html[data-theme="dark"] .ask-go {
+        background: linear-gradient(145deg, #383c44, #2a2e35);
+        border-color: rgba(255, 255, 255, 0.06);
+        box-shadow:
+          3px 3px 8px rgba(0, 0, 0, 0.45),
+          -2px -2px 6px rgba(255, 255, 255, 0.02);
+        color: #60a5fa;
+      }
+      html[data-theme="incognito"] .ask-go.ready:hover,
+      html[data-theme="dark"] .ask-go.ready:hover {
+        background: linear-gradient(145deg, #2e3848, #283040);
+        border-color: rgba(96, 165, 250, 0.32);
+      }
+      .ask-go svg { width: 14px; height: 14px; display: block; }
+
+      /* Suggestions dropdown hangs off the card. */
+      .search-suggest {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(100% + 8px);
+        max-height: min(240px, 34vh);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        border-radius: 18px;
+        border: 1px solid var(--card-border);
+        background: var(--card);
+        box-shadow: var(--card-shadow);
+        padding: 6px 0;
+        z-index: 5;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
+      }
+      html[data-theme="dark"] .search-suggest,
+      html[data-theme="incognito"] .search-suggest {
+        scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+      }
+      .search-suggest::-webkit-scrollbar {
+        width: 8px;
+      }
+      .search-suggest::-webkit-scrollbar-thumb {
+        background: rgba(0, 0, 0, 0.22);
+        border-radius: 999px;
+        border: 2px solid transparent;
+        background-clip: padding-box;
+      }
+      .search-suggest[hidden] { display: none; }
+      .search-suggest .item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        min-height: 44px;
+        border: none;
+        border-radius: 0;
+        background: transparent;
+        color: var(--text);
+        text-align: left;
+        padding: 8px 16px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .search-suggest .item:hover,
+      .search-suggest .item.active {
+        background: var(--item-hover);
+      }
+      .search-suggest .item .ico {
+        flex: none;
+        width: 18px;
+        height: 18px;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        opacity: 0.9;
+      }
+      .search-suggest .item .ico svg {
+        display: block;
+        width: 18px;
+        height: 18px;
+      }
+      .search-suggest .item .ico img {
+        display: block;
+        width: 16px;
+        height: 16px;
+        border-radius: 3px;
+        object-fit: contain;
+      }
+      .search-suggest .item .meta {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .search-suggest .item .name {
+        font-size: 14px;
+        font-weight: 400;
+        line-height: 1.25;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .search-suggest .item .host {
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.25;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ── Quick apps ── */
+      .apps {
         display: flex;
         flex-wrap: wrap;
-        align-items: center;
         justify-content: center;
-        gap: 0.28em 0.35em;
-        font-size: 22px;
-        font-weight: 650;
-        letter-spacing: -0.02em;
-        line-height: 1.25;
-        color: var(--text);
+        gap: 12px;
+        margin-top: 40px;
       }
-      .copy h1 .wordmark {
-        display: inline-block;
-        /* ViewBox has vertical padding — scale so glyph height matches surrounding type. */
-        height: 1.35em;
-        width: auto;
-        vertical-align: middle;
-        color: var(--text);
+      .app-card {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 220px;
+        padding: 9px 10px 9px 14px;
+        border-radius: 14px;
+        background: var(--app-card);
+        border: 1px solid var(--card-border);
       }
-      .copy h1 .wordmark path {
-        fill: currentColor;
+      .app-card img {
+        flex: none;
+        width: 20px;
+        height: 20px;
+        object-fit: contain;
       }
-      .copy p {
-        margin: 0;
-        font-size: 14px;
-        line-height: 1.45;
-        color: var(--muted);
-        max-width: 320px;
+      .app-card .app-name {
+        flex: 1;
+        font-size: 13px;
+        font-weight: 550;
       }
+      .app-card .app-open {
+        flex: none;
+        height: 28px;
+        padding: 0 14px;
+        border: none;
+        border-radius: 999px;
+        background: var(--go-bg);
+        color: var(--go-fg);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .app-card .app-open:hover { opacity: 0.85; }
       .badge {
         display: none;
-        margin-top: 14px;
+        margin-top: 18px;
         font-size: 11px;
         font-weight: 650;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: var(--muted);
+        text-align: center;
       }
       html[data-theme="incognito"] .badge,
       html[data-theme="dark"] .badge {
-        display: inline-block;
+        display: block;
       }
+
     </style>
   </head>
   <body>
     <div class="stage">
-      <div class="mark">
-        <!-- LYKN Icon B Open — filled with page bg; depth from CSS drop-shadows -->
-        <div class="stamp" aria-hidden="true">
-          <svg viewBox="0 0 204.29 204.29" role="img" aria-label="LYKN">
-            <path
-              d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z"
-            />
-          </svg>
-        </div>
-        <div class="copy">
-          <h1>
-            <span>Welcome to the</span>
-            <svg class="wordmark" viewBox="0 0 480.27 194.53" role="img" aria-label="LYKN">
-              <path
-                d="M113.42,136.31h-39.19c-2.23,0-4.05-1.82-4.05-4.05V39.72c0-.45-.36-.81-.81-.81h-29.64c-.45,0-.81.36-.81.81v86.71c0,20.57,11.2,29.2,27.65,29.2h46.86c.45,0,.81-.36.81-.81v-17.69c0-.45-.36-.81-.81-.81ZM403.29,36.25c-15.94,0-26.62,7.59-32.83,15.64-1.48,1.92-2.75,1.47-2.75-.96v-11.21c0-.45-.36-.81-.81-.81h-27.94c-.45,0-.81.36-.81.81v115.09c0,.45.36.81.81.81h29.57c.45,0,.81-.36.81-.81v-62.28c0-24.75,10.56-34.37,22.16-34.37s18.66,7.86,18.66,22.14v74.51c0,.45.36.81.81.81h29.57c.45,0,.81-.36.81-.81v-79.75c0-25.52-16.91-38.81-38.08-38.81ZM285.84,84.42c-.54-.9-.4-2.28.31-3.05l37.57-41.1c.48-.52.11-1.36-.6-1.36h-26.05c-.48,0-.93.21-1.24.57l-43.12,50.89c-1.5,1.77-2.72,1.32-2.72-1v-49.65c0-.45-.36-.81-.81-.81h-29.64c-.45,0-.81.36-.81.81v115.09c0,.45.36.81.81.81h29.64c.45,0,.81-.36.81-.81v-31.5c0-1.32.73-3.19,1.61-4.16l10.7-11.72c.79-.86,1.91-.74,2.48.28l26.64,47.09c.29.51.83.82,1.41.82h34.13c.63,0,1.02-.69.7-1.23l-41.83-69.98ZM210.32,38.91h-23.32c-.61,0-1.17.34-1.45.89l-23.86,47.1c-.77,1.51-2.01,1.51-2.76-.01l-23.23-47.07c-.27-.55-.84-.91-1.46-.91h-33.97c-.62,0-1.01.66-.71,1.2l39.62,72.63v42.08c0,.45.36.81.81.81h29.64c.45,0,.81-.36.81-.81v-42.4l40.57-72.29c.3-.54-.09-1.21-.71-1.21Z"
+      <div class="hero">
+        <div class="drop-follow" id="orb-follow" aria-hidden="true">
+          <div class="drop">
+            <svg viewBox="0 0 204.29 204.29" role="img" aria-label="LYKN" id="orb-svg">
+              <defs>
+                <path
+                  id="lykn-mark"
+                  pathLength="1"
+                  d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z"
+                />
+                <!-- Electric-blue loader fill: the outline draws in bright
+                     blue, then resolves into the solid LYKN mark. -->
+                <linearGradient id="lykn-glass" x1="0.08" y1="0" x2="0.7" y2="1">
+                  <stop offset="0" stop-color="#7dd3ff" />
+                  <stop offset="0.28" stop-color="#2997ff" />
+                  <stop offset="0.7" stop-color="#1768e6" />
+                  <stop offset="1" stop-color="#0b3fae" />
+                </linearGradient>
+                <linearGradient id="lykn-prism-edge" x1="0" y1="0.08" x2="1" y2="0.92">
+                  <stop offset="0" stop-color="#d9f4ff" />
+                  <stop offset="0.2" stop-color="#48c7ff" />
+                  <stop offset="0.48" stop-color="#146eff" />
+                  <stop offset="0.72" stop-color="#0e4fd2" />
+                  <stop offset="1" stop-color="#9cddff" />
+                </linearGradient>
+                <clipPath id="lykn-clip"><use href="#lykn-mark" /></clipPath>
+                <filter id="lykn-soft" x="-60%" y="-60%" width="220%" height="220%">
+                  <feGaussianBlur stdDeviation="16" />
+                </filter>
+                <filter id="lykn-rim" x="-30%" y="-30%" width="160%" height="160%">
+                  <feGaussianBlur stdDeviation="3" />
+                </filter>
+              </defs>
+              <use
+                class="glass-loader-path"
+                href="#lykn-mark"
+                fill="url(#lykn-glass)"
+                stroke="url(#lykn-prism-edge)"
+                stroke-width="3.2"
+                vector-effect="non-scaling-stroke"
               />
+              <!-- Rear refraction gives the mark a glass thickness. -->
+              <use
+                href="#lykn-mark"
+                transform="translate(0 4)"
+                fill="#596067"
+                fill-opacity="0.16"
+                stroke="#747b82"
+                stroke-opacity="0.26"
+                stroke-width="5"
+              />
+              <use
+                href="#lykn-mark"
+                fill="url(#lykn-glass)"
+                stroke="url(#lykn-prism-edge)"
+                stroke-width="3.2"
+                stroke-linejoin="round"
+              />
+              <g clip-path="url(#lykn-clip)">
+                <ellipse class="liq-hi" cx="62" cy="38" rx="78" ry="36" fill="#ffffff" opacity="0.76" filter="url(#lykn-soft)" />
+                <ellipse class="liq-lo" cx="154" cy="178" rx="82" ry="46" fill="#4f555d" opacity="0.24" filter="url(#lykn-soft)" />
+                <ellipse cx="58" cy="36" rx="14" ry="7" fill="#ffffff" opacity="0.95" filter="url(#lykn-rim)" />
+                <use
+                  href="#lykn-mark"
+                  fill="none"
+                  stroke="rgba(255,255,255,0.96)"
+                  stroke-width="4"
+                  opacity="0.76"
+                  filter="url(#lykn-rim)"
+                />
+              </g>
             </svg>
-            <span>browser</span>
-          </h1>
-          <p>Ask LYKN to open a site, research, or build. This tab is ready when you are.</p>
-          <div class="badge">Incognito</div>
+          </div>
         </div>
+
+        <h1 class="agent-heading">Meet Your Browser Agent</h1>
+        <div id="chat-thread" class="chat-thread" hidden aria-live="polite"></div>
+        <div class="ask-wrap">
+          <div class="ask-card">
+            <textarea
+              id="q"
+              class="ask-input"
+              rows="1"
+              spellcheck="false"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              placeholder="Ask me anything..."
+            ></textarea>
+            <div class="ask-row">
+              <div class="model-picker">
+                <button type="button" id="model-trigger" class="model-trigger" aria-haspopup="listbox" aria-expanded="false">
+                  <span id="model-label">LYKN</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+                <div id="model-menu" class="model-menu" hidden role="listbox" aria-label="Choose a model">
+                  <button type="button" class="model-option selected" role="option" aria-selected="true" data-model="LYKN"><span>LYKN</span></button>
+                  <div class="model-menu-label">Top frontier models</div>
+                  <button type="button" class="model-option" role="option" aria-selected="false" data-model="GPT-5.6"><span>GPT-5.6</span><span class="provider">OpenAI</span></button>
+                  <button type="button" class="model-option" role="option" aria-selected="false" data-model="Claude Sonnet 4.6"><span>Claude Sonnet 4.6</span><span class="provider">Anthropic</span></button>
+                  <button type="button" class="model-option" role="option" aria-selected="false" data-model="Gemini 3.1 Pro"><span>Gemini 3.1 Pro</span><span class="provider">Google</span></button>
+                  <button type="button" class="model-option" role="option" aria-selected="false" data-model="Grok 4.5"><span>Grok 4.5</span><span class="provider">xAI</span></button>
+                </div>
+              </div>
+              <button type="button" id="hint" class="ask-hint" title="Quick links" aria-label="Quick links">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              </button>
+              <button type="button" id="go" class="ask-go" title="Send" aria-label="Send">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+              </button>
+            </div>
+          </div>
+          <div id="suggest" class="search-suggest" hidden role="listbox" aria-label="Suggestions"></div>
+        </div>
+
+        <div class="apps">
+          <div class="app-card">
+            <img src="https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png" alt="" loading="lazy" referrerpolicy="no-referrer" />
+            <span class="app-name">Gmail</span>
+            <button type="button" class="app-open" data-url="https://mail.google.com/">Open</button>
+          </div>
+          <div class="app-card">
+            <img src="https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png" alt="" loading="lazy" referrerpolicy="no-referrer" />
+            <span class="app-name">Calendar</span>
+            <button type="button" class="app-open" data-url="https://calendar.google.com/">Open</button>
+          </div>
+        </div>
+        <div class="badge">Incognito</div>
       </div>
+
     </div>
     <script>
       (function () {
         try {
-          const q = new URLSearchParams(location.search || "");
-          const theme = (q.get("theme") || "").toLowerCase();
+          const params = new URLSearchParams(location.search || "");
+          const theme = (params.get("theme") || "").toLowerCase();
           const dark =
             theme === "incognito" ||
             theme === "dark" ||
-            q.get("incognito") === "1";
+            params.get("incognito") === "1";
           document.documentElement.setAttribute(
             "data-theme",
             dark ? "incognito" : "light",
           );
         } catch (_) {}
+
+        const COMMON = [
+          { name: "Google", url: "https://www.google.com/", complete: "google.com" },
+          { name: "YouTube", url: "https://www.youtube.com/", complete: "youtube.com" },
+          { name: "Gmail", url: "https://mail.google.com/", complete: "mail.google.com" },
+          { name: "Google Docs", url: "https://docs.google.com/", complete: "docs.google.com" },
+          { name: "Google Drive", url: "https://drive.google.com/", complete: "drive.google.com" },
+          { name: "Wikipedia", url: "https://www.wikipedia.org/", complete: "wikipedia.org" },
+          { name: "GitHub", url: "https://github.com/", complete: "github.com" },
+          { name: "X", url: "https://x.com/", complete: "x.com" },
+          { name: "Reddit", url: "https://www.reddit.com/", complete: "reddit.com" },
+          { name: "LinkedIn", url: "https://www.linkedin.com/", complete: "linkedin.com" },
+        ];
+
+        const qEl = document.getElementById("q");
+        const suggestEl = document.getElementById("suggest");
+        const goEl = document.getElementById("go");
+        const hintEl = document.getElementById("hint");
+        const modelTriggerEl = document.getElementById("model-trigger");
+        const modelMenuEl = document.getElementById("model-menu");
+        const modelLabelEl = document.getElementById("model-label");
+        const chatThreadEl = document.getElementById("chat-thread");
+        const pendingChatReplies = new Map();
+        let open = false;
+        let items = [];
+        let active = -1;
+
+        function escapeHtml(s) {
+          return String(s || "").replace(
+            /[&<>"']/g,
+            (c) =>
+              ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+          );
+        }
+
+        function omniboxToUrl(input) {
+          const q = String(input || "").trim();
+          if (!q) return "";
+          if (/^https?:\/\//i.test(q)) return q;
+          const hostish =
+            !/\s/.test(q) &&
+            (/^localhost(:\d+)?([/?#]|$)/i.test(q) ||
+              /^\d{1,3}(\.\d{1,3}){3}(:\d+)?([/?#]|$)/.test(q) ||
+              /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?([/?#]|$)/i.test(q));
+          if (hostish) return `https://${q}`;
+          return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+        }
+
+        function hostLabel(url) {
+          try {
+            return new URL(url).hostname.replace(/^www\./i, "");
+          } catch {
+            return "";
+          }
+        }
+
+        const BRAND_ICON_BY_HOST = {
+          "mail.google.com":
+            "https://www.gstatic.com/images/branding/product/2x/gmail_2020q4_48dp.png",
+          "calendar.google.com":
+            "https://www.gstatic.com/images/branding/product/2x/calendar_2020q4_48dp.png",
+          "drive.google.com":
+            "https://www.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
+          "docs.google.com":
+            "https://www.gstatic.com/images/branding/product/2x/docs_2020q4_48dp.png",
+          "sheets.google.com":
+            "https://www.gstatic.com/images/branding/product/2x/sheets_2020q4_48dp.png",
+          "slides.google.com":
+            "https://www.gstatic.com/images/branding/product/2x/slides_2020q4_48dp.png",
+          "keep.google.com":
+            "https://www.gstatic.com/images/branding/product/2x/keep_2020q4_48dp.png",
+          "youtube.com":
+            "https://www.gstatic.com/images/branding/product/2x/youtube_48dp.png",
+          "music.youtube.com":
+            "https://www.gstatic.com/images/branding/product/2x/youtube_music_2020q4_48dp.png",
+        };
+
+        function brandIconFor(url) {
+          const u = String(url || "");
+          const host = hostLabel(u);
+          if (!host) return "";
+          if (host === "docs.google.com") {
+            if (u.includes("/document/")) return BRAND_ICON_BY_HOST["docs.google.com"];
+            if (u.includes("/spreadsheets/")) return BRAND_ICON_BY_HOST["sheets.google.com"];
+            if (u.includes("/presentation/")) return BRAND_ICON_BY_HOST["slides.google.com"];
+          }
+          if (host === "google.com" && u.includes("/calendar/")) {
+            return BRAND_ICON_BY_HOST["calendar.google.com"];
+          }
+          return BRAND_ICON_BY_HOST[host] || "";
+        }
+
+        function faviconUrlFor(url) {
+          const brand = brandIconFor(url);
+          if (brand) return brand;
+          const host = hostLabel(url);
+          if (!host) return "";
+          return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`;
+        }
+
+        const GLOBE_SVG =
+          `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" stroke-linecap="round"/></svg>`;
+        const SEARCH_SVG =
+          `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>`;
+
+        function linkGuess(raw) {
+          const q = String(raw || "").trim();
+          if (!q || /\s/.test(q) || /^https?:\/\//i.test(q)) return null;
+          if (!/^[a-z0-9][a-z0-9.-]*$/i.test(q)) return null;
+          if (/^[a-z0-9-]+$/i.test(q)) {
+            return {
+              name: `${q}.com`,
+              url: `https://${q.toLowerCase()}.com/`,
+              complete: `${q}.com`,
+              kind: "Link",
+            };
+          }
+          const m = q.match(/^([a-z0-9-]+)\.(com?)?$/i);
+          if (m && (!m[2] || m[2].toLowerCase() !== "com")) {
+            return {
+              name: `${m[1]}.com`,
+              url: `https://${m[1].toLowerCase()}.com/`,
+              complete: `${m[1]}.com`,
+              kind: "Link",
+            };
+          }
+          return null;
+        }
+
+        function build(query) {
+          const raw = String(query || "");
+          const q = raw.trim().toLowerCase();
+          const out = COMMON.map((c) => ({ ...c, kind: "Popular" }));
+          if (!q) return out.slice(0, 6);
+          const filtered = out.filter((it) => {
+            const hay = `${it.name} ${it.url} ${it.complete}`.toLowerCase();
+            return hay.includes(q) || it.complete.toLowerCase().startsWith(q);
+          });
+          const guess = linkGuess(raw);
+          if (guess) filtered.unshift(guess);
+          if (q && !/^[a-z0-9.-]+\.[a-z]{2,}/i.test(q) && !/^https?:\/\//i.test(q)) {
+            filtered.push({
+              name: `Search Google for “${raw.trim()}”`,
+              url: `https://www.google.com/search?q=${encodeURIComponent(raw.trim())}`,
+              complete: raw.trim(),
+              kind: "Search",
+            });
+          }
+          return filtered.slice(0, 7);
+        }
+
+        function render() {
+          items = build(qEl.value);
+          active = -1;
+          if (!open || !items.length) {
+            suggestEl.hidden = true;
+            suggestEl.innerHTML = "";
+            return;
+          }
+          const iconFor = (it) => {
+            if (it.kind === "Search") return SEARCH_SVG;
+            const fav = faviconUrlFor(it.url);
+            if (fav) {
+              return `<img src="${escapeHtml(fav)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-fallback="1" />`;
+            }
+            return GLOBE_SVG;
+          };
+          suggestEl.innerHTML = items
+            .map((it, i) => {
+              const host =
+                it.kind === "Search"
+                  ? "Google Search"
+                  : hostLabel(it.url) || it.complete || it.url;
+              const title =
+                it.kind === "Search"
+                  ? it.name.replace(/^Search Google for\s+[“"](.+)[”"]$/i, "$1")
+                  : it.name || host;
+              return `<button type="button" class="item" data-idx="${i}">
+                  <span class="ico" aria-hidden="true">${iconFor(it)}</span>
+                  <div class="meta">
+                    <div class="name">${escapeHtml(title)}</div>
+                    <div class="host">${escapeHtml(host)}</div>
+                  </div>
+                </button>`;
+            })
+            .join("");
+          suggestEl.querySelectorAll("img[data-fallback]").forEach((img) => {
+            img.addEventListener(
+              "error",
+              () => {
+                const wrap = document.createElement("span");
+                wrap.innerHTML = GLOBE_SVG;
+                img.replaceWith(wrap.firstChild || wrap);
+              },
+              { once: true },
+            );
+          });
+          suggestEl.hidden = false;
+        }
+
+        function appendChatMessage(kind, text, pending = false) {
+          if (!chatThreadEl) return null;
+          const el = document.createElement("div");
+          el.className = `chat-message ${kind}${pending ? " pending" : ""}`;
+          el.textContent = text;
+          chatThreadEl.appendChild(el);
+          chatThreadEl.scrollTop = chatThreadEl.scrollHeight;
+          return el;
+        }
+        function renderThinking(el, status = "Thinking…") {
+          if (!el) return;
+          el.classList.add("pending");
+          // Render the path directly (the exact LyknOutlineSpinner markup)
+          // rather than referencing the decorative SVG above. A direct path
+          // keeps the stroke-draw animation visible in every webContents.
+          const iconPath = document.getElementById("lykn-mark")?.getAttribute("d") || "";
+          const wrap = document.createElement("span");
+          wrap.className = "chat-thinking";
+          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          svg.setAttribute("class", "chat-thinking-mark");
+          svg.setAttribute("viewBox", "0 0 204.29 204.29");
+          svg.setAttribute("aria-hidden", "true");
+          const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path.setAttribute("d", iconPath);
+          path.setAttribute("pathLength", "1");
+          path.setAttribute("vector-effect", "non-scaling-stroke");
+          svg.appendChild(path);
+          const label = document.createElement("span");
+          label.className = "chat-thinking-text";
+          label.textContent = status;
+          wrap.append(svg, label);
+          el.replaceChildren(wrap);
+        }
+        // Agent deltas contain the growing response. Reveal the new portion
+        // over a few frames so the browser reads like LYKN's live typing,
+        // rather than replacing a whole paragraph at once.
+        function typeResponse(el, nextText, { final = false } = {}) {
+          if (!el) return;
+          const target = String(nextText || "");
+          const current = String(el.dataset.typedText || "");
+          if (!target) return;
+          if (el._typeFrame) cancelAnimationFrame(el._typeFrame);
+          if (!target.startsWith(current)) {
+            el.dataset.typedText = "";
+            el.textContent = "";
+          }
+          let index = String(el.dataset.typedText || "").length;
+          const step = () => {
+            // Catch up quickly on long streams while retaining visible typing.
+            index = Math.min(target.length, index + Math.max(1, Math.ceil((target.length - index) / 18)));
+            const shown = target.slice(0, index);
+            el.textContent = shown;
+            el.dataset.typedText = shown;
+            chatThreadEl?.scrollTo({ top: chatThreadEl.scrollHeight, behavior: "smooth" });
+            if (index < target.length) {
+              el._typeFrame = requestAnimationFrame(step);
+            }
+          };
+          step();
+        }
+
+        async function go(raw) {
+          const prompt = String(raw || "").trim();
+          if (!prompt) return;
+          const model = String(modelLabelEl?.textContent || "LYKN");
+          const requestId =
+            globalThis.crypto?.randomUUID?.() ||
+            `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          qEl.value = "";
+          resizeComposer();
+          open = false;
+          suggestEl.hidden = true;
+          updateGoReady();
+          // Shift into chat immediately. This must not wait on IPC / model
+          // startup or the composer feels like an unresponsive search field.
+          document.body.classList.add("chat-active");
+          if (chatThreadEl) chatThreadEl.hidden = false;
+          appendChatMessage("user", prompt);
+          const pending = appendChatMessage("assistant", "Thinking…", true);
+          renderThinking(pending);
+          pendingChatReplies.set(requestId, pending);
+          qEl.disabled = true;
+          try {
+            const result = await window.lyknBrowserWelcome?.sendToAgent?.(prompt, model, requestId);
+            if (!result?.ok) throw new Error(result?.error || "send_failed");
+            if (result?.task) {
+              // Real work is visible in the dedicated task sidebar instead.
+              pendingChatReplies.delete(requestId);
+              pending?.remove();
+              return;
+            }
+          } catch {
+            pendingChatReplies.delete(requestId);
+            if (pending) {
+              pending.classList.remove("pending");
+              pending.textContent = "Something went wrong. Please try again.";
+            }
+          } finally {
+            qEl.disabled = false;
+            qEl.focus();
+          }
+        }
+
+        if (typeof window.lyknBrowserWelcome?.onChatResult === "function") {
+          window.lyknBrowserWelcome.onChatResult((result) => {
+            const pending = pendingChatReplies.get(String(result?.requestId || ""));
+            if (!pending) return;
+            pendingChatReplies.delete(String(result?.requestId || ""));
+            pending.classList.remove("pending");
+            if (result?.ok && String(result?.text || "").trim()) {
+              typeResponse(pending, String(result.text).trim(), { final: true });
+            } else {
+              pending.textContent = "Something went wrong. Please try again.";
+            }
+            chatThreadEl?.scrollTo({ top: chatThreadEl.scrollHeight, behavior: "smooth" });
+          });
+        }
+        if (typeof window.lyknBrowserWelcome?.onChatStream === "function") {
+          window.lyknBrowserWelcome.onChatStream((event) => {
+            const pending = pendingChatReplies.get(String(event?.requestId || ""));
+            if (!pending) return;
+            const channel = String(event?.channel || "");
+            const text = String(event?.text || "");
+            if (channel === "lykn:agent-status" && pending.classList.contains("pending")) {
+              renderThinking(pending, String(event?.status || "Thinking…"));
+            } else if (channel === "lykn:agent-delta" && text) {
+              pending.classList.remove("pending");
+              typeResponse(pending, text, { final: !!event?.final });
+            } else if (channel === "lykn:agent-error") {
+              pending.classList.remove("pending");
+              pending.textContent = String(event?.message || "Something went wrong. Please try again.");
+            }
+            chatThreadEl?.scrollTo({ top: chatThreadEl.scrollHeight, behavior: "smooth" });
+          });
+        }
+
+        function updateGoReady() {
+          if (goEl) goEl.classList.toggle("ready", !!qEl.value.trim());
+        }
+        function resizeComposer() {
+          if (!qEl) return;
+          qEl.style.height = "auto";
+          qEl.style.height = `${Math.min(180, Math.max(52, qEl.scrollHeight))}px`;
+          qEl.style.overflowY = qEl.scrollHeight > 180 ? "auto" : "hidden";
+        }
+
+        qEl.addEventListener("focus", () => {
+          open = false;
+          suggestEl.hidden = true;
+        });
+        qEl.addEventListener("blur", () => {
+          setTimeout(() => {
+            open = false;
+            suggestEl.hidden = true;
+          }, 140);
+        });
+        qEl.addEventListener("input", () => {
+          open = false;
+          suggestEl.hidden = true;
+          resizeComposer();
+          updateGoReady();
+        });
+        qEl.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") {
+            qEl.blur();
+            return;
+          }
+          if (e.key === "ArrowDown" && items.length) {
+            e.preventDefault();
+            active = Math.min(items.length - 1, active + 1);
+            [...suggestEl.querySelectorAll(".item")].forEach((el, i) =>
+              el.classList.toggle("active", i === active),
+            );
+            return;
+          }
+          if (e.key === "ArrowUp" && items.length) {
+            e.preventDefault();
+            active = Math.max(0, active - 1);
+            [...suggestEl.querySelectorAll(".item")].forEach((el, i) =>
+              el.classList.toggle("active", i === active),
+            );
+            return;
+          }
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (active >= 0 && items[active]) go(items[active].url);
+            else go(qEl.value);
+          }
+        });
+        suggestEl.addEventListener("mousedown", (e) => e.preventDefault());
+        suggestEl.addEventListener("click", (e) => {
+          const item = e.target.closest(".item");
+          if (!item) return;
+          const hit = items[Number(item.getAttribute("data-idx"))];
+          if (hit) go(hit.url);
+        });
+
+        if (goEl) {
+          goEl.addEventListener("click", () => {
+            if (active >= 0 && items[active]) go(items[active].url);
+            else go(qEl.value);
+          });
+        }
+        // Quick links pill — focuses the box, which opens popular sites.
+        if (hintEl) {
+          hintEl.addEventListener("click", () => {
+            qEl.focus();
+          });
+        }
+        if (modelTriggerEl && modelMenuEl) {
+          modelTriggerEl.addEventListener("click", () => {
+            const nextOpen = modelMenuEl.hidden;
+            modelMenuEl.hidden = !nextOpen;
+            modelTriggerEl.setAttribute("aria-expanded", String(nextOpen));
+          });
+          modelMenuEl.addEventListener("click", (e) => {
+            const option = e.target.closest(".model-option");
+            if (!option) return;
+            const model = option.getAttribute("data-model") || "LYKN";
+            if (modelLabelEl) modelLabelEl.textContent = model;
+            modelMenuEl.querySelectorAll(".model-option").forEach((item) => {
+              const selected = item === option;
+              item.classList.toggle("selected", selected);
+              item.setAttribute("aria-selected", String(selected));
+            });
+            modelMenuEl.hidden = true;
+            modelTriggerEl.setAttribute("aria-expanded", "false");
+          });
+          document.addEventListener("click", (e) => {
+            if (!e.target.closest(".model-picker")) {
+              modelMenuEl.hidden = true;
+              modelTriggerEl.setAttribute("aria-expanded", "false");
+            }
+          });
+        }
+        document.querySelectorAll(".app-open").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const url = btn.getAttribute("data-url");
+            if (url) location.href = url;
+          });
+        });
+
       })();
     </script>
   </body>

@@ -5,6 +5,22 @@ const { contextBridge, ipcRenderer, clipboard } = require("electron");
 
 contextBridge.exposeInMainWorld("lyknOverlay", {
   platform: process.platform,
+  // Local Mode — file/terminal access, shared with the main-app surface so the
+  // Glass overlay can run local tools too. Tools execute in main.
+  localModeGet: () => ipcRenderer.invoke("lykn:local-mode-get"),
+  localModeSet: (enabled) =>
+    ipcRenderer.invoke("lykn:local-mode-set", { enabled: !!enabled }),
+  onLocalModeChanged: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:local-mode-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:local-mode-changed", fn);
+  },
+  localToolRun: (name, args, opts = {}) =>
+    ipcRenderer.invoke("lykn:local-tool-run", {
+      name: String(name || ""),
+      args: args || {},
+      approved: opts?.approved === true,
+    }),
   // Ask LYKN about the current screen. The main process captures the screen
   // silently and streams the answer back via onDelta/onDone/onError.
   // opts: { forceImage } — image mode armed via menu → "Create an image".
@@ -72,10 +88,6 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
   pickFiles: () => ipcRenderer.invoke("lykn:pick-files"),
   // Drag-select a region of the screen and get it back as an image attachment.
   snipScreen: () => ipcRenderer.invoke("lykn:snip-screen"),
-  // AI picks the described region of the screen, crops it, saves to Downloads
-  // + clipboard. Pass the user's phrasing (e.g. "the chart top-right").
-  saveScreenRegion: (description) =>
-    ipcRenderer.invoke("lykn:save-screen-region", description),
   // Voice mode: fetch a signed ElevenLabs session, and dispatch agent tools.
   voiceSignedUrl: (payload) => ipcRenderer.invoke("lykn:voice-signed-url", payload || {}),
   voiceTool: (name, args) => ipcRenderer.invoke("lykn:voice-tool", { name, args }),
@@ -129,7 +141,8 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     return () => ipcRenderer.removeListener("lykn:browser-progress", fn);
   },
   // Open a URL — Agent Mode: LYKN agent browser; otherwise OS default browser.
-  openUrl: (url) => ipcRenderer.send("lykn:open-url", url),
+  openUrl: (url, title) =>
+    ipcRenderer.send("lykn:open-url", { url: String(url || ""), title }),
   // Download a generated image / Build-mode artifact into ~/Downloads and
   // reveal it in Finder; also saves a copy into the user's Vault (best-effort).
   // Returns { ok, path, savedToVault } or { ok: false, error }.

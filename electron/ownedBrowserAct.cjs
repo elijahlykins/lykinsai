@@ -3,24 +3,49 @@
  * Parallel-safe: no global lock; each agent owns its own webContents.
  */
 
+const fsSync = require("node:fs");
+const pathMod = require("node:path");
+
+// Collection order matters: open dialogs/popovers first (their controls are
+// what the user is interacting with — e.g. Gmail's compose window sits at the
+// END of the DOM and used to fall past the item cap behind 200+ inbox rows),
+// then the rest of the page with repetitive rows capped so long lists can't
+// crowd real controls out of the catalog.
 const COLLECT_INTERACTABLES_JS =
   "(function(){function p(el){if(!el||el.nodeType!==1)return'';if(el.id)return '#'+CSS.escape(el.id);" +
   "var a=[],n=el;while(n&&n.nodeType===1&&a.length<6){var t=n.nodeName.toLowerCase();" +
   "if(n.id){a.unshift('#'+CSS.escape(n.id));break;}var s=n,x=1;" +
   "while(s=s.previousElementSibling){if(s.nodeName===n.nodeName)x++;}" +
   "a.unshift(t+(x>1?':nth-of-type('+x+')':''));n=n.parentElement;}return a.join(' > ');}" +
-  "var items=[],q='input,textarea,select,button,a[href],img[alt],img[title],picture,canvas,[role=button],[role=link],[role=searchbox],[role=combobox],[role=radio],[role=option],[role=tab],[role=img],[role=row],[role=listitem],[role=gridcell],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=treeitem],[role=checkbox],[role=switch],tr,li,figure,label,input[type=radio],input[type=checkbox],[tabindex],[onclick]';" +
+  "var items=[],seen=new Set(),q='input,textarea,select,button,a[href],img[alt],img[title],picture,canvas,[contenteditable=true],[role=button],[role=link],[role=searchbox],[role=combobox],[role=radio],[role=option],[role=tab],[role=img],[role=row],[role=listitem],[role=gridcell],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=treeitem],[role=checkbox],[role=switch],[role=textbox],tr,li,figure,label,input[type=radio],input[type=checkbox],[tabindex],[onclick]';" +
   "var vw=window.innerWidth||1200,vh=window.innerHeight||800;" +
-  "document.querySelectorAll(q).forEach(function(el,i){if(items.length>=170||i>2000)return;var r=el.getBoundingClientRect();" +
-  "if(r.width<2||r.height<2)return;var st=getComputedStyle(el);" +
-  "if(st.visibility==='hidden'||st.display==='none'||st.pointerEvents==='none')return;" +
-  "var ti=el.getAttribute('tabindex');if(ti!==null&&parseInt(ti,10)<0)return;var tag=el.tagName.toLowerCase()," +
+  "function add(el,dlg){if(items.length>=170||seen.has(el))return false;var r=el.getBoundingClientRect();" +
+  "if(r.width<2||r.height<2)return false;var st=getComputedStyle(el);" +
+  "if(st.visibility==='hidden'||st.display==='none'||st.pointerEvents==='none')return false;" +
+  "var ti=el.getAttribute('tabindex');if(ti!==null&&parseInt(ti,10)<0)return false;" +
+  // Anything nested INSIDE a rich-text editor is document content, not UI —
+  // and a nested editable region duplicates its parent editor in the catalog
+  // (Gmail's body produced two "Message Body" refs; typing went in twice).
+  "if(el.parentElement&&el.parentElement.closest&&el.parentElement.closest('[contenteditable=true]'))return false;" +
+  "var tag=el.tagName.toLowerCase()," +
   "type=el.getAttribute('type')||'',role=el.getAttribute('role')||''," +
   "lab=(el.getAttribute('aria-label')||el.getAttribute('alt')||el.getAttribute('title')||el.innerText||el.placeholder||el.name||el.id||'').trim().slice(0,120);" +
   "if(!lab&&tag==='img')lab='image';" +
-  "if(!lab&&tag!=='input'&&tag!=='textarea'&&role!=='searchbox'&&tag!=='img'&&tag!=='canvas')return;" +
+  "if(!lab&&tag!=='input'&&tag!=='textarea'&&role!=='searchbox'&&role!=='textbox'&&tag!=='img'&&tag!=='canvas'&&el.getAttribute('contenteditable')!=='true')return false;" +
   "var inView=r.bottom>0&&r.top<vh&&r.right>0&&r.left<vw;" +
-  "items.push({id:'el'+items.length,tag:tag,type:type,role:role,selector:p(el),label:lab,value:(el.value||'').slice(0,80),checked:el.checked===true,href:(el.href||'').slice(0,200),clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+r.height/2),inView:inView});});" +
+  // Rich-text editors (contenteditable) have no .value — surface their text so
+// the agent can SEE what it already wrote instead of retyping it every round.
+"var val=el.value!=null?el.value:(el.isContentEditable?(el.innerText||''):'');" +
+"seen.add(el);items.push({id:'el'+items.length,tag:tag,type:type,role:role,selector:p(el),label:lab,value:(''+val).slice(0,80),checked:el.checked===true,href:(el.href||'').slice(0,200),clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+r.height/2),inView:inView,inDialog:!!dlg});return true;}" +
+  "var dlgs=document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true]');" +
+  "for(var d=0;d<dlgs.length;d++){var dels=dlgs[d].querySelectorAll(q);" +
+  "for(var j=0;j<dels.length&&j<400;j++){add(dels[j],true);}}" +
+  "var rows=0,all=document.querySelectorAll(q);" +
+  "for(var i=0;i<all.length&&i<=2000;i++){var el=all[i];" +
+  "var t2=el.tagName.toLowerCase(),r2=el.getAttribute('role')||'';" +
+  "var rowish=t2==='tr'||t2==='li'||r2==='row'||r2==='listitem'||r2==='option'||r2==='gridcell';" +
+  "if(rowish&&rows>=60)continue;" +
+  "if(add(el,false)&&rowish)rows++;}" +
   "return {url:location.href,title:document.title,items:items};})()";
 
 // Reads the WHOLE document (not just the viewport) so dashboards, tables and
@@ -48,9 +73,9 @@ const EXTRACT_FRAME_TEXT_JS =
 function buildActionJs(action) {
   const payload = Buffer.from(JSON.stringify(action || {}), "utf8").toString("base64");
   return (
-    "(function(){try{var a=JSON.parse(atob('" +
+    "(function(){try{var a=JSON.parse(decodeURIComponent(escape(atob('" +
     payload +
-    "'));" +
+    "'))));" +
     "function vis(el){if(!el)return false;var r=el.getBoundingClientRect();if(r.width<2||r.height<2)return false;" +
     "var st=getComputedStyle(el);return st.visibility!=='hidden'&&st.display!=='none'&&st.pointerEvents!=='none';}" +
     "function findEl(a){var el=null;try{el=document.querySelector(a.selector);}catch(e){}if(el&&vis(el))return el;" +
@@ -416,7 +441,7 @@ async function focusTypeTarget(webContents, { hint = "", enriched = null, prefer
     ).toString("base64");
     const hit = await webContents.executeJavaScript(
       `(function(){
-        var d=JSON.parse(atob('${hintPayload}'));
+        var d=JSON.parse(decodeURIComponent(escape(atob('${hintPayload}'))));
         var hint=String(d.hint||'').toLowerCase();
         if(!hint) return {ok:false,error:'empty_hint'};
         function vis(el){if(!el)return false;var r=el.getBoundingClientRect();
@@ -475,10 +500,93 @@ async function focusTypeTarget(webContents, { hint = "", enriched = null, prefer
   return { ok: false, error: "focus_target_not_found" };
 }
 
+/** Select-all + Backspace in the focused field — real keys, SPA-safe. */
+async function clearFocusedField(webContents) {
+  const mod = process.platform === "darwin" ? "meta" : "control";
+  try {
+    sendModKey(webContents, "A", mod);
+    await new Promise((r) => setTimeout(r, 70));
+    await sendRealKey(webContents, "Backspace");
+    await new Promise((r) => setTimeout(r, 90));
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 /**
  * Click into a field, type, verify the value/page changed; re-click and retry
  * if typing had no effect.
  */
+/**
+ * Read the CURRENT text of a specific field (by selector, falling back to an
+ * aria-label/placeholder match). Strict typing verifies against this — never
+ * against the active editable or whole-page text, which pass when the text
+ * landed in the WRONG element (e.g. the doc body behind a share dialog).
+ */
+async function readTargetFieldValue(webContents, { selector = "", label = "" } = {}) {
+  if (!webContents || webContents.isDestroyed?.()) return null;
+  const payload = Buffer.from(JSON.stringify({ selector, label }), "utf8").toString("base64");
+  try {
+    return await webContents.executeJavaScript(
+      `(function(){try{var a=JSON.parse(decodeURIComponent(escape(atob('${payload}'))));` +
+        `function val(el){if(!el)return null;var v=el.value!=null?el.value:(el.isContentEditable?el.innerText:null);return v==null?null:(''+v);}` +
+        `function vis(el){if(!el)return false;var r=el.getBoundingClientRect();if(r.width<2||r.height<2)return false;` +
+        `var st=getComputedStyle(el);return st.visibility!=='hidden'&&st.display!=='none';}` +
+        // Collect ALL candidates and prefer a visible one with content —
+        // pages keep hidden twins with the same label (empty), and reading
+        // the first match reported "" for text that fully landed.
+        `var cands=[];var el=null;try{el=document.querySelector(a.selector);}catch(e){}if(el)cands.push(el);` +
+        `var want=(a.label||'').toLowerCase().replace(/\\s+/g,' ').trim();` +
+        `if(want){var nodes=document.querySelectorAll('input,textarea,[contenteditable=true],[role=textbox],[role=searchbox],[role=combobox]');` +
+        `for(var i=0;i<nodes.length;i++){var n=nodes[i];` +
+        `var lab=((n.getAttribute('aria-label')||n.getAttribute('placeholder')||n.getAttribute('title')||n.name||'')+'').toLowerCase().replace(/\\s+/g,' ').trim();` +
+        `if(lab&&(lab.indexOf(want.slice(0,40))>-1||want.indexOf(lab)>-1))cands.push(n);}}` +
+        `var best=null,bestVal=null;` +
+        `for(var j=0;j<cands.length;j++){var c=cands[j],cv=val(c);if(cv==null)continue;` +
+        `if(best==null){best=c;bestVal=cv;}` +
+        `if(vis(c)&&cv.replace(/\\s+/g,'')!==''){best=c;bestVal=cv;break;}}` +
+        `return bestVal==null?null:bestVal.slice(0,8000);}catch(e){return null;}})()`,
+      true,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Force DOM focus onto the target field when a synthetic click didn't take,
+ * and normalize the caret to the END of the field. The focusing click lands
+ * mid-text in a filled editor — inserting there splices new sentences into
+ * the middle of existing ones. "type" means append: caret goes to the end.
+ */
+async function focusTargetFieldDom(webContents, { selector = "", label = "" } = {}) {
+  if (!webContents || webContents.isDestroyed?.()) return false;
+  const payload = Buffer.from(JSON.stringify({ selector, label }), "utf8").toString("base64");
+  try {
+    return !!(await webContents.executeJavaScript(
+      `(function(){try{var a=JSON.parse(decodeURIComponent(escape(atob('${payload}'))));` +
+        `var el=null;try{el=document.querySelector(a.selector);}catch(e){}` +
+        `if(!el&&a.label){var want=(a.label||'').toLowerCase().replace(/\\s+/g,' ').trim();` +
+        `var nodes=document.querySelectorAll('input,textarea,[contenteditable=true],[role=textbox],[role=searchbox],[role=combobox]');` +
+        `for(var i=0;i<nodes.length;i++){var n=nodes[i];` +
+        `var lab=((n.getAttribute('aria-label')||n.getAttribute('placeholder')||n.getAttribute('title')||n.name||'')+'').toLowerCase().replace(/\\s+/g,' ').trim();` +
+        `if(lab&&(lab.indexOf(want.slice(0,40))>-1||want.indexOf(lab)>-1)){el=n;break;}}}` +
+        `if(!el)return false;` +
+        `if(!(document.activeElement===el||el.contains(document.activeElement))){try{el.focus();}catch(e){}}` +
+        `var ok=document.activeElement===el||el.contains(document.activeElement);` +
+        `if(ok){try{` +
+        `if(el.isContentEditable){var r=document.createRange();r.selectNodeContents(el);r.collapse(false);` +
+        `var s=getSelection();s.removeAllRanges();s.addRange(r);}` +
+        `else if(el.setSelectionRange){var L=(el.value||'').length;el.setSelectionRange(L,L);}` +
+        `}catch(e2){}}` +
+        `return ok;}catch(e){return false;}})()`,
+      true,
+    ));
+  } catch {
+    return false;
+  }
+}
+
 async function typeWithFocusRetry(
   webContents,
   {
@@ -491,14 +599,26 @@ async function typeWithFocusRetry(
     maxAttempts = 3,
     useInsertText = true,
     clickPoint = null,
+    // Strict mode (modular agent): success ONLY when the text is in the NAMED
+    // field (or committed as a chip). Active-editable / page-text hits lie
+    // when the text landed somewhere else.
+    strictVerify = false,
+    verifySelector = "",
+    verifyLabel = "",
   } = {},
 ) {
   const value = String(text ?? "");
   if (!value) return { ok: false, error: "empty_text" };
-  const needle = String(verifyNeedle || value)
-    .trim()
-    .slice(0, 48)
-    .toLowerCase();
+  // ALL landed-text comparisons collapse whitespace: rich-text editors render
+  // "\n\n" back as "\n\n\n" (Gmail's body), so raw substring checks declare
+  // typed text missing when it fully landed — the agent then retypes it and
+  // duplicates the content.
+  const normWs = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+  const needle = normWs(String(verifyNeedle || value)).slice(0, 48);
   const pageUrl = String(webContents.getURL?.() || "");
   const canvas = looksLikeCanvasEditorUrl(pageUrl);
   let lastErr = "";
@@ -519,6 +639,15 @@ async function typeWithFocusRetry(
         await clickAtClientPoint(webContents, clickPoint.x, clickPoint.y);
         await new Promise((r) => setTimeout(r, 120));
       }
+      // Dialog inputs sometimes swallow synthetic clicks without taking focus
+      // (insertText then types into whatever WAS focused — e.g. the document
+      // body behind the dialog). Force DOM focus onto the named field.
+      if (strictVerify && (verifySelector || verifyLabel)) {
+        await focusTargetFieldDom(webContents, {
+          selector: verifySelector,
+          label: verifyLabel,
+        }).catch(() => {});
+      }
     } else {
       const focused = await focusTypeTarget(webContents, {
         hint,
@@ -533,6 +662,75 @@ async function typeWithFocusRetry(
           preferDocsBody: preferDocsBody || canvas,
         });
         await new Promise((r) => setTimeout(r, 160));
+      }
+    }
+
+    // Typing an email into a share dialog: a prior attempt may have committed
+    // it as a chip (which empties the field and hides the raw email from page
+    // text) — never create a second chip.
+    const emailValue = /^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$/.test(value.trim())
+      ? value.trim()
+      : "";
+    if (emailValue && !preferDocsBody && !canvas) {
+      if (await shareDialogHasRecipientChip(webContents, emailValue)) {
+        return {
+          ok: true,
+          type: "os_write",
+          via: "chip_already_present",
+          chars: value.length,
+          attempts: attempt + 1,
+          verified: true,
+        };
+      }
+    }
+
+    // Double-type protection for single-line fields (search boxes, share
+    // "Add people" inputs): a prior attempt/round may have landed silently.
+    // If the field already holds the exact text, don't type it again; if it
+    // holds a doubled value or retry leftovers, clear before retyping.
+    if (!preferDocsBody && !canvas) {
+      const st = await readActiveEditableState(webContents);
+      // Strict mode: "already present" only counts when the ACTIVE element is
+      // the named field — the doc body behind a dialog holding the text (from
+      // a previous mistyped attempt) must not short-circuit as success.
+      const activeMatchesTarget = (() => {
+        if (!strictVerify) return true;
+        const lab = String(st?.label || "").toLowerCase().replace(/\s+/g, " ").trim();
+        const want = String(verifyLabel || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 40);
+        if (!want) return true;
+        return !!lab && (lab.includes(want) || want.includes(lab));
+      })();
+      if (st?.activeOk && !st?.titleish && activeMatchesTarget) {
+        const stVal = normWs(st.value);
+        const wanted = normWs(value).slice(0, 180);
+        // Strict mode appends deliberately — only skip as "already present"
+        // when the text is distinctive, not a short word the body happens to
+        // contain already.
+        if (wanted && (!strictVerify || wanted.length >= 12) && stVal.includes(wanted)) {
+          const doubled = stVal.split(wanted).length - 1 >= 2;
+          if (!doubled) {
+            if (pressEnter) await sendRealKey(webContents, "Enter");
+            return {
+              ok: true,
+              type: "os_write",
+              via: "already_present",
+              chars: value.length,
+              attempts: attempt + 1,
+              verified: true,
+            };
+          }
+          await clearFocusedField(webContents);
+        } else if (
+          attempt > 0 &&
+          Number(st.valueLen || 0) > 0 &&
+          (st.tag === "input" ||
+            st.tag === "textarea" ||
+            (wanted && stVal.includes(wanted.slice(0, 12))))
+        ) {
+          // Retry with our partial text (or a plain input's stale value) in
+          // the way — replace, never append.
+          await clearFocusedField(webContents);
+        }
       }
     }
 
@@ -603,41 +801,69 @@ async function typeWithFocusRetry(
 
     const after = await readActiveEditableState(webContents);
     let pageHit = false;
-    if (needle && !canvas) {
+    if (needle && !canvas && !strictVerify) {
       try {
         const p = await getPageContext(webContents);
-        pageHit = String(p?.text || "")
-          .toLowerCase()
-          .includes(needle);
+        pageHit = normWs(p?.text).includes(needle);
       } catch {
         /* ignore */
       }
     }
-    const valueHit =
-      !!needle &&
-      String(after?.value || "")
-        .toLowerCase()
-        .includes(needle);
+    const valueHit = !!needle && normWs(after?.value).includes(needle);
+    // Strict mode: the evidence is the NAMED field's own value. Active-editable
+    // and page-text hits pass when the text landed in the wrong element.
+    let targetHit = false;
+    if (strictVerify && needle) {
+      const fieldVal = await readTargetFieldValue(webContents, {
+        selector: verifySelector,
+        label: verifyLabel || hint,
+      });
+      targetHit = fieldVal != null && normWs(fieldVal).includes(needle);
+    }
+    // Email committed as a recipient chip: field empties and the raw email
+    // leaves the page text — check the dialog DOM so we don't retry-type.
+    const chipHit =
+      !valueHit &&
+      !pageHit &&
+      !targetHit &&
+      !!emailValue &&
+      (await shareDialogHasRecipientChip(webContents, emailValue));
     const grew =
       Number(after?.valueLen || 0) > Number(before?.valueLen || 0) + Math.min(2, value.length - 1);
     const activeOk = !!after?.activeOk && !after?.titleish;
 
-    if (valueHit || pageHit || (grew && activeOk)) {
+    const passed = strictVerify
+      ? targetHit || chipHit
+      : valueHit || pageHit || chipHit || (grew && activeOk);
+    if (passed) {
       return {
         ok: true,
         type: "os_write",
         via: attempt === 0 ? "insert" : "insert_retry",
         chars: value.length,
         attempts: attempt + 1,
-        verified: valueHit || pageHit,
+        verified: strictVerify ? true : valueHit || pageHit || chipHit,
       };
     }
 
-    lastErr = activeOk ? "type_no_effect" : "field_not_focused";
+    lastErr = strictVerify
+      ? "text_not_in_target_field"
+      : activeOk
+        ? "type_no_effect"
+        : "field_not_focused";
     // Re-click path continues loop.
   }
 
-  return { ok: false, error: lastErr || "type_no_effect", chars: value.length, attempts: maxAttempts };
+  return {
+    ok: false,
+    error: lastErr || "type_no_effect",
+    chars: value.length,
+    attempts: maxAttempts,
+    hint:
+      lastErr === "text_not_in_target_field"
+        ? `The text never landed in the "${verifyLabel || hint}" field — the field may be masked by another element or need a different route.`
+        : undefined,
+  };
 }
 
 /**
@@ -651,7 +877,7 @@ async function resolveElementPoint(webContents, action) {
   const payload = Buffer.from(JSON.stringify(action || {}), "utf8").toString("base64");
   try {
     const pt = await webContents.executeJavaScript(
-      `(function(){try{var a=JSON.parse(atob('${payload}'));` +
+      `(function(){try{var a=JSON.parse(decodeURIComponent(escape(atob('${payload}'))));` +
         `function visEl(el){if(!el)return null;var r=el.getBoundingClientRect();if(r.width<2||r.height<2)return null;` +
         `var st=getComputedStyle(el);if(st.visibility==='hidden'||st.display==='none')return null;return el;}` +
         `function point(el){try{el.scrollIntoView({block:'center',inline:'center'});}catch(e){}` +
@@ -660,18 +886,28 @@ async function resolveElementPoint(webContents, action) {
         `x=Math.max(1,Math.min(x,(window.innerWidth||1200)-1));y=Math.max(1,Math.min(y,(window.innerHeight||800)-1));` +
         `var hitOk=false;try{var hit=document.elementFromPoint(x,y);hitOk=!!(hit&&(hit===el||el.contains(hit)||hit.contains(el)));}catch(e){}` +
         `return {x:x,y:y,hit:hitOk};}` +
+        `function labOf(n){return ((n.getAttribute('aria-label')||n.getAttribute('alt')||n.getAttribute('title')||n.innerText||n.placeholder||n.name||n.id||'')+'').toLowerCase().replace(/\\s+/g,' ').trim();}` +
+        `var want=(a.label||'').toLowerCase().replace(/\\s+/g,' ').trim();` +
         `var el=null;try{el=document.querySelector(a.selector);}catch(e){}el=visEl(el);` +
-        `if(el)return point(el);` +
-        `var want=(a.label||'').toLowerCase().replace(/\\s+/g,' ').trim();if(!want)return null;` +
+        // Snapshot selectors are nth-of-type paths — after an SPA re-render the
+        // same path can address a DIFFERENT element. When we know what label the
+        // agent expects, the selector match must still carry it; otherwise fall
+        // through to the label search instead of clicking a stranger.
+        `if(el&&want){var lw=labOf(el).slice(0,200);` +
+        `if(!lw||!(lw.indexOf(want.slice(0,60))>-1||want.indexOf(lw)>-1))el=null;}` +
+        `if(el){var pp=point(el);pp.label=labOf(el).slice(0,80);pp.via='selector';return pp;}` +
+        `if(!want)return null;` +
         `var nodes=document.querySelectorAll('a,button,input,select,textarea,tr,li,img,[role=button],[role=link],[role=row],[role=listitem],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=radio],[role=combobox],[role=switch],label,div.zA,tr.zA,[tabindex],[onclick]');` +
         `var best=null,bestScore=0;` +
-        `for(var i=0;i<nodes.length;i++){var n=nodes[i],lab=((n.getAttribute('aria-label')||n.getAttribute('alt')||n.getAttribute('title')||n.innerText||n.placeholder||'')+'').toLowerCase().replace(/\\s+/g,' ').trim();` +
+        `for(var i=0;i<nodes.length;i++){var n=nodes[i],lab=labOf(n);` +
         `if(!lab||!visEl(n))continue;` +
         `var score=0;if(lab===want)score=100;else if(lab.indexOf(want)===0)score=80;` +
         `else if(lab.indexOf(want)>-1)score=60-Math.min(40,Math.abs(lab.length-want.length));` +
         `else if(want.indexOf(lab)>-1&&lab.length>=4)score=40;` +
         `if(score>bestScore){bestScore=score;best=n;if(score>=100)break;}}` +
-        `if(best)return point(best);return null;}catch(e){return null;}})()`,
+        // minLabelScore (strict callers): weak fuzzy matches click unrelated
+        // elements — better to fail and let the agent re-observe.
+        `if(best&&bestScore>=(Number(a.minLabelScore)||1)){var pb=point(best);pb.label=labOf(best).slice(0,80);pb.via='label';return pb;}return null;}catch(e){return null;}})()`,
       true,
     );
     if (pt && typeof pt.x === "number" && typeof pt.y === "number") return pt;
@@ -731,6 +967,40 @@ async function waitForLoad(webContents, timeoutMs = 15000) {
     webContents.once("did-navigate", done);
     webContents.once("did-navigate-in-page", done);
   });
+}
+
+/**
+ * In-page "Loading…" that never resolves: navigation is finished (isLoading
+ * is false) but a widget/dialog shows a spinner forever. Detect a VISIBLE
+ * spinner/progressbar so the adaptive loop can reload instead of waiting.
+ */
+async function pageHasActiveSpinner(webContents) {
+  if (!webContents || webContents.isDestroyed?.()) return false;
+  try {
+    return !!(await webContents.executeJavaScript(
+      `(function(){try{
+        function vis(el){if(!el)return false;var r=el.getBoundingClientRect();
+          if(r.width<8||r.height<8)return false;
+          var st=getComputedStyle(el);
+          return st.visibility!=='hidden'&&st.display!=='none'&&st.opacity!=='0';}
+        var nodes=document.querySelectorAll('[role="progressbar"],[aria-busy="true"],progress,[class*="spinner" i],[class*="loading" i]');
+        for(var i=0;i<nodes.length;i++){ if(vis(nodes[i])) return true; }
+        return false;
+      }catch(e){return false;}})()`,
+      true,
+    ));
+  } catch {
+    return false;
+  }
+}
+
+/** Page text dominated by a loading message ("Loading…", "Please wait…"). */
+function pageLooksStuckLoadingText(text) {
+  const t = String(text || "").slice(0, 6000).toLowerCase();
+  if (!t.trim()) return false;
+  return /\b(loading|please wait|one moment|just a (moment|sec(ond)?)|still working|preparing|fetching)\b\s*(\.{2,}|…)/.test(
+    t,
+  );
 }
 
 function isAbortNavigationError(err) {
@@ -922,11 +1192,53 @@ async function runAction(webContents, action, catalogItems) {
   }
   if (type === "scroll") {
     try {
+      let dy = Number(enriched.dy);
+      if (!Number.isFinite(dy) || dy === 0) {
+        const amount = Math.min(Math.max(Number(enriched.amount) || 600, 100), 2400);
+        dy = String(enriched.direction || "").toLowerCase() === "up" ? -amount : amount;
+      }
       await webContents.executeJavaScript(
-        `window.scrollBy(0, ${Number(enriched.dy) || 400}); true`,
+        `window.scrollBy(0, ${dy}); true`,
         true,
       );
-      return { ok: true, type: "scroll" };
+      return { ok: true, type: "scroll", dy };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+  // Browser history navigation — recover from wrong turns / return to lists.
+  if (type === "back" || type === "go_back" || type === "goback") {
+    try {
+      const nav = webContents.navigationHistory;
+      const canBack =
+        typeof nav?.canGoBack === "function"
+          ? nav.canGoBack()
+          : typeof webContents.canGoBack === "function"
+            ? webContents.canGoBack()
+            : false;
+      if (!canBack) return { ok: false, error: "cannot_go_back" };
+      if (typeof nav?.goBack === "function") nav.goBack();
+      else webContents.goBack();
+      await waitForLoad(webContents, 8000);
+      return { ok: true, type: "back", url: webContents.getURL?.() || "" };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+  if (type === "forward" || type === "go_forward") {
+    try {
+      const nav = webContents.navigationHistory;
+      const canFwd =
+        typeof nav?.canGoForward === "function"
+          ? nav.canGoForward()
+          : typeof webContents.canGoForward === "function"
+            ? webContents.canGoForward()
+            : false;
+      if (!canFwd) return { ok: false, error: "cannot_go_forward" };
+      if (typeof nav?.goForward === "function") nav.goForward();
+      else webContents.goForward();
+      await waitForLoad(webContents, 8000);
+      return { ok: true, type: "forward", url: webContents.getURL?.() || "" };
     } catch (e) {
       return { ok: false, error: e?.message || String(e) };
     }
@@ -1083,16 +1395,56 @@ async function runAction(webContents, action, catalogItems) {
       /document body|docs_editor|essay|page body|editor/i.test(fieldHint) ||
       (onCanvasEditor && text.length > 80 && (!fieldHint || /^(type|write|os_write|fill|input|click_type)$/i.test(fieldHint)));
 
-    // Prefer explicit client pixels, else map 0–1000 screenshot coords.
+    // LIVE-first targeting, same rule as plain click below: catalog pixels go
+    // stale the moment the page scrolls or re-renders, and typing at a stale
+    // point puts the text into whatever field now sits there. Re-resolve the
+    // element's position NOW; stored pixels are only a last resort.
     let clickPoint = null;
+    if (enriched.selector || enriched.label) {
+      const live = await resolveElementPoint(webContents, enriched);
+      if (live) {
+        if (live.hit === false && enriched.strictTarget) {
+          return {
+            ok: false,
+            error: "element_obscured",
+            hint: "Another element covers the field (open dialog or menu?) — re-observe the page first.",
+          };
+        }
+        clickPoint = { x: live.x, y: live.y };
+      } else if (enriched.strictTarget) {
+        return {
+          ok: false,
+          error: "element_not_relocated",
+          hint: "The field from the last snapshot no longer resolves — the page changed; re-observe.",
+        };
+      }
+    }
     if (
+      !clickPoint &&
       typeof enriched.clientX === "number" &&
       typeof enriched.clientY === "number" &&
       Number.isFinite(enriched.clientX) &&
       Number.isFinite(enriched.clientY)
     ) {
-      clickPoint = { x: enriched.clientX, y: enriched.clientY };
-    } else {
+      // Only trust stored pixels while they are still inside the viewport.
+      let vp = null;
+      try {
+        vp = await webContents.executeJavaScript(
+          "({w:window.innerWidth||1200,h:window.innerHeight||800})",
+          true,
+        );
+      } catch {
+        /* ignore */
+      }
+      const withinView =
+        !vp ||
+        (enriched.clientX >= 0 &&
+          enriched.clientX <= vp.w &&
+          enriched.clientY >= 0 &&
+          enriched.clientY <= vp.h);
+      if (withinView) clickPoint = { x: enriched.clientX, y: enriched.clientY };
+    }
+    if (!clickPoint) {
       const nx = Number(enriched.x);
       const ny = Number(enriched.y);
       const hasNormCoords =
@@ -1151,6 +1503,9 @@ async function runAction(webContents, action, catalogItems) {
       maxAttempts: 3,
       useInsertText: true,
       clickPoint,
+      strictVerify: !!enriched.strictTarget && !wantsDocBody,
+      verifySelector: enriched.selector || "",
+      verifyLabel: enriched.label || "",
     });
   }
   // Key press the way a user would: focus the target (best-effort), then send
@@ -1171,12 +1526,26 @@ async function runAction(webContents, action, catalogItems) {
   }
   // Hover: real mouseMove at the element's center (reveals menus/tooltips).
   if (type === "hover" || type === "mouseover") {
-    const pt =
+    let pt =
       (await resolveElementPoint(webContents, enriched)) ||
       (typeof enriched.clientX === "number" && {
         x: enriched.clientX,
         y: enriched.clientY,
       });
+    // Vision planners send 0–1000 screenshot coords — map like click_coord.
+    if (!pt) {
+      const nx = Number(enriched.x);
+      const ny = Number(enriched.y);
+      if (Number.isFinite(nx) && Number.isFinite(ny) && nx >= 0 && nx <= 1000 && ny >= 0 && ny <= 1000) {
+        try {
+          const metrics = await getViewportMetrics(webContents);
+          const shotMeta = lastScreenshotMeta.get(webContents) || null;
+          pt = mapNormCoordToClient(nx, ny, metrics, shotMeta);
+        } catch {
+          pt = null;
+        }
+      }
+    }
     if (!pt) return { ok: false, error: "Element not found" };
     try {
       webContents.sendInputEvent({ type: "mouseMove", x: pt.x, y: pt.y });
@@ -1209,9 +1578,35 @@ async function runAction(webContents, action, catalogItems) {
     if (enriched.selector || enriched.label) {
       pt = await resolveElementPoint(webContents, enriched);
     }
+    // Strict callers (modular agent) never guess: a covered target means a
+    // dialog/menu is in the way, and an unresolvable one means the page
+    // changed since the snapshot — both need a re-observe, not a blind click.
+    if (enriched.strictTarget) {
+      if (pt && pt.hit === false) {
+        return {
+          ok: false,
+          error: "element_obscured",
+          hint: "Another element covers the target (open dialog or menu?) — re-observe the page first.",
+        };
+      }
+      if (!pt) {
+        return {
+          ok: false,
+          error: "element_not_relocated",
+          hint: "The element from the last snapshot no longer resolves — the page changed; re-observe.",
+        };
+      }
+    }
     if (pt) {
       const hit = await clickAtClientPoint(webContents, pt.x, pt.y);
-      if (hit.ok) return { ...hit, resolved: "live", hitTest: pt.hit !== false };
+      if (hit.ok) {
+        return {
+          ...hit,
+          resolved: pt.via || "live",
+          clickedLabel: pt.label || "",
+          hitTest: pt.hit !== false,
+        };
+      }
     }
     if (
       !pt &&
@@ -1501,6 +1896,8 @@ async function observeAfterOwnedAction(
 function looksLikeBareOpenBrowseGoal(goal) {
   const g = String(goal || "").toLowerCase();
   if (!g) return false;
+  // "my ads/account/dashboard" always needs a signed-in surface — never bare open.
+  if (looksLikeAccountDashboardAsk(g)) return false;
   if (
     /\b(then|after that|and then|complete|fill|type|submit|all|every|entire|keep going|go through|do the rest|all of it)\b/.test(
       g,
@@ -1523,13 +1920,109 @@ function looksLikeBareOpenBrowseGoal(goal) {
 }
 
 /**
+ * "go to / check my reddit ads account" — must land in the signed-in dashboard,
+ * not just the marketing/login redirect.
+ */
+function looksLikeAccountDashboardAsk(goal) {
+  const g = String(goal || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!g) return false;
+  if (resolveAccountDashboardUrl(g)) return true;
+  return (
+    /\bmy\b/.test(g) &&
+    ACCOUNT_SURFACE_NOUN_RE.test(g) &&
+    /\b(go\s+to|open|visit|pull\s+up|check|review|look\s+at|show|see|log\s*in|sign\s*in)\b/.test(g)
+  );
+}
+
+/**
+ * True when the live tab looks like a signed-in account/workspace
+ * (not marketing, login, or "start advertising" landing).
+ */
+function accountDashboardLooksSignedIn({ url = "", pageText = "", title = "" } = {}) {
+  const u = String(url || "");
+  const t = String(pageText || "");
+  const titleL = String(title || "");
+  if (looksLikeSignInWall({ url: u, text: t, title: titleL })) return false;
+  const lower = `${titleL}\n${t}`.toLowerCase();
+
+  // Notion workspace (app.notion.com / notion.so/…)
+  if (/notion\.(so|site)|app\.notion\.com/i.test(u)) {
+    if (
+      looksLikeMarketingOrHomeUrl(u, t) &&
+      /\b(log\s*in|sign\s*up|get notion free|try notion)\b/i.test(lower)
+    ) {
+      return false;
+    }
+    if (
+      /\b(new page|add a page|private|workspace|quick find|trash|shared|teamspaces?|all pages|favorites?)\b/i.test(
+        lower,
+      )
+    ) {
+      return true;
+    }
+    // Deep workspace URL with real chrome (not bare marketing home).
+    try {
+      const path = new URL(u).pathname || "";
+      if (
+        path.length > 2 &&
+        !/\/(login|signup|sign-in|sign-up|product|pricing|templates|enterprise|onboarding)(\/|$)/i.test(
+          path,
+        ) &&
+        t.trim().length >= 60
+      ) {
+        return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
+
+  if (looksLikeMarketingOrHomeUrl(u, t)) return false;
+  const loggedOutChrome =
+    /\b(log\s*in|sign\s*in|sign\s*up|log\s*in\s*with|continue with google|get started|create (an )?account|start advertising|advertise (on|with)|try (for )?free|book a demo|for business)\b/i.test(
+      lower,
+    ) &&
+    !/\b(campaigns?|ad groups?|ad sets?|impressions|amount spent|spend|ads manager|delivery|audiences?|reporting|your ads|create campaign|ad account|workspace|dashboard)\b/i.test(
+      lower,
+    );
+  if (loggedOutChrome) return false;
+  if (
+    /\b(campaigns?|ad groups?|ad sets?|impressions|amount spent|ads manager|create campaign|delivery|audiences?|ad account|billing|payment methods)\b/i.test(
+      lower,
+    )
+  ) {
+    return true;
+  }
+  // On a known ads/dashboard host with real body and no logged-out chrome.
+  if (
+    /ads\.|adsmanager|campaignmanager|analytics\.google|studio\.youtube|dashboard\.|admin\.|console\./i.test(
+      u,
+    ) ||
+    /business\.reddit\.com/i.test(u)
+  ) {
+    return t.trim().length >= 100 && !loggedOutChrome;
+  }
+  return false;
+}
+
+/**
  * True when the ask still needs in-page work after landing on a URL —
  * find/complete/fill/share/etc. Used to block "Opened X. What next?" early exits.
  */
 function askStillNeedsAdaptiveWork(text) {
   const g = String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
   if (!g) return false;
+  // Account/dashboard asks need sign-in + real dashboard — never stop at marketing.
+  if (looksLikeAccountDashboardAsk(g)) return true;
   if (looksLikeMultiStepBrowseGoal(g)) return true;
+  // Opening a specific inbox row is NOT done just by landing on #inbox.
+  if (
+    looksLikeOpenMailItem(g) ||
+    /\b(open|read|view|click)\b.{0,48}\b(email|e-mail|mail|message|thread)\b/.test(g)
+  ) {
+    return true;
+  }
   if (
     /\b(find|search|look\s*up|locate|complete|finish|fill|submit|share|invite|write|draft|create|make|build|edit|click|play|watch|answer|take|solve|type|compose|reply|respond|post|upload|select|choose|pick|check|review|summarize|summarise|keep going|go through|do the rest|all of it|work\s+through)\b/.test(
       g,
@@ -1540,7 +2033,8 @@ function askStillNeedsAdaptiveWork(text) {
       /^(please\s+|can\s+you\s+)?(open|go\s+to|visit|pull\s+up|launch|load)\b/.test(g) &&
       !/\b(and|then|find|search|complete|fill|write|edit|share|click|play|watch|take|answer)\b/.test(
         g.replace(/^(please\s+|can\s+you\s+)?(open|go\s+to|visit|pull\s+up|launch|load)\b/, ""),
-      )
+      ) &&
+      !looksLikeAccountDashboardAsk(g)
     ) {
       return false;
     }
@@ -1559,8 +2053,15 @@ function askStillNeedsAdaptiveWork(text) {
 function looksLikeInspectOrReviewAsk(goal) {
   const g = String(goal || "").toLowerCase().replace(/\s+/g, " ").trim();
   if (!g) return false;
+  // Opening a specific email/message is an action — not "inspect Gmail".
+  if (looksLikeOpenMailItem(g)) return false;
+  if (/\b(open|read|view|click)\b.{0,48}\b(email|e-mail|mail|message|thread)\b/.test(g)) {
+    return false;
+  }
+  // Account dashboards are inspect-style but need signed-in evidence.
+  if (looksLikeAccountDashboardAsk(g)) return true;
   if (
-    !/\b(check|review|look\s+(?:at|over)|see|inspect|status|how\s+(?:is|are)|show\s+me|pull\s+up|open)\b/.test(
+    !/\b(check|review|look\s+(?:at|over)|see|inspect|status|how\s+(?:is|are)|show\s+me|pull\s+up|open|go\s+to)\b/.test(
       g,
     )
   ) {
@@ -1585,11 +2086,19 @@ function hostsMatchForAsk(wantUrl, haveUrl) {
     if (!wh || !hh) return false;
     if (hh === wh) return true;
     if (hh.endsWith(`.${wh}`) || wh.endsWith(`.${hh}`)) return true;
-    // ads.reddit.com ↔ reddit.com/ads paths
+    // notion.so ↔ app.notion.com ↔ *.notion.site (same product; different hosts)
+    if (isNotionProductHost(wh) && isNotionProductHost(hh)) return true;
+    // ads.reddit.com ↔ business.reddit.com / reddit.com/ads (same product family)
     const wBase = wh.split(".").slice(-2).join(".");
     const hBase = hh.split(".").slice(-2).join(".");
     if (wBase && wBase === hBase) {
-      if (/^ads\./i.test(wh)) return /^ads\./i.test(hh) || /\/ads\b/i.test(have.pathname || "");
+      if (/^ads\./i.test(wh) || /ads\.reddit/i.test(String(wantUrl || ""))) {
+        return (
+          /^ads\./i.test(hh) ||
+          /^business\./i.test(hh) ||
+          /\/ads\b/i.test(have.pathname || "")
+        );
+      }
       return true;
     }
   } catch {
@@ -1598,17 +2107,85 @@ function hostsMatchForAsk(wantUrl, haveUrl) {
   return false;
 }
 
-function historyHasTypedContent(history) {
+function isNotionProductHost(hostname) {
+  const h = String(hostname || "")
+    .replace(/^www\./i, "")
+    .toLowerCase();
+  return (
+    /^notion\.(so|site)$/i.test(h) ||
+    /^app\.notion\.com$/i.test(h) ||
+    /\.notion\.(so|site)$/i.test(h)
+  );
+}
+
+/** Wanted account URL and live tab are the same product (even if hosts differ). */
+function sameAccountProductHost(wantUrl, haveUrl) {
+  if (hostsMatchForAsk(wantUrl, haveUrl)) return true;
+  try {
+    const wh = new URL(String(wantUrl || "")).hostname.replace(/^www\./i, "");
+    const hh = new URL(String(haveUrl || "")).hostname.replace(/^www\./i, "");
+    if (isNotionProductHost(wh) && isNotionProductHost(hh)) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+/** How much typed/pasted text counts as finishing a write/create ask. */
+function typedContentMinCharsForGoal(goal) {
+  const g = String(goal || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  if (/\b(essay|paper|article|report|write-?up|memo|letter|proposal|thesis)\b/.test(g)) {
+    return 280;
+  }
+  if (/\b(write|draft|compose|author|write\s+out)\b/.test(g)) return 120;
+  if (
+    /\b(create|make|new|start)\b/.test(g) &&
+    /\b(page|doc|document|note|sheet|deck|presentation)\b/.test(g)
+  ) {
+    return 40;
+  }
+  return 2;
+}
+
+/**
+ * History-verified write that the page now echoes — the content landed even if
+ * it is shorter than the goal-size heuristic (e.g. "write a short essay").
+ */
+function historyTypedContentVisibleOnPage(history, pageText, { minChars = 20 } = {}) {
+  const text = String(pageText || "").replace(/\s+/g, " ").toLowerCase();
+  if (!text) return false;
   const hist = Array.isArray(history) ? history : [];
-  return hist.some((h) => {
+  for (const h of hist) {
+    if (!h?.result?.ok) continue;
     const t = String(h?.action?.type || "").toLowerCase();
+    if (!/^(?:os_write|write|type|fill|paste|click_type|input)$/i.test(t)) continue;
+    const val = String(h?.action?.value || h?.action?.text || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (val.length < minChars) continue;
+    const needle = val.slice(0, 60).toLowerCase();
+    if (needle && text.includes(needle)) return true;
+  }
+  return false;
+}
+
+function historyHasTypedContent(history, { minChars = 2 } = {}) {
+  const hist = Array.isArray(history) ? history : [];
+  let total = 0;
+  for (const h of hist) {
+    if (!h?.result?.ok) continue;
+    const t = String(h?.action?.type || "").toLowerCase();
+    if (!/^(?:os_write|write|type|fill|paste|click_type|input)$/i.test(t)) continue;
     const val = String(h?.action?.value || h?.action?.text || "").trim();
-    return (
-      h?.result?.ok &&
-      /^(?:os_write|write|type|fill|paste|click_type|input)$/i.test(t) &&
-      (val.length >= 2 || t === "paste" || t === "os_write" || t === "write")
-    );
-  });
+    // Bare write/paste with no captured value used to count as done — that
+    // falsely cleared essay asks after a no-op or title-field tap.
+    if (val.length < 2) continue;
+    total += val.length;
+    if (val.length >= minChars || total >= minChars) return true;
+  }
+  return false;
 }
 
 /**
@@ -1617,21 +2194,41 @@ function historyHasTypedContent(history) {
  */
 function pageShowsSubstantialDocBody(pageText = "", url = "") {
   const u = String(url || "");
-  const onEditor =
+  // Marketing / product home is never a filled deliverable.
+  if (looksLikeMarketingOrHomeUrl(u, pageText)) return false;
+  const onDocs =
     /docs\.google\.com\/document\//i.test(u) ||
     /docs\.google\.com\/spreadsheets\//i.test(u) ||
-    /docs\.google\.com\/presentation\//i.test(u) ||
-    /notion\.(so|site)\//i.test(u) ||
-    looksLikeCanvasEditorUrl(u);
-  if (!onEditor && !String(pageText || "").trim()) return false;
+    /docs\.google\.com\/presentation\//i.test(u);
+  const onNotion = /notion\.(so|site)\//i.test(u) || /\.notion\.(so|site)\b/i.test(u);
+  const onCanvas = looksLikeCanvasEditorUrl(u);
+  if (onNotion) {
+    const path = (() => {
+      try {
+        return new URL(u).pathname || "";
+      } catch {
+        return "";
+      }
+    })();
+    // Workspace root without a page id isn't the created page yet.
+    if (!path || path === "/" || (/^\/[^/]+\/?$/i.test(path) && !/-[\da-f]{16,}/i.test(path))) {
+      return false;
+    }
+  }
+  if (!onDocs && !onNotion && !onCanvas && !String(pageText || "").trim()) return false;
   const body = String(pageText || "")
     .replace(
-      /\b(File|Edit|View|Insert|Format|Tools|Extensions|Help|Share|Comment|Comments|Editing|Suggesting|Viewing|Untitled document|Untitled spreadsheet|Untitled presentation|Last edit was|Document tabs|Menus|Toolbar|Search the menus|Normal text|Arial|Courier)\b/gi,
+      /\b(File|Edit|View|Insert|Format|Tools|Extensions|Help|Share|Comment|Comments|Editing|Suggesting|Viewing|Untitled document|Untitled spreadsheet|Untitled presentation|Last edit was|Document tabs|Menus|Toolbar|Search the menus|Normal text|Arial|Courier|Get started|Log in|Sign up|Templates|Product|Download|Pricing|Enterprise)\b/gi,
       " ",
     )
     .replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+  if (onDocs || onNotion || onCanvas) {
+    if (body.length >= 220) return true;
+    const words = body.split(/\s+/).filter((w) => w.length > 2);
+    return words.length >= 60;
+  }
   if (body.length >= 160) return true;
   const words = body.split(/\s+/).filter((w) => w.length > 2);
   return words.length >= 45;
@@ -1670,9 +2267,29 @@ function shareInviteSatisfied(goal, pageText, history) {
  */
 function unmetBrowseAskRequirements(
   goal,
-  { url = "", pageText = "", title = "", history = [], sawScreenChange = false } = {},
+  {
+    url = "",
+    pageText = "",
+    title = "",
+    history = [],
+    sawScreenChange = false,
+    // The runtime already sent the content via Gmail this turn — share/send
+    // evidence lives on the Gmail tab, so doc-page checks can't see it.
+    mailSendDone = false,
+  } = {},
 ) {
   const rawGoal = String(goal || "");
+  // Email compose/reply is owned end-to-end by the mail path — the modular
+  // agent verifies its own draft and asks the user itself when content is
+  // missing. The browse residual checker second-guessing it caused bogus
+  // "write/type the requested content" re-runs and "Needs you" pauses.
+  // Doc share-by-email asks are different and still checked below.
+  if (
+    !isShareInviteGoal(rawGoal) &&
+    (looksLikeMailComposeTask(rawGoal) || looksLikeMailReplyTask(rawGoal))
+  ) {
+    return [];
+  }
   // Continuation goals already list STILL TODO — validate those against the page
   // instead of re-parsing the embedded original ask (which caused rewrite loops).
   if (
@@ -1700,6 +2317,7 @@ function unmetBrowseAskRequirements(
         }
       }
       if (/share|send/i.test(t)) {
+        if (mailSendDone) continue;
         if (shareInviteSatisfied(rawGoal, text0, hist0)) continue;
         // Prefer email from continuation context / original line.
         const emails = rawGoal.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || [];
@@ -1752,16 +2370,52 @@ function unmetBrowseAskRequirements(
     return ["sign in so the page is usable"];
   }
 
+  // Account / ads dashboard asks: must be signed in to the real console —
+  // marketing redirects (e.g. ads.reddit.com → business.reddit.com logged out)
+  // are NOT done.
+  if (looksLikeAccountDashboardAsk(goal)) {
+    const signedIn = accountDashboardLooksSignedIn({
+      url: u,
+      pageText: text,
+      title,
+    });
+    const accountUrl = resolveAccountDashboardUrl(goal);
+    const hostOk =
+      !accountUrl ||
+      /google\.com\/search/i.test(accountUrl) ||
+      hostsMatchForAsk(accountUrl, u);
+    // Already signed in on the right product (notion.so ↔ app.notion.com, etc.)
+    // → done for open/check account asks. Don't nag "open the dashboard".
+    if (signedIn && (hostOk || sameAccountProductHost(accountUrl, u))) {
+      return [];
+    }
+    if (accountUrl && !/google\.com\/search/i.test(accountUrl) && !hostOk && !signedIn) {
+      return ["open the requested dashboard/account"];
+    }
+    if (!signedIn) {
+      return ["sign in to your account dashboard"];
+    }
+    return [];
+  }
+
   // Inspect/review: landing on the right surface with content is enough.
+  // Exception: open-mail asks must reach a thread URL, not bare #inbox.
   if (looksLikeInspectOrReviewAsk(goal)) {
     if (/google\.com\/search|bing\.com\/search|duckduckgo\.com\/\?|youtube\.com\/results/i.test(u)) {
       return ["open the requested page (still on search results)"];
     }
     const accountUrl = resolveAccountDashboardUrl(goal);
     if (accountUrl && !/google\.com\/search/i.test(accountUrl)) {
-      if (!hostsMatchForAsk(accountUrl, u)) return ["open the requested dashboard/account"];
-      if (text.trim().length < 40 && !/ads\.|dashboard|campaign|analytics|admin/i.test(u)) {
-        return ["wait for the dashboard content to load"];
+      const signedIn = accountDashboardLooksSignedIn({
+        url: u,
+        pageText: text,
+        title,
+      });
+      if (!hostsMatchForAsk(accountUrl, u) && !sameAccountProductHost(accountUrl, u) && !signedIn) {
+        return ["open the requested dashboard/account"];
+      }
+      if (!signedIn) {
+        return ["sign in to your account dashboard"];
       }
       return [];
     }
@@ -1778,6 +2432,38 @@ function unmetBrowseAskRequirements(
     return ["open/land on the page for this ask"];
   }
 
+  // Open a specific email/message — must be on a thread hash, not bare inbox.
+  // NEVER for compose asks: "open gmail and draft an email to X" is about
+  // WRITING a new mail ("open" points at Gmail, "email" at the draft) — it
+  // must not demand an existing thread be opened.
+  const composeMailAsk =
+    looksLikeMailComposeTask(goal) ||
+    /\b(draft|compose|write|send)\b[^.!?]{0,48}\b(email|e-mail|mail|message)\b/.test(g) ||
+    /\b(email|e-mail|mail|message)\b[^.!?]{0,24}\bto\s+\S+@/.test(g);
+  const openMailAsk =
+    looksLikeOpenMailItem(goal) ||
+    (!composeMailAsk &&
+      (/\b(open|read|view|click)\b.{0,48}\b(email|e-mail|mail|message|thread)\b/.test(g) ||
+        (/\b(first|second|third|top|\d+(?:st|nd|rd|th))\b.{0,40}\b(email|e-mail|mail|message|thread)\b/.test(
+          g,
+        ) &&
+          /\b(open|read|view|click|identify|find|show)\b/.test(g))));
+  if (openMailAsk) {
+    const threadOpen =
+      /mail\.google\.com/i.test(u) &&
+      /(?:#|\/)(?:inbox|all|sent|drafts|starred|important|snoozed|label\/[^/]+)\/[A-Za-z0-9]+/i.test(
+        u,
+      );
+    if (!threadOpen) {
+      unmet.push("open the email/message");
+    } else if (
+      // Pure open-mail asks are done once the thread URL is live.
+      !/\b(reply|respond|compose|draft|forward|share|invite)\b/.test(g)
+    ) {
+      return [];
+    }
+  }
+
   if (
     /google\.com\/search|bing\.com\/search|duckduckgo\.com\/\?|youtube\.com\/results/i.test(u) &&
     askStillNeedsAdaptiveWork(g)
@@ -1788,18 +2474,54 @@ function unmetBrowseAskRequirements(
   const wantsWrite =
     /\b(write|draft|compose|essay|author|paper)\b/.test(g) ||
     /\bwrite\s+out\b/.test(g) ||
-    (/\bfill\b/.test(g) && /\b(form|doc|document|sheet|field|out|in)\b/.test(g)) ||
+    (/\bfill\b/.test(g) &&
+      /\b(form|doc|document|sheet|field|out|in|page|sections?|content|profile|details)\b/.test(g)) ||
     (/\btype\b/.test(g) &&
       !/\b(type of|prototype)\b/.test(g) &&
-      /\b(essay|doc|document|content|text|reply|response|message|email|notes?|body|paper)\b/.test(g));
-  const writeDone = typedOk || pageShowsSubstantialDocBody(text, u);
-  if (wantsWrite && !writeDone) {
-    unmet.push("write/type the requested content");
+      /\b(essay|doc|document|content|text|reply|response|message|email|notes?|body|paper|page|sections?)\b/.test(
+        g,
+      )) ||
+    (/\b(add|include)\b/.test(g) &&
+      /\b(sections?|content|details|copy|text|profile)\b/.test(g));
+  const wantsCreate =
+    /\b(create|make|new|start)\b/.test(g) &&
+    /\b(page|doc|document|note|sheet|deck|presentation|profile|workspace|file|board|design)\b/.test(g);
+  const writeDone = deliverableContentReady(goal, {
+    url: u,
+    pageText: text,
+    history: hist,
+  });
+  if ((wantsWrite || wantsCreate) && !writeDone) {
+    unmet.push(
+      wantsCreate && !wantsWrite
+        ? "create the page/doc and add the requested content"
+        : "write/type the requested content",
+    );
   }
 
   const wantsShare = isShareInviteGoal(goal);
-  if (wantsShare && !shareInviteSatisfied(goal, text, hist)) {
+  if (wantsShare && !mailSendDone && !shareInviteSatisfied(goal, text, hist)) {
     unmet.push("share/send the doc to the recipient");
+  }
+  // Share/email without a concrete address still needs a share action.
+  if (
+    !wantsShare &&
+    !mailSendDone &&
+    /\b(share|email|send)\b/.test(g) &&
+    /\b(page|doc|document|file|via email|by email|with)\b/.test(g) &&
+    !shareInviteSatisfied(goal, text, hist) &&
+    !okUi.some((h) => /\bshare\b/i.test(String(h?.action?.label || "")))
+  ) {
+    unmet.push("open share and send/email the page");
+  }
+
+  // Any mutate ask still on a marketing/home URL → not done.
+  if (
+    (wantsWrite || wantsCreate || askStillNeedsAdaptiveWork(g)) &&
+    looksLikeMarketingOrHomeUrl(u, text) &&
+    !unmet.some((x) => /create|write|type|open the requested/i.test(x))
+  ) {
+    unmet.push("get past the home/marketing page into the real workspace");
   }
 
   const exerciseGoal =
@@ -1823,16 +2545,6 @@ function unmetBrowseAskRequirements(
         /\b(play|watch|video)\b/i.test(String(h?.action?.label || h?.action?.element || "")),
       );
     if (!playing) unmet.push("play/open the video");
-  }
-
-  if (
-    looksLikeOpenMailItem(goal) ||
-    /\b(open|read|view)\b.{0,48}\b(email|e-mail|mail|message|thread)\b/.test(g)
-  ) {
-    const threadOpen =
-      /mail\.google\.com/i.test(u) &&
-      /(?:#|\/)(?:inbox|all|sent|drafts|label\/[^/]+)\/[A-Za-z0-9]+/i.test(u);
-    if (!threadOpen) unmet.push("open the email/message");
   }
 
   if (
@@ -1870,6 +2582,10 @@ function unmetBrowseAskRequirements(
   }
 
   // Phase coverage (open/find/act/submit/finish) — skip labels already covered above.
+  // A completed Gmail send covers every phase of a "send …" ask.
+  if (mailSendDone && /\b(send|share|email|forward|mail)\b/.test(g)) {
+    return unmet;
+  }
   const phaseEv = browseGoalPhasesEvidence(goal, {
     url: u,
     pageText: text,
@@ -1990,31 +2706,126 @@ function remainingAskGoal(
 function planStepAlreadySatisfied(
   stepText,
   fullAsk,
-  { url = "", pageText = "", title = "", history = [] } = {},
+  { url = "", pageText = "", title = "", history = [], mailSendDone = false } = {},
 ) {
   const step = String(stepText || "").trim();
   if (!step) return false;
-  const ctx = { url, pageText, title, history };
+  const ctx = { url, pageText, title, history, mailSendDone };
+
+  // Share/send step already completed via Gmail this turn — the evidence is
+  // on the mail tab, not the current page.
+  if (mailSendDone && /\b(share|send|email|forward)\b/i.test(step)) return true;
+
+  // Page Q&A / "what's on my page" always needs a fresh scrape answer —
+  // never skip as "already complete" just because a tab is open.
+  if (
+    looksLikePageQuestionAsk(step) ||
+    looksLikePageQuestionAsk(fullAsk || "")
+  ) {
+    return false;
+  }
+
+  // Conditional sign-in step: done only when we're past the wall.
+  if (/\bsign[- ]?in|log[- ]?in\b/i.test(step)) {
+    return !looksLikeSignInWall({
+      url,
+      text: pageText,
+      title,
+    });
+  }
+
+  // A step naming a concrete subject (site, brand, product, person) is only
+  // "already complete" when that subject actually appears on the live page.
+  // "compare the prices to adidas" while a different store is open must RUN.
+  {
+    const hay = `${String(url)}\n${String(title)}\n${String(pageText)}`.toLowerCase();
+    const stop = new Set([
+      "this", "that", "these", "those", "with", "from", "into", "about", "after",
+      "then", "than", "compare", "comparison", "versus", "against", "price",
+      "prices", "pricing", "cost", "costs", "check", "review", "look", "open",
+      "find", "search", "show", "page", "site", "tab", "screen", "please",
+      "just", "also", "really", "their", "there", "them", "your", "mine",
+      "some", "more", "less", "cheaper", "expensive", "difference", "between",
+      "current", "product", "products", "item", "items", "thing", "things",
+      "stuff", "info", "information", "details", "data", "what", "when",
+      "where", "which", "make", "sure", "well", "good", "best", "same",
+    ]);
+    const tokens = (String(step).toLowerCase().match(/[a-z][a-z0-9'-]{3,}/g) || []).filter(
+      (w) => !stop.has(w),
+    );
+    if (tokens.length && !tokens.some((w) => hay.includes(w))) {
+      return false;
+    }
+  }
+
   const fullGaps = unmetBrowseAskRequirements(fullAsk || step, ctx);
+
+  // Opening an inbox row is never "already done" on bare #inbox.
+  if (
+    looksLikeOpenMailItem(step) ||
+    /\b(open|read|view|click)\b.{0,48}\b(email|e-mail|mail|message|thread)\b/i.test(step)
+  ) {
+    const threadOpen =
+      /mail\.google\.com/i.test(String(url || "")) &&
+      /(?:#|\/)(?:inbox|all|sent|drafts|starred|important|snoozed|label\/[^/]+)\/[A-Za-z0-9]+/i.test(
+        String(url || ""),
+      );
+    if (!threadOpen) return false;
+  }
+
+  // Create / fill / write / title steps are never "done" from merely opening the site.
+  // Bare "email" in "open the email" is NOT a create/fill step.
+  const createOrFillStep =
+    !looksLikeOpenMailItem(step) &&
+    /\b(create|make|new\s+page|new\s+doc|blank|fill|add\s+sections?|write|draft|compose|essay|author|type|title|content|share|include)\b/i.test(
+      step,
+    ) &&
+    !/\b(open|click|read|view)\b.{0,40}\b(email|e-mail|mail|message|thread)\b/i.test(step);
+  if (createOrFillStep) {
+    // Only gaps relevant to THIS step block it — a pure write step is not
+    // blocked by a later share step's outstanding gap.
+    const stepWantsShare = isShareInviteGoal(step) || /\b(share|send|invite)\b/i.test(step);
+    const blockingGapRe = stepWantsShare
+      ? /write|type|create|share|sign in|open share|home\/marketing/i
+      : /write|type|create|sign in|home\/marketing/i;
+    if (fullGaps.some((g) => blockingGapRe.test(g))) {
+      return false;
+    }
+    if (
+      !deliverableContentReady(fullAsk || step, {
+        url,
+        pageText,
+        history,
+      })
+    ) {
+      return false;
+    }
+    // Content is actually ready for this create/write step.
+    return true;
+  }
+
   if (!fullGaps.length) return true;
 
   const shareOnlyStep =
     isShareInviteGoal(step) &&
-    !/\b(write|draft|compose|essay|author|paper|write\s+out)\b/i.test(step);
+    !/\b(write|draft|compose|essay|author|paper|write\s+out|create|fill)\b/i.test(step);
   if (shareOnlyStep) {
     return !fullGaps.some((g) => /share|send/i.test(g));
   }
 
   const writeOnlyStep =
-    /\b(write|draft|compose|essay|author|paper|write\s+out)\b/i.test(step) &&
+    /\b(write|draft|compose|essay|author|paper|write\s+out|fill|add\s+sections?)\b/i.test(step) &&
     !isShareInviteGoal(step);
   if (writeOnlyStep) {
-    return !fullGaps.some((g) => /write|type/i.test(g));
+    return !fullGaps.some((g) => /write|type|create/i.test(g));
   }
 
   // Open-only step while we're already on a real page for the ask.
+  // Never treat "open the first email" as done just because inbox loaded.
   if (
-    /^(?:please\s+|can\s+you\s+)?(?:open|go\s+to|visit|pull\s+up)\b/i.test(step) &&
+    /^(?:please\s+|can\s+you\s+)?(?:open|go\s+to|visit|pull\s+up|navigate\s+to)\b/i.test(step) &&
+    !looksLikeOpenMailItem(step) &&
+    !/\b(open|read|view|click)\b.{0,48}\b(email|e-mail|mail|message|thread)\b/i.test(step) &&
     !askStillNeedsAdaptiveWork(step) &&
     /^https?:\/\//i.test(url) &&
     !isPlaceholderAgentUrl(url) &&
@@ -2108,18 +2919,518 @@ function looksLikeMarketingOrHomeUrl(url, pageText = "") {
     const parsed = new URL(u);
     const path = (parsed.pathname || "/").replace(/\/+$/, "") || "/";
     const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
-    if (path === "/" || path === "/home" || path === "/en" || path === "/us") {
+    const shallow =
+      path === "/" ||
+      path === "/home" ||
+      path === "/en" ||
+      path === "/us" ||
+      /^\/(product|products|templates?|pricing|enterprise|customers|features|download|desktop|mobile|login|signup|sign-in|sign-up)(\/|$)/i.test(
+        path,
+      );
+    if (shallow) {
       if (
-        /\b(get started|sign up|create account|learn more|watch demo|for business|pricing)\b/.test(t) ||
-        /^(google\.com|microsoft\.com|apple\.com|amazon\.com)$/i.test(host)
+        /\b(get started|sign up|log in|create account|learn more|watch demo|for business|pricing|templates?|free forever|try (it )?free|download)\b/.test(
+          t,
+        ) ||
+        /^(google\.com|microsoft\.com|apple\.com|amazon\.com|notion\.so|notion\.site|canva\.com|figma\.com|dropbox\.com|airtable\.com|miro\.com|asana\.com|trello\.com|slack\.com|business\.reddit\.com|ads\.reddit\.com|reddit\.com)$/i.test(
+          host,
+        )
       ) {
         return true;
       }
+      // Shallow path with little app chrome → treat as landing.
+      if (t.length < 80) return true;
     }
   } catch {
     /* ignore */
   }
   return /google\.com\/search|youtube\.com\/results|bing\.com\/search/i.test(u);
+}
+
+/**
+ * Detect blockers that require the USER (not more clicking): sign-in, paywall,
+ * captcha, permission prompts. Used to pause and wait instead of faking Done.
+ * Includes a concrete `userAction` so the user knows the bare-minimum step.
+ */
+function detectBrowseBlocker({ url = "", pageText = "", title = "" } = {}) {
+  const u = String(url || "");
+  const t = String(pageText || "");
+  const titleL = String(title || "");
+  let host = "this site";
+  try {
+    host = new URL(u).hostname.replace(/^www\./i, "") || host;
+  } catch {
+    /* ignore */
+  }
+
+  if (looksLikeSignInWall({ url: u, text: t, title: titleL })) {
+    const userAction = describeSignInUserAction({ url: u, pageText: t, title: titleL, host });
+    return {
+      kind: "signin",
+      label: "Needs sign-in",
+      userAction,
+      message: formatUserHelpBrief({
+        userAction,
+        host,
+        kind: "signin",
+      }),
+    };
+  }
+  // Signed-in app surfaces (inbox, docs/canvas editors) show USER CONTENT —
+  // email subjects/snippets and document text routinely contain "captcha",
+  // "security check", "upgrade to pro", "allow notifications", etc. Never
+  // read blockers out of user content; only sign-in walls (handled above,
+  // with their own evidence rules) apply there.
+  const onSignedInMail = looksLikeSignedInMailUrl(u);
+  const onSignedInApp = onSignedInMail || looksLikeCanvasEditorUrl(u);
+  const compactBody = t.replace(/\s+/g, " ").trim();
+  // Real captcha / interstitial walls are sparse pages, not full apps.
+  const sparsePage = compactBody.length <= 2000;
+
+  if (!onSignedInMail && looksLikePaywall({ url: u, text: t, title: titleL })) {
+    const userAction =
+      `Clear the upgrade/paywall on **${host}** in the agent browser ` +
+      `(upgrade, dismiss, or switch account) — leave me on the page after.`;
+    return {
+      kind: "paywall",
+      label: "Needs upgrade / paywall",
+      userAction,
+      message: formatUserHelpBrief({ userAction, host, kind: "paywall" }),
+    };
+  }
+  {
+    const captchaTitleHit =
+      /\b(captcha|attention required|just a moment|verify you are human|are you a robot|security check|unusual traffic)\b/i.test(
+        titleL,
+      );
+    const captchaBodyHit =
+      /\b(i('m| am) not a robot|verify (?:that )?you(?:'re| are) (?:a )?human|complete the (?:security check|captcha)|checking your browser|detected unusual traffic|press and hold|hcaptcha|recaptcha)\b/i.test(
+        t,
+      );
+    if (!onSignedInApp && sparsePage && (captchaTitleHit || captchaBodyHit)) {
+      const userAction =
+        `Complete the captcha / human check in the agent browser tab on **${host}** ` +
+        `(check the box or solve the puzzle), then leave the tab open.`;
+      return {
+        kind: "captcha",
+        label: "Needs captcha / human check",
+        userAction,
+        message: formatUserHelpBrief({ userAction, host, kind: "captcha" }),
+      };
+    }
+  }
+  if (
+    !onSignedInApp &&
+    /\b(allow (notifications|camera|microphone|location)|permission (required|denied)|blocked (pop-?ups|cookies)|enable cookies)\b/i.test(
+      t,
+    )
+  ) {
+    const userAction =
+      `Click **Allow** (or dismiss) the permission/cookie prompt in the agent browser on **${host}**.`;
+    return {
+      kind: "permission",
+      label: "Needs permission",
+      userAction,
+      message: formatUserHelpBrief({ userAction, host, kind: "permission" }),
+    };
+  }
+  return null;
+}
+
+/** One concrete thing the user must do on a sign-in screen. */
+function describeSignInUserAction({ url = "", pageText = "", title = "", host = "this site" } = {}) {
+  const t = `${title}\n${pageText}`.toLowerCase();
+  if (/\b(2-?step|two-?factor|verification code|authenticator|enter (the )?code|approve (the )?sign-?in|check your (phone|device))\b/i.test(t)) {
+    return `Enter the verification / 2FA code for **${host}** in the agent browser (or approve the sign-in on your phone).`;
+  }
+  if (/\b(choose an account|pick an account|select (an )?account|use another account)\b/i.test(t)) {
+    return `Pick your account in the chooser in the agent browser for **${host}**.`;
+  }
+  if (/\bpassword\b/i.test(t) && !/\b(forgot password|reset password)\b/i.test(t)) {
+    return `Type your **password** for **${host}** in the agent browser (field should be ready), then press Enter / Sign in.`;
+  }
+  if (/\b(email|phone|username)\b/i.test(t) && !/\bpassword\b/i.test(t)) {
+    return `Enter your email/username for **${host}** in the agent browser, then click Next — I'll take the next step after that.`;
+  }
+  return `Finish signing in to **${host}** in the agent browser tab (I'll continue automatically when you're in).`;
+}
+
+/**
+ * Short, specific "needs you" brief — one action, bare minimum for the user.
+ */
+function formatUserHelpBrief({
+  userAction = "",
+  host = "",
+  kind = "blocked",
+  alreadyDone = [],
+  stillTodo = [],
+} = {}) {
+  const action = String(userAction || "").trim() ||
+    "Take the next step in the agent browser tab, then say **continue**.";
+  const done = (Array.isArray(alreadyDone) ? alreadyDone : [])
+    .map((s) => String(s || "").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const todo = (Array.isArray(stillTodo) ? stillTodo : [])
+    .map((s) => String(s || "").trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const auto =
+    kind === "signin"
+      ? `I'll notice when you're signed in and continue automatically (or say **"continue"**).`
+      : `When that's done, say **"continue"** and I'll finish the rest.`;
+  return [
+    `## Needs you — 1 step`,
+    ``,
+    `**Please:** ${action}`,
+    ``,
+    auto,
+    done.length ? `\nAlready done:\n${done.map((s) => `- ${s}`).join("\n")}` : "",
+    todo.length
+      ? `\nI'll finish after you:\n${todo.map((s) => `- ${s}`).join("\n")}`
+      : "",
+    host && kind === "signin" ? `\n_Tab: ${host}_` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * Click/type everything the agent CAN before asking the user.
+ * Goal: leave the user with a single bare-minimum action (password, 2FA, etc.).
+ */
+async function advanceTowardUserGate(
+  webContents,
+  { goal = "", history = [], maxSteps = 5 } = {},
+) {
+  const taken = [];
+  if (!webContents || webContents.isDestroyed?.()) {
+    return {
+      advanced: false,
+      actionsTaken: taken,
+      blocker: null,
+      userAction: "Open the agent browser tab and continue from where it left off.",
+    };
+  }
+
+  const emails = String(goal || "").match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || [];
+  const primaryEmail = emails[0] || "";
+
+  for (let step = 0; step < maxSteps; step += 1) {
+    let page = { url: "", text: "", title: "" };
+    try {
+      await waitForDomSettle(webContents, 400);
+      page = await getPageContext(webContents);
+    } catch {
+      break;
+    }
+    const url = page.url || webContents.getURL?.() || "";
+    const text = String(page.text || "");
+    const title = String(page.title || "");
+    const blocker = detectBrowseBlocker({ url, pageText: text, title });
+
+    // Marketing / home with create goal → click into app / Log in.
+    if (
+      looksLikeMarketingOrHomeUrl(url, text) &&
+      askStillNeedsAdaptiveWork(goal)
+    ) {
+      const hints = [
+        "Log in",
+        "Sign in",
+        "Continue with Google",
+        "Get started",
+        "Get Notion free",
+        "New page",
+        "Create",
+      ];
+      let clicked = false;
+      for (const hint of hints) {
+        const hit = await clickInPageByHint(webContents, { hint });
+        if (hit?.ok) {
+          taken.push(`Clicked “${hit.label || hint}”`);
+          clicked = true;
+          break;
+        }
+      }
+      if (clicked) continue;
+    }
+
+    // Permission → try Allow ourselves.
+    if (blocker?.kind === "permission") {
+      const hit =
+        (await clickInPageByHint(webContents, { hint: "Allow" })) ||
+        (await clickInPageByHint(webContents, { hint: "Accept" })) ||
+        (await clickInPageByHint(webContents, { hint: "I agree" }));
+      if (hit?.ok) {
+        taken.push(`Clicked “${hit.label || "Allow"}”`);
+        continue;
+      }
+      return {
+        advanced: taken.length > 0,
+        actionsTaken: taken,
+        blocker,
+        userAction: blocker.userAction,
+        label: blocker.label,
+        message: formatUserHelpBrief({
+          userAction: blocker.userAction,
+          kind: blocker.kind,
+          alreadyDone: taken,
+        }),
+      };
+    }
+
+    // Captcha → try the checkbox once.
+    if (blocker?.kind === "captcha") {
+      const hit =
+        (await clickInPageByHint(webContents, { hint: "I'm not a robot" })) ||
+        (await clickInPageByHint(webContents, { hint: "Verify" }));
+      if (hit?.ok) {
+        taken.push(`Clicked “${hit.label || "captcha"}”`);
+        // Re-check — if still captcha, user must finish.
+        await waitForDomSettle(webContents, 800).catch(() => {});
+        const after = await getPageContext(webContents).catch(() => page);
+        const still = detectBrowseBlocker({
+          url: after.url || url,
+          pageText: after.text || "",
+          title: after.title || "",
+        });
+        if (still?.kind === "captcha") {
+          return {
+            advanced: true,
+            actionsTaken: taken,
+            blocker: still,
+            userAction: still.userAction,
+            label: still.label,
+            message: formatUserHelpBrief({
+              userAction: still.userAction,
+              kind: "captcha",
+              alreadyDone: taken,
+            }),
+          };
+        }
+        continue;
+      }
+      return {
+        advanced: taken.length > 0,
+        actionsTaken: taken,
+        blocker,
+        userAction: blocker.userAction,
+        label: blocker.label,
+        message: formatUserHelpBrief({
+          userAction: blocker.userAction,
+          kind: "captcha",
+          alreadyDone: taken,
+        }),
+      };
+    }
+
+    // Sign-in: click SSO / Log in / Next; type email if we have it; stop at password/2FA.
+    if (blocker?.kind === "signin" || looksLikeSignInPageText(text)) {
+      const lower = text.toLowerCase();
+      let openedSso = false;
+      // Account chooser / Continue with Google — click it for the user.
+      for (const hint of [
+        "Continue with Google",
+        "Sign in with Google",
+        "Continue with Apple",
+        "Continue with Microsoft",
+        "Sign in with Apple",
+        "Sign in with Microsoft",
+        "Log in",
+        "Sign in",
+        "Next",
+      ]) {
+        // Don't click Next if password is already the ask — that's the user's step.
+        if (/^next$/i.test(hint) && /\bpassword\b/i.test(lower)) break;
+        const hit = await clickInPageByHint(webContents, { hint });
+        if (hit?.ok) {
+          taken.push(`Clicked “${hit.label || hint}”`);
+          if (/google|apple|microsoft|sso|continue with/i.test(hint)) {
+            openedSso = true;
+          }
+          await waitForDomSettle(webContents, openedSso ? 1100 : 700).catch(() => {});
+          break;
+        }
+      }
+
+      // Type email into login if visible and empty-ish (skip when an SSO popup is up).
+      if (!openedSso && primaryEmail && /\b(email|phone|username)\b/i.test(lower)) {
+        try {
+          await clickInPageByHint(webContents, { hint: "Email" });
+          const typed = await typeWithFocusRetry(webContents, {
+            text: primaryEmail,
+            hint: "Email",
+            pressEnter: false,
+            verifyNeedle: primaryEmail,
+          });
+          if (typed?.ok) {
+            taken.push(`Entered email **${primaryEmail}**`);
+            const next = await clickInPageByHint(webContents, { hint: "Next" });
+            if (next?.ok) taken.push(`Clicked “${next.label || "Next"}”`);
+            await waitForDomSettle(webContents, 800).catch(() => {});
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const after = await getPageContext(webContents).catch(() => page);
+      const afterBlocker = detectBrowseBlocker({
+        url: after.url || url,
+        pageText: after.text || "",
+        title: after.title || "",
+      });
+      let host = "this site";
+      try {
+        host =
+          new URL(after.url || url).hostname.replace(/^www\./i, "") || host;
+      } catch {
+        /* ignore */
+      }
+      let userAction =
+        afterBlocker?.userAction ||
+        describeSignInUserAction({
+          url: after.url || url,
+          pageText: after.text || "",
+          title: after.title || "",
+          host,
+        });
+      // SSO click opens a real popup — tell the user to finish there, not type a password on the parent tab.
+      if (openedSso) {
+        userAction = `Finish signing in in the **Sign in** popup that just opened for **${host}** (Google / Apple / Microsoft). It should be in front of Studio.`;
+      }
+      // If wall cleared, we're done advancing.
+      if (!afterBlocker && !openedSso) {
+        return {
+          advanced: taken.length > 0,
+          actionsTaken: taken,
+          blocker: null,
+          userAction: "",
+          cleared: true,
+        };
+      }
+      return {
+        advanced: taken.length > 0,
+        actionsTaken: taken,
+        blocker: afterBlocker || blocker,
+        userAction,
+        label: (afterBlocker || blocker)?.label || "Needs sign-in",
+        message: formatUserHelpBrief({
+          userAction,
+          host,
+          kind: "signin",
+          alreadyDone: taken,
+        }),
+      };
+    }
+
+    if (blocker) {
+      return {
+        advanced: taken.length > 0,
+        actionsTaken: taken,
+        blocker,
+        userAction: blocker.userAction,
+        label: blocker.label,
+        message: formatUserHelpBrief({
+          userAction: blocker.userAction,
+          kind: blocker.kind,
+          alreadyDone: taken,
+        }),
+      };
+    }
+
+    // No hard blocker — stuck on UI. Infer one specific next click for the user.
+    break;
+  }
+
+  let page = { url: "", text: "", title: "" };
+  try {
+    page = await getPageContext(webContents);
+  } catch {
+    /* ignore */
+  }
+  const gaps = unmetBrowseAskRequirements(goal, {
+    url: page.url || "",
+    pageText: page.text || "",
+    title: page.title || "",
+    history,
+  });
+  const userAction = describeStuckUserAction({
+    goal,
+    gaps,
+    url: page.url || "",
+    pageText: page.text || "",
+  });
+  return {
+    advanced: taken.length > 0,
+    actionsTaken: taken,
+    blocker: null,
+    userAction,
+    label: "Needs you",
+    message: formatUserHelpBrief({
+      userAction,
+      kind: "stuck",
+      alreadyDone: taken,
+      stillTodo: gaps,
+    }),
+  };
+}
+
+/** Specific next click when the agent is stuck without a hard wall. */
+function describeStuckUserAction({ goal = "", gaps = [], url = "", pageText = "" } = {}) {
+  const g = String(goal || "").toLowerCase();
+  const gap0 = String(gaps[0] || "").toLowerCase();
+  const t = String(pageText || "").toLowerCase();
+  let host = "this page";
+  try {
+    host = new URL(url).hostname.replace(/^www\./i, "") || host;
+  } catch {
+    /* ignore */
+  }
+
+  if (/sign in/i.test(gap0) || /account dashboard/i.test(gap0)) {
+    return `Sign in to **${host}** in the agent browser — I'll continue into your account right after.`;
+  }
+  if (/share|send/i.test(gap0) || isShareInviteGoal(goal)) {
+    if (/\b(add people|share with|send invite)\b/i.test(t)) {
+      return `In the open Share dialog, click **Send** / **Invite** (email should already be entered if I got that far).`;
+    }
+    return `Click **Share** on **${host}**, add the recipient, and click **Send** — or say **continue** after you do.`;
+  }
+  if (/create|write|type|marketing|home/i.test(gap0) || /\b(create|new page|write)\b/i.test(g)) {
+    if (/\b(new page|add a page|blank|create)\b/i.test(t)) {
+      return `Click **New page** / **Create** / **Blank** in the agent browser on **${host}** — I'll write and finish after that.`;
+    }
+    return `Get into a blank page/editor on **${host}** (New page / Create / Blank), then say **continue**.`;
+  }
+  if (gaps.length) {
+    return `On **${host}**, do this one thing: **${gaps[0]}** — then say **continue** and I'll handle the rest.`;
+  }
+  return `Take the next click on **${host}** in the agent browser (whatever unlocks the task), then say **continue**.`;
+}
+
+/**
+ * For create/write/fill asks: landing on a marketing/home page never counts
+ * as the deliverable, regardless of site chrome text length.
+ */
+function deliverableContentReady(goal, { url = "", pageText = "", history = [] } = {}) {
+  const g = String(goal || "").toLowerCase();
+  const minChars = typedContentMinCharsForGoal(goal);
+  const typed = historyHasTypedContent(history, { minChars });
+  const body = pageShowsSubstantialDocBody(pageText, url);
+  const landing = looksLikeMarketingOrHomeUrl(url, pageText);
+  const wantsMutate =
+    /\b(write|draft|compose|create|make|fill|type|add sections?|edit|build)\b/.test(g) ||
+    (/\b(new|start)\b/.test(g) && /\b(page|doc|document|note|sheet|deck|presentation)\b/.test(g));
+  if (!wantsMutate) return body || historyHasTypedContent(history, { minChars: 2 });
+  if (landing) return false;
+  // Docs/Sheets home is never a finished essay — require real editor body or
+  // enough typed/pasted characters for this kind of ask.
+  if (/docs\.google\.com\/document\/u\/\d+\/?$/i.test(String(url || ""))) return false;
+  // Prefer evidence we actually typed; otherwise require a real non-landing body.
+  // A shorter successful write that the page visibly echoes also counts —
+  // never demand a rewrite of content that already landed.
+  return typed || body || historyTypedContentVisibleOnPage(history, pageText);
 }
 
 /**
@@ -2180,7 +3491,15 @@ function browseGoalPhasesEvidence(
         ) ||
         (/\bfill\b/i.test(String(goal || "")) &&
           /\b(form|doc|document|sheet|field)\b/i.test(String(goal || "")));
-      if (writeGoal) {
+      const mailThreadOpen =
+        looksLikeOpenMailItem(goal) &&
+        /mail\.google\.com/i.test(u) &&
+        /(?:#|\/)(?:inbox|all|sent|drafts|starred|important|snoozed|label\/[^/]+)\/[A-Za-z0-9]+/i.test(
+          u,
+        );
+      if (mailThreadOpen) {
+        // Opening the thread counts as the asked click.
+      } else if (writeGoal) {
         if (
           !historyHasTypedContent(hist) &&
           !pageShowsSubstantialDocBody(pageText, u)
@@ -2425,6 +3744,35 @@ function progressivePlanNowLine(taskPlan) {
   return m ? String(m[1] || "").trim().slice(0, 120) : "";
 }
 
+/**
+ * Honest "I need your help with a step" fallback for when the agent has
+ * repeatedly failed or run out of ideas. Names the exact step it was on
+ * (WORKING PLAN's NOW line when available) so the user can do that one
+ * thing and say "continue" — never a vague "couldn't finish".
+ */
+function formatStuckNeedsHelp({ goal, taskPlan, history, reason = "" } = {}) {
+  const nowLine = progressivePlanNowLine(taskPlan);
+  const step = (nowLine || String(goal || "this task").trim()).slice(0, 160);
+  const hist = Array.isArray(history) ? history : [];
+  const lastFail = [...hist]
+    .reverse()
+    .find((h) => h?.result && h.result.ok === false);
+  const failNote = lastFail
+    ? `My last attempt — ${String(lastFail.action?.type || "action")}${
+        lastFail.action?.label
+          ? ` "${String(lastFail.action.label).slice(0, 60)}"`
+          : ""
+      } — failed (${String(lastFail.result?.error || "no effect").slice(0, 90)}).`
+    : "";
+  return [
+    `I need your help with a step — I couldn't get past: **${step}**.`,
+    [String(reason || "").trim(), failNote].filter(Boolean).join(" "),
+    `Please do that one step in the agent browser tab, or tell me exactly what to click, then say **continue** and I'll finish the rest.`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 /** True when the page/history already satisfies a simple browse goal — skip more LLM plan rounds. */
 function looksBrowseGoalSatisfied(goal, { url = "", pageText = "", title = "", history = [] } = {}) {
   const g = String(goal || "").toLowerCase();
@@ -2550,7 +3898,7 @@ async function executeOwnedAdaptiveTask({
   planNext,
   onProgress,
   signal,
-  maxRounds = 14,
+  maxRounds = 16,
   conversationHistory = [],
 }) {
   if (!webContents || webContents.isDestroyed()) {
@@ -2566,6 +3914,14 @@ async function executeOwnedAdaptiveTask({
   // instead of burning rounds on "step N browsing…".
   let lastRoundSig = "";
   let stalledRounds = 0;
+  // Hung page loads: when a navigation sits loading past this long, force one
+  // reload instead of scraping a blank page / burning rounds on "wait".
+  let loadingSince = 0;
+  let stallReloads = 0;
+  let loadStallNote = "";
+  // Set when a mid-round reload happens (in-page spinner) — carried into the
+  // NEXT round's planner hint since that round starts with a fresh scrape.
+  let pendingStallNote = "";
   // Progressive WORKING PLAN — rewritten each round from the visible screen.
   // Seed a skeleton so round 1 already has DONE/NOW/CHECK/LATER structure.
   let taskPlan = seedProgressiveTaskPlan(goal);
@@ -2583,9 +3939,10 @@ async function executeOwnedAdaptiveTask({
   // Small action models love to DESCRIBE the plan via their answer tool
   // instead of acting. Reject "done" until a real click/type has landed.
   let answerRejections = 0;
+  let plannerFailures = 0;
   const multiStepGoal = looksLikeMultiStepBrowseGoal(goal);
   const effectiveMaxRounds = multiStepGoal
-    ? Math.max(maxRounds, 22)
+    ? Math.max(maxRounds, 28)
     : maxRounds;
   const inspectAsk = looksLikeInspectOrReviewAsk(goal);
   const finishIfGoalMet = (pageUrlNow, pageTextNow, pageTitleNow) => {
@@ -2675,9 +4032,42 @@ async function executeOwnedAdaptiveTask({
       );
       if (early) return early;
     }
+    // In-flight page load: give it a real chance to finish before scraping a
+    // half-rendered page, and if it hangs past ~10s force one reload — slow
+    // CDNs / dropped requests otherwise leave the agent staring at a spinner.
+    loadStallNote = pendingStallNote;
+    pendingStallNote = "";
+    try {
+      if (webContents.isLoading?.()) {
+        if (!loadingSince) loadingSince = Date.now();
+        await waitForLoad(webContents, 6000);
+        if (
+          webContents.isLoading?.() &&
+          Date.now() - loadingSince > 10000 &&
+          stallReloads < 2
+        ) {
+          stallReloads += 1;
+          try {
+            webContents.stop();
+          } catch (_) {}
+          await new Promise((r) => setTimeout(r, 200));
+          try {
+            webContents.reload();
+          } catch (_) {}
+          await waitForLoad(webContents, 12000);
+          loadingSince = webContents.isLoading?.() ? Date.now() : 0;
+          loadStallNote =
+            "NOTE: the page stalled while loading and was just RELOADED. Look at the fresh screen state before acting; do not assume prior partial content is still there.";
+        } else if (!webContents.isLoading?.()) {
+          loadingSince = 0;
+        }
+      } else {
+        loadingSince = 0;
+      }
+    } catch (_) {}
     const catalog = await getDOMCatalog(webContents);
     const page = await getPageContext(webContents);
-    const pageText = String(page.text || "").slice(0, 6000);
+    const pageText = String(page.text || "").slice(0, 9000);
     const pageUrl = page.url || webContents.getURL();
     const pageTitle = page.title || webContents.getTitle() || "";
     if (
@@ -2719,10 +4109,17 @@ async function executeOwnedAdaptiveTask({
         return {
           ok: true,
           stuck: true,
+          needsHelp: true,
           answer:
             answer ||
-            "I kept retrying the same click without progress on this editor screen — couldn't finish here.",
-        history,
+            formatStuckNeedsHelp({
+              goal,
+              taskPlan,
+              history,
+              reason:
+                "This editor screen kept ignoring the same action no matter how I retried.",
+            }),
+          history,
           url: pageUrl,
         };
       }
@@ -2740,14 +4137,132 @@ async function executeOwnedAdaptiveTask({
       return {
         ok: true,
         stuck: true,
+        needsHelp: true,
         answer:
           answer ||
-          "The page stopped responding to my actions — I couldn't finish this on the current screen.",
+          formatStuckNeedsHelp({
+            goal,
+            taskPlan,
+            history,
+            reason:
+              "The page stopped responding to my actions — nothing I did changed the screen.",
+          }),
         history,
         url: pageUrl,
       };
       }
     }
+
+    // In-page spinner that never resolves (widget/dialog stuck on "Loading…"):
+    // isLoading() is false so the top-of-round check can't see it. If the
+    // screen hasn't changed for 2 rounds and a live spinner is visible,
+    // reload the page — that unsticks most hung widgets.
+    if (
+      !isCanvasEditor &&
+      stalledRounds >= 2 &&
+      stallReloads < 2 &&
+      (pageLooksStuckLoadingText(pageText) ||
+        (await pageHasActiveSpinner(webContents)))
+    ) {
+      stallReloads += 1;
+      try {
+        webContents.reload();
+      } catch (_) {}
+      await waitForLoad(webContents, 12000);
+      await waitForDomSettle(webContents, 900).catch(() => {});
+      pendingStallNote =
+        "NOTE: part of the page was stuck on a loading spinner, so it was just RELOADED. Re-read the fresh screen before acting; do not assume prior dialogs are still open.";
+      stalledRounds = 0;
+      lastRoundSig = "";
+      continue;
+    }
+
+    // Safety fallback: several failed actions in a row means the agent is
+    // messing up repeatedly — stop and ask the user for help with the current
+    // step instead of thrashing until the round budget runs out.
+    {
+      const recent = history.slice(-5);
+      if (
+        recent.length >= 5 &&
+        recent.every((h) => h?.result && h.result.ok === false)
+      ) {
+        const doneAnyway = finishIfGoalMet(pageUrl, pageText, pageTitle);
+        if (doneAnyway) return doneAnyway;
+        return {
+          ok: true,
+          stuck: true,
+          needsHelp: true,
+          answer: formatStuckNeedsHelp({
+            goal,
+            taskPlan,
+            history,
+            reason: "My last 5 actions in a row all failed to take effect.",
+          }),
+          history,
+          url: pageUrl,
+        };
+      }
+    }
+
+    // Landing / marketing page + create/write goal: click an obvious CTA before
+    // waiting on the planner (Log in / New page / Get started). Re-read next round.
+    if (
+      round <= 2 &&
+      looksLikeMarketingOrHomeUrl(pageUrl, pageText) &&
+      askStillNeedsAdaptiveWork(goal) &&
+      !history.some(
+        (h) =>
+          h?.result?.ok &&
+          /^(?:click|tap|press_click|click_coord|tap_coord)$/i.test(
+            String(h?.action?.type || ""),
+          ),
+      )
+    ) {
+      const ctaHints = [
+        "Log in",
+        "Sign in",
+        "New page",
+        "Add a page",
+        "Get Notion free",
+        "Get started",
+        "Create",
+        "Start for free",
+        "Continue with Google",
+      ];
+      let ctaHit = null;
+      for (const hint of ctaHints) {
+        try {
+          const hit = await clickInPageByHint(webContents, { hint });
+          if (hit?.ok) {
+            ctaHit = { ...hit, hint };
+            break;
+          }
+        } catch {
+          /* try next */
+        }
+      }
+      if (ctaHit?.ok) {
+        history.push({
+          action: {
+            type: "click",
+            label: ctaHit.label || ctaHit.hint,
+          },
+          result: { ok: true, via: "marketing_cta" },
+          at: new Date().toISOString(),
+        });
+        lastToolName = "click";
+        lastToolOutput = `Clicked "${ctaHit.label || ctaHit.hint}" on the landing page to get into the app.`;
+        lastActionDiff =
+          "Clicked a landing-page CTA — re-read the new screen and continue the USER GOAL.";
+        try {
+          await waitForDomSettle(webContents, 900);
+        } catch {
+          /* ignore */
+        }
+        continue;
+      }
+    }
+
     // On Docs write goals: after a couple of missed clicks, paste drafted content
     // directly into the document body instead of thrashing the planner.
     if (
@@ -2814,6 +4329,7 @@ async function executeOwnedAdaptiveTask({
         lastActionDiff,
         taskPlan,
         stuckHint: [
+          loadStallNote,
           /NEW controls/i.test(String(lastActionDiff || ""))
             ? "The UI just advanced and NEW controls are listed in WHAT CHANGED. REWRITE the WORKING PLAN now: mark prior NOW as DONE if its CHECK passed, set NOW to the single best NEW control (Send/Next/Continue/field), keep LATER as placeholders. Do NOT re-click the previous button. Do NOT Cancel/Close/click outside."
             : "",
@@ -2846,6 +4362,49 @@ async function executeOwnedAdaptiveTask({
     if (plan?.taskPlan) {
       taskPlan = String(plan.taskPlan).slice(0, 2000);
     }
+
+    // Planner API/screenshot failures must NOT enter the "premature done" reject
+    // loop — that burns minutes of Thinking… with zero clicks.
+    const planActionsEarly = Array.isArray(plan?.actions) ? plan.actions : [];
+    if (
+      (plan?.plannerFailed || (plan?.stuck && !planActionsEarly.length && !plan?.done && !plan?.answer)) &&
+      !planActionsEarly.length
+    ) {
+      plannerFailures += 1;
+      if (plannerFailures >= 2) {
+        return {
+          ok: true,
+          stuck: true,
+          needsHelp: true,
+          answer:
+            String(plan?.answer || "").trim() ||
+            formatStuckNeedsHelp({
+              goal,
+              taskPlan,
+              history,
+              reason:
+                "I can see the page but couldn't figure out the next click after two tries.",
+            }),
+          history,
+          url: webContents.getURL() || pageUrl,
+          unmet: unmetBrowseAskRequirements(goal, {
+            url: pageUrl,
+            pageText,
+            title: pageTitle,
+            history,
+            sawScreenChange,
+          }),
+        };
+      }
+      // One retry with a hard "click something visible" nudge.
+      lastToolName = "plan";
+      lastToolOutput =
+        "PLANNING FAILED — return ONE concrete click/type on a visible control that advances the USER GOAL. Prefer Log in / Sign in / New page / Create / Get started if on a landing page.";
+      lastActionDiff = "Planner returned no actions — must click something on this screen.";
+      continue;
+    }
+    plannerFailures = 0;
+
     // An ACTION goal cannot be "done" before real UI work lands AND the page
     // shows evidence. Bounce narrated plans / premature finishes hard.
     const actionGoal =
@@ -3244,13 +4803,15 @@ async function executeOwnedAdaptiveTask({
         return {
           ok: true,
           stuck: true,
+          needsHelp: true,
           answer:
-            askGaps.length
+            (askGaps.length
               ? `I got partway there, but still need to: ${askGaps.slice(0, 4).join("; ")}.`
               : answer ||
                 (shareGoal
                   ? "I opened Share but could not verify the invite was sent to the email — still incomplete."
-                  : "I could not verify this was finished on the page — the task is still incomplete."),
+                  : "I could not verify this was finished on the page — the task is still incomplete.")) +
+            "\n\nIf you handle that in the agent browser tab — or tell me exactly what to click — say **continue** and I'll finish the rest.",
           history,
           url: doneUrl,
           unmet: askGaps.slice(),
@@ -3498,7 +5059,16 @@ async function executeOwnedAdaptiveTask({
   return {
     ok: true,
     stuck: true,
-    answer: answer || "Reached step limit without finishing the task.",
+    needsHelp: true,
+    answer:
+      answer ||
+      formatStuckNeedsHelp({
+        goal,
+        taskPlan,
+        history,
+        reason:
+          "I used my full action budget without being able to verify this finished.",
+      }),
     history,
     url: webContents.getURL(),
   };
@@ -3723,8 +5293,8 @@ function resolveWellKnownBrandUrl(name) {
 }
 
 /**
- * Per-user starred links (agent browser bookmarks). Longer keys preferred.
- * Populated via setUserSiteAliases() from main process.
+ * Optional per-session site aliases for "open my …" deep links.
+ * Populated via setUserSiteAliases() (tests / future features).
  */
 let USER_SITE_ALIASES = Object.create(null);
 
@@ -4466,7 +6036,7 @@ function looksLikePlayMediaFollowUp(text) {
  */
 function looksLikeDeicticFollowUp(text) {
   const t = String(text || "").trim();
-  if (!t || t.length > 100) return false;
+  if (!t || t.length > 160) return false;
   if (looksLikePlayMediaFollowUp(t)) return true;
   const bare = t
     .toLowerCase()
@@ -4477,6 +6047,14 @@ function looksLikeDeicticFollowUp(text) {
     .replace(/[.!?]+$/g, "")
     .trim();
   if (!bare) return false;
+  // Suggestion-chip continuations ("Keep going from here…", "Continue with another step…").
+  if (
+    /^(?:keep\s+going|continue|finish(?:\s+(?:it|that|this|anything))?|what(?:'s|\s+is)\s+the\s+best\s+next\s+step)/i.test(
+      bare,
+    )
+  ) {
+    return true;
+  }
   if (
     /^(?:do\s+it|go\s+ahead|continue|keep\s+going|finish\s+(?:it|that|this)|try\s+(?:it|that|this)|use\s+(?:it|that|this)|open\s+(?:it|that|this|one)|click\s+(?:it|that|this)|press\s+(?:it|that|play)|pick\s+(?:it|that|this|one)|choose\s+(?:it|that|this|one)|select\s+(?:it|that|this|one)|start\s+(?:it|that)|submit\s+(?:it|that)|send\s+(?:it|that)|download\s+(?:it|that)|save\s+(?:it|that)|watch\s+(?:it|that)|the\s+first\s+one|that\s+one|this\s+one)$/i.test(
       bare,
@@ -4484,11 +6062,16 @@ function looksLikeDeicticFollowUp(text) {
   ) {
     return true;
   }
+  // Action + referent only — not "what do you think about this" (chat).
+  if (/\b(?:what|how|why|when|where|who)\s+do\s+you\b/.test(bare)) return false;
+  if (/\bdo\s+you\b/.test(bare) && !/\bdo\s+you\s+(?:want|need)\s+me\s+to\b/.test(bare)) {
+    return false;
+  }
   return (
-    /\b(do|open|play|click|press|try|use|pick|choose|select|start|finish|complete|send|submit|download|save|watch|listen|resume)\b/.test(
+    /\b(do|open|play|click|press|try|use|pick|choose|select|start|finish|complete|send|submit|download|save|watch|listen|resume|draft|reply|edit)\b/.test(
       bare,
     ) &&
-    /\b(it|that|this|them|those|one|the\s+one|the\s+first|the\s+top|the\s+song|the\s+track|the\s+video)\b/.test(
+    /\b(it|that|this|them|those|one|the\s+one|the\s+first|the\s+top|the\s+song|the\s+track|the\s+video|here|thread|page|tab|email|campaign|draft)\b/.test(
       bare,
     )
   );
@@ -4569,19 +6152,19 @@ function expandDeicticFollowUp(text, ctx = {}) {
 
 /**
  * Adaptive clicker goal: keep short asks grounded in chat + open software.
+ * When forceContinuation is set (suggestion chips), always seed prior page/goal
+ * so the agent clicks through instead of treating the tip as a cold-start task.
  */
 function composeAdaptiveBrowseGoal(text, ctx = {}) {
   const t = String(text || "").trim();
   if (!t) return "";
   const expanded = expandDeicticFollowUp(t, ctx);
-  if (expanded) return expanded.slice(0, 500);
-  const needsCtx =
-    t.length < 100 &&
-    /\b(it|that|this|them|those|one)\b/i.test(t) &&
-    (ctx.priorGoal || ctx.lastBrowseQuery || ctx.currentUrl);
-  if (!needsCtx) return t.slice(0, 500);
+  if (expanded && !ctx.forceContinuation) return expanded.slice(0, 500);
+
   const priorGoal = String(ctx.priorGoal || "").trim();
   const lastQ = String(ctx.lastBrowseQuery || "").trim();
+  const priorAsst = String(ctx.priorAssistant || "").replace(/\s+/g, " ").trim();
+  const title = String(ctx.pageTitle || "").trim();
   const url = String(ctx.currentUrl || ctx.priorUrl || "").trim();
   let host = "";
   try {
@@ -4589,6 +6172,38 @@ function composeAdaptiveBrowseGoal(text, ctx = {}) {
   } catch {
     host = "";
   }
+
+  const force = !!ctx.forceContinuation;
+  const needsCtx =
+    force ||
+    !!expanded ||
+    (t.length < 180 &&
+      /\b(it|that|this|them|those|one|here|page|tab|thread|email|campaign|draft|reply|continue|keep\s+going|next|deeper|summarize|dig|open|edit|share|compare|pause|flag)\b/i.test(
+        t,
+      ) &&
+      !!(priorGoal || url || lastQ));
+
+  if (!needsCtx) return t.slice(0, 500);
+
+  if (force || expanded) {
+    const bits = [
+      "Continue from the CURRENT browser tab — click through the UI to finish this ask.",
+      "Do NOT treat this as a brand-new unrelated task. Do NOT Google the tip unless the user clearly asks to leave.",
+      `Next ask: ${t}`,
+    ];
+    if (priorGoal) bits.push(`Prior goal: ${priorGoal.slice(0, 220)}`);
+    if (title || host || url) {
+      bits.push(
+        `Open page: ${title || host || "current tab"}${url ? ` — ${url.slice(0, 140)}` : ""}`,
+      );
+    }
+    if (priorAsst) bits.push(`What we just finished: ${priorAsst.slice(0, 320)}`);
+    if (lastQ && !isWeakPickQuery(lastQ)) bits.push(`Last search: ${lastQ.slice(0, 80)}`);
+    if (host) bits.push(`Stay on ${host} unless the ask clearly requires another site`);
+    bits.push("Use what’s on screen as context; open, click, type, or scrape as needed.");
+    return bits.join("\n").slice(0, 1100);
+  }
+
   const bits = [`Goal: ${t}`];
   if (priorGoal) bits.push(`Prior: ${priorGoal.slice(0, 160)}`);
   if (lastQ && !isWeakPickQuery(lastQ)) bits.push(`Last search: ${lastQ.slice(0, 80)}`);
@@ -4990,10 +6605,18 @@ function isPlaceholderAgentUrl(url) {
   return false;
 }
 
-/** Follow-ups about the already-open tab ("here", inbox, emails…). */
+/** Follow-ups that mean "keep acting on the already-open tab" (not chat about it). */
 function looksLikeCurrentTabTask(text) {
   const lower = String(text || "").toLowerCase();
-  if (/\b(here|this page|this tab|on this (page|tab|screen)|on the (page|tab))\b/.test(lower)) {
+  // Pure Q&A / opinions about the page are conversational — not browse tasks.
+  if (looksLikePageQuestionAsk(text) && !looksLikeBrowseActAsk(text)) return false;
+  if (looksLikeCasualConversation(text) && !looksLikeBrowseActAsk(text)) return false;
+  // Action-y stay-on-tab language (not mere mention of "this page").
+  if (
+    /\b(another step here|from here|keep going|continue with|dig deeper|go deeper|draft a reply|edit (or|what)|tighten the|compare spend|open a campaign|open the first|check drafts|add columns|build a quick chart)\b/.test(
+      lower,
+    )
+  ) {
     return true;
   }
   // "go to my gmail and check…" is a navigate+review ask, not a stay-on-tab follow-up.
@@ -5008,11 +6631,12 @@ function looksLikeCurrentTabTask(text) {
     /\b(emails?|inbox|messages?|gmail)\b/.test(lower) &&
     /\b(top\s+(ten|\d+)|see|show|list|review|scan|go through|read|check|flag|respond|reply|important|anything i need|can you|could you|what('s| is)|need to)\b/.test(
       lower,
-    )
+    ) &&
+    // "what are emails?"-style definitions stay chat; inbox review keeps browse.
+    !/\b(what (?:is|are|does)|define|explain)\b.{0,20}\b(email|inbox|gmail)\b/.test(lower)
   ) {
     return true;
   }
-  if (/\b(what('s| is) on (this|the) (page|tab|screen))\b/.test(lower)) return true;
   return false;
 }
 
@@ -5229,8 +6853,8 @@ function resolveSignInUrl(text, currentUrl = "") {
  * ("go to the sign in page", "click Subscribe", …).
  */
 /**
- * Question / explain / summarize about what's already on screen — scrape + answer,
- * not a multi-step click plan.
+ * Question / explain / summarize / opine about what's already on screen —
+ * scrape + answer, not a multi-step click plan.
  */
 function looksLikePageQuestionAsk(text) {
   const t = String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -5241,10 +6865,31 @@ function looksLikePageQuestionAsk(text) {
     /\b(what(?:'s| is| are)|how much|how many|how (?:is|are|does|do)|why|when|where|which|who)\b/.test(
       t,
     ) ||
-    /\b(tell me|explain|summarize|summarise|describe|break down|analyse|analyze|walk me through)\b/.test(
+    /\b(tell me|explain|summarize|summarise|describe|break down|analyse|analyze|walk me through|help me understand|catch me up)\b/.test(
       t,
     ) ||
     /\bbased on (this|the page|the data|the screen|my|what(?:'s| is) (?:on|here))\b/.test(t)
+  ) {
+    return true;
+  }
+  // Opinions / judgments about the open page ("thoughts on this?", "is this good?").
+  if (
+    /\b(thoughts|opinions?|take|feedback|honest(?:ly)?|feel(?:ing)?s?)\b/.test(t) ||
+    /\b(what do you (?:think|make of|reckon)|do you (?:think|like|notice)|how does (?:this|that|it) (?:look|read|feel|seem)|does this (?:look|seem|read|make sense)|is this (?:good|bad|okay|ok|weird|wrong|right|clear|confusing))\b/.test(
+      t,
+    ) ||
+    /\b(looks? (?:good|bad|weird|off|fine|great|wrong)|seems? (?:off|weird|fine|good|wrong)|makes? sense|confusing|unclear)\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // Casual talk that clearly points at the open surface.
+  if (
+    /\b(this|the|my)\s+(page|tab|screen|site|article|dashboard|doc|document|email|thread)\b/.test(t) &&
+    !/\b(click|press|open|go to|visit|navigate|type|fill|submit|delete|scroll|change|edit|update|remove|add|move|rename|replace|rewrite|resize|format|copy|paste|send|share|invite|compose|play|watch|download|upload)\b/.test(
+      t,
+    )
   ) {
     return true;
   }
@@ -5257,7 +6902,85 @@ function looksLikePageQuestionAsk(text) {
   ) {
     return true;
   }
-  if (/\b(what('s| is) on (this|the) (page|tab|screen)|what do you see)\b/.test(t)) {
+  if (/\b(what('s| is) on (this|the|my) (page|tab|screen)|what do you see|what(?:'s| is) (?:here|on screen))\b/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Normal chat / small talk / opinions that should NOT spin up browse/act.
+ * Still false when the ask clearly wants clicking, navigating, or building.
+ */
+function looksLikeCasualConversation(text) {
+  const t = String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!t) return false;
+  if (looksLikeBrowseActAsk(t)) return false;
+  if (looksLikeInPageAction(t)) return false;
+  // Explicit task verbs that mean work, not chat.
+  if (
+    /\b(research|build|create|generate|make me|write me|draft me|open|visit|go to|navigate|search for|look up|find me|pull up|click|type|fill|submit|install|deploy|fix|debug)\b/.test(
+      t,
+    )
+  ) {
+    return false;
+  }
+  // Phatic / acknowledgements / short reactions.
+  if (
+    /^(hi|hello|hey|thanks|thank you|thx|ok|okay|cool|nice|got it|makes sense|yeah|yep|yup|nah|nope|lol|haha|wow|interesting|fair|true|right|sure|alright|all good|sounds good|perfect|great|awesome|love it|hate it|idk|i don'?t know)[\s!.?]*$/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^(?:yeah|yep|yup|ok|okay|right|sure|alright)[,.]?\s+(?:that\s+)?(?:makes sense|sounds (?:good|right|fair)|figured|true|fair|interesting)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/^(?:that|it)\s+makes sense\b/i.test(t)) return true;
+  // Greetings with tails ("hey, how's it going?", "good morning!") — chat, not browse.
+  if (
+    t.length <= 80 &&
+    /^(hi|hello|hey|yo|sup|howdy|good (?:morning|afternoon|evening))\b/.test(t)
+  ) {
+    return true;
+  }
+  // Identity / capability / small-talk questions about the assistant itself.
+  if (
+    /\b(how are you|how's it going|how is it going|what's up|whats up|how's your day|hows your day)\b/.test(t) ||
+    /\b(who are you|what are you\??$|what can you (?:do|help with)|what do you do\b|what are you capable of|how do you work|what should i ask you)\b/.test(t)
+  ) {
+    return true;
+  }
+  // Conversational follow-ups about prior chat (not the page UI).
+  if (
+    /\b(tell me more|say more|go on|what do you mean|why do you say|can you expand|elaborate|in other words|plain english)\b/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // General knowledge / advice / opinions with no browse destination.
+  if (
+    /\b(what do you think|thoughts|opinions?|any advice|should i|would you|how would you|help me think|brainstorm|talk (?:to me |with me )?about|chat about|curious(?:\s+(?:about|if|what|how))?|wondering)\b/.test(
+      t,
+    ) &&
+    !/\bhttps?:\/\/|www\./i.test(t)
+  ) {
+    return true;
+  }
+  // Short reflective lines about the open content without asking for UI work.
+  if (
+    t.length <= 140 &&
+    /\b(this|that|it)\b/.test(t) &&
+    /\b(interesting|weird|cool|nice|confusing|clear|messy|clean|busy|loud|quiet|pretty|ugly|smart|dumb|good|bad|fine|wrong|right)\b/.test(
+      t,
+    ) &&
+    !/\b(click|open|change|edit|fix|delete|move|send)\b/.test(t)
+  ) {
     return true;
   }
   return false;
@@ -5400,6 +7123,32 @@ function looksLikeInPageAction(text) {
  * someone via the page's own share feature (Docs/Sheets/Notion invite dialog),
  * not a fresh Gmail compose.
  */
+/**
+ * A short "go ahead" reply approving a send/share the agent already prepared
+ * ("send it", "ok send", "looks good") — as opposed to a first-run ask that
+ * composes something new ("send an email to bob about the meeting").
+ */
+function looksLikeSendApprovalFollowUp(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t || t.length > 80) return false;
+  // Words that can PRECEDE the send verb ("ok now send it", "please send").
+  const prefix =
+    "(?:ok(?:ay)?|k+|yes|yeah|yea|ya|yep|yup|sure|alright|perfect|great|please|now|go ahead(?: and)?|do it|looks? good|sounds? good|that works|all good|good to go|(?:that'?s )?(?:good|fine|perfect)|lgtm)";
+  if (
+    new RegExp(
+      `^(?:${prefix}[\\s,!.]*)*(?:please\\s+)?(?:send|share|submit|post|publish|ship)\\b(?:\\s+(?:it|this|that|them|the\\s+(?:email|message|draft|doc|document|invite|post|link)))?\\s*(?:off|now|away|out)?[\\s,!.]*$`,
+    ).test(t)
+  ) {
+    return true;
+  }
+  // Bare approval with no verb ("ya go ahead", "looks good!") — the agent
+  // just asked "say send when ready", so a plain yes releases it. Filler-only
+  // words ("now", "please", "great") do NOT count on their own.
+  const bare =
+    "(?:ok(?:ay)?|k+|yes|yeah|yea|ya|yep|yup|sure|alright|go ahead|do it|looks? good|sounds? good|that works|all good|good to go|(?:that'?s )?(?:good|fine|perfect)|lgtm|perfect|approved?|confirm(?:ed)?|ship it|send away)";
+  return new RegExp(`^(?:${bare})(?:[\\s,!.]+(?:${bare}|and (?:send|share) it|thanks?|ty))*[\\s,!.]*$`).test(t);
+}
+
 function looksLikeShareCurrentPageAsk(text) {
   const lower = String(text || "").toLowerCase();
   if (!lower) return false;
@@ -5410,17 +7159,23 @@ function looksLikeShareCurrentPageAsk(text) {
   ) {
     return false;
   }
+  // Sending an agent-made image/artifact/file → Gmail attach, not page Share.
+  if (looksLikeSendDeliverableAsk(lower)) {
+    return false;
+  }
   const hasEmailAddr = /\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/.test(lower);
   const deictic =
     /\b(this|that|it)\b/.test(lower) ||
     /\bthe\s+(doc|document|page|file|sheet|spreadsheet|slides?|deck|presentation|notes?|report|essay|paper|draft)\b/.test(
       lower,
     );
-  if (
-    /\b(share|send|email|forward)\b/.test(lower) &&
-    deictic &&
-    (hasEmailAddr || /\b(?:with|to)\s+\S+/.test(lower))
-  ) {
+  // "click/open the email to open it" is NOT Docs Share — ignore action verbs after to/with.
+  const toRecipient =
+    hasEmailAddr ||
+    /\b(?:with|to)\s+(?!open\b|view\b|read\b|click\b|see\b|check\b|show\b|pull\b)[\w.+@-]/.test(
+      lower,
+    );
+  if (/\b(share|send|email|forward)\b/.test(lower) && deictic && toRecipient) {
     return true;
   }
   // "send to elijah@lykn.io" / "email bob@x.com" after a write ask — no "it" needed.
@@ -5438,8 +7193,48 @@ function looksLikeShareCurrentPageAsk(text) {
   return false;
 }
 
+/**
+ * Send/email an agent-created image, artifact, PDF, or downloadable file
+ * (not sharing the open Docs/Notion page).
+ */
+function looksLikeSendDeliverableAsk(text) {
+  const lower = String(text || "").toLowerCase();
+  if (!lower.trim()) return false;
+  const hasEmail = /\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/.test(lower);
+  const wantsSend = /\b(send|email|forward|attach|mail)\b/.test(lower);
+  if (!hasEmail || !wantsSend) return false;
+  // Explicit file/image/artifact language.
+  if (
+    /\b(image|picture|photo|png|jpe?g|webp|gif|artifact|html|pdf|attachment|download|file you (made|created|generated)|generated (image|file)|last (image|picture|artifact|file))\b/.test(
+      lower,
+    )
+  ) {
+    return true;
+  }
+  // "send this/it to email" when talking about an image/artifact context.
+  if (
+    /\b(this|that|it)\b/.test(lower) &&
+    /\b(image|picture|photo|artifact|file|download)\b/.test(lower)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** User wants the email actually sent (not just drafted). */
+function looksLikeExplicitMailSendAsk(text) {
+  const lower = String(text || "").toLowerCase();
+  if (/\b(don'?t send|do not send|draft only|just draft|don'?t actually send)\b/.test(lower)) {
+    return false;
+  }
+  return /\b(send(\s+it)?(\s+now)?|go ahead and send|actually send|send the (email|message|mail))\b/.test(
+    lower,
+  );
+}
+
 /** True for Docs/Sheets share OR "send/share it to email@…". */
 function isShareInviteGoal(text) {
+  if (looksLikeSendDeliverableAsk(text)) return false;
   return (
     looksLikeShareCurrentPageAsk(text) ||
     /\b(share|invite|give\b.{0,20}\baccess)\b/i.test(String(text || ""))
@@ -6413,6 +8208,16 @@ function looksLikeGoogleDocsUrl(url) {
   return /docs\.google\.com\/document/i.test(String(url || ""));
 }
 
+/**
+ * Docs-suite editors sharing the docs chrome (filename box = .docs-title-input):
+ * Docs AND Slides. Pastes here need title-field protection or the payload
+ * lands in the filename — Slides used to get renamed with a blank canvas.
+ * Sheets is separate (grid focus path).
+ */
+function looksLikeGoogleEditorUrl(url) {
+  return /docs\.google\.com\/(document|presentation)/i.test(String(url || ""));
+}
+
 function looksLikeCanvasEditorUrl(url) {
   const u = String(url || "");
   return (
@@ -6432,7 +8237,7 @@ async function focusPageEditor(webContents) {
     return { ok: false, error: "no_webcontents" };
   }
   const pageUrl = String(webContents.getURL?.() || "");
-  const isGoogleDoc = looksLikeGoogleDocsUrl(pageUrl);
+  const isGoogleDoc = looksLikeGoogleEditorUrl(pageUrl);
   const isSheets = looksLikeGoogleSheetsUrl(pageUrl);
   try {
     if (isSheets) {
@@ -6560,7 +8365,7 @@ async function focusPageEditor(webContents) {
 
 async function editorTitleStillFocused(webContents) {
   if (!webContents || webContents.isDestroyed()) return false;
-  if (!looksLikeGoogleDocsUrl(webContents.getURL?.() || "")) return false;
+  if (!looksLikeGoogleEditorUrl(webContents.getURL?.() || "")) return false;
   try {
     return !!(await webContents.executeJavaScript(
       `(function(){
@@ -6704,7 +8509,7 @@ async function pasteTextIntoPage(webContents, { text, replaceAll = false } = {})
   }
 
   const pageUrl = String(webContents.getURL?.() || "");
-  const isGoogleDoc = looksLikeGoogleDocsUrl(pageUrl);
+  const isGoogleDoc = looksLikeGoogleEditorUrl(pageUrl);
   const mod = process.platform === "darwin" ? "meta" : "control";
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -6898,6 +8703,140 @@ async function fillGmailComposeDraft(webContents, draft) {
   }
 }
 
+/**
+ * Attach a local file to the open Gmail compose via CDP setFileInputFiles.
+ * Clicks "Attach files" first so Gmail's hidden file input exists.
+ */
+async function attachFileToGmailCompose(webContents, filePath) {
+  if (!webContents || webContents.isDestroyed()) {
+    return { ok: false, error: "no_webcontents" };
+  }
+  const abs = pathMod.resolve(String(filePath || ""));
+  if (!abs || !fsSync.existsSync(abs)) {
+    return { ok: false, error: "missing_file" };
+  }
+  // Nudge Gmail to mount its file input.
+  try {
+    await clickInPageByHint(webContents, { hint: "Attach files" });
+    await waitForDomSettle(webContents, 500).catch(() => {});
+  } catch {
+    /* input may already exist */
+  }
+  let attachedDebugger = false;
+  try {
+    if (!webContents.debugger.isAttached()) {
+      webContents.debugger.attach("1.3");
+      attachedDebugger = true;
+    }
+    const doc = await webContents.debugger.sendCommand("DOM.getDocument", {
+      depth: 0,
+    });
+    const rootId = doc?.root?.nodeId;
+    if (!rootId) return { ok: false, error: "no_dom" };
+    const selectors = [
+      'div.M9 input[type="file"]',
+      'div.AD input[type="file"]',
+      'div[role="dialog"] input[type="file"]',
+      'input[type="file"][name="Filedata"]',
+      'input[type="file"][accept]',
+      'input[type="file"]',
+    ];
+    let nodeId = 0;
+    for (const sel of selectors) {
+      try {
+        const q = await webContents.debugger.sendCommand("DOM.querySelector", {
+          nodeId: rootId,
+          selector: sel,
+        });
+        if (q?.nodeId) {
+          nodeId = q.nodeId;
+          break;
+        }
+      } catch {
+        /* try next */
+      }
+    }
+    if (!nodeId) {
+      return { ok: false, error: "no_file_input" };
+    }
+    await webContents.debugger.sendCommand("DOM.setFileInputFiles", {
+      nodeId,
+      files: [abs],
+    });
+    await waitForDomSettle(webContents, 900).catch(() => {});
+    return { ok: true, path: abs, name: pathMod.basename(abs) };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    if (attachedDebugger) {
+      try {
+        webContents.debugger.detach();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+/** Click Gmail's Send in the open compose dialog. */
+async function clickGmailSend(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return { ok: false, error: "no_webcontents" };
+  }
+  try {
+    const hit = await webContents.executeJavaScript(
+      `(function(){
+        function vis(el){
+          if(!el)return false;var r=el.getBoundingClientRect();
+          if(r.width<8||r.height<8)return false;
+          var st=getComputedStyle(el);
+          return st.visibility!=='hidden'&&st.display!=='none'&&st.pointerEvents!=='none';
+        }
+        function lab(el){
+          return ((el.getAttribute('aria-label')||el.getAttribute('data-tooltip')||
+            el.getAttribute('title')||el.innerText||'')+'').replace(/\\s+/g,' ').trim();
+        }
+        var roots=[].slice.call(document.querySelectorAll(
+          'div.M9, div.AD, div[role="dialog"], form'
+        )).filter(vis);
+        if(!roots.length) roots=[document.body];
+        var best=null,bestScore=-1;
+        for(var r=0;r<roots.length;r++){
+          var nodes=[].slice.call(roots[r].querySelectorAll(
+            'div[role="button"],button,[role="button"]'
+          ));
+          for(var i=0;i<nodes.length;i++){
+            var n=nodes[i]; if(!vis(n)) continue;
+            var L=lab(n); if(!L) continue;
+            var sc=0;
+            if(/^send$/i.test(L)) sc=120;
+            else if(/^send\\b/i.test(L) && /⌘|ctrl|enter|\\(/i.test(L)) sc=110;
+            else if(/^send\\b/i.test(L) && !/invite|share/i.test(L)) sc=100;
+            if(sc<=bestScore) continue;
+            bestScore=sc; best=n;
+          }
+        }
+        if(!best||bestScore<100) return {ok:false,error:'send_not_found'};
+        var box=best.getBoundingClientRect();
+        try{best.scrollIntoView({block:'center'});}catch(e){}
+        box=best.getBoundingClientRect();
+        try{best.click();}catch(e){}
+        return {ok:true,label:lab(best).slice(0,80),
+          x:Math.round(box.left+box.width/2),y:Math.round(box.top+box.height/2)};
+      })()`,
+      true,
+    );
+    if (!hit?.ok) return hit || { ok: false, error: "send_not_found" };
+    if (hit.x && hit.y) {
+      await clickAtClientPoint(webContents, hit.x, hit.y);
+    }
+    await waitForDomSettle(webContents, 1000).catch(() => {});
+    return { ok: true, label: hit.label || "Send" };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 /** Known same-site destinations when the user is already on a host. */
 function resolveInPageTargetUrl(text, currentUrl) {
   const lower = String(text || "").toLowerCase();
@@ -7069,6 +9008,13 @@ function looksLikeSignInWall({ url, text, title } = {}) {
     )
   ) {
     return true;
+  }
+
+  // Product marketing / home pages often have Log in + Sign up in the nav —
+  // that is NOT a hard wall. Agent should click those CTAs (or park clearly),
+  // not freeze in a 30-minute wait without acting.
+  if (looksLikeMarketingOrHomeUrl(url, text)) {
+    return false;
   }
 
   if (!looksLikeSignInPageText(t)) return false;
@@ -7294,7 +9240,7 @@ async function clickGmailInboxRow(webContents, { index = 0, hint = "" } = {}) {
   try {
     const pick = await webContents.executeJavaScript(
       `(function(){
-        var d=JSON.parse(atob('${payload}'));
+        var d=JSON.parse(decodeURIComponent(escape(atob('${payload}'))));
         function clean(s){return ((s||'')+'').replace(/\\s+/g,' ').trim();}
         function vis(el){if(!el)return false;var r=el.getBoundingClientRect();
           return r.width>8&&r.height>8&&r.bottom>0&&r.top<(window.innerHeight||800);}
@@ -7323,9 +9269,14 @@ async function clickGmailInboxRow(webContents, { index = 0, hint = "" } = {}) {
         }
         var r=pick.getBoundingClientRect();
         var label=clean(pick.getAttribute('aria-label')||pick.innerText).slice(0,160);
+        var threadId=String(pick.getAttribute('data-legacy-thread-id')||pick.getAttribute('data-thread-id')||'').trim();
+        if(!threadId && pick.querySelector){
+          var tidEl=pick.querySelector('[data-legacy-thread-id],[data-thread-id],[data-thread-perm-id]');
+          if(tidEl) threadId=String(tidEl.getAttribute('data-legacy-thread-id')||tidEl.getAttribute('data-thread-id')||tidEl.getAttribute('data-thread-perm-id')||'').trim();
+        }
         try{ pick.scrollIntoView({block:'center',inline:'nearest'}); }catch(e){}
         r=pick.getBoundingClientRect();
-        return {ok:true,label:label,clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+Math.min(r.height/2,22)),count:nodes.length};
+        return {ok:true,label:label,threadId:threadId,clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+Math.min(r.height/2,22)),count:nodes.length};
       })()`,
       true,
     );
@@ -7350,12 +9301,39 @@ async function clickGmailInboxRow(webContents, { index = 0, hint = "" } = {}) {
       /* ignore */
     }
     const hit = await clickAtClientPoint(webContents, pick.clientX, pick.clientY);
+    // Give Gmail a beat to update the hash before falling back to direct navigation.
+    await waitForDomSettle(webContents, 450);
+    // If the list click didn't navigate, open the thread by hash (Gmail SPA).
+    const afterClick = String(webContents.getURL?.() || "");
+    const threadOpen =
+      /mail\.google\.com/i.test(afterClick) &&
+      /(?:#|\/)(?:inbox|all|sent|drafts|starred|important|snoozed|label\/[^/]+)\/[A-Za-z0-9]+/i.test(
+        afterClick,
+      );
+    if (!threadOpen && pick.threadId) {
+      try {
+        const base = afterClick.match(/^(https?:\/\/mail\.google\.com\/mail\/u\/\d+)/i);
+        const root = (base && base[1]) || "https://mail.google.com/mail/u/0";
+        const target = `${root}/#inbox/${encodeURIComponent(pick.threadId)}`;
+        await navigate(webContents, target);
+        await waitForDomSettle(webContents, 600);
+      } catch {
+        /* keep click result */
+      }
+    }
+    const finalUrl = String(webContents.getURL?.() || "");
+    const opened =
+      /mail\.google\.com/i.test(finalUrl) &&
+      /(?:#|\/)(?:inbox|all|sent|drafts|starred|important|snoozed|label\/[^/]+)\/[A-Za-z0-9]+/i.test(
+        finalUrl,
+      );
     return {
-      ok: !!hit.ok,
+      ok: !!(hit.ok || opened),
       label: pick.label || "",
       count: pick.count,
-      via: hit.via || "dom",
-      error: hit.ok ? undefined : hit.error,
+      threadId: pick.threadId || "",
+      via: opened && !hit.ok ? "hash" : hit.via || "dom",
+      error: hit.ok || opened ? undefined : hit.error,
     };
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
@@ -7375,7 +9353,7 @@ async function clickInPageByHint(webContents, { hint = "", index = 0 } = {}) {
   try {
     const pick = await webContents.executeJavaScript(
       `(function(){
-        var d=JSON.parse(atob('${payload}'));
+        var d=JSON.parse(decodeURIComponent(escape(atob('${payload}'))));
         function clean(s){return ((s||'')+'').replace(/\\s+/g,' ').trim();}
         function vis(el){if(!el)return false;var r=el.getBoundingClientRect();
           if(r.width<4||r.height<4)return false;
@@ -7449,6 +9427,45 @@ async function clickInPageByHint(webContents, { hint = "", index = 0 } = {}) {
 }
 
 /**
+ * DOM-level check for an entered share recipient. Google's chips usually show
+ * the person's NAME (not the raw email), so page-text checks miss them — the
+ * email survives only in chip attributes (data-hovercard-id / aria-label /
+ * data-tooltip). Only inspects open dialogs so doc-body emails can't match.
+ */
+async function shareDialogHasRecipientChip(webContents, email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e || !webContents || webContents.isDestroyed?.()) return false;
+  try {
+    const payload = Buffer.from(JSON.stringify({ email: e }), "utf8").toString(
+      "base64",
+    );
+    const res = await webContents.executeJavaScript(
+      `(function(){try{
+        var d=JSON.parse(decodeURIComponent(escape(atob('${payload}'))));var e=String(d.email||'').toLowerCase();
+        if(!e) return false;
+        var roots=[].slice.call(document.querySelectorAll('[role="dialog"],[aria-modal="true"]'));
+        if(!roots.length) return false;
+        for(var r=0;r<roots.length;r++){
+          var root=roots[r];
+          var nodes=root.querySelectorAll('[data-hovercard-id],[data-email],[data-tooltip],[aria-label]');
+          for(var i=0;i<nodes.length;i++){
+            var n=nodes[i];
+            var v=((n.getAttribute('data-hovercard-id')||'')+' '+(n.getAttribute('data-email')||'')+' '+(n.getAttribute('data-tooltip')||'')+' '+(n.getAttribute('aria-label')||'')).toLowerCase();
+            if(v.indexOf(e)!==-1) return true;
+          }
+          if(((root.innerText||'')+'').toLowerCase().indexOf(e)!==-1) return true;
+        }
+        return false;
+      }catch(err){return false;}})()`,
+      true,
+    );
+    return !!res;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Focus the Share dialog's Add-people field and type the recipient email.
  * Does not click Share/Cancel — safe to call while the dialog is already open.
  */
@@ -7499,6 +9516,27 @@ async function typeEmailIntoShareDialog(webContents, email) {
     let entered = false;
     let lastFocus = field;
     for (let attempt = 0; attempt < 3 && !entered; attempt += 1) {
+      // A prior attempt or round may have landed the chip even when
+      // verification missed it (chips show the person's NAME, not the email,
+      // so page text misses them) — never type the same email twice.
+      try {
+        if (await shareDialogHasRecipientChip(webContents, primary)) {
+          entered = true;
+          break;
+        }
+        const pre = await getPageContext(webContents);
+        if (
+          pageShowsShareEmailEntered(
+            `${pre.title || ""}\n${pre.text || ""}`,
+            primary,
+          )
+        ) {
+          entered = true;
+          break;
+        }
+      } catch {
+        /* ignore */
+      }
       // Always (re)click the people field before typing — first click often misses.
       if (field?.ok && typeof field.x === "number" && attempt === 0) {
         await clickAtClientPoint(webContents, field.x, field.y);
@@ -7557,7 +9595,9 @@ async function typeEmailIntoShareDialog(webContents, email) {
       } catch {
         /* ignore */
       }
-      entered = pageShowsShareEmailEntered(text, primary);
+      entered =
+        pageShowsShareEmailEntered(text, primary) ||
+        (await shareDialogHasRecipientChip(webContents, primary));
     }
     return {
       ok: entered || !!lastFocus?.ok,
@@ -7701,11 +9741,16 @@ async function sharePageWithEmail(webContents, { emails = [], ask = "" } = {}) {
   }
 
   // 2) Focus the people / invite field and type the email (never re-click Share).
-  let emailEntered = pageShowsShareEmailEntered(await pageText(), primary);
+  let emailEntered =
+    pageShowsShareEmailEntered(await pageText(), primary) ||
+    (await shareDialogHasRecipientChip(webContents, primary));
   for (let attempt = 0; attempt < 3 && !emailEntered; attempt += 1) {
     const typed = await typeEmailIntoShareDialog(webContents, primary);
     text = await pageText();
-    emailEntered = pageShowsShareEmailEntered(text, primary) || !!typed?.verified;
+    emailEntered =
+      pageShowsShareEmailEntered(text, primary) ||
+      !!typed?.verified ||
+      (await shareDialogHasRecipientChip(webContents, primary));
     if (!emailEntered && attempt === 2) {
       return {
         ok: false,
@@ -7732,17 +9777,31 @@ async function sharePageWithEmail(webContents, { emails = [], ask = "" } = {}) {
     };
   }
 
-  // 3) Click ONLY the dialog's Send / Send invite — never toolbar Share, Done,
-  // Cancel, or Close (those dismiss the dialog and discard the pending invite).
-  const sendClick = await clickSendInShareDialog(webContents);
-  const clickedSend = !!sendClick?.ok;
+  // 3) Click ONLY the dialog's Send / Send invite / Invite — never toolbar Share,
+  // Cancel, Done, or Close (those dismiss the dialog and discard the pending invite).
+  let sendClick = await clickSendInShareDialog(webContents);
+  let clickedSend = !!sendClick?.ok;
   if (clickedSend) {
     await waitForDomSettle(webContents, 1200).catch(() => {});
   }
   text = await pageText();
-  const verified = looksLikeShareDone(text);
-  const emailStillThere = pageShowsShareEmailEntered(text, primary);
-  const dialogStillOpen = looksLikeShareDialog(text);
+  let verified = looksLikeShareDone(text);
+  let emailStillThere = pageShowsShareEmailEntered(text, primary);
+  let dialogStillOpen = looksLikeShareDialog(text);
+
+  // Retry Send once if the dialog is still open after the first click.
+  if (!verified && dialogStillOpen && emailEntered) {
+    sendClick = await clickSendInShareDialog(webContents);
+    if (sendClick?.ok) {
+      clickedSend = true;
+      await waitForDomSettle(webContents, 1400).catch(() => {});
+      text = await pageText();
+      verified = looksLikeShareDone(text);
+      emailStillThere = pageShowsShareEmailEntered(text, primary);
+      dialogStillOpen = looksLikeShareDialog(text);
+    }
+  }
+
   if (verified) {
     return {
       ok: true,
@@ -7753,7 +9812,24 @@ async function sharePageWithEmail(webContents, { emails = [], ask = "" } = {}) {
       message: `Shared with **${primary}** from this page.`,
     };
   }
-  // Typed + clicked Send but toast/copy wasn't scrapeable — still incomplete.
+
+  // Soft success: we typed the email and clicked Send/Invite, and the invite
+  // dialog closed (toast often isn't scrapeable). Treat as done so the agent
+  // doesn't loop for minutes claiming send_not_confirmed.
+  if (clickedSend && emailEntered && (!dialogStillOpen || !emailStillThere)) {
+    return {
+      ok: true,
+      stuck: false,
+      step: "done",
+      email: primary,
+      verified: false,
+      softVerified: true,
+      message:
+        `Shared with **${primary}** from this page` +
+        ` (Send clicked — glance at the tab if you want to double-check).`,
+    };
+  }
+
   return {
     ok: false,
     stuck: true,
@@ -7769,7 +9845,7 @@ async function sharePageWithEmail(webContents, { emails = [], ask = "" } = {}) {
     dialogStillOpen,
     message:
       !clickedSend
-        ? `I entered **${primary}** in Share but couldn't find the Send button in the dialog (won't click Done/Cancel — that discards the invite). Tell me to continue.`
+        ? `I entered **${primary}** in Share but couldn't find the Send/Invite button in the dialog (won't click Done/Cancel — that discards the invite). Tell me to continue.`
         : emailStillThere || dialogStillOpen
           ? `I entered **${primary}** and clicked Send in the share dialog, but couldn't confirm the invite went through. Check the tab — tell me to continue.`
           : `I entered **${primary}** and clicked Send, but couldn't confirm it was sent. Check the tab — tell me to continue.`,
@@ -7920,10 +9996,12 @@ async function clickSendInShareDialog(webContents) {
           if(/^send$/i.test(s)) return 120;
           if(/^send(\\s+invite)?$/i.test(s)) return 115;
           if(/\\bsend\\s+invite\\b/i.test(s)) return 110;
+          if(/^invite$/i.test(s)) return 108;
+          if(/^invite\\s+people$/i.test(s)) return 105;
           if(/^share$/i.test(s)) return 80; // dialog primary sometimes says Share
           if(/^share\\s+anyway$/i.test(s)) return 75;
           if(/\\bnotify\\b/i.test(s) && /\\bsend\\b/i.test(s)) return 60;
-          if(/\\bsend\\b/i.test(s) && !/\\b(cancel|don't|dont)\\b/i.test(s)) return 50;
+          if(/\\b(invite|send)\\b/i.test(s) && !/\\b(cancel|don't|dont)\\b/i.test(s)) return 50;
           return 0;
         }
         function looksLikeShareDialogRoot(el){
@@ -8060,6 +10138,18 @@ function looksLikeShareDismissAction(action, goal) {
 /** "open the first email" / "open that message from Kevin" */
 function looksLikeOpenMailItem(text) {
   const lower = String(text || "").toLowerCase();
+  // Composing a NEW mail ("open gmail and draft an email to X") is never an
+  // open-existing-message ask, even though it contains open + email. Only an
+  // explicit "open the first/that email …" alongside the compose verb keeps
+  // this an open ask (e.g. "open the first email and send a reply").
+  if (
+    /\b(draft|compose|write|send)\b[^.!?]{0,48}\b(?:new\s+)?(email|e-mail|mail|message)\b/.test(lower) &&
+    !/\b(open|read|view|click|show|pull\s+up)\b[^.!?]{0,32}\b(first|second|third|top|latest|newest|recent|\d+(?:st|nd|rd|th)|that|this)\b[^.!?]{0,24}\b(email|e-mail|mail|message|thread|one)\b/.test(
+      lower,
+    )
+  ) {
+    return false;
+  }
   if (!/\b(email|e-mail|mail|message|thread|inbox)\b/.test(lower) && !/\bgmail\b/.test(lower)) {
     // Still allow "open the first one" when already on mail (caller checks URL).
     if (!/\b(open|read|view|click|pull\s+up|show)\b.{0,24}\b(first|second|third|top|\d+(st|nd|rd|th))\b/.test(lower)) {
@@ -8074,6 +10164,22 @@ function looksLikeOpenMailItem(text) {
     return true;
   }
   if (/\b(open|read)\b.{0,24}\b(email|message|mail)\b.{0,24}\b(from|about|re:)\b/.test(lower)) {
+    return true;
+  }
+  // "identify/find the first email … and open it" / "… first email from X and open it"
+  if (
+    /\b(first|second|third|top|\d+(?:st|nd|rd|th))\b.{0,48}\b(email|e-mail|mail|message|thread)\b/.test(
+      lower,
+    ) &&
+    /\b(open|read|view|click|show|pull\s+up)\b/.test(lower)
+  ) {
+    return true;
+  }
+  // "click on the email to open it" / "open that email"
+  if (
+    /\b(click|open|read|view|tap)\b.{0,32}\b(email|e-mail|mail|message|thread)\b/.test(lower) &&
+    /\b(open|read|view|click)\b/.test(lower)
+  ) {
     return true;
   }
   return false;
@@ -8424,6 +10530,7 @@ const ACCOUNT_DASHBOARD_SITES = [
     re: /\breddit\s+(?:ads?|advertising|promoted|ads?\s*manager)\b|\b(?:ads?|advertising)\s+(?:on\s+)?reddit\b/i,
     url: "https://ads.reddit.com",
   },
+  { re: /\bnotion\b/i, url: "https://www.notion.so/" },
   { re: /\bgoogle\s+(?:ads?|adwords|advertising|ads?\s*manager)\b|\badwords\b/i, url: "https://ads.google.com" },
   { re: /\bgoogle\s+analytics\b|\bga4\b/i, url: "https://analytics.google.com" },
   { re: /\bsearch\s+console\b/i, url: "https://search.google.com/search-console" },
@@ -8628,6 +10735,8 @@ function resolveBrowseTargetUrl(text, ctx = {}) {
 }
 
 module.exports = {
+  readTargetFieldValue,
+  looksLikeSendApprovalFollowUp,
   navigate,
   getDOMCatalog,
   getPageContext,
@@ -8637,6 +10746,8 @@ module.exports = {
   waitForSearchResultsReady,
   urlMaybeNeedsAuthCheck,
   looksLikeBareOpenBrowseGoal,
+  looksLikeAccountDashboardAsk,
+  accountDashboardLooksSignedIn,
   askStillNeedsAdaptiveWork,
   looksLikeInspectOrReviewAsk,
   unmetBrowseAskRequirements,
@@ -8666,6 +10777,7 @@ module.exports = {
   looksLikeMultiStepBrowseGoal,
   seedProgressiveTaskPlan,
   progressivePlanNowLine,
+  formatStuckNeedsHelp,
   pageShowsExerciseComplete,
   pageShowsShareInviteComplete,
   pageShowsShareEmailEntered,
@@ -8697,6 +10809,7 @@ module.exports = {
   isPlaceholderAgentUrl,
   looksLikeCurrentTabTask,
   looksLikePageQuestionAsk,
+  looksLikeCasualConversation,
   looksLikeBrowseActAsk,
   looksLikeInPageAction,
   looksLikeShareCurrentPageAsk,
@@ -8738,6 +10851,10 @@ module.exports = {
   sanitizeMailDraft,
   resolveGmailComposeUrl,
   fillGmailComposeDraft,
+  attachFileToGmailCompose,
+  clickGmailSend,
+  looksLikeSendDeliverableAsk,
+  looksLikeExplicitMailSendAsk,
   markdownReportToSheetText,
   looksLikePasteIntoSheets,
   looksLikeOrganizeSheetAsk,
@@ -8772,6 +10889,12 @@ module.exports = {
   looksLikeSignInPageText,
   looksLikeSignInWall,
   looksLikePaywall,
+  detectBrowseBlocker,
+  advanceTowardUserGate,
+  formatUserHelpBrief,
+  describeSignInUserAction,
+  describeStuckUserAction,
+  deliverableContentReady,
   waitForSignInClear,
   peekVenueDeepLinkFromSerp,
   peekSpotifyResultHref,

@@ -1595,7 +1595,7 @@ export default function ProjectDetailPage() {
   );
 
   // Live sync — reflect AI/voice writes to tasks, events, and project state
-  // without a manual refresh (mirrors LyknTodosPanel / LyknCalendarDialog).
+  // without a manual refresh (mirrors LyknTodosPanel / LyknCalendarPage).
   useEffect(() => {
     if (!userId) return undefined;
     // Scope realtime to this project (not just our own rows) so a collaborator's

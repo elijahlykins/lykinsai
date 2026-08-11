@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useMemo, useState, useCallback } from "react"
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
-  Check, ChevronRight, Copy, Download, FileText, Globe,
+  Check, ChevronRight, Copy, Download, FileText,
   GripVertical, Link2, MoreHorizontal, Music, Pencil, Play, Plus, RefreshCw,
   Save, Share2, StickyNote, ThumbsDown, ThumbsUp, Trash2, X as XIcon,
 } from "lucide-react";
@@ -12,6 +12,7 @@ import lyknIconBlue from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-
 import ReactMarkdown from "react-markdown";
 import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } from "@/lib/chat/chatMarkdown";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
+import LocalToolApprovalCard from "@/components/lyknChat/LocalToolApprovalCard";
 import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/lyknChat/ChatArtifactCard";
 import LyknChatArtifactPanel, { ARTIFACT_PANEL_WIDTH } from "@/components/lyknChat/LyknChatArtifactPanel";
 
@@ -22,6 +23,7 @@ import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocumen
 import ChatNeuronCard from "@/components/lyknChat/ChatNeuronCard";
 import FactConfirmChip from "@/components/lyknChat/FactConfirmChip";
 import LinkPreview from "@/components/LinkPreview";
+import { SiteFavicon } from "@/components/SiteFavicon";
 import type {
   ToolCallEvent,
   ChatNeuronAttachment,
@@ -30,7 +32,9 @@ import type { FactNeuron } from "@/lib/ai/learnedTag";
 import { labelForModelId } from "@/lib/ai/conversationFormat";
 import { KNOWN_MODEL_IDS } from "@/lib/modelCatalog";
 import { supabase } from "@/lib/supabase";
-import { safeNavHref } from "@/lib/safeExternalUrl";
+import { safeExternalUrl, safeNavHref } from "@/lib/safeExternalUrl";
+import { handleLyknBrowserClick, openArtifactInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
+import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
 
 // Resolve a user-facing model name for the AI Response pill. The server
 // reports the REAL resolved backend in `served_model` — but LYKN is a
@@ -326,7 +330,11 @@ export interface LyknChatViewProps {
   savedYouTubeIds: Set<string>;
   onSaveYouTube: (videoId: string, url: string) => void;
   onSaveAttachment: (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => void;
-  onSaveAiImage: (imageUrl: string, promptText?: string) => void;
+  onSaveAiImage: (
+    imageUrl: string,
+    promptText?: string,
+    meta?: { storagePath?: string; mimeType?: string },
+  ) => void | Promise<boolean | void>;
   onSaveLink: (link: string) => void;
 
   expandedAiMsgIds: Set<string>;
@@ -454,7 +462,11 @@ type MessageItemProps = {
   onRegenerateNonUser: (id: string, idx: number) => void;
   onSaveYouTube: (videoId: string, url: string) => void;
   onSaveAttachment: (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => void;
-  onSaveAiImage: (imageUrl: string, promptText?: string) => void;
+  onSaveAiImage: (
+    imageUrl: string,
+    promptText?: string,
+    meta?: { storagePath?: string; mimeType?: string },
+  ) => void | Promise<boolean | void>;
   onSaveLink: (link: string) => void;
   addChatResponseToGrid: (text: string) => void;
   handleChunkClick: (e: React.MouseEvent, chunkKey: string, chunkText: string) => void;
@@ -588,10 +600,14 @@ const LoadInBubble: React.FC<{
                             // double-navigating when the chip lives
                             // inside an outer <a>.
                             e.stopPropagation();
-                            if (!chipInternal || !chipNav) return;
+                            if (!chipNav) return;
                             if (e.metaKey || e.ctrlKey || e.shiftKey || (e as unknown as { button?: number }).button === 1) return;
-                            e.preventDefault();
-                            navigate(chipNav.href);
+                            if (chipInternal) {
+                              e.preventDefault();
+                              navigate(chipNav.href);
+                              return;
+                            }
+                            handleLyknBrowserClick(e, chipNav.href, chip.label);
                           };
                           const chipFace = (
                             <span className="inline-flex max-w-[180px] items-center rounded-full border border-black/[0.08] dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.04] px-1.5 py-[1px] text-[10.5px] font-medium text-black/70 dark:text-white/70 truncate">
@@ -630,13 +646,16 @@ const LoadInBubble: React.FC<{
               }
               // Internal hrefs route via react-router so we don't
               // hard-reload the app and lose chat state; external
-              // hrefs (Gmail / Notion / Slack URLs etc.) open in a
-              // new tab.
+              // hrefs (Gmail / Notion / Slack URLs etc.) open in the
+              // LYKN in-app browser.
               const onClick = (e: React.MouseEvent) => {
-                if (!isInternal) return;
                 if (e.metaKey || e.ctrlKey || e.shiftKey || (e as any).button === 1) return;
-                e.preventDefault();
-                navigate(navHref.href);
+                if (isInternal) {
+                  e.preventDefault();
+                  navigate(navHref.href);
+                  return;
+                }
+                handleLyknBrowserClick(e, navHref.href);
               };
               return (
                 <a
@@ -954,7 +973,7 @@ const MessageItem = React.memo(function MessageItem({
   buildChatMarkdownComponents,
   toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
   onCopyMessage, onReaction, onRegenerate, onEditResend, onRegenerateNonUser,
-  onSaveYouTube, onSaveAttachment, onSaveAiImage, onSaveLink,
+  onSaveYouTube, onSaveAttachment, onSaveAiImage, onSaveLink: _onSaveLink,
   addChatResponseToGrid,
   handleChunkClick, getSelectedText, registerChunks,
   onLoadInGreetingRefresh,
@@ -1211,7 +1230,7 @@ const MessageItem = React.memo(function MessageItem({
                 {(msg as any).aiImageUrl ? (
                   <div className="px-4 py-3">
                     <img src={(msg as any).aiImageUrl} alt="Generated image" className="max-w-full rounded-xl shadow-lg" style={{ maxHeight: "320px" }} />
-                    <button type="button" className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${savedMediaUrls.has((msg as any).aiImageUrl) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/25 bg-white/35 backdrop-blur-sm text-black/60 hover:text-black/80 hover:border-black/30 hover:shadow-sm"}`} disabled={savedMediaUrls.has((msg as any).aiImageUrl)} onClick={() => { onSaveAiImage((msg as any).aiImageUrl, msg.content); }}>
+                    <button type="button" className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${savedMediaUrls.has((msg as any).aiImageUrl) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/25 bg-white/35 backdrop-blur-sm text-black/60 hover:text-black/80 hover:border-black/30 hover:shadow-sm"}`} disabled={savedMediaUrls.has((msg as any).aiImageUrl)} onClick={() => { onSaveAiImage((msg as any).aiImageUrl, msg.content, { storagePath: (msg as any).aiImageStoragePath }); }}>
                       {savedMediaUrls.has((msg as any).aiImageUrl) ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
                     </button>
                   </div>
@@ -1279,7 +1298,8 @@ const MessageItem = React.memo(function MessageItem({
                           under the description so "still building" is obvious. */}
                       {inlineThinkingStatus && !leakedArtifact && !htmlPending ? (
                         <div className="mt-3">
-                          <ThinkingIndicator status={inlineThinkingStatus} compact />
+                          {/* Full-size spinner — same as Research mode's thinking row. */}
+                          <ThinkingIndicator status={inlineThinkingStatus} />
                         </div>
                       ) : null}
                     </div>
@@ -1675,7 +1695,13 @@ const MessageItem = React.memo(function MessageItem({
                           >
                             {savedYouTubeIds.has(yt.videoId) ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
                           </button>
-                          <a href={yt.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-white/25 bg-white/35 backdrop-blur-sm text-black/70 hover:border-black/30 hover:shadow-sm transition-all">
+                          <a
+                            href={yt.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => handleLyknBrowserClick(e, yt.url, "YouTube")}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-white/25 bg-white/35 backdrop-blur-sm text-black/70 hover:border-black/30 hover:shadow-sm transition-all"
+                          >
                             <Play className="w-3 h-3" /> Open on YouTube
                           </a>
                         </div>
@@ -1685,33 +1711,42 @@ const MessageItem = React.memo(function MessageItem({
                 )}
                 {!hideMessageSources && Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 px-4 pb-3">
-                    {(msg as any).sources.map((src: { title: string; url: string }, i: number) => (
-                      <a key={i} href={src.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all">
-                        <svg className="w-3 h-3 flex-shrink-0 opacity-40" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-4.5-6h6m0 0v6m0-6L9.75 14.25" /></svg>
+                    {(msg as any).sources.map((src: { title: string; url: string }, i: number) => {
+                      const href = safeExternalUrl(src.url) || src.url;
+                      return (
+                      <a
+                        key={i}
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => handleLyknBrowserClick(e, href, src.title)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
+                      >
+                        <SiteFavicon url={href} className="h-3.5 w-3.5" />
                         <span className="truncate max-w-[10rem]">{src.title}</span>
                       </a>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
                 {(msg as any).aiWebLinks && (msg as any).aiWebLinks.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 px-4 pb-3">
                     {(msg as any).aiWebLinks.map((link: string) => {
-                      const isSaved = savedMediaUrls.has(link);
                       let domain = "";
                       try { domain = new URL(link).hostname.replace(/^www\./, ""); } catch { domain = link; }
+                      const href = safeExternalUrl(link) || link;
                       return (
-                        <div key={link} className="inline-flex items-center gap-1 rounded-lg border border-white/25 bg-white/30 backdrop-blur-sm px-2 py-1">
-                          <Globe className="w-3 h-3 text-black/40 flex-shrink-0" />
-                          <a href={link} target="_blank" rel="noopener noreferrer" className="text-xs text-black/70 hover:text-black truncate max-w-[8rem]">{domain}</a>
-                          <button
-                            type="button"
-                            disabled={isSaved}
-                            className={`ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 text-[0.5625rem] rounded-md border transition-all ${isSaved ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/50 text-black/50 hover:text-black/70 hover:border-black/20"}`}
-                            onClick={() => { onSaveLink(link); }}
-                          >
-                            {isSaved ? <><Check className="w-2.5 h-2.5" /> Saved</> : <><Save className="w-2.5 h-2.5" /> Save</>}
-                          </button>
-                        </div>
+                        <a
+                          key={link}
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => handleLyknBrowserClick(e, href, domain)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
+                        >
+                          <SiteFavicon url={href} className="h-3.5 w-3.5" />
+                          <span className="truncate max-w-[10rem]">{domain}</span>
+                        </a>
                       );
                     })}
                   </div>
@@ -1722,7 +1757,7 @@ const MessageItem = React.memo(function MessageItem({
                       <GridIcon className="w-3.5 h-3.5" />
                     </button>
                   )}
-                  <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = msg.aiResponse || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void navigator.clipboard.writeText(text); } }}>
+                  <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = msg.aiResponse || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void copyMarkdownAsRich(text); } }}>
                     <Share2 className="w-3.5 h-3.5" />
                   </button>
                   <button type="button" title="Download" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = msg.aiResponse || ""; const blob = new Blob([text], { type: "text/plain" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "response.txt"; a.click(); URL.revokeObjectURL(url); }}>
@@ -1760,13 +1795,13 @@ const MessageItem = React.memo(function MessageItem({
                         onClick={() => onOpenArtifact(art)}
                         className="group flex items-center gap-3 rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] px-3.5 py-3 text-left shadow-sm transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.07] w-full"
                       >
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#c2603f]/12 text-[#c2603f] dark:bg-[#e08e6f]/15 dark:text-[#e08e6f]">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/80 text-white dark:bg-white/15 dark:text-white">
                           <FileText className="h-4 w-4" />
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-[13px] font-semibold text-foreground">{art.title}</span>
                           <span className="block text-[11px] text-muted-foreground">
-                            {art.kind === "html" ? "Artifact · click to open" : (art.format || "file").toUpperCase()}
+                            {art.kind === "html" ? "Artifact · open in LYKN browser" : (art.format || "file").toUpperCase()}
                           </span>
                         </span>
                         <span className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground group-hover:text-foreground transition-colors">
@@ -1860,39 +1895,48 @@ const MessageItem = React.memo(function MessageItem({
                 })()}
                 {!hideMessageSources && Array.isArray((msg as any).sources) && (msg as any).sources.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 px-4 pb-3">
-                    {(msg as any).sources.map((src: { title: string; url: string }, i: number) => (
-                      <a key={i} href={src.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all">
-                        <svg className="w-3 h-3 flex-shrink-0 opacity-40" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-4.5-6h6m0 0v6m0-6L9.75 14.25" /></svg>
+                    {(msg as any).sources.map((src: { title: string; url: string }, i: number) => {
+                      const href = safeExternalUrl(src.url) || src.url;
+                      return (
+                      <a
+                        key={i}
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => handleLyknBrowserClick(e, href, src.title)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
+                      >
+                        <SiteFavicon url={href} className="h-3.5 w-3.5" />
                         <span className="truncate max-w-[10rem]">{src.title}</span>
                       </a>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
                 {(msg as any).aiWebLinks && (msg as any).aiWebLinks.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 px-4 pb-3">
                     {(msg as any).aiWebLinks.map((link: string) => {
-                      const isSaved = savedMediaUrls.has(link);
                       let domain = "";
                       try { domain = new URL(link).hostname.replace(/^www\./, ""); } catch { domain = link; }
+                      const href = safeExternalUrl(link) || link;
                       return (
-                        <div key={link} className="inline-flex items-center gap-1 rounded-lg border border-white/25 bg-white/30 backdrop-blur-sm px-2 py-1">
-                          <Globe className="w-3 h-3 text-black/40 flex-shrink-0" />
-                          <a href={link} target="_blank" rel="noopener noreferrer" className="text-xs text-black/70 hover:text-black truncate max-w-[8rem]">{domain}</a>
-                          <button
-                            type="button"
-                            disabled={isSaved}
-                            className={`ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 text-[0.5625rem] rounded-md border transition-all ${isSaved ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/40 bg-white/50 text-black/50 hover:text-black/70 hover:border-black/20"}`}
-                            onClick={() => { onSaveLink(link); }}
-                          >
-                            {isSaved ? <><Check className="w-2.5 h-2.5" /> Saved</> : <><Save className="w-2.5 h-2.5" /> Save</>}
-                          </button>
-                        </div>
+                        <a
+                          key={link}
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => handleLyknBrowserClick(e, href, domain)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/25 dark:border-white/8 bg-white/35 dark:bg-white/4 backdrop-blur-sm text-black/70 dark:text-white/70 hover:border-black/30 dark:hover:border-white/30 hover:shadow-sm transition-all"
+                        >
+                          <SiteFavicon url={href} className="h-3.5 w-3.5" />
+                          <span className="truncate max-w-[10rem]">{domain}</span>
+                        </a>
                       );
                     })}
                   </div>
                 )}
                 <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
-                  <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = (msg as any).content || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void navigator.clipboard.writeText(text); } }}>
+                  <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = (msg as any).content || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void copyMarkdownAsRich(text); } }}>
                     <Share2 className="w-3.5 h-3.5" />
                   </button>
                   <button type="button" title="Download" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = (msg as any).content || ""; const blob = new Blob([text], { type: "text/plain" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "response.txt"; a.click(); URL.revokeObjectURL(url); }}>
@@ -1984,10 +2028,14 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const chunkMapRef = useRef<Map<string, string>>(new Map());
 
-  // Claude-style artifact pullout: clicking a card opens it in the side panel,
-  // and a brand-new (or just-refined) artifact auto-opens / updates it in place.
+  // Claude-style artifact pullout + LYKN browser: clicking a card opens the
+  // side panel for edit/preview, and when a hosted preview URL exists also
+  // routes it into the Studio / agent browser.
   const onOpenArtifact = useCallback(
-    (art: ChatArtifact) => { onActiveArtifactChange?.(art); },
+    (art: ChatArtifact) => {
+      onActiveArtifactChange?.(art);
+      openArtifactInStudioBrowser(art);
+    },
     [onActiveArtifactChange],
   );
   // When the artifact panel is open on desktop, the chat column shrinks to the
@@ -2321,6 +2369,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                 </div>
               </div>
             )}
+            <LocalToolApprovalCard />
           </div>
           <div className="w-full max-w-2xl px-4 pb-6 pt-2">
             {composerAbove ? <div className="mb-1">{composerAbove}</div> : null}

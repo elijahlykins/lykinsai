@@ -95,11 +95,19 @@ async function run({ userId, noteId, attachment, onPosterReady }: BackfillArgs):
   if (!variants.medium && !variants.thumb) return;
 
   const dir = storagePath.slice(0, storagePath.lastIndexOf("/") + 1);
+  // Flat folders (e.g. userId/generated/) must not all write the same
+  // medium.jpg — derive unique names from the original file stem. Per-file
+  // dirs (userId/{fileId}/) keep the compact medium.jpg / thumb.jpg names.
+  const baseName = storagePath.slice(storagePath.lastIndexOf("/") + 1) || "media";
+  const stem = baseName.replace(/\.[^.]+$/, "") || "media";
+  const sharedDir = /\/generated\/$/i.test(dir) || stem !== "original";
+  const mediumName = sharedDir ? `${stem}.medium.jpg` : "medium.jpg";
+  const thumbName = sharedDir ? `${stem}.thumb.jpg` : "thumb.jpg";
   const patch: Record<string, unknown> = {};
   const markerPatch: Record<string, string> = {};
 
   if (variants.medium) {
-    const mediumPath = `${dir}medium.jpg`;
+    const mediumPath = `${dir}${mediumName}`;
     try {
       await uploadFileToStorage({
         file: variants.medium,
@@ -115,7 +123,7 @@ async function run({ userId, noteId, attachment, onPosterReady }: BackfillArgs):
     } catch { /* best-effort */ }
   }
   if (variants.thumb) {
-    const thumbPath = `${dir}thumb.jpg`;
+    const thumbPath = `${dir}${thumbName}`;
     try {
       await uploadFileToStorage({
         file: variants.thumb,

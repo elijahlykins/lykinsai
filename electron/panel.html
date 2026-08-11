@@ -43,6 +43,24 @@
         user-select: none;
         -webkit-user-select: none;
       }
+      /* Body copy (sources, notes, tasks) is highlightable; chrome stays locked. */
+      #body .side-text-item,
+      #body .side-summary,
+      #body .side-title,
+      #body .suggest-link-title,
+      #body .suggest-link-domain {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      #head,
+      #head *,
+      #close,
+      button,
+      .suggest-link,
+      .suggest-chip {
+        -webkit-user-select: none;
+        user-select: none;
+      }
       #card {
         height: 100%;
         display: flex;
@@ -287,6 +305,7 @@
         word-break: break-word;
       }
     </style>
+    <link rel="stylesheet" href="hover-tips.css" />
   </head>
   <body>
     <div id="card">
@@ -298,6 +317,7 @@
       </div>
       <div id="body"></div>
     </div>
+    <script src="hover-tips.js"></script>
     <script src="panel.js"></script>
   </body>
 </html>

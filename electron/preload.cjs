@@ -53,7 +53,8 @@ contextBridge.exposeInMainWorld("lykn", {
   // Open a URL in the user's default browser (main validates http/https).
   // Needed for the browser-based Google sign-in: a plain window.open() to our
   // own origin would stay inside the shell window.
-  openExternal: (url) => ipcRenderer.send("lykn:open-url", String(url || "")),
+  openExternal: (url, title) =>
+    ipcRenderer.send("lykn:open-url", { url: String(url || ""), title }),
   // LYKN Studio: the liquid-glass workspace window (loads /studio). Open from
   // the main app's sidebar; close from the Studio UI's own chrome.
   openStudio: () => ipcRenderer.send("lykn:studio-set", { open: true }),
@@ -78,9 +79,29 @@ contextBridge.exposeInMainWorld("lykn", {
   // Open a URL as a tab in the Studio's own browser (artifact "Open" etc.).
   studioOpenUrl: (url, title) =>
     ipcRenderer.invoke("lykn:studio-open-url", { url: String(url || ""), title }),
+  // Open a chat artifact (URL and/or inline HTML) as a new agent tab.
+  studioOpenArtifact: (payload) =>
+    ipcRenderer.invoke("lykn:studio-open-artifact", payload || {}),
+  // Main → Studio: switch to the Browser tab when a URL was opened in-app.
+  // Prefer listening for the DOM event `lykn-studio-show-browser` (auto-forwarded
+  // from this IPC below); this helper is for callers that want a direct cb.
+  onStudioShowBrowser: (cb) => {
+    const fn = () => {
+      try {
+        cb?.();
+      } catch (_) {}
+    };
+    ipcRenderer.on("lykn:studio-show-browser", fn);
+    return () => ipcRenderer.removeListener("lykn:studio-show-browser", fn);
+  },
   // Studio agent rail (beside the docked browser): drive + observe agents.
-  studioAgentSend: (text, attachments, agentId) =>
-    ipcRenderer.invoke("lykn:studio-bar-send", { text, attachments, agentId }),
+  studioAgentSend: (text, attachments, agentId, opts = {}) =>
+    ipcRenderer.invoke("lykn:studio-bar-send", {
+      text,
+      attachments,
+      agentId,
+      fromSuggestion: !!opts?.fromSuggestion,
+    }),
   agentList: () => ipcRenderer.invoke("lykn:agent-list"),
   agentSwitch: (agentId) => ipcRenderer.invoke("lykn:agent-switch", agentId),
   agentClose: (agentId) => ipcRenderer.invoke("lykn:agent-close", agentId),
@@ -91,6 +112,15 @@ contextBridge.exposeInMainWorld("lykn", {
   agentShowStep: (agentId, stepIndex) =>
     ipcRenderer.invoke("lykn:agent-show-step", { agentId, stepIndex }),
   agentHistory: (agentId) => ipcRenderer.invoke("lykn:agent-history", agentId),
+  // Use LYKN pill — open/close the agent chat side panel.
+  agentChatSet: (payload) =>
+    ipcRenderer.invoke("lykn:agent-chat-set", payload || {}),
+  agentChatGet: () => ipcRenderer.invoke("lykn:agent-chat-get"),
+  onAgentChatVisibility: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-chat-visibility", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-chat-visibility", fn);
+  },
   // Studio browser history — closed tabs/agents (rail "History" section).
   agentBrowserHistoryList: () => ipcRenderer.invoke("lykn:agent-browser-history-list"),
   agentBrowserHistoryOpen: (entryId) =>
@@ -103,6 +133,9 @@ contextBridge.exposeInMainWorld("lykn", {
     return () => ipcRenderer.removeListener("lykn:agent-browser-history", fn);
   },
   pickFiles: () => ipcRenderer.invoke("lykn:pick-files"),
+  // Cluely-style follow-ups after an agent/answer finishes (same as Glass).
+  suggest: (question, answer, opts = {}) =>
+    ipcRenderer.invoke("lykn:suggest", { question, answer, ...opts }),
   onAgentList: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-list", fn);
@@ -128,6 +161,22 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:agent-done", fn);
     return () => ipcRenderer.removeListener("lykn:agent-done", fn);
   },
+  // Local Mode — Vault switch that grants LYKN file/terminal access on this
+  // device. Tools execute in main (never in the renderer or on the server).
+  localModeGet: () => ipcRenderer.invoke("lykn:local-mode-get"),
+  localModeSet: (enabled) =>
+    ipcRenderer.invoke("lykn:local-mode-set", { enabled: !!enabled }),
+  onLocalModeChanged: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:local-mode-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:local-mode-changed", fn);
+  },
+  localToolRun: (name, args, opts = {}) =>
+    ipcRenderer.invoke("lykn:local-tool-run", {
+      name: String(name || ""),
+      args: args || {},
+      approved: opts?.approved === true,
+    }),
   // Global notifications mute — gates update/agent OS notifications, the
   // agent-finished popup, and renderer Notification permission requests.
   getNotificationsMuted: () => ipcRenderer.invoke("lykn:notifications-muted-get"),
@@ -142,4 +191,13 @@ contextBridge.exposeInMainWorld("lykn", {
       authTokensCallback(tokens);
     }
   },
+});
+
+// Always forward main→Studio "show browser" into a DOM event so Studio.jsx
+// (and any other listener) can switch to the Browser tab without an extra
+// subscription. Harmless when Studio isn't mounted.
+ipcRenderer.on("lykn:studio-show-browser", () => {
+  try {
+    window.dispatchEvent(new CustomEvent("lykn-studio-show-browser"));
+  } catch (_) {}
 });

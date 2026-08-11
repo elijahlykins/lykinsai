@@ -202,6 +202,61 @@ html.lykn-studio-mode #root {
   background-image: none !important;
 }
 
+/* Frosted hover description boxes (StudioHoverTips + Electron hover-tips.js) */
+.lykn-hover-tip {
+  position: fixed;
+  z-index: 2147483000;
+  pointer-events: none;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(0, 0, 0, 0.8);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  animation: lykn-hover-tip-in 120ms ease-out;
+  white-space: normal;
+  word-break: break-word;
+}
+html.dark .lykn-hover-tip,
+html.lykn-studio-mode.dark .lykn-hover-tip,
+:is(html.lykn-overlay, html.lykn-agent-stage, body.lykn-electron-chrome) .lykn-hover-tip {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(20, 22, 28, 0.88);
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+@keyframes lykn-hover-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.lykn-hover-tip[data-side="top"] {
+  animation-name: lykn-hover-tip-in-top;
+}
+@keyframes lykn-hover-tip-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 /* =========================================================
    GLASS EMBEDS — pages loaded inside LYKN Studio (?embedded=1&glass=1)
    Every product surface gets a "glass version": the opaque stage and
@@ -304,6 +359,32 @@ html.lykn-studio-mode.dark [data-radix-dialog-content] {
     inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
 }
 
+/* Soft dim over Studio frost — heavy black wash kills the glass read. */
+html.lykn-glass-embed.dark .lykn-dialog-overlay,
+html.lykn-studio-mode.dark .lykn-dialog-overlay {
+  background-color: rgba(6, 8, 12, 0.42) !important;
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+}
+
+/* Neutral Studio: light frost dialogs over the opaque stage. */
+html.lykn-glass-embed:not(.dark) [role="dialog"],
+html.lykn-studio-mode:not(.dark) [role="dialog"],
+html.lykn-glass-embed:not(.dark) [data-radix-dialog-content],
+html.lykn-studio-mode:not(.dark) [data-radix-dialog-content] {
+  background-color: rgba(255, 255, 255, 0.88) !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+  backdrop-filter: blur(28px) saturate(1.35) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(1.35) !important;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.14) !important;
+}
+html.lykn-glass-embed:not(.dark) .lykn-dialog-overlay,
+html.lykn-studio-mode:not(.dark) .lykn-dialog-overlay {
+  background-color: rgba(20, 22, 28, 0.28) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
 /* Menus that hardcode opaque dark panel colors (vault ⋮ menus, etc.). */
 html.lykn-glass-embed.dark .dark\:bg-\[\#2c2c2e\],
 html.lykn-studio-mode.dark .dark\:bg-\[\#2c2c2e\],
@@ -387,8 +468,63 @@ html.lykn-glass-embed.dark .lykn-chat-neu-chat-send-btn:active:not(:disabled) {
 
 /* Pages that paint their own opaque dark stage go transparent in the
    dark-glass Studio so the shared frost shows through. */
-html.lykn-glass-embed.dark .lykn-projects-page {
+html.lykn-glass-embed.dark .lykn-projects-page,
+html.lykn-glass-embed.dark .lykn-calendar-page {
   background-color: transparent !important;
+}
+
+/* Projects card rail: hide scrollbars entirely (paging is via the glass arrow). */
+.lykn-projects-rail,
+.lykn-projects-page {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.lykn-projects-rail::-webkit-scrollbar,
+.lykn-projects-page::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+  background: transparent;
+}
+
+/* Header spreads with Studio focused mode — title eases to the card rail's
+   left edge (first card), new-project eases right. */
+.lykn-projects-title,
+.lykn-projects-new {
+  transition: transform 500ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+html.lykn-studio-focused .lykn-projects-title {
+  /* Sit the "Y" on the first card's left edge (same as rail padding). */
+  transform: translateX(0.35rem);
+}
+html.lykn-studio-focused .lykn-projects-new {
+  transform: translateX(0.75rem);
+}
+
+/* Studio top-bar search suggestions — thin visible scrollbar (list is capped
+   short so it never clips under the frost panel / dock). */
+.lykn-studio-search-menu {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
+}
+html.dark .lykn-studio-search-menu,
+html.lykn-studio-mode.dark .lykn-studio-search-menu {
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+.lykn-studio-search-menu::-webkit-scrollbar {
+  width: 8px;
+}
+.lykn-studio-search-menu::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html.dark .lykn-studio-search-menu::-webkit-scrollbar-thumb,
+html.lykn-studio-mode.dark .lykn-studio-search-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: padding-box;
 }
 
 /* Voice Mode overlay: bg-background is a 35%-alpha wash in the glass skin,

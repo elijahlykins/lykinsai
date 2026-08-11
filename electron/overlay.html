@@ -44,6 +44,28 @@
         overflow: hidden;
         font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
         color: var(--text);
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      /* Chat replies, code, and the composer are freely highlightable —
+         chrome (titlebar, toolbars, buttons) stays non-selectable above. */
+      #ask,
+      .chat-a,
+      .chat-a-body,
+      .chat-a-body *,
+      .chat-q,
+      .chat-q .q-text {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      .titlebar,
+      .titlebar *,
+      .chat-a-actions,
+      .chat-a-actions *,
+      .chat-q .chev,
+      button {
+        -webkit-user-select: none;
+        user-select: none;
       }
       /* Two-column shell: an optional source/follow-up panel on the LEFT and the
          chat column on the RIGHT. Both bottom-aligned; the chat hugs the right so
@@ -112,6 +134,8 @@
         font-weight: 600;
         text-align: left;
         cursor: pointer;
+        -webkit-user-select: text;
+        user-select: text;
       }
       .chat-q:hover { background: rgba(255, 255, 255, 0.04); }
       .chat-q .chev {
@@ -126,6 +150,8 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        -webkit-user-select: text;
+        user-select: text;
       }
       .chat-a {
         padding: 0 16px 14px 38px;
@@ -135,6 +161,7 @@
         word-break: break-word;
         overflow-wrap: anywhere;
         color: #e9edf6;
+        cursor: text;
         -webkit-user-select: text;
         user-select: text;
       }
@@ -685,10 +712,10 @@
       .thinking {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 12px;
         padding: 4px 0 8px;
         overflow: visible;
-        min-height: 26px;
+        min-height: 30px;
       }
       /* Shown under the model's description while a build/tool is still
          running — same spinner as the initial thinking state. */
@@ -703,8 +730,8 @@
         transform-origin: center;
         animation: lyknOutlinePop 3.6s ease-in-out infinite;
         flex: none;
-        width: 20px;
-        height: 20px;
+        width: 24px;
+        height: 24px;
       }
       .lykn-outline-spinner path {
         stroke-dasharray: 1;
@@ -1874,6 +1901,7 @@
       .mic.listening { color: #f87171; }
       .mic.listening svg { animation: micPulse 1.4s ease-in-out infinite; }
     </style>
+    <link rel="stylesheet" href="hover-tips.css" />
   </head>
   <body>
     <button id="bubble" title="Open LYKN" aria-label="Open LYKN">
@@ -2204,6 +2232,7 @@
       </div>
     </div>
     <script src="vendor/elevenlabs-client.iife.js"></script>
+    <script src="hover-tips.js"></script>
     <script src="overlay.js"></script>
   </body>
 </html>

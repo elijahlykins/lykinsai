@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
+import { useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -36,12 +30,13 @@ import LyknTodosPanel from "@/components/todos/LyknTodosPanel";
 import { listUserProjects } from "@/lib/userProjects";
 
 // ────────────────────────────────────────────────────────────────────────
-// LyknCalendarDialog — the calendar pop-up.
+// LyknCalendarPage — Calendar / To-dos as a Studio (and standalone) page.
 //
-// Reads/writes the user's own lykn_events rows directly through the
-// RLS-protected Supabase client (same pattern AppSidebar uses for boards),
-// and subscribes to realtime so events the AI adds in text/voice appear
-// here live. Two views in one dialog: a month grid, and an add/edit form.
+// Sits on the Studio frost panel in Glass mode (transparent stage) and the
+// regular opaque UI in Neutral. Reads/writes lykn_events through the
+// RLS-protected Supabase client and subscribes to realtime so events the AI
+// adds in text/voice appear live. Toggle Calendar ↔ To-dos at the top;
+// ?panel=todos deep-links the to-do list.
 // ────────────────────────────────────────────────────────────────────────
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -200,15 +195,17 @@ function PanelToggle({ panel, onChange }) {
   );
 }
 
-export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = "calendar" }) {
+export default function LyknCalendarPage() {
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const panelParam = searchParams.get("panel") === "todos" ? "todos" : "calendar";
   const today = useMemo(() => new Date(), []);
-  const [panel, setPanel] = useState("calendar"); // "calendar" | "todos"
+  const [panel, setPanel] = useState(panelParam); // "calendar" | "todos"
   const [cursor, setCursor] = useState(() => ({ year: today.getFullYear(), month: today.getMonth() }));
   const [events, setEvents] = useState([]);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [view, setView] = useState("month"); // 'month' | 'day' | 'form'
+  const [view, setView] = useState("month"); // 'month' | 'day' | 'form' | 'sync'
   const [selectedDay, setSelectedDay] = useState(null);
   const [formReturnTo, setFormReturnTo] = useState("month");
   const [form, setForm] = useState(EMPTY_FORM);
@@ -251,19 +248,19 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
   }, [user?.id, windowBounds.fromIso, windowBounds.toIso]);
 
   useEffect(() => {
-    if (open) void loadEvents();
-  }, [open, loadEvents]);
+    void loadEvents();
+  }, [loadEvents]);
 
   // Load the user's projects so events can be filed under one.
   useEffect(() => {
-    if (!open || !user?.id) return;
+    if (!user?.id) return;
     let cancelled = false;
     void (async () => {
       const list = await listUserProjects(user.id);
       if (!cancelled) setProjects(list.filter((p) => p.status === "active"));
     })();
     return () => { cancelled = true; };
-  }, [open, user?.id]);
+  }, [user?.id]);
 
   const projectsById = useMemo(() => {
     const m = new Map();
@@ -271,14 +268,23 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
     return m;
   }, [projects]);
 
-  // Open directly to the requested panel (calendar vs to-dos).
+  // Deep-link Calendar ↔ To-dos via ?panel= (Studio widgets / nav).
   useEffect(() => {
-    if (open) setPanel(initialPanel === "todos" ? "todos" : "calendar");
-  }, [open, initialPanel]);
+    setPanel(panelParam);
+  }, [panelParam]);
+
+  const selectPanel = useCallback((next) => {
+    setPanel(next);
+    setView("month");
+    setSearchParams(
+      next === "todos" ? { panel: "todos" } : {},
+      { replace: true },
+    );
+  }, [setSearchParams]);
 
   // Realtime: reflect events the AI adds in text/voice without a refresh.
   useEffect(() => {
-    if (!open || !user?.id) return undefined;
+    if (!user?.id) return undefined;
     const channel = supabase
       .channel(`lykn-events:${user.id}`)
       .on(
@@ -288,7 +294,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
       )
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [open, user?.id, loadEvents]);
+  }, [user?.id, loadEvents]);
 
   // ── External calendar sync (Google / Apple) ──────────────────────────
   const googleConn = useMemo(
@@ -351,7 +357,6 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
 
   // OAuth popup → opener handshake (Google Calendar only here).
   useEffect(() => {
-    if (!open) return undefined;
     let expectedOrigin = "";
     try { expectedOrigin = new URL(API_BASE_URL).origin; } catch { expectedOrigin = ""; }
     const onMessage = (event) => {
@@ -369,7 +374,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [open, refreshConnections, loadEvents]);
+  }, [refreshConnections, loadEvents]);
 
   const handleAppleConnect = useCallback(
     async (e) => {
@@ -658,36 +663,36 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
     "w-full px-3 py-2 text-sm bg-panel border border-black/10 dark:border-white/10 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20";
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { onOpenChange(next); if (!next) setView("month"); }}>
-      <DialogContent className="bg-panel border-white/15 dark:border-gray-700 text-black dark:text-white max-w-2xl backdrop-blur-md">
+    <div className="lykn-calendar-page h-full min-h-0 overflow-y-auto bg-transparent text-black dark:bg-[#121214] dark:text-white">
+      <div className="mx-auto w-full max-w-2xl px-6 py-8 sm:px-8">
         {(panel === "todos" || view === "month") && (
-          <div className="flex items-center justify-center pb-1">
-            <PanelToggle panel={panel} onChange={setPanel} />
+          <div className="flex items-center justify-center pb-4">
+            <PanelToggle panel={panel} onChange={selectPanel} />
           </div>
         )}
 
         <div
-          className={`flex flex-col gap-4 ${
+          className={`flex flex-col gap-4 rounded-[1.75rem] border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/[0.06] p-5 shadow-[0_8px_32px_rgba(0,0,0,0.08)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.28)] backdrop-blur-xl sm:p-6 ${
             panel === "todos" || view === "month" ? "min-h-[30rem]" : ""
           }`}
         >
         {panel === "todos" && (
           <>
-            <DialogHeader>
-              <DialogTitle className="sr-only">To-dos</DialogTitle>
-              <DialogDescription className="text-[0.625rem] text-black/40 dark:text-white/40">
+            <div className="flex flex-col space-y-1.5 text-left">
+              <h2 className="sr-only">To-dos</h2>
+              <p className="text-[0.625rem] text-black/40 dark:text-white/40">
                 Tasks you and LYKN are tracking. Ask LYKN in chat or voice to add, complete, or clear items. They sync here live.
-              </DialogDescription>
-            </DialogHeader>
-            <LyknTodosPanel active={open && panel === "todos"} />
+              </p>
+            </div>
+            <LyknTodosPanel active={panel === "todos"} />
           </>
         )}
 
         {panel === "calendar" && view === "month" && (
           <>
-            <DialogHeader>
-              <div className="flex items-center justify-between pr-6">
-                <DialogTitle className="text-black dark:text-white">{monthLabel}</DialogTitle>
+            <div className="flex flex-col space-y-1.5 text-left">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold leading-none tracking-tight text-black dark:text-white">{monthLabel}</h2>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
@@ -721,8 +726,8 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                   </button>
                 </div>
               </div>
-              <DialogDescription className="sr-only">Your LYKN calendar</DialogDescription>
-            </DialogHeader>
+              <p className="sr-only">Your LYKN calendar</p>
+            </div>
 
             <div className="grid grid-cols-7 text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 mb-1">
               {WEEKDAYS.map((w) => (
@@ -740,7 +745,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                     type="button"
                     key={day.toISOString()}
                     onClick={() => openDayView(day)}
-                    className={`relative min-h-[4.5rem] text-left p-1 bg-panel transition-colors hover:bg-blue-500/5 ${
+                    className={`relative min-h-[4.5rem] text-left p-1 bg-black/[0.02] dark:bg-white/[0.04] transition-colors hover:bg-blue-500/5 ${
                       inMonth ? "" : "opacity-40"
                     }`}
                   >
@@ -796,17 +801,17 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
 
         {panel === "calendar" && view === "day" && (
           <>
-            <DialogHeader>
-              <div className="flex items-center justify-between pr-6">
+            <div className="flex flex-col space-y-1.5 text-left">
+              <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 min-w-0">
                   <button type="button" onClick={() => setView("month")} className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors flex-shrink-0" title="Back to month">
                     <ArrowLeft className="w-4 h-4" />
                   </button>
-                  <DialogTitle className="text-black dark:text-white truncate">
+                  <h2 className="text-lg font-semibold leading-none tracking-tight text-black dark:text-white truncate">
                     {selectedDay
                       ? selectedDay.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })
                       : ""}
-                  </DialogTitle>
+                  </h2>
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
                   <button type="button" onClick={() => shiftDay(-1)} className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors" title="Previous day">
@@ -824,8 +829,8 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                   </button>
                 </div>
               </div>
-              <DialogDescription className="sr-only">Events for the selected day</DialogDescription>
-            </DialogHeader>
+              <p className="sr-only">Events for the selected day</p>
+            </div>
 
             <div className="max-h-[60vh] overflow-y-auto -mx-1 px-1">
               {selectedDayEvents.length === 0 ? (
@@ -846,7 +851,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
                         key={ev.id}
                         type="button"
                         onClick={() => openEditForm(ev, "day")}
-                        className="w-full text-left flex items-start gap-3 rounded-lg border border-black/5 dark:border-white/5 bg-panel p-3 hover:bg-blue-500/5 transition-colors"
+                        className="w-full text-left flex items-start gap-3 rounded-lg border border-black/5 dark:border-white/5 bg-black/[0.02] dark:bg-white/[0.04] p-3 hover:bg-blue-500/5 transition-colors"
                       >
                         <div className="w-16 flex-shrink-0 text-xs text-black/60 dark:text-white/60 pt-0.5">
                           {ev.all_day ? (
@@ -901,19 +906,19 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
 
         {panel === "calendar" && view === "sync" && (
           <>
-            <DialogHeader>
-              <div className="flex items-center gap-2 pr-6">
+            <div className="flex flex-col space-y-1.5 text-left">
+              <div className="flex items-center gap-2">
                 <button type="button" onClick={() => setView("month")} className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors" title="Back to month">
                   <ArrowLeft className="w-4 h-4" />
                 </button>
-                <DialogTitle className="text-black dark:text-white">Synced calendars</DialogTitle>
+                <h2 className="text-lg font-semibold leading-none tracking-tight text-black dark:text-white">Synced calendars</h2>
               </div>
-              <DialogDescription className="sr-only">Connect Google and Apple calendars</DialogDescription>
-            </DialogHeader>
+              <p className="sr-only">Connect Google and Apple calendars</p>
+            </div>
 
             <div className="flex flex-col gap-3">
               {/* Google Calendar */}
-              <div className="rounded-xl border border-black/5 dark:border-white/10 bg-panel p-3">
+              <div className="rounded-xl border border-black/5 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] p-3">
                 <div className="flex items-center gap-2">
                   <GoogleCalendarIcon />
                   <div className="min-w-0 flex-1">
@@ -947,7 +952,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
               </div>
 
               {/* Apple Calendar */}
-              <div className="rounded-xl border border-black/5 dark:border-white/10 bg-panel p-3">
+              <div className="rounded-xl border border-black/5 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] p-3">
                 <div className="flex items-center gap-2">
                   <AppleCalendarIcon />
                   <div className="min-w-0 flex-1">
@@ -1019,17 +1024,17 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
 
         {panel === "calendar" && view === "form" && (
           <>
-            <DialogHeader>
-              <div className="flex items-center gap-2 pr-6">
+            <div className="flex flex-col space-y-1.5 text-left">
+              <div className="flex items-center gap-2">
                 <button type="button" onClick={() => setView(formReturnTo)} className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors" title="Back">
                   <ArrowLeft className="w-4 h-4" />
                 </button>
-                <DialogTitle className="text-black dark:text-white">
+                <h2 className="text-lg font-semibold leading-none tracking-tight text-black dark:text-white">
                   {form.readOnly ? "Event" : form.id ? "Edit event" : "New event"}
-                </DialogTitle>
+                </h2>
               </div>
-              <DialogDescription className="sr-only">Add or edit a calendar event</DialogDescription>
-            </DialogHeader>
+              <p className="sr-only">Add or edit a calendar event</p>
+            </div>
 
             {form.readOnly && (
               <div className="flex items-start gap-2 rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2 text-xs text-black/60 dark:text-white/60">
@@ -1189,7 +1194,7 @@ export default function LyknCalendarDialog({ open, onOpenChange, initialPanel = 
           </>
         )}
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </div>
   );
 }

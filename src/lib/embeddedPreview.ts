@@ -35,6 +35,7 @@ export function isEmbeddedSurfacePath(pathname: string): boolean {
     // LYKN Studio embeds the real product surfaces inside its glass shell.
     pathname === "/projects" ||
     pathname.startsWith("/projects/") ||
+    pathname === "/calendar" ||
     pathname === "/settings" ||
     pathname.startsWith("/chat/")
   );

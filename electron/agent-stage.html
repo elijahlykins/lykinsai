@@ -3,21 +3,23 @@
   <head>
     <meta charset="utf-8" />
     <style>
-      /* Match Mac app (src/lib/theme.js): light #ececeb · dark #1e1e1e */
+      /* Dia-style light chrome: warm-gray strip, white active tab, white page */
       :root,
       html[data-theme="light"] {
-        --bg: #ececeb;
-        --bar: #e4e4e1;
-        --tab: #dbdbd8;
-        --tab-active: #ececeb;
-        --border: rgba(0, 0, 0, 0.1);
-        --text: #0a0a0a;
-        --muted: #737373;
-        --chrome: #e4e4e1;
-        --url-bg: rgba(255, 255, 255, 0.72);
-        --btn-bg: rgba(0, 0, 0, 0.06);
-        --btn-hover: rgba(0, 0, 0, 0.1);
-        --page: #ececeb;
+        --bg: #f3f2f0;
+        --bar: #f3f2f0;
+        --tab: transparent;
+        --tab-active: #ffffff;
+        --border: rgba(0, 0, 0, 0.08);
+        --text: #1c1c1c;
+        --muted: #6f6f6f;
+        --chrome: #f3f2f0;
+        --url-bg: transparent;
+        --url-bg-focus: #ffffff;
+        --btn-bg: rgba(0, 0, 0, 0.05);
+        --btn-hover: rgba(0, 0, 0, 0.07);
+        --page: #ffffff;
+        --tab-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.06);
         --stamp-hi: rgba(255, 255, 255, 0.92);
         --stamp-lo: rgba(0, 0, 0, 0.18);
         --stamp-hi-soft: rgba(255, 255, 255, 0.45);
@@ -25,17 +27,19 @@
       }
       html[data-theme="incognito"] {
         --bg: #1e1e1e;
-        --bar: #292929;
-        --tab: #2e2e2e;
-        --tab-active: #1e1e1e;
+        --bar: #242424;
+        --tab: transparent;
+        --tab-active: #383838;
         --border: rgba(255, 255, 255, 0.1);
         --text: #fafafa;
         --muted: #a3a3a3;
-        --chrome: #292929;
-        --url-bg: rgba(0, 0, 0, 0.35);
+        --chrome: #242424;
+        --url-bg: transparent;
+        --url-bg-focus: rgba(0, 0, 0, 0.4);
         --btn-bg: rgba(255, 255, 255, 0.06);
         --btn-hover: rgba(255, 255, 255, 0.12);
         --page: #1e1e1e;
+        --tab-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.25);
         --stamp-hi: rgba(255, 255, 255, 0.16);
         --stamp-lo: rgba(0, 0, 0, 0.78);
         --stamp-hi-soft: rgba(255, 255, 255, 0.07);
@@ -57,14 +61,14 @@
         flex-direction: column;
         height: 100%;
       }
+      /* ── Tab strip — floating rounded tabs, Dia/Arc style ── */
       #tabs {
         display: flex;
-        align-items: flex-end;
-        gap: 2px;
-        height: 38px;
-        padding: 6px 8px 0;
+        align-items: center;
+        gap: 3px;
+        height: 42px;
+        padding: 6px 8px;
         background: var(--bar);
-        border-bottom: 1px solid var(--border);
         overflow-x: auto;
         overflow-y: hidden;
         -webkit-app-region: drag;
@@ -73,16 +77,16 @@
       #tabs::-webkit-scrollbar { display: none; }
       .tab {
         -webkit-app-region: no-drag;
-        flex: 0 1 180px;
-        max-width: 200px;
+        flex: 0 1 190px;
+        max-width: 210px;
         min-width: 96px;
         height: 30px;
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 0 8px 0 10px;
+        gap: 7px;
+        padding: 0 7px 0 10px;
         border: none;
-        border-radius: 8px 8px 0 0;
+        border-radius: 9px;
         background: var(--tab);
         color: var(--muted);
         font: inherit;
@@ -90,26 +94,51 @@
         cursor: pointer;
         text-align: left;
       }
-      .tab:hover { color: var(--text); filter: brightness(0.98); }
-      html[data-theme="incognito"] .tab:hover { background: rgba(255,255,255,0.08); filter: none; }
+      .tab:hover { color: var(--text); background: var(--btn-bg); }
       .tab.active {
         background: var(--tab-active);
         color: var(--text);
+        box-shadow: var(--tab-shadow);
       }
+      /* New tabs ease out of the chrome instead of snapping into the strip. */
+      .tab.opening {
+        animation: tab-open 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        will-change: opacity, transform;
+      }
+      @keyframes tab-open {
+        from {
+          opacity: 0;
+          transform: translateY(-7px) scale(0.975);
+        }
+        70% {
+          opacity: 1;
+          transform: translateY(1px) scale(1.003);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .tab.opening { animation: none; }
+      }
+      /* Close button rides on hover / active only — Dia keeps tabs quiet. */
+      .tab .tab-x { display: none; }
+      .tab:hover .tab-x,
+      .tab.active .tab-x { display: grid; }
       .tab-new {
         -webkit-app-region: no-drag;
         flex: none;
-        width: 30px;
-        height: 30px;
-        margin-left: 2px;
-        margin-bottom: 0;
+        width: 28px;
+        height: 28px;
+        margin-left: 3px;
         border: none;
-        border-radius: 8px 8px 0 0;
+        border-radius: 8px;
         background: transparent;
         color: var(--muted);
         font: inherit;
-        font-size: 18px;
-        font-weight: 500;
+        font-size: 17px;
+        font-weight: 450;
         line-height: 1;
         cursor: pointer;
         display: grid;
@@ -131,15 +160,40 @@
         flex: 0 1 150px;
         min-width: 84px;
         max-width: 170px;
-        height: 25px;
-        margin-left: -1px;
-        border-radius: 6px 6px 0 0;
+        height: 26px;
+        border-radius: 8px;
         font-size: 11px;
       }
       .tab.subtab .tab-label::before {
         content: "↳ ";
         font-size: 10px;
         opacity: 0.7;
+      }
+      .tab-favicon {
+        flex: none;
+        width: 15px;
+        height: 15px;
+        border-radius: 3px;
+        object-fit: contain;
+        background: transparent;
+      }
+      .tab-favicon-fallback {
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        opacity: 0.75;
+      }
+      .tab-favicon-fallback svg {
+        width: 12px;
+        height: 12px;
+        display: block;
+      }
+      .tab-favicon-fallback.lykn {
+        opacity: 0.9;
+      }
+      .tab-favicon-fallback.lykn svg {
+        width: 13px;
+        height: 13px;
       }
       .tab-label {
         flex: 1;
@@ -164,37 +218,77 @@
       }
       .tab-x:hover { opacity: 1; background: var(--btn-hover); }
       .tab-x svg { width: 10px; height: 10px; display: block; }
+      /* ── Nav row — round icon buttons + quiet omnibox ── */
       #chrome {
-        height: 44px;
+        height: 40px;
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 4px;
         padding: 0 10px;
         background: var(--chrome);
         border-bottom: 1px solid var(--border);
         -webkit-app-region: drag;
       }
       #chrome button, #chrome input { -webkit-app-region: no-drag; }
-      /* Chrome-style toolbar buttons: bare icons, circular hover only. */
       #chrome button {
         width: 28px;
         height: 28px;
         border: none;
         border-radius: 50%;
         background: transparent;
-        color: var(--text);
+        color: var(--muted);
         cursor: pointer;
         display: grid;
         place-items: center;
       }
-      #chrome button:hover { background: var(--btn-hover); }
+      #chrome button:hover { background: var(--btn-hover); color: var(--text); }
       #chrome button.active {
         background: var(--btn-hover);
         color: var(--text);
       }
       #chrome svg { width: 15px; height: 15px; display: block; }
       #incognito svg { width: 16px; height: 16px; }
+      /* Ask Gemini–style entry point — opens Studio agent chat. */
+      #chrome button#use-lykn {
+        width: auto;
+        height: 28px;
+        flex: none;
+        border-radius: 999px;
+        padding: 0 11px 0 9px;
+        gap: 6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+        -webkit-app-region: no-drag;
+      }
+      #chrome button#use-lykn:hover { background: var(--btn-hover); }
+      #chrome button#use-lykn.active {
+        background: var(--btn-hover);
+        border-color: color-mix(in srgb, var(--text) 28%, var(--border));
+      }
+      #chrome button#use-lykn svg {
+        width: 14px;
+        height: 14px;
+        flex: none;
+      }
+      #chrome button#use-lykn .label { line-height: 1; }
       #url-wrap {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        margin: 0 6px;
+      }
+      #url-field {
         position: relative;
         flex: 1;
         min-width: 0;
@@ -206,129 +300,229 @@
         min-width: 0;
         width: 100%;
         height: 30px;
-        border-radius: 8px;
-        border: 1px solid var(--border);
+        border-radius: 9px;
+        border: 1px solid transparent;
         background: var(--url-bg);
-        color: var(--text);
-        padding: 0 36px 0 10px;
-        font: inherit;
-        font-size: 12px;
-      }
-      #star {
-        position: absolute;
-        right: 4px;
-        width: 26px;
-        height: 26px;
-        border: none;
-        border-radius: 50%;
-        background: transparent;
         color: var(--muted);
-        cursor: pointer;
-        display: grid;
-        place-items: center;
-        padding: 0;
+        padding: 0 10px;
+        font: inherit;
+        font-size: 12.5px;
+        outline: none !important;
+        outline-offset: 0;
+        box-shadow: none !important;
+        -webkit-appearance: none;
+        -webkit-tap-highlight-color: transparent;
       }
-      #star:hover { background: var(--btn-hover); color: var(--text); }
-      #star.saved {
-        color: #d4a017;
+      #url:hover { background: var(--btn-bg); }
+      #url:focus,
+      #url:focus-visible,
+      #url:active {
+        outline: none !important;
+        border-color: var(--border);
+        background: var(--url-bg-focus);
+        color: var(--text);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 14px rgba(0, 0, 0, 0.07) !important;
       }
-      #star.saved:hover { color: #c4920f; }
-      #star:disabled {
-        opacity: 0.35;
-        cursor: default;
+      /* Kill Chromium's yellow/orange autofill wash + focus tint. */
+      #url:-webkit-autofill,
+      #url:-webkit-autofill:hover,
+      #url:-webkit-autofill:focus,
+      #url:-webkit-autofill:active {
+        -webkit-text-fill-color: var(--text) !important;
+        caret-color: var(--text);
+        border-color: var(--border) !important;
+        /* Paint the field bg over the autofill color. */
+        -webkit-box-shadow: 0 0 0 1000px var(--url-bg-focus) inset !important;
+        box-shadow: 0 0 0 1000px var(--url-bg-focus) inset !important;
+        transition: background-color 99999s ease-out;
       }
-      #star svg { width: 15px; height: 15px; display: block; }
-      #star.saved svg { fill: currentColor; stroke: currentColor; }
-      #saved-btn.active {
-        background: var(--btn-hover);
-      }
-      #saved-menu {
+      /* Google-style omnibox suggestions — short + scrollable so the list
+         never runs off the bottom of the Studio browser panel. */
+      #url-suggest {
         position: absolute;
-        top: 40px;
-        right: 44px;
-        width: min(340px, calc(100vw - 24px));
-        max-height: min(360px, 50vh);
-        overflow: auto;
+        left: 0;
+        right: 0;
+        top: calc(100% + 6px);
+        max-height: min(220px, 32vh);
+        overflow-y: auto;
+        overscroll-behavior: contain;
         background: var(--tab-active);
         border: 1px solid var(--border);
-        border-radius: 10px;
-        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
-        z-index: 40;
-        padding: 6px;
+        border-radius: 16px;
+        box-shadow:
+          0 1px 2px rgba(0, 0, 0, 0.06),
+          0 8px 24px rgba(0, 0, 0, 0.12);
+        z-index: 60;
+        padding: 6px 0;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
       }
-      #saved-menu[hidden] { display: none; }
-      #saved-menu .saved-head {
+      html[data-theme="incognito"] #url-suggest {
+        scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+      }
+      #url-suggest::-webkit-scrollbar {
+        width: 8px;
+      }
+      #url-suggest::-webkit-scrollbar-thumb {
+        background: rgba(0, 0, 0, 0.22);
+        border-radius: 999px;
+        border: 2px solid transparent;
+        background-clip: padding-box;
+      }
+      html[data-theme="incognito"] #url-suggest::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.22);
+        background-clip: padding-box;
+      }
+      #url-suggest[hidden] { display: none; }
+      #url-suggest .suggest-item {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        padding: 6px 8px 8px;
-        font-size: 11px;
-        font-weight: 650;
-        letter-spacing: 0.02em;
-        text-transform: uppercase;
-        color: var(--muted);
-      }
-      #saved-menu .saved-empty {
-        padding: 16px 10px;
-        font-size: 12px;
-        color: var(--muted);
-        line-height: 1.4;
-        text-align: center;
-      }
-      #saved-menu .saved-item {
-        display: flex;
-        align-items: center;
-        gap: 8px;
+        gap: 12px;
         width: 100%;
+        min-height: 44px;
         border: none;
-        border-radius: 8px;
+        border-radius: 0;
         background: transparent;
         color: var(--text);
         text-align: left;
-        padding: 8px;
+        padding: 8px 16px;
         cursor: pointer;
         font: inherit;
       }
-      #saved-menu .saved-item:hover { background: var(--btn-bg); }
-      #saved-menu .saved-item .meta {
+      #url-suggest .suggest-item:hover,
+      #url-suggest .suggest-item.active {
+        background: rgba(0, 0, 0, 0.05);
+      }
+      html[data-theme="incognito"] #url-suggest .suggest-item:hover,
+      html[data-theme="incognito"] #url-suggest .suggest-item.active {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      #url-suggest .suggest-ico {
+        flex: none;
+        width: 18px;
+        height: 18px;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        opacity: 0.9;
+      }
+      #url-suggest .suggest-ico svg {
+        display: block;
+        width: 18px;
+        height: 18px;
+      }
+      #url-suggest .suggest-ico img {
+        display: block;
+        width: 16px;
+        height: 16px;
+        border-radius: 3px;
+        object-fit: contain;
+      }
+      #url-suggest .suggest-item .meta {
         flex: 1;
         min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
       }
-      #saved-menu .saved-item .name {
-        font-size: 12px;
-        font-weight: 600;
+      #url-suggest .suggest-item .name {
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.25;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        color: var(--text);
       }
-      #saved-menu .saved-item .host {
-        font-size: 11px;
+      #url-suggest .suggest-item .host {
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.25;
         color: var(--muted);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        margin-top: 2px;
       }
-      #saved-menu .saved-star {
+      /* ── Favorites bar — favicon + label chips, like a bookmarks bar ── */
+      #favs {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        height: 33px;
+        padding: 0 8px 4px;
+        background: var(--bar);
+        border-bottom: 1px solid var(--border);
+        overflow: hidden;
+        -webkit-app-region: drag;
+      }
+      #favs[hidden] { display: none; }
+      #favs-scroll {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        scroll-behavior: smooth;
+      }
+      #favs-scroll::-webkit-scrollbar { display: none; }
+      .fav {
+        -webkit-app-region: no-drag;
         flex: none;
-        width: 22px;
-        height: 22px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        height: 26px;
+        max-width: 170px;
+        padding: 0 10px;
         border: none;
-        border-radius: 6px;
+        border-radius: 8px;
         background: transparent;
-        color: #d4a017;
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .fav:hover { background: var(--btn-bg); }
+      .fav img {
+        flex: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        object-fit: contain;
+      }
+      .fav .fav-fallback {
+        flex: none;
+        width: 14px;
+        height: 14px;
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+      }
+      .fav .fav-fallback svg { width: 12px; height: 12px; display: block; }
+      .fav .fav-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #favs-more {
+        -webkit-app-region: no-drag;
+        flex: none;
+        width: 26px;
+        height: 26px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
         cursor: pointer;
         display: grid;
         place-items: center;
         padding: 0;
       }
-      #saved-menu .saved-star:hover { background: var(--btn-hover); }
-      #saved-menu .saved-star svg {
-        width: 13px;
-        height: 13px;
-        fill: currentColor;
-        stroke: currentColor;
-      }
+      #favs-more:hover { background: var(--btn-bg); color: var(--text); }
+      #favs-more svg { width: 13px; height: 13px; display: block; }
       #sync-menu {
         position: absolute;
         top: 40px;
@@ -359,7 +553,7 @@
         height: 30px;
         border-radius: 8px;
         border: 1px solid var(--border);
-        background: var(--url-bg);
+        background: var(--url-bg-focus);
         color: var(--text);
         font: inherit;
         font-size: 12px;
@@ -406,6 +600,7 @@
         min-height: 0;
         background: var(--page);
       }
+      /* ── Empty state (no tabs yet) — Dia-style new-tab backdrop ── */
       #empty {
         height: 100%;
         display: grid;
@@ -416,19 +611,16 @@
         text-align: center;
         padding: 24px;
         line-height: 1.45;
+        background: #f3f2f0;
+      }
+      html[data-theme="incognito"] #empty {
         background: var(--page);
       }
-      /* Debossed LYKN mark — fill matches page; form from highlight/shadow only */
+      /* The LYKN mark on its own. */
       #empty-stamp {
-        width: min(260px, 52vw);
-        height: min(260px, 52vw);
-        margin-bottom: 18px;
-        color: var(--page);
-        filter:
-          drop-shadow(1.4px 1.4px 0.4px var(--stamp-hi))
-          drop-shadow(-1.6px -1.6px 0.7px var(--stamp-lo))
-          drop-shadow(2.8px 2.8px 1.6px var(--stamp-hi-soft))
-          drop-shadow(-2.8px -2.8px 2.2px var(--stamp-lo-soft));
+        width: 84px;
+        height: 84px;
+        margin-bottom: 26px;
       }
       #empty-stamp svg {
         display: block;
@@ -436,17 +628,17 @@
         height: 100%;
         overflow: visible;
       }
-      #empty-stamp path {
-        fill: currentColor;
-      }
+      #empty-stamp path { fill: #5a8fd0; }
+      html[data-theme="incognito"] #empty-stamp path { fill: rgba(220, 235, 255, 0.7); }
       #empty .title {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         justify-content: center;
         gap: 0.28em 0.35em;
-        font-size: 18px;
+        font-size: 20px;
         font-weight: 650;
+        letter-spacing: -0.02em;
         color: var(--text);
         margin-bottom: 8px;
       }
@@ -469,6 +661,7 @@
       html.menu-overlay #page { background: transparent; }
       html.menu-overlay #empty { visibility: hidden; }
     </style>
+    <link rel="stylesheet" href="hover-tips.css" />
   </head>
   <body>
     <div id="shell">
@@ -484,18 +677,23 @@
         <button type="button" id="reload" title="Reload" aria-label="Reload">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
         </button>
+        <button type="button" id="download" title="Download this page" aria-label="Download this page">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/></svg>
+        </button>
         <div id="url-wrap">
-          <input id="url" type="text" spellcheck="false" placeholder="Search Google or type a URL" />
-          <button type="button" id="star" title="Save link for LYKN" aria-label="Save link" aria-pressed="false" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true">
-              <path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.2 1 5.8L12 16.8 6.8 19.7l1-5.8L3.5 9.7l5.9-.9L12 3.5z"/>
-            </svg>
-          </button>
+          <div id="url-field">
+            <input id="url" type="text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" inputmode="url" name="lykn-agent-omnibox" placeholder="Search or type a URL" />
+          </div>
+          <div id="url-suggest" hidden role="listbox" aria-label="Suggestions"></div>
         </div>
-        <button type="button" id="saved-btn" title="Saved links" aria-label="Saved links" aria-expanded="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 4h12a1 1 0 0 1 1 1v16l-7-3.5L5 21V5a1 1 0 0 1 1-1z"/>
+        <button type="button" id="use-lykn" title="Use LYKN" aria-label="Use LYKN" aria-pressed="false">
+          <svg viewBox="0 0 204.29 204.29" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M167.39,60.26l-.86-.39c-9.83-4.41-17.7-12.28-22.12-22.12l-.39-.86c-1.77-3.94-7.36-3.94-9.13,0l-.39.86c-4.41,9.83-12.28,17.71-22.12,22.12l-.86.39c-3.94,1.77-3.94,7.36,0,9.13l.86.39c9.83,4.41,17.7,12.28,22.12,22.12l.39.86c1.77,3.94,7.36,3.94,9.13,0l.39-.86c4.41-9.83,12.28-17.7,22.12-22.12l.86-.39c3.94-1.77,3.94-7.36,0-9.13ZM134.87,116.05c-14.73,2.8-17.97,18.72-32.73,18.72-8.11,0-12.75-4.81-17.72-9.61-1.8-1.73-3.56-3.5-5.29-5.29-4.8-4.98-9.62-9.61-9.62-17.73,0-14.76,15.93-18,18.72-32.73,2.66-14.03-7.74-27.55-21.99-28.38-13.8-.8-25.24,10.16-25.24,23.79,0,18.8,19.14,21.14,19.14,37.32s-19.14,18.52-19.14,37.32c0,13.16,10.67,23.83,23.83,23.83,18.8,0,21.14-19.14,37.32-19.14s18.52,19.14,37.32,19.14c13.63,0,24.58-11.44,23.78-25.24-.82-14.25-14.35-24.66-28.38-21.99Z"
+            />
           </svg>
+          <span class="label">Use LYKN</span>
         </button>
         <button type="button" id="sync-btn" title="Bring your Chrome logins & tabs" aria-label="Sync from Chrome" aria-expanded="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -516,7 +714,6 @@
             <path d="M10.6 15.2h2.8" />
           </svg>
         </button>
-        <div id="saved-menu" hidden role="menu" aria-label="Saved links"></div>
         <div id="sync-menu" hidden role="dialog" aria-label="Sync from Chrome">
           <div class="sync-head">Bring your browser</div>
           <p class="sync-sub">Import your logins and open tabs so LYKN starts signed in, right where you left off.</p>
@@ -527,6 +724,12 @@
           <button type="button" id="sync-run" class="sync-run">Sync now</button>
           <p id="sync-status" class="sync-status" hidden></p>
         </div>
+      </div>
+      <div id="favs" hidden aria-label="Frequent sites">
+        <div id="favs-scroll"></div>
+        <button type="button" id="favs-more" title="More sites" aria-label="Scroll to more sites">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/></svg>
+        </button>
       </div>
       <div id="page">
         <div id="empty">
@@ -550,6 +753,7 @@
         </div>
       </div>
     </div>
+    <script src="hover-tips.js"></script>
     <script src="agent-stage.js"></script>
   </body>
 </html>

@@ -28,6 +28,7 @@ import { useUserPlan } from "@/lib/useUserPlan";
 import { isModelAllowedForPlan, defaultModelForTier } from "@/lib/modelTiers";
 import { useAssistantName } from "@/hooks/useAssistantName";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
+import { openInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
 import { supabase } from "@/lib/supabase";
 import { useAiStore } from "@/store/aiStore";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -38,12 +39,14 @@ import type { UniversalBlockType } from "@/lyknChat/blockSystem/types";
 import { createDatabaseBlockData } from "@/lyknChat/blockSystem/notionModel";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import LinkPreview from "@/components/LinkPreview";
+import { SiteFavicon } from "@/components/SiteFavicon";
 import { detectSocialPlatform, isSocialEmbedType } from "@/lib/media/socialEmbed";
 import { promptFileDropMode } from "@/lib/fileDropModePrompt";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
+import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { buildTieredLyknChatContext, buildActionLyknChatContext } from "@/lib/ai/buildLyknChatContext";
 import { maybeAutoNameChat, buildAttachmentContext } from "@/lib/ai/chatSendOrchestrator";
@@ -55,6 +58,7 @@ import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 import { getVaultSidebarWidth, useIsTouchOnlyDevice, getIsTouchOnlyDevice } from "@/hooks/useViewportTier";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
+import { saveGeneratedImageToVault } from "@/lib/saveToVault";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
 import { stripAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
@@ -657,8 +661,16 @@ const STUDIO_VIEW_SYSTEM_PROMPTS: Record<Exclude<StudioView, "chat">, string> = 
     "build partner: help shape the idea, ask short clarifying questions when the request is " +
     "ambiguous, propose concrete directions, and build or refine the artifact. Keep the " +
     "conversation anchored on what they're building — don't drift into unrelated topics. When " +
-    "they ask for changes to an artifact that's already built, make targeted edits rather than " +
-    "rebuilding from scratch." + STUDIO_MODE_SWITCH_RULE,
+    "an artifact is already open in the panel and they ask to add, change, fix, or extend it, " +
+    "ALWAYS patch that artifact in place with targeted `edits` — never rebuild from scratch " +
+    "unless they clearly ask to redesign, start over, or build something entirely new. If a " +
+    "tool call returns a compile_error or edits_required, fix it silently and retry before " +
+    "telling the user you're done. COLOR DEFAULT: stay in a quiet earthy-neutral palette — black, " +
+    "white, gray, muted dark/sage greens, dark/slate blues, beige, and browns. Do not invent " +
+    "bright candy accents (orange, rose, cyan, neon, purple) unless the user explicitly asks " +
+    "for vivid color / a chromatic style, OR they show you a reference idea (attached image, " +
+    "screenshot, mood board) — then match that idea." +
+    STUDIO_MODE_SWITCH_RULE,
   imagine:
     "The user is in Imagine mode — a dedicated image-generation session. Every request is about " +
     "creating or refining images. Turn their ideas into vivid, detailed image prompts and " +
@@ -791,6 +803,132 @@ const StudioComposerStrip = React.memo(function StudioComposerStrip({
   );
 });
 
+/** Short topic phrase for post-report suggestion labels ("Brainstorm …"). */
+function researchSuggestionTopic(raw: string, maxLen = 42): string {
+  let t = String(raw || "").replace(/\s+/g, " ").trim();
+  t = t.replace(
+    /^(please\s+)?(?:do\s+)?(?:an?\s+)?(?:deep\s+)?(?:research|investigate|look into|analyze|study|explore|write|give me)\s+(?:(?:a|an|the)\s+)?(?:academic\s+)?(?:research\s+)?(?:report|overview|brief|summary)?\s*(?:on|about|into|regarding|for)?\s+/i,
+    "",
+  );
+  t = t.replace(/[.?!]+$/, "").trim();
+  if (!t) return "these findings";
+  if (t.length > maxLen) t = `${t.slice(0, Math.max(12, maxLen - 1)).replace(/\s+\S*$/, "")}…`;
+  return t;
+}
+
+/** Short title phrase for post-build suggestion labels. */
+function buildSuggestionTopic(raw: string, maxLen = 42): string {
+  let t = String(raw || "").replace(/\s+/g, " ").trim();
+  t = t.replace(
+    /^(please\s+)?(?:can you\s+)?(?:make|build|create|design|generate|code|write|whip up|mock up|put together)\s+(?:me\s+)?(?:an?\s+)?(?:interactive\s+)?(?:presentation|pitch deck|slide deck|deck|app|game|dashboard|one-pager|investor deck|study guide|page|site|tool)?\s*(?:about|on|for|that|which|where)?\s*/i,
+    "",
+  );
+  t = t.replace(/[.?!]+$/, "").trim();
+  if (!t) return "this build";
+  if (t.length > maxLen) t = `${t.slice(0, Math.max(12, maxLen - 1)).replace(/\s+\S*$/, "")}…`;
+  return t;
+}
+
+type StudioSuggestionItem = {
+  key: string;
+  view: StudioView;
+  label: string;
+  prompt: string;
+  icon: React.ComponentType<{ className?: string }>;
+};
+
+// Shared strip above the chat bar: three one-tap next steps after a
+// Research report or Build finishes. Each switches Studio mode (when
+// needed) and immediately starts the turn.
+const StudioFollowUpSuggestions = React.memo(function StudioFollowUpSuggestions({
+  items,
+  disabled,
+  onSelect,
+}: {
+  items: StudioSuggestionItem[];
+  disabled?: boolean;
+  onSelect: (view: StudioView, prompt: string) => void;
+}) {
+  return (
+    <div className="mb-1.5 px-1">
+      <p className="mb-1.5 px-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.08em] text-black/40 dark:text-white/40">
+        Suggestions
+      </p>
+      <div className="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap">
+        {items.map(({ key, view, label, prompt, icon: Icon }) => (
+          <button
+            key={key}
+            type="button"
+            disabled={disabled}
+            onClick={() => onSelect(view, prompt)}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-2xl border border-black/10 bg-white/50 px-3 py-2 text-left text-[12px] font-medium leading-snug text-black/70 backdrop-blur-sm transition-colors hover:bg-black/[0.06] hover:text-black/90 disabled:pointer-events-none disabled:opacity-40 dark:border-white/12 dark:bg-white/[0.06] dark:text-white/70 dark:hover:bg-white/[0.1] dark:hover:text-white/90"
+          >
+            <Icon className="h-3.5 w-3.5 shrink-0 opacity-60" />
+            <span className="min-w-0">{label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+});
+
+function researchFollowUpItems(topic: string): StudioSuggestionItem[] {
+  const blank = researchSuggestionTopic(topic, 42);
+  const fullTopic = researchSuggestionTopic(topic, 160);
+  return [
+    {
+      key: "build",
+      view: "build",
+      label: "Build · Turn this into an interactive presentation",
+      prompt: "Turn this research report into an interactive presentation",
+      icon: Code,
+    },
+    {
+      key: "brainstorm",
+      view: "chat",
+      label: `Chat · Brainstorm ${blank}`,
+      prompt: `Brainstorm ideas, angles, and next steps around ${fullTopic}`,
+      icon: MessageCircle,
+    },
+    {
+      key: "deeper",
+      view: "research",
+      label: "Dive deeper",
+      prompt: `Dive deeper into ${fullTopic}`,
+      icon: Telescope,
+    },
+  ];
+}
+
+function buildFollowUpItems(topic: string): StudioSuggestionItem[] {
+  const blank = buildSuggestionTopic(topic, 42);
+  const fullTopic = buildSuggestionTopic(topic, 160);
+  return [
+    {
+      key: "research",
+      view: "research",
+      label: `Research · Dig into ${blank}`,
+      prompt: `Research ${fullTopic}: key facts, current context, and anything I should know to strengthen this build`,
+      icon: Telescope,
+    },
+    {
+      key: "brainstorm",
+      view: "chat",
+      label: `Chat · Brainstorm improvements for ${blank}`,
+      prompt: `Brainstorm improvements, alternate directions, and next features for ${fullTopic}`,
+      icon: MessageCircle,
+    },
+    {
+      key: "polish",
+      view: "build",
+      label: "Polish this",
+      prompt:
+        "Polish and refine this build — tighten the design, improve clarity, and add polished interactions",
+      icon: Sparkles,
+    },
+  ];
+}
+
 // Studio Research page: right rail listing every link the deep-research
 // pipeline searched/read (streamed from the server before the report text),
 // plus a Save report action that writes the finished report into the vault.
@@ -814,6 +952,7 @@ const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
   onSave: () => void;
 }) {
   const openLink = (url: string) => {
+    if (openInStudioBrowser(url)) return;
     const lykn = (window as any).lykn;
     if (lykn?.openExternal) lykn.openExternal(url);
     else window.open(url, "_blank", "noopener");
@@ -846,7 +985,7 @@ const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
               title={s.url}
               className="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
             >
-              <Globe className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-black/40 dark:text-white/40" />
+              <SiteFavicon url={s.url} className="mt-0.5 h-3.5 w-3.5" />
               <span className="min-w-0">
                 <span className="block truncate text-[0.74rem] text-black/85 dark:text-white/85">
                   {s.title || "Source"}
@@ -2733,80 +2872,47 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     }
   }, [applyVaultDropToChat]);
 
-  const saveAiImageToMedia = useCallback(async (imageUrl: string, promptText?: string) => {
-    if (!imageUrl) return;
-    if (!user?.id) { requireSignIn("save to the vault"); return; }
-    if (!(await checkVaultLimit())) return;
+  const saveAiImageToMedia = useCallback(async (
+    imageUrl: string,
+    promptText?: string,
+    meta?: { storagePath?: string; mimeType?: string },
+  ): Promise<boolean> => {
+    if (!imageUrl) return false;
+    if (!user?.id) { requireSignIn("save to the vault"); return false; }
+    if (!(await checkVaultLimit())) return false;
 
-    let ext = "jpg";
-    let fileUrl = imageUrl;
-    let fileId = crypto.randomUUID();
-    let storagePath = "";
-    let fileSize = 0;
-    let mimeType = "image/jpeg";
-    let uploaded = false;
+    const result = await saveGeneratedImageToVault({
+      userId: user.id,
+      imageUrl,
+      storagePath: meta?.storagePath,
+      mimeType: meta?.mimeType,
+      promptText,
+      source: "studio_imagine",
+      folder: "Generated",
+    });
 
-    try {
-      const res = await fetch(imageUrl);
-      if (res.ok) {
-        const blob = await res.blob();
-        ext = blob.type.includes("png") ? "png" : "jpg";
-        mimeType = blob.type || `image/${ext}`;
-        storagePath = `${user.id}/${fileId}/original.${ext}`;
-        const { error: uploadError } = await supabase.storage
-          .from("user-files")
-          .upload(storagePath, blob, { cacheControl: "3600", upsert: false });
-        if (!uploadError) {
-          fileSize = blob.size;
-          const { data: signedData } = await supabase.storage
-            .from("user-files")
-            .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-          fileUrl = signedData?.signedUrl || imageUrl;
-          uploaded = true;
-        } else {
-          if (import.meta.env.DEV) console.warn("[LYKN] Failed to upload AI image to storage:", uploadError.message);
-        }
+    if (!result.ok) {
+      if (result.reason === "duplicate") {
+        // Already in vault — treat as success so the UI shows Saved.
+        return true;
       }
-    } catch (err) {
-      if (import.meta.env.DEV) console.warn("[LYKN] Could not download AI image for re-upload:", err);
+      if (result.reason !== "cap" && result.reason !== "rate") {
+        toast({
+          title: "Couldn't save to vault",
+          description: result.message || "Please try again.",
+        });
+      }
+      return false;
     }
 
+    incrementVaultCount();
+    if (import.meta.env.DEV) console.log("[LYKN] AI image saved to media", result.id);
     try {
-      const filename = `AI Generated ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.${ext}`;
-      const attachment = [{
-        type: "image",
-        url: fileUrl,
-        name: filename,
-        fileId,
-        ...(uploaded ? { storagePath, storageBucket: "user-files", size: fileSize } : {}),
-        mimeType,
-      }];
-      const noteContent = `AI-generated image${promptText ? `: "${promptText.slice(0, 100)}"` : ""}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-
-      const { data: ins, error } = await supabase
-        .from("vault_items")
-        .insert({
-          user_id: user.id,
-          title: filename,
-          content: noteContent,
-        })
-        .select("id")
-        .single();
-      if (error) {
-        notifyVaultCapIfApplicable(error);
-        if (import.meta.env.DEV) console.warn("[LYKN] Failed to save AI image note:", error.message);
-      } else {
-        if (import.meta.env.DEV) console.log("[LYKN] AI image saved to media");
-        if (ins?.id) {
-          afterVaultNoteSaved(user.id, ins.id, { title: filename, content: noteContent }, {
-            excludeChatId: routeChatId || chatId || undefined,
-          });
-        }
-      }
-    } catch (err) {
-      if (import.meta.env.DEV) console.warn("[LYKN] Error saving AI image note:", err);
-    }
-  }, [user?.id, routeChatId, chatId, requireSignIn]);
+      const { queryClientInstance } = await import("@/lib/query-client");
+      void queryClientInstance.invalidateQueries({ queryKey: ["vault-notes", user.id] });
+    } catch { /* vault will refresh on next visit */ }
+    return true;
+  }, [user?.id, requireSignIn, checkVaultLimit, incrementVaultCount]);
 
   const saveYouTubeToMedia = useCallback(async (videoId: string, url: string) => {
     if (!videoId) return;
@@ -3052,6 +3158,25 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     }, 0);
   }, [setChatInput, chatPanelInputRef, centerChatInputRef]);
 
+  // Post-report / post-build suggestion: flip to the target Studio mode,
+  // arm its lane, and send immediately so the user lands mid-task.
+  // Uses handleChatSend (not studioGuardedSend) because we intentionally left
+  // the prior lane — the mode-redirect guard would otherwise block the turn.
+  // Refs are patched sync before send so the orchestrator and snapshot tag
+  // see the new mode even though React state hasn't re-rendered yet.
+  const handleStudioFollowUp = useCallback((view: StudioView, prompt: string) => {
+    if (isChatLoading) return;
+    const text = String(prompt || "").trim();
+    if (!text) return;
+    setStudioView(view);
+    setComposerMode(view === "chat" ? "none" : STUDIO_VIEW_MODES[view]);
+    studioModeInstructionsRef.current =
+      view === "chat" ? "" : STUDIO_VIEW_SYSTEM_PROMPTS[view];
+    studioModeSaveRef.current = view === "chat" ? null : view;
+    setChatInput(text);
+    void handleChatSend();
+  }, [isChatLoading, setComposerMode, setChatInput, handleChatSend]);
+
   // Mode sessions are sticky: useChatEngine auto-clears composerMode after
   // every send, so while a mode page is active re-arm it — each turn keeps
   // the forced tool lane (build / image / research) until the user switches
@@ -3098,6 +3223,21 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     }
     return null;
   }, [chatMessages]);
+
+  // Topic for post-build suggestions: prefer the open artifact title, else
+  // the latest user prompt that produced it.
+  const latestBuildTopic = useMemo(() => {
+    const titled = String(activeArtifact?.title || "").trim();
+    if (titled) return titled;
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      const m = chatMessages[i] as any;
+      if (m?.role === "user") {
+        const content = String(m.content || "").trim();
+        if (content) return content;
+      }
+    }
+    return "this build";
+  }, [activeArtifact?.title, chatMessages]);
 
   const [researchReportSaving, setResearchReportSaving] = useState(false);
   const handleSaveResearchReport = useCallback(async () => {
@@ -3263,6 +3403,49 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
     // Cap check only for new inserts — updates replace an existing card.
     if (!existing && !(await checkVaultLimit())) return false;
+
+    // Generated images already live in user-files — reuse the path so Vault
+    // gets a durable card without re-downloading the proxy URL.
+    if (artifact.kind === "image" && !existing) {
+      const imageUrl = artifact.previewUrl || artifact.downloadUrl || "";
+      const path = typeof artifact.storagePath === "string" ? artifact.storagePath.trim() : "";
+      if (imageUrl || path) {
+        const result = await saveGeneratedImageToVault({
+          userId: user.id,
+          imageUrl: imageUrl || path,
+          storagePath: path || undefined,
+          promptText: title,
+          source: "ai_artifact",
+          folder: "Generated",
+        });
+        if (result.ok) {
+          incrementVaultCount();
+          savedArtifactVaultRef.current.set(lineageKey, {
+            noteId: result.id,
+            fileId: path.split("/")[1] || result.id,
+            storagePath: path || "",
+            ext: (artifact.format || "png").toLowerCase(),
+            contentKey: `image|${path || imageUrl}`,
+          });
+          try {
+            const { queryClientInstance } = await import("@/lib/query-client");
+            void queryClientInstance.invalidateQueries({ queryKey: ["vault-notes", user.id] });
+          } catch { /* vault will refresh on next visit */ }
+          if (!opts?.auto) {
+            toast({ title: "Saved to vault", description: title });
+          }
+          return true;
+        }
+        if (result.reason === "duplicate") {
+          if (!opts?.auto) toast({ title: "Already in vault", description: title });
+          return true;
+        }
+        if (!opts?.auto && result.reason !== "cap" && result.reason !== "rate") {
+          toast({ title: "Couldn't save", description: result.message || "Please try again." });
+        }
+        return false;
+      }
+    }
 
     const downloads = artifact.downloads || [];
     const pdf = downloads.find((d) => String(d.format).toLowerCase() === "pdf");
@@ -3486,7 +3669,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
       return false;
     }
-  }, [user?.id, routeChatId, chatId, requireSignIn, checkVaultLimit]);
+  }, [user?.id, routeChatId, chatId, requireSignIn, checkVaultLimit, incrementVaultCount]);
 
 
   // Sticky-mode lane guard: on the Build / Imagine / Research pages every
@@ -4436,9 +4619,14 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     setSavedMediaUrls((p) => new Set(p).add(url));
   }, [saveAttachmentToMedia]);
 
-  const handleSideRailSaveAiImage = useCallback((imageUrl: string, promptText?: string) => {
-    void saveAiImageToMedia(imageUrl, promptText);
-    setSavedMediaUrls((p) => new Set(p).add(imageUrl));
+  const handleSideRailSaveAiImage = useCallback(async (
+    imageUrl: string,
+    promptText?: string,
+    meta?: { storagePath?: string; mimeType?: string },
+  ) => {
+    const ok = await saveAiImageToMedia(imageUrl, promptText, meta);
+    if (ok) setSavedMediaUrls((p) => new Set(p).add(imageUrl));
+    return ok;
   }, [saveAiImageToMedia]);
 
   const handleSideRailSaveLink = useCallback((link: string) => {
@@ -4451,7 +4639,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   }, [replaySavedPromptResponse]);
 
   const handleSideRailCopyMessage = useCallback((msgId: string, text: string) => {
-    void navigator.clipboard.writeText(text);
+    void copyMarkdownAsRich(text);
     setCopiedMsgId(msgId);
     setTimeout(() => setCopiedMsgId((cur) => cur === msgId ? null : cur), 2000);
   }, []);
@@ -4466,9 +4654,14 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     setSavedMediaUrls((p) => new Set(p).add(url));
   }, [saveAttachmentToMedia]);
 
-  const handleFocusedChatSaveAiImage = useCallback((imageUrl: string, promptText?: string) => {
-    void saveAiImageToMedia(imageUrl, promptText);
-    setSavedMediaUrls((p) => new Set(p).add(imageUrl));
+  const handleFocusedChatSaveAiImage = useCallback(async (
+    imageUrl: string,
+    promptText?: string,
+    meta?: { storagePath?: string; mimeType?: string },
+  ) => {
+    const ok = await saveAiImageToMedia(imageUrl, promptText, meta);
+    if (ok) setSavedMediaUrls((p) => new Set(p).add(imageUrl));
+    return ok;
   }, [saveAiImageToMedia]);
 
   const handleFocusedChatSaveLink = useCallback((link: string) => {
@@ -4477,7 +4670,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   }, [saveLinkToMedia]);
 
   const handleFocusedChatCopyMessage = useCallback((msgId: string, text: string) => {
-    void navigator.clipboard.writeText(text);
+    void copyMarkdownAsRich(text);
     setCopiedMsgId(msgId);
     setTimeout(() => setCopiedMsgId((cur) => cur === msgId ? null : cur), 2000);
   }, []);
@@ -5154,8 +5347,28 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
             (chatMode && isMainAgentChat && CUSTOM_MODELS_ENABLED) ? (
               <>
                 {isGlassChat &&
-                (studioView === "research" || studioView === "build") &&
-                !voiceModeOn ? (
+                studioView === "research" &&
+                !voiceModeOn &&
+                !isChatLoading &&
+                !!latestResearch?.report ? (
+                  <StudioFollowUpSuggestions
+                    items={researchFollowUpItems(latestResearch.topic)}
+                    disabled={isChatLoading}
+                    onSelect={handleStudioFollowUp}
+                  />
+                ) : isGlassChat &&
+                  studioView === "build" &&
+                  !voiceModeOn &&
+                  !isChatLoading &&
+                  !!activeArtifact ? (
+                  <StudioFollowUpSuggestions
+                    items={buildFollowUpItems(latestBuildTopic)}
+                    disabled={isChatLoading}
+                    onSelect={handleStudioFollowUp}
+                  />
+                ) : isGlassChat &&
+                  (studioView === "research" || studioView === "build") &&
+                  !voiceModeOn ? (
                   <StudioComposerStrip
                     view={studioView}
                     onInsert={handleComposerChipInsert}

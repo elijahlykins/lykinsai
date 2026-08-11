@@ -44,14 +44,21 @@ import imagineHeadphones from "@/assets/imagine-headphones.png";
 import imagineHovercraft from "@/assets/imagine-hovercraft.png";
 import imagineFigure from "@/assets/imagine-figure.png";
 import VoiceTechOrb from "@/components/lyknChat/VoiceTechOrb";
+import {
+  CapBrowserDemo,
+  CapDriveDemo,
+  CapGlassDemo,
+  CapResearchDemo,
+} from "@/components/landing/CapResearchBrowserDemos";
 import { streamWakeChatPreview } from "@/lib/wake/wakeChatPreviewStream";
 import { AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import {
   desktopHotkeyLabel,
-  desktopModifierAria,
   desktopModifierKey,
 } from "@/lib/desktopHotkey";
 import "./GlassLanding.css";
+
+export { CapBrowserDemo, CapDriveDemo, CapGlassDemo, CapResearchDemo };
 
 const HOTKEY = desktopHotkeyLabel();
 const HOTKEY_SPACED = desktopHotkeyLabel("spaced");
@@ -585,10 +592,9 @@ function CapFoot({ name, onExplore }: { name: string; onExplore: () => void }) {
   );
 }
 
-/** Capabilities grid directly under the hero: centered headline + CTAs over a
-    2×2 grid of dark cards — Chat (LYKN answering), Build (build mode running),
-    Imagine (image generation), and Voice (the voice orb). Each card's Explore
-    link opens that capability's own product page. */
+/** Capabilities grid directly under the hero: centered headline over a grid
+    of dark cards — Chat, Build, Imagine, Voice, Research, Browser, Drive,
+    and Glass. Each card's Explore link opens that capability's product page. */
 function CapabilitiesSection() {
   const navigate = useNavigate();
   return (
@@ -620,6 +626,35 @@ function CapabilitiesSection() {
           <article className="gl-cap-card">
             <CapVoiceDemo />
             <CapFoot name="Voice" onExplore={() => navigate("/product/voice")} />
+          </article>
+
+          <article className="gl-cap-card">
+            <CapResearchDemo />
+            <CapFoot
+              name="Research"
+              onExplore={() => navigate("/product/research")}
+            />
+          </article>
+
+          <article className="gl-cap-card">
+            <CapBrowserDemo />
+            <CapFoot
+              name="Browser"
+              onExplore={() => navigate("/product/browser")}
+            />
+          </article>
+
+          <article className="gl-cap-card">
+            <CapDriveDemo />
+            <CapFoot
+              name="Drive"
+              onExplore={() => navigate("/product/drive")}
+            />
+          </article>
+
+          <article className="gl-cap-card">
+            <CapGlassDemo />
+            <CapFoot name="Glass" onExplore={() => navigate("/product/glass")} />
           </article>
         </div>
       </div>
@@ -693,7 +728,18 @@ function AnyScreenSection() {
           {/* Product-page shortcuts under the window: each chip jumps to
               that capability's page. */}
           <div className="gl-any-chips">
-            {(["chat", "build", "imagine", "voice"] as const).map((id) => (
+            {(
+              [
+                "chat",
+                "build",
+                "imagine",
+                "voice",
+                "research",
+                "browser",
+                "drive",
+                "glass",
+              ] as const
+            ).map((id) => (
               <button
                 key={id}
                 type="button"
@@ -1265,37 +1311,6 @@ function GlassDemoOverlay({
             </div>
           </aside>
         ) : null}
-      </div>
-    </div>
-  );
-}
-
-/** Fixed bottom-right shortcut hint — two neumorphic keycaps (⌘/Ctrl + L)
-    that drop in with a bounce and lift on hover. Clicking summons the demo. */
-function KeycapCTA({ onTrigger }: { onTrigger?: () => void }) {
-  const mod = desktopModifierKey();
-  return (
-    <div className="gl-cta" aria-label={`AI on any screen — press ${HOTKEY}`}>
-      <div className="gl-keys">
-        <span className="gl-cta-text" role="tooltip">
-          AI on any screen · {HOTKEY}
-        </span>
-        <button
-          type="button"
-          className={`gl-key gl-key--cmd${mod === "Ctrl" ? " gl-key--ctrl" : ""}`}
-          aria-label={desktopModifierAria()}
-          onClick={onTrigger}
-        >
-          <span>{mod}</span>
-        </button>
-        <button
-          type="button"
-          className="gl-key gl-key--ret"
-          aria-label={`Open LYKN demo (${HOTKEY})`}
-          onClick={onTrigger}
-        >
-          <span>L</span>
-        </button>
       </div>
     </div>
   );
@@ -1935,13 +1950,17 @@ const START_OPTIONS: {
 }[] = [
   {
     title: "Download LYKN",
-    sub: "The desktop app puts your AI on every screen — available for Mac.",
+    sub: "Full Glass Studio on your desktop - AI on every screen, available for Mac.",
     points: [
-      `Summon LYKN Glass anywhere with ${HOTKEY_SPACED}`,
-      "Ask about whatever is on your screen",
-      "Snip, build, and generate without switching apps",
-      "Hands-free voice mode",
-      "Chat, projects, vault, and your synthesis layer",
+      `Glass - summon LYKN over any screen with ${HOTKEY_SPACED}`,
+      "Chat - ask anything with your context already loaded",
+      "Build - turn a sentence into working software",
+      "Imagine - on-brand images, ads, and art from a prompt",
+      "Voice - real-time conversation, hands-free",
+      "Research - deep digs into sources, structured as a report",
+      "Browser - an agent that browses and acts on the web for you",
+      "Drive - every file, note, and artifact in one place",
+      "Projects, calendar, and your synthesis layer",
     ],
     cta: "Download for Mac",
     to: "/download",
@@ -2010,6 +2029,7 @@ const FOOTER_COLS: { title: string; links: FooterLink[] }[] = [
   {
     title: "Explore",
     links: [
+      { label: "Templates", to: "/templates" },
       { label: "Pricing", to: "/pricing" },
       { label: "Download", scroll: "download" },
     ],
@@ -2141,8 +2161,7 @@ const GlassLanding = () => {
   const goToSignup = () => navigate("/download");
 
   // ⌘L (or Ctrl+L) summons the live LYKN overlay demo over the landing page,
-  // the same shortcut that pulls up the real Glass overlay on any screen. The
-  // corner keycaps open it on click too.
+  // the same shortcut that pulls up the real Glass overlay on any screen.
   const [demoOpen, setDemoOpen] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2234,14 +2253,13 @@ const GlassLanding = () => {
                 studio
               </h1>
               <p className="gl-hero-lede">
-                LYKN studio is your personal AI workspace. Your projects,
-                notes, and conversations live together in one place, and an
-                AI that actually knows you works across all of them.
+                LYKN studio is the only AI workspace you need. Everything
+                you make, save, and come back to lives here.
               </p>
               <p className="gl-hero-lede">
-                Summon it on any screen with a shortcut: draft a report, build
-                a dashboard, manage your tasks, or just ask, without ever
-                switching apps.
+                Write, research, create, and browse the web without jumping
+                between apps. Your projects and files stay open beside the
+                work, so you never leave what you&apos;re doing.
               </p>
               <div className="gl-hero-ctas">
                 <button
@@ -2266,7 +2284,6 @@ const GlassLanding = () => {
       </main>
 
       <SiteFooter />
-      <KeycapCTA onTrigger={() => setDemoOpen((o) => !o)} />
       <GlassDemoOverlay
         open={demoOpen}
         onClose={() => setDemoOpen(false)}
