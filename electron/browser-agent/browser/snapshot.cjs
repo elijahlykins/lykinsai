@@ -31,6 +31,15 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
       checked: item.checked === true,
       href: item.href ? String(item.href).slice(0, 200) : "",
       inView: item.inView !== false,
+      // State the model has to know or it wastes rounds: clicking a disabled
+      // control looks like a failed click, and not knowing a dialog is open
+      // means not knowing why the page underneath ignores everything.
+      disabled: item.disabled === true,
+      inDialog: item.inDialog === true,
+      scrollable: item.scrollable === true,
+      // Elements inside an embedded editor's iframe — the model should know
+      // it is working in a nested document.
+      frameHost: item.frameHost ? String(item.frameHost).slice(0, 60) : "",
       raw: item,
     };
     elements.push(el);
@@ -87,13 +96,29 @@ function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 500
   }
   lines.push("");
   lines.push("INTERACTIVE ELEMENTS");
-  const inView = snapshot.elements.filter((e) => e.inView);
-  const offView = snapshot.elements.filter((e) => !e.inView);
-  const chosen = [...inView, ...offView].slice(0, maxElements);
+  // A modal changes what every other element means — say so before listing.
+  if (snapshot.elements.some((e) => e.inDialog)) {
+    lines.push("(A dialog is open. Elements marked [dialog] belong to it; the rest are behind it.)");
+  }
+  const embeddedHosts = [
+    ...new Set(snapshot.elements.map((e) => e.frameHost).filter(Boolean)),
+  ];
+  if (embeddedHosts.length) {
+    lines.push(
+      `(Elements marked [embedded: host] live inside an iframe on this page — ` +
+        `usually the real editor. They are interacted with exactly like any other element. ` +
+        `Embedded documents here: ${embeddedHosts.join(", ")}.)`,
+    );
+  }
+  const chosen = chooseElements(snapshot.elements, maxElements);
   for (const el of chosen) {
     let line = `[${el.ref}] ${el.role} "${el.label}"`;
     if (el.value) line += ` value="${el.value}"`;
     if (el.checked) line += " (checked)";
+    if (el.disabled) line += " (disabled — not clickable until something enables it)";
+    if (el.inDialog) line += " [dialog]";
+    if (el.scrollable) line += " (scrollable — scroll this ref to reach its contents)";
+    if (el.frameHost) line += ` [embedded: ${el.frameHost}]`;
     if (!el.inView) line += " (below fold)";
     lines.push(line);
   }
@@ -104,6 +129,35 @@ function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 500
   lines.push("VISIBLE CONTENT");
   lines.push(snapshot.visibleText.slice(0, maxTextChars) || "(no visible text)");
   return lines.join("\n");
+}
+
+/**
+ * Fit the most useful elements into the budget.
+ *
+ * In-view before below-fold, as ever. The addition is a reserved share for
+ * elements inside embedded frames: the outer page of an app like a campaign
+ * editor can easily present 90 controls of its own chrome, which would push the
+ * actual editor — the only part the task is about — off the end of the list.
+ */
+function chooseElements(elements, maxElements) {
+  const rank = (e) => (e.inView ? 0 : 1);
+  const embedded = elements.filter((e) => e.frameHost).sort((a, b) => rank(a) - rank(b));
+  const main = elements.filter((e) => !e.frameHost).sort((a, b) => rank(a) - rank(b));
+  if (!embedded.length) return main.slice(0, maxElements);
+  const embeddedQuota = Math.min(embedded.length, Math.max(30, Math.floor(maxElements / 3)));
+  const kept = [
+    ...main.slice(0, Math.max(0, maxElements - embeddedQuota)),
+    ...embedded.slice(0, embeddedQuota),
+  ];
+  // Any budget the smaller group left unused goes back to the other.
+  if (kept.length < maxElements) {
+    const seen = new Set(kept);
+    for (const el of [...main, ...embedded]) {
+      if (kept.length >= maxElements) break;
+      if (!seen.has(el)) kept.push(el);
+    }
+  }
+  return kept.sort((a, b) => rank(a) - rank(b));
 }
 
 /**

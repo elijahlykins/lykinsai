@@ -215,6 +215,13 @@ contextBridge.exposeInMainWorld("lyknOverlay", {
     ipcRenderer.on("lykn:agent-status", fn);
     return () => ipcRenderer.removeListener("lykn:agent-status", fn);
   },
+  // Persistent "paused, waiting on you" state (sign-in wall, captcha, manual
+  // step). Survives the finished turn until the runtime clears it.
+  onAgentWaiting: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-waiting", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-waiting", fn);
+  },
   onAgentDelta: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-delta", fn);

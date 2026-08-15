@@ -95,12 +95,18 @@ function stopStatusRotation(opts) {
   }
 }
 
+function shouldKeepBuildingUnder() {
+  // Once the model is talking, only keep the spinner for build/tool work —
+  // not the generic "Thinking…" rotation under a finished (or finishing) reply.
+  return answerStillWorking && statusRotateLane === "build";
+}
+
 function applyRotatedStatus(text) {
   lastThinkingStatus = text;
   if (!currentHasText) {
     const el = currentAnswerEl && currentAnswerEl.querySelector(".thinking-text");
     if (el) el.textContent = text;
-  } else if (answerStillWorking) {
+  } else if (shouldKeepBuildingUnder()) {
     ensureBuildingUnder(text);
   }
 }
@@ -1309,6 +1315,8 @@ function setBusy(on) {
 function startTurn(question) {
   // A new question is pending — reset sources side data but keep live watch panel open.
   stopStatusRotation();
+  // A new turn supersedes any parked wait from the previous one.
+  pendingAgentWaiting = null;
   currentPageSource = null;
   resetSideForNewTurn();
   threadEl.querySelectorAll(".chat").forEach((c) => c.classList.add("collapsed"));
@@ -1536,7 +1544,7 @@ function setThinkingStatus(text) {
   if (!currentHasText) {
     const el = currentAnswerEl.querySelector(".thinking-text");
     if (el) el.textContent = lastThinkingStatus;
-  } else if (answerStillWorking) {
+  } else if (shouldKeepBuildingUnder()) {
     ensureBuildingUnder(lastThinkingStatus);
   }
   threadEl.scrollTop = threadEl.scrollHeight;
@@ -1559,8 +1567,11 @@ function updateAnswer(text) {
   if (actions) actions.hidden = !trimmed;
   // Build mode: description lands first, then the tool runs for a while with
   // no more text — put the thinking animation under the description so it's
-  // obvious LYKN is still working.
-  if (answerStillWorking) ensureBuildingUnder(lastThinkingStatus);
+  // obvious LYKN is still working. Regular chat drops the spinner as soon as
+  // the reply text is on screen so it doesn't keep looping after the model
+  // has finished saying what it was going to say.
+  if (shouldKeepBuildingUnder()) ensureBuildingUnder(lastThinkingStatus);
+  else if (statusRotateLane !== "build") stopStatusRotation();
   // Generated images / artifact iframes load async — resize once they settle,
   // or the bubble stays sized for text only and the preview gets clipped.
   const onMediaReady = () => {
@@ -1576,6 +1587,66 @@ function updateAnswer(text) {
   });
   threadEl.scrollTop = threadEl.scrollHeight;
   reportHeight();
+}
+
+/**
+ * "Paused, waiting on you" indicator. The agent parks on sign-in walls and
+ * manual steps while still watching the tab, but the turn itself finishes — so
+ * the busy spinner goes away. This row keeps the same mark drawing, under a
+ * label saying what it is waiting for, until the runtime says the wall cleared,
+ * so a parked run never looks like a done run.
+ */
+let pendingAgentWaiting = null;
+
+function clearAgentWaitingRow(answerEl) {
+  const el = answerEl || currentAnswerEl;
+  if (!el) return;
+  el.querySelectorAll(":scope > .agent-waiting-row").forEach((n) => n.remove());
+}
+
+function renderAgentWaitingRow(answerEl) {
+  const el = answerEl || currentAnswerEl;
+  if (!el) return;
+  clearAgentWaitingRow(el);
+  if (!pendingAgentWaiting) return;
+  const row = document.createElement("div");
+  row.className = "agent-waiting-row";
+  // Same mark and shimmer as the thinking state, just saying something else.
+  row.innerHTML = thinkingHTML();
+  const label = row.querySelector(".thinking-text");
+  if (label) label.textContent = pendingAgentWaiting.label;
+  if (pendingAgentWaiting.detail) {
+    const detail = document.createElement("div");
+    detail.className = "agent-waiting-detail";
+    detail.textContent = pendingAgentWaiting.detail;
+    row.appendChild(detail);
+  }
+  const actions = el.querySelector(":scope > .chat-a-actions");
+  if (actions) el.insertBefore(row, actions);
+  else el.appendChild(row);
+  reportHeight();
+}
+
+function setAgentWaiting(p) {
+  if (!p?.waiting) {
+    pendingAgentWaiting = null;
+    clearAgentWaitingRow();
+    reportHeight();
+    return;
+  }
+  const kind = String(p.kind || "");
+  const host = String(p.host || "").trim();
+  const fallback =
+    kind === "signin"
+      ? `Waiting for you to sign in${host ? ` to ${host}` : ""}`
+      : kind === "approval"
+        ? "Waiting for your go-ahead"
+        : "Waiting for you";
+  pendingAgentWaiting = {
+    label: String(p.label || "").trim() || fallback,
+    detail: String(p.detail || "").trim(),
+  };
+  renderAgentWaitingRow();
 }
 
 /** Choice buttons under an agent answer (e.g. complex software → artifact vs stop). */
@@ -3257,7 +3328,7 @@ window.lyknOverlay.onAgentDelta((p) => {
     if (looksFinal) {
       answerStillWorking = false;
       clearBuildingUnder();
-    } else if (answerStillWorking) {
+    } else if (answerStillWorking && (p?.writing || status)) {
       const n = Number(p.chars) || text.length;
       const under =
         status ||
@@ -3267,6 +3338,10 @@ window.lyknOverlay.onAgentDelta((p) => {
             : "Writing output…"
           : lastThinkingStatus || "Working…");
       ensureBuildingUnder(under);
+    } else if (answerStillWorking) {
+      // Text is on screen and nothing is still writing/working — don't
+      // leave the thinking animation looping under a finished reply.
+      clearBuildingUnder();
     }
     return;
   }
@@ -3291,6 +3366,10 @@ window.lyknOverlay.onAgentSources((p) => {
   };
   syncSidePickerState();
   if (sidePanelView === "sources" || sidePanelView === "all") renderSidePanel();
+});
+window.lyknOverlay.onAgentWaiting?.((p) => {
+  if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
+  setAgentWaiting(p);
 });
 window.lyknOverlay.onAgentDone((p) => {
   if (!agentModeArmed || (p?.agentId && p.agentId !== activeAgentId)) return;
@@ -3339,6 +3418,17 @@ window.lyknOverlay.onAgentDone((p) => {
   }
   agentStreamingText = "";
   setBusy(false);
+  // Parked runs finish the turn but keep watching — keep the pulse on screen.
+  // The done payload says so too, which covers a pause that never sent a
+  // separate waiting event: without this the spinner just stops and a run
+  // that is still waiting on the user reads as finished.
+  if (!pendingAgentWaiting && (p?.waitingSignIn || p?.waitingChoice)) {
+    setAgentWaiting({
+      waiting: true,
+      kind: p.waitingChoice ? "choice" : "signin",
+      label: p.waitingChoice ? "Waiting for your choice" : "",
+    });
+  } else if (pendingAgentWaiting) renderAgentWaitingRow();
   reportHeight();
   askEl.focus();
 });

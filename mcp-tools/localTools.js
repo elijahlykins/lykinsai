@@ -19,6 +19,10 @@ export const LOCAL_TOOL_NAMES = [
   'local_pull_file',
   'local_write_file',
   'local_run_command',
+  'local_synced_folders',
+  'local_running_apps',
+  'local_read_app',
+  'local_open_app',
 ];
 
 export const LOCAL_CHAT_TOOLS = [
@@ -119,6 +123,73 @@ export const LOCAL_CHAT_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'local_synced_folders',
+    description:
+      'List the folders the user has synced with LYKN (Sync with Mac). Every other local tool ' +
+      'can only access paths inside these folders — call this first when you are unsure what ' +
+      'you can reach, or when another local tool reports a path is not synced. Read-only; runs ' +
+      'immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_running_apps',
+    description:
+      'See which applications are currently open on the user\'s Mac and which one is frontmost ' +
+      '(what they are looking at right now). Use it when the user refers to an app they are ' +
+      'using ("the app I have open", "while I\'m in Cursor"). Read-only; runs immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_read_app',
+    description:
+      'Read what is currently showing INSIDE an app on the user\'s Mac — no screenshot needed. ' +
+      'Returns structured data when the app is scriptable (Spotify/Music: current track, artist, ' +
+      'album, playback state; Safari/Chrome-family: active tab title + URL), otherwise the app\'s ' +
+      'on-screen text read through macOS Accessibility, plus its window titles. Defaults to the ' +
+      'frontmost app. Call it whenever the user ' +
+      'asks about an app\'s content ("what song is this?", "what\'s on screen in Cursor?", ' +
+      '"what page am I on?"). Read-only; runs immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        app: {
+          type: 'string',
+        description:
+          'App name, e.g. "Spotify" or "Cursor". Omit to read the frontmost app.',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_open_app',
+    description:
+      'Open a Mac application as a normal window — the same as clicking its icon in the ' +
+      'LYKN dock. The app launches (or comes to the front if already running). Use it when ' +
+      'the user asks to open, launch, or pull up an app ("open Spotify", "pull up Safari"). ' +
+      'Matches installed apps by name; runs immediately without asking permission. After ' +
+      'opening, use local_read_app to see what the app is showing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        app: {
+          type: 'string',
+          description: 'Name of the app to open, e.g. "Spotify", "Safari", "Notes".',
+        },
+      },
+      required: ['app'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export const LOCAL_CHAT_TOOLS_BY_NAME = Object.freeze(
@@ -144,6 +215,18 @@ export function looksLikeLocalSystemAsk(text) {
   }
   // Explicit "on my computer/mac/machine/disk" framing.
   if (/\b(on|from|in)\s+(my\s+)?(computer|mac|macbook|machine|laptop|desktop|downloads|hard\s*drive|disk|filesystem|file system)\b/.test(t)) {
+    return true;
+  }
+  // App-content asks ("what song is this", "what's playing", "what's open in
+  // Cursor") — answered by local_read_app / local_running_apps.
+  if (/\b(what('| i)?s|whats)\s+(playing|open|on( the| my)? screen)\b/.test(t)) return true;
+  if (/\b(current|this|that) (song|track|tab|app|window)\b/.test(t)) return true;
+  if (/\b(now playing|what song|what track|which app)\b/.test(t)) return true;
+  // App-launch asks ("open Spotify", "pull up Safari") — answered by
+  // local_open_app. Require the word app/application or a well-known app name
+  // so generic "open"s ("open an account") don't trip it.
+  if (/\b(open|launch|start|pull up|bring up)\b.*\b(app|application)\b/.test(t)) return true;
+  if (/\b(open|launch|start|pull up|bring up|switch to)\s+(the\s+)?(spotify|safari|chrome|firefox|arc|finder|notes|music|messages|imessage|mail|calendar|terminal|cursor|slack|discord|figma|photoshop|xcode|vs ?code|facetime|photos|reminders|preview|pages|numbers|keynote|obsidian|notion|zoom|whatsapp|telegram)\b/.test(t)) {
     return true;
   }
   // Terminal / shell commands.

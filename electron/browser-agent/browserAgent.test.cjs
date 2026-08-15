@@ -679,7 +679,10 @@ test("email: sendPolicy 'ask' pauses for review even when the ask says send", as
   assert.equal(result.status, "waiting_for_user", `expected review pause, got ${result.status}: ${result.answer}`);
   assert.equal(result.needsApproval, true);
   assert.equal(fake.sendClicks, 0, "Send was never clicked before user review");
-  assert.match(result.answer, /look it over/i);
+  // The pause is presented as a yes/no question the user answers inline, not as
+  // an instruction to go inspect the browser and reply with a keyword.
+  assert.match(result.answer, /want me to/i);
+  assert.match(result.answer, /\?$/, "it should read as a question");
 });
 
 test("email: revision edits the draft in place instead of retyping it", async () => {

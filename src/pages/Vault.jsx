@@ -6929,7 +6929,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                         <ChevronDown className={`w-3 h-3 transition-transform ${showVaultViewDropdown ? "rotate-180" : ""}`} />
                       </button>
                       {showVaultViewDropdown && (
-                        <div className="absolute top-full left-0 mt-1 w-44 rounded-xl border border-black/10 dark:border-white/10 bg-panel backdrop-blur-md shadow-md z-[400] py-1">
+                        <div className="lg-menu absolute top-full left-0 mt-1 w-44 z-[400] py-1">
                           {VAULT_VIEW_OPTIONS.map((v) => {
                             const Icon = v.icon;
                             const active = vaultView === v.id;
@@ -6979,7 +6979,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                     </button>
                   )}
                   {showEmbeddedTagDropdown && (
-                    <div className="absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-panel backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide">
+                    <div className="lg-menu absolute top-full left-0 mt-1 w-52 max-h-56 overflow-y-auto z-[400] py-1 scrollbar-hide">
                       {(() => {
                         const untaggedActive = selectedFilterTags.includes("__untagged__");
                         return (
@@ -7104,7 +7104,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                         <ChevronDown className={`w-3 h-3 transition-transform ${showVaultViewDropdown ? "rotate-180" : ""}`} />
                       </button>
                       {showVaultViewDropdown && (
-                        <div className={`absolute top-full mt-1 w-44 max-w-[calc(100vw-1.5rem)] rounded-xl border border-black/10 dark:border-white/10 bg-panel backdrop-blur-md shadow-md z-[400] py-1 ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
+                        <div className={`lg-menu absolute top-full mt-1 w-44 max-w-[calc(100vw-1.5rem)] z-[400] py-1 ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
                           {VAULT_VIEW_OPTIONS.map((v) => {
                             const Icon = v.icon;
                             const active = vaultView === v.id;
@@ -7156,7 +7156,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                       )}
                     </div>
                     {showEmbeddedTagDropdown && (
-                      <div className={`absolute top-full mt-1 w-56 md:w-64 max-w-[calc(100vw-1.5rem)] max-h-72 overflow-y-auto rounded-xl border border-black/10 dark:border-white/10 bg-panel backdrop-blur-md shadow-md z-[400] py-1 scrollbar-hide ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
+                      <div className={`lg-menu absolute top-full mt-1 w-56 md:w-64 max-w-[calc(100vw-1.5rem)] max-h-72 overflow-y-auto z-[400] py-1 scrollbar-hide ${isWakePreview ? "left-0" : "left-0 md:left-auto md:right-0"}`}>
                         {(() => {
                           const untaggedActive = selectedFilterTags.includes("__untagged__");
                           return (
@@ -7753,7 +7753,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
             <div
               ref={cardMenuRef}
               data-vault-popover=""
-              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-panel shadow-lg text-black/80 dark:text-white/90 p-1.5 flex flex-col overflow-hidden overscroll-contain"
+              className="lg-menu p-1.5 flex flex-col overflow-hidden overscroll-contain"
               style={{
                 position: previewRoot ? "absolute" : "fixed",
                 width: menuW,
@@ -8118,7 +8118,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
             <div
               ref={tagPickerRef}
               data-vault-popover=""
-              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.08] bg-panel shadow-lg text-black/80 dark:text-white/90 p-1.5 overflow-hidden overscroll-contain"
+              className="lg-menu p-1.5 overflow-hidden overscroll-contain"
               style={{ position: "fixed", width: menuW, left, top, zIndex: previewCard ? 10050 : 10000 }}
               onMouseDown={(e) => e.stopPropagation()}
               onWheel={trapPopoverWheel}
@@ -8730,7 +8730,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                           <div
                             data-vault-popover=""
                             role="listbox"
-                            className="absolute left-0 right-0 top-full mt-1.5 z-30 max-h-52 overflow-y-auto scrollbar-hide rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-white dark:bg-[#2c2c2e] shadow-[0_12px_36px_rgba(0,0,0,0.18)] p-1.5"
+                            className="lg-menu absolute left-0 right-0 top-full mt-1.5 z-30 max-h-52 overflow-y-auto scrollbar-hide p-1.5"
                             onMouseDown={(e) => e.stopPropagation()}
                             onClick={(e) => e.stopPropagation()}
                           >
@@ -9106,7 +9106,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
             <div
               ref={previewShareMenuRef}
               data-vault-popover=""
-              className="rounded-2xl border border-black/[0.08] dark:border-white/[0.1] bg-white dark:bg-[#2c2c2e] shadow-[0_12px_40px_rgba(0,0,0,0.22)] p-1.5 flex flex-col min-w-[11rem]"
+              className="lg-menu p-1.5 flex flex-col min-w-[11rem]"
               style={{ position: "fixed", width: menuW, zIndex: 10060, ...style }}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}

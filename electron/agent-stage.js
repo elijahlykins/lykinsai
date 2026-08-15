@@ -30,6 +30,9 @@ let urlSuggestItems = [];
 let urlSuggestIndex = -1;
 let renderedTabIds = new Set();
 let pendingNewTabAnimation = false;
+// Docked inside the Studio window (vs. the standalone stage window): the tab
+// strip stands in for the floating Browser window's title bar.
+let docked = false;
 
 const COMMON_SITES = [
   { name: "Google", url: "https://www.google.com/" },
@@ -622,6 +625,10 @@ function applyState(p) {
     recents: Array.isArray(p.recents) ? p.recents : state.recents,
   };
   if (typeof p.url === "string") urlEl.value = p.url;
+  // Only the copy docked in the Studio is told so, and only it draws a title
+  // bar of its own — the standalone stage window already has one.
+  docked = !!p.docked;
+  document.documentElement.classList.toggle("docked", docked);
   applyTheme(state.incognito);
   renderTabs();
   renderFavs();
@@ -712,6 +719,58 @@ tabsEl.addEventListener("click", (e) => {
   const id = tab.getAttribute("data-id");
   if (id) void window.lyknAgentStage.selectTab(id);
 });
+
+/* ── Window controls (docked only) ───────────────────────────────────────
+   Docked in the Studio, this strip is the floating Browser window's title
+   bar. That window is React, painted below this native view, so its traffic
+   lights and its drag are wired up here and sent back over IPC. */
+const tabRowEl = document.getElementById("tabrow");
+const sendWindow = (payload) => window.lyknAgentStage.windowControl?.(payload);
+
+document
+  .getElementById("win-close")
+  ?.addEventListener("click", () => sendWindow({ action: "close" }));
+document
+  .getElementById("win-min")
+  ?.addEventListener("click", () => sendWindow({ action: "minimize" }));
+document
+  .getElementById("win-zoom")
+  ?.addEventListener("click", () => sendWindow({ action: "zoom" }));
+
+if (tabRowEl) {
+  // Empty strip only — never off a tab, the + button or a traffic light.
+  const grabbable = (e) =>
+    docked && e.button === 0 && !e.target.closest(".tab, .tab-new, #winbtns");
+  let drag = null;
+  tabRowEl.addEventListener("pointerdown", (e) => {
+    if (!grabbable(e)) return;
+    // Screen coordinates: the window slides out from under the pointer as it
+    // follows, and view-relative ones would chase their own tail.
+    drag = { x: e.screenX, y: e.screenY };
+    try {
+      tabRowEl.setPointerCapture(e.pointerId);
+    } catch (_) {}
+    sendWindow({ action: "drag-start" });
+  });
+  tabRowEl.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    sendWindow({ action: "drag-move", dx: e.screenX - drag.x, dy: e.screenY - drag.y });
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    drag = null;
+    sendWindow({ action: "drag-end" });
+  };
+  tabRowEl.addEventListener("pointerup", endDrag);
+  tabRowEl.addEventListener("pointercancel", endDrag);
+  // Let go if the release lands anywhere else — a fast drag can outrun the
+  // strip, and a drag left hanging would keep the window on the pointer.
+  window.addEventListener("pointerup", endDrag);
+  window.addEventListener("blur", endDrag);
+  tabRowEl.addEventListener("dblclick", (e) => {
+    if (grabbable(e)) sendWindow({ action: "zoom" });
+  });
+}
 
 if (favsScrollEl) {
   favsScrollEl.addEventListener("click", (e) => {
@@ -861,7 +920,7 @@ if (syncBtn && syncMenu) {
 function reportChrome() {
   const favs = document.getElementById("favs");
   const h = Math.ceil(
-    (document.getElementById("tabs")?.offsetHeight || 0) +
+    (document.getElementById("tabrow")?.offsetHeight || 0) +
       (document.getElementById("chrome")?.offsetHeight || 0) +
       (favs && !favs.hidden ? favs.offsetHeight : 0),
   );

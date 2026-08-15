@@ -175,6 +175,22 @@
         padding-top: 2px;
       }
       .chat-a-actions[hidden] { display: none !important; }
+      /* Parked-on-you indicator: stays on screen after the turn ends so it is
+         obvious the run is paused and still watching, not finished. Carries the
+         same drawing LYKN mark as the thinking state — a pause is the agent
+         alive and holding the task, not an alert to acknowledge. */
+      .agent-waiting-row {
+        margin-top: 8px;
+        -webkit-app-region: no-drag;
+      }
+      .agent-waiting-row[hidden] { display: none !important; }
+      .agent-waiting-detail {
+        /* Aligns under the label: 24px mark + the 12px .thinking gap. */
+        margin: 2px 0 0 36px;
+        font-size: 12.5px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.62);
+      }
       .agent-choice-row {
         display: flex;
         flex-wrap: wrap;

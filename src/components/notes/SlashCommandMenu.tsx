@@ -145,7 +145,7 @@ const SlashCommandList = forwardRef<SlashCommandListRef, SlashCommandListProps>(
     return (
       <div
         ref={containerRef}
-        className="z-[200] w-64 max-h-72 overflow-y-auto rounded-xl border border-black/8 bg-white/80 backdrop-blur-md shadow-lg p-1.5"
+        className="lg-menu z-[200] w-64 max-h-72 overflow-y-auto p-1.5"
       >
         {items.map((item, index) => {
           const Icon = item.icon;

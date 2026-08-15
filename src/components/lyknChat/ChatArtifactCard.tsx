@@ -3,7 +3,7 @@ import { ChevronDown, Download, ExternalLink, LayoutPanelTop, Loader2, Maximize2
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
-import { safeAttachmentUrl, safeHtmlPreviewUrl } from "@/lib/safeExternalUrl";
+import { safeAttachmentUrl, safeHtmlPreviewUrl, preferInlineHtmlPreview } from "@/lib/safeExternalUrl";
 import { openArtifactInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
 import {
   downloadArtifactToComputer,
@@ -73,7 +73,7 @@ function ArtifactDownloads({ artifact }: { artifact: ChatArtifact }) {
         <ChevronDown className="h-3 w-3 opacity-60" />
       </button>
       {open ? (
-        <div className="absolute right-0 top-full z-20 mt-1 min-w-[11rem] overflow-hidden rounded-xl border border-black/10 bg-panel py-1 shadow-lg dark:border-white/12">
+        <div className="lg-menu absolute right-0 top-full z-20 mt-1 min-w-[11rem] overflow-hidden py-1">
           {options.map((d) => (
             <button
               key={d.id}
@@ -98,11 +98,19 @@ function ArtifactDownloads({ artifact }: { artifact: ChatArtifact }) {
  * Uses the same LYKN outline spinner as the thinking indicator (full size,
  * matching Research mode) and cycles descriptive build phrases.
  */
-export function ArtifactBuildingPlaceholder({ className = "" }: { className?: string }) {
-  const status = useThinkingStatus(true, "Building…");
+export function ArtifactBuildingPlaceholder({
+  className = "",
+  status: statusProp,
+}: {
+  className?: string;
+  /** Live build narration ("Writing the code… (12k)"). Falls back to a cycling "Building…" lane. */
+  status?: string;
+}) {
+  const fallback = useThinkingStatus(true, "Building…");
+  const status = (statusProp && statusProp.trim()) || fallback;
   return (
     <div
-      className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm px-4 py-3 shadow-sm ${className}`}
+      className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm px-4 py-3 shadow-none ${className}`}
     >
       <ThinkingIndicator status={status || "Designing the build…"} />
     </div>
@@ -112,7 +120,7 @@ export function ArtifactBuildingPlaceholder({ className = "" }: { className?: st
 export type ChatArtifactCardProps = {
   artifact: ChatArtifact;
   className?: string;
-  /** Open this artifact in the side pullout panel (Claude-style). */
+  /** Open this artifact in the floating preview popup. */
   onOpen?: () => void;
 };
 
@@ -136,6 +144,9 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
 
   const openUrl = safeAttachmentUrl(artifact.previewUrl || artifact.downloadUrl);
   const htmlPreview = artifact.previewUrl ? safeHtmlPreviewUrl(artifact.previewUrl) : null;
+  const useSrcDoc =
+    Boolean(artifact.srcDoc) &&
+    (!htmlPreview || preferInlineHtmlPreview(artifact.previewUrl));
   const previewHeight = expanded ? "min(72vh, 640px)" : "min(360px, 52vh)";
 
   const badge = useMemo(() => {
@@ -148,7 +159,7 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
   if (artifact.kind === "download") {
     return (
       <div
-        className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm overflow-hidden shadow-sm ${className}`}
+        className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm overflow-hidden shadow-none ${className}`}
       >
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-black/6 dark:border-white/8">
           <div className="min-w-0">
@@ -165,7 +176,7 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
 
   return (
     <div
-      className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm overflow-hidden shadow-sm ${className}`}
+      className={`rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] backdrop-blur-sm overflow-hidden shadow-none ${className}`}
     >
       <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-black/6 dark:border-white/8">
         <button
@@ -173,7 +184,7 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
           onClick={onOpen}
           disabled={!onOpen}
           className="flex items-center gap-2 min-w-0 text-left enabled:hover:opacity-80 transition-opacity"
-          title={onOpen ? "Open in panel" : undefined}
+          title={onOpen ? "Open preview" : undefined}
         >
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-black/80 text-white dark:bg-white/15 dark:text-white">
             <LayoutPanelTop className="h-3.5 w-3.5" />
@@ -189,7 +200,7 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
             type="button"
             onClick={onOpen}
             className="inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
-            title="Open in LYKN browser"
+            title="Open preview"
           >
             <LayoutPanelTop className="h-3.5 w-3.5" />
             Open
@@ -203,13 +214,12 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
           >
             {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
           </button>
-          {openUrl ? (
+          {openUrl && !onOpen ? (
             <a
               href={openUrl}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => {
-                // Inside the Studio: open in its docked browser, not the OS browser.
                 if (openArtifactInStudioBrowser(artifact)) e.preventDefault();
               }}
               className="inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
@@ -230,30 +240,27 @@ export default function ChatArtifactCard({ artifact, className = "", onOpen }: C
             type="button"
             onClick={onOpen}
             className="absolute inset-0 z-10 cursor-pointer bg-transparent"
-            title="Open in LYKN browser"
-            aria-label={`Open ${artifact.title} in LYKN browser`}
+            title="Open preview"
+            aria-label={`Open ${artifact.title}`}
           />
         ) : null}
         {artifact.kind === "html" ? (
-          // Prefer the cross-origin previewUrl over an inline srcDoc: srcdoc
-          // frames inherit the parent CSP (prod `script-src 'self'`), which
-          // blocks the deck's inline navigation script and leaves the viewport
-          // blank. A signed cross-origin URL has no such policy. srcDoc is the
-          // offline fallback only.
-          htmlPreview ? (
-            <iframe
-              title={artifact.title}
-              src={htmlPreview.url}
-              className="w-full h-full border-0 bg-white"
-              sandbox={htmlPreview.sandbox}
-              referrerPolicy="no-referrer"
-            />
-          ) : artifact.srcDoc ? (
+          // Prod: hosted preview URL (parent CSP blocks srcDoc scripts).
+          // Local: srcDoc — file-proxy iframes from 127.0.0.1 were blank.
+          useSrcDoc ? (
             <iframe
               title={artifact.title}
               srcDoc={artifact.srcDoc}
               className="w-full h-full border-0 bg-white"
               sandbox={IFRAME_SANDBOX_SRCDOC}
+              referrerPolicy="no-referrer"
+            />
+          ) : htmlPreview ? (
+            <iframe
+              title={artifact.title}
+              src={htmlPreview.url}
+              className="w-full h-full border-0 bg-white"
+              sandbox={htmlPreview.sandbox}
               referrerPolicy="no-referrer"
             />
           ) : null

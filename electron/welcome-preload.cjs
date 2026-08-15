@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld("lyknWelcome", {
   /** Sign an existing account in, then resume the walkthrough. */
   signIn: (email, password) =>
     ipcRenderer.invoke("lykn:welcome-signin", { email: String(email || ""), password: String(password || "") }),
+  /** "Continue with Google": the OAuth round-trip runs in the system browser. */
+  signInWithGoogle: () => ipcRenderer.invoke("lykn:welcome-google"),
+  /** Fired when the Google round-trip lands a session in the app. */
+  onGoogleSignedIn: (callback) => ipcRenderer.on("lykn:welcome-google-signed-in", () => callback()),
   /** Confirm the emailed account verification code. */
   verifyCode: (email, code) =>
     ipcRenderer.invoke("lykn:welcome-verify", { email: String(email || ""), code: String(code || "") }),
@@ -45,6 +49,38 @@ contextBridge.exposeInMainWorld("lyknWelcome", {
    * open tabs, and recent browsing context. macOS owns any credential prompt.
    */
   syncBrowser: (options) => ipcRenderer.invoke("lykn:chrome-sync-run", options || {}),
+  /**
+   * Mac sync stage: open the native folder picker for extra synced folders.
+   * Resolves { ok, folders?: string[] }.
+   */
+  pickSyncFolder: () => ipcRenderer.invoke("lykn:mac-sync-pick-folder"),
+  /**
+   * Mac sync stage "Next": persist the synced-folders allowlist and turn
+   * Local Mode on so LYKN AI can read what the user picked.
+   * @param {{ syncAll?: boolean, folders?: string[] }} payload
+   */
+  setMacSync: (payload) => ipcRenderer.invoke("lykn:welcome-macsync", payload),
+  /**
+   * Background stage: small preview of the user's current macOS wallpaper.
+   * Resolves { ok, dataUrl? }.
+   */
+  wallpaperPreview: () => ipcRenderer.invoke("lykn:background-wallpaper-preview"),
+  /**
+   * Background stage: native image picker.
+   * Resolves { ok, path?, dataUrl? } (dataUrl is a small preview).
+   */
+  pickBackgroundImage: () => ipcRenderer.invoke("lykn:background-pick-file"),
+  /**
+   * Background stage "Next": persist the chosen Studio background.
+   * @param {{ source: "wallpaper" | "file", path?: string }} payload
+   */
+  setBackground: ({ source, path } = {}) =>
+    ipcRenderer.invoke("lykn:background-set", { source, path }),
+  /**
+   * Widgets stage "Next": which widgets sit on the Home desktop.
+   * @param {Record<string, boolean>} widgets e.g. { calendar: true, todos: false }
+   */
+  setHomeWidgets: (widgets) => ipcRenderer.invoke("lykn:welcome-widgets", widgets),
   /**
    * Apps stage "Next": the apps the user works with, so LYKN can tailor
    * itself to their workflow.

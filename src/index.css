@@ -35,8 +35,14 @@ html {
     /* App background (customizable) */
     --app-background: #ececeb;
 
-    /* Layout density multiplier (set via Settings; default = comfortable) */
+    /* Layout density multiplier */
     --layout-density: 1;
+
+    /* What `text-black` / `text-white` resolve to (tailwind.config.js). Plain
+       black and white app-wide; chat surfaces re-point them at the ink picked
+       in Settings › Appearance › Chat text. */
+    --lykn-ink-on-light: 0 0% 0%;
+    --lykn-ink-on-dark: 0 0% 100%;
 
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
@@ -178,6 +184,8 @@ html {
   body {
     @apply text-foreground;
     background-color: var(--app-background);
+    /* Settings › Appearance › Typeface. */
+    font-family: var(--lykn-font-body, 'Inter', ui-sans-serif, system-ui, sans-serif);
     min-height: 100vh;
   }
 }
@@ -312,51 +320,39 @@ html.lykn-studio-mode.dark {
 }
 
 /*
-  Float menus / hamburgers / dialogs in Glass mode.
-  Heavier tint + stronger blur so the background softens without the menu
-  reading as empty glass. Do NOT filter-blur `#root` (that hid the Studio).
+  Static panel surfaces (sidebars, cards, rails) in Glass mode. Floating
+  surfaces are NOT listed here — menus, popovers and dialogs all resolve
+  through the shared liquid-glass layer further down this file, which is what
+  keeps them matching the settings window. Do NOT filter-blur `#root` (that
+  hid the Studio).
 */
 html.lykn-glass-embed.dark .lykn-panel,
 html.lykn-studio-mode.dark .lykn-panel,
 html.lykn-glass-embed.dark .bg-panel,
 html.lykn-studio-mode.dark .bg-panel,
-html.lykn-glass-embed.dark .lykn-chat-bar-menu,
-html.lykn-studio-mode.dark .lykn-chat-bar-menu,
 html.lykn-glass-embed.dark [class*="bg-popover"],
-html.lykn-studio-mode.dark [class*="bg-popover"],
-html.lykn-glass-embed.dark [data-radix-popper-content-wrapper] > div,
-html.lykn-studio-mode.dark [data-radix-popper-content-wrapper] > div,
-html.lykn-glass-embed.dark [data-radix-menu-content],
-html.lykn-studio-mode.dark [data-radix-menu-content],
-html.lykn-glass-embed.dark [data-radix-dropdown-menu-content],
-html.lykn-studio-mode.dark [data-radix-dropdown-menu-content],
-html.lykn-glass-embed.dark [data-radix-select-content],
-html.lykn-studio-mode.dark [data-radix-select-content],
-html.lykn-glass-embed.dark [data-radix-popover-content],
-html.lykn-studio-mode.dark [data-radix-popover-content],
-html.lykn-glass-embed.dark [role="menu"],
-html.lykn-studio-mode.dark [role="menu"] {
-  background-color: rgba(14, 16, 22, 0.86) !important;
-  border-color: rgba(255, 255, 255, 0.16) !important;
-  backdrop-filter: blur(48px) saturate(1.6) !important;
-  -webkit-backdrop-filter: blur(48px) saturate(1.6) !important;
-  box-shadow:
-    0 18px 52px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+html.lykn-studio-mode.dark [class*="bg-popover"] {
+  background-color: var(--lg-menu-tint) !important;
+  border-color: var(--lg-hairline) !important;
+  backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  box-shadow: inset 0 1px 0 var(--lg-sheen) !important;
 }
 
-/* Dialogs / sheets — same denser frost. */
+/* Dialogs / sheets — thicker glass, same material. */
 html.lykn-glass-embed.dark [role="dialog"],
 html.lykn-studio-mode.dark [role="dialog"],
 html.lykn-glass-embed.dark [data-radix-dialog-content],
 html.lykn-studio-mode.dark [data-radix-dialog-content] {
-  background-color: rgba(14, 16, 22, 0.9) !important;
-  border-color: rgba(255, 255, 255, 0.16) !important;
-  backdrop-filter: blur(56px) saturate(1.6) !important;
-  -webkit-backdrop-filter: blur(56px) saturate(1.6) !important;
+  background:
+    linear-gradient(155deg, var(--lg-tint-strong) 0%, var(--lg-tint) 55%, var(--lg-tint-strong) 100%) !important;
+  border-color: var(--lg-hairline) !important;
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
   box-shadow:
-    0 24px 64px rgba(0, 0, 0, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+    var(--lg-shadow-window),
+    inset 0 1px 0 var(--lg-sheen),
+    inset 0 -1px 0 var(--lg-edge) !important;
 }
 
 /* Soft dim over Studio frost — heavy black wash kills the glass read. */
@@ -372,11 +368,15 @@ html.lykn-glass-embed:not(.dark) [role="dialog"],
 html.lykn-studio-mode:not(.dark) [role="dialog"],
 html.lykn-glass-embed:not(.dark) [data-radix-dialog-content],
 html.lykn-studio-mode:not(.dark) [data-radix-dialog-content] {
-  background-color: rgba(255, 255, 255, 0.88) !important;
-  border-color: rgba(0, 0, 0, 0.1) !important;
-  backdrop-filter: blur(28px) saturate(1.35) !important;
-  -webkit-backdrop-filter: blur(28px) saturate(1.35) !important;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.14) !important;
+  background:
+    linear-gradient(155deg, var(--lg-tint-strong) 0%, var(--lg-tint) 55%, var(--lg-tint-strong) 100%) !important;
+  border-color: var(--lg-hairline) !important;
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  box-shadow:
+    var(--lg-shadow-window),
+    inset 0 1px 0 var(--lg-sheen),
+    inset 0 -1px 0 var(--lg-edge) !important;
 }
 html.lykn-glass-embed:not(.dark) .lykn-dialog-overlay,
 html.lykn-studio-mode:not(.dark) .lykn-dialog-overlay {
@@ -385,24 +385,561 @@ html.lykn-studio-mode:not(.dark) .lykn-dialog-overlay {
   -webkit-backdrop-filter: blur(8px);
 }
 
-/* Menus that hardcode opaque dark panel colors (vault ⋮ menus, etc.). */
-html.lykn-glass-embed.dark .dark\:bg-\[\#2c2c2e\],
-html.lykn-studio-mode.dark .dark\:bg-\[\#2c2c2e\],
-html.lykn-glass-embed.dark .dark\:bg-\[\#1c1c1e\],
-html.lykn-studio-mode.dark .dark\:bg-\[\#1c1c1e\] {
-  background-color: rgba(14, 16, 22, 0.86) !important;
-  backdrop-filter: blur(48px) saturate(1.6) !important;
-  -webkit-backdrop-filter: blur(48px) saturate(1.6) !important;
+/* =========================================================
+   LIQUID GLASS SETTINGS — macOS System Settings layout (split sidebar +
+   grouped inset lists) rendered on the shared window glass, with no tint or
+   bloom of its own: the settings window must read as the same material as
+   every other floating surface. Every layer reads --lg-* so the accessibility
+   toggles (high contrast) can retune the whole pane from one place.
+   ========================================================= */
+:root {
+  /* One wash for every floating surface. The tint/tint-strong and menu-tint
+     pairs are held equal so the gradients they feed resolve flat — the app is
+     deliberately a single flat material, not a graded one. Retune the surface
+     for the whole app by editing these two values (plus the dark pair). */
+  --lg-tint: rgba(255, 255, 255, 0.7);
+  --lg-tint-strong: rgba(255, 255, 255, 0.7);
+  --lg-hairline: rgba(0, 0, 0, 0.1);
+  /* No specular sheen or grounding edge: the material is a plain wash over a
+     deep blur, so the inset highlights that used to sell "thick glass" would
+     read as a seam. High contrast reinstates the edge below. */
+  --lg-edge: transparent;
+  --lg-sheen: transparent;
+  --lg-text: rgba(0, 0, 0, 0.88);
+  --lg-text-dim: rgba(0, 0, 0, 0.46);
+  --lg-fill: rgba(255, 255, 255, 0.5);
+  --lg-fill-hover: rgba(255, 255, 255, 0.7);
+  --lg-inset: rgba(0, 0, 0, 0.06);
+  /* Flat recess for a sidebar sitting inside a glass window — a gradient here
+     reads as a second material stacked on the first. */
+  --lg-recess: rgba(255, 255, 255, 0.16);
+
+  /* Menus used to carry a denser tint than a window body. They no longer do —
+     a menu, a dialog and a tooltip are the same wash, and only radius tells
+     them apart — but the names stay so existing call sites keep resolving. */
+  --lg-menu-tint: rgba(255, 255, 255, 0.7);
+  --lg-menu-tint-strong: rgba(255, 255, 255, 0.7);
+
+  /* Geometry + depth for every floating surface, so the whole app retunes here.
+     One blur and one shadow across the roles; only radius varies, so a tooltip
+     doesn't get a window's corner. */
+  --lg-blur-tip: 40px;
+  --lg-blur-menu: 40px;
+  --lg-blur-window: 40px;
+  --lg-saturate: 1;
+  --lg-radius-tip: 10px;
+  --lg-radius-menu: 14px;
+  --lg-radius-window: 26px;
+  --lg-shadow-tip: 0 12px 40px rgba(0, 0, 0, 0.2);
+  --lg-shadow-menu: 0 12px 40px rgba(0, 0, 0, 0.2);
+  --lg-shadow-window: 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+html.dark {
+  --lg-tint: rgba(0, 0, 0, 0.4);
+  --lg-tint-strong: rgba(0, 0, 0, 0.4);
+  --lg-hairline: rgba(255, 255, 255, 0.15);
+  --lg-edge: transparent;
+  --lg-sheen: transparent;
+  --lg-text: rgba(255, 255, 255, 0.92);
+  --lg-text-dim: rgba(255, 255, 255, 0.46);
+  --lg-fill: rgba(255, 255, 255, 0.08);
+  --lg-fill-hover: rgba(255, 255, 255, 0.13);
+  --lg-inset: rgba(0, 0, 0, 0.28);
+  --lg-recess: rgba(255, 255, 255, 0.045);
+  --lg-menu-tint: rgba(0, 0, 0, 0.4);
+  --lg-menu-tint-strong: rgba(0, 0, 0, 0.4);
 }
 
-/* Neutral Studio: chat-bar menus get a soft frost; other panels stay solid. */
-html.lykn-glass-embed:not(.dark) .lykn-chat-bar-menu,
-html.lykn-studio-mode:not(.dark) .lykn-chat-bar-menu {
-  background-color: rgba(255, 255, 255, 0.88) !important;
-  border-color: rgba(0, 0, 0, 0.1) !important;
-  backdrop-filter: blur(28px) saturate(1.35) !important;
-  -webkit-backdrop-filter: blur(28px) saturate(1.35) !important;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.12) !important;
+/* =========================================================
+   CHAT TEXT COLOR — Settings › Appearance › AI chat.
+
+   The app's text is `text-black/NN dark:text-white/NN` almost everywhere, and
+   both halves resolve through --lykn-ink-on-light / --lykn-ink-on-dark (see
+   tailwind.config.js), which the base layer holds at plain black and white.
+   Re-pointing that pair inside `.lykn-chat-ink` recolors every word on a chat
+   surface — headings, markdown bodies, LYKN's replies, at the opacity each was
+   written with — and reaches nothing outside it.
+
+   applyAppearance() flips data-chat-ink to 'off' for the Default ink, so the
+   chat then keeps the theme's own black/white with no override in play.
+   ========================================================= */
+html[data-chat-ink='on'] .lykn-chat-ink {
+  --lykn-ink-on-light: var(--lykn-chat-ink);
+  --lykn-ink-on-dark: var(--lykn-chat-ink);
+  --foreground: var(--lykn-chat-ink);
+  --card-fg: var(--lykn-chat-ink);
+  --lg-text: hsl(var(--lykn-chat-ink) / 0.92);
+  --lg-text-dim: hsl(var(--lykn-chat-ink) / 0.5);
+  /* Markdown bodies carry no color of their own — they inherit. */
+  color: hsl(var(--lykn-chat-ink) / 0.9);
+}
+
+/* The user's bubble sits inside that surface but answers to its own ink, so it
+   re-declares the pair unconditionally rather than inheriting LYKN's. The two
+   halves are equal when a color was picked and fall back to the theme's own
+   black/white otherwise — which is also what makes "Default" mean default here
+   even while the reply ink is set. */
+.lykn-user-prompt-bubble {
+  --lykn-ink-on-light: var(--lykn-chat-ink-user-light, 0 0% 0%);
+  --lykn-ink-on-dark: var(--lykn-chat-ink-user-dark, 0 0% 100%);
+}
+
+html[data-chat-bubble='on'] .lykn-user-prompt-bubble {
+  background: hsl(var(--lykn-chat-bubble)) !important;
+  border-color: hsl(var(--lykn-chat-bubble) / 0.65) !important;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   THE ONE GLASS. Every surface that floats above content — menus,
+   context menus, popovers, dropdowns, dialogs, side panels, tooltips, and
+   the desktop's own bar and menus — is one material: a flat wash over a
+   deep blur, a hairline edge, and a single drop shadow. Roles differ only
+   by corner radius; everything else is shared, and all of it is tokens.
+
+   Call sites should carry `lg-menu` / `lg-window` / `lg-sheet` / `lg-tip`
+   and pass no background, blur, border or shadow utilities of their own.
+
+   Some rules further down still write the wash as a gradient between
+   --lg-tint and --lg-tint-strong. Those pairs are held equal, so they
+   resolve to this same flat fill.
+   ───────────────────────────────────────────────────────────── */
+.lg-menu,
+.lg-window,
+.lg-sheet,
+.lg-tip,
+.lg-desktop-surface {
+  background: var(--lg-menu-tint);
+  backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate));
+  border: 1px solid var(--lg-hairline);
+  box-shadow: var(--lg-shadow-menu);
+  color: var(--lg-text);
+}
+
+.lg-menu {
+  border-radius: var(--lg-radius-menu);
+}
+
+.lg-window,
+.lg-sheet {
+  background: var(--lg-tint);
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shadow-window);
+}
+.lg-window {
+  border-radius: var(--lg-radius-window);
+}
+
+/* Tooltips are the same glass at the smallest radius. */
+.lg-tip {
+  border-radius: var(--lg-radius-tip);
+  backdrop-filter: blur(var(--lg-blur-tip)) saturate(var(--lg-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-blur-tip)) saturate(var(--lg-saturate));
+  box-shadow: var(--lg-shadow-tip);
+}
+
+/* `lg-desktop-surface` is the same material with no radius of its own, for the
+   Home bar and the menus that open onto bare wallpaper, which set their own.
+
+   Anything using the glass must not be nested inside another backdrop-filtered
+   element — an ancestor that blurs its own backdrop becomes a backdrop root,
+   and a child positioned outside that ancestor's painted box has nothing left
+   to blur, so it renders as flat color over whatever is behind. */
+
+/* The dim behind a glass window. A heavy black wash flattens the blur, so this
+   stays a soft tint plus its own blur — the window then reads as a second
+   layer of glass rather than a card on a black hole. */
+.lg-scrim {
+  background-color: rgba(6, 8, 12, 0.4);
+  backdrop-filter: blur(8px) saturate(1.2);
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+}
+html:not(.dark) .lg-scrim {
+  background-color: rgba(20, 22, 28, 0.28);
+}
+
+/* Safety net for floating surfaces that still ship their own tint utilities:
+   normalise anything Radix portals out, plus the legacy chat-bar menu class, to
+   the same material. Migrated call sites resolve to identical values, so the
+   overlap is a no-op. Opt out per element with `data-glass="off"`. */
+[data-radix-popper-content-wrapper] > *:not([data-glass='off']),
+[data-radix-menu-content]:not([data-glass='off']),
+[data-radix-dropdown-menu-content]:not([data-glass='off']),
+[data-radix-select-content]:not([data-glass='off']),
+[data-radix-popover-content]:not([data-glass='off']),
+[data-radix-context-menu-content]:not([data-glass='off']),
+.lykn-chat-bar-menu:not([data-glass='off']) {
+  background:
+    linear-gradient(
+      155deg,
+      var(--lg-menu-tint-strong) 0%,
+      var(--lg-menu-tint) 55%,
+      var(--lg-menu-tint-strong) 100%
+    ) !important;
+  backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  border-color: var(--lg-hairline) !important;
+  box-shadow:
+    var(--lg-shadow-menu),
+    inset 0 1px 0 var(--lg-sheen),
+    inset 0 -1px 0 var(--lg-edge) !important;
+}
+
+/* Tooltips ride the same portal, so pull them back to the small-scale glass. */
+[data-radix-popper-content-wrapper] > .lg-tip {
+  backdrop-filter: blur(var(--lg-blur-tip)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-tip)) saturate(var(--lg-saturate)) !important;
+  box-shadow:
+    var(--lg-shadow-tip),
+    inset 0 1px 0 var(--lg-sheen) !important;
+}
+
+.lykn-settings-window {
+  padding: 0 !important;
+  gap: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: row !important;
+  /* No `position` here: the dialog primitive supplies `fixed`, and overriding
+     it knocks the window out of the centered viewport position. */
+  background:
+    linear-gradient(155deg, var(--lg-tint-strong) 0%, var(--lg-tint) 55%, var(--lg-tint-strong) 100%) !important;
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  border: 1px solid var(--lg-hairline) !important;
+  box-shadow:
+    var(--lg-shadow-window),
+    inset 0 1px 0 var(--lg-sheen),
+    inset 0 -1px 0 var(--lg-edge) !important;
+}
+
+/* Studio's blanket dialog frost would flatten the window back to a slab. */
+html.lykn-glass-embed [role="dialog"].lykn-settings-window,
+html.lykn-studio-mode [role="dialog"].lykn-settings-window,
+html.lykn-glass-embed.dark [role="dialog"].lykn-settings-window,
+html.lykn-studio-mode.dark [role="dialog"].lykn-settings-window {
+  background:
+    linear-gradient(155deg, var(--lg-tint-strong) 0%, var(--lg-tint) 55%, var(--lg-tint-strong) 100%) !important;
+  border-color: var(--lg-hairline) !important;
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate)) !important;
+}
+
+/* The sidebar is a flat recess in the same pane of glass, not a second
+   material laid over it — hence one uniform fill and a single hairline. */
+.lykn-settings-sidebar {
+  background: var(--lg-recess);
+  border-right: 1px solid var(--lg-hairline);
+}
+
+/* Hosted in a DesktopAppWindow: the frame already supplies rounding, border
+   and shadow, so the settings pane just fills it. */
+.lykn-settings-embedded {
+  position: absolute !important;
+  inset: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* The content pane is the window glass itself. */
+.lykn-settings-pane {
+  background: transparent;
+}
+
+/* Grouped inset list — a floating glass card. */
+.lykn-settings-group,
+.lg-card {
+  background: var(--lg-fill);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid var(--lg-hairline);
+  box-shadow:
+    0 8px 22px -12px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 var(--lg-sheen);
+}
+
+/* Overlay scrollbars — a chunky grey gutter breaks the glass edge. */
+.lykn-settings-scroll::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.lykn-settings-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.lykn-settings-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+.lykn-settings-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+  background-clip: content-box;
+}
+html.dark .lykn-settings-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: content-box;
+}
+html.dark .lykn-settings-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.34);
+  background-clip: content-box;
+}
+
+/* ── Sidebar nav rows ── */
+.lg-nav-item {
+  position: relative;
+  border: 1px solid transparent;
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+.lg-nav-item:hover:not([data-active='true']):not(:disabled) {
+  background: var(--lg-fill);
+  border-color: var(--lg-hairline);
+}
+.lg-nav-item[data-active='true'] {
+  background: var(--lg-fill-hover);
+  border-color: var(--lg-hairline);
+  box-shadow: inset 0 1px 0 var(--lg-sheen);
+}
+.lg-nav-icon {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+html[data-sidebar-icons='large'] .lg-nav-item {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+html[data-sidebar-icons='large'] .lg-nav-icon {
+  width: 21px;
+  height: 21px;
+}
+
+/* ── Menu rows ──
+   Highlights are the glass itself lifting, never a color: hover raises the
+   neutral fill, and a checked/open row sits one step brighter still. */
+.lg-menu-row {
+  border: 1px solid transparent;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+.lg-menu-row:hover:not(:disabled) {
+  background: var(--lg-fill);
+  border-color: var(--lg-hairline);
+}
+.lg-menu-row[data-active='true'] {
+  background: var(--lg-fill-hover);
+  border-color: var(--lg-hairline);
+  box-shadow: inset 0 1px 0 var(--lg-sheen);
+}
+
+/* ── Segmented control (Theme) ── */
+.lg-segment {
+  position: relative;
+  display: grid;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--lg-inset);
+  border: 1px solid var(--lg-hairline);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.07);
+}
+.lg-segment-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(255, 255, 255, 0.82) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow:
+    0 2px 8px -2px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+html.dark .lg-segment-thumb {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.12) 100%);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.lg-segment-btn {
+  position: relative;
+  z-index: 1;
+  padding: 5px 0;
+  font-size: 12.5px;
+  line-height: 1.2;
+  color: var(--lg-text-dim);
+  transition: color 160ms ease;
+}
+.lg-segment-btn[data-active='true'] {
+  color: var(--lg-text);
+  font-weight: 500;
+}
+
+/* ── Accent swatches ── */
+.lg-swatch {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.6),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.14),
+    0 2px 6px -2px rgba(0, 0, 0, 0.3);
+  transition: transform 160ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.lg-swatch:hover {
+  transform: scale(1.08);
+}
+.lg-swatch[data-selected='true'] {
+  transform: scale(1.04);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.6),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.14),
+    0 0 0 2.5px var(--lg-tint-strong),
+    0 0 0 4.5px hsl(var(--lykn-accent) / 0.9),
+    0 0 16px 2px hsl(var(--lykn-accent) / 0.6);
+}
+
+/* ── Slider (hue, wallpaper dim/blur, glass depth) ── */
+.lg-slider-track {
+  background: var(--lg-inset);
+  border: 1px solid var(--lg-hairline);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+.lg-slider-range {
+  background: linear-gradient(90deg, hsl(var(--lykn-accent) / 0.55), hsl(var(--lykn-accent)));
+}
+.lg-slider-thumb {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(240, 242, 246, 0.9) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow:
+    0 2px 8px -1px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  transition: box-shadow 160ms ease, transform 160ms ease;
+}
+html.dark .lg-slider-thumb {
+  background: linear-gradient(180deg, rgba(246, 247, 250, 0.95) 0%, rgba(206, 210, 220, 0.9) 100%);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+.lg-slider-thumb:hover,
+.lg-slider-thumb:focus-visible {
+  box-shadow:
+    0 2px 10px -1px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 0 0 4px hsl(var(--lykn-accent) / 0.28);
+}
+/* ── Numeric stepper ── */
+.lg-stepper {
+  background: var(--lg-fill);
+  border: 1px solid var(--lg-hairline);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.lg-stepper:focus-within {
+  border-color: hsl(var(--lykn-accent) / 0.6);
+  box-shadow: 0 0 0 3px hsl(var(--lykn-accent) / 0.2);
+}
+
+/* ── Switch: accent-tinted glass pill ── */
+.lg-switch[data-state='unchecked'] {
+  background: var(--lg-inset);
+  border-color: var(--lg-hairline);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.lg-switch[data-state='checked'] {
+  background: linear-gradient(180deg, hsl(var(--lykn-accent) / 0.92), hsl(var(--lykn-accent)));
+  border-color: hsl(var(--lykn-accent) / 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 2px 8px -3px hsl(var(--lykn-accent) / 0.8);
+}
+.lg-switch > span {
+  background: #fff !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+}
+
+/* ── "Saved to this device" pill ── */
+.lg-toast {
+  background: var(--lg-tint-strong);
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  border: 1px solid var(--lg-hairline);
+  box-shadow:
+    0 12px 28px -10px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 var(--lg-sheen);
+  animation: lg-toast-in 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+@keyframes lg-toast-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Live preview mini-window ── */
+.lg-preview {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.3) 100%);
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  border: 1px solid var(--lg-hairline);
+  box-shadow:
+    0 20px 44px -18px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 var(--lg-sheen);
+}
+html.dark .lg-preview {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.03) 100%);
+}
+
+/* ── Appearance token side effects ── */
+html[data-row-dividers='off'] .lg-card > * + *,
+html[data-row-dividers='off'] .lykn-settings-group > * + * {
+  border-top-color: transparent !important;
+}
+
+html[data-contrast='high'] {
+  --lg-hairline: rgba(0, 0, 0, 0.42);
+  --lg-edge: rgba(0, 0, 0, 0.2);
+  --border: 0 0% 58%;
+  --input: 0 0% 58%;
+}
+html[data-contrast='high'].dark {
+  --lg-hairline: rgba(255, 255, 255, 0.42);
+  --border: 0 0% 48%;
+  --input: 0 0% 48%;
+}
+
+html[data-reduce-motion='true'] *,
+html[data-reduce-motion='true'] *::before,
+html[data-reduce-motion='true'] *::after {
+  animation-duration: 1ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important;
+  transition-delay: 0ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Menus that hardcode opaque panel colors (vault ⋮ menus, etc.) — these are
+   plain positioned divs rather than Radix portals, so the shared liquid-glass
+   layer can't reach them by selector. Pull them onto the same material. */
+html.lykn-glass-embed .dark\:bg-\[\#2c2c2e\],
+html.lykn-studio-mode .dark\:bg-\[\#2c2c2e\],
+html.lykn-glass-embed .dark\:bg-\[\#1c1c1e\],
+html.lykn-studio-mode .dark\:bg-\[\#1c1c1e\] {
+  background:
+    linear-gradient(
+      155deg,
+      var(--lg-menu-tint-strong) 0%,
+      var(--lg-menu-tint) 55%,
+      var(--lg-menu-tint-strong) 100%
+    ) !important;
+  border-color: var(--lg-hairline) !important;
+  backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  -webkit-backdrop-filter: blur(var(--lg-blur-menu)) saturate(var(--lg-saturate)) !important;
+  box-shadow:
+    var(--lg-shadow-menu),
+    inset 0 1px 0 var(--lg-sheen),
+    inset 0 -1px 0 var(--lg-edge) !important;
 }
 
 /* ── Glass chat page ──
@@ -416,6 +953,113 @@ html.lykn-glass-embed.dark body.embedded-vault-mode .lykn-chat-grid-bg {
 }
 html.lykn-glass-embed:not(.dark) body.embedded-vault-mode .lykn-chat-grid-bg {
   background: var(--app-background) !important;
+}
+
+/* ── Home-desktop chat ──
+   The Studio Home tab hosts the chat surface right on the wallpaper, with
+   its own rounded pill bar as the composer. Hide the page's built-in
+   composer (and Imagine's prompt bar) while hosted there; the desktop
+   widgets stay visible behind the transparent chat page. */
+
+/* Click-through: the chat layer covers the whole desktop, but only its
+   CONTENT should take clicks — everywhere else (wallpaper, widgets, folder
+   icons, right-click menu) must stay live underneath. The host + page root
+   go pointer-events:none, then real chat UI re-enables itself below. */
+.lykn-home-chat-host,
+.lykn-home-chat-host .lykn-chat-grid-bg {
+  pointer-events: none;
+}
+/* Every direct child of the page root is real UI (pill, overlays, dialogs,
+   drop zones) — except pieces that already manage their own click-through
+   (Tailwind pointer-events-none wrappers keep their manners). */
+.lykn-home-chat-host .lykn-chat-grid-bg > :not(.pointer-events-none) {
+  pointer-events: auto;
+}
+/* …but the thread band and the empty-state stage span the full window with
+   big empty gutters. Keep the gutters click-through and re-enable only
+   their content (the centered max-w-2xl column, side rails, panels). */
+.lykn-home-chat-host .lykn-chat-grid-bg > .lykn-chat-empty-state,
+.lykn-home-chat-host .lykn-chat-grid-bg > .lykn-chat-thread-stage {
+  pointer-events: none;
+}
+.lykn-home-chat-host .lykn-chat-empty-state > *,
+.lykn-home-chat-host .lykn-chat-thread-stage > * {
+  pointer-events: auto;
+}
+
+.lykn-home-chat-host .lykn-chat-neu-chat-shell,
+/* Voice Mode moved into the desktop's rounded bar — hide the page's
+   top-right voice toggle when hosted on Home. */
+.lykn-home-chat-host .lykn-voice-toolbar {
+  display: none !important;
+}
+/* Imagine keeps its OWN prompt bar on Home (aspect ratios, reference
+   images) — the desktop's rounded bar steps aside there instead. Once
+   batches exist the page docks its bar to the bottom edge; lift it above
+   the Studio dock to the rounded bar's usual spot. */
+.lykn-home-chat-host .lykn-imagine-dock {
+  bottom: 4.25rem !important;
+}
+/* Fresh mode pages: every mode reads the same on the desktop — headline
+   comfortably above the center-screen bar, extras (chips / showcase tiles)
+   right below it. Centering-with-padding drifted with column height, so pin
+   the welcome column outright: its bottom lands just above the bar, exactly
+   like the Imagine hero. (The container ends 8.75rem above the window
+   bottom, so 50% − 2rem of it ≈ the column bottom at window-center − 2rem.) */
+.lykn-home-chat-host .lykn-chat-empty-state > div {
+  position: absolute;
+  left: 50%;
+  bottom: calc(50% - 3rem);
+  transform: translateX(-50%);
+  margin: 0;
+}
+/* Build / Research quick-start chips: pulled out of the welcome column and
+   pinned just below the bar — the same spot Imagine's showcase tiles sit.
+   Anchored off the pinned column above: its bottom edge sits ~2rem above
+   window center, so +5.25rem below it ≈ 3.25rem under the bar. */
+.lykn-home-chat-host .lykn-chat-empty-state .lykn-studio-chips {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 4rem);
+  transform: translateX(-50%);
+  margin: 0;
+  width: max-content;
+  max-width: min(90vw, 40rem);
+  justify-content: center;
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+/* Imagine's empty-page showcase collage: its own layout pins the tiles to
+   the page's bottom edge, which reads far too low under the desktop's
+   center-screen bar. Anchor them right below the bar instead. */
+.lykn-home-chat-host .lykn-imagine-showcase {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 3.25rem);
+  transform: translateX(-50%);
+  margin-bottom: 0 !important;
+}
+/* …and with the collage out of flow, hold the Imagine hero (headline +
+   its own prompt bar) so the headline keeps its approved height and the
+   bar lands at the window center — the rounded bar's usual spot. */
+.lykn-home-chat-host .lykn-imagine-hero {
+  transform: translateY(-5.5rem);
+}
+/* No page frame on Home — the chat sits straight on the wallpaper. The
+   selectors repeat the themed grid-bg rules above with the host class so
+   they win on specificity in every theme/embed combination. */
+.lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed .lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed.dark .lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed:not(.dark) .lykn-home-chat-host .lykn-chat-grid-bg,
+body.embedded-vault-mode .lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed.dark body.embedded-vault-mode .lykn-home-chat-host .lykn-chat-grid-bg,
+html.lykn-glass-embed:not(.dark) body.embedded-vault-mode .lykn-home-chat-host .lykn-chat-grid-bg {
+  background: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
 }
 
 /* The chat composer wears the LYKN Glass bar look (electron/overlay.html
@@ -469,7 +1113,8 @@ html.lykn-glass-embed.dark .lykn-chat-neu-chat-send-btn:active:not(:disabled) {
 /* Pages that paint their own opaque dark stage go transparent in the
    dark-glass Studio so the shared frost shows through. */
 html.lykn-glass-embed.dark .lykn-projects-page,
-html.lykn-glass-embed.dark .lykn-calendar-page {
+html.lykn-glass-embed.dark .lykn-calendar-page,
+html.lykn-glass-embed.dark .lykn-todos-page {
   background-color: transparent !important;
 }
 
@@ -537,23 +1182,27 @@ html.lykn-glass-embed.dark .lykn-voice-overlay {
   -webkit-backdrop-filter: blur(40px) saturate(1.4);
 }
 
-/* Artifact panel (Build mode's side preview): bg-panel is a 55%-alpha wash
-   in the glass skin, so the header banner let the chat behind bleed through.
-   Solid grey so it reads as its own opaque surface over the chat. (Neutral's
-   panels are already opaque.) */
-html.lykn-glass-embed.dark .lykn-artifact-panel,
-html.lykn-studio-mode.dark .lykn-artifact-panel {
-  background: #2a2c31 !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+/* Artifact popup: the window itself is `lg-window` glass (same as dialogs
+   and desktop chrome). Keep the preview/code body opaque so the build
+   doesn't wash over the chat — only the top bar reads as frost. */
+.lykn-artifact-panel .lykn-artifact-body {
+  background: #fff;
+}
+html.dark .lykn-artifact-panel .lykn-artifact-body {
+  background: #1c1c1e;
 }
 
 /* Sent user prompts are the one black-text element in the dark Studio: a
    bright bubble with dark ink, floating over the dark glass. (Neutral keeps
-   the standard light-theme bubble.) */
-html.lykn-glass-embed.dark .lykn-user-prompt-bubble {
+   the standard light-theme bubble.) This is the shipped look, so it steps
+   aside the moment Appearance names a bubble or user ink of its own. */
+html.lykn-glass-embed.dark:not([data-chat-bubble='on']) .lykn-user-prompt-bubble {
   background: rgba(255, 255, 255, 0.92) !important;
   border-color: rgba(255, 255, 255, 0.55) !important;
+}
+
+html.lykn-glass-embed.dark:not([data-chat-bubble='on']):not([data-chat-ink-user='on'])
+  .lykn-user-prompt-bubble {
   color: rgba(0, 0, 0, 0.9) !important;
 }
 
@@ -1733,6 +2382,17 @@ body.sidebar-collapsed .app-content:has(.model-builder-page) {
   transform-box: fill-box;
   transform-origin: center;
   animation: lyknOutlinePop 3.6s ease-in-out infinite;
+  /* Brand blue on light, the same rule the icon follows in the Home bar, the
+     dock and the AI-response pill. Dark keeps inheriting the surrounding text,
+     where the mark reads as the near-white icon instead. */
+  color: #1a4ee2;
+}
+
+/* Inherit on dark, and on the surfaces that are dark in both themes
+   (ThinkingIndicator tone="inherit"), where blue would sink into the glass. */
+html.dark .lykn-outline-spinner,
+.lykn-mark-inherit .lykn-outline-spinner {
+  color: inherit;
 }
 
 .lykn-outline-spinner path {

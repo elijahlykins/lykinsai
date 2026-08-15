@@ -340,13 +340,18 @@ async function uploadViaTus(args: {
     const upload = new Upload(file as File, {
       endpoint,
       retryDelays: [0, 1000, 3000, 5000, 10000, 20000],
+      // IMPORTANT: `authorization` must NOT appear in these static headers.
+      // tus applies them to every request, and onBeforeRequest below sets the
+      // header again — XMLHttpRequest.setRequestHeader APPENDS on repeat
+      // calls, producing "Bearer X, Bearer X", which Supabase rejects as
+      // "Invalid Compact JWS" and fails the whole upload.
       headers: {
-        authorization: `Bearer ${accessToken}`,
         "x-upsert": upsert ? "true" : "false",
         apikey: anonKey,
       },
-      // Refresh the token on each request hop so multi-hour video
-      // uploads don't die when the access token rotates.
+      // Sole writer of the authorization header — runs once per request
+      // (creation POST and every chunk PATCH), re-pulling the session so
+      // multi-hour uploads survive a token rotation mid-flight.
       onBeforeRequest: async (req: any) => {
         try {
           const { data } = await supabase.auth.getSession();
@@ -354,11 +359,11 @@ async function uploadViaTus(args: {
           if (fresh && fresh !== accessToken) {
             accessToken = fresh;
           }
-          if (req && typeof req.setHeader === "function") {
-            req.setHeader("authorization", `Bearer ${accessToken}`);
-          }
         } catch {
           /* keep prior token */
+        }
+        if (req && typeof req.setHeader === "function") {
+          req.setHeader("authorization", `Bearer ${accessToken}`);
         }
       },
       uploadDataDuringCreation: true,

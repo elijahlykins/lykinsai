@@ -92,8 +92,10 @@ const {
 const ownedBrowserAct = require("./ownedBrowserAct.cjs");
 const agentRecentVisits = require("./agentRecentVisits.cjs");
 const localSystem = require("./localSystem.cjs");
+const appDock = require("./appDock.cjs");
 const chromeSync = require("./chromeSync.cjs");
 const { createAgentRuntime } = require("./agentRuntime.cjs");
+const { decideChatRoute } = require("./chatAgentRoute.cjs");
 const {
   wrapReportAsStageHtml,
   titleFromMarkdown: titleFromStageMarkdown,
@@ -478,8 +480,20 @@ function clearDesktopAuthState() {
 // Also used in unpackaged/local shells so we never steal lykn:// from the
 // installed LYKN.app (Launch Services would relaunch Electron.app with no main).
 const AUTH_HANDOFF_PORT = Number(process.env.LYKN_DEV_AUTH_PORT || 38472);
+// A second LYKN can already own the default port — typically the installed
+// LYKN.app while a dev shell runs. Posting tokens to a port we don't own hands
+// them to the OTHER instance, which rejects them as bad_state (it never minted
+// that desktop_state), so each instance needs a port of its own.
+const AUTH_HANDOFF_PORT_CANDIDATES = [
+  AUTH_HANDOFF_PORT,
+  AUTH_HANDOFF_PORT + 10,
+  AUTH_HANDOFF_PORT + 11,
+  AUTH_HANDOFF_PORT + 12,
+];
 /** @type {import('node:http').Server | null} */
 let authHandoffServer = null;
+// 0 until listen() succeeds — mintDesktopAuthUrl only advertises a port we own.
+let authHandoffPort = 0;
 
 function authHandoffAllowedOrigin(origin) {
   const o = String(origin || "");
@@ -513,6 +527,13 @@ function deliverAuthTokensToRenderer(access_token, refresh_token) {
     // First-launch walkthrough owns the screen: hand the session to the
     // hidden window but let the walkthrough decide when to reveal it.
     flushPendingAuthTokens();
+    // Google round-trips through the system browser — tell the walkthrough
+    // the session landed so it can advance, and take the screen back.
+    if (welcomeWindow && !welcomeWindow.isDestroyed()) {
+      welcomeWindow.webContents.send("lykn:welcome-google-signed-in");
+      welcomeWindow.show();
+      welcomeWindow.focus();
+    }
   } else {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
@@ -552,10 +573,18 @@ function acceptAuthHandoffPayload(body) {
   return { ok: true };
 }
 
-function startAuthHandoffServer() {
+function startAuthHandoffServer(attempt = 0) {
   if (authHandoffServer) return;
+  const port = AUTH_HANDOFF_PORT_CANDIDATES[attempt];
+  if (!port) {
+    console.warn(
+      "[auth] every localhost handoff port is in use — Google sign-in falls back to lykn://auth",
+    );
+    return;
+  }
+  let bound = false;
   try {
-    authHandoffServer = http.createServer((req, res) => {
+    const server = http.createServer((req, res) => {
       const origin = String(req.headers.origin || "");
       const allowOrigin = authHandoffAllowedOrigin(origin);
       if (allowOrigin) {
@@ -608,22 +637,32 @@ function startAuthHandoffServer() {
         res.end(JSON.stringify(result));
       });
     });
-    authHandoffServer.on("error", (err) => {
-      console.warn("[auth] localhost handoff server error:", err?.message || err);
+    server.on("error", (err) => {
       authHandoffServer = null;
+      authHandoffPort = 0;
+      if (!bound && err?.code === "EADDRINUSE") {
+        startAuthHandoffServer(attempt + 1);
+        return;
+      }
+      console.warn("[auth] localhost handoff server error:", err?.message || err);
     });
-    authHandoffServer.listen(AUTH_HANDOFF_PORT, "127.0.0.1", () => {
-      console.log(
-        `[auth] localhost handoff listening on http://127.0.0.1:${AUTH_HANDOFF_PORT}/auth-handoff`,
-      );
+    server.listen(port, "127.0.0.1", () => {
+      bound = true;
+      authHandoffPort = port;
+      console.log(`[auth] localhost handoff listening on http://127.0.0.1:${port}/auth-handoff`);
     });
+    authHandoffServer = server;
   } catch (err) {
     console.warn("[auth] failed to start localhost handoff server:", err?.message || err);
     authHandoffServer = null;
+    authHandoffPort = 0;
   }
 }
 
 function mintDesktopAuthUrl(baseUrl) {
+  // The instance that blocked us at launch may have quit since — try again so
+  // this round-trip can use loopback instead of the lykn:// fallback.
+  if (!authHandoffPort) startAuthHandoffServer();
   const state = crypto.randomBytes(24).toString("base64url");
   // New Google round-trip — don't accept replays from a prior attempt.
   lastAcceptedAuthHandoff = null;
@@ -633,7 +672,7 @@ function mintDesktopAuthUrl(baseUrl) {
     u.searchParams.set("desktop_state", state);
     // Prefer loopback POST so /desktop-auth can auto-handoff without a click.
     // lykn://auth stays available as the Open LYKN button fallback.
-    u.searchParams.set("handoff_port", String(AUTH_HANDOFF_PORT));
+    if (authHandoffPort) u.searchParams.set("handoff_port", String(authHandoffPort));
     return u.toString();
   } catch {
     return baseUrl;
@@ -1329,14 +1368,14 @@ function createMainWindow() {
     movable: true,
     minimizable: true,
     maximizable: true,
-    // Native fullscreen everywhere — macOS animates it smoothly on its own.
     fullscreenable: true,
     // Studio opens already fullscreen so there's no expand transition at all.
-    // EXCEPT during the first-launch walkthrough: on macOS a window created
-    // fullscreen ignores show:false and boots visibly into its own Space —
-    // that leaked the booting web app behind the welcome glass. The
-    // walkthrough's handoff calls setFullScreen(true) at reveal instead.
-    fullscreen: !welcomeGateActive,
+    // On macOS that's SIMPLE fullscreen (applied at ready-to-show below):
+    // fills the screen like native fullscreen but stays on the regular
+    // desktop instead of a separate Space. Native fullscreen also ignored
+    // show:false during the walkthrough, leaking the booting web app
+    // behind the welcome glass.
+    fullscreen: !welcomeGateActive && !IS_MAC,
     acceptFirstMouse: true,
     show: false,
     webPreferences: {
@@ -1357,6 +1396,12 @@ function createMainWindow() {
     // the onboarding flow (or its close fallback) reveals the window.
     if (welcomeGateActive) return;
     if (mainWindow && !mainWindow.isDestroyed()) {
+      // Simple fullscreen before show — full screen with no separate Space.
+      if (IS_MAC) {
+        try {
+          mainWindow.setSimpleFullScreen(true);
+        } catch (_) {}
+      }
       mainWindow.show();
       mainWindow.focus();
       broadcastStudioFullscreen();
@@ -1507,11 +1552,21 @@ function createStudioWindow() {
   // First-launch walkthrough owns the screen — the web app boots in the
   // hidden window and its studio IPC must not reveal it early.
   if (welcomeGateActive) return;
+  // Re-shows come back fullscreen, matching the boot state (hide/minimize
+  // exit simple fullscreen first, so it must be re-applied here).
+  if (IS_MAC && !mainWindow.isVisible()) {
+    try {
+      if (!mainWindow.isSimpleFullScreen() && !mainWindow.isFullScreen()) {
+        mainWindow.setSimpleFullScreen(true);
+      }
+    } catch (_) {}
+  }
   mainWindow.show();
   mainWindow.focus();
 }
 
-// Studio fullscreen is plain native fullscreen on every platform.
+// Studio fullscreen: simple fullscreen on macOS (fills the screen with no
+// separate Space), plain native fullscreen elsewhere.
 function studioWindowRef() {
   if (studioWindow && !studioWindow.isDestroyed()) return studioWindow;
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
@@ -1521,6 +1576,13 @@ function studioWindowRef() {
 function studioFullscreenActive() {
   const win = studioWindowRef();
   if (!win) return false;
+  // Simple fullscreen (fills the screen without a separate macOS Space)
+  // counts as fullscreen for the studio UI.
+  try {
+    if (typeof win.isSimpleFullScreen === "function" && win.isSimpleFullScreen()) {
+      return true;
+    }
+  } catch (_) {}
   return win.isFullScreen();
 }
 
@@ -1548,6 +1610,14 @@ function showStudioWindow() {
 // minimizing a fullscreen window mid-animation gets ignored).
 function afterStudioFullscreenExit(win, then) {
   if (!win || win.isDestroyed()) return;
+  // Simple fullscreen (macOS studio default) exits instantly — no animation.
+  try {
+    if (typeof win.isSimpleFullScreen === "function" && win.isSimpleFullScreen()) {
+      win.setSimpleFullScreen(false);
+      then();
+      return;
+    }
+  } catch (_) {}
   if (!win.isFullScreen()) {
     then();
     return;
@@ -3837,6 +3907,8 @@ function wireAgentPopupWindow(childWindow, { parentWc, agentId } = {}) {
       permission === "clipboard-read";
     callback(allow);
   });
+  // OAuth runs in this popup — it needs the same Chrome-looking client hints.
+  wireAgentSessionClientHints(childWc.session);
   // If the opener navigates the popup after about:blank, re-raise it once.
   const raiseOnNavigate = () => {
     try {
@@ -3884,8 +3956,13 @@ function agentStageVisible() {
 let studioStageChromeView = null;
 let studioStageBounds = null; // DIP rect within the studio window's content
 let studioStageEmbedded = false;
-// The browser docks as an inset rounded card beside the Studio's agent rail.
-const STUDIO_DOCK_RADIUS = 24;
+// The browser docks into the body of the Studio's floating Browser window:
+// square along the top, where the window's own title bar sits, and rounded at
+// the bottom to sit concentric with the frame's corners. The renderer owns
+// that radius (it knows the frame) and reports it with the bounds; this is
+// just the fallback until the first report lands.
+const STUDIO_DOCK_RADIUS = 14;
+let studioStageRadius = STUDIO_DOCK_RADIUS;
 
 function studioStageEmbedActive() {
   return !!(studioStageEmbedded && studioWindow && !studioWindow.isDestroyed());
@@ -3934,7 +4011,10 @@ function ensureStudioStageChromeView() {
   try {
     studioStageChromeView.setBackgroundColor("#ececeb");
   } catch (_) {}
-  setViewRadius(studioStageChromeView, STUDIO_DOCK_RADIUS);
+  // The chrome is the top of the floating window — its tab strip stands in for
+  // the title bar — so it wears the frame's corner curve. The matching curve it
+  // also cuts along its bottom sits hidden behind the page view.
+  setViewRadius(studioStageChromeView, studioStageRadius);
   studioStageChromeView.webContents.loadFile(path.join(__dirname, "agent-stage.html"));
   studioStageChromeView.webContents.on("did-finish-load", () => {
     pushAgentStageState();
@@ -3944,7 +4024,7 @@ function ensureStudioStageChromeView() {
 }
 
 /** Dock (open) or undock (close) the agent browser inside the Studio window. */
-function setStudioBrowserEmbed({ open, bounds } = {}) {
+function setStudioBrowserEmbed({ open, bounds, radius } = {}) {
   if (!open) {
     if (!studioStageEmbedded) return;
     studioStageEmbedded = false;
@@ -3972,12 +4052,27 @@ function setStudioBrowserEmbed({ open, bounds } = {}) {
 
   if (!studioWindow || studioWindow.isDestroyed()) return;
   if (bounds && typeof bounds === "object") {
+    // x/y may be negative: the Browser window can be dragged past the desktop's
+    // edges, and the window clips whatever hangs off. Pinning them to 0 would
+    // slide the page back out from under its own frame.
     studioStageBounds = {
-      x: Math.max(0, Math.round(Number(bounds.x) || 0)),
-      y: Math.max(0, Math.round(Number(bounds.y) || 0)),
+      x: Math.round(Number(bounds.x) || 0),
+      y: Math.round(Number(bounds.y) || 0),
       width: Math.max(0, Math.round(Number(bounds.width) || 0)),
       height: Math.max(0, Math.round(Number(bounds.height) || 0)),
     };
+  }
+  // The window frame's radius can only reach the views from the renderer, so
+  // pick it up here and repaint any that are already docked.
+  if (Number.isFinite(Number(radius))) {
+    const next = Math.max(0, Math.round(Number(radius)));
+    if (next !== studioStageRadius) {
+      studioStageRadius = next;
+      if (studioStageEmbedded) {
+        for (const view of agentBrowserViews.values()) setViewRadius(view, next);
+        setViewRadius(studioStageChromeView, next);
+      }
+    }
   }
   if (!studioStageEmbedded) {
     studioStageEmbedded = true;
@@ -3992,7 +4087,7 @@ function setStudioBrowserEmbed({ open, bounds } = {}) {
     const chrome = ensureStudioStageChromeView();
     attachViewToWindow(studioWindow, chrome);
     for (const view of agentBrowserViews.values()) {
-      setViewRadius(view, STUDIO_DOCK_RADIUS);
+      setViewRadius(view, studioStageRadius);
       attachViewToWindow(studioWindow, view);
     }
     // Recreate tabs for any worker agents restored from disk — tabs and
@@ -4004,6 +4099,9 @@ function setStudioBrowserEmbed({ open, bounds } = {}) {
     // instead of an empty strip.
     if (!agentBrowserViews.size) openFreshStudioBrowserTab();
     pushAgentStageState();
+    // Freshly docked: take a picture as soon as the page has settled, so the
+    // close that follows has the browser as it actually looks to animate over.
+    scheduleStudioStageShot(600);
   }
   layoutAgentStageViews();
 }
@@ -4240,22 +4338,103 @@ function ensureAgentStageWindow() {
   return agentStageWindow;
 }
 
+/** Height the tab strip + toolbar occupy above the page, as the stage reports it. */
+function agentStageChromeH() {
+  return Math.max(60, Math.min(140, agentStageChromeHeight || AGENT_STAGE_CHROME_DEFAULT));
+}
+
+// ── A picture of the browser, for the window's own motion ───────────────────
+// Native views are not part of the renderer's paint, so CSS can neither scale
+// nor fade them: the Studio has to take them away while its Browser window
+// flies open or shut. That left the page blinking out of existence at the start
+// of a close and appearing whole at the end of an open — an animation with
+// nothing in it, which reads as the window simply popping in and out.
+//
+// So keep a still picture of the browser and let the frame animate that. Chrome
+// (tab strip) and page are separate views, hence two images, stacked back
+// together in the renderer at the same seam the layout uses.
+//
+// The picture is also what makes the *next* open animate: the renderer holds on
+// to the last one, so a closed browser still has itself to grow back from,
+// exactly as the user left it.
+let studioStageShotTimer = null;
+let studioStageShotAt = 0;
+// Pages change in bursts (navigate → title → favicon → load), and this runs off
+// that same signal, so it waits out the burst and never repeats too often. A
+// picture only has to be about as fresh as the last thing the user looked at.
+const STAGE_SHOT_DEBOUNCE = 1200;
+const STAGE_SHOT_MIN_GAP = 2500;
+
+async function viewShotDataUrl(view, targetWidth) {
+  const wc = view?.webContents;
+  if (!wc || wc.isDestroyed()) return "";
+  try {
+    let img = await wc.capturePage();
+    if (!img || img.isEmpty()) return "";
+    // Down to the size it will actually be drawn at: a Retina capture is four
+    // times the pixels for detail that only exists while the window is in
+    // motion, and this crosses to the renderer as a string.
+    const w = Math.round(Number(targetWidth) || 0);
+    if (w > 0 && img.getSize().width > w) img = img.resize({ width: w, quality: "good" });
+    // JPEG, not PNG: shown for a couple of hundred milliseconds, in motion,
+    // under a fade. Nobody reads text off it, and lossless would be megabytes.
+    return `data:image/jpeg;base64,${img.toJPEG(70).toString("base64")}`;
+  } catch (_) {
+    return "";
+  }
+}
+
+async function refreshStudioStageShot() {
+  if (!studioStageEmbedActive()) return;
+  const shotWidth = studioStageBounds?.width || 0;
+  const [chrome, page] = await Promise.all([
+    viewShotDataUrl(studioStageChromeView, shotWidth),
+    viewShotDataUrl(agentBrowserViews.get(agentStageActiveId), shotWidth),
+  ]);
+  // Nothing captured — keep the previous picture rather than blanking the
+  // window's animation.
+  if (!chrome && !page) return;
+  studioStageShotAt = Date.now();
+  try {
+    if (studioWindow && !studioWindow.isDestroyed()) {
+      studioWindow.webContents.send("lykn:studio-browser-shot", {
+        ok: true,
+        chrome,
+        page,
+        chromeHeight: agentStageChromeH(),
+      });
+    }
+  } catch (_) {}
+}
+
+function scheduleStudioStageShot(delay = STAGE_SHOT_DEBOUNCE) {
+  if (!studioStageEmbedActive()) return;
+  // A capture already waiting is never pushed further out: the stage can change
+  // several times a second while an agent works, and re-arming on every change
+  // would starve the picture for as long as the agent kept working.
+  if (studioStageShotTimer) return;
+  const since = Date.now() - studioStageShotAt;
+  studioStageShotTimer = setTimeout(
+    () => {
+      studioStageShotTimer = null;
+      void refreshStudioStageShot();
+    },
+    Math.max(delay, STAGE_SHOT_MIN_GAP - since),
+  );
+}
+
 function layoutAgentStageViews() {
   // Docked in the Studio window — lay everything out inside the panel rect
   // the Studio renderer reported instead of filling the stage window.
   if (studioStageEmbedActive() && studioStageBounds) {
     const b = studioStageBounds;
-    const chromeH = Math.max(
-      60,
-      Math.min(140, agentStageChromeHeight || AGENT_STAGE_CHROME_DEFAULT)
-    );
+    const chromeH = agentStageChromeH();
     const pageH = Math.max(0, b.height - chromeH);
     try {
-      // Both views wear the panel's corner radius, which cuts notches into
-      // the page view's top corners at the seam. Extending the chrome view
-      // well below the seam (hidden behind the page, which stacks on top)
-      // fills those notches with the chrome's light background instead of
-      // letting the studio frost bleed through.
+      // The page view's radius cuts notches into its own top corners at the
+      // seam. Extending the chrome view well below the seam (hidden behind the
+      // page, which stacks on top) fills those notches with the chrome's light
+      // background instead of letting the studio frost bleed through.
       studioStageChromeView?.setBounds({
         x: b.x,
         y: b.y,
@@ -4264,7 +4443,7 @@ function layoutAgentStageViews() {
         // the page (the chrome doc goes transparent outside the bars/menu).
         height: agentStageMenuOverlay
           ? b.height
-          : Math.min(chromeH + STUDIO_DOCK_RADIUS * 2, b.height),
+          : Math.min(chromeH + studioStageRadius * 2, b.height),
       });
     } catch (_) {}
     for (const [id, view] of agentBrowserViews) {
@@ -4292,7 +4471,7 @@ function layoutAgentStageViews() {
   }
   if (!agentStageWindow || agentStageWindow.isDestroyed()) return;
   const [width, height] = agentStageWindow.getContentSize();
-  const chromeH = Math.max(60, Math.min(140, agentStageChromeHeight || AGENT_STAGE_CHROME_DEFAULT));
+  const chromeH = agentStageChromeH();
   const toastPad = Math.max(0, Math.min(120, agentStageToastReserve || 0));
   const pageH = Math.max(0, height - chromeH - toastPad);
   for (const [id, view] of agentBrowserViews) {
@@ -4442,9 +4621,18 @@ function pushAgentStageState() {
   }
   if (dockAlive) {
     try {
-      studioStageChromeView.webContents.send("lykn:agent-stage-state", payload);
+      // Docked, the chrome is the floating window's title bar: it draws the
+      // traffic lights and takes the drag, which it skips when it's the
+      // standalone stage window with a real title bar of its own.
+      studioStageChromeView.webContents.send("lykn:agent-stage-state", {
+        ...payload,
+        docked: true,
+      });
     } catch (_) {}
   }
+  // Whatever just changed about the browser, the picture the Studio animates
+  // its window over is now a little out of date.
+  scheduleStudioStageShot();
 }
 
 function wireAgentBrowserViewEvents(agentId, view) {
@@ -4631,7 +4819,44 @@ function wireAgentBrowserViewEvents(agentId, view) {
       permission === "clipboard-read";
     callback(allow);
   });
+  wireAgentSessionClientHints(wc.session);
   wireAgentSessionDownloads(wc.session);
+}
+
+// Overriding app.userAgentFallback is only half the disguise: Chromium keeps
+// advertising "Electron" in the Sec-CH-UA client-hint headers, and that is what
+// providers like Google read when they refuse OAuth from embedded app browsers.
+// The visible symptom is a "Continue with Google" button that does nothing, or
+// the "This browser or app may not be secure" wall. Rewrite the brand hints on
+// the agent browser's session so it presents as plain desktop Chrome.
+const clientHintsWiredSessions = new WeakSet();
+function wireAgentSessionClientHints(sess) {
+  if (!sess || clientHintsWiredSessions.has(sess)) return;
+  const full = String(process.versions.chrome || "").trim();
+  const major = full.split(".")[0] || "";
+  if (!major) return;
+  clientHintsWiredSessions.add(sess);
+  const brands = `"Chromium";v="${major}", "Google Chrome";v="${major}", "Not?A_Brand";v="99"`;
+  const fullVersionList =
+    `"Chromium";v="${full}", "Google Chrome";v="${full}", "Not?A_Brand";v="99.0.0.0"`;
+  try {
+    // Electron allows a single onBeforeSendHeaders listener per session; the
+    // agent partition has no other, so this owns it.
+    sess.webRequest.onBeforeSendHeaders((details, callback) => {
+      const headers = { ...details.requestHeaders };
+      for (const key of Object.keys(headers)) {
+        const lower = key.toLowerCase();
+        if (!lower.startsWith("sec-ch-ua")) continue;
+        if (lower === "sec-ch-ua") headers[key] = brands;
+        else if (lower === "sec-ch-ua-full-version-list") headers[key] = fullVersionList;
+        else if (lower === "sec-ch-ua-full-version") headers[key] = `"${full}"`;
+        else if (/electron|lykn/i.test(String(headers[key] || ""))) delete headers[key];
+      }
+      callback({ requestHeaders: headers });
+    });
+  } catch (_) {
+    /* header rewriting is best-effort — sign-in still works via email/password */
+  }
 }
 
 // Real downloads in the LYKN browser: save straight into the user's Downloads
@@ -5001,7 +5226,7 @@ async function toggleAgentIncognito(agentId) {
   } catch (_) {}
   if (studioStageEmbedActive()) {
     try {
-      setViewRadius(newView, STUDIO_DOCK_RADIUS);
+      setViewRadius(newView, studioStageRadius);
     } catch (_) {}
     attachViewToWindow(studioWindow, newView);
   } else {
@@ -10372,6 +10597,14 @@ function pickArtifactUrl(result) {
 
 function registerOverlayIpc() {
   ipcMain.on("lykn:hide-overlay", () => hideOverlay());
+  // Renderer-initiated summon (Studio desktop right-click → "Open LYKN Glass").
+  // Same path as the ⌘/Ctrl+L hotkey: show the bar and focus the composer.
+  ipcMain.on("lykn:show-overlay", () => {
+    try {
+      showOverlay();
+      focusOverlayForTyping();
+    } catch (_) {}
+  });
   ipcMain.on("lykn:focus-overlay-composer", () => focusOverlayForTyping());
   ipcMain.on("lykn:agent-finished-popup-close", () => closeAgentFinishedPopup());
   ipcMain.on("lykn:agent-finished-popup-open", (_e, agentId) => {
@@ -10442,10 +10675,21 @@ function registerOverlayIpc() {
     else hideStudioWindow();
   });
   // Fullscreen toggle for the Studio window — plain native fullscreen; the
-  // enter/leave events broadcast the new state to the renderer.
+  // enter/leave events broadcast the new state to the renderer. While the
+  // window is in SIMPLE fullscreen (no separate Space), exit that mode
+  // instead — setFullScreen(false) wouldn't touch it.
   ipcMain.on("lykn:studio-fullscreen-set", (_e, { fullscreen } = {}) => {
     const win = studioWindowRef();
     if (!win) return;
+    try {
+      if (typeof win.isSimpleFullScreen === "function" && win.isSimpleFullScreen()) {
+        if (!fullscreen) {
+          win.setSimpleFullScreen(false);
+          broadcastStudioFullscreen();
+        }
+        return;
+      }
+    } catch (_) {}
     win.setFullScreen(!!fullscreen);
   });
   ipcMain.handle("lykn:studio-fullscreen-get", () => ({
@@ -11255,20 +11499,22 @@ function registerOverlayIpc() {
   });
   // Local Mode — Vault switch grants file/terminal access to LYKN agents.
   // Device-level setting; tools only ever execute here in main.
+  localSystem.configure(app.getPath("userData"));
+  const broadcastToAllWindows = (channel, payload) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        if (!win.isDestroyed()) win.webContents.send(channel, payload);
+      } catch (_) {}
+    }
+  };
   ipcMain.handle("lykn:local-mode-get", () => {
-    const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
-    return { ok: true, enabled };
+    const { enabled, syncAll, syncedFolders } = localSystem.readLocalMode(app.getPath("userData"));
+    return { ok: true, enabled, syncAll, syncedFolders };
   });
   ipcMain.handle("lykn:local-mode-set", (_e, { enabled } = {}) => {
     const next = localSystem.writeLocalMode(app.getPath("userData"), !!enabled);
     // Every window (main app, Studio, overlay) should see the flip immediately.
-    for (const win of BrowserWindow.getAllWindows()) {
-      try {
-        if (!win.isDestroyed()) {
-          win.webContents.send("lykn:local-mode-changed", { enabled: next.enabled });
-        }
-      } catch (_) {}
-    }
+    broadcastToAllWindows("lykn:local-mode-changed", { enabled: next.enabled });
     return { ok: true, enabled: next.enabled };
   });
   ipcMain.handle("lykn:local-tool-run", async (_e, { name, args, approved } = {}) => {
@@ -11276,7 +11522,121 @@ function registerOverlayIpc() {
     if (!enabled) {
       return { ok: false, error: "Local mode is off — enable it in the Vault first." };
     }
-    return localSystem.run(String(name || ""), args || {}, { approved: approved === true });
+    return localSystem.run(String(name || ""), args || {}, {
+      approved: approved === true,
+      userDataPath: app.getPath("userData"),
+    });
+  });
+
+  // --- Sync with Mac: synced-folders allowlist -----------------------------
+  ipcMain.handle("lykn:mac-sync-get", () => {
+    const cfg = localSystem.readLocalMode(app.getPath("userData"));
+    return { ok: true, enabled: cfg.enabled, syncAll: cfg.syncAll, syncedFolders: cfg.syncedFolders };
+  });
+  ipcMain.handle("lykn:mac-sync-set", (_e, { syncAll, syncedFolders } = {}) => {
+    const next = localSystem.writeMacSync(app.getPath("userData"), { syncAll, syncedFolders });
+    broadcastToAllWindows("lykn:mac-sync-changed", {
+      enabled: next.enabled,
+      syncAll: next.syncAll,
+      syncedFolders: next.syncedFolders,
+    });
+    return { ok: true, syncAll: next.syncAll, syncedFolders: next.syncedFolders };
+  });
+  ipcMain.handle("lykn:mac-sync-pick-folder", async (e) => {
+    const parent = BrowserWindow.fromWebContents(e.sender) || BrowserWindow.getFocusedWindow();
+    const res = await dialog.showOpenDialog(parent, {
+      title: "Choose folders to sync with LYKN",
+      buttonLabel: "Sync",
+      properties: ["openDirectory", "multiSelections", "createDirectory"],
+      defaultPath: app.getPath("home"),
+    });
+    if (res.canceled || !res.filePaths?.length) return { ok: false, canceled: true };
+    return { ok: true, folders: res.filePaths };
+  });
+
+  // --- Mac Files browser (renderer-facing, gated on Local Mode + allowlist) -
+  ipcMain.handle("lykn:mac-fs-list", async (_e, { path: dirPath } = {}) => {
+    const cfg = localSystem.readLocalMode(app.getPath("userData"));
+    if (!cfg.enabled) return { ok: false, error: "local_mode_off" };
+    return localSystem.run("local_list_dir", { path: dirPath }, {
+      userDataPath: app.getPath("userData"),
+    });
+  });
+  ipcMain.handle("lykn:mac-fs-open", async (_e, { path: targetPath, reveal } = {}) => {
+    const cfg = localSystem.readLocalMode(app.getPath("userData"));
+    if (!cfg.enabled) return { ok: false, error: "local_mode_off" };
+    const abs = localSystem.resolveUserPath(targetPath);
+    if (!abs || !localSystem.isAllowedPath(abs, cfg)) {
+      return { ok: false, error: "Path is not inside a synced folder" };
+    }
+    try {
+      if (reveal) {
+        shell.showItemInFolder(abs);
+        return { ok: true };
+      }
+      const err = await shell.openPath(abs);
+      return err ? { ok: false, error: err } : { ok: true };
+    } catch (err) {
+      return { ok: false, error: err?.message || "open failed" };
+    }
+  });
+  // The real, localized locations of the user's folders — Settings needs the
+  // absolute Desktop path to mirror it and to add it to the sync allowlist.
+  ipcMain.handle("lykn:mac-fs-home", () => {
+    try {
+      return {
+        ok: true,
+        home: app.getPath("home"),
+        desktop: app.getPath("desktop"),
+        documents: app.getPath("documents"),
+        downloads: app.getPath("downloads"),
+      };
+    } catch (err) {
+      return { ok: false, error: err?.message || "path lookup failed" };
+    }
+  });
+
+  // --- Mac app dock: installed apps, launch, running-state ------------------
+  ipcMain.handle("lykn:mac-apps-list", async () => {
+    try {
+      const apps = await appDock.listAppsWithIcons();
+      return { ok: true, apps };
+    } catch (err) {
+      return { ok: false, error: err?.message || "app scan failed", apps: [] };
+    }
+  });
+  ipcMain.handle("lykn:mac-app-launch", (_e, { path: bundlePath } = {}) =>
+    appDock.launchApp(bundlePath)
+  );
+  ipcMain.handle("lykn:mac-apps-running", () => appDock.getRunningApps());
+  // Studio dock subscribes while visible; polling stops when nobody listens.
+  const runningAppWatchers = new Map(); // webContents.id -> unsubscribe
+  ipcMain.on("lykn:mac-apps-watch", (e, { on } = {}) => {
+    const wc = e.sender;
+    const existing = runningAppWatchers.get(wc.id);
+    if (!on) {
+      if (existing) {
+        existing();
+        runningAppWatchers.delete(wc.id);
+      }
+      return;
+    }
+    if (existing) return;
+    const unsubscribe = appDock.subscribeRunningApps((snapshot) => {
+      try {
+        if (!wc.isDestroyed()) {
+          wc.send("lykn:mac-apps-running-changed", snapshot);
+        }
+      } catch (_) {}
+    });
+    runningAppWatchers.set(wc.id, unsubscribe);
+    wc.once("destroyed", () => {
+      const un = runningAppWatchers.get(wc.id);
+      if (un) {
+        un();
+        runningAppWatchers.delete(wc.id);
+      }
+    });
   });
   ipcMain.on("lykn:agent-stage-chrome-height", (_e, { height } = {}) => {
     const h = Math.round(Number(height) || 0);
@@ -11297,6 +11657,16 @@ function registerOverlayIpc() {
       studioStageChromeView?.setBackgroundColor(next ? "#00000000" : "#ececeb");
     } catch (_) {}
     layoutAgentStageViews();
+  });
+  // Docked browser chrome → the Studio's floating Browser window. Its tab
+  // strip carries the traffic lights and the title-bar drag, and it's a native
+  // view, so the clicks land out here rather than in the Studio's DOM.
+  ipcMain.on("lykn:studio-window-control", (_e, payload = {}) => {
+    try {
+      if (studioWindow && !studioWindow.isDestroyed()) {
+        studioWindow.webContents.send("lykn:studio-window-control", payload || {});
+      }
+    } catch (_) {}
   });
   ipcMain.on("lykn:agent-stage-set", (_e, { open } = {}) => {
     if (open) {
@@ -11448,6 +11818,22 @@ function registerOverlayIpc() {
     notifyStudioShowBrowser();
     return opened;
   });
+  // Does this prompt belong to the browser agent rather than the chat model?
+  //
+  // The chat surface cannot answer this itself. Knowing that "open up Mailchimp
+  // and build the campaign" is browser work — and that "what is Mailchimp good
+  // for?" is not — takes the whole venue table and the skill classifier, which
+  // live here in main. Without asking, the chat can only do what a chat can do:
+  // it writes the campaign into the conversation and tells the user to paste it
+  // into Mailchimp themselves, which is the exact thing they asked not to do.
+  ipcMain.handle("lykn:agent-route-check", async (_e, { text } = {}) => {
+    try {
+      return decideChatRoute(text);
+    } catch (_) {
+      return { route: "chat" };
+    }
+  });
+
   // Studio agent rail chat bar → Main orchestrator. Enables Agent Mode
   // quietly (no floating sidebar window — the rail is already showing).
   ipcMain.handle("lykn:studio-bar-send", async (_e, { text, attachments, agentId, fromSuggestion } = {}) => {
@@ -12992,7 +13378,14 @@ function showWelcomeSplash() {
         mainWindow.focus();
         // The window boots windowed while gated (fullscreen would have made
         // it visible behind the welcome glass) — go fullscreen at reveal.
-        if (!mainWindow.isFullScreen()) mainWindow.setFullScreen(true);
+        // macOS uses simple fullscreen so it stays on the regular desktop.
+        if (IS_MAC) {
+          try {
+            if (!mainWindow.isSimpleFullScreen()) mainWindow.setSimpleFullScreen(true);
+          } catch (_) {}
+        } else if (!mainWindow.isFullScreen()) {
+          mainWindow.setFullScreen(true);
+        }
         broadcastStudioFullscreen();
       };
       // Normal walkthrough handoff: the studio finished loading behind the
@@ -13152,6 +13545,16 @@ function registerWelcomeIpc() {
     }
   });
 
+  // "Continue with Google": Google blocks OAuth in embedded windows, so the
+  // round-trip runs in the system browser via /desktop-auth — the same flow
+  // the main app uses. The session comes back through the loopback handoff
+  // and deliverAuthTokensToRenderer pings the walkthrough to advance.
+  ipcMain.handle("lykn:welcome-google", () => {
+    const url = mintDesktopAuthUrl(`${APP_ORIGIN}/desktop-auth`);
+    void shell.openExternal(url);
+    return { ok: true };
+  });
+
   ipcMain.handle("lykn:welcome-resend", async (_e, { email } = {}) => {
     try {
       const response = await fetch(`${API_BASE}/api/auth/signup-resend`, {
@@ -13199,9 +13602,21 @@ function registerWelcomeIpc() {
     return [];
   });
 
+  const welcomeProfileFile = () =>
+    path.join(app.getPath("userData"), "welcome-profile.json");
+
+  const readWelcomeProfile = () => {
+    try {
+      const profile = JSON.parse(fsSync.readFileSync(welcomeProfileFile(), "utf8"));
+      return profile && typeof profile === "object" ? profile : {};
+    } catch {
+      return {};
+    }
+  };
+
   // Welcome-profile writes are merges — each stage adds what it learned.
   const mergeWelcomeProfile = (patch) => {
-    const file = path.join(app.getPath("userData"), "welcome-profile.json");
+    const file = welcomeProfileFile();
     let profile = {};
     try {
       profile = JSON.parse(fsSync.readFileSync(file, "utf8"));
@@ -13225,6 +13640,554 @@ function registerWelcomeIpc() {
   // Logins stage: the user wants saved passwords brought over too.
   ipcMain.handle("lykn:welcome-import-logins", (_e, wanted) => {
     mergeWelcomeProfile({ importLogins: !!wanted });
+    return { ok: true };
+  });
+
+  // Studio Mac dock pins — which local apps the user keeps on the dock strip.
+  ipcMain.handle("lykn:mac-dock-pins-get", () => {
+    try {
+      const file = path.join(app.getPath("userData"), "welcome-profile.json");
+      const profile = JSON.parse(fsSync.readFileSync(file, "utf8"));
+      return { ok: true, pins: Array.isArray(profile.macDockPins) ? profile.macDockPins : [] };
+    } catch {
+      return { ok: true, pins: [] };
+    }
+  });
+  ipcMain.handle("lykn:mac-dock-pins-set", (_e, { pins } = {}) => {
+    const clean = (Array.isArray(pins) ? pins : [])
+      .map((p) => String(p || ""))
+      .filter(Boolean)
+      .slice(0, 30);
+    mergeWelcomeProfile({ macDockPins: clean });
+    return { ok: true, pins: clean };
+  });
+
+  // Mac sync stage: persist the synced-folders allowlist and switch Local
+  // Mode on — this is the consent moment for LYKN reading local files.
+  ipcMain.handle("lykn:welcome-macsync", (_e, { syncAll, folders } = {}) => {
+    const userData = app.getPath("userData");
+    const cleanFolders = (Array.isArray(folders) ? folders : [])
+      .map((f) => String(f || "").trim())
+      .filter(Boolean)
+      .slice(0, 100);
+    const next = localSystem.writeMacSync(userData, {
+      syncAll: syncAll === true,
+      syncedFolders: syncAll === true ? [] : cleanFolders,
+    });
+    localSystem.writeLocalMode(userData, true);
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        if (!win.isDestroyed()) {
+          win.webContents.send("lykn:local-mode-changed", { enabled: true });
+          win.webContents.send("lykn:mac-sync-changed", {
+            enabled: true,
+            syncAll: next.syncAll,
+            syncedFolders: next.syncedFolders,
+          });
+        }
+      } catch (_) {}
+    }
+    mergeWelcomeProfile({ macSync: { syncAll: next.syncAll, folders: next.syncedFolders } });
+    return { ok: true };
+  });
+
+  // ── Studio background — synced from the Mac ───────────────────────────────
+  // The user picks any image (or their current macOS wallpaper) and it becomes
+  // the Studio backdrop. Everything is normalized to a JPEG in userData via
+  // `sips` because macOS wallpapers are usually HEIC, which Chromium can't
+  // render. Renderers get data URLs; live changes broadcast to all windows.
+  const studioBgFile = () => path.join(app.getPath("userData"), "studio-background.jpg");
+  const bgDataUrl = (file) => {
+    try {
+      const buf = fsSync.readFileSync(file);
+      return buf.length ? "data:image/jpeg;base64," + buf.toString("base64") : "";
+    } catch {
+      return "";
+    }
+  };
+  // maxPx 0 converts without resampling — sips would otherwise upscale sources
+  // that are already smaller than the target.
+  const bgConvert = (src, dest, maxPx) =>
+    new Promise((resolve) => {
+      execFile(
+        "sips",
+        [
+          "-s", "format", "jpeg",
+          "-s", "formatOptions", "85",
+          ...(maxPx ? ["--resampleHeightWidthMax", String(maxPx)] : []),
+          src,
+          "--out", dest,
+        ],
+        { timeout: 15_000 },
+        (err) => resolve(!err)
+      );
+    });
+  const runBgOsa = (script) =>
+    new Promise((resolve) => {
+      execFile("osascript", ["-e", script], { timeout: 5000 }, (err, stdout) =>
+        resolve(err ? "" : String(stdout || "").trim())
+      );
+    });
+  const currentWallpaperPath = async () => {
+    // System Events first; Finder as fallback (dynamic wallpapers sometimes
+    // only answer through one of the two).
+    const scripts = [
+      'tell application "System Events" to get picture of current desktop',
+      'tell application "Finder" to get POSIX path of (desktop picture as alias)',
+    ];
+    for (const script of scripts) {
+      const out = await runBgOsa(script);
+      if (out && fsSync.existsSync(out)) {
+        try {
+          if (fsSync.statSync(out).isFile()) return out;
+        } catch (_) {}
+      }
+    }
+    return "";
+  };
+  const broadcastBackground = (dataUrl, srcPath = "", id = "") => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        if (!win.isDestroyed()) {
+          win.webContents.send("lykn:background-changed", { dataUrl, path: srcPath, id });
+        }
+      } catch (_) {}
+    }
+  };
+  ipcMain.handle("lykn:background-get", () => {
+    // Which source produced it, so the wallpaper picker can mark its tile.
+    const profile = readWelcomeProfile();
+    return {
+      ok: true,
+      dataUrl: bgDataUrl(studioBgFile()),
+      path: profile.studioBackgroundPath || "",
+      id: profile.studioBackgroundId || "",
+    };
+  });
+
+  // ── The wallpapers macOS ships (System Settings › Wallpaper) ──────────────
+  // Apple keeps them in three places, so we read all three:
+  //   • full-size stills sitting in /System/Library/Desktop Pictures
+  //   • Solid Colors — tiny flat PNGs in a subfolder
+  //   • everything else (Big Sur, Catalina, Ventura, the hello set…), which
+  //     ships as a .madesktop stub whose only local image is a ~214px
+  //     thumbnail. Those masters live in Apple's MobileAsset catalog and are
+  //     fetched on demand, which is exactly what System Settings does when you
+  //     click one.
+  // Grid thumbnails always come from local files, so browsing needs no network.
+  const SYSTEM_WALLPAPER_ROOT = "/System/Library/Desktop Pictures";
+  const SYSTEM_THUMB_DIR = path.join(SYSTEM_WALLPAPER_ROOT, ".thumbnails");
+  const DESKTOP_ASSET_CATALOG =
+    "/System/Library/AssetsV2/com_apple_MobileAsset_DesktopPicture/com_apple_MobileAsset_DesktopPicture.xml";
+  const WALLPAPER_EXT_RE = /\.(heic|heif|jpe?g|png|tiff?)$/i;
+  const MIN_STILL_BYTES = 8 * 1024; // filters stub/preview art, not solid colors
+
+  const wallpaperLabel = (file) => file.replace(WALLPAPER_EXT_RE, "");
+  const wallpaperId = (name) =>
+    crypto.createHash("sha1").update(String(name)).digest("hex").slice(0, 16);
+  const wallpaperCacheFile = (id) =>
+    path.join(app.getPath("userData"), "wallpaper-cache", `${id}.jpg`);
+
+  /** id -> item, rebuilt by the list handler. The thumbnail and apply handlers
+   *  resolve an id through this, so the renderer never hands us a path to read
+   *  or a URL to fetch. */
+  let systemWallpapers = new Map();
+
+  const readWallpaperDir = async (dir, group, minBytes = MIN_STILL_BYTES) => {
+    let names = [];
+    try {
+      names = await fs.readdir(dir);
+    } catch {
+      return []; // folder doesn't exist on this macOS version
+    }
+    const items = [];
+    for (const name of names) {
+      if (name.startsWith(".") || !WALLPAPER_EXT_RE.test(name)) continue;
+      if (/thumbnail/i.test(name)) continue;
+      const full = path.join(dir, name);
+      try {
+        const stat = await fs.stat(full);
+        if (!stat.isFile() || stat.size < minBytes) continue;
+      } catch {
+        continue;
+      }
+      items.push({
+        name: wallpaperLabel(name),
+        group,
+        source: full,
+        thumbSource: full,
+        thumbMax: 480,
+      });
+    }
+    return items;
+  };
+
+  /* The catalog is an XML plist of flat dicts. plutil can't convert it to JSON
+   * (it holds <data> checksums), and a plist library isn't worth shipping for
+   * one file, so scan the Assets array directly. */
+  const parseAssetCatalog = (xml) => {
+    const keyed = xml.indexOf("<key>Assets</key>");
+    if (keyed < 0) return [];
+    const arrayStart = xml.indexOf("<array>", keyed);
+    const arrayEnd = xml.indexOf("</array>", arrayStart);
+    if (arrayStart < 0 || arrayEnd < 0) return [];
+    const assets = [];
+    for (const block of xml.slice(arrayStart, arrayEnd).matchAll(/<dict>([\s\S]*?)<\/dict>/g)) {
+      const fields = {};
+      const pair =
+        /<key>([^<]+)<\/key>\s*(?:<(string|integer|real|data)>([\s\S]*?)<\/\2>|<(true|false)\s*\/>)/g;
+      for (const m of block[1].matchAll(pair)) {
+        fields[m[1]] = m[4] ? m[4] === "true" : m[3].trim();
+      }
+      assets.push(fields);
+    }
+    return assets;
+  };
+
+  const readCatalogWallpapers = async () => {
+    let xml = "";
+    try {
+      xml = await fs.readFile(DESKTOP_ASSET_CATALOG, "utf8");
+    } catch {
+      return []; // no catalog: only the on-disk wallpapers are offered
+    }
+    const items = [];
+    for (const asset of parseAssetCatalog(xml)) {
+      const name = asset.DesktopPictureID || "";
+      const base = asset.__BaseURL || "";
+      const rel = asset.__RelativePath || "";
+      if (!name || !base || !rel) continue;
+      const thumbSource = path.join(SYSTEM_THUMB_DIR, `${name}.heic`);
+      items.push({
+        name,
+        group: "pictures",
+        url: `${base.replace(/\/+$/, "")}/${rel.replace(/^\/+/, "")}`,
+        sizeBytes: Number(asset._DownloadSize) || 0,
+        // Apple's SHA-1 of the zip, so a bad object can't become a wallpaper.
+        sha1:
+          asset._MeasurementAlgorithm === "SHA-1" && asset._Measurement
+            ? Buffer.from(asset._Measurement.replace(/\s+/g, ""), "base64").toString("hex")
+            : "",
+        thumbSource: fsSync.existsSync(thumbSource) ? thumbSource : "",
+      });
+    }
+    return items;
+  };
+
+  const buildSystemWallpapers = async () => {
+    // Solid colors are tiny by nature (a 128px flat PNG), hence the lower floor.
+    const [pictures, colors, remote] = await Promise.all([
+      readWallpaperDir(SYSTEM_WALLPAPER_ROOT, "pictures"),
+      readWallpaperDir(path.join(SYSTEM_WALLPAPER_ROOT, "Solid Colors"), "colors", 0),
+      readCatalogWallpapers(),
+    ]);
+
+    // Newer releases tuck a few full-size stills (e.g. Sonoma Horizon) inside
+    // the hidden .wallpapers bundle alongside the .mov versions.
+    const bundled = [];
+    const bundleRoot = path.join(SYSTEM_WALLPAPER_ROOT, ".wallpapers");
+    try {
+      for (const dir of await fs.readdir(bundleRoot)) {
+        bundled.push(
+          ...(await readWallpaperDir(path.join(bundleRoot, dir), "pictures", 512 * 1024)),
+        );
+      }
+    } catch {
+      /* no bundle on this macOS version */
+    }
+
+    // Local first: a wallpaper already on disk needs no download, and several
+    // (the iMac colors, Sonoma) appear in both places.
+    const byName = new Map();
+    for (const item of [...pictures, ...bundled, ...colors, ...remote]) {
+      if (!byName.has(item.name)) byName.set(item.name, item);
+    }
+    // Colors last, pictures alphabetical — one grid, like System Settings.
+    const ordered = [...byName.values()].sort((a, b) =>
+      a.group === b.group
+        ? a.name.localeCompare(b.name, undefined, { numeric: true })
+        : a.group === "colors"
+          ? 1
+          : -1,
+    );
+    systemWallpapers = new Map(
+      ordered.map((item) => [wallpaperId(item.name), { ...item, id: wallpaperId(item.name) }]),
+    );
+    return systemWallpapers;
+  };
+
+  const systemWallpaperById = async (id) => {
+    if (!systemWallpapers.size) await buildSystemWallpapers();
+    return systemWallpapers.get(String(id || "")) || null;
+  };
+
+  ipcMain.handle("lykn:background-system-list", async () => {
+    const map = await buildSystemWallpapers();
+    return {
+      ok: true,
+      items: [...map.values()]
+        // A wallpaper with neither a local file nor a thumbnail has nothing to
+        // show in the grid (light/dark variants of the dynamic sets).
+        .filter((item) => item.source || item.thumbSource)
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          group: item.group,
+          needsDownload: !item.source && !fsSync.existsSync(wallpaperCacheFile(item.id)),
+          sizeBytes: item.sizeBytes || 0,
+        })),
+    };
+  });
+
+  // Grid-sized preview, cached in userData: HEIC needs a sips pass before
+  // Chromium can show it, and that pass is the slow part.
+  ipcMain.handle("lykn:background-system-thumb", async (_e, id) => {
+    const item = await systemWallpaperById(id);
+    const src = item?.thumbSource || "";
+    if (!src || !fsSync.existsSync(src)) return { ok: false, error: "no_thumbnail" };
+    const cacheDir = path.join(app.getPath("userData"), "wallpaper-thumbs");
+    const dest = path.join(cacheDir, `${item.id}.jpg`);
+    if (!fsSync.existsSync(dest)) {
+      try {
+        await fs.mkdir(cacheDir, { recursive: true });
+      } catch {
+        /* the convert below will fail and the tile stays a placeholder */
+      }
+      // Apple's own preview art is already tile-sized; only full-size stills
+      // need scaling down.
+      if (!(await bgConvert(src, dest, item.thumbMax || 0))) {
+        return { ok: false, error: "convert_failed" };
+      }
+    }
+    return { ok: true, dataUrl: bgDataUrl(dest) };
+  });
+
+  // Stream Apple's asset zip to disk, hashing as it lands.
+  const downloadWallpaperAsset = async (item, dest, onProgress) => {
+    let res;
+    try {
+      res = await electronNet.fetch(item.url, { redirect: "follow" });
+    } catch {
+      return { ok: false, error: "offline" };
+    }
+    if (!res.ok || !res.body) return { ok: false, error: `http_${res.status || 0}` };
+    const total = Number(res.headers.get("content-length")) || item.sizeBytes || 0;
+    const hash = crypto.createHash("sha1");
+    const handle = await fs.open(dest, "w");
+    let received = 0;
+    let lastTick = 0;
+    try {
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        hash.update(value);
+        await handle.write(value);
+        received += value.byteLength;
+        const now = Date.now();
+        if (now - lastTick > 200) {
+          lastTick = now;
+          onProgress(received, total);
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+    if (item.sha1 && hash.digest("hex") !== item.sha1) {
+      return { ok: false, error: "checksum_mismatch" };
+    }
+    return { ok: true };
+  };
+
+  /** Unpack the asset and return its largest image — the master still sits at
+   *  AssetData/<name>.heic, but the layout is Apple's to change. */
+  const extractWallpaperImage = async (zipFile, dir) => {
+    await new Promise((resolve) => {
+      // ditto, not unzip: it's the tool that understands Apple's archives.
+      execFile("ditto", ["-x", "-k", zipFile, dir], { timeout: 120_000 }, () => resolve());
+    });
+    let best = null;
+    const walk = async (current, depth) => {
+      if (depth > 3) return;
+      let entries = [];
+      try {
+        entries = await fs.readdir(current, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const full = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full, depth + 1);
+          continue;
+        }
+        if (!WALLPAPER_EXT_RE.test(entry.name)) continue;
+        try {
+          const stat = await fs.stat(full);
+          if (!best || stat.size > best.size) best = { path: full, size: stat.size };
+        } catch {
+          /* skip unreadable entries */
+        }
+      }
+    };
+    await walk(dir, 0);
+    return best?.path || "";
+  };
+
+  ipcMain.handle("lykn:background-system-apply", async (e, id) => {
+    const item = await systemWallpaperById(id);
+    if (!item) return { ok: false, error: "unknown_wallpaper" };
+    const send = (payload) => {
+      try {
+        if (!e.sender.isDestroyed()) {
+          e.sender.send("lykn:background-progress", { id: item.id, ...payload });
+        }
+      } catch (_) {}
+    };
+    let workDir = "";
+    try {
+      if (item.source) {
+        send({ phase: "applying" });
+        if (!(await bgConvert(item.source, studioBgFile(), 2560))) {
+          send({ phase: "error" });
+          return { ok: false, error: "convert_failed" };
+        }
+      } else {
+        // Downloaded masters are converted once and kept as a ready backdrop,
+        // so picking the same wallpaper again never re-downloads 30MB.
+        const cached = wallpaperCacheFile(item.id);
+        if (!fsSync.existsSync(cached)) {
+          workDir = path.join(app.getPath("temp"), `lykn-wallpaper-${item.id}`);
+          await fs.rm(workDir, { recursive: true, force: true });
+          await fs.mkdir(workDir, { recursive: true });
+          const zip = path.join(workDir, "asset.zip");
+          send({ phase: "downloading", received: 0, total: item.sizeBytes || 0 });
+          const got = await downloadWallpaperAsset(item, zip, (received, total) =>
+            send({ phase: "downloading", received, total }),
+          );
+          if (!got.ok) {
+            send({ phase: "error" });
+            return got;
+          }
+          send({ phase: "applying" });
+          const image = await extractWallpaperImage(zip, path.join(workDir, "asset"));
+          if (!image) {
+            send({ phase: "error" });
+            return { ok: false, error: "asset_empty" };
+          }
+          await fs.mkdir(path.dirname(cached), { recursive: true });
+          if (!(await bgConvert(image, cached, 2560))) {
+            send({ phase: "error" });
+            return { ok: false, error: "convert_failed" };
+          }
+        } else {
+          send({ phase: "applying" });
+        }
+        fsSync.copyFileSync(cached, studioBgFile());
+      }
+      const dataUrl = bgDataUrl(studioBgFile());
+      mergeWelcomeProfile({
+        studioBackground: "system",
+        studioBackgroundPath: item.source || "",
+        studioBackgroundId: item.id,
+      });
+      broadcastBackground(dataUrl, item.source || "", item.id);
+      send({ phase: "done" });
+      return { ok: true, dataUrl };
+    } catch (err) {
+      send({ phase: "error" });
+      return { ok: false, error: err?.message || "apply_failed" };
+    } finally {
+      if (workDir) fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+  // Small preview of the user's current macOS wallpaper (welcome stage card).
+  ipcMain.handle("lykn:background-wallpaper-preview", async () => {
+    const src = await currentWallpaperPath();
+    if (!src) return { ok: false, error: "wallpaper_unavailable" };
+    const tmp = path.join(app.getPath("temp"), "lykn-bg-wallpaper-preview.jpg");
+    if (!(await bgConvert(src, tmp, 640))) return { ok: false, error: "convert_failed" };
+    return { ok: true, dataUrl: bgDataUrl(tmp) };
+  });
+  // Native image picker; returns the chosen path plus a small preview.
+  ipcMain.handle("lykn:background-pick-file", async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const res = await dialog.showOpenDialog(win, {
+      title: "Choose a background image",
+      properties: ["openFile"],
+      filters: [
+        { name: "Images", extensions: ["png", "jpg", "jpeg", "heic", "heif", "webp", "tiff", "gif", "bmp"] },
+      ],
+    });
+    if (res.canceled || !res.filePaths?.length) return { ok: false, canceled: true };
+    const src = res.filePaths[0];
+    const tmp = path.join(app.getPath("temp"), "lykn-bg-pick-preview.jpg");
+    const preview = (await bgConvert(src, tmp, 640)) ? bgDataUrl(tmp) : "";
+    return { ok: true, path: src, dataUrl: preview };
+  });
+  // Persist: source is "wallpaper" or an explicit image path.
+  ipcMain.handle("lykn:background-set", async (_e, { source, path: srcPath } = {}) => {
+    const src =
+      source === "wallpaper" ? await currentWallpaperPath() : String(srcPath || "");
+    if (!src || !fsSync.existsSync(src)) return { ok: false, error: "source_missing" };
+    if (!(await bgConvert(src, studioBgFile(), 2560))) {
+      return { ok: false, error: "convert_failed" };
+    }
+    const dataUrl = bgDataUrl(studioBgFile());
+    mergeWelcomeProfile({
+      studioBackground: source === "wallpaper" ? "wallpaper" : "custom",
+      // Kept so the wallpaper picker can highlight the tile in use — the
+      // converted JPEG itself says nothing about where it came from.
+      studioBackgroundPath: src,
+      studioBackgroundId: "",
+    });
+    broadcastBackground(dataUrl, src);
+    return { ok: true, dataUrl };
+  });
+  ipcMain.handle("lykn:background-clear", () => {
+    try {
+      fsSync.unlinkSync(studioBgFile());
+    } catch (_) {}
+    mergeWelcomeProfile({
+      studioBackground: "",
+      studioBackgroundPath: "",
+      studioBackgroundId: "",
+    });
+    broadcastBackground("");
+    return { ok: true };
+  });
+
+  // Widgets stage: which widgets the Home desktop shows. The studio keeps
+  // widget state in its own settings, so the picks travel with a stamp — the
+  // renderer applies them once and later Settings edits stay put.
+  const readHomeWidgets = () => {
+    try {
+      const file = path.join(app.getPath("userData"), "welcome-profile.json");
+      const profile = JSON.parse(fsSync.readFileSync(file, "utf8"));
+      const widgets =
+        profile.homeWidgets && typeof profile.homeWidgets === "object"
+          ? profile.homeWidgets
+          : {};
+      return { ok: true, widgets, stamp: Number(profile.homeWidgetsStamp) || 0 };
+    } catch {
+      return { ok: true, widgets: {}, stamp: 0 };
+    }
+  };
+  ipcMain.handle("lykn:home-widgets-get", () => readHomeWidgets());
+  ipcMain.handle("lykn:welcome-widgets", (_e, widgets = {}) => {
+    const clean = {};
+    for (const [id, on] of Object.entries(widgets || {})) {
+      if (/^[a-zA-Z]{1,40}$/.test(id)) clean[id] = on === true;
+    }
+    const stamp = Date.now();
+    mergeWelcomeProfile({ homeWidgets: clean, homeWidgetsStamp: stamp });
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        if (!win.isDestroyed()) {
+          win.webContents.send("lykn:home-widgets-changed", { widgets: clean, stamp });
+        }
+      } catch (_) {}
+    }
     return { ok: true };
   });
 

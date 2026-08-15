@@ -1,29 +1,45 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import {
   LogOut,
   User,
-  Shield,
-  Monitor,
+  Lock,
+  LayoutGrid,
+  Bell,
+  Palette,
+  Keyboard,
+  SlidersHorizontal,
   CreditCard,
-  HelpCircle,
-  ChevronLeft,
   ChevronRight,
   Sparkles,
-  Upload,
   Plug,
   Loader2,
+  Search,
+  X,
 } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 
+import BillingDialog from '@/components/billing/BillingDialog';
 import ConnectionsAppGrid from '@/components/connections/ConnectionsAppGrid';
+import { PrivacyBody } from '@/pages/Privacy';
+import { CookiePolicyBody } from '@/pages/CookiePolicy';
+import { DPABody } from '@/pages/DPA';
+import { TermsBody } from '@/pages/Terms';
 import ModelSelectOptions from '@/components/ModelSelectOptions';
 import VoicePicker from '@/components/notes/VoicePicker';
+import AppearanceSettings from '@/components/settings/AppearanceSettings';
+import {
+  LG_FIELD,
+  LG_FIELD_INLINE,
+  LG_INLINE_W,
+  LG_SELECT_CONTENT,
+  LG_SELECT_INLINE,
+  LG_SWITCH,
+  LG_TEXTAREA,
+} from '@/components/settings/glassTokens';
 import { useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/components/ui/use-toast';
@@ -32,54 +48,287 @@ import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from 
 import { planLabel } from '@/lib/pricing-config';
 import { API_BASE_URL } from '@/lib/api-config';
 import { parseNightShiftTier } from '@/lib/stewardQueue';
+import { STARTUP_BRIEF_DEFAULT } from '@/lib/brief';
 import { applyTheme, normalizeTheme, readSavedTheme } from '@/lib/theme';
+import { folderLabel, shortenHome, useDesktopMirrorSettings } from '@/lib/macDesktopSync';
+import { useMacSync } from '@/lib/macSync';
+import { HOME_WIDGET_DEFAULTS } from '@/components/macdesktop/DesktopWidgets';
+import { WIDGET_TYPES } from '@/components/macdesktop/widgetCatalog';
+import { hasMacApps } from '@/lib/macApps';
+import {
+  addWidget,
+  readWidgetLayout,
+  removeWidgetsOfType,
+  subscribeWidgetLayout,
+} from '@/lib/desktopWidgets';
+import { DEFAULT_APPEARANCE, saveAppearance } from '@/lib/appearance';
+import { cn } from '@/lib/utils';
 
-// ---------------------------------------------------------------------
-// MenuRow — single icon + title row in the main settings list.
-// Hover is intentionally very light (bg-black/[0.03] / white/[0.04]).
-// ---------------------------------------------------------------------
-function MenuRow({ icon: Icon, title, onClick, danger = false, trailing = null, disabled = false }) {
+const NAV_ITEMS = [
+  { id: 'workspace', title: 'Workspace', icon: LayoutGrid, keywords: 'home desktop widgets todos projects sync mac folders layout local mode files access' },
+  { id: 'assistant', title: 'Assistant', icon: Sparkles, keywords: 'ai model voice name instructions personality chat response length' },
+  { id: 'notifications', title: 'Notifications', icon: Bell, keywords: 'night shift brief alerts overnight' },
+  { id: 'privacy', title: 'Privacy', icon: Lock, keywords: 'policy cookies terms dpa legal sessions devices sign out' },
+  { id: 'appearance', title: 'Appearance', icon: Palette, keywords: 'theme dark light system swatch accent color hue custom wallpaper background photo desktop widgets glass blur dim density typeface font corner radius motion contrast dividers icons' },
+  { id: 'integrations', title: 'Integrations', icon: Plug, keywords: 'apps api mcp google slack notion connect connections' },
+  { id: 'billing', title: 'Billing', icon: CreditCard, keywords: 'payment plan subscription stripe upgrade invoice cancel' },
+  { id: 'keyboard', title: 'Keyboard', icon: Keyboard, keywords: 'shortcuts hotkey command overlay keys' },
+  { id: 'advanced', title: 'Advanced', icon: SlidersHorizontal, keywords: 'import export reset defaults support help chatgpt claude zip' },
+];
+
+// Privacy pane. Each doc opens in a popup over Settings; `path` is both the
+// public route and how a cross-link inside one doc finds its sibling.
+const POLICY_DOCS = [
+  { id: 'privacy', label: 'Privacy Policy', path: '/privacy', Body: PrivacyBody },
+  { id: 'cookies', label: 'Cookie Policy', path: '/cookies', Body: CookiePolicyBody },
+  { id: 'dpa', label: 'Data Processing Addendum', path: '/dpa', Body: DPABody },
+  { id: 'terms', label: 'Terms of Service', path: '/terms', Body: TermsBody },
+];
+
+const VIEW_TITLES = {
+  account: 'Account',
+  workspace: 'Workspace',
+  assistant: 'Assistant',
+  notifications: 'Notifications',
+  privacy: 'Privacy',
+  appearance: 'Appearance',
+  integrations: 'Integrations',
+  billing: 'Billing',
+  keyboard: 'Keyboard',
+  advanced: 'Advanced',
+};
+
+// Existing callers deep-link with the pre-rename ids — Studio's SETTINGS_VIEWS,
+// the desktop context menu ("Edit Widgets…"), /settings?section=connections.
+const VIEW_ALIASES = {
+  display: 'appearance',
+  connections: 'integrations',
+  payment: 'billing',
+  aiPersonalization: 'assistant',
+  import: 'advanced',
+  help: 'advanced',
+};
+
+const resolveView = (id) => (VIEW_TITLES[id] ? id : VIEW_ALIASES[id] || 'account');
+
+// Chat-history import is built but not shipped; Advanced shows it as "Soon"
+// (the old Import nav row was disabled for the same reason).
+const IMPORT_ENABLED = false;
+
+const KEY_BINDINGS = [
+  {
+    keys: ['⌘', 'L'],
+    label: 'Show or hide the LYKN overlay',
+    description: 'Works from any app, even when LYKN is in the background.',
+  },
+  { keys: ['Return'], label: 'Send the current message' },
+  { keys: ['Shift', 'Return'], label: 'New line without sending' },
+  { keys: ['Esc'], label: 'Close the overlay, a dialog, or an open menu' },
+];
+
+function TrafficLight({ color, label, glyph, onClick }) {
   return (
     <button
       type="button"
+      title={label}
+      aria-label={label}
       onClick={onClick}
-      disabled={disabled}
-      className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg text-left transition-colors
-        ${disabled
-          ? 'text-black/45 dark:text-white/45 cursor-default'
-          : danger
-            ? 'text-red-600 dark:text-red-400 hover:bg-red-500/[0.06] dark:hover:bg-red-500/[0.08]'
-            : 'text-black dark:text-white hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'}`}
+      onPointerDown={(e) => e.stopPropagation()}
+      className="flex h-3 w-3 items-center justify-center rounded-full transition-transform active:scale-90"
+      style={{ background: color }}
     >
-      <Icon className={`w-4 h-4 shrink-0 ${danger ? '' : 'text-gray-500 dark:text-gray-400'}`} />
-      <span className="flex-1 text-sm font-medium">{title}</span>
-      {trailing ?? (
-        !danger && <ChevronRight className="w-4 h-4 text-gray-400 dark:text-gray-500" />
-      )}
+      <svg
+        viewBox="0 0 10 10"
+        className="h-2 w-2 opacity-0 transition-opacity group-hover/traffic:opacity-60 group-hover/win:opacity-60"
+        stroke="rgba(0,0,0,0.75)"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        fill="none"
+      >
+        <path d={glyph} />
+      </svg>
     </button>
   );
 }
 
-// ---------------------------------------------------------------------
-// SubViewHeader — back button + title for any settings sub-page.
-// ---------------------------------------------------------------------
-function SubViewHeader({ title, onBack }) {
+function TrafficLights({ onClose, onMinimize, onZoom, drag }) {
   return (
-    <div className="flex items-center gap-1 mb-4">
-      <button
-        type="button"
-        onClick={onBack}
-        className="p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
-        aria-label="Back to settings"
-      >
-        <ChevronLeft className="w-4 h-4" />
-      </button>
-      <h3 className="text-sm font-semibold text-black dark:text-white">{title}</h3>
+    <div
+      className="group/traffic flex touch-none select-none items-center gap-[8px] px-[14px] pt-[14px] pb-[10px]"
+      {...(drag || {})}
+    >
+      <TrafficLight
+        color="#ff5f57"
+        label="Close settings"
+        onClick={onClose}
+        glyph="M2 2 L8 8 M8 2 L2 8"
+      />
+      <TrafficLight
+        color="#febc2e"
+        label="Minimize settings"
+        onClick={onMinimize}
+        glyph="M2 5 H8"
+      />
+      <TrafficLight
+        color="#28c840"
+        label="Zoom settings"
+        onClick={onZoom}
+        glyph="M2.5 7.5 L7.5 2.5 M3 3 H7 V7"
+      />
     </div>
   );
 }
 
-export default function SettingsModal({ isOpen, onClose }) {
+/** Drag the hosting DesktopAppWindow from a chromeless page's own chrome. */
+function useWindowDrag(controls) {
+  const origin = useRef(null);
+  const onPointerDown = (e) => {
+    if (!controls?.current || e.button !== 0) return;
+    if (e.target.closest('button, input, a, textarea, select, [role="button"]')) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    origin.current = { x: e.clientX, y: e.clientY };
+    controls.current.dragStart();
+  };
+  const onPointerMove = (e) => {
+    if (!origin.current || !controls?.current) return;
+    controls.current.dragBy(e.clientX - origin.current.x, e.clientY - origin.current.y);
+  };
+  const onPointerUp = () => {
+    if (!origin.current) return;
+    origin.current = null;
+    controls.current?.dragEnd();
+  };
+  const onDoubleClick = (e) => {
+    if (e.target.closest('button, input, a, textarea, select, [role="button"]')) return;
+    controls?.current?.zoom();
+  };
+  return { onPointerDown, onPointerMove, onPointerUp, onDoubleClick };
+}
+
+function SettingsGroup({ children, caption, className }) {
+  return (
+    <div className={className}>
+      <div className="lykn-settings-group overflow-hidden rounded-[14px] divide-y divide-black/[0.06] dark:divide-white/[0.08]">
+        {children}
+      </div>
+      {caption ? (
+        <p className="mt-1.5 px-3 text-[11px] leading-snug text-black/45 dark:text-white/40">{caption}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Small caps heading that names the group of rows beneath it. */
+function GroupLabel({ children }) {
+  return (
+    <p className="px-1 text-[11px] font-medium uppercase tracking-[0.04em] text-black/40 dark:text-white/35">
+      {children}
+    </p>
+  );
+}
+
+function SettingsRow({ label, description, trailing, children, onClick, href, to, danger = false, disabled = false }) {
+  const body = (
+    <>
+      <div className="min-w-0 flex-1 py-0.5">
+        {label ? (
+          <p className={cn(
+            'text-[13px] leading-snug',
+            danger ? 'text-red-600 dark:text-red-400' : 'text-black dark:text-white',
+            disabled && 'opacity-50',
+          )}>
+            {label}
+          </p>
+        ) : null}
+        {description ? (
+          <p className="mt-0.5 text-[11px] leading-snug text-black/45 dark:text-white/40">{description}</p>
+        ) : null}
+        {children}
+      </div>
+      {trailing ? <div className="shrink-0 pl-3">{trailing}</div> : null}
+    </>
+  );
+
+  const interactive = !!(onClick || href || to);
+  const rowClass = cn(
+    'flex w-full gap-3 px-3.5 py-[11px] text-left',
+    children ? 'items-start' : 'items-center',
+    interactive && !disabled && 'hover:bg-black/[0.03] dark:hover:bg-white/[0.04]',
+    disabled && 'cursor-default',
+  );
+
+  if (to) {
+    return (
+      <Link to={to} onClick={onClick} className={rowClass}>
+        {body}
+      </Link>
+    );
+  }
+  if (href) {
+    return (
+      <a href={href} className={rowClass}>
+        {body}
+      </a>
+    );
+  }
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} disabled={disabled} className={rowClass}>
+        {body}
+      </button>
+    );
+  }
+  return <div className={rowClass}>{body}</div>;
+}
+
+function SidebarItem({ item, active, onSelect }) {
+  const Icon = item.icon;
+  return (
+    <button
+      type="button"
+      disabled={item.disabled}
+      data-active={active || undefined}
+      onClick={() => onSelect(item.id)}
+      className={cn(
+        'lg-nav-item flex w-full items-center gap-2.5 rounded-[11px] px-2.5 py-[6px] text-left',
+        item.disabled && 'cursor-default opacity-45',
+      )}
+    >
+      <Icon
+        className="lg-nav-icon"
+        strokeWidth={1.9}
+        style={active ? { color: 'hsl(var(--lykn-accent))' } : undefined}
+      />
+      <span className={cn(
+        'flex-1 truncate text-[13.5px] text-black dark:text-white',
+        active && 'font-medium',
+      )}>
+        {item.title}
+      </span>
+      {item.disabled ? (
+        <span className="text-[10px] text-black/35 dark:text-white/30">Soon</span>
+      ) : null}
+    </button>
+  );
+}
+
+function KeyCap({ children }) {
+  return (
+    <kbd className="lg-stepper inline-flex h-[22px] min-w-[22px] items-center justify-center rounded-[7px] px-1.5 font-sans text-[11.5px] font-medium text-black/70 dark:text-white/75">
+      {children}
+    </kbd>
+  );
+}
+
+export default function SettingsModal({
+  isOpen,
+  onClose,
+  initialView = 'account',
+  // Hosted inside a DesktopAppWindow: no portal, and the sidebar lights
+  // drive that window's close / minimize / zoom / drag.
+  embedded = false,
+  windowControls = null,
+}) {
   const { user, loading, signInWithOAuth, signOut } = useAuth();
   const {
     planId,
@@ -92,13 +341,13 @@ export default function SettingsModal({ isOpen, onClose }) {
   const nav = useNavigate();
   const location = useLocation();
   const [portalBusy, setPortalBusy] = useState(false);
+  // Which tab of the billing popup is open ('usage' | 'topup' | 'plans'), or
+  // null when it's closed. Nested inside this dialog like the policy viewer.
+  const [billingTab, setBillingTab] = useState(null);
 
-  // 'menu' | 'account' | 'privacy' | 'display' | 'aiPersonalization' | 'import'
-  // | 'payment' | 'help' | 'connections'
-  const [view, setView] = useState('menu');
-
-  // ---- AI personalization: explicit save feedback ----
-  const [aiPersonalizationSaveStatus, setAiPersonalizationSaveStatus] = useState('idle'); // idle | saved
+  // One of the keys in VIEW_TITLES; legacy ids arrive via VIEW_ALIASES.
+  const [view, setView] = useState('account');
+  const [navQuery, setNavQuery] = useState('');
 
   // ---- Import: chat-history .zip upload ----
   const [importFile, setImportFile] = useState(null);
@@ -112,16 +361,38 @@ export default function SettingsModal({ isOpen, onClose }) {
   const [nightShiftLoading, setNightShiftLoading] = useState(false);
   const [nightShiftSaving, setNightShiftSaving] = useState(false);
 
-  // Reset to menu whenever the modal closes/reopens.
+  // Each visit starts on the requested view (Account unless a caller deep-links
+  // one, e.g. the desktop menu opening Display), and resets on close.
   useEffect(() => {
-    if (!isOpen) setView('menu');
-  }, [isOpen]);
+    setView(isOpen ? resolveView(initialView) : 'account');
+    if (!isOpen) {
+      setNavQuery('');
+      setBillingTab(null);
+    }
+  }, [isOpen, initialView]);
 
-  // The AI Personalization "Saved" confirmation persists for the whole visit and
-  // only resets to "Save" once the user leaves that view (or closes the modal).
+  const runWindow = (action, fallback) => {
+    const fn = windowControls?.current?.[action];
+    if (typeof fn === 'function') fn();
+    else fallback?.();
+  };
+  const closeWindow = () => runWindow('close', onClose);
+  const minimizeWindow = () => runWindow('minimize', onClose);
+  const zoomWindow = () => runWindow('zoom');
+  const titleDrag = useWindowDrag(windowControls);
+  const closeWindowRef = useRef(closeWindow);
+  closeWindowRef.current = closeWindow;
+
   useEffect(() => {
-    if (view !== 'aiPersonalization') setAiPersonalizationSaveStatus('idle');
-  }, [view]);
+    if (!embedded || !isOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      closeWindowRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [embedded, isOpen]);
 
   const loadNightShiftPref = useCallback(async () => {
     if (!user?.id) return;
@@ -146,7 +417,7 @@ export default function SettingsModal({ isOpen, onClose }) {
   }, [user?.id]);
 
   useEffect(() => {
-    if (isOpen && view === 'privacy' && user?.id) void loadNightShiftPref();
+    if (isOpen && view === 'notifications' && user?.id) void loadNightShiftPref();
   }, [isOpen, view, user?.id, loadNightShiftPref]);
 
   const toggleNightShift = async () => {
@@ -232,7 +503,7 @@ export default function SettingsModal({ isOpen, onClose }) {
     const wantsConnections =
       (location.hash || '').replace(/^#/, '') === 'connections' ||
       params.get('section') === 'connections';
-    if (wantsConnections) setView('connections');
+    if (wantsConnections) setView('integrations');
   }, [isOpen, location.hash, location.search]);
 
   const openBillingPortal = useCallback(async (flow) => {
@@ -283,7 +554,15 @@ export default function SettingsModal({ isOpen, onClose }) {
     voiceId: '',
     voiceName: '',
     responseLength: 'medium',
+    startupBrief: STARTUP_BRIEF_DEFAULT,
+    homeWidgets: { ...HOME_WIDGET_DEFAULTS },
   });
+
+  // What's actually on the Home desktop right now. Its own store, because a
+  // widget carries a position and a size that this settings blob has no shape
+  // for — and because the desktop edits it while this pane is open.
+  const [widgetLayout, setWidgetLayout] = useState(readWidgetLayout);
+  useEffect(() => subscribeWidgetLayout(setWidgetLayout), []);
 
   // ---- Guest auth form (only shown when no `user`) ----
   const [email, setEmail] = useState('');
@@ -317,6 +596,16 @@ export default function SettingsModal({ isOpen, onClose }) {
           parsed.theme = normalizeTheme(parsed.theme);
           parsed.aiModel = canonicalizeModelId(parsed.aiModel)
             || defaultModelForTier(modelTier);
+          parsed.startupBrief =
+            typeof parsed.startupBrief === 'boolean'
+              ? parsed.startupBrief
+              : STARTUP_BRIEF_DEFAULT;
+          parsed.homeWidgets = {
+            ...HOME_WIDGET_DEFAULTS,
+            ...(parsed.homeWidgets && typeof parsed.homeWidgets === 'object'
+              ? parsed.homeWidgets
+              : {}),
+          };
           setSettings(parsed);
           applyTheme(parsed.theme);
         } catch (e) {
@@ -339,10 +628,23 @@ export default function SettingsModal({ isOpen, onClose }) {
 
   const persistSettings = (next) => {
     const normalized = { ...next, theme: normalizeTheme(next.theme) };
-    localStorage.setItem('lykinsai_settings', JSON.stringify(normalized));
-    const densities = { compact: '0.75', comfortable: '1', spacious: '1.25' };
-    document.documentElement.style.setProperty('--layout-density', densities[normalized.layoutDensity]);
-    applyTheme(normalized.theme);
+    // The Appearance pane owns `appearance` / `layoutDensity` in the same blob
+    // and writes them directly, so keep whatever is on disk for those two keys
+    // rather than overwriting them with this component's copy of the state.
+    let blob = normalized;
+    try {
+      const saved = JSON.parse(localStorage.getItem('lykinsai_settings') || '{}');
+      blob = {
+        ...saved,
+        ...normalized,
+        appearance: saved.appearance ?? normalized.appearance,
+        layoutDensity: saved.layoutDensity ?? normalized.layoutDensity,
+      };
+    } catch {
+      /* fall back to writing just this component's state */
+    }
+    localStorage.setItem('lykinsai_settings', JSON.stringify(blob));
+    applyTheme(blob.theme);
     window.dispatchEvent(new CustomEvent('lykinsai_settings_changed'));
     window.dispatchEvent(new Event('storage'));
   };
@@ -354,6 +656,34 @@ export default function SettingsModal({ isOpen, onClose }) {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const persistCurrentSettings = () => persistSettings(settingsRef.current);
+
+  // Assistant pane. Fields already save when you click out of them, so the
+  // button is really the confirmation: it flushes whatever is still focused
+  // and says "Saved" for a beat.
+  const [assistantSaved, setAssistantSaved] = useState(false);
+  const assistantSavedTimer = useRef(null);
+  useEffect(() => () => clearTimeout(assistantSavedTimer.current), []);
+  const saveAssistantSettings = () => {
+    persistCurrentSettings();
+    setAssistantSaved(true);
+    clearTimeout(assistantSavedTimer.current);
+    assistantSavedTimer.current = setTimeout(() => setAssistantSaved(false), 2000);
+  };
+
+  // "Sync my Desktop" — mirrors the real Mac desktop onto Home. Desktop-app
+  // only; the hook reports available: false in a browser.
+  const macMirror = useDesktopMirrorSettings(settings.desktopSync, (desktopSync) => {
+    const updated = { ...settingsRef.current, desktopSync };
+    setSettings(updated);
+    persistSettings(updated);
+  });
+
+  // "Sync with Mac" — the folders LYKN may read, same allowlist the welcome
+  // flow sets up. Lives in the main process, so it has no settings blob.
+  const macSync = useMacSync();
+
+  // Which legal doc the Privacy pane is showing in a popup, if any.
+  const [openPolicy, setOpenPolicy] = useState(null);
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -500,128 +830,78 @@ export default function SettingsModal({ isOpen, onClose }) {
     }
   };
 
-  if (loading) {
-    return (
-      <Dialog open={isOpen} onOpenChange={onClose}>
-        <DialogContent className="bg-panel border-black/10 dark:border-transparent text-black dark:text-white max-w-md backdrop-blur-md">
-          <DialogTitle className="sr-only">Settings</DialogTitle>
-          <div className="flex items-center justify-center p-8">
-            <div className="w-6 h-6 border-4 border-slate-200 border-t-slate-800 dark:border-white/15 dark:border-t-white/70 rounded-full animate-spin" />
-          </div>
-        </DialogContent>
-      </Dialog>
+  const filteredNav = useMemo(() => {
+    const q = navQuery.trim().toLowerCase();
+    if (!q) return NAV_ITEMS;
+    return NAV_ITEMS.filter((item) =>
+      `${item.title} ${item.keywords}`.toLowerCase().includes(q),
     );
-  }
+  }, [navQuery]);
 
-  // ===========================================================
-  // MAIN MENU
-  // ===========================================================
-  const renderMenu = () => (
-    <div className="py-2">
-      {user && (
-        <div className="px-3 pb-3 mb-1 border-b border-black/[0.06] dark:border-white/[0.06]">
-          <p className="text-xs text-gray-500 dark:text-gray-400">Signed in as</p>
-          <p className="text-sm font-medium text-black dark:text-white truncate">{user.email}</p>
-        </div>
-      )}
-      <div className="flex flex-col">
-        <MenuRow icon={User} title="Account" onClick={() => setView('account')} />
-        <MenuRow icon={Plug} title="Connections" onClick={() => setView('connections')} />
-        <MenuRow icon={Shield} title="Privacy" onClick={() => setView('privacy')} />
-        <MenuRow icon={Monitor} title="Display" onClick={() => setView('display')} />
-        <MenuRow icon={Sparkles} title="AI Personalization" onClick={() => setView('aiPersonalization')} />
-        {/* The chat-history import backend (/api/import/chat-history) hasn't
-            shipped yet — every upload 404'd after the user picked a file.
-            Keep the row visible but inert until the server route exists. */}
-        <MenuRow
-          icon={Upload}
-          title="Import"
-          disabled
-          onClick={() => {}}
-          trailing={
-            <span className="text-[11px] text-gray-400 dark:text-gray-500">
-              Coming soon
-            </span>
-          }
-        />
-        <MenuRow icon={CreditCard} title="Payment" onClick={() => setView('payment')} />
-        <MenuRow icon={HelpCircle} title="Help" onClick={() => setView('help')} />
-        {user && (
-          <MenuRow
-            icon={LogOut}
-            title="Logout"
-            onClick={handleLogout}
-            danger
-            trailing={<span />}
-          />
-        )}
-      </div>
-    </div>
+  const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.picture || '';
+  const profileName = (displayName || '').trim() || user?.email?.split('@')[0] || 'Account';
+  const profileInitial = (profileName || '?').charAt(0).toUpperCase();
+  const accountNeedle = navQuery.trim().toLowerCase();
+  const showAccountCard = !accountNeedle || (
+    'account profile sign in email name logout'.includes(accountNeedle)
+    || profileName.toLowerCase().includes(accountNeedle)
+    || String(user?.email || '').toLowerCase().includes(accountNeedle)
   );
 
-  // ===========================================================
-  // ACCOUNT
-  // ===========================================================
-  const renderAccount = () => (
-    <div>
-      <SubViewHeader title="Account" onBack={() => setView('menu')} />
-      {user ? (
-        <div className="space-y-5">
-          <div className="space-y-1.5">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">Email</Label>
-            <p className="text-sm text-black dark:text-white">{user.email}</p>
-          </div>
+  const chevron = <ChevronRight className="h-3.5 w-3.5 text-black/25 dark:text-white/30" />;
+  const windowClass = embedded
+    ? 'lykn-settings-window lykn-settings-embedded flex h-full w-full flex-row overflow-hidden text-black dark:text-white p-0 gap-0'
+    : 'lykn-settings-window flex flex-row overflow-hidden text-black dark:text-white w-[min(940px,calc(100vw-24px))] h-[min(620px,92vh)] max-w-none p-0 gap-0 rounded-[26px] sm:rounded-[26px]';
 
-          <div className="space-y-1.5">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">Display name</Label>
-            <div className="flex gap-2">
+  const renderAccount = () => (
+    user ? (
+      <div className="space-y-5">
+        <SettingsGroup>
+          <SettingsRow label="Email" trailing={
+            <span className="max-w-[220px] truncate text-[13px] text-black/45 dark:text-white/45">{user.email}</span>
+          } />
+          <SettingsRow label="Display name" trailing={
+            <div className="flex items-center gap-2">
               <input
                 type="text"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 placeholder="Your name"
-                className="flex-1 px-0 py-1.5 text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-none focus:outline-none focus:border-black/40 dark:focus:border-white/40"
+                className="h-7 w-[160px] px-2 text-[13px] text-right rounded-md bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.08] dark:border-white/[0.1] text-black dark:text-white placeholder:text-black/35 dark:placeholder:text-white/30 focus:outline-none"
               />
               <button
                 type="button"
                 onClick={handleSaveDisplayName}
                 disabled={displayNameStatus === 'saving' || displayName.trim() === initialDisplayName.trim()}
-                className="text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white disabled:opacity-40 transition-colors"
+                className="text-[13px] font-medium text-[#007aff] disabled:opacity-30"
               >
                 {displayNameStatus === 'saving'
                   ? 'Saving…'
                   : displayNameStatus === 'saved'
                     ? 'Saved'
-                    : 'Save'}
+                    : displayNameStatus === 'error'
+                      ? 'Retry'
+                      : 'Save'}
               </button>
             </div>
-          </div>
+          } />
+        </SettingsGroup>
 
-          <div className="pt-4 mt-4 border-t border-black/[0.06] dark:border-white/[0.06] space-y-2">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">Security</Label>
-            <Button
-              type="button"
-              onClick={handleSignOutEverywhere}
-              disabled={signOutEverywhereBusy}
-              variant="outline"
-              className="w-full !bg-transparent border-red-300 dark:border-red-900/60 text-red-600 dark:text-red-400 !shadow-none hover:!bg-red-500/[0.06] dark:hover:!bg-red-500/[0.08] hover:text-red-700 dark:hover:text-red-300 flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              {signOutEverywhereBusy ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <LogOut className="w-4 h-4" />
-              )}
-              {signOutEverywhereBusy ? 'Signing out everywhere…' : 'Sign out of all devices'}
-            </Button>
-            <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-snug">
-              Revokes every active session on your account. Use this if you suspect someone else has access.
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <button
-            type="button"
+        <SettingsGroup caption="Revokes every active session on your account. Use this if you suspect someone else has access.">
+          <SettingsRow
+            label={signOutEverywhereBusy ? 'Signing out everywhere…' : 'Sign out of all devices'}
+            danger
+            disabled={signOutEverywhereBusy}
+            onClick={handleSignOutEverywhere}
+            trailing={signOutEverywhereBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin text-red-400" /> : null}
+          />
+        </SettingsGroup>
+      </div>
+    ) : (
+      <div className="space-y-5">
+        <SettingsGroup>
+          <SettingsRow
+            label="Continue with Google"
             onClick={async () => {
               try {
                 setAuthError('');
@@ -635,228 +915,486 @@ export default function SettingsModal({ isOpen, onClose }) {
                 if (import.meta.env.DEV) console.error('Google OAuth exception:', error);
               }
             }}
-            className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
+            trailing={chevron}
+          />
+        </SettingsGroup>
+
+        <form onSubmit={handleAuth} className="space-y-5">
+          {authError && (
+            <p className="px-1 text-[12px] text-red-500">{authError}</p>
+          )}
+          <SettingsGroup caption="Or continue with email.">
+            <SettingsRow label="Email">
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className={`${LG_FIELD} mt-1.5`}
+                required
+              />
+            </SettingsRow>
+            <SettingsRow label="Password">
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className={`${LG_FIELD} mt-1.5`}
+                required
+              />
+            </SettingsRow>
+          </SettingsGroup>
+          <div className="flex items-center gap-4 px-1">
+            <button
+              type="submit"
+              className="text-[13px] font-medium text-[#007aff]"
+            >
+              {authMode === 'login' ? 'Sign In' : 'Create Account'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+              className="text-[13px] text-black/45 dark:text-white/45 hover:text-black dark:hover:text-white"
+            >
+              {authMode === 'login' ? 'Create an account' : 'Have an account? Sign in'}
+            </button>
+          </div>
+        </form>
+      </div>
+    )
+  );
+
+  const renderConnections = () => (
+    <ConnectionsAppGrid user={user} embedded />
+  );
+
+  // A doc's cross-links (Privacy → Cookie Policy, …) swap the popup instead of
+  // routing the app out from under the open Settings window.
+  const handlePolicyLinkClick = (e) => {
+    const anchor = e.target?.closest?.('a[href]');
+    if (!anchor) return;
+    const href = anchor.getAttribute('href') || '';
+    const sibling = POLICY_DOCS.find((doc) => href.startsWith(doc.path));
+    if (sibling) {
+      e.preventDefault();
+      setOpenPolicy(sibling.id);
+      return;
+    }
+    if (href.startsWith('/')) onClose?.();
+  };
+
+  const renderPrivacy = () => {
+    const doc = POLICY_DOCS.find((d) => d.id === openPolicy) || null;
+    return (
+      <div className="flex flex-col gap-px">
+        {POLICY_DOCS.map((row) => (
+          <button
+            key={row.id}
+            type="button"
+            onClick={() => setOpenPolicy(row.id)}
+            className="flex w-full items-center gap-3 rounded-[10px] px-2 py-[9px] text-left text-[13px] text-black transition-colors hover:bg-black/[0.04] dark:text-white dark:hover:bg-white/[0.06]"
           >
-            Continue with Google
+            <span className="min-w-0 flex-1 truncate">{row.label}</span>
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-black/25 dark:text-white/25" />
           </button>
+        ))}
 
-          <p className="text-xs text-gray-500 dark:text-gray-400">Or continue with email</p>
-
-          <form onSubmit={handleAuth} className="space-y-3">
-            {authError && <p className="text-sm text-red-500">{authError}</p>}
-            <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-0 py-1.5 text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-none focus:outline-none focus:border-black/40 dark:focus:border-white/40"
-              required
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-0 py-1.5 text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-none focus:outline-none focus:border-black/40 dark:focus:border-white/40"
-              required
-            />
-            <div className="flex items-center gap-4 pt-1">
-              <button
-                type="submit"
-                className="text-sm font-medium text-black dark:text-white hover:opacity-70 transition-opacity"
-              >
-                {authMode === 'login' ? 'Sign In' : 'Create Account'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-                className="text-sm text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white transition-colors"
-              >
-                {authMode === 'login' ? 'Sign Up' : 'Sign In'}
-              </button>
+        <Dialog open={!!doc} onOpenChange={(open) => { if (!open) setOpenPolicy(null); }}>
+          <DialogContent className="grid-rows-[auto_minmax(0,1fr)] max-w-2xl gap-0 overflow-hidden overflow-y-hidden p-0">
+            <DialogTitle className="px-6 pb-3 pt-5 text-[15px]">{doc?.label}</DialogTitle>
+            {/* The docs are written as full pages — drop the page chrome and
+                scale the type down to popup size. */}
+            <div
+              onClick={handlePolicyLinkClick}
+              className="lykn-settings-scroll min-h-0 overflow-y-auto px-6 pb-6 [&_article]:max-w-none [&_article]:space-y-6 [&_article]:px-0 [&_article]:py-0 [&_footer]:hidden [&_h1]:hidden [&_h2]:text-[15px] [&_h3]:text-[13.5px]"
+            >
+              {doc ? <doc.Body /> : null}
             </div>
-          </form>
-        </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+    );
+  };
+
+  const setTheme = (value) => {
+    const updated = { ...settings, theme: value };
+    setSettings(updated);
+    persistSettings(updated);
+  };
+
+  // The Files desktop icon rides on this component's settings blob, so both
+  // panes that offer it go through here — a direct localStorage write from the
+  // Appearance pane would be stomped by the next persistSettings from this
+  // state. An icon the user has never touched is on if it ships on.
+  const isHomeWidgetChecked = (id) =>
+    typeof settings.homeWidgets?.[id] === 'boolean'
+      ? settings.homeWidgets[id]
+      : (HOME_WIDGET_DEFAULTS[id] ?? true);
+
+  const toggleHomeWidget = (id, checked) => {
+    const updated = {
+      ...settings,
+      homeWidgets: { ...(settings.homeWidgets || {}), [id]: checked },
+    };
+    setSettings(updated);
+    persistSettings(updated);
+  };
+
+  const renderAppearance = () => (
+    <AppearanceSettings
+      theme={settings.theme || 'dark'}
+      onThemeChange={setTheme}
+      homeWidgets={settings.homeWidgets}
+      onHomeWidgetToggle={toggleHomeWidget}
+    />
+  );
+
+  const toggleStartupBrief = (checked) => {
+    const updated = { ...settings, startupBrief: checked };
+    setSettings(updated);
+    persistSettings(updated);
+  };
+
+  const renderNotifications = () => (
+    <div className="space-y-5">
+      {user ? (
+        <>
+          <SettingsGroup caption="A brief slides in on the right each time you open LYKN. Press it to read your day — what's scheduled, what's due, and anything Night Shift left overnight.">
+            <SettingsRow
+              label="Brief on startup"
+              trailing={
+                <Switch
+                  checked={!!settings.startupBrief}
+                  onCheckedChange={toggleStartupBrief}
+                  aria-label="Brief on startup"
+                  className={LG_SWITCH}
+                />
+              }
+            />
+          </SettingsGroup>
+          <SettingsGroup caption="Work on your projects overnight and leave a morning brief.">
+            <SettingsRow
+              label="Night Shift"
+              trailing={
+                <Switch
+                  checked={nightShiftEnabled}
+                  disabled={nightShiftLoading || nightShiftSaving}
+                  onCheckedChange={() => void toggleNightShift()}
+                  aria-label="Night Shift"
+                  className={LG_SWITCH}
+                />
+              }
+            />
+            {nightShiftEnabled ? (
+              <SettingsRow
+                label="Depth"
+                trailing={
+                  <Select
+                    value={nightShiftTier}
+                    onValueChange={(value) => void setNightShiftTierPref(value)}
+                    disabled={nightShiftSaving}
+                  >
+                    <SelectTrigger className={LG_SELECT_INLINE}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className={LG_SELECT_CONTENT}>
+                      <SelectItem value="brief">Brief</SelectItem>
+                      <SelectItem value="research">Research</SelectItem>
+                      <SelectItem value="delegate">Delegate</SelectItem>
+                    </SelectContent>
+                  </Select>
+                }
+              />
+            ) : null}
+          </SettingsGroup>
+        </>
+      ) : (
+        <SettingsGroup caption="Sign in from Account to set up a brief.">
+          <SettingsRow
+            label="Go to Account"
+            onClick={() => setView('account')}
+            trailing={chevron}
+          />
+        </SettingsGroup>
       )}
     </div>
   );
 
-  // ===========================================================
-  // CONNECTIONS — the three connect cards (API / MCP / Build), formerly
-  // the standalone /connections page. ConnectionsAppGrid runs in
-  // `embedded` mode so its picker renders inline instead of as a fixed
-  // overlay (a `fixed` child of Radix's transformed DialogContent would
-  // anchor to the dialog, not the viewport).
-  // ===========================================================
-  const renderConnections = () => (
-    <div>
-      <ConnectionsAppGrid user={user} embedded onBack={() => setView('menu')} />
-    </div>
-  );
-
-  // ===========================================================
-  // PRIVACY
-  // ===========================================================
-  const renderPrivacy = () => (
-    <div>
-      <SubViewHeader title="Privacy" onBack={() => setView('menu')} />
-      <div className="space-y-5">
-        {user && (
-          <div className="space-y-3">
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-black dark:text-white">Night Shift</p>
-                <p className="text-xs text-gray-500 dark:text-gray-500 mt-0.5">
-                  Work on your projects overnight and leave a morning brief.
-                </p>
-              </div>
-              <Switch
-                checked={nightShiftEnabled}
-                disabled={nightShiftLoading || nightShiftSaving}
-                onCheckedChange={() => void toggleNightShift()}
-                aria-label="Night Shift"
-                className="mt-0.5"
-              />
-            </div>
-            {nightShiftEnabled ? (
-              <div className="space-y-1.5">
-                <Label className="text-xs text-gray-600 dark:text-gray-400">Depth</Label>
-                <Select
-                  value={nightShiftTier}
-                  onValueChange={(value) => void setNightShiftTierPref(value)}
-                  disabled={nightShiftSaving}
-                >
-                  <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-panel border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
-                    <SelectItem value="brief">Brief</SelectItem>
-                    <SelectItem value="research">Research</SelectItem>
-                    <SelectItem value="delegate">Delegate</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : null}
-          </div>
-        )}
-
-        <div className="flex flex-col">
-          {[
-            { to: '/privacy', label: 'Privacy Policy' },
-            { to: '/cookies', label: 'Cookie Policy' },
-            { to: '/dpa', label: 'Data Processing Addendum' },
-            { to: '/terms', label: 'Terms of Service' },
-          ].map((row) => (
-            <Link
-              key={row.to}
-              to={row.to}
-              onClick={onClose}
-              className="px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
-            >
-              {row.label}
-            </Link>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-
-  // ===========================================================
-  // DISPLAY
-  // ===========================================================
-  const renderDisplay = () => (
-    <div>
-      <SubViewHeader title="Display" onBack={() => setView('menu')} />
-      <div className="space-y-2">
-        <Label className="text-xs text-gray-600 dark:text-gray-400">Theme</Label>
-        <Select
-          value={settings.theme || 'dark'}
-          onValueChange={(value) => {
-            const updated = { ...settings, theme: value };
-            setSettings(updated);
-            persistSettings(updated);
-          }}
-        >
-          <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="bg-panel border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
-            <SelectItem value="light">Light</SelectItem>
-            <SelectItem value="dark">Dark</SelectItem>
-            <SelectItem value="system">System</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-    </div>
-  );
-
-  // ===========================================================
-  // AI PERSONALIZATION
-  // ===========================================================
-  const renderAiPersonalization = () => (
-    <div>
-      <SubViewHeader title="AI Personalization" onBack={() => setView('menu')} />
-      <div className="space-y-5">
-        <div className="space-y-1.5">
-          <Label className="text-xs text-gray-600 dark:text-gray-400">Default AI model</Label>
-          <Select
-            value={settings.aiModel}
-            onValueChange={(value) => {
-              if (!isModelAllowedForPlan(value, modelTier)) return;
-              const updated = { ...settings, aiModel: value };
-              setSettings(updated);
-              persistSettings(updated);
-            }}
-          >
-            <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="bg-panel border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
-              <ModelSelectOptions modelTier={modelTier} />
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="space-y-1.5">
-          <Label className="text-xs text-gray-600 dark:text-gray-400">Assistant name</Label>
-          <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
-            Give your assistant its own name. It will refer to itself by this name in chat and voice instead of &ldquo;LYKN&rdquo;.
-          </p>
-          <input
-            type="text"
-            value={settings.aiName || ''}
-            maxLength={40}
-            onChange={(e) => setSettings((prev) => ({ ...prev, aiName: e.target.value }))}
-            onBlur={persistCurrentSettings}
-            placeholder="LYKN"
-            className="w-full px-0 py-1.5 text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 text-black dark:text-white rounded-none focus:outline-none focus:border-black/40 dark:focus:border-white/40"
-          />
-        </div>
-
-        <div className="space-y-4 pt-1 border-t border-black/[0.06] dark:border-white/[0.06]">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 pt-3">Chat</p>
-
-          <div className="space-y-1.5">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">Custom instructions</Label>
-            <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
-              Tell your assistant how to respond in chat: tone, format, the overall feel, things to always or never do. Applied to every chat.
-            </p>
-            <Textarea
-              value={settings.userPrompt || ''}
-              onChange={(e) => setSettings((prev) => ({ ...prev, userPrompt: e.target.value }))}
-              onBlur={persistCurrentSettings}
-              maxLength={1500}
-              rows={4}
-              placeholder="e.g. Be concise and direct. Use bullet points. Skip the preamble."
-              className="resize-none text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 rounded-none px-0 shadow-none focus-visible:ring-0"
+  const renderWorkspace = () => (
+    <div className="space-y-5">
+      <SettingsGroup caption="What's out on the Home desktop. Where each widget sits and how big it is belongs to the desktop — hold one there to move, resize, or add another. Wallpaper lives in Appearance.">
+        {WIDGET_TYPES.filter((spec) => !spec.desktopOnly || hasMacApps()).map((spec) => {
+          const count = widgetLayout.filter((i) => i.type === spec.type).length;
+          return (
+            <SettingsRow
+              key={spec.type}
+              label={spec.label}
+              description={spec.description}
+              trailing={
+                spec.repeatable ? (
+                  // App widgets are added by picking an app, which happens on
+                  // the desktop where you can see where it lands.
+                  <span className="text-[11px] tabular-nums text-black/45 dark:text-white/40">
+                    {count === 0 ? 'None' : `${count} on desktop`}
+                  </span>
+                ) : (
+                  <Switch
+                    checked={count > 0}
+                    onCheckedChange={(checked) => {
+                      if (checked) addWidget(spec.type, { size: spec.defaultSize });
+                      else removeWidgetsOfType(spec.type);
+                    }}
+                    aria-label={`${spec.label} widget`}
+                    className={LG_SWITCH}
+                  />
+                )
+              }
             />
-            <div className="text-right text-[10px] text-gray-400 dark:text-gray-600">
-              {(settings.userPrompt || '').length}/1500
-            </div>
-          </div>
+          );
+        })}
+        <SettingsRow
+          label="Files icon"
+          description="A desktop icon for your Mac files."
+          trailing={
+            <Switch
+              checked={isHomeWidgetChecked('files')}
+              onCheckedChange={(checked) => toggleHomeWidget('files', checked)}
+              aria-label="Files desktop icon"
+              className={LG_SWITCH}
+            />
+          }
+        />
+      </SettingsGroup>
 
-          <div className="space-y-1.5">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">Response length</Label>
+      {macSync.available ? (
+        <SettingsGroup caption="The folders LYKN can see on this Mac — the same access as Local mode in the Vault. Files never leave your computer: they open in place, and LYKN AI can read them when you ask.">
+          <SettingsRow
+            label="Sync with Mac"
+            description={
+              macSync.enabled
+                ? 'On — LYKN can read the files you share below.'
+                : 'Off — LYKN can’t read anything on this Mac.'
+            }
+            trailing={
+              <Switch
+                checked={macSync.enabled}
+                disabled={macSync.busy}
+                onCheckedChange={(checked) => macSync.requestToggle(checked)}
+                aria-label="Sync with Mac"
+                className={LG_SWITCH}
+              />
+            }
+          />
+
+          {macSync.confirming ? (
+            <div className="px-3 py-2.5">
+              <p className="text-[11px] leading-snug text-black/55 dark:text-white/50">
+                Syncing lets LYKN read the files in the folders you pick. That
+                turns on Local mode. Files stay on this Mac, and LYKN asks before
+                anything is written, deleted, or changed.
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={macSync.confirmEnable}
+                  disabled={macSync.busy}
+                  className="rounded-md bg-black px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50 dark:bg-white dark:text-black"
+                >
+                  Turn on
+                </button>
+                <button
+                  type="button"
+                  onClick={macSync.cancelEnable}
+                  className="rounded-md px-2.5 py-1 text-[12px] font-medium text-black/60 transition-colors hover:bg-black/[0.05] dark:text-white/60 dark:hover:bg-white/[0.08]"
+                >
+                  Not now
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {macSync.enabled ? (
+            <SettingsRow
+              label="Share my whole home folder"
+              description={
+                macSync.syncAll
+                  ? 'LYKN can see everything in your home folder.'
+                  : `LYKN can only see the ${macSync.folders.length} folder${macSync.folders.length === 1 ? '' : 's'} below.`
+              }
+              trailing={
+                <Switch
+                  checked={macSync.syncAll}
+                  disabled={macSync.busy}
+                  onCheckedChange={(checked) => macSync.setSyncAll(checked)}
+                  aria-label="Share my whole home folder"
+                  className={LG_SWITCH}
+                />
+              }
+            />
+          ) : null}
+
+          {macSync.enabled && !macSync.syncAll
+            ? macSync.folders.map((folder) => (
+                <SettingsRow
+                  key={folder}
+                  label={folderLabel(folder)}
+                  description={shortenHome(folder)}
+                  trailing={
+                    <button
+                      type="button"
+                      onClick={() => macSync.removeFolder(folder)}
+                      aria-label={`Stop syncing ${folderLabel(folder)}`}
+                      className="rounded p-0.5 text-black/35 transition-colors hover:text-black/80 dark:text-white/35 dark:hover:text-white/80"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  }
+                />
+              ))
+            : null}
+
+          {macSync.enabled && !macSync.syncAll ? (
+            <SettingsRow
+              label="Sync a folder…"
+              description={macSync.empty ? "Nothing is synced yet — LYKN can't see any files." : undefined}
+              disabled={macSync.busy}
+              onClick={() => void macSync.addFolders()}
+              trailing={chevron}
+            />
+          ) : null}
+        </SettingsGroup>
+      ) : null}
+
+      {macMirror.available ? (
+        <SettingsGroup caption="Your Mac desktop, shown on the LYKN Home desktop. Items open in the apps that own them — LYKN never moves, renames, or deletes them.">
+          <SettingsRow
+            label="Sync my Desktop"
+            description={
+              macMirror.blocked
+                ? 'Local mode is off — turn it back on to see your files.'
+                : 'Show the files and folders from your Mac desktop on Home.'
+            }
+            trailing={
+              <Switch
+                checked={macMirror.enabled}
+                disabled={macMirror.busy}
+                onCheckedChange={(checked) => macMirror.requestToggle(checked)}
+                aria-label="Sync my Desktop"
+                className={LG_SWITCH}
+              />
+            }
+          />
+
+          {macMirror.confirming ? (
+            <div className="px-3 py-2.5">
+              <p className="text-[11px] leading-snug text-black/55 dark:text-white/50">
+                To show your desktop, LYKN needs to read the files on this Mac.
+                That turns on Local mode. Files stay on your Mac, and LYKN asks
+                before anything is written or changed.
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={macMirror.confirmEnable}
+                  disabled={macMirror.busy}
+                  className="rounded-md bg-black px-2.5 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50 dark:bg-white dark:text-black"
+                >
+                  Turn on
+                </button>
+                <button
+                  type="button"
+                  onClick={macMirror.cancelEnable}
+                  className="rounded-md px-2.5 py-1 text-[12px] font-medium text-black/60 transition-colors hover:bg-black/[0.05] dark:text-white/60 dark:hover:bg-white/[0.08]"
+                >
+                  Not now
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {macMirror.enabled
+            ? macMirror.folders.map((folder) => (
+                <SettingsRow
+                  key={folder}
+                  label={folderLabel(folder)}
+                  description={shortenHome(folder)}
+                  trailing={
+                    <button
+                      type="button"
+                      onClick={() => macMirror.removeFolder(folder)}
+                      aria-label={`Stop showing ${folderLabel(folder)} on Home`}
+                      className="rounded p-0.5 text-black/35 transition-colors hover:text-black/80 dark:text-white/35 dark:hover:text-white/80"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  }
+                />
+              ))
+            : null}
+
+          {macMirror.enabled ? (
+            <SettingsRow
+              label="Show another folder…"
+              disabled={macMirror.busy}
+              onClick={() => void macMirror.addFolders()}
+              trailing={chevron}
+            />
+          ) : null}
+        </SettingsGroup>
+      ) : null}
+    </div>
+  );
+
+  // Every control in this pane is either an inline pill on the right edge or a
+  // full-width field under its label, so the rows line up down the pane.
+  const renderAiPersonalization = () => (
+    <div className="space-y-5">
+      <GroupLabel>General</GroupLabel>
+      <SettingsGroup>
+        <SettingsRow
+          label="Default model"
+          trailing={
+            <Select
+              value={settings.aiModel}
+              onValueChange={(value) => {
+                if (!isModelAllowedForPlan(value, modelTier)) return;
+                const updated = { ...settings, aiModel: value };
+                setSettings(updated);
+                persistSettings(updated);
+              }}
+            >
+              <SelectTrigger className={cn(LG_SELECT_INLINE, LG_INLINE_W, 'justify-between')}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className={LG_SELECT_CONTENT}>
+                <ModelSelectOptions modelTier={modelTier} />
+              </SelectContent>
+            </Select>
+          }
+        />
+        <SettingsRow
+          label="Assistant name"
+          trailing={
+            <input
+              type="text"
+              value={settings.aiName || ''}
+              maxLength={40}
+              onChange={(e) => setSettings((prev) => ({ ...prev, aiName: e.target.value }))}
+              onBlur={persistCurrentSettings}
+              placeholder="LYKN"
+              aria-label="Assistant name"
+              className={cn(LG_FIELD_INLINE, LG_INLINE_W)}
+            />
+          }
+        />
+      </SettingsGroup>
+
+      <GroupLabel>Chat</GroupLabel>
+      <SettingsGroup caption="Applied to every new chat.">
+        <SettingsRow
+          label="Response length"
+          trailing={
             <Select
               value={settings.responseLength || 'medium'}
               onValueChange={(value) => {
@@ -865,26 +1403,34 @@ export default function SettingsModal({ isOpen, onClose }) {
                 persistSettings(updated);
               }}
             >
-              <SelectTrigger className="h-auto border-0 bg-transparent shadow-none rounded-none px-0 py-1 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors focus:ring-0 focus:ring-offset-0">
+              <SelectTrigger className={cn(LG_SELECT_INLINE, LG_INLINE_W, 'justify-between')}>
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="bg-panel border border-gray-200 dark:border-white/10 rounded-xl shadow-xl backdrop-blur-xl p-1">
+              <SelectContent className={LG_SELECT_CONTENT}>
                 <SelectItem value="concise">Concise</SelectItem>
                 <SelectItem value="medium">Balanced</SelectItem>
                 <SelectItem value="detailed">Detailed</SelectItem>
               </SelectContent>
             </Select>
-          </div>
-        </div>
+          }
+        />
+        <SettingsRow label="Custom instructions">
+          <Textarea
+            value={settings.userPrompt || ''}
+            onChange={(e) => setSettings((prev) => ({ ...prev, userPrompt: e.target.value }))}
+            onBlur={persistCurrentSettings}
+            maxLength={1500}
+            rows={4}
+            placeholder="Be concise and direct. Use bullet points. Skip the preamble."
+            className={cn(LG_TEXTAREA, 'mt-2')}
+          />
+        </SettingsRow>
+      </SettingsGroup>
 
-        <div className="space-y-4 pt-1 border-t border-black/[0.06] dark:border-white/[0.06]">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 pt-3">Voice</p>
-
-          <div className="space-y-1.5">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">Assistant voice</Label>
-            <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
-              Pick the voice your assistant speaks with in voice conversations. Tap a voice to preview it, then select your favorite.
-            </p>
+      <GroupLabel>Voice</GroupLabel>
+      <SettingsGroup caption="Tap a voice to hear it. Voice instructions shape how the assistant sounds in live voice, not how it writes.">
+        <SettingsRow label="Assistant voice">
+          <div className="mt-2">
             <VoicePicker
               selectedVoiceId={settings.voiceId || ''}
               onSelect={(voiceId, voiceName) => {
@@ -894,69 +1440,46 @@ export default function SettingsModal({ isOpen, onClose }) {
               }}
             />
           </div>
+        </SettingsRow>
+        <SettingsRow label="Voice instructions">
+          <Textarea
+            value={settings.voicePrompt || ''}
+            onChange={(e) => setSettings((prev) => ({ ...prev, voicePrompt: e.target.value }))}
+            onBlur={persistCurrentSettings}
+            maxLength={1500}
+            rows={4}
+            placeholder="Speak warmly and casually, like a close friend. Keep replies short."
+            className={cn(LG_TEXTAREA, 'mt-2')}
+          />
+        </SettingsRow>
+      </SettingsGroup>
 
-          <div className="space-y-1.5">
-            <Label className="text-xs text-gray-600 dark:text-gray-400">Voice instructions</Label>
-            <p className="text-[11px] text-gray-500 dark:text-gray-500 leading-relaxed">
-              How you want your assistant to sound and behave in live voice conversations: pace, warmth, formality, the overall feel.
-            </p>
-            <Textarea
-              value={settings.voicePrompt || ''}
-              onChange={(e) => setSettings((prev) => ({ ...prev, voicePrompt: e.target.value }))}
-              onBlur={persistCurrentSettings}
-              maxLength={1500}
-              rows={4}
-              placeholder="e.g. Speak warmly and casually, like a close friend. Keep replies short. Don't over-explain."
-              className="resize-none text-sm bg-transparent border-0 border-b border-gray-200 dark:border-gray-700 rounded-none px-0 shadow-none focus-visible:ring-0"
-            />
-            <div className="text-right text-[10px] text-gray-400 dark:text-gray-600">
-              {(settings.voicePrompt || '').length}/1500
-            </div>
-          </div>
-        </div>
-
-        <div className="pt-2">
-          <button
-            type="button"
-            onClick={() => {
-              persistCurrentSettings();
-              setAiPersonalizationSaveStatus('saved');
-            }}
-            className="text-sm font-medium text-black dark:text-white hover:opacity-70 transition-opacity"
-          >
-            {aiPersonalizationSaveStatus === 'saved' ? 'Saved' : 'Save'}
-          </button>
-        </div>
+      <div className="flex justify-end px-1">
+        <button
+          type="button"
+          onClick={saveAssistantSettings}
+          className="rounded-[10px] bg-black px-3.5 py-1.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90 dark:bg-white dark:text-black"
+        >
+          {assistantSaved ? 'Saved' : 'Save'}
+        </button>
       </div>
     </div>
   );
 
-  // ===========================================================
-  // IMPORT — upload a chat-history .zip from ChatGPT / Claude / etc.
-  // ===========================================================
   const renderImport = () => (
-    <div>
-      <SubViewHeader title="Import" onBack={() => setView('menu')} />
-      <div className="space-y-4">
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          Upload a .zip export from ChatGPT, Claude, or another assistant. LYKN will read every conversation and extract beliefs, preferences, and projects.
-        </p>
-
+    <div className="space-y-5">
+      <SettingsGroup caption="Upload a .zip export from ChatGPT, Claude, or another assistant. LYKN will read every conversation and extract beliefs, preferences, and projects.">
         {!importFile ? (
           <label
             onDragOver={(e) => { e.preventDefault(); setIsDraggingImport(true); }}
             onDragLeave={() => setIsDraggingImport(false)}
             onDrop={handleImportDrop}
-            className={`block px-0 py-4 cursor-pointer transition-colors border-b ${
-              isDraggingImport
-                ? 'border-black/40 dark:border-white/40'
-                : 'border-gray-200 dark:border-gray-700'
+            className={`block cursor-pointer px-3.5 py-4 transition-colors ${
+              isDraggingImport ? 'bg-black/[0.04] dark:bg-white/[0.06]' : ''
             }`}
           >
-            <p className="text-sm text-black/70 dark:text-white/70">
-              Drop your .zip here or click to choose
-            </p>
-            <p className="text-[11px] text-gray-500 dark:text-gray-500 mt-1">
+            <p className="text-[13px] text-black dark:text-white">Drop your .zip here or click to choose</p>
+            <p className="mt-0.5 text-[11px] text-black/45 dark:text-white/40">
               ChatGPT and Claude exports supported · up to 500 MB
             </p>
             <input
@@ -967,36 +1490,36 @@ export default function SettingsModal({ isOpen, onClose }) {
             />
           </label>
         ) : (
-          <div className="flex items-baseline justify-between gap-3 py-2 border-b border-gray-200 dark:border-gray-700">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-black dark:text-white truncate">{importFile.name}</p>
-              <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                {(importFile.size / (1024 * 1024)).toFixed(2)} MB
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setImportFile(null);
-                setImportStatus('idle');
-                setImportError('');
-              }}
-              disabled={importStatus === 'uploading'}
-              className="text-sm text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white transition-colors disabled:opacity-40"
-            >
-              Remove
-            </button>
-          </div>
+          <SettingsRow
+            label={importFile.name}
+            description={`${(importFile.size / (1024 * 1024)).toFixed(2)} MB`}
+            trailing={
+              <button
+                type="button"
+                onClick={() => {
+                  setImportFile(null);
+                  setImportStatus('idle');
+                  setImportError('');
+                }}
+                disabled={importStatus === 'uploading'}
+                className="text-[13px] text-[#007aff] disabled:opacity-40"
+              >
+                Remove
+              </button>
+            }
+          />
         )}
+      </SettingsGroup>
 
-        {importError && <p className="text-xs text-red-500">{importError}</p>}
+      {importError && <p className="px-1 text-[12px] text-red-500">{importError}</p>}
 
-        {importFile && (
+      {importFile && (
+        <div className="px-1">
           <button
             type="button"
             onClick={handleImportUpload}
             disabled={importStatus === 'uploading' || importStatus === 'done'}
-            className="text-sm font-medium text-black dark:text-white hover:opacity-70 transition-opacity disabled:opacity-40"
+            className="text-[13px] font-medium text-[#007aff] disabled:opacity-40"
           >
             {importStatus === 'uploading'
               ? 'Uploading…'
@@ -1004,14 +1527,11 @@ export default function SettingsModal({ isOpen, onClose }) {
                 ? 'Uploaded'
                 : 'Start import'}
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 
-  // ===========================================================
-  // PAYMENT
-  // ===========================================================
   const periodEndLabel = currentPeriodEnd
     ? new Date(currentPeriodEnd).toLocaleDateString(undefined, {
         month: 'short',
@@ -1021,129 +1541,287 @@ export default function SettingsModal({ isOpen, onClose }) {
     : null;
 
   const renderPayment = () => (
-    <div>
-      <SubViewHeader title="Payment" onBack={() => setView('menu')} />
-      {user ? (
-        <div className="space-y-5">
-          <div className="space-y-1">
-            <p className="text-xs text-gray-500 dark:text-gray-400">Current plan</p>
-            <p className="text-sm font-medium text-black dark:text-white">{planLabel(planId)}</p>
-            {cancelAtPeriodEnd && periodEndLabel && (
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                Cancels on {periodEndLabel}. You'll keep access until then.
-              </p>
-            )}
-          </div>
+    user ? (
+      <div className="space-y-5">
+        <SettingsGroup caption={cancelAtPeriodEnd && periodEndLabel
+          ? `Cancels on ${periodEndLabel}. You'll keep access until then.`
+          : null}
+        >
+          <SettingsRow
+            label="Current plan"
+            onClick={() => setBillingTab('usage')}
+            trailing={
+              <span className="flex items-center text-[13px] text-black/45 dark:text-white/45">
+                {planLabel(planId)}
+                {chevron}
+              </span>
+            }
+          />
+          <SettingsRow
+            label="Usage this month"
+            description="Requests, credits, and what spent them."
+            onClick={() => setBillingTab('usage')}
+            trailing={chevron}
+          />
+        </SettingsGroup>
 
-          <div className="flex flex-col">
-            {hasStripeCustomer ? (
-              <button
-                type="button"
-                onClick={handleManageSubscription}
-                disabled={portalBusy}
-                className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors disabled:opacity-50"
-              >
-                {portalBusy ? 'Opening…' : 'Manage subscription'}
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => { onClose(); nav('/billing'); }}
-                className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
-              >
-                Upgrade plan
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => { onClose(); nav('/billing'); }}
-              className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
-            >
-              {hasStripeCustomer ? 'Change plan' : 'View plans'}
-            </button>
-            {hasActiveSubscription && !cancelAtPeriodEnd && (
-              <button
-                type="button"
-                onClick={handleCancelSubscription}
-                disabled={portalBusy}
-                className="w-full text-left px-0 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors disabled:opacity-50"
-              >
-                {portalBusy ? 'Opening…' : 'Cancel subscription'}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => { onClose(); nav('/billing#faq'); }}
-              className="w-full text-left px-0 py-2 text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
-            >
-              Billing FAQ
-            </button>
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          Sign in from the Account screen to manage your subscription.
-        </p>
-      )}
-    </div>
+        <SettingsGroup caption="Credits cover anything past your plan's included usage, and they never expire.">
+          <SettingsRow
+            label="Top up credits"
+            onClick={() => setBillingTab('topup')}
+            trailing={chevron}
+          />
+        </SettingsGroup>
+
+        <SettingsGroup>
+          <SettingsRow
+            label={hasActiveSubscription ? 'Change plan' : 'Upgrade plan'}
+            onClick={() => setBillingTab('plans')}
+            trailing={chevron}
+          />
+          {hasStripeCustomer && (
+            <SettingsRow
+              label={portalBusy ? 'Opening…' : 'Payment method & invoices'}
+              onClick={handleManageSubscription}
+              disabled={portalBusy}
+              trailing={chevron}
+            />
+          )}
+          {hasActiveSubscription && !cancelAtPeriodEnd && (
+            <SettingsRow
+              label={portalBusy ? 'Opening…' : 'Cancel subscription'}
+              danger
+              onClick={handleCancelSubscription}
+              disabled={portalBusy}
+            />
+          )}
+          <SettingsRow
+            label="Billing FAQ"
+            onClick={() => { onClose(); nav('/billing#faq'); }}
+            trailing={chevron}
+          />
+        </SettingsGroup>
+
+        <BillingDialog
+          open={!!billingTab}
+          onOpenChange={(open) => { if (!open) setBillingTab(null); }}
+          initialTab={billingTab || 'usage'}
+          onNavigateAway={onClose}
+        />
+      </div>
+    ) : (
+      <SettingsGroup caption="Sign in from Account to manage your subscription.">
+        <SettingsRow
+          label="Go to Account"
+          onClick={() => setView('account')}
+          trailing={chevron}
+        />
+      </SettingsGroup>
+    )
   );
 
-  // ===========================================================
-  // HELP
-  // ===========================================================
-  const renderHelp = () => (
-    <div>
-      <SubViewHeader title="Help" onBack={() => setView('menu')} />
-      <div className="space-y-3">
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          Need a hand? We respond to every message.
-        </p>
-        <a
+  const renderKeyboard = () => (
+    <SettingsGroup caption="Shortcuts are fixed for now — remapping is not available yet.">
+      {KEY_BINDINGS.map((binding) => (
+        <SettingsRow
+          key={binding.label}
+          label={binding.label}
+          description={binding.description}
+          trailing={
+            <span className="flex items-center gap-1">
+              {binding.keys.map((key) => (
+                <KeyCap key={key}>{key}</KeyCap>
+              ))}
+            </span>
+          }
+        />
+      ))}
+    </SettingsGroup>
+  );
+
+  const renderAdvanced = () => (
+    <div className="space-y-5">
+      <SettingsGroup caption="Restores the accent, typeface, density, corner radius, and accessibility toggles on this device.">
+        <SettingsRow
+          label="Reset appearance to defaults"
+          onClick={() => {
+            saveAppearance(DEFAULT_APPEARANCE);
+            setView('appearance');
+          }}
+          trailing={chevron}
+        />
+      </SettingsGroup>
+
+      <GroupLabel>Import</GroupLabel>
+      {IMPORT_ENABLED ? renderImport() : (
+        <SettingsGroup caption="Bring a .zip export from ChatGPT or Claude and LYKN will read every conversation to extract beliefs, preferences, and projects.">
+          <SettingsRow
+            label="Import chat history"
+            description="ChatGPT and Claude exports"
+            disabled
+            trailing={
+              <span className="text-[11px] text-black/35 dark:text-white/30">Soon</span>
+            }
+          />
+        </SettingsGroup>
+      )}
+
+      <GroupLabel>Support</GroupLabel>
+      <SettingsGroup caption="Need a hand? We respond to every message.">
+        <SettingsRow
           href="mailto:support@lykn.ai"
-          className="block text-sm font-medium text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white transition-colors"
-        >
-          support@lykn.ai
-        </a>
-      </div>
+          label="Email support"
+          trailing={
+            <span className="text-[13px] text-black/45 dark:text-white/45">support@lykn.ai</span>
+          }
+        />
+      </SettingsGroup>
     </div>
   );
 
   const renderView = () => {
     switch (view) {
       case 'account': return renderAccount();
-      case 'connections': return renderConnections();
+      case 'workspace': return renderWorkspace();
+      case 'assistant': return renderAiPersonalization();
+      case 'notifications': return renderNotifications();
       case 'privacy': return renderPrivacy();
-      case 'display': return renderDisplay();
-      case 'aiPersonalization': return renderAiPersonalization();
-      case 'import':  return renderImport();
-      case 'payment': return renderPayment();
-      case 'help':    return renderHelp();
-      default:        return renderMenu();
+      case 'appearance': return renderAppearance();
+      case 'integrations': return renderConnections();
+      case 'billing': return renderPayment();
+      case 'keyboard': return renderKeyboard();
+      case 'advanced': return renderAdvanced();
+      default: return renderAccount();
     }
   };
 
-  return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent
-        // flex column with an inner scroll area (not a scrolling DialogContent)
-        // so the "Settings" header and the ✕ stay pinned while long views
-        // (AI Personalization, Connections) scroll underneath.
-        className={`bg-panel border-black/10 dark:border-transparent text-black dark:text-white backdrop-blur-md max-h-[90vh] flex flex-col overflow-hidden ${
-          view === 'connections' ? 'max-w-2xl' : 'max-w-md'
-        }`}
-      >
-        <DialogHeader>
-          <DialogTitle className="text-black dark:text-white">Settings</DialogTitle>
-        </DialogHeader>
+  const renderShell = (content) => {
+    const body = (
+      <>
+        <aside className="lykn-settings-sidebar flex w-[224px] shrink-0 flex-col">
+          <TrafficLights
+            onClose={closeWindow}
+            onMinimize={minimizeWindow}
+            onZoom={zoomWindow}
+            drag={embedded ? titleDrag : undefined}
+          />
+          <div className="relative mx-2.5 mb-2.5">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-black/35 dark:text-white/35" />
+            <input
+              type="search"
+              value={navQuery}
+              onChange={(e) => setNavQuery(e.target.value)}
+              placeholder="Search"
+              className="lg-stepper h-[28px] w-full rounded-full border-0 pl-8 pr-2.5 text-[12px] text-black outline-none dark:text-white placeholder:text-black/35 dark:placeholder:text-white/35"
+            />
+          </div>
+          <div className="lykn-settings-scroll min-h-0 flex-1 overflow-y-auto px-2.5 pb-2">
+            {showAccountCard && (
+              <button
+                type="button"
+                data-active={view === 'account' || undefined}
+                onClick={() => setView('account')}
+                className="lg-nav-item mb-2 flex w-full items-center gap-2.5 rounded-[13px] px-2 py-1.5 text-left"
+              >
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt="" className="h-8 w-8 rounded-full object-cover" />
+                ) : (
+                  <span
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-[13px] font-medium"
+                    style={{
+                      background: 'var(--lykn-accent-swatch, hsl(var(--lykn-accent)))',
+                      color: 'hsl(var(--lykn-accent-fg))',
+                    }}
+                  >
+                    {user ? profileInitial : <User className="h-3.5 w-3.5" />}
+                  </span>
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium text-black dark:text-white">
+                    {user ? profileName : 'Sign in'}
+                  </span>
+                  <span className="block truncate text-[11px] text-black/45 dark:text-white/40">
+                    {user?.email || 'Account'}
+                  </span>
+                </span>
+              </button>
+            )}
+            <div className="flex flex-col gap-0.5">
+              {filteredNav.map((item) => (
+                <SidebarItem
+                  key={item.id}
+                  item={item}
+                  active={view === item.id}
+                  onSelect={setView}
+                />
+              ))}
+              {!showAccountCard && filteredNav.length === 0 && (
+                <p className="px-2 py-3 text-[12px] text-black/40 dark:text-white/35">No Results</p>
+              )}
+            </div>
+          </div>
+          {user && (
+            <div className="px-2.5 pb-3 pt-1">
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="flex w-full items-center gap-2.5 rounded-[11px] px-2.5 py-[6px] text-[13.5px] text-red-600 transition-colors dark:text-red-400 hover:bg-red-500/[0.08] dark:hover:bg-red-500/[0.1]"
+              >
+                <LogOut className="lg-nav-icon" strokeWidth={1.9} />
+                Log Out
+              </button>
+            </div>
+          )}
+        </aside>
+        <section className="lykn-settings-pane flex min-w-0 flex-1 flex-col">
+          {content}
+        </section>
+      </>
+    );
 
-        <div
-          className={`min-w-0 py-2 flex-1 overflow-y-auto overflow-x-hidden ${
-            view === 'aiPersonalization' ? 'scrollbar-hide' : ''
-          }`}
-        >
-          {renderView()}
+    if (embedded) {
+      return (
+        <div className={windowClass} role="document" aria-label="Settings">
+          {body}
         </div>
-      </DialogContent>
-    </Dialog>
+      );
+    }
+
+    return (
+      <Dialog open={isOpen} onOpenChange={onClose}>
+        <DialogContent hideClose className={windowClass}>
+          <DialogTitle className="sr-only">Settings</DialogTitle>
+          {body}
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
+  if (loading) {
+    return renderShell(
+      <div className="flex flex-1 items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-black/15 border-t-black/70 dark:border-white/15 dark:border-t-white/70" />
+      </div>,
+    );
+  }
+
+  return renderShell(
+    <>
+      <div
+        className="flex h-[68px] shrink-0 touch-none select-none items-end px-7 pb-3.5"
+        {...(embedded ? titleDrag : {})}
+      >
+        <h2 className="text-[24px] font-semibold leading-none tracking-[-0.01em] text-black dark:text-white">
+          {VIEW_TITLES[view] || 'Settings'}
+        </h2>
+      </div>
+      <div className={cn(
+        'lykn-settings-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-7 pb-7 pt-3',
+        view === 'assistant' && 'scrollbar-hide',
+        view === 'integrations' && 'px-5',
+      )}>
+        {renderView()}
+      </div>
+    </>,
   );
 }

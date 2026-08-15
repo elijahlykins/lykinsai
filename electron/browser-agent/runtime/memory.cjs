@@ -37,6 +37,47 @@ function createMemoryStore({ userDataPath } = {}) {
     return true;
   }
 
+  /** Loose equality so a re-learned note does not accumulate near-duplicates. */
+  function noteKey(text) {
+    return String(text || "")
+      .toLowerCase()
+      .replace(/\(\d{4}-\d{2}-\d{2}\)\s*$/, "")
+      .replace(/[^a-z0-9 ]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /**
+   * Only so much site memory can be injected into a prompt, so an unbounded
+   * file would let stale notes crowd out what was just learned. Keep the most
+   * recent entries and drop the rest.
+   */
+  const MAX_NOTES_PER_SITE = 24;
+
+  async function appendNotesDeduped(name, notes) {
+    if (!baseDir) return 0;
+    const filePath = path.join(baseDir, name);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const existing = await readUserFile(name);
+    const lines = existing ? existing.split("\n").filter((l) => l.trim()) : [];
+    const seen = new Set(lines.map(noteKey));
+    let added = 0;
+    const today = new Date().toISOString().slice(0, 10);
+    for (const note of notes) {
+      const text = String(note || "").trim().replace(/\n+/g, " ");
+      if (!text) continue;
+      const key = noteKey(text);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      lines.push(`- ${text} (${today})`);
+      added += 1;
+    }
+    if (!added) return 0;
+    const kept = lines.slice(-MAX_NOTES_PER_SITE);
+    await fs.writeFile(filePath, `${kept.join("\n")}\n`, "utf8");
+    return added;
+  }
+
   /** Durable user memory + preferences, seeds merged with learned entries. */
   async function getUserMemory() {
     const parts = [];
@@ -59,13 +100,41 @@ function createMemoryStore({ userDataPath } = {}) {
     }
   }
 
+  /**
+   * The host plus its parent domains, most specific first.
+   *
+   * Big products shard their app across regional hosts —
+   * `us21.admin.mailchimp.com` today, `us14.` for the next account. Knowledge
+   * about the product belongs to `mailchimp.com` and has to reach every one of
+   * them, or a hand-written playbook never loads for anybody.
+   */
+  function hostLookupChain(host) {
+    const labels = String(host || "").split(".").filter(Boolean);
+    const chain = [];
+    for (let i = 0; i + 2 <= labels.length; i += 1) {
+      chain.push(labels.slice(i).join("."));
+    }
+    return chain;
+  }
+
   /** Learned + seeded knowledge about the current site. */
   async function getWebsiteMemory(urlOrHost) {
     const host = urlOrHost?.includes?.("/") ? hostFromUrl(urlOrHost) : String(urlOrHost || "").toLowerCase();
     if (!host) return "";
-    const seed = instructions.loadWebsiteSeed(host);
-    const learned = await readUserFile(path.join("websites", `${host}.md`));
-    const parts = [seed, learned].filter(Boolean);
+    const parts = [];
+    const seen = new Set();
+    for (const candidate of hostLookupChain(host)) {
+      const seed = instructions.loadWebsiteSeed(candidate);
+      // Notes are written per exact host, so only that file is read back; the
+      // parent domains contribute hand-written product knowledge.
+      const learned = candidate === host ? await readUserFile(path.join("websites", `${host}.md`)) : "";
+      for (const text of [seed, learned]) {
+        if (text && !seen.has(text)) {
+          seen.add(text);
+          parts.push(text);
+        }
+      }
+    }
     return parts.length ? `# Known about ${host}\n${parts.join("\n")}` : "";
   }
 
@@ -80,6 +149,24 @@ function createMemoryStore({ userDataPath } = {}) {
     return appendUserFile(path.join("websites", `${host}.md`), text);
   }
 
+  /**
+   * Persist several notes about a site at once, skipping anything already
+   * known. This is what turns a finished run into a head start on the next one.
+   */
+  async function rememberWebsiteNotes(urlOrHost, notes) {
+    const host = urlOrHost?.includes?.("/") ? hostFromUrl(urlOrHost) : String(urlOrHost || "").toLowerCase();
+    if (!host) return 0;
+    const safe = (Array.isArray(notes) ? notes : [])
+      .map((n) => String(n || "").trim())
+      .filter((n) => n && n.length >= 12 && n.length <= 300 && !SECRET_RE.test(n));
+    if (!safe.length) return 0;
+    try {
+      return await appendNotesDeduped(path.join("websites", `${host}.md`), safe);
+    } catch {
+      return 0;
+    }
+  }
+
   async function rememberUserFact(fact) {
     const text = String(fact || "").trim();
     if (!text || SECRET_RE.test(text)) return false;
@@ -90,6 +177,7 @@ function createMemoryStore({ userDataPath } = {}) {
     getUserMemory,
     getWebsiteMemory,
     rememberWebsiteNote,
+    rememberWebsiteNotes,
     rememberUserFact,
     hostFromUrl,
   };

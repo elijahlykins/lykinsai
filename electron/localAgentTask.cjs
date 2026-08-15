@@ -26,6 +26,10 @@ const DECISION_SCHEMA = {
         "local_search_files",
         "local_write_file",
         "local_run_command",
+        "local_synced_folders",
+        "local_running_apps",
+        "local_read_app",
+        "local_open_app",
       ],
     },
     args: {
@@ -37,6 +41,7 @@ const DECISION_SCHEMA = {
         cwd: { type: "string" },
         namePattern: { type: "string" },
         query: { type: "string" },
+        app: { type: "string" },
       },
       additionalProperties: false,
     },
@@ -59,10 +64,15 @@ const SYSTEM_PROMPT = [
   "- local_search_files { path, namePattern, query } — find files by name/text (read-only).",
   "- local_write_file { path, content } — create/overwrite a file (asks the user first).",
   "- local_run_command { command, cwd } — run a shell command (safe ones run immediately; risky ones ask first).",
+  "- local_synced_folders {} — list the folders the user synced with LYKN (your filesystem scope).",
+  "- local_running_apps {} — see which apps are open and which is frontmost.",
+  "- local_read_app { app } — read what's showing inside an app (Spotify: current track; browsers: active tab; others: on-screen text via Accessibility). Omit app for the frontmost one.",
+  "- local_open_app { app } — open a Mac app and bring it into view on the user's desktop, like clicking it in the dock (runs immediately).",
   "",
   "Rules:",
   "- Explore with reads before writing or running mutating commands.",
   "- Paths may be absolute, start with ~, or be relative to the home folder.",
+  "- File access is limited to the user's synced folders — check local_synced_folders if a path is refused.",
   "- When the goal is done, return kind=finish with a concise summary of what you did.",
   "- If you truly cannot proceed without the user, return kind=ask_user with a specific question.",
 ].join("\n");
@@ -297,6 +307,18 @@ function looksLikeLocalSystemAsk(text) {
   }
   // Explicit "on my computer/mac/machine/laptop/disk" framing.
   if (/\b(on|from|in)\s+(my\s+)?(computer|mac|macbook|machine|laptop|desktop|downloads|hard\s*drive|disk|filesystem|file system)\b/.test(t)) {
+    return true;
+  }
+  // App-content asks ("what song is this", "what's playing", "what's open in
+  // Cursor") — answered by local_read_app / local_running_apps.
+  if (/\b(what('| i)?s|whats)\s+(playing|open|on( the| my)? screen)\b/.test(t)) return true;
+  if (/\b(current|this|that) (song|track|tab|app|window)\b/.test(t)) return true;
+  if (/\b(now playing|what song|what track|which app)\b/.test(t)) return true;
+  // App-launch asks ("open Spotify", "pull up Safari") — answered by
+  // local_open_app. Require the word app/application or a well-known app name
+  // so generic "open"s ("open an account") don't trip it.
+  if (/\b(open|launch|start|pull up|bring up)\b.*\b(app|application)\b/.test(t)) return true;
+  if (/\b(open|launch|start|pull up|bring up|switch to)\s+(the\s+)?(spotify|safari|chrome|firefox|arc|finder|notes|music|messages|imessage|mail|calendar|terminal|cursor|slack|discord|figma|photoshop|xcode|vs ?code|facetime|photos|reminders|preview|pages|numbers|keynote|obsidian|notion|zoom|whatsapp|telegram)\b/.test(t)) {
     return true;
   }
   // Terminal / shell commands.

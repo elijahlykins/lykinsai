@@ -6,7 +6,7 @@
          connect autocomplete.clearbit.com → the "+ add your app" search. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'unsafe-inline'; media-src 'self'; img-src 'self' https:; script-src 'unsafe-inline'; connect-src https://autocomplete.clearbit.com"
+      content="default-src 'self'; style-src 'unsafe-inline'; media-src 'self'; img-src 'self' https: data:; script-src 'unsafe-inline'; connect-src https://autocomplete.clearbit.com"
     />
     <title>Welcome to LYKN</title>
     <style>
@@ -235,6 +235,274 @@
         color: rgba(255, 255, 255, 0.55);
       }
 
+      /* ── Stage macsync: folders to sync ── */
+      .folder-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 14px;
+        max-width: 460px;
+      }
+      .folder-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        padding: 10px 16px;
+        border-radius: 12px;
+        border: 1.5px solid rgba(255, 255, 255, 0.22);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.85);
+        font: inherit;
+        font-size: 14.5px;
+        cursor: pointer;
+        transition: background 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease;
+      }
+      .folder-chip svg {
+        opacity: 0.8;
+      }
+      .folder-chip:hover {
+        border-color: rgba(255, 255, 255, 0.45);
+      }
+      .folder-chip.picked {
+        background: #fff;
+        border-color: #fff;
+        color: #0b0c10;
+      }
+      .folder-grid.all-on .folder-chip {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+      .hw-folders {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 18px 20px;
+        transition: opacity 200ms ease;
+      }
+      .hw-folders.dim {
+        opacity: 0.35;
+      }
+      .hw-folder-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 12px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.07);
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 13.5px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        animation: hwFolderIn 260ms ease both;
+      }
+      .hw-folder-row svg {
+        flex: none;
+        opacity: 0.75;
+      }
+      @keyframes hwFolderIn {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      /* ── Stage background: pick the Studio backdrop ── */
+      .bg-options {
+        display: flex;
+        gap: 14px;
+        margin-bottom: 18px;
+        max-width: 480px;
+      }
+      .bg-card {
+        flex: 1;
+        padding: 0;
+        border: 1.5px solid rgba(255, 255, 255, 0.22);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.85);
+        font: inherit;
+        cursor: pointer;
+        overflow: hidden;
+        text-align: left;
+        transition: border-color 150ms ease, background 150ms ease;
+      }
+      .bg-card:hover {
+        border-color: rgba(255, 255, 255, 0.45);
+      }
+      .bg-card.picked {
+        border-color: #fff;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .bg-card .bg-thumb {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        aspect-ratio: 16 / 10;
+        background: rgba(255, 255, 255, 0.05);
+        overflow: hidden;
+      }
+      .bg-card .bg-thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .bg-card .bg-thumb svg {
+        opacity: 0.55;
+      }
+      .bg-card .bg-label {
+        display: block;
+        padding: 10px 14px 12px;
+      }
+      .bg-card .bg-label b {
+        display: block;
+        font-size: 14.5px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .bg-card .bg-label span {
+        display: block;
+        margin-top: 2px;
+        font-size: 12.5px;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      /* Preview: the chosen image fills the mini LYKN window, chrome on top. */
+      .hw-bg {
+        position: absolute;
+        inset: 0;
+        border-radius: 18px;
+        overflow: hidden;
+        opacity: 0;
+        transition: opacity 300ms ease;
+      }
+      .hw-bg.on {
+        opacity: 1;
+      }
+      .hw-bg img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .hw-bg::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: rgba(9, 11, 16, 0.35);
+      }
+
+      /* ── Stage widgets: what sits on the Home desktop ── */
+      .widget-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 16px;
+        max-width: 480px;
+      }
+      .widget-card {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        padding: 11px 13px;
+        border: 1.5px solid rgba(255, 255, 255, 0.22);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.85);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition: border-color 150ms ease, background 150ms ease;
+      }
+      .widget-card:hover {
+        border-color: rgba(255, 255, 255, 0.45);
+      }
+      .widget-card.picked {
+        border-color: #fff;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .widget-card .wg-icon {
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.75);
+        transition: background 150ms ease, color 150ms ease;
+      }
+      .widget-card.picked .wg-icon {
+        background: rgba(255, 255, 255, 0.18);
+        color: #fff;
+      }
+      .widget-card .wg-label {
+        min-width: 0;
+      }
+      .widget-card .wg-label b {
+        display: block;
+        font-size: 14px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .widget-card .wg-label span {
+        display: block;
+        margin-top: 2px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      /* Preview: a mini Home desktop laying out the picked widgets. */
+      .hang-window .hw-widgets {
+        position: absolute;
+        top: 19%;
+        left: 8%;
+        right: 26%;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        grid-auto-rows: 48px;
+        grid-auto-flow: dense;
+        gap: 10px;
+        transition: opacity 200ms ease;
+      }
+      .hang-window .hw-widgets.dim {
+        opacity: 0.35;
+      }
+      .hw-widget {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 8px 9px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.09);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+        overflow: hidden;
+        animation: hw-pop 340ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+      }
+      .hw-widget b {
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--wg, rgba(255, 255, 255, 0.75));
+        white-space: nowrap;
+      }
+      .hw-widget i {
+        display: block;
+        height: 5px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .hw-widget.wide {
+        grid-column: span 2;
+      }
+      .hw-widget.tall {
+        grid-row: span 2;
+      }
+
       /* Right-side glass preview cards. */
       .setup-preview {
         flex: 1 1 45%;
@@ -433,6 +701,49 @@
         font-size: 14px;
         color: #fca5a5;
       }
+      .or-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: min(440px, 100%);
+        margin-top: 18px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .or-row::before,
+      .or-row::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: rgba(255, 255, 255, 0.18);
+      }
+      .google-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        width: min(440px, 100%);
+        margin-top: 14px;
+        padding: 12px 22px;
+        border: 0;
+        border-radius: 12px;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        color: #0b0c10;
+        background: rgba(255, 255, 255, 0.92);
+        cursor: pointer;
+        transition: transform 120ms ease, background 150ms ease;
+      }
+      .google-btn:hover {
+        background: #fff;
+        transform: scale(1.02);
+      }
+      .google-btn svg {
+        width: 18px;
+        height: 18px;
+        flex: none;
+      }
       .account-link {
         color: rgba(255, 255, 255, 0.82);
         text-decoration: underline;
@@ -529,7 +840,10 @@
         transform: scale(1);
       }
       #import-skip,
-      #logins-skip {
+      #logins-skip,
+      #macsync-skip,
+      #background-skip,
+      #widgets-skip {
         position: absolute;
         left: calc((100% - min(1120px, 84vw)) / 2);
         bottom: 6.4vh;
@@ -546,7 +860,10 @@
         transition: background 150ms ease;
       }
       #import-skip:hover,
-      #logins-skip:hover {
+      #logins-skip:hover,
+      #macsync-skip:hover,
+      #background-skip:hover,
+      #widgets-skip:hover {
         background: rgba(255, 255, 255, 0.16);
       }
 
@@ -1543,6 +1860,8 @@
               <input class="field" id="email" type="email" placeholder="you@company.com" spellcheck="false" autocomplete="email" />
             </div>
             <div class="account-error" id="email-error"></div>
+            <div class="or-row"><span>or</span></div>
+            <button class="google-btn google-signin" type="button"><svg viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92a8.78 8.78 0 0 0 2.68-6.62Z"/><path fill="#34A853" d="M9 18a8.6 8.6 0 0 0 5.96-2.18l-2.92-2.26a5.4 5.4 0 0 1-8.09-2.85H.96v2.33A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.95 10.71a5.4 5.4 0 0 1 0-3.42V4.96H.96a9 9 0 0 0 0 8.08l2.99-2.33Z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A8.65 8.65 0 0 0 9 0 9 9 0 0 0 .96 4.96l2.99 2.33A5.36 5.36 0 0 1 9 3.58Z"/></svg><span>Continue with Google</span></button>
             <button class="existing-account" id="have-account-email">I already have an account</button>
           </div>
           <div class="setup-preview"><div class="pv-window pv"><div class="dots"><i></i><i></i><i></i></div><div class="pv-bubble">Your workspace, ready when you are.</div><div class="pv-ask">Ask LYKN anything <span class="pv-send">&#8593;</span></div></div></div>
@@ -1574,6 +1893,8 @@
               </label>
             </div>
             <div class="account-error" id="signup-error"></div>
+            <div class="or-row"><span>or</span></div>
+            <button class="google-btn google-signin" type="button"><svg viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92a8.78 8.78 0 0 0 2.68-6.62Z"/><path fill="#34A853" d="M9 18a8.6 8.6 0 0 0 5.96-2.18l-2.92-2.26a5.4 5.4 0 0 1-8.09-2.85H.96v2.33A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.95 10.71a5.4 5.4 0 0 1 0-3.42V4.96H.96a9 9 0 0 0 0 8.08l2.99-2.33Z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A8.65 8.65 0 0 0 9 0 9 9 0 0 0 .96 4.96l2.99 2.33A5.36 5.36 0 0 1 9 3.58Z"/></svg><span>Continue with Google</span></button>
             <button class="existing-account" id="have-account-signup">I already have an account</button>
           </div>
           <div class="setup-preview"><div class="pv-window pv"><div class="dots"><i></i><i></i><i></i></div><div class="pv-bubble">A private workspace for your work.</div><div class="pv-ask">Ask LYKN anything <span class="pv-send">&#8593;</span></div></div></div>
@@ -1594,6 +1915,8 @@
               <div class="password-field"><input class="field" id="login-password" type="password" autocomplete="current-password" /><button class="password-toggle" type="button" aria-label="Show password"><svg class="eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></svg><svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" /><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68" /><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.39-1.61" /><line x1="2" x2="22" y1="2" y2="22" /></svg></button></div>
             </div>
             <div class="account-error" id="login-error"></div>
+            <div class="or-row"><span>or</span></div>
+            <button class="google-btn google-signin" type="button"><svg viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92a8.78 8.78 0 0 0 2.68-6.62Z"/><path fill="#34A853" d="M9 18a8.6 8.6 0 0 0 5.96-2.18l-2.92-2.26a5.4 5.4 0 0 1-8.09-2.85H.96v2.33A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M3.95 10.71a5.4 5.4 0 0 1 0-3.42V4.96H.96a9 9 0 0 0 0 8.08l2.99-2.33Z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A8.65 8.65 0 0 0 9 0 9 9 0 0 0 .96 4.96l2.99 2.33A5.36 5.36 0 0 1 9 3.58Z"/></svg><span>Continue with Google</span></button>
             <button class="existing-account" id="login-back">&#8592; Back</button>
           </div>
           <div class="setup-preview"><div class="pv-window pv"><div class="dots"><i></i><i></i><i></i></div><div class="pv-bubble">Pick up where you left off.</div><div class="pv-ask">Ask LYKN anything <span class="pv-send">&#8593;</span></div></div></div>
@@ -1715,6 +2038,123 @@
         </div>
         <button id="logins-skip">Skip</button>
         <button class="cta" id="logins-import">Sync browser <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage macsync: sync folders with the Mac -->
+      <div class="stage" id="stage-macsync">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Sync LYKN with your Mac</h1>
+            <p class="sub" style="margin-bottom: 24px">
+              Pick the folders LYKN can see. Files never leave your Mac &mdash;
+              they open right inside LYKN, and LYKN AI can read them when you ask.
+            </p>
+            <div class="folder-grid" id="folder-grid"></div>
+            <label class="opt" style="padding: 10px 0 6px">
+              <input type="checkbox" id="opt-sync-all" />
+              <span class="box">
+                <svg width="14" height="11" viewBox="0 0 14 11" fill="none">
+                  <path d="M1 5.5 5 9.5 13 1.5" stroke="#0b0c10" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="label">
+                <b>Sync everything</b>
+                <span>Give LYKN access to your whole home folder.</span>
+              </span>
+            </label>
+            <p class="sub" style="font-size: 13.5px">
+              Everything stays on this Mac. You can change synced folders anytime
+              from Local Mode in the Vault.
+            </p>
+          </div>
+          <div class="setup-preview">
+            <div class="hang-window">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <span class="hw-tab"></span>
+              <div class="hw-folders dim" id="hw-folders"></div>
+            </div>
+          </div>
+        </div>
+        <button id="macsync-skip">Skip</button>
+        <button class="cta" id="macsync-next" disabled>Sync with Mac <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage background: bring the Mac's wallpaper (or any image) into LYKN -->
+      <div class="stage" id="stage-background">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Bring your background with you</h1>
+            <p class="sub" style="margin-bottom: 24px">
+              Set the backdrop LYKN opens with &mdash; use the wallpaper already
+              on your Mac, or pick any image on your machine.
+            </p>
+            <div class="bg-options">
+              <button type="button" class="bg-card" id="bg-card-wallpaper">
+                <span class="bg-thumb" id="bg-thumb-wallpaper">
+                  <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="4" width="20" height="13" rx="2" />
+                    <path d="M8 21h8M12 17v4" />
+                  </svg>
+                </span>
+                <span class="bg-label">
+                  <b>Use my Mac wallpaper</b>
+                  <span>Match the desktop you already have.</span>
+                </span>
+              </button>
+              <button type="button" class="bg-card" id="bg-card-file">
+                <span class="bg-thumb" id="bg-thumb-file">
+                  <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="3" />
+                    <circle cx="9" cy="9" r="2" />
+                    <path d="m21 15-4.5-4.5L6 21" />
+                  </svg>
+                </span>
+                <span class="bg-label">
+                  <b>Choose an image&hellip;</b>
+                  <span>Any photo or image on this Mac.</span>
+                </span>
+              </button>
+            </div>
+            <p class="sub" style="font-size: 13.5px">
+              LYKN keeps its own copy, and you can change it anytime.
+            </p>
+          </div>
+          <div class="setup-preview">
+            <div class="hang-window">
+              <div class="hw-bg" id="hw-bg"><img id="hw-bg-img" alt="" /></div>
+              <div class="dots"><i></i><i></i><i></i></div>
+              <span class="hw-tab"></span>
+            </div>
+          </div>
+        </div>
+        <button id="background-skip">Skip</button>
+        <button class="cta" id="background-next" disabled>Set background <span class="key">&#9166;</span></button>
+      </div>
+
+      <!-- Stage widgets: what LYKN keeps on the Home desktop -->
+      <div class="stage" id="stage-widgets">
+        <div class="setup-inner">
+          <div class="setup-copy">
+            <h1 style="margin-bottom: 20px">Choose your widgets</h1>
+            <p class="sub" style="margin-bottom: 24px">
+              Pick what sits on your LYKN desktop. They stay live &mdash; your
+              day, your tasks, and everything you've saved, one glance away.
+            </p>
+            <div class="widget-grid" id="widget-grid"></div>
+            <p class="sub" style="font-size: 13.5px">
+              Add or remove widgets anytime from Settings &rarr; Display.
+            </p>
+          </div>
+          <div class="setup-preview">
+            <div class="hang-window">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <span class="hw-tab"></span>
+              <div class="hw-widgets dim" id="hw-widgets"></div>
+            </div>
+          </div>
+        </div>
+        <button id="widgets-skip">Skip</button>
+        <button class="cta" id="widgets-next">Add widgets <span class="key">&#9166;</span></button>
       </div>
 
       <!-- Stage 8: favorite apps -->
@@ -1976,6 +2416,9 @@
         5: document.getElementById("stage-confirm"),
         6: document.getElementById("stage-import"),
         7: document.getElementById("stage-logins"),
+        macsync: document.getElementById("stage-macsync"),
+        background: document.getElementById("stage-background"),
+        widgets: document.getElementById("stage-widgets"),
         8: document.getElementById("stage-apps"),
         9: document.getElementById("stage-theme"),
         10: document.getElementById("stage-tabs"),
@@ -1985,7 +2428,7 @@
       };
       // Progress across the welcome stages. Stage 2 (essentials) hands off to
       // the finish animation (stage 13), which fills the bar to 100.
-      const PROGRESS = { 3: 8, 4: 18, 5: 28, 6: 38, 7: 48, 8: 58, 9: 68, 10: 78, 11: 86, 12: 92, 2: 96 };
+      const PROGRESS = { 3: 8, 4: 18, 5: 28, 6: 38, 7: 48, macsync: 51, background: 55, widgets: 58, 8: 62, 9: 68, 10: 78, 11: 86, 12: 92, 2: 96 };
       let stage = 1;
       const setStage = (n) => {
         stages[stage].classList.remove("active");
@@ -2016,6 +2459,10 @@
           setTimeout(() => loginEmail.focus(), 450);
         }
         if (n === 6) void loadBrowsers();
+        // Warm the wallpaper thumbnail one stage early — the sips conversion
+        // takes a few seconds, so kicking it off at macsync means the card is
+        // ready by the time the background stage shows.
+        if (n === "macsync" || n === "background") void loadWallpaperPreview();
         if (n === 13) {
           // Fill the bar and hand off right away: finish() loads the studio
           // behind this window while the spinner plays, holds for at least one
@@ -2141,7 +2588,9 @@
         try {
           const res = await window.lyknWelcome.signIn(loginEmail.value.trim(), loginPassword.value);
           if (!res?.ok) throw new Error(res?.error || "Could not sign in.");
-          setStage(6);
+          // Existing account: the session is already delivered to the studio
+          // window, so skip the setup stages and go straight in.
+          setStage(13);
         } catch (error) {
           loginError.textContent = error?.message || "Could not sign in.";
           loginBtn.firstChild.textContent = "Sign in ";
@@ -2151,6 +2600,30 @@
       };
       loginBtn.addEventListener("click", signIn);
       document.getElementById("login-back").addEventListener("click", () => setStage(loginReturnStage));
+
+      // ── Continue with Google: OAuth runs in the system browser; the main
+      // process pings us when the session lands. ──
+      document.querySelectorAll(".google-signin").forEach((button) => {
+        const label = button.querySelector("span");
+        button.addEventListener("click", () => {
+          try {
+            window.lyknWelcome.signInWithGoogle();
+          } catch {
+            return;
+          }
+          label.textContent = "Check your browser\u2026";
+          // Re-arm the label in case the user cancels in the browser.
+          setTimeout(() => {
+            label.textContent = "Continue with Google";
+          }, 8000);
+        });
+      });
+      window.lyknWelcome.onGoogleSignedIn(() => {
+        // Existing accounts go straight into the studio; Google signups still
+        // walk the setup stages (import, apps, theme…).
+        if (stage === "login") setStage(13);
+        else if (stage === 3 || stage === 4) setStage(6);
+      });
 
       const codeInput = document.getElementById("code");
       const confirmBtn = document.getElementById("confirm");
@@ -2250,11 +2723,11 @@
         }
         setStage(7); // logins come from the chosen browser's keychain store
       });
-      // No import source → nothing to pull logins from; straight to apps.
-      document.getElementById("import-skip").addEventListener("click", () => setStage(8));
+      // No import source → nothing to pull logins from; on to Mac sync.
+      document.getElementById("import-skip").addEventListener("click", () => setStage("macsync"));
 
       // ── stage 7: securely sync the selected browser ──
-      document.getElementById("logins-skip").addEventListener("click", () => setStage(8));
+      document.getElementById("logins-skip").addEventListener("click", () => setStage("macsync"));
       const syncBrowserBtn = document.getElementById("logins-import");
       const syncStatus = document.getElementById("logins-status");
       let browserSyncing = false;
@@ -2295,7 +2768,7 @@
             `Synced ${imported} signed-in session${imported === 1 ? "" : "s"} and ` +
             `${tabs} tab${tabs === 1 ? "" : "s"}${context}.`;
           syncBrowserBtn.firstChild.textContent = "Synced ";
-          setTimeout(() => setStage(8), 700);
+          setTimeout(() => setStage("macsync"), 700);
         } catch (error) {
           syncStatus.textContent =
             error?.message || "Browser sync could not finish. Approve the macOS prompt and try again.";
@@ -2303,6 +2776,264 @@
           syncBrowserBtn.disabled = false;
           browserSyncing = false;
         }
+      });
+
+      // ── stage macsync: pick folders LYKN can see ──
+      const FOLDER_ICON = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+        </svg>`;
+      const folderGrid = document.getElementById("folder-grid");
+      const hwFolders = document.getElementById("hw-folders");
+      const syncAllOpt = document.getElementById("opt-sync-all");
+      const macsyncNext = document.getElementById("macsync-next");
+      const FOLDER_PRESETS = [
+        { name: "Desktop", path: "~/Desktop" },
+        { name: "Documents", path: "~/Documents" },
+        { name: "Downloads", path: "~/Downloads" },
+      ];
+      const escAttr = (s) =>
+        String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+      const folderChipHtml = (f, picked) => `
+        <button type="button" class="folder-chip${picked ? " picked" : ""}" data-path="${escAttr(f.path)}" data-name="${escAttr(f.name)}">
+          ${FOLDER_ICON}<span>${escAttr(f.name)}</span>
+        </button>`;
+      const pickedFolders = () =>
+        [...folderGrid.querySelectorAll(".folder-chip.picked")].map((c) => c.dataset.path);
+      const renderMacsyncState = () => {
+        const all = syncAllOpt.checked;
+        folderGrid.classList.toggle("all-on", all);
+        const picks = all
+          ? [{ name: "Home folder — everything synced" }]
+          : [...folderGrid.querySelectorAll(".folder-chip.picked")].map((c) => ({
+              name: c.dataset.name,
+            }));
+        hwFolders.classList.toggle("dim", picks.length === 0);
+        const shown = picks.length
+          ? picks
+          : FOLDER_PRESETS.map((f) => ({ name: f.name }));
+        hwFolders.innerHTML = shown
+          .slice(0, 7)
+          .map(
+            (f, i) =>
+              `<div class="hw-folder-row" style="animation-delay:${i * 40}ms">${FOLDER_ICON}<span>${escAttr(f.name)}</span></div>`,
+          )
+          .join("");
+        macsyncNext.disabled = !all && picks.length === 0;
+      };
+      const wireFolderChip = (chip) =>
+        chip.addEventListener("click", () => {
+          chip.classList.toggle("picked");
+          renderMacsyncState();
+        });
+      folderGrid.innerHTML =
+        FOLDER_PRESETS.map((f) => folderChipHtml(f, false)).join("") +
+        `<button type="button" class="folder-chip" id="folder-add">+ Choose folder</button>`;
+      folderGrid.querySelectorAll(".folder-chip:not(#folder-add)").forEach(wireFolderChip);
+      const folderAdd = document.getElementById("folder-add");
+      folderAdd.addEventListener("click", async () => {
+        let res = null;
+        try {
+          res = await window.lyknWelcome.pickSyncFolder();
+        } catch {
+          /* dialog unavailable — nothing to add */
+        }
+        if (!res?.ok || !res.folders?.length) return;
+        for (const p of res.folders) {
+          if (folderGrid.querySelector(`.folder-chip[data-path="${CSS.escape(p)}"]`)) continue;
+          const name = p.split("/").filter(Boolean).pop() || p;
+          folderAdd.insertAdjacentHTML("beforebegin", folderChipHtml({ name, path: p }, true));
+          wireFolderChip(folderAdd.previousElementSibling);
+        }
+        renderMacsyncState();
+      });
+      syncAllOpt.addEventListener("change", renderMacsyncState);
+      renderMacsyncState();
+      document.getElementById("macsync-skip").addEventListener("click", () => setStage("background"));
+      document.getElementById("macsync-next").addEventListener("click", async () => {
+        if (macsyncNext.disabled) return;
+        try {
+          await window.lyknWelcome.setMacSync({
+            syncAll: syncAllOpt.checked,
+            folders: syncAllOpt.checked ? [] : pickedFolders(),
+          });
+        } catch {
+          /* stored best-effort */
+        }
+        setStage("background");
+      });
+
+      // ── stage background: sync the Mac's wallpaper (or any image) into LYKN ──
+      const bgNext = document.getElementById("background-next");
+      const bgCardWallpaper = document.getElementById("bg-card-wallpaper");
+      const bgCardFile = document.getElementById("bg-card-file");
+      const bgThumbWallpaper = document.getElementById("bg-thumb-wallpaper");
+      const bgThumbFile = document.getElementById("bg-thumb-file");
+      const hwBg = document.getElementById("hw-bg");
+      const hwBgImg = document.getElementById("hw-bg-img");
+      let bgChoice = null; // { source: "wallpaper" } | { source: "file", path }
+      let bgWallpaperPreview = "";
+      let bgFilePreview = "";
+      let bgPreviewRequested = false;
+      // The wallpaper thumbnail loads lazily when the stage first shows —
+      // conversion shells out to sips, no reason to pay that at startup.
+      const loadWallpaperPreview = async () => {
+        if (bgPreviewRequested) return;
+        bgPreviewRequested = true;
+        try {
+          const res = await window.lyknWelcome.wallpaperPreview();
+          if (res?.ok && res.dataUrl) {
+            bgWallpaperPreview = res.dataUrl;
+            bgThumbWallpaper.innerHTML = `<img src="${res.dataUrl}" alt="" />`;
+            renderBgState();
+          }
+        } catch {
+          /* card falls back to the generic icon */
+        }
+      };
+      const renderBgState = () => {
+        bgCardWallpaper.classList.toggle("picked", bgChoice?.source === "wallpaper");
+        bgCardFile.classList.toggle("picked", bgChoice?.source === "file");
+        const preview =
+          bgChoice?.source === "wallpaper"
+            ? bgWallpaperPreview
+            : bgChoice?.source === "file"
+              ? bgFilePreview
+              : "";
+        if (preview) hwBgImg.src = preview;
+        hwBg.classList.toggle("on", !!preview);
+        bgNext.disabled = !bgChoice;
+      };
+      bgCardWallpaper.addEventListener("click", () => {
+        bgChoice = { source: "wallpaper" };
+        renderBgState();
+      });
+      bgCardFile.addEventListener("click", async () => {
+        let res = null;
+        try {
+          res = await window.lyknWelcome.pickBackgroundImage();
+        } catch {
+          /* picker unavailable */
+        }
+        if (!res?.ok || !res.path) return;
+        bgChoice = { source: "file", path: res.path };
+        bgFilePreview = res.dataUrl || "";
+        if (bgFilePreview) bgThumbFile.innerHTML = `<img src="${bgFilePreview}" alt="" />`;
+        renderBgState();
+      });
+      document.getElementById("background-skip").addEventListener("click", () => setStage("widgets"));
+      document.getElementById("background-next").addEventListener("click", async () => {
+        if (bgNext.disabled || !bgChoice) return;
+        try {
+          await window.lyknWelcome.setBackground(bgChoice);
+        } catch {
+          /* stored best-effort */
+        }
+        setStage("widgets");
+      });
+
+      // ── stage widgets: what LYKN keeps on the Home desktop ──
+      // Ids match the studio's homeWidgets settings keys; `size` mirrors the
+      // real widget's footprint so the preview reads like the actual desktop.
+      const WIDGETS = [
+        {
+          id: "calendar",
+          name: "Calendar",
+          desc: "Today, plus what's next.",
+          accent: "#ff6b6b",
+          on: true,
+          icon: `<rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 11h18" />`,
+        },
+        {
+          id: "monthCalendar",
+          name: "Month",
+          desc: "The whole month at a glance.",
+          accent: "#ff6b6b",
+          on: true,
+          icon: `<rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 9h18M9 9v12M15 9v12" />`,
+        },
+        {
+          id: "todos",
+          name: "To-dos",
+          desc: "Your open tasks.",
+          accent: "#f5a524",
+          on: true,
+          icon: `<path d="M4 6.5 6 8.5 10 4.5M4 17.5l2 2 4-4M13 7h7M13 17h7" />`,
+        },
+        {
+          id: "vault",
+          name: "Vault",
+          desc: "Everything you've saved.",
+          accent: "#a78bfa",
+          on: true,
+          size: "wide",
+          icon: `<rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="m21 16-5-5-9 9" />`,
+        },
+        {
+          id: "projects",
+          name: "Projects",
+          desc: "Pick up recent work.",
+          accent: "#2dd4bf",
+          on: false,
+          size: "tall",
+          icon: `<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 12h18" />`,
+        },
+        {
+          id: "files",
+          name: "Files",
+          desc: "Your Mac files, on the desktop.",
+          accent: "#38bdf8",
+          on: true,
+          icon: `<path d="M14 3v5h5" /><path d="M6 3h8l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />`,
+        },
+      ];
+      const widgetGrid = document.getElementById("widget-grid");
+      const hwWidgets = document.getElementById("hw-widgets");
+      const widgetPicks = new Set(WIDGETS.filter((w) => w.on).map((w) => w.id));
+      const widgetIcon = (paths) =>
+        `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+      // Nothing picked → the mockup shows every widget dimmed, as a hint.
+      const renderWidgetPreview = () => {
+        const picked = WIDGETS.filter((w) => widgetPicks.has(w.id));
+        hwWidgets.classList.toggle("dim", picked.length === 0);
+        hwWidgets.innerHTML = (picked.length ? picked : WIDGETS)
+          .map(
+            (w, i) => `
+              <div class="hw-widget ${w.size || ""}" style="--wg:${w.accent};animation-delay:${i * 45}ms">
+                <b>${escAttr(w.name)}</b><i></i><i style="width:65%"></i>
+              </div>`,
+          )
+          .join("");
+      };
+      widgetGrid.innerHTML = WIDGETS.map(
+        (w) => `
+          <button type="button" class="widget-card${widgetPicks.has(w.id) ? " picked" : ""}" data-id="${w.id}" aria-pressed="${widgetPicks.has(w.id)}">
+            <span class="wg-icon">${widgetIcon(w.icon)}</span>
+            <span class="wg-label"><b>${escAttr(w.name)}</b><span>${escAttr(w.desc)}</span></span>
+          </button>`,
+      ).join("");
+      widgetGrid.querySelectorAll(".widget-card").forEach((card) =>
+        card.addEventListener("click", () => {
+          const id = card.dataset.id;
+          if (widgetPicks.has(id)) widgetPicks.delete(id);
+          else widgetPicks.add(id);
+          const on = widgetPicks.has(id);
+          card.classList.toggle("picked", on);
+          card.setAttribute("aria-pressed", String(on));
+          renderWidgetPreview();
+        }),
+      );
+      renderWidgetPreview();
+      document.getElementById("widgets-skip").addEventListener("click", () => setStage(8));
+      document.getElementById("widgets-next").addEventListener("click", async () => {
+        try {
+          await window.lyknWelcome.setHomeWidgets(
+            Object.fromEntries(WIDGETS.map((w) => [w.id, widgetPicks.has(w.id)])),
+          );
+        } catch {
+          /* stored best-effort */
+        }
+        setStage(8);
       });
 
       // ── stage 8: favorite apps ──
@@ -2550,6 +3281,9 @@
         else if (e.key === "Enter" && stage === 5) confirm();
         else if (e.key === "Enter" && stage === 6) importNext.click();
         else if (e.key === "Enter" && stage === 7) document.getElementById("logins-import").click();
+        else if (e.key === "Enter" && stage === "macsync") document.getElementById("macsync-next").click();
+        else if (e.key === "Enter" && stage === "background") document.getElementById("background-next").click();
+        else if (e.key === "Enter" && stage === "widgets") document.getElementById("widgets-next").click();
         else if (e.key === "Enter" && stage === 8) document.getElementById("apps-next").click();
         else if (e.key === "Enter" && stage === 9) setStage(10);
         else if (e.key === "Enter" && stage === 10) setStage(11);

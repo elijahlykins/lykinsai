@@ -69,7 +69,7 @@ export default function FactConfirmChip({ fact, onChange }: Props) {
   };
 
   return (
-    <div className="mt-2 max-w-[min(100%,28rem)] rounded-2xl border border-black/10 dark:border-white/12 bg-panel px-3.5 py-3 shadow-sm">
+    <div className="mt-2 max-w-[min(100%,28rem)] rounded-2xl border border-black/10 dark:border-white/12 bg-panel px-3.5 py-3 shadow-none">
       <p className="text-[11px] uppercase tracking-[0.14em] text-black/45 dark:text-white/45 font-semibold mb-1">
         {isReplace ? "Update what we know?" : "Save this about you?"}
       </p>

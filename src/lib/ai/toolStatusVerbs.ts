@@ -71,6 +71,10 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   local_pull_file: "Pulling it into the chat…",
   local_write_file: "Writing the file…",
   local_run_command: "Running it on your Mac…",
+  local_synced_folders: "Checking your synced folders…",
+  local_running_apps: "Checking your open apps…",
+  local_read_app: "Reading the app…",
+  local_open_app: "Opening the app…",
 };
 
 /**
@@ -141,6 +145,13 @@ function toolDetailStatus(name: string, args?: Record<string, unknown>): string 
     if (name === "local_read_file") return `Reading ${truncateForStatus(leaf, 40)}…`;
     if (name === "local_pull_file") return `Pulling in ${truncateForStatus(leaf, 40)}…`;
     return `Opening ${truncateForStatus(leaf, 40)}…`;
+  }
+  if (name === "local_open_app" || name === "local_read_app") {
+    const app = typeof args.app === "string" ? args.app.trim() : "";
+    if (!app) return "";
+    return name === "local_open_app"
+      ? `Opening ${truncateForStatus(app, 40)}…`
+      : `Reading ${truncateForStatus(app, 40)}…`;
   }
   if (name === "local_search_files") {
     const q =

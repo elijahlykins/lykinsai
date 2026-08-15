@@ -52,6 +52,7 @@ import { buildTieredLyknChatContext, buildActionLyknChatContext } from "@/lib/ai
 import { maybeAutoNameChat, buildAttachmentContext } from "@/lib/ai/chatSendOrchestrator";
 import { ocrImageAttachments } from "@/lib/ai/imageOcr";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
+import { takePendingHomeChatFiles } from "@/lib/homeChatFiles";
 import { persistMessageFeedback } from "@/lib/chat/messageFeedback";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
@@ -701,12 +702,25 @@ const STUDIO_MODE_OPTIONS: {
 const StudioModePill = React.memo(function StudioModePill({
   activeView,
   onSelect,
+  onNewChat,
 }: {
   activeView: StudioView;
   onSelect: (view: StudioView) => void;
+  onNewChat?: () => void;
 }) {
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-3 z-[70] flex justify-center">
+    <div className="pointer-events-none absolute inset-x-0 top-3 z-[70] flex items-center justify-center gap-2">
+      {onNewChat && (
+        <button
+          type="button"
+          onClick={onNewChat}
+          title="New chat"
+          aria-label="New chat"
+          className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white/55 text-black/60 shadow-lg backdrop-blur-2xl transition-colors hover:text-black dark:border-white/15 dark:bg-black/35 dark:text-white/65 dark:hover:text-white"
+        >
+          <SquarePen className="h-4 w-4" />
+        </button>
+      )}
       <div className="pointer-events-auto flex items-center gap-0.5 rounded-full border border-black/10 bg-white/55 p-1 shadow-lg backdrop-blur-2xl dark:border-white/15 dark:bg-black/35">
         {STUDIO_MODE_OPTIONS.map(({ id, label, icon: Icon }) => {
           const active = id === activeView;
@@ -788,7 +802,7 @@ const StudioComposerStrip = React.memo(function StudioComposerStrip({
   onInsert: (text: string) => void;
 }) {
   return (
-    <div className="mb-1 flex flex-nowrap items-center gap-1.5 overflow-x-auto px-1">
+    <div className="lykn-studio-chips mb-1 flex flex-nowrap items-center gap-1.5 overflow-x-auto px-1">
       {STUDIO_COMPOSER_CHIPS[view].map((chip) => (
         <button
           key={chip.label}
@@ -1064,7 +1078,7 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
     : "lykn-chat-neu-chat-toolbar-select-trigger h-9 !w-auto max-w-[8.5rem] min-w-0 shrink rounded-lg border-0 bg-transparent text-xs px-1.5 font-medium text-black/75 shadow-none dark:text-white/80 !justify-start gap-1.5 overflow-hidden focus:ring-0 focus:ring-offset-0 focus-visible:ring-0 [&>span]:truncate [&>span]:pr-0.5 [&>svg]:w-3.5 [&>svg]:h-3.5 [&>svg]:opacity-40 [&>svg]:shrink-0 [&>svg]:ml-0.5";
   const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
   const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
-  const dropdownCls = "lykn-chat-bar-menu rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg p-1.5";
+  const dropdownCls = "lykn-chat-bar-menu lg-menu p-1.5";
 
   const blurModelTrigger = React.useCallback(() => {
     requestAnimationFrame(() => {
@@ -1252,6 +1266,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   // mode sessions: the chat stays in that mode (forced tool lane + mode
   // system prompt) until the user switches the pill back.
   const [studioView, setStudioView] = useState<StudioView>("chat");
+  // Build / Research empty-state demo chips — hide after a chip click or
+  // the first send, then come back on a new chat or mode switch.
+  const [studioChipsDismissed, setStudioChipsDismissed] = useState(false);
   // Read at send-time by useChatEngine → orchestrator so every turn in a
   // mode session ships the mode's system prompt. Assigned during render so
   // it can never lag the state.
@@ -1654,11 +1671,16 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     // a first message. The async Supabase round-trip below may reconcile to
     // a different board for cross-device resume — useLyknChatPersistence keeps
     // any in-flight chat when that happens.
+    //
+    // Studio always lands on a fresh empty chat ("Welcome back") — don't
+    // reuse the last active id or we'd hydrate the previous conversation.
     let provisionalId: string | null = null;
-    try {
-      provisionalId = localStorage.getItem("lyknchat_active_id");
-    } catch {
-      // ignore
+    if (!studioSurface) {
+      try {
+        provisionalId = localStorage.getItem("lyknchat_active_id");
+      } catch {
+        // ignore
+      }
     }
     if (!provisionalId) {
       provisionalId =
@@ -1667,6 +1689,12 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     }
     nav(`/chat/${provisionalId}`, { replace: true });
+
+    if (studioSurface) {
+      return () => {
+        cancelled = true;
+      };
+    }
 
     (async () => {
       try {
@@ -1727,7 +1755,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     return () => {
       cancelled = true;
     };
-  }, [user?.id, planLoading, routeChatId, nav]);
+  }, [user?.id, planLoading, routeChatId, nav, studioSurface]);
 
   // The matching "graduation" effect (clears the saved dashboard
   // pointer once a user types into a load-in greeting board) and the
@@ -2372,7 +2400,10 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     typeResponseIntoChat, addChatResponseToGrid,
     replaySavedPromptResponse, applyProjectActions,
   } = chatEngine;
-  const thinkingStatus = useThinkingStatus(isChatLoading, chatStatusText);
+  const keepBuildThinking =
+    studioView === "build" ||
+    (typeof composerMode === "string" && composerMode.startsWith("create:"));
+  const thinkingStatus = useThinkingStatus(isChatLoading, chatStatusText, keepBuildThinking);
 
   const clampChatRailWidth = useCallback((raw: number, vw: number) => {
     const width = Math.max(0, Math.floor(vw || 0));
@@ -3143,9 +3174,16 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   }, [studioView, user?.id, nav]);
 
   // Quick-start chip → drop the template into the composer, cursor at the
-  // end, ready for the user to finish the sentence.
+  // end, ready for the user to finish the sentence. Picking one dismisses
+  // the demo strip so it doesn't sit under a prompt that's already started.
   const handleComposerChipInsert = useCallback((text: string) => {
+    setStudioChipsDismissed(true);
     setChatInput(text);
+    // Hosted on Home the page's own composer is hidden — the desktop's
+    // rounded bar listens for this and takes the text instead.
+    window.dispatchEvent(
+      new CustomEvent("lykn-home-compose-insert", { detail: { text } }),
+    );
     window.setTimeout(() => {
       const el = chatPanelInputRef.current || centerChatInputRef.current;
       if (!el) return;
@@ -3158,16 +3196,44 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     }, 0);
   }, [setChatInput, chatPanelInputRef, centerChatInputRef]);
 
+  // "Ask AI" on a local file (Mac Files surface): the browser stashes a
+  // prompt and flips the Studio to this tab. Consume it on mount, and via
+  // the DOM event when this surface is already warm.
+  useEffect(() => {
+    const consume = (fallback = "") => {
+      let text = "";
+      try {
+        text = sessionStorage.getItem("lykn_pending_local_file_ask") || "";
+        if (text) sessionStorage.removeItem("lykn_pending_local_file_ask");
+      } catch {
+        /* storage blocked — fall back to the event payload */
+      }
+      if (!text) text = fallback;
+      if (text) handleComposerChipInsert(text);
+    };
+    consume();
+    const onAsk = (e: Event) =>
+      consume(String((e as CustomEvent).detail?.text || ""));
+    window.addEventListener("lykn-local-file-ask", onAsk);
+    return () => window.removeEventListener("lykn-local-file-ask", onAsk);
+  }, [handleComposerChipInsert]);
+
   // Post-report / post-build suggestion: flip to the target Studio mode,
   // arm its lane, and send immediately so the user lands mid-task.
   // Uses handleChatSend (not studioGuardedSend) because we intentionally left
   // the prior lane — the mode-redirect guard would otherwise block the turn.
   // Refs are patched sync before send so the orchestrator and snapshot tag
   // see the new mode even though React state hasn't re-rendered yet.
-  const handleStudioFollowUp = useCallback((view: StudioView, prompt: string) => {
+  const handleStudioFollowUp = useCallback((
+    view: StudioView,
+    prompt: string,
+    opts?: { allowEmptyText?: boolean },
+  ) => {
     if (isChatLoading) return;
     const text = String(prompt || "").trim();
-    if (!text) return;
+    // An attachment-only turn from the home bar arrives with no words;
+    // handleChatSend still requires text or an attachment.
+    if (!text && !opts?.allowEmptyText) return;
     setStudioView(view);
     setComposerMode(view === "chat" ? "none" : STUDIO_VIEW_MODES[view]);
     studioModeInstructionsRef.current =
@@ -3176,6 +3242,232 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     setChatInput(text);
     void handleChatSend();
   }, [isChatLoading, setComposerMode, setChatInput, handleChatSend]);
+
+  // A mode picked from the home desktop must survive chat hydration: the
+  // settled chat's saved mode (usually plain "chat") hydrates asynchronously
+  // and would otherwise stomp the just-picked page (e.g. Imagine) right
+  // before the user's send resolves against it. Recent-only so a stale
+  // override can't hijack a chat opened later from the dock popover.
+  const homeModeOverrideRef = useRef<{ view: StudioView; at: number } | null>(null);
+
+  // A home-bar send that carried attachments: uploads/text extraction run
+  // async and the send reads attachments from state, so the turn is armed here
+  // and fired by the effect below once React has committed the chips.
+  const pendingHomeAttachSendRef = useRef<
+    { view: StudioView; text: string; ready: boolean } | null
+  >(null);
+  const [homeAttachSendTick, setHomeAttachSendTick] = useState(0);
+
+  // Home-screen chat bar: the Studio desktop stashes {view, text} and flips
+  // to this tab. Consume on mount (cold surface) or via the DOM event (warm
+  // surface): arm the picked mode and send immediately. Imagine is special —
+  // its page owns generation, so re-stash the prompt for it and just switch.
+  //
+  // IMPORTANT: /app immediately navigates (remounts) to /chat/:id — a send
+  // fired before that settles streams into the unmounted instance and never
+  // renders. Hold the stash until this instance owns a chat route.
+  useEffect(() => {
+    if (!routeChatId) return;
+    const consume = (fallback: { view?: string; text?: string; researchSourcePref?: string } = {}) => {
+      let view = String(fallback.view || "");
+      let text = String(fallback.text || "");
+      let sourcePref = String(fallback.researchSourcePref || "");
+      try {
+        const raw = sessionStorage.getItem("lykn_pending_home_chat");
+        if (raw) {
+          sessionStorage.removeItem("lykn_pending_home_chat");
+          const p = JSON.parse(raw) as { view?: string; text?: string; researchSourcePref?: string };
+          view = String(p?.view || view);
+          text = String(p?.text || text);
+          sourcePref = String(p?.researchSourcePref || sourcePref);
+        }
+      } catch {
+        /* storage blocked — fall back to the event payload */
+      }
+      if (sourcePref) {
+        const pref = normalizeResearchSourcePref(sourcePref);
+        researchSourcePrefsRef.current = pref;
+        setResearchSourcePref(pref);
+      }
+      text = text.trim();
+      // Claimed before the empty-prompt bail so files can't linger and
+      // reappear on a later send. A file with no words is a valid turn.
+      const homeFiles = takePendingHomeChatFiles();
+      if (!text && !homeFiles.length) return;
+      // Empty view = follow-up from the home bar mid-conversation: keep
+      // whatever mode this surface is currently in (its pill owns it).
+      const resolved: StudioView =
+        view === "build" || view === "research" || view === "imagine" || view === "chat"
+          ? (view as StudioView)
+          : ((studioModeSaveRef.current as StudioView) || "chat");
+      homeModeOverrideRef.current = { view: resolved, at: Date.now() };
+      if (resolved === "imagine") {
+        // Imagine generates from the prompt alone — a bare file has nothing
+        // to render, so there's no turn to start.
+        if (!text) return;
+        try {
+          sessionStorage.setItem("lykn_pending_imagine_prompt", text);
+        } catch {
+          /* the seed event below still covers the warm page */
+        }
+        setStudioView("imagine");
+        setComposerMode(STUDIO_VIEW_MODES.imagine);
+        window.dispatchEvent(
+          new CustomEvent("lykn-imagine-seed", { detail: { text } }),
+        );
+        return;
+      }
+      if (homeFiles.length) {
+        pendingHomeAttachSendRef.current = { view: resolved, text, ready: false };
+        void ingestChatFiles(homeFiles, addFocusedAttachment, {
+          userId: user?.id,
+          updateAttachment: updateFocusedAttachment,
+        }).finally(() => {
+          if (pendingHomeAttachSendRef.current) {
+            pendingHomeAttachSendRef.current.ready = true;
+          }
+          setHomeAttachSendTick((t) => t + 1);
+        });
+        return;
+      }
+      handleStudioFollowUp(resolved, text);
+    };
+    consume();
+    const onSend = (e: Event) =>
+      consume(((e as CustomEvent).detail || {}) as { view?: string; text?: string; researchSourcePref?: string });
+    window.addEventListener("lykn-home-chat-send", onSend);
+    return () => window.removeEventListener("lykn-home-chat-send", onSend);
+  }, [
+    routeChatId, handleStudioFollowUp, setComposerMode,
+    addFocusedAttachment, updateFocusedAttachment, user?.id,
+  ]);
+
+  // The armed home-bar send, fired on the render that commits the last
+  // attachment so handleChatSend's closure includes it. Same shape as the
+  // brick-action auto-send in useChatEngine.
+  useEffect(() => {
+    const pending = pendingHomeAttachSendRef.current;
+    if (!pending?.ready) return;
+    pendingHomeAttachSendRef.current = null;
+    handleStudioFollowUp(pending.view, pending.text, { allowEmptyText: true });
+  }, [homeAttachSendTick, focusedChatAttachments.length, handleStudioFollowUp]);
+
+  // Home-pill mode click (no send yet): flip this surface straight to the
+  // picked mode page so its elements show immediately. Storage covers a
+  // cold mount, the event covers the warm surface. Same /app→/chat/:id
+  // settling rule as sends — a view set pre-remount would be lost.
+  useEffect(() => {
+    if (!routeChatId) return;
+    const consume = (fallback = "") => {
+      let view = fallback;
+      try {
+        const raw = sessionStorage.getItem("lykn_pending_home_view") || "";
+        if (raw) {
+          sessionStorage.removeItem("lykn_pending_home_view");
+          view = raw;
+        }
+      } catch {
+        /* storage blocked — fall back to the event payload */
+      }
+      if (view === "chat" || view === "build" || view === "imagine" || view === "research") {
+        homeModeOverrideRef.current = { view: view as StudioView, at: Date.now() };
+        handleStudioModeSelect(view as StudioView);
+      }
+    };
+    consume();
+    const onView = (e: Event) =>
+      consume(String((e as CustomEvent).detail?.view || ""));
+    window.addEventListener("lykn-home-view", onView);
+    return () => window.removeEventListener("lykn-home-view", onView);
+  }, [routeChatId, handleStudioModeSelect]);
+
+  // Home-bar voice button: turn Voice Mode on. Storage covers a cold mount,
+  // the event covers the warm surface (turning voice OFF happens inside the
+  // voice overlay itself). Waits out the /app→/chat/:id settle like sends.
+  useEffect(() => {
+    if (!routeChatId) return;
+    const consume = (fromEvent = false) => {
+      let pending = fromEvent;
+      try {
+        if (sessionStorage.getItem("lykn_pending_voice_mode") === "1") {
+          sessionStorage.removeItem("lykn_pending_voice_mode");
+          pending = true;
+        }
+      } catch {
+        /* storage blocked — the event alone still turns voice on */
+      }
+      if (pending) setVoiceMode(true);
+    };
+    consume();
+    const onVoice = () => consume(true);
+    window.addEventListener("lykn-home-voice-toggle", onVoice);
+    return () => window.removeEventListener("lykn-home-voice-toggle", onVoice);
+  }, [routeChatId, setVoiceMode]);
+
+  // Home-bar Research sources dropdown: apply before send so the
+  // orchestrator reads the picked focus (academic / news / markets…).
+  useEffect(() => {
+    const apply = (raw: unknown) => {
+      const pref = normalizeResearchSourcePref(raw);
+      researchSourcePrefsRef.current = pref;
+      setResearchSourcePref(pref);
+    };
+    const consume = (fallback = "") => {
+      let next = fallback;
+      try {
+        const stored = sessionStorage.getItem("lykn_pending_research_sources");
+        if (stored) {
+          sessionStorage.removeItem("lykn_pending_research_sources");
+          next = stored;
+        }
+      } catch {
+        /* storage blocked — the event payload still applies */
+      }
+      if (next) apply(next);
+    };
+    consume();
+    const onPref = (e: Event) =>
+      consume(String((e as CustomEvent).detail?.pref || ""));
+    window.addEventListener("lykn-home-research-sources", onPref);
+    return () => window.removeEventListener("lykn-home-research-sources", onPref);
+  }, []);
+
+  // Let the Studio shell react to voice mode (it hides the home desktop's
+  // rounded bar while the voice overlay is up).
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("lykn-voice-mode-changed", { detail: { on: voiceModeOn } }),
+    );
+  }, [voiceModeOn]);
+
+  // Tell the Studio shell which mode page is up — on the Imagine page the
+  // desktop's rounded bar steps aside for Imagine's own full prompt bar.
+  useEffect(() => {
+    if (!isGlassChat) return;
+    window.dispatchEvent(
+      new CustomEvent("lykn-studio-view-changed", { detail: { view: studioView } }),
+    );
+  }, [studioView, isGlassChat]);
+
+  // Tell the Studio shell whether a conversation is actually under way —
+  // the home desktop's rounded bar stays centered on fresh pages and only
+  // docks to the bottom once turns exist. The Imagine page broadcasts its
+  // own signal (batches, not chat turns), so skip it here.
+  const hasChatTurns = chatMessages.length > 0;
+  useEffect(() => {
+    if (isGlassChat && studioView === "imagine") return;
+    window.dispatchEvent(
+      new CustomEvent("lykn-chat-activity-changed", { detail: { active: hasChatTurns } }),
+    );
+  }, [hasChatTurns, studioView, isGlassChat]);
+
+  useEffect(() => {
+    setStudioChipsDismissed(false);
+  }, [studioView]);
+
+  useEffect(() => {
+    if (!hasChatTurns) setStudioChipsDismissed(false);
+  }, [hasChatTurns]);
 
   // Mode sessions are sticky: useChatEngine auto-clears composerMode after
   // every send, so while a mode page is active re-arm it — each turn keeps
@@ -3193,6 +3485,18 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   // every render so the persistence hook always calls the fresh closure.
   studioModeHydratedCbRef.current = (mode: string | null) => {
     if (!isGlassChat) return;
+    // A mode just picked on the home desktop wins over the chat's saved
+    // mode — hydration lands moments after the pick and would stomp it.
+    const override = homeModeOverrideRef.current;
+    if (override && Date.now() - override.at < 15000) {
+      homeModeOverrideRef.current = null;
+      setStudioView(override.view);
+      setComposerMode(
+        override.view === "chat" ? "none" : STUDIO_VIEW_MODES[override.view],
+      );
+      return;
+    }
+    homeModeOverrideRef.current = null;
     const m: StudioView =
       mode === "build" || mode === "imagine" || mode === "research" ? mode : "chat";
     setStudioView(m);
@@ -3213,16 +3517,24 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   const latestResearch = useMemo(() => {
     for (let i = chatMessages.length - 1; i >= 0; i--) {
       const m = chatMessages[i] as any;
-      if (Array.isArray(m?.sources) && m.sources.length) {
+      const report = String(m.aiResponse || "").trim();
+      if (!report) continue;
+      const sources = Array.isArray(m?.sources)
+        ? (m.sources as { title: string; url: string }[])
+        : [];
+      // On the Research page, the latest finished reply owns the rail even
+      // when live search returned nothing — otherwise hideMessageSources
+      // leaves the report with no citations UI at all.
+      if (sources.length || studioView === "research") {
         return {
-          sources: m.sources as { title: string; url: string }[],
-          report: String(m.aiResponse || "").trim(),
+          sources,
+          report,
           topic: String(m.content || "").trim(),
         };
       }
     }
     return null;
-  }, [chatMessages]);
+  }, [chatMessages, studioView]);
 
   // Topic for post-build suggestions: prefer the open artifact title, else
   // the latest user prompt that produced it.
@@ -5137,36 +5449,26 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
   return (
     <div className={`w-full relative overflow-hidden lykn-chat-grid-bg ${isEmbeddedMode || studioSurface ? "h-full min-h-0" : "h-[100svh]"}`}>
-      {/* Match BrickEditor layout: minimal chrome + floating controls */}
+      {/* Match BrickEditor layout: minimal chrome + floating controls. */}
       {!isEmbeddedMode && (
       <LyknChatToolbar
         isMobilePhone={isMobilePhone}
         notesOpen={notesOpen}
-        // In the glass Studio the artifact panel simply covers the top-right
-        // controls (it sits at a higher z-index) instead of nudging them left.
-        rightInset={activeArtifact && !isMobilePhone && !isGlassChat ? "min(760px, 50vw)" : undefined}
         voiceModeEligible={voiceModeEligible}
         voiceModeOn={voiceModeOn}
         onVoiceModeToggle={toggleVoiceMode}
       />
       )}
 
-      {/* Studio glass shell: mode selector pill pinned top-center and the
-          New-chat icon pinned top-left. Hidden while the voice overlay is
+      {/* Studio glass shell: mode selector pill pinned top-center with the
+          New-chat button right beside it. Hidden while the voice overlay is
           up — voice is always plain chat. */}
       {isGlassChat && !voiceModeOn && (
-        <>
-          <button
-            type="button"
-            onClick={() => void handleStudioNewChat()}
-            title="New chat"
-            aria-label="New chat"
-            className="absolute left-3 top-3 z-[70] flex h-9 w-9 items-center justify-center text-black/60 transition-colors hover:text-black dark:text-white/65 dark:hover:text-white"
-          >
-            <SquarePen className="h-4 w-4" />
-          </button>
-          <StudioModePill activeView={studioView} onSelect={handleStudioModeSelect} />
-        </>
+        <StudioModePill
+          activeView={studioView}
+          onSelect={handleStudioModeSelect}
+          onNewChat={handleStudioNewChat}
+        />
       )}
 
       <LyknChatVoiceMode
@@ -5260,6 +5562,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           chatMessages={chatMessages}
           isChatLoading={isChatLoading}
           thinkingStatus={thinkingStatus}
+          keepThinkingWhileLoading={keepBuildThinking}
           chatInputRef={chatInputRef}
           onChatInputChange={handleChatInputChange}
           onSend={studioGuardedSend}
@@ -5302,7 +5605,12 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           renderFocusedAttachmentPreview={renderFocusedAttachmentPreview}
           onDragOver={handleFocusedChatDragOver}
           onDrop={handleFocusedChatDrop}
-          chatBarToolbar={<LyknChatBarToolbar onSend={studioGuardedSend} {...chatBarToolbarProps} />}
+          chatBarToolbar={
+            <LyknChatBarToolbar
+              onSend={studioGuardedSend}
+              {...chatBarToolbarProps}
+            />
+          }
           chatReactions={chatReactions}
           onReaction={handleFocusedChatReaction}
           onRegenerate={handleFocusedChatRegenerate}
@@ -5368,7 +5676,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
                   />
                 ) : isGlassChat &&
                   (studioView === "research" || studioView === "build") &&
-                  !voiceModeOn ? (
+                  !voiceModeOn &&
+                  !hasChatTurns &&
+                  !studioChipsDismissed ? (
                   <StudioComposerStrip
                     view={studioView}
                     onInsert={handleComposerChipInsert}

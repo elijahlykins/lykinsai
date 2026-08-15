@@ -406,6 +406,27 @@ export default function Billing() {
     window.history.replaceState({}, "", url.toString());
   }, []);
 
+  // Returning from a credit top-up (?topup=success). The grant lands via the
+  // Stripe webhook a moment later, so confirm the purchase and drop the params
+  // rather than leaving the user on a page that says nothing happened.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const topup = params.get("topup");
+    if (!topup) return;
+
+    if (topup === "success") {
+      toast({
+        title: "Credits on the way",
+        description: "Your top-up lands in a few seconds — check Settings → Billing.",
+      });
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("topup");
+    url.searchParams.delete("session_id");
+    window.history.replaceState({}, "", url.toString());
+  }, []);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
 

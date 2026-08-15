@@ -29,8 +29,7 @@ const PRIORITY_OPTIONS = [
 // Dialog wrapper. It owns its own data: reads/writes the user's lykn_todos
 // rows through the RLS-protected Supabase client and subscribes to realtime
 // so tasks the AI adds / completes in text or voice appear live. Hosted by
-// both the standalone to-do surfaces and the combined LyknCalendarPage
-// (under its Calendar / To-dos toggle). Loads only while `active`.
+// LyknTodosPage (the Studio popup). Loads only while `active`.
 // ────────────────────────────────────────────────────────────────────────
 
 const PRIORITY_META = {
@@ -337,7 +336,7 @@ export default function LyknTodosPanel({ active = true }) {
     return (
       <div
         key={todo.id}
-        className="group flex items-start gap-2.5 px-3 py-2.5 rounded-lg hover:bg-black/[0.03] dark:hover:bg-white/[0.03] transition-colors"
+        className="group flex items-start gap-2 px-2.5 py-1.5 rounded-lg hover:bg-black/[0.03] dark:hover:bg-white/[0.03] transition-colors"
       >
         <button
           type="button"
@@ -347,40 +346,43 @@ export default function LyknTodosPanel({ active = true }) {
           title={done ? "Mark as not done" : "Mark done"}
         >
           {done ? (
-            <CheckCircle2 className="w-5 h-5 text-emerald-500 dark:text-emerald-400" />
+            <CheckCircle2 className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
           ) : (
-            <Circle className="w-5 h-5" />
+            <Circle className="w-4 h-4" />
           )}
         </button>
 
         <div className="min-w-0 flex-1">
-          <div className={`text-[0.875rem] leading-snug break-words ${done ? "line-through text-black/35 dark:text-white/35" : "text-black/90 dark:text-white/90"}`}>
+          <div className={`text-[0.8125rem] leading-snug break-words ${done ? "line-through text-black/35 dark:text-white/35" : "text-black/90 dark:text-white/90"}`}>
             {todo.title}
           </div>
           {todo.notes ? (
-            <div className={`text-[0.75rem] mt-0.5 break-words ${done ? "text-black/30 dark:text-white/25" : "text-black/50 dark:text-white/45"}`}>
+            <div className={`text-[0.6875rem] mt-0.5 break-words ${done ? "text-black/30 dark:text-white/25" : "text-black/50 dark:text-white/45"}`}>
               {todo.notes}
             </div>
           ) : null}
-          <div className="flex items-center gap-2 mt-1">
-            {due ? (
-              <span className={`text-[0.6875rem] ${overdue ? "text-red-500 dark:text-red-400 font-medium" : "text-black/45 dark:text-white/40"}`}>
-                {overdue ? "Overdue · " : "Due "}{due}
-              </span>
-            ) : null}
-            {!done && todo.priority !== "normal" ? (
-              <span className={`inline-flex items-center gap-1 text-[0.6875rem] ${pri.text}`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${pri.dot}`} />
-                {pri.label}
-              </span>
-            ) : null}
-            {projectName ? (
-              <span className="inline-flex items-center gap-1 text-[0.6875rem] text-blue-500 dark:text-blue-400">
-                <FolderClosed className="w-3 h-3" />
-                {projectName}
-              </span>
-            ) : null}
-          </div>
+          {/* The meta line only earns its space when there's something on it. */}
+          {due || projectName || (!done && todo.priority !== "normal") ? (
+            <div className="flex items-center gap-2 mt-0.5">
+              {due ? (
+                <span className={`text-[0.625rem] ${overdue ? "text-red-500 dark:text-red-400 font-medium" : "text-black/45 dark:text-white/40"}`}>
+                  {overdue ? "Overdue · " : "Due "}{due}
+                </span>
+              ) : null}
+              {!done && todo.priority !== "normal" ? (
+                <span className={`inline-flex items-center gap-1 text-[0.625rem] ${pri.text}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${pri.dot}`} />
+                  {pri.label}
+                </span>
+              ) : null}
+              {projectName ? (
+                <span className="inline-flex items-center gap-1 text-[0.625rem] text-blue-500 dark:text-blue-400">
+                  <FolderClosed className="w-2.5 h-2.5" />
+                  {projectName}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -392,7 +394,7 @@ export default function LyknTodosPanel({ active = true }) {
               title="Assign to a project"
               icon={<FolderClosed className="w-3 h-3" />}
               active={Boolean(todo.project_id)}
-              className="max-w-[7.5rem] text-[0.6875rem] px-1.5 py-1"
+              className="max-w-[7.5rem] text-[0.625rem] px-1.5 py-0.5"
               triggerLabel={
                 todo.project_id
                   ? (projectsById.get(todo.project_id) || "Project")
@@ -413,30 +415,30 @@ export default function LyknTodosPanel({ active = true }) {
               type="button"
               disabled={isBusy}
               onClick={() => cyclePriority(todo)}
-              className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
+              className="p-0.5 rounded-md text-black/35 dark:text-white/35 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
               title={`Priority: ${pri.label} (click to change)`}
             >
-              <Flag className="w-3.5 h-3.5" />
+              <Flag className="w-3 h-3" />
             </button>
           ) : (
             <button
               type="button"
               disabled={isBusy}
               onClick={() => setStatus(todo, "open")}
-              className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
+              className="p-0.5 rounded-md text-black/35 dark:text-white/35 hover:text-black/80 dark:hover:text-white/80 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
               title="Reopen"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
+              <RotateCcw className="w-3 h-3" />
             </button>
           )}
           <button
             type="button"
             disabled={isBusy}
             onClick={() => removeTodo(todo)}
-            className="p-1 rounded-md text-black/35 dark:text-white/35 hover:text-red-500 dark:hover:text-red-400 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
+            className="p-0.5 rounded-md text-black/35 dark:text-white/35 hover:text-red-500 dark:hover:text-red-400 hover:bg-black/10 dark:hover:bg-white/10 transition-colors disabled:opacity-50"
             title="Delete"
           >
-            {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            {isBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
           </button>
         </div>
       </div>
@@ -527,7 +529,7 @@ export default function LyknTodosPanel({ active = true }) {
       </div>
 
       {/* List */}
-      <div className="overflow-y-auto -mx-2 px-2 py-1 flex-1 min-h-[8rem] max-h-[55vh]">
+      <div className="overflow-y-auto scrollbar-hide -mx-2 px-2 py-1 flex-1 min-h-0">
         {loading ? (
           <div className="flex items-center justify-center py-10 text-black/40 dark:text-white/40">
             <Loader2 className="w-5 h-5 animate-spin" />
@@ -547,7 +549,7 @@ export default function LyknTodosPanel({ active = true }) {
             )}
             {doneTodos.length > 0 ? (
               <div className="mt-3 pt-2 border-t border-black/10 dark:border-white/10">
-                <div className="px-3 pb-1 text-[0.6875rem] uppercase tracking-wide text-black/30 dark:text-white/30">
+                <div className="px-2.5 pb-1 text-[0.625rem] uppercase tracking-wide text-black/30 dark:text-white/30">
                   Recently completed
                 </div>
                 {doneTodos.map(renderRow)}

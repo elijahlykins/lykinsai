@@ -23,6 +23,9 @@ const READ_TOOLS = new Set([
   "local_read_file",
   "local_search_files",
   "local_pull_file",
+  "local_synced_folders",
+  "local_running_apps",
+  "local_read_app",
 ]);
 
 // The grant lives on globalThis so dev-time HMR module swaps don't silently
@@ -44,6 +47,12 @@ function readActionSummary(name: string, args: Record<string, unknown>): string 
   if (name === "local_read_file") return `Read ${p}`;
   if (name === "local_search_files") return `Search your files under ${p === "your files" ? "your home folder" : p}`;
   if (name === "local_pull_file") return `Pull ${p} into this chat`;
+  if (name === "local_synced_folders") return "Check which folders are synced with LYKN";
+  if (name === "local_running_apps") return "See which apps are open on your Mac";
+  if (name === "local_read_app") {
+    const app = typeof args.app === "string" && args.app.trim() ? args.app.trim() : "the app you're using";
+    return `Read what's showing in ${app}`;
+  }
   return `Access ${p}`;
 }
 
@@ -117,10 +126,15 @@ async function uploadPulledFile(result: LocalToolResult): Promise<LocalToolResul
       size: result.size,
       path: result.path,
       url,
+      storagePath: uploaded.storagePath,
+      storageBucket: uploaded.bucket,
+      // The chat UI renders the pulled file as a card from this exact result
+      // (see local_pull_file in chatArtifacts.ts). A hand-copied signed URL
+      // loses characters in the token and 400s with InvalidJWT — the model
+      // must never write it out.
       note:
-        result.kind === "image"
-          ? `Show it inline with: ![${name}](${url})`
-          : `Link it with: [${name}](${url})`,
+        `${name} is already attached to your reply and visible to the user as a card in the chat. ` +
+        "Do NOT paste, transcribe, or link its URL in your reply text — just refer to the file by name.",
     };
   } catch (e) {
     return { ok: false, error: (e as Error)?.message || "Failed to upload the pulled file." };

@@ -41,6 +41,7 @@ const BROWSER_MODULES = [
   "observation",
   "interaction",
   "editing",
+  "builders",
   "tabs",
   "forms",
   "downloads",

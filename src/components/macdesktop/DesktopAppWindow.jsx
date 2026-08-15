@@ -1,0 +1,542 @@
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
+// ────────────────────────────────────────────────────────────────────────
+// DesktopAppWindow — a macOS-style floating window for a LYKN page that
+// pops up over the Home desktop (Browser, Calendar, To-dos) instead of taking
+// the whole studio stage. Drag by the title bar, resize from any edge or
+// corner, zoom to fill the desktop; the geometry sticks per window.
+//
+// It positions itself against its offsetParent, so the host layer must be
+// positioned (the Studio renders these inside an absolute desktop layer).
+// ────────────────────────────────────────────────────────────────────────
+
+const NO_DRAG = { WebkitAppRegion: "no-drag" };
+
+const EDGE = 8; // breathing room a zoomed window leaves at the desktop edges
+// The bottom dock owns this strip, and a zoomed window stays clear of it —
+// except a window that can actually paint over it (see `zoomCoversDock`).
+const DOCK_CLEAR = 104;
+const MIN_W = 380;
+const MIN_H = 320;
+// Dragging runs to the edges and past them, macOS style — the only rule is
+// that the window stays grabbable: this much of it left on the desktop
+// sideways, and its title bar never tucked under the dock, which paints above
+// the windows and would swallow the clicks needed to drag it back out.
+const KEEP_VISIBLE = 96;
+
+// ── Motion. Windows scale up into place as they open, shrink away as they
+// close, and drop toward the dock when minimized — quick and small, the way
+// macOS does it. MOVE_MS also times the wallpaper-peek slide, since both ride
+// the frame's one transform transition.
+const MOVE_MS = 260;
+const CLOSE_MS = 150;
+const MIN_MS = 200;
+const PEEK_MS = MOVE_MS;
+const EASE_OUT = "cubic-bezier(0.16, 1, 0.3, 1)";
+const EASE_IN = "cubic-bezier(0.4, 0, 1, 1)";
+
+// scale/lift are the transform the frame rests at in each stage; `open` is the
+// window at its true geometry, so everything animates toward and away from it.
+const STAGES = {
+  entering: { scale: 0.92, lift: 10, opacity: 0, ms: MOVE_MS, ease: EASE_OUT },
+  open: { scale: 1, lift: 0, opacity: 1, ms: MOVE_MS, ease: EASE_OUT },
+  closing: { scale: 0.94, lift: 4, opacity: 0, ms: CLOSE_MS, ease: EASE_IN },
+  minimized: { scale: 0.88, lift: 34, opacity: 0, ms: MIN_MS, ease: EASE_IN },
+};
+
+const prefersReducedMotion = () =>
+  typeof window !== "undefined" &&
+  !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+function readGeom(key) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || "null");
+    if (saved && [saved.x, saved.y, saved.w, saved.h].every(Number.isFinite)) {
+      return saved;
+    }
+  } catch {
+    /* fall back to the default spot */
+  }
+  return null;
+}
+
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+
+function clampGeom(g, box) {
+  const w = Math.min(Math.max(g.w, MIN_W), Math.max(box.w, MIN_W));
+  const h = Math.min(Math.max(g.h, MIN_H), Math.max(box.h, MIN_H));
+  return {
+    w,
+    h,
+    // The body may hang off either side and run past the bottom of the
+    // desktop; only the title bar is held back, at the top of the dock strip.
+    x: clamp(g.x, KEEP_VISIBLE - w, box.w - KEEP_VISIBLE),
+    y: clamp(g.y, 0, box.h - DOCK_CLEAR),
+  };
+}
+
+/** Drag one or two edges of `base` by (dx, dy), leaving the opposite edges
+ *  pinned — so pulling the left edge grows the window leftward instead of
+ *  sliding it. `mode` is a compass string ("n", "se", …); the letters it
+ *  contains are the edges being dragged.
+ *
+ *  An edge can be pulled outward as far as the desktop's matching edge — dock
+ *  strip included — and always inward to the window's minimum. A window that
+ *  was dragged off the desktop keeps whatever overhang it already has, so
+ *  grabbing that edge nudges it rather than snapping it back on screen. */
+function resizeGeom(base, mode, dx, dy, box) {
+  let left = base.x;
+  let top = base.y;
+  let right = base.x + base.w;
+  let bottom = base.y + base.h;
+
+  if (mode.includes("e")) right = clamp(right + dx, left + MIN_W, Math.max(box.w, right));
+  if (mode.includes("w")) left = clamp(left + dx, Math.min(0, left), right - MIN_W);
+  if (mode.includes("s")) bottom = clamp(bottom + dy, top + MIN_H, Math.max(box.h, bottom));
+  if (mode.includes("n")) top = clamp(top + dy, Math.min(0, top), bottom - MIN_H);
+
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+export default function DesktopAppWindow({
+  title,
+  icon: Icon,
+  storageKey,
+  width = 720,
+  height = 620,
+  // Nth simultaneously-open window: staggers the default spot, macOS style.
+  cascade = 0,
+  active = true,
+  // Off on another studio tab: gone at once, with no motion to play to an
+  // audience that isn't looking at the desktop.
+  hidden = false,
+  // Sent to the dock: drops away, and rises back when it's picked up again.
+  minimized = false,
+  // The wallpaper was clicked: slide out of the way and let the desktop
+  // through, holding position so the next click can bring the window back.
+  peeked = false,
+  // No title bar: the hosted page draws its own top row (the Browser's tab
+  // strip), traffic lights and all, and drives the window through `controls`.
+  chromeless = false,
+  // Ref handed the window's title-bar actions, for a chromeless page that
+  // can't reach them any other way (native views paint above the renderer).
+  controls,
+  // Zoom runs to the desktop's bottom edge, dock strip included. Only the
+  // Browser does this: its page is a native view painting above the whole
+  // renderer, so the strip genuinely disappears under it, the way a zoomed mac
+  // window swallows the Dock. A React window would instead have its last inch
+  // hidden *behind* the dock (z-25 against z-30), which just looks broken.
+  zoomCoversDock = false,
+  z = 1,
+  onFocus,
+  onClose,
+  onMinimize,
+  // Fired after every geometry change (drag, resize, zoom, reclamp). The
+  // Browser window uses it to move its native Electron views with the frame.
+  onGeometry,
+  // True while an open/close/minimize animation is playing. Native views
+  // can't be scaled by CSS, so the Browser window undocks its own for the
+  // duration and docks them again once the frame is at rest.
+  onAnimating,
+  children,
+}) {
+  const winRef = useRef(null);
+  const gestureRef = useRef(null);
+  const [geom, setGeom] = useState(null);
+  const [zoomed, setZoomed] = useState(false);
+  // Desktop width, for working out which side is nearer to slide off toward.
+  const [parentW, setParentW] = useState(0);
+  const restoreRef = useRef(null);
+  const [skipMotion] = useState(prefersReducedMotion);
+  const [entered, setEntered] = useState(skipMotion);
+  const [closing, setClosing] = useState(false);
+  const [settling, setSettling] = useState(false);
+  const closeTimer = useRef(0);
+
+  const parentBox = () => {
+    const p = winRef.current?.offsetParent;
+    return p ? { w: p.clientWidth, h: p.clientHeight } : null;
+  };
+
+  const persist = (g) => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(g));
+    } catch {
+      /* geometry just won't persist */
+    }
+  };
+
+  // Before paint: an unplaced frame sits at the desktop's top-left corner, and
+  // anything anchored to it (the Browser's native views) would flash there.
+  useLayoutEffect(() => {
+    const box = parentBox();
+    if (!box) return;
+    const saved = readGeom(storageKey);
+    const base =
+      saved || {
+        w: width,
+        h: height,
+        x: Math.round((box.w - width) / 2) + cascade * 30,
+        y: Math.round((box.h - DOCK_CLEAR - height) / 2) + cascade * 30,
+      };
+    setParentW(box.w);
+    setGeom(clampGeom(base, box));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Anything anchored to the frame from outside the DOM (native views) has to
+  // be told where it moved, after the browser has laid the new geometry out.
+  useEffect(() => {
+    if (geom) onGeometry?.(geom);
+  }, [geom, hidden, onGeometry]);
+
+  // The peek slide is a CSS transition, so `geom` never changes and nothing
+  // anchored from outside the DOM hears about it. Walk those views along the
+  // animation by hand, otherwise the Browser's page snaps in a frame late.
+  useEffect(() => {
+    if (!onGeometry || !geom) return undefined;
+    let raf = 0;
+    const until = performance.now() + PEEK_MS + 60;
+    const tick = () => {
+      onGeometry(geom);
+      if (performance.now() < until) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peeked]);
+
+  // Keep the window inside the desktop when the studio window resizes or
+  // goes full screen.
+  useEffect(() => {
+    const p = winRef.current?.offsetParent;
+    if (!p || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      setParentW(p.clientWidth);
+      setGeom((g) =>
+        g ? clampGeom(g, { w: p.clientWidth, h: p.clientHeight }) : g,
+      );
+    });
+    ro.observe(p);
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Open / close / minimize motion ──────────────────────────────────────
+  // `geom` lands before the first paint, so the frame is already in the right
+  // place when it starts its way in; the entry stage holds it small and clear
+  // for one painted frame, then hands over to the transition.
+  const gone = hidden || !geom;
+  const stage = closing
+    ? "closing"
+    : !geom || !entered
+      ? "entering"
+      : minimized
+        ? "minimized"
+        : "open";
+  const motion = STAGES[stage];
+  const ms = skipMotion || gone ? 0 : motion.ms;
+
+  useEffect(() => {
+    if (skipMotion) return undefined;
+    // Two frames: one for the browser to paint the entry stage, one for the
+    // style change that transitions out of it.
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setEntered(true));
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [skipMotion]);
+
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
+
+  // The close click plays the exit first and only then tells the desktop to
+  // drop the window — unmounting on the click would cut the animation off.
+  const requestClose = () => {
+    if (closing) return;
+    if (skipMotion) {
+      onClose?.();
+      return;
+    }
+    setClosing(true);
+    closeTimer.current = setTimeout(() => onClose?.(), CLOSE_MS);
+  };
+
+  // A stage change starts a transition; the window is settled once it has run
+  // its course. Only the stage may start the clock — a trip to another studio
+  // tab and back changes the timings but plays no animation.
+  const msRef = useRef(ms);
+  msRef.current = ms;
+  useEffect(() => {
+    const wait = msRef.current;
+    if (!wait) {
+      setSettling(false);
+      return undefined;
+    }
+    setSettling(true);
+    const t = setTimeout(() => setSettling(false), wait);
+    return () => clearTimeout(t);
+  }, [stage]);
+
+  // Anything the desktop anchors to this frame from outside the DOM has to sit
+  // the animation out: a CSS scale doesn't carry native views with it, and the
+  // rect they'd measure mid-flight is the wrong one.
+  const animatingRef = useRef(onAnimating);
+  animatingRef.current = onAnimating;
+  const busy = stage !== "open" || settling;
+  useEffect(() => {
+    animatingRef.current?.(busy);
+  }, [busy]);
+  useEffect(() => () => animatingRef.current?.(false), []);
+
+  const startGesture = (mode) => (e) => {
+    if (e.button !== 0 || zoomed || !geom) return;
+    const box = parentBox();
+    if (!box) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    gestureRef.current = {
+      mode,
+      box,
+      base: geom,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      last: null,
+    };
+  };
+
+  const moveGesture = (e) => {
+    const g = gestureRef.current;
+    if (!g) return;
+    const dx = e.clientX - g.startX;
+    const dy = e.clientY - g.startY;
+    if (!g.moved && Math.hypot(dx, dy) < 3) return;
+    g.moved = true;
+    const b = g.base;
+    g.last =
+      g.mode === "move"
+        ? clampGeom({ ...b, x: b.x + dx, y: b.y + dy }, g.box)
+        : resizeGeom(b, g.mode, dx, dy, g.box);
+    setGeom(g.last);
+  };
+
+  const endGesture = () => {
+    const g = gestureRef.current;
+    gestureRef.current = null;
+    if (g?.last) persist(g.last);
+  };
+
+  const toggleZoom = () => {
+    const box = parentBox();
+    if (!box) return;
+    onFocus?.(); // the traffic lights swallow the frame's own focus click
+
+    if (zoomed) {
+      const back = restoreRef.current;
+      setZoomed(false);
+      if (back) setGeom(clampGeom(back, box));
+      return;
+    }
+    restoreRef.current = geom;
+    setZoomed(true);
+    setGeom({
+      x: EDGE,
+      y: EDGE,
+      w: box.w - EDGE * 2,
+      // Flush to the bottom when this window covers the dock — a gap there
+      // would show a sliver of the strip and read as a mistake, not a margin.
+      h: box.h - EDGE - (zoomCoversDock ? 0 : DOCK_CLEAR),
+    });
+  };
+
+  // A chromeless page draws its own title bar out in a native view, where the
+  // pointer never reaches React — hand it the actions the traffic lights and
+  // the drag handle would have run. Rebuilt each render so the closures it
+  // holds see the current geometry.
+  useEffect(() => {
+    if (!controls) return undefined;
+    controls.current = {
+      close: requestClose,
+      minimize: () => onMinimize?.(),
+      zoom: toggleZoom,
+      dragStart: () => {
+        const box = parentBox();
+        if (zoomed || !geom || !box) return;
+        gestureRef.current = { mode: "move", box, base: geom, moved: true, last: null };
+      },
+      dragBy: (dx, dy) => {
+        const g = gestureRef.current;
+        if (!g) return;
+        g.last = clampGeom({ ...g.base, x: g.base.x + dx, y: g.base.y + dy }, g.box);
+        setGeom(g.last);
+      },
+      dragEnd: endGesture,
+    };
+    return () => {
+      controls.current = null;
+    };
+  });
+
+  // Peeked windows slide clear off whichever edge they're nearer, the way
+  // macOS sweeps them aside to reveal the wallpaper. Position stays in `geom`,
+  // so letting the transform go puts every window back exactly where it was.
+  const peekShift = (() => {
+    if (!peeked || !geom || !parentW) return 0;
+    const offLeft = -(geom.x + geom.w + 24);
+    const offRight = parentW - geom.x + 24;
+    return geom.x + geom.w / 2 < parentW / 2 ? offLeft : offRight;
+  })();
+
+  return (
+    <div
+      ref={winRef}
+      role="dialog"
+      aria-label={title}
+      onPointerDown={() => onFocus?.()}
+      style={{
+        ...NO_DRAG,
+        left: geom?.x ?? 0,
+        top: geom?.y ?? 0,
+        width: geom?.w ?? width,
+        height: geom?.h ?? height,
+        zIndex: z,
+        // Anchors position:fixed inside the hosted page to the window frame.
+        transform: `translateZ(0) translateX(${peekShift}px) translateY(${
+          motion.lift
+        }px) scale(${motion.scale})`,
+        transformOrigin: "50% 50%",
+        opacity: motion.opacity,
+        // A window on another tab is hidden outright rather than faded, so it
+        // comes back the instant the desktop does. Minimized ones fall away
+        // first and only then leave the paint, holding the delay below.
+        visibility: gone || stage === "minimized" ? "hidden" : "visible",
+        transition: ms
+          ? `transform ${ms}ms ${motion.ease}, opacity ${Math.round(
+              ms * 0.8,
+            )}ms ${motion.ease}, visibility 0s linear ${
+              stage === "minimized" ? ms : 0
+            }ms`
+          : "none",
+      }}
+      className={`group/win absolute flex flex-col overflow-hidden rounded-[1.25rem] border border-black/10 bg-white/85 backdrop-blur-2xl dark:border-white/10 dark:bg-black/55 ${
+        active
+          ? "shadow-[0_30px_90px_rgba(0,0,0,0.42)]"
+          : "shadow-[0_14px_44px_rgba(0,0,0,0.28)]"
+      } ${
+        gone || peeked || closing || minimized
+          ? "pointer-events-none"
+          : "pointer-events-auto"
+      }`}
+    >
+      {/* Title bar — traffic lights + centered title, drag handle. Kept short:
+          the page below brings its own header, and two tall bars stacked read
+          as wasted space. A chromeless page has no bar at all — its own top
+          row carries the lights (see `controls`). */}
+      {!chromeless && (
+        <div
+          onPointerDown={startGesture("move")}
+          onPointerMove={moveGesture}
+          onPointerUp={endGesture}
+          onDoubleClick={toggleZoom}
+          className="relative flex h-7 flex-shrink-0 touch-none select-none items-center gap-2 px-2.5"
+        >
+          <div className="flex items-center gap-[0.3rem]">
+            <TrafficLight
+              color="#ff5f57"
+              label={`Close ${title}`}
+              onClick={requestClose}
+              glyph="M2 2 L8 8 M8 2 L2 8"
+            />
+            <TrafficLight
+              color="#febc2e"
+              label={`Minimize ${title}`}
+              onClick={onMinimize}
+              glyph="M2 5 H8"
+            />
+            <TrafficLight
+              color="#28c840"
+              label={zoomed ? `Restore ${title}` : `Zoom ${title}`}
+              onClick={toggleZoom}
+              glyph="M2.5 7.5 L7.5 2.5 M3 3 H7 V7"
+            />
+          </div>
+          <div className="pointer-events-none absolute inset-x-0 flex items-center justify-center gap-1.5">
+            {Icon && <Icon className="h-3 w-3 text-black/40 dark:text-white/40" />}
+            <span className="text-[0.68rem] font-medium text-black/55 dark:text-white/55">
+              {title}
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div className="relative min-h-0 flex-1 overflow-hidden">{children}</div>
+
+      {/* Resize grips: every edge and corner, like a real window. They sit
+          last so they take the pointer ahead of the title bar's move handler
+          and the page underneath. */}
+      {!zoomed &&
+        RESIZE_GRIPS.map(({ mode, className }) => (
+          <Grip
+            key={mode}
+            onDown={startGesture(mode)}
+            onMove={moveGesture}
+            onUp={endGesture}
+            className={className}
+          />
+        ))}
+    </div>
+  );
+}
+
+function TrafficLight({ color, label, glyph, onClick }) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      onPointerDown={(e) => e.stopPropagation()}
+      className="flex h-3 w-3 items-center justify-center rounded-full transition-transform active:scale-90"
+      style={{ background: color }}
+    >
+      <svg
+        viewBox="0 0 10 10"
+        className="h-2 w-2 opacity-0 transition-opacity group-hover/win:opacity-60"
+        stroke="rgba(0,0,0,0.75)"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        fill="none"
+      >
+        <path d={glyph} />
+      </svg>
+    </button>
+  );
+}
+
+/* Edges are 6px bands hugging the frame; corners are 14px squares laid over
+ * them. The Browser window insets its native views by the same 6px so these
+ * stay grabbable — native views paint above the page and would swallow the
+ * pointer otherwise. */
+const RESIZE_GRIPS = [
+  { mode: "n", className: "top-0 left-3.5 right-3.5 h-1.5 cursor-ns-resize" },
+  { mode: "s", className: "bottom-0 left-3.5 right-3.5 h-1.5 cursor-ns-resize" },
+  { mode: "w", className: "left-0 top-3.5 bottom-3.5 w-1.5 cursor-ew-resize" },
+  { mode: "e", className: "right-0 top-3.5 bottom-3.5 w-1.5 cursor-ew-resize" },
+  { mode: "nw", className: "left-0 top-0 h-3.5 w-3.5 cursor-nwse-resize" },
+  { mode: "ne", className: "right-0 top-0 h-3.5 w-3.5 cursor-nesw-resize" },
+  { mode: "sw", className: "left-0 bottom-0 h-3.5 w-3.5 cursor-nesw-resize" },
+  { mode: "se", className: "right-0 bottom-0 h-3.5 w-3.5 cursor-nwse-resize" },
+];
+
+function Grip({ onDown, onMove, onUp, className }) {
+  return (
+    <div
+      onPointerDown={onDown}
+      onPointerMove={onMove}
+      onPointerUp={onUp}
+      className={`absolute touch-none ${className}`}
+    />
+  );
+}

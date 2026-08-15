@@ -192,6 +192,10 @@ export const FAQ_ITEMS = [
 // feature copy above. Server enforcement: `checkAiUsageLimit` in server.js
 // reads `glassRequests`; `imageGenQuota.js` covers image gens.
 export const PLAN_LIMITS = {
+  // Free accounts are metered by the one-time signup credit allowance
+  // (FREE_PLAN_CREDITS in server.js, enforced by requireAppAccess) rather
+  // than a monthly request cap — glassRequests stays uncapped so the credit
+  // meter is the single paywall trigger.
   free: {
     requests: Infinity,
     vaultCards: 50,
@@ -201,7 +205,7 @@ export const PLAN_LIMITS = {
     synthesisNodes: 100,
     seats: 1,
     modelTier: "basic",
-    glassRequests: 50,
+    glassRequests: Infinity,
     imageGens: 20,
     artifactBuilds: 10,
   },
@@ -300,6 +304,68 @@ export const VAULT_UPLOAD_LIMITS = {
   /** Skip per-file AI describe + enrich when a single drop is at least this big. */
   bulkImportAiThreshold: 25,
 };
+
+// ---------------------------------------------------------------------------
+// Credit top-ups (one-time purchases).
+//
+// A top-up is a `mode: 'payment'` Stripe checkout that grants credits into
+// `lykn_credit_wallets` (migration 123). Those credits are spent only once an
+// account has no included allowance left — a free account past
+// FREE_PLAN_CREDITS, or a subscriber past PLAN_LIMITS.glassRequests for the
+// month. They never expire and they don't reset monthly.
+//
+// `envVar` names the server env var holding that pack's Stripe price id;
+// server.js reads them into STRIPE_TOPUP_PRICE_MAP. A pack whose env var is
+// unset is hidden from the picker, so adding a pack here is safe before the
+// Stripe product exists. Create each price in Stripe as a ONE-TIME price (not
+// recurring) and keep the amount here in sync with it — this number is display
+// only; Stripe charges what its price says.
+// ---------------------------------------------------------------------------
+export const CREDIT_PACKS = [
+  {
+    id: "topup_1000",
+    name: "1,000 credits",
+    credits: 1000,
+    priceUsd: 5,
+    envVar: "STRIPE_PRICE_TOPUP_1000",
+    blurb: "About a week of everyday chat.",
+    highlighted: false,
+  },
+  {
+    id: "topup_5000",
+    name: "5,000 credits",
+    credits: 5000,
+    priceUsd: 20,
+    envVar: "STRIPE_PRICE_TOPUP_5000",
+    blurb: "Best value for regular image and file work.",
+    highlighted: true,
+  },
+  {
+    id: "topup_15000",
+    name: "15,000 credits",
+    credits: 15000,
+    priceUsd: 50,
+    envVar: "STRIPE_PRICE_TOPUP_15000",
+    blurb: "A long runway for heavy months.",
+    highlighted: false,
+  },
+];
+
+export function creditPackById(packId) {
+  return CREDIT_PACKS.find((pack) => pack.id === packId) || null;
+}
+
+// What a credit buys, for the usage view. Display only — the authoritative
+// weights are CREDIT_COSTS in usageTracking.js; keep these in sync.
+export const CREDIT_COST_EXAMPLES = [
+  { label: "Chat message", credits: 1 },
+  { label: "Long or complex answer", credits: 3 },
+  { label: "Reading a large file", credits: 15 },
+  { label: "Image generation", credits: 15 },
+  { label: "Image edit", credits: 10 },
+  { label: "Video generation", credits: 35 },
+  { label: "Transcription", credits: 5 },
+];
 
 export const PLAN_LABELS = {
   free: "Free",

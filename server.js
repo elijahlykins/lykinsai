@@ -26,7 +26,7 @@ import {
   retranscribeSegment,
   transcribeBuffer,
 } from './youtubeQa.js';
-import { searchWeb, formatSearchResultsForPrompt } from './lib/exterior/webSearch.js';
+import { searchWeb, formatSearchResultsForPrompt, extractSourcesFromSearchPrompt } from './lib/exterior/webSearch.js';
 import { runDeepResearchForPrompt } from './lib/exterior/deepResearch.js';
 import { fetchWebPage } from './lib/exterior/webFetch.js';
 import { assertUrlSafe, safeFetch } from './lib/exterior/ssrfGuard.js';
@@ -56,6 +56,7 @@ import {
   extractGeminiUsage,
   extractGrokUsage,
   getUserMonthlyUsage,
+  getUserLifetimeCredits,
   getUserSessions,
   getSessionWithLogs,
   startSessionCleanup,
@@ -71,7 +72,13 @@ import {
   defaultModelForTier,
   classifyModel,
 } from './src/lib/modelTiers.js';
-import { PLAN_LIMITS } from './src/lib/pricing-config.js';
+import { PLAN_LIMITS, CREDIT_PACKS, creditPackById } from './src/lib/pricing-config.js';
+import {
+  getCreditWallet,
+  grantTopupCredits,
+  listCreditTopups,
+  markTopupPayer,
+} from './lib/billing/creditWallet.js';
 import { compressConversation as compressConversationForPrompt } from './src/lib/ai/conversationFormat.js';
 import { runHoloBrowserStep } from './lib/holo/browserAgent.js';
 import { runScreenReader, formatScreenBriefForHolo } from './lib/holo/screenReader.js';
@@ -855,6 +862,19 @@ const STRIPE_PRICE_MAP = {
   },
 };
 
+// One-time credit packs. Each pack in CREDIT_PACKS (pricing-config.js) names
+// the env var holding its Stripe price id; a pack with no configured price is
+// simply not offered, so this ships safely before the Stripe products exist.
+// The prices must be ONE-TIME in Stripe — mode: 'payment' checkout rejects
+// recurring prices.
+const STRIPE_TOPUP_PRICE_MAP = Object.fromEntries(
+  CREDIT_PACKS.map((pack) => [pack.id, String(process.env[pack.envVar] || '').trim()]),
+);
+
+function availableCreditPacks() {
+  return CREDIT_PACKS.filter((pack) => Boolean(STRIPE_TOPUP_PRICE_MAP[pack.id]));
+}
+
 // ============================================
 // COMPED ACCOUNTS — internal team / friends-of-house
 // ============================================
@@ -1325,6 +1345,7 @@ const FILE_PROXY_FRAME_ANCESTORS = [
   'https://*.lykn.io',
   process.env.NODE_ENV === 'production' ? null : 'https://*.vercel.app',
   'http://localhost:*',
+  'http://127.0.0.1:*',
   // The Electron glass overlay (loaded via loadFile → file:// origin) embeds
   // built artifacts in an inline preview iframe (Build mode).
   'file:',
@@ -4722,16 +4743,36 @@ async function checkAiUsageLimit(req, res, next) {
         message: 'Could not verify your usage right now. Please try again.',
       });
     }
-    const used = monthly.log_count || 0;
+    // Count only the requests the user was charged for. log_count includes
+    // background rows (embedding reindex, profile refresh, chat naming) that
+    // cost 0 credits, and counting those burned a paid plan's allowance on
+    // housekeeping the user never asked for.
+    const used = monthly.billable_count ?? monthly.log_count ?? 0;
     if (used >= limit) {
+      // Past the plan's monthly cap, purchased credits take over. The wallet
+      // read fails closed for the same reason the usage read does.
+      const wallet = await getCreditWallet(userId);
+      if (wallet === null) {
+        return res.status(503).json({
+          error: 'usage_check_unavailable',
+          message: 'Could not verify your usage right now. Please try again.',
+        });
+      }
+      if (wallet.balance > 0) {
+        markTopupPayer(userId, true);
+        return next();
+      }
+      markTopupPayer(userId, false);
       return res.status(429).json({
         error: 'ai_limit_reached',
         message: `You've used all ${limit} AI requests this month. Upgrade your plan or add a top-up to continue.`,
         used,
         limit,
         plan: planId,
+        topup_available: availableCreditPacks().length > 0,
       });
     }
+    markTopupPayer(userId, false);
     next();
   } catch (err) {
     console.error('⚠️ AI usage check failed, refusing request:', err.message);
@@ -5647,10 +5688,17 @@ function resolveIntentChatToolNames(msg, opts = {}) {
 /** Short tool policy when only a tiny allowlist is attached. */
 function buildSlimChatToolGuidance(toolNames) {
   const names = (Array.isArray(toolNames) ? toolNames : []).filter(Boolean);
+  const hasLocal = names.some((n) => n.startsWith('local_'));
   return [
     '=== TOOL CALLING (lean) ===',
     'You have a small set of tools for THIS turn only:',
     names.map((n) => `  • ${n}`).join('\n') || '  (none)',
+    ...(hasLocal
+      ? [
+          "The local_* tools run live on the user's Mac (Local Mode is ON). For any ask about " +
+            'their files, folders, apps, or system, CALL THEM — never claim local access is unavailable.',
+        ]
+      : []),
     'Call a tool silently when it is needed; never invent tool syntax in your reply.',
     'Never invent URLs, chart links, or claim a tool ran if it did not.',
     'If a needed tool is not listed, answer from context or say briefly what the user should arm (Build mode / Generate image / etc.).',
@@ -6969,7 +7017,7 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    spreadsheets, standalone charts/diagrams, images, speech/audio, real .mp4',
   '    videos (animated logos / image animations / motion graphics), and',
   '    live interactive apps, dashboards, and tools (coded in React and',
-  '    rendered in a side panel next to the chat). Charts/diagrams use',
+  '    rendered in a popup over the chat when the build is done). Charts/diagrams use',
   '    "+" → Create → Chart/Diagram or Build mode; images use "+" →',
   '    Generate image; live coded builds use "+" → Build mode (or Create).',
   '  • Compute & convert — exact math, symbolic algebra/calculus, run',
@@ -7018,7 +7066,7 @@ const TOOL_GUIDANCE_VISUAL = [
   '  When the user asks for a document, report, study guide, worksheet,',
   '  dashboard, mini-app, landing page, or any visual/interactive deliverable,',
   '  BUILD IT WITH TOOLS — do not dump a long HTML/code block only in markdown.',
-  '  LYKN renders tool output live in a side panel next to the chat.',
+  '  LYKN renders tool output live in a popup over the chat when the build is done.',
   '  • lykn_build_react_artifact — THE DEFAULT builder. You WRITE React code',
   '    and it renders live. Simple: pass `code` (one component). Complex',
   '    games/apps: pass multi-file `files` ([{path,content}], entry App.jsx)',
@@ -7365,7 +7413,7 @@ function detectImageFollowUpIntent(message, conversation) {
 }
 
 const TOOL_GUIDANCE_ARTIFACT_EDIT = [
-  'ARTIFACT EDITING (an artifact is already open in the side panel):',
+  'ARTIFACT EDITING (an artifact is already open in the preview popup):',
   '  The user is refining an EXISTING build — not commissioning a new one.',
   '  • Do NOT invent a new look, theme, palette, layout, typography, or component structure.',
   '  • There is NO [DESIGN_SYSTEM] / [STYLE_GUIDE] on this turn on purpose. Keep the open',
@@ -14015,10 +14063,16 @@ ${t}
     if (searchResults) prompt += "\n\n" + searchResults;
     if (youtubeResults) prompt += "\n\n" + youtubeResults;
     if (deepResearch) {
-      if (searchResults && String(searchResults).includes('[DEEP_RESEARCH_EVIDENCE]')) {
+      const evidence = String(searchResults || '');
+      if (evidence.includes('[DEEP_RESEARCH_EVIDENCE]')) {
         prompt +=
           '\n\n[RESEARCH_MODE — Deep research is armed. Treat [DEEP_RESEARCH_EVIDENCE] as your primary evidence and follow [RESEARCH_REPORT_INSTRUCTIONS]. ' +
           'Deliver as markdown in your reply ONLY — do not call lykn_build_* or create a side-panel artifact.]';
+      } else if (evidence.includes('[WEB_SEARCH_RESULTS]')) {
+        prompt +=
+          '\n\n[RESEARCH_MODE — Deep research is armed. Multi-query research was unavailable, so use [WEB_SEARCH_RESULTS] as your evidence. ' +
+          'Write a thorough markdown report and end with a **Sources** section listing markdown links ONLY from those results — never invent URLs. ' +
+          'Do not call lykn_build_* or create a side-panel artifact.]';
       } else {
         prompt +=
           '\n\n[RESEARCH_MODE — Deep research was requested but live multi-source evidence was unavailable. ' +
@@ -15791,7 +15845,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       }
       useTools = true;
     }
-    // Artifact open in the side panel: keep the matching builder tool available
+    // Artifact open in the preview popup: keep the matching builder tool available
     // so a plain-language edit can patch it in place.
     if (activeArtifactEditable) {
       const editToolName = String(activeArtifact.toolName || 'lykn_build_template');
@@ -16348,14 +16402,25 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               );
               return out.text;
             }
-            console.warn(`⚠️ Deep research failed (${out.pack?.error || 'unknown'}) — falling back to forced web search`);
-            writeStreamStatus('Searching the web\u2026');
-            return runWebSearchIfNeeded(topic, {
+            const failReason = String(out.pack?.error || 'unknown');
+            console.warn(`⚠️ Deep research failed (${failReason}) — falling back to forced web search`);
+            writeStreamStatus(
+              failReason === 'serper_no_credits'
+                ? 'Search provider is out of credits \u2014 trying a simpler web search\u2026'
+                : 'Searching the web\u2026',
+            );
+            const fallbackText = await runWebSearchIfNeeded(topic, {
               hasFocusedBricks: Boolean(hasFocusedBricks),
               hasContext: hasContextForStreamSearch,
               force: true,
               deep: true,
             });
+            if (fallbackText) {
+              deepResearchSources = extractSourcesFromSearchPrompt(fallbackText);
+            } else {
+              writeStreamStatus('Couldn\u2019t reach live sources \u2014 writing from general knowledge.');
+            }
+            return fallbackText;
           })()
         : runWebSearchIfNeeded(streamSearchText, {
             hasFocusedBricks: Boolean(hasFocusedBricks),
@@ -16477,13 +16542,19 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         "If [WHAT_IM_ON] shows no saved state or clustered context yet, say the project looks empty so far and offer to help start filling it in.]";
     }
     if (deepResearch) {
-      if (searchResults && String(searchResults).includes('[DEEP_RESEARCH_EVIDENCE]')) {
+      const evidence = String(searchResults || '');
+      if (evidence.includes('[DEEP_RESEARCH_EVIDENCE]')) {
         // Report structure + Sources rules are inside the evidence pack.
         prompt +=
           '\n\n[RESEARCH_MODE — Deep research is armed. Treat [DEEP_RESEARCH_EVIDENCE] as your primary evidence and follow [RESEARCH_REPORT_INSTRUCTIONS]. ' +
           'Deliver the report as markdown in your reply ONLY. Do NOT call lykn_build_*, open a side-panel artifact, ' +
           'or "build a polished interactive report". Mentions of investor pitch / deck / slides are the TOPIC of this ' +
           'written research — not a Create/Build request. The user armed Deep research, not Create.]';
+      } else if (evidence.includes('[WEB_SEARCH_RESULTS]')) {
+        prompt +=
+          '\n\n[RESEARCH_MODE — Deep research is armed. Multi-query research was unavailable, so use [WEB_SEARCH_RESULTS] as your evidence. ' +
+          'Write a thorough markdown report in your reply ONLY and end with a **Sources** section listing markdown links ONLY from those results — never invent URLs. ' +
+          'Do NOT call lykn_build_* or create a side-panel artifact.]';
       } else {
         prompt +=
           '\n\n[RESEARCH_MODE — Deep research was requested but live multi-source evidence was unavailable. ' +
@@ -16582,7 +16653,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               : 'artifact';
       prompt +=
         `\n\n[ARTIFACT_VISIBLE — The user has "${String(activeArtifact.title || 'Untitled').slice(0, 200)}" ` +
-        `(${kindHint}) open in the side panel, but they are in Chat mode — not Build/Create. ` +
+        `(${kindHint}) open in the preview popup, but they are in Chat mode — not Build/Create. ` +
         `You may discuss, explain, critique, brainstorm about, or answer questions about this artifact using conversation context. ` +
         `Do NOT call lykn_build_react_artifact, lykn_build_template, lykn_build_spreadsheet, lykn_manage_file, or any other build/edit tool, ` +
         `and do NOT modify the open artifact. If they ask you to change, add to, or rebuild it, tell them in one short line to switch to ` +
@@ -16630,13 +16701,13 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           runtimeErrs.map((e) => `  - ${String(e.message || e).slice(0, 400)}`).join('\n') + '\n'
         : '';
       prompt +=
-        `\n\n[ARTIFACT_OPEN — The user has this coded React artifact open in the side panel and may ask you to refine it:\n` +
+        `\n\n[ARTIFACT_OPEN — The user has this coded React artifact open in the preview popup and may ask you to refine it:\n` +
         `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
         sourceBlock +
         todosBlock +
         runtimeBlock +
         `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
-        `Build mode does NOT mean rebuild — with this panel open, add/edit/fix requests are ALWAYS in-place patches, never a new artifact from scratch. ` +
+        `Build mode does NOT mean rebuild — with this popup open, add/edit/fix requests are ALWAYS in-place patches, never a new artifact from scratch. ` +
         `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, colors, radii, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. Swapping a color palette or font "while you're at it" is a FAILURE. ` +
         `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
         (isMulti
@@ -16659,7 +16730,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       } catch { sectionsJson = '[]'; }
       const templateRestyleAuthorized = redesignArtifactAsk;
       prompt +=
-        `\n\n[ARTIFACT_OPEN — The user has this artifact open in the side panel and may ask you to refine it:\n` +
+        `\n\n[ARTIFACT_OPEN — The user has this artifact open in the preview popup and may ask you to refine it:\n` +
         `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
         `• template_type: ${tType}\n` +
         `• current theme: ${curTheme}\n` +
@@ -16871,7 +16942,14 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       // Tiny allowlists get a short policy block (~few hundred chars) instead
       // of the ~30K full LYKN_CHAT_TOOL_GUIDANCE dump.
       if (streamLeanToolSet && Array.isArray(streamChatToolNames) && streamChatToolNames.length) {
-        prompt += '\n\n' + buildSlimChatToolGuidance(streamChatToolNames);
+        // Local Mode: the local_* schemas are appended to the lean allowlist
+        // later (effectiveChatToolNames) — they must be listed HERE too, or
+        // the "tools for THIS turn only" policy convinces the model its live
+        // local tools don't exist and it refuses local file asks.
+        const slimNames = streamLocalMode
+          ? [...streamChatToolNames, ...LOCAL_TOOL_NAMES]
+          : streamChatToolNames;
+        prompt += '\n\n' + buildSlimChatToolGuidance(slimNames);
       } else {
         prompt += '\n\n' + buildChatToolGuidance(streamPureUserMessage || streamSearchText, {
           // Fresh Create / image turns get the full visual + design brief.
@@ -17933,13 +18011,28 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           '\n\n[LOCAL MODE — ACTIVE]\n' +
           'Local Mode is ON for this turn. You HAVE live access to the user\'s Mac through the ' +
           'local_* tools: local_list_dir, local_read_file, local_search_files, local_pull_file ' +
-          '(brings any file — including images — into the chat), local_write_file, and ' +
-          'local_run_command. Reads may show the user a one-time permission prompt; writes and ' +
-          'risky commands always ask them per action. When the user asks about their files, ' +
-          'folders, or system, CALL THE TOOLS — never claim local access is unavailable or ask ' +
-          'them to enable it (the switch is already on). Ignore any earlier statements in this ' +
-          'conversation that said local access was off; those were transient errors. If a tool ' +
-          'returns an error, relay that exact error honestly instead of inventing a reason.'
+          '(brings any file — including images — into the chat), local_write_file, ' +
+          'local_run_command, local_synced_folders, local_running_apps, local_read_app, and ' +
+          'local_open_app. Your filesystem ' +
+          'access is scoped to the folders the user synced with LYKN — call ' +
+          'local_synced_folders first when you are unsure what you can reach, or when a tool ' +
+          'reports a path is not synced. local_running_apps tells you which apps are open on ' +
+          'their Mac and which is frontmost. local_open_app opens a Mac app as a normal ' +
+          'window — use it whenever they ask to ' +
+          'open, launch, or pull up an app. Reads may show the user a one-time permission ' +
+          'prompt; writes and risky commands always ask them per action. When the user asks ' +
+          'about their files, folders, apps, or system, CALL THE TOOLS — never claim local ' +
+          'access is unavailable or ask them to enable it (the switch is already on). Ignore ' +
+          'any earlier statements in this conversation that said local access was off; those ' +
+          'were transient errors. If a tool returns an error, relay that exact error honestly ' +
+          'instead of inventing a reason. When the ask targets a place on their MACHINE ' +
+          '(Downloads, Desktop, Documents, a folder, a drive), use ONLY the local_* tools — do ' +
+          'NOT search the vault or load saved items unless the user explicitly says vault/saved. ' +
+          'If the user does not say where a file lives, assume their local machine (especially ' +
+          'when this conversation has been about their local files) — never call vault tools ' +
+          'speculatively. When local_pull_file succeeds, the file is automatically shown ' +
+          'to the user as a card in the chat — NEVER write its URL into your reply (hand-copied ' +
+          'signed URLs corrupt and break); just mention the file by name.'
         : rawAgentSys;
       if (streamLocalToolsEnabled) {
         console.log(
@@ -20170,11 +20263,14 @@ app.post('/api/desktop/agent-intent', requireAuth, requireAppAccess, aiLimiter, 
       `You are LYKN Agent Mode's intent interpreter. The user has NOT opened a page yet.\n` +
       `Your job: deduce what they mean, pick the best concrete destination URL, and write a clear browse goal.\n` +
       `Rules:\n` +
+      `- If the ask NAMES a product, app or site ("in mailchimp", "on hubspot", "using notion"), that product IS the destination. Never substitute a different tool that does a similar job — an email task named for Mailchimp goes to Mailchimp, NOT Gmail. Repeat the named product in browseGoal so it cannot be lost.\n` +
+      `- Words like "email", "calendar", "doc" or "invoice" describe the ARTIFACT, not the destination. Only route to a mail client / calendar / editor when the user named no other product.\n` +
       `- Prefer official product/account dashboards over Google search.\n` +
       `- Vague filler ("thing", "stuff", "my … ads") still maps to the real product (e.g. Reddit Ads → https://ads.reddit.com).\n` +
       `- Do NOT invent credentials. Sign-in walls are fine — land on the right product.\n` +
       `- If they want to check/review something, say that in browseGoal (not just "open").\n` +
-      `- Only use a Google search URL when the destination is truly unknown.\n` +
+      `- browseGoal must cover the WHOLE ask through to its finished outcome, including anything after the first navigation ("… then write the body and save it as a draft"). Never shorten it to just opening a page.\n` +
+      `- Only use a Google search URL when the destination is truly unknown. For an unfamiliar named product, search for that product's login/dashboard rather than routing to a generic tool.\n` +
       `- skill is usually "browse". Use "research" only for deep research reports, "build" for artifacts, "general" for chat.\n` +
       `Return JSON only:\n` +
       `{"understood":"short plain English","destinationUrl":"https://...","browseGoal":"one imperative sentence the browser agent will execute","steps":["step1","step2"],"skill":"browse","confidence":0.0}`;
@@ -20387,10 +20483,16 @@ app.post('/api/desktop/agent-model', requireAuth, requireAppAccess, aiLimiter, a
     // gpt-5.6-terra by default — 4.1-mini misread element catalogs (random
     // clicks, wrong fields) and mis-verified steps. Verify can still be
     // pointed at a cheaper model via BROWSER_AGENT_VERIFY_MODEL.
-    const model =
-      stage === 'verify'
-        ? String(process.env.BROWSER_AGENT_VERIFY_MODEL || process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra').trim()
-        : String(process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra').trim();
+    // Learning runs once per completed task and is plain summarization of text
+    // the agent already produced, so it does not need the reasoning model.
+    let model = String(process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra').trim();
+    if (stage === 'verify') {
+      model = String(
+        process.env.BROWSER_AGENT_VERIFY_MODEL || process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra',
+      ).trim();
+    } else if (stage === 'learn') {
+      model = String(process.env.BROWSER_AGENT_LEARN_MODEL || 'gpt-4.1-mini').trim();
+    }
 
     const userContent = imageUrl.startsWith('data:image/')
       ? [{ type: 'text', text: user }, { type: 'image_url', image_url: { url: imageUrl, detail: 'low' } }]
@@ -25826,6 +25928,39 @@ function hasAppAccessRow(row) {
 const APP_ACCESS_GRACE_MS = 10 * 60 * 1000;
 const appAccessGrace = new Map(); // userId → expiresAt (last-known-good)
 
+// ── Free signup credits ──────────────────────────────────────────────────────
+// New accounts are NOT hard-walled at signup. Every account gets a one-time
+// allowance of AI credits (ai_usage_logs.credits_used, lifetime sum); the
+// 402 → /start-trial paywall only kicks in once the allowance is spent.
+// Tune without a deploy via FREE_PLAN_CREDITS; set 0 to restore the old
+// wall-at-signup behavior.
+const FREE_PLAN_CREDITS = Math.max(0, Number(process.env.FREE_PLAN_CREDITS ?? 3000) || 0);
+const FREE_CREDITS_CACHE_MS = 30 * 1000;
+const freeCreditsCache = new Map(); // userId → { used, expiresAt }
+
+/**
+ * Lifetime credit usage vs the free allowance, cached briefly so the check
+ * doesn't add a usage-table scan to every AI request. Returns null when the
+ * usage backend is unreachable — callers must fail closed.
+ */
+async function freeCreditsStatus(userId) {
+  if (!userId) return null;
+  const cached = freeCreditsCache.get(userId);
+  let used;
+  if (cached && cached.expiresAt > Date.now()) {
+    used = cached.used;
+  } else {
+    used = await getUserLifetimeCredits(userId, { stopAt: FREE_PLAN_CREDITS + 1 });
+    if (used === null || used === undefined) return null;
+    freeCreditsCache.set(userId, { used, expiresAt: Date.now() + FREE_CREDITS_CACHE_MS });
+  }
+  return {
+    used,
+    limit: FREE_PLAN_CREDITS,
+    remaining: Math.max(0, FREE_PLAN_CREDITS - used),
+  };
+}
+
 async function requireAppAccess(req, res, next) {
   const uid = req.user?.id;
   try {
@@ -25842,13 +25977,42 @@ async function requireAppAccess(req, res, next) {
     if (error) throw new Error(error.message || 'billing_query_failed');
     if (hasAppAccessRow(data || null)) {
       if (uid) appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
+      // The plan covers this request, so purchased credits must not be
+      // touched. checkAiUsageLimit runs after us and flips this back on if
+      // they're past their monthly cap.
+      markTopupPayer(uid, false);
       return next();
     }
+    // No subscription: free accounts ride the signup credit allowance until
+    // it's spent. A failed usage lookup throws → fail closed (503/grace),
+    // never a silent free pass on routes that cost provider spend.
+    if (FREE_PLAN_CREDITS > 0) {
+      const credits = await freeCreditsStatus(uid);
+      if (!credits) throw new Error('free_credit_check_unavailable');
+      if (credits.remaining > 0) {
+        markTopupPayer(uid, false);
+        appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
+        return next();
+      }
+    }
+    // Signup allowance spent: purchased credits are the only thing left that
+    // can keep this account running. logAiUsage debits the real cost of
+    // whatever the request turns out to be.
+    const wallet = await getCreditWallet(uid);
+    if (wallet === null) throw new Error('credit_wallet_unavailable');
+    if (wallet.balance > 0) {
+      markTopupPayer(uid, true);
+      appAccessGrace.set(uid, Date.now() + APP_ACCESS_GRACE_MS);
+      return next();
+    }
+    markTopupPayer(uid, false);
     if (uid) appAccessGrace.delete(uid);
     return res.status(402).json({
-      error: 'An active subscription is required.',
+      error: "You've used all your free credits. Upgrade to keep going.",
       code: 'subscription_required',
       needs_trial_checkout: true,
+      free_credits_exhausted: FREE_PLAN_CREDITS > 0,
+      topup_available: availableCreditPacks().length > 0,
     });
   } catch (err) {
     console.error('❌ requireAppAccess failed:', err?.message || err);
@@ -26234,6 +26398,46 @@ async function syncSubscriptionToBilling(subscription) {
   }
 }
 
+/**
+ * A one-time credit purchase completed. Throws on anything unexpected so the
+ * webhook route 500s and Stripe redelivers; the grant RPC is idempotent on the
+ * session id, so a retry can never double-credit. Credits come from the pack
+ * catalog keyed by metadata.topup_pack, not from a number in metadata.
+ */
+async function grantTopupFromCheckoutSession(session) {
+  const packId = String(session.metadata?.topup_pack || '').trim();
+  // Some other one-time payment (Model Builder wallet, etc.) — not ours.
+  if (!packId) return;
+
+  const paymentStatus = session.payment_status;
+  if (paymentStatus && paymentStatus !== 'paid' && paymentStatus !== 'no_payment_required') {
+    console.warn(`⚠️ Top-up session ${session.id} is ${paymentStatus} — no credits granted`);
+    return;
+  }
+
+  const pack = creditPackById(packId);
+  if (!pack) throw new Error(`unknown credit pack "${packId}" on session ${session.id}`);
+
+  const userId = String(
+    session.client_reference_id || session.metadata?.supabase_user_id || '',
+  ).trim();
+  if (!userId) throw new Error(`top-up session ${session.id} carries no user reference`);
+
+  const result = await grantTopupCredits({
+    userId,
+    credits: pack.credits,
+    sessionId: session.id,
+    packId: pack.id,
+    amountCents: session.amount_total ?? null,
+    currency: session.currency || 'usd',
+  });
+
+  const outcome = result?.duplicate ? 'already granted' : 'granted';
+  console.log(
+    `💳 Top-up ${outcome}: ${pack.credits} credits → ${userId.slice(0, 8)} (balance ${result?.balance ?? '?'})`,
+  );
+}
+
 async function handleStripeEvent(event) {
   if (!supabaseAdmin) {
     console.warn('⚠️ Stripe event received but supabaseAdmin unavailable — skipping');
@@ -26261,6 +26465,8 @@ async function handleStripeEvent(event) {
         // still throws if the subscription is access-granting and unlinkable.
         await linkBillingRowFromCheckoutSession(session, subscription);
         await syncSubscriptionToBilling(subscription);
+      } else if (session.mode === 'payment') {
+        await grantTopupFromCheckoutSession(session);
       }
       break;
     }
@@ -26330,7 +26536,30 @@ app.get('/api/billing/me', requireAuth, async (req, res) => {
     }
 
     const row = await loadBillingRow(userId);
-    return res.json(billingMePayload(row));
+    const payload = billingMePayload(row);
+    // Free signup credits: while the allowance lasts, the client gate must
+    // NOT bounce the user to /start-trial. Surface the meter either way so
+    // the UI can show credits remaining / the upgrade nudge.
+    if (payload.needs_trial_checkout && FREE_PLAN_CREDITS > 0) {
+      const credits = await freeCreditsStatus(userId);
+      if (credits) {
+        payload.free_credits = credits;
+        if (credits.remaining > 0) payload.needs_trial_checkout = false;
+      }
+    }
+    // Purchased credits also count as access — otherwise someone who just
+    // topped up would be bounced to /start-trial by the client gate. Only read
+    // the wallet when they'd otherwise be walled, so the common case (a healthy
+    // subscription) stays a single query; the billing popup gets the full
+    // balance from /api/billing/credits.
+    if (payload.needs_trial_checkout) {
+      const wallet = await getCreditWallet(userId);
+      if (wallet && wallet.balance > 0) {
+        payload.topup_credits = wallet;
+        payload.needs_trial_checkout = false;
+      }
+    }
+    return res.json(payload);
   } catch (err) {
     console.error('❌ /api/billing/me error:', err);
     return res.status(500).json({ error: 'Failed to load billing' });
@@ -26413,6 +26642,117 @@ app.post('/api/billing/checkout', requireAuth, validate(billingCheckoutSchema), 
       return res.status(400).json({ error: 'checkout_email_required' });
     }
     return res.status(500).json({ error: 'checkout_failed' });
+  }
+});
+
+
+// ── /api/billing/credits ────────────────────────────────────────────────────
+// Everything the billing popup needs to explain where an account stands:
+// what's included, what's been used this month, what's been bought, and which
+// packs are purchasable. Kept off /api/billing/me because the monthly usage
+// scan is far too heavy for a route the client gate hits on every app load.
+app.get('/api/billing/credits', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+    const { planId } = await resolveUserPlan(userId, req.user?.email);
+    const rawLimit = PLAN_LIMITS[planId]?.glassRequests ?? PLAN_LIMITS.free.glassRequests ?? null;
+    const now = new Date();
+
+    const [monthly, wallet, purchases] = await Promise.all([
+      getUserMonthlyUsage(userId),
+      getCreditWallet(userId),
+      listCreditTopups(userId, 10),
+    ]);
+
+    // The signup allowance only exists for accounts without a subscription.
+    let includedCredits = null;
+    const row = await loadBillingRow(userId);
+    if (!hasAppAccessRow(row) && FREE_PLAN_CREDITS > 0 && !isCompedProEmail(req.user?.email)) {
+      includedCredits = await freeCreditsStatus(userId);
+    }
+
+    return res.json({
+      plan: planId,
+      // null limit = unlimited (Max, and the free tier's uncapped request count).
+      monthly: {
+        period_start: new Date(now.getFullYear(), now.getMonth(), 1).toISOString(),
+        // Mirror checkAiUsageLimit exactly, so the meter can't disagree with
+        // what actually gets enforced.
+        requests_used: monthly?.billable_count ?? monthly?.log_count ?? null,
+        requests_limit: Number.isFinite(rawLimit) ? rawLimit : null,
+        credits_used: monthly?.total_credits ?? null,
+        action_breakdown: monthly?.action_breakdown || {},
+        usage_available: Boolean(monthly),
+      },
+      included_credits: includedCredits,
+      topup: wallet || { granted: 0, used: 0, balance: 0 },
+      packs: availableCreditPacks().map((pack) => ({
+        id: pack.id,
+        name: pack.name,
+        credits: pack.credits,
+        priceUsd: pack.priceUsd,
+        blurb: pack.blurb,
+        highlighted: Boolean(pack.highlighted),
+      })),
+      purchases,
+    });
+  } catch (err) {
+    console.error('❌ /api/billing/credits error:', err);
+    return res.status(500).json({ error: 'Failed to load credits' });
+  }
+});
+
+// ── /api/billing/topup (one-time credit purchase) ───────────────────────────
+const billingTopupSchema = z.object({
+  packId: z.string().min(1).max(64),
+});
+
+app.post('/api/billing/topup', requireAuth, validate(billingTopupSchema), async (req, res) => {
+  try {
+    if (!stripeConfigured()) return res.status(503).json({ error: 'Stripe not configured' });
+    const user = req.user;
+    const pack = creditPackById(req.body.packId);
+    if (!pack) return res.status(400).json({ error: 'invalid_pack' });
+
+    const priceId = STRIPE_TOPUP_PRICE_MAP[pack.id];
+    if (!priceId) {
+      return res.status(503).json({
+        error: 'topup_not_configured',
+        message: `Missing env var ${pack.envVar} (one-time Stripe price id for ${pack.name})`,
+      });
+    }
+
+    const row = await loadBillingRow(user.id);
+    const checkoutIdentity = await buildStripeCheckoutIdentity(user, row);
+    const appUrl = appUrlFromReq(req);
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      ...checkoutIdentity,
+      // Keep a customer on file for a first-time buyer so a later subscription
+      // reuses it instead of creating a second Stripe customer.
+      ...(checkoutIdentity.customer ? {} : { customer_creation: 'always' }),
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `${appUrl}/billing?topup=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${appUrl}/billing?topup=canceled`,
+      client_reference_id: user.id,
+      // The webhook re-derives the credit amount from pack_id rather than
+      // trusting a number in metadata.
+      metadata: { supabase_user_id: user.id, topup_pack: pack.id },
+      payment_intent_data: {
+        metadata: { supabase_user_id: user.id, topup_pack: pack.id },
+      },
+    });
+
+    return res.json({ url: session.url });
+  } catch (err) {
+    console.error('❌ /api/billing/topup error:', err);
+    if (String(err?.message || '').includes('checkout_email_required')) {
+      return res.status(400).json({ error: 'checkout_email_required' });
+    }
+    return res.status(500).json({ error: 'topup_failed' });
   }
 });
 

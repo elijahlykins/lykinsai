@@ -229,7 +229,7 @@ export default function MobileLyknChat() {
             onClick={() => setOpen(false)}
           />
           <div
-            className="relative mt-auto w-full max-h-[85vh] flex flex-col rounded-t-2xl bg-panel border-t border-black/10 dark:border-white/10 shadow-2xl"
+            className="relative mt-auto w-full max-h-[85vh] flex flex-col rounded-t-2xl bg-panel border-t border-black/10 dark:border-white/10 shadow-none"
             style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
           >
             <div className="flex justify-center pt-2 pb-1">
@@ -368,7 +368,7 @@ export default function MobileLyknChat() {
               <div className="absolute inset-0 bg-black/30" />
               <div
                 ref={actionSheetRef}
-                className="relative w-full mx-2 mb-2 rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg overflow-hidden"
+                className="relative w-full mx-2 mb-2 rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-none overflow-hidden"
                 style={{ marginBottom: "max(env(safe-area-inset-bottom, 0px), 8px)" }}
                 onClick={(e) => e.stopPropagation()}
               >

@@ -177,7 +177,7 @@ export default function AddLinkDialog({
       onClick={handleClose}
     >
       <div
-        className="w-[420px] max-w-[92vw] max-h-[90vh] overflow-y-auto glass-control rounded-2xl shadow-lg p-5 space-y-4"
+        className="w-[420px] max-w-[92vw] max-h-[90vh] overflow-y-auto glass-control rounded-2xl !shadow-none p-5 space-y-4"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

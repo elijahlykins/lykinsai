@@ -27,23 +27,67 @@ function settingPath(userDataPath) {
   return path.join(String(userDataPath || ""), "local-mode.json");
 }
 
+// Main sets this once at startup so tool runs can load the synced-folders
+// allowlist without every call site having to thread userDataPath through.
+let defaultUserDataPath = "";
+function configure(userDataPath) {
+  defaultUserDataPath = String(userDataPath || "");
+}
+
+function normalizeSyncedFolders(folders) {
+  const out = [];
+  for (const f of Array.isArray(folders) ? folders : []) {
+    const abs = resolveUserPath(f);
+    if (!abs) continue;
+    if (!out.includes(abs)) out.push(abs);
+  }
+  return out.slice(0, 100);
+}
+
 function readLocalMode(userDataPath) {
   try {
     const data = JSON.parse(fs.readFileSync(settingPath(userDataPath), "utf8"));
-    return { enabled: data?.enabled === true, updatedAt: Number(data?.updatedAt) || 0 };
+    return {
+      enabled: data?.enabled === true,
+      updatedAt: Number(data?.updatedAt) || 0,
+      // Missing key → true, so configs written before synced folders existed
+      // keep their original whole-home behavior.
+      syncAll: data?.syncAll !== false,
+      syncedFolders: normalizeSyncedFolders(data?.syncedFolders),
+    };
   } catch {
-    return { enabled: false, updatedAt: 0 };
+    return { enabled: false, updatedAt: 0, syncAll: true, syncedFolders: [] };
   }
 }
 
-function writeLocalMode(userDataPath, enabled) {
-  const next = { enabled: enabled === true, updatedAt: Date.now() };
+function persistLocalMode(userDataPath, config) {
   try {
-    fs.writeFileSync(settingPath(userDataPath), JSON.stringify(next, null, 2), "utf8");
+    fs.writeFileSync(settingPath(userDataPath), JSON.stringify(config, null, 2), "utf8");
   } catch (e) {
     console.error("[LYKN] failed to write local-mode setting:", e?.message);
   }
-  return next;
+  return config;
+}
+
+function writeLocalMode(userDataPath, enabled) {
+  const prev = readLocalMode(userDataPath);
+  return persistLocalMode(userDataPath, {
+    ...prev,
+    enabled: enabled === true,
+    updatedAt: Date.now(),
+  });
+}
+
+/** Update the synced-folders allowlist (and/or the sync-all switch). */
+function writeMacSync(userDataPath, { syncAll, syncedFolders } = {}) {
+  const prev = readLocalMode(userDataPath);
+  return persistLocalMode(userDataPath, {
+    ...prev,
+    syncAll: typeof syncAll === "boolean" ? syncAll : prev.syncAll,
+    syncedFolders:
+      syncedFolders !== undefined ? normalizeSyncedFolders(syncedFolders) : prev.syncedFolders,
+    updatedAt: Date.now(),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +101,10 @@ const LOCAL_TOOL_NAMES = [
   "local_pull_file",
   "local_write_file",
   "local_run_command",
+  "local_synced_folders",
+  "local_running_apps",
+  "local_read_app",
+  "local_open_app",
 ];
 
 // local_pull_file ships the raw bytes to the renderer for upload, so the cap
@@ -162,6 +210,51 @@ function isInsideHome(absPath) {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+function isInsideFolder(absPath, folder) {
+  const rel = path.relative(path.resolve(folder), absPath);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/**
+ * Allowlist gate for the synced-folders model. With syncAll (default, matches
+ * pre-allowlist installs) every path is allowed exactly as before; otherwise
+ * the path must live inside one of the user's synced folders.
+ */
+function isAllowedPath(absPath, config) {
+  if (!absPath) return false;
+  if (!config || config.syncAll !== false) return true;
+  return (config.syncedFolders || []).some((f) => isInsideFolder(absPath, f));
+}
+
+/**
+ * Which of a tool call's args are filesystem paths that the allowlist must
+ * cover. Returns { allowed: boolean, blockedPath?: string }.
+ */
+function checkToolAccess(name, args = {}, config) {
+  if (!config || config.syncAll !== false) return { allowed: true };
+  const paths = [];
+  switch (name) {
+    case "local_list_dir":
+    case "local_search_files":
+      paths.push(resolveUserPath(args.path || "~"));
+      break;
+    case "local_read_file":
+    case "local_pull_file":
+    case "local_write_file":
+      paths.push(resolveUserPath(args.path));
+      break;
+    case "local_run_command":
+      paths.push(args.cwd ? resolveUserPath(args.cwd) : homeDir());
+      break;
+    default:
+      return { allowed: true };
+  }
+  for (const p of paths) {
+    if (!isAllowedPath(p, config)) return { allowed: false, blockedPath: p };
+  }
+  return { allowed: true };
+}
+
 /**
  * Classify a tool invocation. Returns { risky: boolean, summary: string }.
  * Risky invocations require `approved: true` to execute.
@@ -172,6 +265,11 @@ function classifyRisk(name, args = {}) {
     case "local_read_file":
     case "local_search_files":
     case "local_pull_file":
+    case "local_synced_folders":
+    case "local_running_apps":
+    case "local_read_app":
+    // Opening an app is what a dock click does — visible, non-destructive.
+    case "local_open_app":
       return { risky: false, summary: "" };
     case "local_write_file": {
       const target = resolveUserPath(args.path);
@@ -427,6 +525,345 @@ function runCommand(args = {}) {
   });
 }
 
+function syncedFoldersTool(config) {
+  return {
+    ok: true,
+    syncAll: config.syncAll !== false,
+    folders:
+      config.syncAll !== false
+        ? [homeDir()]
+        : (config.syncedFolders || []),
+    note:
+      config.syncAll !== false
+        ? "Everything under the home folder is synced."
+        : "Only these folders are synced — reads and writes outside them are blocked.",
+  };
+}
+
+async function runningAppsTool() {
+  // App/process awareness lives in appDock.cjs; required lazily so this
+  // module stays loadable in contexts without Electron.
+  const appDock = require("./appDock.cjs");
+  return appDock.getRunningAppsResult();
+}
+
+// ---------------------------------------------------------------------------
+// local_open_app — launch a Mac app as a normal window
+// ---------------------------------------------------------------------------
+
+async function openAppTool(args = {}) {
+  if (process.platform !== "darwin") {
+    return { ok: false, error: "local_open_app is only available on macOS." };
+  }
+  const query = String(args.app || "").trim().replace(/\.app$/i, "");
+  if (!query) {
+    return { ok: false, error: 'app is required, e.g. { app: "Spotify" }' };
+  }
+  const appDock = require("./appDock.cjs");
+  const apps = await appDock.listInstalledApps();
+  const lower = query.toLowerCase();
+  const target =
+    apps.find((a) => a.name.toLowerCase() === lower) ||
+    apps.find((a) => a.name.toLowerCase().startsWith(lower)) ||
+    apps.find((a) => a.name.toLowerCase().includes(lower));
+  if (!target) {
+    const sample = apps.slice(0, 40).map((a) => a.name).join(", ");
+    return {
+      ok: false,
+      error:
+        `No installed app matching "${query}". Installed apps include: ${sample}` +
+        (apps.length > 40 ? ", …" : "") + ".",
+    };
+  }
+
+  const launched = await appDock.launchApp(target.path);
+  if (launched && launched.ok) {
+    return {
+      ok: true,
+      app: target.name,
+      note: `${target.name} is now open on the user's screen.`,
+    };
+  }
+  return launched || { ok: false, error: `Could not open ${target.name}.` };
+}
+
+// ---------------------------------------------------------------------------
+// local_read_app — read what's showing inside a Mac app WITHOUT a screenshot
+// ---------------------------------------------------------------------------
+// Three layers, best first:
+//   1. The app's AppleScript dictionary (Spotify → exact track + playback,
+//      browsers → active tab). Structured and precise when it exists.
+//   2. The macOS Accessibility tree: on-screen text read the way VoiceOver
+//      reads it. Works for native apps; Electron apps need the
+//      AXManualAccessibility nudge and may still expose little.
+//   3. Window titles — nearly free and often informative ("Track — Artist").
+
+const OSA_READ_TIMEOUT_MS = 15_000;
+const APP_TEXT_CAP = 12_000;
+
+function runOsa(script, argv = [], timeoutMs = OSA_READ_TIMEOUT_MS, lang = "AppleScript") {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      const langArgs = lang === "JavaScript" ? ["-l", "JavaScript"] : [];
+      child = spawn("osascript", [...langArgs, "-e", script, ...argv.map(String)], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (e) {
+      resolve({ code: -1, out: "", err: e?.message || "spawn failed" });
+      return;
+    }
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    }, timeoutMs);
+    child.stdout.on("data", (d) => {
+      out += d;
+    });
+    child.stderr.on("data", (d) => {
+      err += d;
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, out: String(out).trim(), err: String(err).trim() });
+    });
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ code: -1, out: "", err: e?.message || "osascript failed" });
+    });
+  });
+}
+
+// Dictionary scripts must embed the app name LITERALLY — AppleScript
+// resolves app-specific terms (`player state`, `active tab`) at compile
+// time, so `tell application someVariable` is a guaranteed syntax error.
+function osaQuote(s) {
+  return `"${String(s).replace(/[\\"]/g, "\\$&")}"`;
+}
+
+// Player-style dictionary (Spotify and Music share the shape). Variable
+// names are deliberately verbose — short ones can collide with dictionary
+// terms (Spotify reserves `st`, which breaks the parse with a baffling
+// "Expected expression" error).
+function playerScript(appName) {
+  return `
+tell application ${osaQuote(appName)}
+  set theState to (player state as text)
+  set theOut to "state: " & theState
+  try
+    set theTrack to current track
+    set theOut to theOut & linefeed & "track: " & (name of theTrack)
+    set theOut to theOut & linefeed & "artist: " & (artist of theTrack)
+    set theOut to theOut & linefeed & "album: " & (album of theTrack)
+    try
+      set theOut to theOut & linefeed & "position: " & (round (player position)) & "s"
+    end try
+  end try
+  return theOut
+end tell`;
+}
+
+const SAFARI_SCRIPT = `
+tell application "Safari"
+  set theDoc to front document
+  return "tab: " & (name of theDoc) & linefeed & "url: " & (URL of theDoc)
+end tell`;
+
+function chromiumScript(appName) {
+  return `
+tell application ${osaQuote(appName)}
+  set theTab to active tab of front window
+  return "tab: " & (title of theTab) & linefeed & "url: " & (URL of theTab)
+end tell`;
+}
+
+// On-screen text via the Accessibility tree. Element property reads are one
+// Apple Event each, so the walk is capped — enough for "what's on screen",
+// cheap enough to return in a few seconds.
+// On-screen text via the C-level Accessibility API through JXA. This walks
+// thousands of elements in ~1s — an AppleScript/System Events walk is one
+// Apple Event PER PROPERTY READ and takes minutes on Electron-sized trees.
+// The AXManualAccessibility nudge wakes Chromium/Electron apps, which only
+// populate their tree a beat later — hence the delayed second pass.
+const AX_TEXT_JXA = `
+ObjC.import("Cocoa");
+ObjC.import("ApplicationServices");
+
+function run(argv) {
+  const appName = String(argv[0] || "");
+  const running = $.NSWorkspace.sharedWorkspace.runningApplications;
+  let pid = -1;
+  for (let i = 0; i < running.count; i++) {
+    const a = running.objectAtIndex(i);
+    const n = ObjC.unwrap(a.localizedName) || "";
+    if (n === appName || n.toLowerCase() === appName.toLowerCase()) {
+      pid = a.processIdentifier;
+      break;
+    }
+  }
+  if (pid < 0) return "";
+
+  const axApp = $.AXUIElementCreateApplication(pid);
+  $.AXUIElementSetAttributeValue(axApp, $("AXManualAccessibility"), $.kCFBooleanTrue);
+
+  function copyAttr(el, attr) {
+    const ref = Ref();
+    const err = $.AXUIElementCopyAttributeValue(el, $(attr), ref);
+    if (err !== 0) return null;
+    return ref[0];
+  }
+  function toJS(v) {
+    try {
+      return ObjC.deepUnwrap(ObjC.castRefToObject(v));
+    } catch (e) {
+      return null;
+    }
+  }
+  function childRefs(cfArr) {
+    if (!cfArr) return null;
+    const arr = ObjC.castRefToObject(cfArr);
+    if (!arr || !arr.count) return null;
+    const out = [];
+    for (let i = 0; i < arr.count; i++) out.push(arr.objectAtIndex(i));
+    return out;
+  }
+
+  const TEXT_ROLES = { AXStaticText: 1, AXLink: 1, AXHeading: 1, AXTextField: 1, AXTextArea: 1 };
+
+  function walk() {
+    const windows = childRefs(copyAttr(axApp, "AXWindows"));
+    if (!windows || !windows.length) return [];
+    const lines = [];
+    let visited = 0;
+    const stack = [windows[0]];
+    while (stack.length && visited < 6000 && lines.length < 800) {
+      const el = stack.pop();
+      visited++;
+      const role = toJS(copyAttr(el, "AXRole"));
+      if (role && TEXT_ROLES[role]) {
+        let v = toJS(copyAttr(el, "AXValue"));
+        if (!v || typeof v !== "string" || !v.trim()) v = toJS(copyAttr(el, "AXTitle"));
+        if (v && typeof v === "string" && v.trim()) lines.push(v.trim());
+      }
+      const kids = childRefs(copyAttr(el, "AXChildren"));
+      if (kids) for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+    }
+    return lines;
+  }
+
+  let lines = walk();
+  if (!lines.length) {
+    // Electron tree still building after the nudge — one delayed retry.
+    $.NSThread.sleepForTimeInterval(0.9);
+    lines = walk();
+  }
+  return lines.join("\\n");
+}`;
+
+const WINDOW_TITLES_SCRIPT = `
+on run argv
+  set procName to item 1 of argv
+  tell application "System Events"
+    return name of windows of process procName
+  end tell
+end run`;
+
+async function readAppViaDictionary(procName) {
+  const lower = procName.toLowerCase();
+  if (lower === "spotify" || lower === "music" || lower === "itunes") {
+    const r = await runOsa(playerScript(procName), [], 6000);
+    return r.out || "";
+  }
+  if (lower === "safari") {
+    const r = await runOsa(SAFARI_SCRIPT, [], 6000);
+    return r.out || "";
+  }
+  if (
+    ["google chrome", "brave browser", "microsoft edge", "arc", "vivaldi", "opera"].includes(lower)
+  ) {
+    const r = await runOsa(chromiumScript(procName), [], 6000);
+    return r.out || "";
+  }
+  return "";
+}
+
+async function readAppTool(args = {}) {
+  if (process.platform !== "darwin") {
+    return { ok: false, error: "local_read_app is only available on macOS." };
+  }
+
+  let target = String(args.app || "").trim();
+  if (!target) {
+    const fm = await runOsa(
+      `tell application "System Events" to get name of first application process whose frontmost is true`,
+      [],
+      6000
+    );
+    target = fm.out;
+    if (!target) {
+      return {
+        ok: false,
+        error:
+          "No app specified, and the frontmost app couldn't be determined. " +
+          "Pass an app name, e.g. { app: \"Spotify\" }.",
+      };
+    }
+  }
+
+  // Resolve to the exact running process name (System Events is case-exact).
+  const list = await runOsa(
+    `tell application "System Events" to get name of every application process whose background only is false`,
+    [],
+    6000
+  );
+  const running = list.out ? list.out.split(", ") : [];
+  const lower = target.toLowerCase();
+  const proc =
+    running.find((n) => n.toLowerCase() === lower) ||
+    running.find((n) => n.toLowerCase().includes(lower)) ||
+    "";
+  if (!proc) {
+    return {
+      ok: false,
+      error: `${target} doesn't appear to be running. Use local_running_apps to see open apps.`,
+    };
+  }
+
+  const result = { ok: true, app: proc };
+
+  // Cheap and always useful — titles often carry state ("Track — Artist").
+  const titles = await runOsa(WINDOW_TITLES_SCRIPT, [proc], 6000);
+  if (titles.out) result.windowTitles = titles.out.slice(0, 500);
+
+  // Structured data beats everything when the app is scriptable.
+  const dict = await readAppViaDictionary(proc);
+  if (dict) {
+    result.method = "app-script";
+    result.content = dict.slice(0, APP_TEXT_CAP);
+    return result;
+  }
+
+  // Fall back to reading the window's on-screen text via Accessibility.
+  const ax = await runOsa(AX_TEXT_JXA, [proc], OSA_READ_TIMEOUT_MS, "JavaScript");
+  const axText = (ax.out || "").replace(/\n{3,}/g, "\n\n").trim();
+  if (axText) {
+    result.method = "accessibility";
+    result.content = axText.slice(0, APP_TEXT_CAP);
+    return result;
+  }
+
+  result.method = "window-titles";
+  result.content = "";
+  result.note =
+    `${proc} exposes no readable text through its scripting dictionary or the Accessibility ` +
+    "tree (common for Electron/game/canvas apps). Only the window titles above are available — " +
+    "answer from those, or ask the user to describe what they see.";
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -436,9 +873,32 @@ function runCommand(args = {}) {
  *  - { needsApproval: true, summary } if the action is risky and not approved
  *  - a tool result object (always has ok: boolean)
  */
-async function run(name, args = {}, { approved = false } = {}) {
+async function run(name, args = {}, { approved = false, userDataPath = "" } = {}) {
   if (!isLocalToolName(name)) {
     return { ok: false, error: `Unknown local tool: ${name}` };
+  }
+  const config = readLocalMode(userDataPath || defaultUserDataPath);
+  // Synced-folders allowlist: when the user picked specific folders, every
+  // filesystem tool is confined to them.
+  if (config.syncAll === false) {
+    // Home-folder defaults would be blocked — root the call in the first
+    // synced folder instead.
+    if (name === "local_run_command" && !args.cwd) {
+      args = { ...args, cwd: config.syncedFolders[0] || homeDir() };
+    }
+    if ((name === "local_list_dir" || name === "local_search_files") && !args.path) {
+      args = { ...args, path: config.syncedFolders[0] || homeDir() };
+    }
+  }
+  const access = checkToolAccess(name, args, config);
+  if (!access.allowed) {
+    const folders = (config.syncedFolders || []).join(", ") || "(none)";
+    return {
+      ok: false,
+      error:
+        `Path not synced: ${access.blockedPath}. LYKN can only access the folders the user ` +
+        `synced: ${folders}. Ask the user to add the folder in Local Mode settings if needed.`,
+    };
   }
   const risk = classifyRisk(name, args);
   if (risk.risky && !approved) {
@@ -458,6 +918,14 @@ async function run(name, args = {}, { approved = false } = {}) {
         return await writeFileTool(args);
       case "local_run_command":
         return await runCommand(args);
+      case "local_synced_folders":
+        return syncedFoldersTool(config);
+      case "local_running_apps":
+        return await runningAppsTool();
+      case "local_read_app":
+        return await readAppTool(args);
+      case "local_open_app":
+        return await openAppTool(args);
       default:
         return { ok: false, error: `Unknown local tool: ${name}` };
     }
@@ -470,7 +938,11 @@ module.exports = {
   LOCAL_TOOL_NAMES,
   isLocalToolName,
   classifyRisk,
+  configure,
   readLocalMode,
   writeLocalMode,
+  writeMacSync,
+  isAllowedPath,
+  resolveUserPath,
   run,
 };

@@ -174,3 +174,24 @@ export function safeHtmlPreviewUrl(
     sandbox: sameOrigin ? HTML_SANDBOX_OPAQUE : HTML_SANDBOX_CROSS_ORIGIN,
   };
 }
+
+/** True when we should iframe `srcDoc` instead of a hosted preview URL.
+ *  Vite/Electron serve the app from 127.0.0.1 while file-proxy CSP historically
+ *  allowed only `http://localhost:*` — the iframe is blank, but Open (which
+ *  ships the HTML into the LYKN browser) still works. Prod still prefers the
+ *  cross-origin file-proxy URL because the parent CSP blocks srcDoc scripts.
+ */
+export function preferInlineHtmlPreview(previewUrl?: string | null): boolean {
+  const isLoopback = (host: string) =>
+    /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(String(host || ""));
+  if (typeof window !== "undefined" && isLoopback(window.location.hostname)) {
+    return true;
+  }
+  const raw = String(previewUrl || "").trim();
+  if (!raw) return true;
+  try {
+    return isLoopback(new URL(raw).hostname);
+  } catch {
+    return true;
+  }
+}

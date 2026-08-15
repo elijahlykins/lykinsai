@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "@/lib/api-config";
 import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
+import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 
 export type RealtimeVoiceState =
   | "idle"
@@ -299,6 +300,24 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       return;
     }
 
+    // Ask for the mic before minting a session: inside the desktop shell the
+    // macOS prompt only appears when the main process requests it, and there's
+    // no point paying for a realtime session the user can't speak into.
+    let micStream: MediaStream;
+    try {
+      micStream = await requestMicStream({ audio: true });
+    } catch (err: unknown) {
+      setErrorText(micErrorMessage(err));
+      setVoiceState("error");
+      return;
+    }
+    micStreamRef.current = micStream;
+    const releaseMic = () => {
+      try { micStream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      if (micStreamRef.current === micStream) micStreamRef.current = null;
+    };
+    if (!activeRef.current) { releaseMic(); return; }
+
     // 1) Build grounded instructions + mint ephemeral session token.
     let instructions = "";
     try { instructions = String((await buildInstructionsRef.current?.()) || ""); } catch { instructions = ""; }
@@ -314,6 +333,7 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data?.value) {
+        releaseMic();
         setErrorText(String(data?.error || "Couldn't start voice session."));
         setVoiceState("error");
         return;
@@ -321,17 +341,16 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
       ephemeral = data.value;
       sessionModel = data.model || sessionModel;
     } catch {
+      releaseMic();
       setErrorText("Couldn't reach the voice service.");
       setVoiceState("error");
       return;
     }
-    if (!activeRef.current) return;
+    if (!activeRef.current) { releaseMic(); return; }
 
-    // 2) Mic + peer connection.
+    // 2) Peer connection over the stream we already opened.
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (!activeRef.current) { stream.getTracks().forEach((t) => t.stop()); return; }
-      micStreamRef.current = stream;
+      const stream = micStream;
 
       const pc = new RTCPeerConnection();
       pcRef.current = pc;
@@ -378,20 +397,17 @@ export function useRealtimeVoice({ active, chatId, voice, buildInstructions, onU
         headers: { Authorization: `Bearer ${ephemeral}`, "Content-Type": "application/sdp" },
       });
       if (!sdpRes.ok) {
+        releaseMic();
         setErrorText("Voice connection was refused.");
         setVoiceState("error");
         return;
       }
       const answerSdp = await sdpRes.text();
-      if (!activeRef.current) return;
+      if (!activeRef.current) { releaseMic(); return; }
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-    } catch (err: unknown) {
-      const name = (err as { name?: string })?.name || "";
-      setErrorText(
-        name === "NotAllowedError"
-          ? "Microphone permission was denied. Enable it to use Voice Mode."
-          : "Couldn't start the voice connection.",
-      );
+    } catch {
+      releaseMic();
+      setErrorText("Couldn't start the voice connection.");
       setVoiceState("error");
     }
   }, [authHeaders, handleEvent, monitorFrame, setVoiceState, stopMonitor]);

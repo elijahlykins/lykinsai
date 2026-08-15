@@ -377,12 +377,16 @@ export default function DesktopAuth() {
       if (result.mode === "http") setHttpHandoffDone(true);
       handoffSucceededRef.current = true;
       return true;
-    } catch {
+    } catch (err) {
       if (!silent) {
+        // bad_state means a LYKN answered but didn't mint this sign-in — another
+        // copy of the app is holding the loopback port.
         setErrorMsg(
-          readHandoffPort()
-            ? "Couldn't reach the LYKN Mac app automatically. Make sure LYKN is still open, then click Open LYKN."
-            : "Couldn't open the LYKN Mac app. Click Open LYKN to try again.",
+          err?.message === "bad_state"
+            ? "Another copy of LYKN answered this sign-in. Quit the other LYKN window, then start sign-in again from the app."
+            : readHandoffPort()
+              ? "Couldn't reach the LYKN Mac app automatically. Make sure LYKN is still open, then click Open LYKN."
+              : "Couldn't open the LYKN Mac app. Click Open LYKN to try again.",
         );
       }
       return false;

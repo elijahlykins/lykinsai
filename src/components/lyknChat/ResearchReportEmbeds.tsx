@@ -64,9 +64,9 @@ function EmbedShell({
       className={
         `my-4 overflow-hidden rounded-2xl border border-black/[0.1] ` +
         `bg-gradient-to-br from-white via-[#f7f6f4] to-[#ececea] ` +
-        `shadow-[0_8px_28px_rgba(28,25,23,0.06)] ` +
+        `shadow-none ` +
         `dark:border-white/[0.1] dark:from-[#141413] dark:via-[#111110] dark:to-[#0c0c0b] ` +
-        `dark:shadow-[0_8px_28px_rgba(0,0,0,0.45)] ${className}`
+        `dark:shadow-none ${className}`
       }
     >
       <div
@@ -253,7 +253,7 @@ function ChartTooltip({
 }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-lg border border-black/10 bg-white/95 px-2.5 py-1.5 text-[11px] shadow-lg backdrop-blur-sm dark:border-white/12 dark:bg-[#141413]/95">
+    <div className="rounded-lg border border-black/10 bg-white/95 px-2.5 py-1.5 text-[11px] shadow-none backdrop-blur-sm dark:border-white/12 dark:bg-[#141413]/95">
       {label ? (
         <div className="mb-0.5 font-semibold text-black/75 dark:text-white/80">{label}</div>
       ) : null}

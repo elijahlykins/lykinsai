@@ -3,7 +3,8 @@
  *
  * Remote `download` attributes often fail (cross-origin + Content-Disposition:
  * inline on the file proxy), so we always materialize a Blob and trigger a
- * same-origin object-URL download.
+ * same-origin object-URL download. HTML is saved as octet-stream so Chromium
+ * / Electron actually writes a file instead of opening (or printing) the page.
  */
 
 import JSZip from "jszip";
@@ -59,6 +60,12 @@ async function downloadRemoteUrl(
   fallbackMime?: string,
 ): Promise<void> {
   const blob = await fetchAsBlob(url);
+  const lower = filename.toLowerCase();
+  // Force a file save for HTML — text/html blobs open in a window instead.
+  if (lower.endsWith(".html") || lower.endsWith(".htm") || fallbackMime?.includes("text/html")) {
+    triggerBlobDownload(await blob.text(), filename, "application/octet-stream");
+    return;
+  }
   const typed =
     blob.type && blob.type !== "application/octet-stream"
       ? blob
@@ -70,7 +77,7 @@ async function downloadRemoteUrl(
 
 function mimeForFormat(format: string): string {
   const f = format.toLowerCase();
-  if (f === "html" || f === "htm") return "text/html;charset=utf-8";
+  if (f === "html" || f === "htm") return "application/octet-stream";
   if (f === "jsx" || f === "tsx" || f === "js" || f === "ts") return "text/plain;charset=utf-8";
   if (f === "json") return "application/json;charset=utf-8";
   if (f === "md" || f === "markdown") return "text/markdown;charset=utf-8";
@@ -88,15 +95,18 @@ function mimeForFormat(format: string): string {
 
 async function downloadHtmlPreview(artifact: ChatArtifact): Promise<void> {
   const name = `${basenameFromArtifact(artifact)}.html`;
+  const saveHtml = (html: string) =>
+    triggerBlobDownload(html, name, "application/octet-stream");
   if (typeof artifact.srcDoc === "string" && artifact.srcDoc.trim()) {
-    triggerBlobDownload(artifact.srcDoc, name, "text/html;charset=utf-8");
+    saveHtml(artifact.srcDoc);
     return;
   }
   const url =
     safeAttachmentUrl(artifact.previewUrl) ||
     safeAttachmentUrl(artifact.downloadUrl);
   if (!url) throw new Error("No HTML preview available to download");
-  await downloadRemoteUrl(url, name, "text/html;charset=utf-8");
+  const blob = await fetchAsBlob(url);
+  saveHtml(await blob.text());
 }
 
 async function downloadReactSource(artifact: ChatArtifact): Promise<void> {
@@ -121,113 +131,6 @@ async function downloadReactSource(artifact: ChatArtifact): Promise<void> {
       ? files[0].path.replace(/^.*\./, ".")
       : ".jsx";
   triggerBlobDownload(single, `${base}${pathExt}`, "text/plain;charset=utf-8");
-}
-
-// Print stylesheet: flatten slideshows, force light paper, hide chrome.
-const PRINT_CSS = `<style>@media print {
-  @page { margin: 16mm 14mm; }
-  html, body { background: #fff !important; overflow: visible !important;
-    height: auto !important; width: auto !important; }
-  .deck { position: static !important; width: auto !important; height: auto !important;
-    display: block !important; }
-  .slide { position: static !important; inset: auto !important; display: block !important;
-    opacity: 1 !important; height: auto !important; min-height: 0 !important;
-    page-break-after: always; break-after: page; padding: 0 0 12mm !important; }
-  .slide:last-child { page-break-after: auto; break-after: auto; }
-  .slide h2 { color: #111 !important; }
-  .slide .body, .slide .body strong { color: #1a1a1a !important; }
-  .slide .body { max-width: none !important; }
-  .toolbar, .progress, #prev, #next, #lykn-boot { display: none !important; }
-}</style>`;
-
-/**
- * Auto-print hook injected into a temporary iframe. Opens the system print
- * dialog so the user can choose "Save as PDF". No allow-same-origin — the
- * script runs inside the framed document itself.
- */
-function autoPrintScript(delayMs: number): string {
-  const delay = Math.max(200, Math.min(delayMs, 8000));
-  return `<script>(function(){
-  var printed = false;
-  function go(){
-    if (printed) return;
-    printed = true;
-    try { window.focus(); window.print(); } catch (e) {}
-  }
-  function arm(ms){ setTimeout(go, ms); }
-  if (document.readyState === "complete") arm(${delay});
-  else window.addEventListener("load", function(){ arm(${delay}); });
-  window.addEventListener("message", function(ev){
-    try {
-      var d = ev && ev.data;
-      if (d && d.source === "lykn-artifact" && (d.type === "ready" || d.type === "runtime_error")) arm(600);
-    } catch (e) {}
-  });
-  // Hard ceiling so a stuck compile still offers print.
-  arm(${delay + 2500});
-})();<\/script>`;
-}
-
-async function resolveArtifactHtml(artifact: ChatArtifact): Promise<string> {
-  if (typeof artifact.srcDoc === "string" && artifact.srcDoc.trim()) {
-    return artifact.srcDoc;
-  }
-  const url =
-    safeAttachmentUrl(artifact.previewUrl) ||
-    safeAttachmentUrl(artifact.downloadUrl);
-  if (!url) return "";
-  const res = await fetch(url, { credentials: "include" });
-  if (!res.ok) return "";
-  return await res.text();
-}
-
-/**
- * Open the system print dialog for an HTML/React artifact so the user can
- * Save as PDF. Matches on-screen layout via the browser's own engine.
- */
-export async function printArtifactAsPdf(artifact: ChatArtifact): Promise<void> {
-  const isReact = artifact.toolName === "lykn_build_react_artifact";
-  let html = await resolveArtifactHtml(artifact);
-  if (!html) {
-    const url = safeAttachmentUrl(artifact.previewUrl);
-    if (url) {
-      window.open(url, "_blank", "noopener");
-      return;
-    }
-    throw new Error("No preview available to export as PDF");
-  }
-
-  const withCss = html.includes("</head>")
-    ? html.replace("</head>", `${PRINT_CSS}</head>`)
-    : `${PRINT_CSS}${html}`;
-  const withPrint = withCss.includes("</body>")
-    ? withCss.replace("</body>", `${autoPrintScript(isReact ? 1200 : 400)}</body>`)
-    : `${withCss}${autoPrintScript(isReact ? 1200 : 400)}`;
-
-  const frame = document.createElement("iframe");
-  frame.setAttribute("aria-hidden", "true");
-  // Scripts + modals only — no allow-same-origin (keeps AI markup off our DOM).
-  frame.setAttribute("sandbox", "allow-scripts allow-modals");
-  frame.style.cssText =
-    "position:fixed;right:0;bottom:0;width:794px;height:1123px;border:0;opacity:0;pointer-events:none;z-index:-1;";
-  let cleaned = false;
-  const cleanup = () => {
-    if (cleaned) return;
-    cleaned = true;
-    window.setTimeout(() => {
-      try {
-        frame.remove();
-      } catch {
-        /* gone */
-      }
-    }, 2000);
-  };
-  frame.onload = () => {
-    // Fallback cleanup if the user cancels print (opaque sandbox — no afterprint).
-    window.setTimeout(cleanup, 60_000);
-  };
-  frame.srcdoc = withPrint;
-  document.body.appendChild(frame);
 }
 
 async function downloadImageAsPdf(artifact: ChatArtifact): Promise<void> {
@@ -278,13 +181,21 @@ async function downloadImageAsPdf(artifact: ChatArtifact): Promise<void> {
   }
 }
 
-/** PDF export: remote PDF link, image→PDF file, or print-dialog Save as PDF. */
+function remotePdfLink(artifact: ChatArtifact) {
+  return (artifact.downloads || []).find(
+    (d) => String(d.format || "").toLowerCase() === "pdf" && safeAttachmentUrl(d.url),
+  );
+}
+
+function canDownloadRealPdf(artifact: ChatArtifact): boolean {
+  return Boolean(remotePdfLink(artifact) || artifact.kind === "image");
+}
+
+/** PDF export: a real .pdf file only (remote link or image→PDF). Never print. */
 export async function downloadArtifactAsPdf(
   artifact: ChatArtifact,
 ): Promise<void> {
-  const remotePdf = (artifact.downloads || []).find(
-    (d) => String(d.format || "").toLowerCase() === "pdf" && safeAttachmentUrl(d.url),
-  );
+  const remotePdf = remotePdfLink(artifact);
   if (remotePdf) {
     const href = safeAttachmentUrl(remotePdf.url)!;
     await downloadRemoteUrl(
@@ -300,12 +211,7 @@ export async function downloadArtifactAsPdf(
     return;
   }
 
-  const hasHtml =
-    artifact.kind === "html" ||
-    (typeof artifact.srcDoc === "string" && !!artifact.srcDoc.trim()) ||
-    !!safeAttachmentUrl(artifact.previewUrl);
-  if (!hasHtml) throw new Error("This artifact can't be exported as PDF");
-  await printArtifactAsPdf(artifact);
+  throw new Error("No PDF file available to download");
 }
 
 /**
@@ -338,8 +244,8 @@ export function listArtifactDownloadOptions(
     });
   }
 
-  // PDF for anything with a visual preview (apps, decks, images).
-  if (hasHtml || artifact.kind === "image") {
+  // Real PDF files only — never the system print dialog.
+  if (canDownloadRealPdf(artifact)) {
     add({
       id: "pdf",
       label: "PDF",
@@ -423,7 +329,7 @@ export function listArtifactDownloadOptions(
     // Skip formats we already offer as first-class local options.
     if ((fmt === "html" || fmt === "htm") && hasHtml) continue;
     if ((fmt === "jsx" || fmt === "tsx") && isReact) continue;
-    if (fmt === "pdf" && (hasHtml || artifact.kind === "image")) continue;
+    if (fmt === "pdf" && canDownloadRealPdf(artifact)) continue;
     const id = `remote:${fmt}:${href.slice(-24)}`;
     const ext = fmt.replace(/[^a-z0-9]+/gi, "") || "file";
     const filename =

@@ -8,10 +8,17 @@
 const MAX_SAME_ACTION_RETRIES = 2;
 const MAX_TOTAL_RECOVERIES = 6;
 
+/**
+ * Visual inspection is worth repeating. A single screenshot for the whole task
+ * meant that once it was spent, later failures on a completely different screen
+ * had no way to look at what was actually there.
+ */
+const MAX_VISUAL_RECOVERIES = 3;
+
 function createRecoveryTracker() {
   const failuresBySignature = new Map();
   let totalRecoveries = 0;
-  let usedVisual = false;
+  let visualUses = 0;
 
   function signatureOf(decision) {
     const a = decision?.action || {};
@@ -57,11 +64,16 @@ function createRecoveryTracker() {
         hint: "The same action failed twice. Do NOT repeat it. Look for a different element or route that accomplishes the same step (same role/purpose, different target).",
       };
     }
-    if (!usedVisual) {
-      usedVisual = true;
+    if (visualUses < MAX_VISUAL_RECOVERIES) {
+      visualUses += 1;
       return {
         mode: "visual",
-        hint: "Semantic targeting keeps failing — a screenshot of the page is attached. Use visual understanding to find the right target or realize the approach is wrong.",
+        hint:
+          "Semantic targeting keeps failing — a screenshot of the page is attached. " +
+          "Find the target in the image. If it is visible there but missing from the " +
+          "element list, act on it directly with click_coord (or drag) using 0-1000 " +
+          "coordinates read off the image. If the image shows the approach itself is " +
+          "wrong, say so and replan.",
       };
     }
     return {
@@ -78,7 +90,24 @@ function createRecoveryTracker() {
     return totalRecoveries;
   }
 
-  return { nextRecoveryStep, retriesFor, totalCount, signatureOf };
+  /**
+   * The environment changed underneath us in a way that invalidates the failure
+   * history — the user signed in, cleared a wall, or advanced the page by hand.
+   * Past failures describe a page that no longer exists, so the agent gets a
+   * fresh budget rather than inheriting a spent one.
+   */
+  function reset() {
+    failuresBySignature.clear();
+    totalRecoveries = 0;
+    visualUses = 0;
+  }
+
+  return { nextRecoveryStep, retriesFor, totalCount, signatureOf, reset };
 }
 
-module.exports = { createRecoveryTracker, MAX_SAME_ACTION_RETRIES, MAX_TOTAL_RECOVERIES };
+module.exports = {
+  createRecoveryTracker,
+  MAX_SAME_ACTION_RETRIES,
+  MAX_TOTAL_RECOVERIES,
+  MAX_VISUAL_RECOVERIES,
+};

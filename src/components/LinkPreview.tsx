@@ -184,7 +184,7 @@ function MonogramHero({
         {letter}
       </div>
       {effectiveFavicon && faviconOk && (
-        <div className="absolute bottom-2.5 right-2.5 w-8 h-8 rounded-lg bg-white/90 dark:bg-white/15 backdrop-blur-sm flex items-center justify-center shadow-sm ring-1 ring-black/5 dark:ring-white/10">
+        <div className="absolute bottom-2.5 right-2.5 w-8 h-8 rounded-lg bg-white/90 dark:bg-white/15 backdrop-blur-sm flex items-center justify-center shadow-none ring-1 ring-black/5 dark:ring-white/10">
           <img
             src={effectiveFavicon}
             alt=""
@@ -269,7 +269,7 @@ export const LinkPreview = memo(function LinkPreview({
       <Shell
         url={url}
         onOpen={onOpen}
-        className={`block w-full h-full rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm ${className}`}
+        className={`block w-full h-full rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm shadow-none ${className}`}
         draggable={draggable}
       >
         <div className="p-4 flex flex-col gap-2.5 h-full">
@@ -313,7 +313,7 @@ export const LinkPreview = memo(function LinkPreview({
     <Shell
       url={url}
       onOpen={onOpen}
-      className={`block w-full h-full rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm flex flex-col ${className}`}
+      className={`block w-full h-full rounded-2xl overflow-hidden border border-white/40 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-md hover:bg-white/40 dark:hover:bg-white/10 transition-colors group/bm flex flex-col shadow-none ${className}`}
       draggable={draggable}
     >
       <div className={heroClass}>

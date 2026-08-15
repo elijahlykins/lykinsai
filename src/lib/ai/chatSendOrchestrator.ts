@@ -26,7 +26,7 @@ import {
 import { finalizeResearchReport } from "@/lib/ai/researchReportFinalize";
 import { ocrImageAttachments } from "@/lib/ai/imageOcr";
 import { toolRunningStatus } from "@/lib/ai/toolStatusVerbs";
-import { isLocalModeAvailable, refreshLocalMode } from "@/lib/localMode";
+import { isLocalModeAvailable, refreshLocalMode, getLocalModeCached } from "@/lib/localMode";
 import { executeAwaitingLocalTool } from "@/lib/ai/localToolExecutor";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
 import { loadActiveCustomModelId } from "@/lib/modelBuilder/activeCustomModelStorage";
@@ -279,12 +279,31 @@ const VAULT_SURFACE_OFFER_RE =
 function userRequestedVaultSurface(
   userText: string,
   aiThread: Array<{ role: "user" | "assistant"; content: string }>,
+  /**
+   * Local Mode on for this turn — "pull in the images" then usually means
+   * files on the user's MACHINE, so the broad verb+noun match below is
+   * skipped and only explicit saved/vault references surface vault cards.
+   */
+  localModeOn = false,
 ): boolean {
   const t = String(userText || "").trim();
   if (!t) return false;
+  // Local-machine asks ("pull in an image from my downloads", "show the file
+  // on my desktop") are Local Mode territory, not vault surfacing — without
+  // this, "pull … the … images" below matches and unrelated vault cards
+  // render on file-system turns.
+  if (
+    /\b(?:from|in|on|inside)\s+(?:my\s+)?(?:downloads?|desktop|documents|home\s+folder|mac(?:book)?|machine|computer|laptop|hard\s*drive|finder|file\s*system)\b/i.test(
+      t,
+    ) &&
+    !/\bvault\b/i.test(t)
+  ) {
+    return false;
+  }
   const hasView = VAULT_SURFACE_REQUEST_RE.test(t) || VAULT_SURFACE_PLACEMENT_RE.test(t);
   if (hasView && VAULT_SAVED_CONTEXT_RE.test(t)) return true;
   if (
+    !localModeOn &&
     /\b(?:show|see|open|pull|bring|display|load)\b.{0,48}\b(?:my|the|that|those)\b.{0,24}\b(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|vault|saved|links?|articles?|artifacts?)\b/i.test(
       t,
     )
@@ -638,7 +657,7 @@ export interface ChatSendParams {
   /** Studio Research source focus (all / web / academic / news / social / finance). */
   researchSourcePref?: string;
   /**
-   * Artifact currently open in the side panel. When present with source, the
+   * Artifact currently open in the preview popup. When present with source, the
    * server forces surgical patches (edits / section_edits / cell_edits) instead
    * of a full rebuild. When `discussOnly` is true (Chat mode), the server only
    * injects read-only context — no edits.
@@ -1179,7 +1198,14 @@ async function handleStreamingResponse(
   // card in the chat when the user actually asked to see it this turn (or
   // confirmed a surfacing offer). The model is told the same thing in the
   // prompt, but this guarantees no random saved item gets embedded.
-  const allowVaultSurface = userRequestedVaultSurface(userText, p.aiThread);
+  // With Local Mode on, ambiguous "pull in the images" asks are treated as
+  // local-file requests — vault cards then need an explicit saved/vault
+  // mention.
+  const allowVaultSurface = userRequestedVaultSurface(
+    userText,
+    p.aiThread,
+    isLocalModeAvailable() && getLocalModeCached(),
+  );
   // Whether to auto-pop the full embedded document reader for a vault item
   // this turn (strict subset of the surface gate above). When false the card
   // still renders; the user pulls it up with one tap.
@@ -1450,7 +1476,13 @@ async function handleStreamingResponse(
             }
             if (parsed.t) {
               if (firstToken) {
-                state.setChatStatusText("Responding...");
+                // Build / Create turns: don't clobber the cycling "Designing
+                // the build…" lane with a generic "Responding…" — the long
+                // wait is still ahead (tool args streaming).
+                const mode = String(p.composerMode || "");
+                if (!mode.startsWith("create:")) {
+                  state.setChatStatusText("Responding...");
+                }
                 firstToken = false;
                 streamRefs.streamDisplayedLenRef.current = 0;
                 streamRefs.streamTargetTextRef.current = "";
@@ -2942,7 +2974,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     ...(typeof p.composerMode === "string" && p.composerMode.startsWith("create:")
       ? { forceArtifact: true, artifactType: p.composerMode.slice("create:".length) }
       : {}),
-    // Artifact open in the side panel — let the server refine it in place.
+    // Artifact open in the preview popup — let the server refine it in place.
     ...(p.activeArtifact ? { activeArtifact: p.activeArtifact } : {}),
     // Opt this turn into the agent loop (chat-agent-loop.js). Authenticated
     // chat path only — the model can call the in-app tool whitelist
@@ -3000,6 +3032,11 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   const streamReturnedNoUsableText = (t: string) =>
     !t.trim() || t.trim() === AI_TEMPORARY_FAILURE_TEXT;
   let notifiedModelDowngrade = false;
+  // 402 = the free credit allowance is spent (or a lapsed subscription).
+  // Not transient — retrying or falling back to /api/ai/invoke would hit the
+  // same wall, so we surface the upgrade message instead of the generic
+  // connection-trouble text.
+  let paywallText: string | null = null;
   const fetchChatStream = async (): Promise<Response | null> => {
     try {
       const timeout = setTimeout(() => abortController.abort(), 120000);
@@ -3010,6 +3047,13 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
         signal,
       });
       clearTimeout(timeout);
+      if (res.status === 402) {
+        const data = await res.json().catch(() => ({}));
+        paywallText =
+          String((data as { error?: string })?.error || "").trim() ||
+          "You've used all your free credits. Upgrade your plan to keep going.";
+        return null;
+      }
       // The server swaps to a cheaper model for out-of-tier requests; tell
       // the user so they know why they got a different answer than expected.
       // Only once per turn — a silent retry shouldn't double-toast.
@@ -3038,7 +3082,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   };
 
   let streamResponse = await fetchChatStream();
-  if (!streamResponse && !signal.aborted) {
+  if (!streamResponse && !paywallText && !signal.aborted) {
     // The first attempt can land exactly while the backend is restarting
     // (dev-server watch reboots, deploys). An immediate retry would hit the
     // same dead socket — a short pause rides out the gap before giving up
@@ -3046,6 +3090,15 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     state.setChatStatusText("Reconnecting…");
     await new Promise((r) => setTimeout(r, 2500));
     streamResponse = await fetchChatStream();
+  }
+
+  if (!streamResponse && paywallText) {
+    const finalText = paywallText;
+    state.setChatMessages((prev) => prev.map((m) => (m.id === promptId ? { ...m, aiResponse: finalText } : m)));
+    p.aiThread.push({ role: "assistant", content: finalText });
+    if (p.aiThread.length > 40) p.aiThread.splice(0, p.aiThread.length - 40);
+    state.setChatStatusText("Answered");
+    return;
   }
 
   if (streamResponse) {

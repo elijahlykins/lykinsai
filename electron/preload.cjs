@@ -55,6 +55,9 @@ contextBridge.exposeInMainWorld("lykn", {
   // own origin would stay inside the shell window.
   openExternal: (url, title) =>
     ipcRenderer.send("lykn:open-url", { url: String(url || ""), title }),
+  // LYKN Glass — the always-on-top ⌘/Ctrl+L chat overlay. Same path as the
+  // global hotkey: summon the bar and focus its composer for typing.
+  openGlass: () => ipcRenderer.send("lykn:show-overlay"),
   // LYKN Studio: the liquid-glass workspace window (loads /studio). Open from
   // the main app's sidebar; close from the Studio UI's own chrome.
   openStudio: () => ipcRenderer.send("lykn:studio-set", { open: true }),
@@ -76,6 +79,14 @@ contextBridge.exposeInMainWorld("lykn", {
   // Studio panel rect (window-relative CSS px) where the browser should sit.
   setStudioBrowser: (payload) =>
     ipcRenderer.send("lykn:studio-browser-set", payload || { open: false }),
+  // A still picture of the docked browser (tab strip + page, captured
+  // separately). The Browser window's open/close motion plays over this,
+  // because CSS can move a native view but cannot scale or fade one.
+  onStudioBrowserShot: (cb) => {
+    const fn = (_e, p) => cb(p || null);
+    ipcRenderer.on("lykn:studio-browser-shot", fn);
+    return () => ipcRenderer.removeListener("lykn:studio-browser-shot", fn);
+  },
   // Open a URL as a tab in the Studio's own browser (artifact "Open" etc.).
   studioOpenUrl: (url, title) =>
     ipcRenderer.invoke("lykn:studio-open-url", { url: String(url || ""), title }),
@@ -94,6 +105,10 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:studio-show-browser", fn);
     return () => ipcRenderer.removeListener("lykn:studio-show-browser", fn);
   },
+  // Ask main whether a chat prompt is really browser-agent work before the
+  // chat surface spends a turn answering it as conversation.
+  agentRouteCheck: (text) =>
+    ipcRenderer.invoke("lykn:agent-route-check", { text }),
   // Studio agent rail (beside the docked browser): drive + observe agents.
   studioAgentSend: (text, attachments, agentId, opts = {}) =>
     ipcRenderer.invoke("lykn:studio-bar-send", {
@@ -120,6 +135,14 @@ contextBridge.exposeInMainWorld("lykn", {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-chat-visibility", fn);
     return () => ipcRenderer.removeListener("lykn:agent-chat-visibility", fn);
+  },
+  // Traffic lights / title-bar drag from the docked browser's tab strip: it
+  // draws its own title bar in a native view, above anything React can paint,
+  // so its window controls arrive here instead of as DOM events.
+  onStudioWindowControl: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:studio-window-control", fn);
+    return () => ipcRenderer.removeListener("lykn:studio-window-control", fn);
   },
   // Studio browser history — closed tabs/agents (rail "History" section).
   agentBrowserHistoryList: () => ipcRenderer.invoke("lykn:agent-browser-history-list"),
@@ -156,6 +179,12 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:agent-delta", fn);
     return () => ipcRenderer.removeListener("lykn:agent-delta", fn);
   },
+  // Persistent "paused, waiting on you" state — outlives the finished turn.
+  onAgentWaiting: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-waiting", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-waiting", fn);
+  },
   onAgentDone: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-done", fn);
@@ -177,6 +206,71 @@ contextBridge.exposeInMainWorld("lykn", {
       args: args || {},
       approved: opts?.approved === true,
     }),
+  // Sync with Mac — synced-folders allowlist that scopes Local Mode.
+  macSyncGet: () => ipcRenderer.invoke("lykn:mac-sync-get"),
+  macSyncSet: ({ syncAll, syncedFolders } = {}) =>
+    ipcRenderer.invoke("lykn:mac-sync-set", { syncAll, syncedFolders }),
+  macSyncPickFolder: () => ipcRenderer.invoke("lykn:mac-sync-pick-folder"),
+  onMacSyncChanged: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:mac-sync-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:mac-sync-changed", fn);
+  },
+  // Mac Files browser — list synced directories and open items natively.
+  macFsList: (path) => ipcRenderer.invoke("lykn:mac-fs-list", { path }),
+  macFsOpen: (path, opts = {}) =>
+    ipcRenderer.invoke("lykn:mac-fs-open", { path, reveal: opts?.reveal === true }),
+  macFsHome: () => ipcRenderer.invoke("lykn:mac-fs-home"),
+  // Mac app dock — installed apps, launch, and running-state.
+  macAppsList: () => ipcRenderer.invoke("lykn:mac-apps-list"),
+  macAppLaunch: (path) => ipcRenderer.invoke("lykn:mac-app-launch", { path }),
+  macAppsRunning: () => ipcRenderer.invoke("lykn:mac-apps-running"),
+  macAppsWatch: (on) => ipcRenderer.send("lykn:mac-apps-watch", { on: !!on }),
+  macDockPinsGet: () => ipcRenderer.invoke("lykn:mac-dock-pins-get"),
+  macDockPinsSet: (pins) => ipcRenderer.invoke("lykn:mac-dock-pins-set", { pins }),
+  onMacAppsRunning: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:mac-apps-running-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:mac-apps-running-changed", fn);
+  },
+  // Studio background — the backdrop image synced from the Mac (welcome flow
+  // or settings). Data URLs; empty string means "no custom background".
+  backgroundGet: () => ipcRenderer.invoke("lykn:background-get"),
+  backgroundSet: (payload) => ipcRenderer.invoke("lykn:background-set", payload),
+  backgroundPickFile: () => ipcRenderer.invoke("lykn:background-pick-file"),
+  backgroundClear: () => ipcRenderer.invoke("lykn:background-clear"),
+  // The wallpapers macOS ships. Listing is cheap (names only); thumbnails come
+  // one at a time because each HEIC needs a sips pass, and applying one may
+  // have to fetch the master from Apple — hence the progress channel.
+  backgroundSystemList: () => ipcRenderer.invoke("lykn:background-system-list"),
+  backgroundSystemThumb: (id) => ipcRenderer.invoke("lykn:background-system-thumb", id),
+  backgroundSystemApply: (id) => ipcRenderer.invoke("lykn:background-system-apply", id),
+  onBackgroundProgress: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:background-progress", fn);
+    return () => ipcRenderer.removeListener("lykn:background-progress", fn);
+  },
+  onBackgroundChanged: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:background-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:background-changed", fn);
+  },
+  // Home desktop widgets picked in the welcome walkthrough. `stamp` tells the
+  // studio whether these picks are newer than what it already applied.
+  homeWidgetsGet: () => ipcRenderer.invoke("lykn:home-widgets-get"),
+  onHomeWidgetsChanged: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:home-widgets-changed", fn);
+    return () => ipcRenderer.removeListener("lykn:home-widgets-changed", fn);
+  },
+  // Microphone — macOS only shows the TCC prompt when the app asks for it from
+  // the main process; Chromium's getUserMedia inside Electron silently fails
+  // when the OS status is still not-determined. Dictation and Voice Mode call
+  // ensureMic() first so the user gets the system "Allow" dialog (or Settings
+  // when they previously denied) before we open a stream.
+  micStatus: () => ipcRenderer.invoke("lykn:onboarding-mic-status"),
+  ensureMic: () => ipcRenderer.invoke("lykn:ensure-mic"),
+  openMicSettings: () => ipcRenderer.send("lykn:onboarding-open-mic-settings"),
   // Global notifications mute — gates update/agent OS notifications, the
   // agent-finished popup, and renderer Notification permission requests.
   getNotificationsMuted: () => ipcRenderer.invoke("lykn:notifications-muted-get"),

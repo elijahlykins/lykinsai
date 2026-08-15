@@ -111,6 +111,130 @@
         padding: 5px 2px 12px;
         color: rgba(22, 22, 26, 0.9);
       }
+      .chat-message.assistant .chat-a-body {
+        min-width: 0;
+      }
+      /* Markdown answers: block elements own spacing (not literal newlines). */
+      .chat-message.assistant.has-md .chat-a-body {
+        white-space: normal;
+      }
+      .chat-message.assistant.has-md .chat-a-body > :first-child { margin-top: 0; }
+      .chat-message.assistant.has-md .chat-a-body > :last-child { margin-bottom: 0; }
+      .chat-message.assistant .md-h {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text);
+        margin: 14px 0 6px;
+      }
+      .chat-message.assistant p { margin: 0 0 10px; }
+      .chat-message.assistant ul,
+      .chat-message.assistant ol {
+        margin: 6px 0 12px;
+        padding-left: 22px;
+      }
+      .chat-message.assistant li { margin: 4px 0; }
+      .chat-message.assistant strong { font-weight: 700; color: var(--text); }
+      .chat-message.assistant em { font-style: italic; }
+      .chat-message.assistant a {
+        color: #2563eb;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .chat-message.assistant code {
+        background: rgba(0, 0, 0, 0.06);
+        padding: 1px 6px;
+        border-radius: 5px;
+        font-size: 12.5px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .chat-message.assistant pre {
+        margin: 8px 0 12px;
+        padding: 12px 14px;
+        overflow-x: auto;
+        border-radius: 10px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        background: rgba(0, 0, 0, 0.04);
+      }
+      .chat-message.assistant pre code {
+        background: transparent;
+        padding: 0;
+        border-radius: 0;
+        font-size: 12.5px;
+      }
+      .chat-message.assistant blockquote {
+        margin: 8px 0 12px;
+        padding: 2px 0 2px 14px;
+        border-left: 3px solid rgba(37, 99, 235, 0.45);
+        color: var(--muted);
+      }
+      .chat-message.assistant blockquote p { margin: 0 0 6px; }
+      .chat-message.assistant hr {
+        border: 0;
+        border-top: 1px solid rgba(0, 0, 0, 0.1);
+        margin: 14px 0;
+      }
+      .chat-message.assistant .md-img {
+        margin: 10px 0;
+        display: block;
+        max-width: 100%;
+      }
+      .chat-message.assistant .md-img img {
+        display: block;
+        max-width: 100%;
+        max-height: 360px;
+        border-radius: 12px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+      }
+      .chat-a-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        margin-top: 4px;
+        padding: 2px 0 0;
+      }
+      .chat-a-actions[hidden] { display: none !important; }
+      .chat-a-actions .chat-act {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: rgba(0, 0, 0, 0.4);
+        cursor: pointer;
+        transition: color 120ms ease, background 120ms ease;
+      }
+      .chat-a-actions .chat-act:hover {
+        color: rgba(0, 0, 0, 0.72);
+        background: rgba(0, 0, 0, 0.05);
+      }
+      .chat-a-actions .chat-act svg {
+        width: 14px;
+        height: 14px;
+        flex: none;
+      }
+      .chat-a-actions .chat-act-sep {
+        width: 1px;
+        height: 14px;
+        margin: 0 4px;
+        background: rgba(0, 0, 0, 0.1);
+      }
+      .chat-a-actions .chat-act.copied,
+      .chat-a-actions .chat-act.is-active[data-act="copy"] {
+        color: #2563eb;
+        background: rgba(37, 99, 235, 0.1);
+      }
+      .chat-a-actions .chat-act.is-active[data-act="like"] {
+        color: #16a34a;
+        background: rgba(34, 197, 94, 0.12);
+      }
+      .chat-a-actions .chat-act.is-active[data-act="dislike"] {
+        color: #ef4444;
+        background: rgba(239, 68, 68, 0.12);
+      }
       .chat-message.pending {
         color: var(--muted);
       }
@@ -160,7 +284,6 @@
         from { background-position: 130% 0; }
         to { background-position: -130% 0; }
       }
-      }
       @keyframes chat-message-in {
         from { opacity: 0; transform: translateY(8px); }
         to { opacity: 1; transform: translateY(0); }
@@ -180,6 +303,40 @@
       html[data-theme="incognito"] .chat-message.assistant,
       html[data-theme="dark"] .chat-message.assistant {
         color: rgba(255, 255, 255, 0.9);
+      }
+      html[data-theme="incognito"] .chat-message.assistant a,
+      html[data-theme="dark"] .chat-message.assistant a {
+        color: #93c5fd;
+      }
+      html[data-theme="incognito"] .chat-message.assistant code,
+      html[data-theme="dark"] .chat-message.assistant code {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      html[data-theme="incognito"] .chat-message.assistant pre,
+      html[data-theme="dark"] .chat-message.assistant pre {
+        border-color: rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.05);
+      }
+      html[data-theme="incognito"] .chat-message.assistant hr,
+      html[data-theme="dark"] .chat-message.assistant hr {
+        border-top-color: rgba(255, 255, 255, 0.12);
+      }
+      html[data-theme="incognito"] .chat-message.assistant .md-img img,
+      html[data-theme="dark"] .chat-message.assistant .md-img img {
+        border-color: rgba(255, 255, 255, 0.1);
+      }
+      html[data-theme="incognito"] .chat-a-actions .chat-act,
+      html[data-theme="dark"] .chat-a-actions .chat-act {
+        color: rgba(255, 255, 255, 0.4);
+      }
+      html[data-theme="incognito"] .chat-a-actions .chat-act:hover,
+      html[data-theme="dark"] .chat-a-actions .chat-act:hover {
+        color: rgba(255, 255, 255, 0.78);
+        background: rgba(255, 255, 255, 0.08);
+      }
+      html[data-theme="incognito"] .chat-a-actions .chat-act-sep,
+      html[data-theme="dark"] .chat-a-actions .chat-act-sep {
+        background: rgba(255, 255, 255, 0.12);
       }
       html[data-theme="incognito"] .chat-thinking-text,
       html[data-theme="dark"] .chat-thinking-text {
@@ -825,6 +982,291 @@
           );
         }
 
+        function renderInline(s) {
+          return String(s || "")
+            .replace(/`([^`]+)`/g, (_m, c) => `<code>${c}</code>`)
+            .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+            .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+            .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+            .replace(
+              /\[([^\]]+)\]\((https?:\/\/[^\s)"']+)\)/g,
+              '<a href="$2" rel="noopener noreferrer">$1</a>',
+            )
+            .replace(
+              /(^|[\s(>])(https?:\/\/[^\s<)"']+)/g,
+              '$1<a href="$2" rel="noopener noreferrer">$2</a>',
+            );
+        }
+
+        // Lightweight markdown for browser-chat replies — same subset Glass uses
+        // for conversational answers (no artifact/step cards here).
+        function renderMarkdown(md) {
+          const src = String(md || "").replace(/\r\n/g, "\n");
+          const lines = src.split("\n");
+          let html = "";
+          let listType = null;
+          let para = [];
+          const closeList = () => {
+            if (listType) {
+              html += `</${listType}>`;
+              listType = null;
+            }
+          };
+          const flushPara = () => {
+            if (!para.length) return;
+            html += `<p>${renderInline(escapeHtml(para.join(" ")))}</p>`;
+            para = [];
+          };
+          for (let i = 0; i < lines.length; i++) {
+            const raw = lines[i];
+            const trimmed = String(raw || "").trim();
+
+            const fence = trimmed.match(/^```([\w-]*)\s*$/);
+            if (fence) {
+              flushPara();
+              closeList();
+              const lang = fence[1] || "";
+              const codeLines = [];
+              i += 1;
+              while (i < lines.length && !/^```\s*$/.test(String(lines[i] || "").trim())) {
+                codeLines.push(lines[i]);
+                i += 1;
+              }
+              html +=
+                `<pre><code${lang ? ` class="language-${escapeHtml(lang)}"` : ""}>` +
+                `${escapeHtml(codeLines.join("\n"))}</code></pre>`;
+              continue;
+            }
+
+            if (!trimmed) {
+              flushPara();
+              closeList();
+              continue;
+            }
+
+            if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+              flushPara();
+              closeList();
+              html += "<hr/>";
+              continue;
+            }
+
+            const img = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+)(?:\s+"[^"]*")?\)$/.exec(trimmed);
+            if (img) {
+              flushPara();
+              closeList();
+              const alt = escapeHtml(img[1] || "Image");
+              const url = escapeHtml(img[2]);
+              html += `<div class="md-img"><img src="${url}" alt="${alt}" loading="lazy" /></div>`;
+              continue;
+            }
+
+            const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+            if (heading) {
+              flushPara();
+              closeList();
+              html += `<div class="md-h">${renderInline(escapeHtml(heading[2]))}</div>`;
+              continue;
+            }
+
+            if (/^>\s?/.test(trimmed)) {
+              flushPara();
+              closeList();
+              const quote = [];
+              while (i < lines.length && /^>\s?/.test(String(lines[i] || "").trim())) {
+                quote.push(String(lines[i]).trim().replace(/^>\s?/, ""));
+                i += 1;
+              }
+              i -= 1;
+              html +=
+                `<blockquote>${quote
+                  .map((q) => `<p>${renderInline(escapeHtml(q))}</p>`)
+                  .join("")}</blockquote>`;
+              continue;
+            }
+
+            const bullet = /^\s*[-*•]\s+(.*)$/.exec(raw);
+            if (bullet) {
+              flushPara();
+              if (listType !== "ul") {
+                closeList();
+                html += "<ul>";
+                listType = "ul";
+              }
+              html += `<li>${renderInline(escapeHtml(bullet[1]))}</li>`;
+              continue;
+            }
+
+            const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(raw);
+            if (numbered) {
+              flushPara();
+              if (listType !== "ol") {
+                closeList();
+                html += "<ol>";
+                listType = "ol";
+              }
+              html += `<li>${renderInline(escapeHtml(numbered[1]))}</li>`;
+              continue;
+            }
+
+            closeList();
+            para.push(trimmed);
+          }
+          flushPara();
+          closeList();
+          return html;
+        }
+
+        const COPY_SVG =
+          `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`;
+        const CHECK_SVG =
+          `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`;
+        const SHARE_SVG =
+          `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="m16 6-4-4-4 4"/><path d="M12 2v13"/></svg>`;
+        const DOWNLOAD_SVG =
+          `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>`;
+        const REFRESH_SVG =
+          `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>`;
+        const LIKE_SVG =
+          `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>`;
+        const DISLIKE_SVG =
+          `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/></svg>`;
+
+        const CHAT_ACTIONS_HTML =
+          `<button type="button" class="chat-act" data-act="share" title="Share" aria-label="Share">${SHARE_SVG}</button>` +
+          `<button type="button" class="chat-act" data-act="download" title="Download" aria-label="Download">${DOWNLOAD_SVG}</button>` +
+          `<button type="button" class="chat-act" data-act="copy" title="Copy" aria-label="Copy">${COPY_SVG}</button>` +
+          `<button type="button" class="chat-act" data-act="regenerate" title="Regenerate" aria-label="Regenerate">${REFRESH_SVG}</button>` +
+          `<span class="chat-act-sep" aria-hidden="true"></span>` +
+          `<button type="button" class="chat-act" data-act="like" title="Like" aria-label="Like">${LIKE_SVG}</button>` +
+          `<button type="button" class="chat-act" data-act="dislike" title="Dislike" aria-label="Dislike">${DISLIKE_SVG}</button>`;
+
+        function ensureAssistantChrome(el) {
+          if (!el) return null;
+          let body = el.querySelector(":scope > .chat-a-body");
+          let actions = el.querySelector(":scope > .chat-a-actions");
+          if (!body) {
+            body = document.createElement("div");
+            body.className = "chat-a-body";
+            const keep = [];
+            while (el.firstChild) {
+              const node = el.removeChild(el.firstChild);
+              if (node.classList?.contains("chat-a-actions")) actions = node;
+              else keep.push(node);
+            }
+            for (const node of keep) body.appendChild(node);
+            el.appendChild(body);
+          }
+          if (!actions) {
+            actions = document.createElement("div");
+            actions.className = "chat-a-actions";
+            actions.hidden = true;
+            actions.innerHTML = CHAT_ACTIONS_HTML;
+            el.appendChild(actions);
+          } else if (!actions.parentElement) {
+            el.appendChild(actions);
+          }
+          return body;
+        }
+
+        function hideAssistantActions(el) {
+          const actions = el?.querySelector?.(":scope > .chat-a-actions");
+          if (actions) actions.hidden = true;
+        }
+
+        function showAssistantActions(el) {
+          ensureAssistantChrome(el);
+          const bar = el?.querySelector?.(":scope > .chat-a-actions");
+          if (!bar) return;
+          bar.hidden = false;
+          const reaction = String(el.dataset.reaction || "");
+          bar.querySelectorAll(".chat-act[data-act='like'], .chat-act[data-act='dislike']").forEach((btn) => {
+            btn.classList.toggle("is-active", btn.getAttribute("data-act") === reaction);
+          });
+        }
+
+        function setAssistantMarkdown(el, text, { showActions = false } = {}) {
+          if (!el) return;
+          const body = ensureAssistantChrome(el);
+          const raw = String(text || "");
+          el.dataset.raw = raw;
+          el.classList.add("has-md");
+          body.innerHTML = renderMarkdown(raw);
+          if (showActions) showAssistantActions(el);
+          else hideAssistantActions(el);
+        }
+
+        function setPlainMessage(el, text) {
+          if (!el) return;
+          el.classList.remove("has-md");
+          delete el.dataset.raw;
+          if (el.classList.contains("assistant")) {
+            const body = ensureAssistantChrome(el);
+            body.textContent = String(text || "");
+            hideAssistantActions(el);
+            return;
+          }
+          el.textContent = String(text || "");
+        }
+
+        function rawAnswerText(el) {
+          return String(el?.dataset?.raw || el?.querySelector?.(".chat-a-body")?.innerText || "").trim();
+        }
+
+        async function copyAnswer(el, btn) {
+          const text = rawAnswerText(el);
+          if (!text) return;
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch {
+            return;
+          }
+          if (!btn) return;
+          btn.classList.add("copied");
+          btn.innerHTML = CHECK_SVG;
+          setTimeout(() => {
+            btn.classList.remove("copied");
+            btn.innerHTML = COPY_SVG;
+          }, 1400);
+        }
+
+        function downloadAnswer(el) {
+          const text = rawAnswerText(el);
+          if (!text) return;
+          const blob = new Blob([text], { type: "text/plain" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "response.txt";
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+
+        async function shareAnswer(el) {
+          const text = rawAnswerText(el);
+          if (!text) return;
+          if (navigator.share) {
+            try {
+              await navigator.share({ text });
+              return;
+            } catch {
+              // fall through to copy
+            }
+          }
+          const copyBtn = el.querySelector('.chat-act[data-act="copy"]');
+          await copyAnswer(el, copyBtn);
+        }
+
+        function setReaction(el, kind) {
+          const next = el.dataset.reaction === kind ? "" : kind;
+          el.dataset.reaction = next;
+          const bar = el.querySelector(":scope > .chat-a-actions");
+          if (!bar) return;
+          bar.querySelectorAll(".chat-act[data-act='like'], .chat-act[data-act='dislike']").forEach((btn) => {
+            btn.classList.toggle("is-active", btn.getAttribute("data-act") === next);
+          });
+        }
+
         function omniboxToUrl(input) {
           const q = String(input || "").trim();
           if (!q) return "";
@@ -994,7 +1436,14 @@
           if (!chatThreadEl) return null;
           const el = document.createElement("div");
           el.className = `chat-message ${kind}${pending ? " pending" : ""}`;
-          el.textContent = text;
+          if (kind === "assistant" && !pending) {
+            setAssistantMarkdown(el, text, { showActions: true });
+          } else if (kind === "assistant") {
+            ensureAssistantChrome(el);
+            setPlainMessage(el, text);
+          } else {
+            setPlainMessage(el, text);
+          }
           chatThreadEl.appendChild(el);
           chatThreadEl.scrollTop = chatThreadEl.scrollHeight;
           return el;
@@ -1002,6 +1451,10 @@
         function renderThinking(el, status = "Thinking…") {
           if (!el) return;
           el.classList.add("pending");
+          el.classList.remove("has-md");
+          hideAssistantActions(el);
+          delete el.dataset.raw;
+          el.dataset.typedText = "";
           // Render the path directly (the exact LyknOutlineSpinner markup)
           // rather than referencing the decorative SVG above. A direct path
           // keeps the stroke-draw animation visible in every webContents.
@@ -1021,7 +1474,8 @@
           label.className = "chat-thinking-text";
           label.textContent = status;
           wrap.append(svg, label);
-          el.replaceChildren(wrap);
+          const body = ensureAssistantChrome(el);
+          body.replaceChildren(wrap);
         }
         // Agent deltas contain the growing response. Reveal the new portion
         // over a few frames so the browser reads like LYKN's live typing,
@@ -1034,26 +1488,29 @@
           if (el._typeFrame) cancelAnimationFrame(el._typeFrame);
           if (!target.startsWith(current)) {
             el.dataset.typedText = "";
-            el.textContent = "";
+            setAssistantMarkdown(el, "");
           }
           let index = String(el.dataset.typedText || "").length;
           const step = () => {
             // Catch up quickly on long streams while retaining visible typing.
             index = Math.min(target.length, index + Math.max(1, Math.ceil((target.length - index) / 18)));
             const shown = target.slice(0, index);
-            el.textContent = shown;
+            setAssistantMarkdown(el, shown, { showActions: final && index >= target.length });
             el.dataset.typedText = shown;
             chatThreadEl?.scrollTo({ top: chatThreadEl.scrollHeight, behavior: "smooth" });
             if (index < target.length) {
               el._typeFrame = requestAnimationFrame(step);
+            } else if (final) {
+              setAssistantMarkdown(el, target, { showActions: true });
             }
           };
           step();
         }
 
-        async function go(raw) {
+        async function go(raw, { regenerateEl = null } = {}) {
           const prompt = String(raw || "").trim();
           if (!prompt) return;
+          if (qEl.disabled) return;
           const model = String(modelLabelEl?.textContent || "LYKN");
           const requestId =
             globalThis.crypto?.randomUUID?.() ||
@@ -1067,9 +1524,24 @@
           // startup or the composer feels like an unresponsive search field.
           document.body.classList.add("chat-active");
           if (chatThreadEl) chatThreadEl.hidden = false;
-          appendChatMessage("user", prompt);
-          const pending = appendChatMessage("assistant", "Thinking…", true);
-          renderThinking(pending);
+
+          let pending = regenerateEl;
+          if (pending) {
+            for (const [id, el] of [...pendingChatReplies.entries()]) {
+              if (el === pending) pendingChatReplies.delete(id);
+            }
+            if (pending._typeFrame) cancelAnimationFrame(pending._typeFrame);
+            pending.dataset.typedText = "";
+            pending.dataset.reaction = "";
+            pending.dataset.prompt = prompt;
+            pending.classList.add("pending");
+            renderThinking(pending);
+          } else {
+            appendChatMessage("user", prompt);
+            pending = appendChatMessage("assistant", "Thinking…", true);
+            pending.dataset.prompt = prompt;
+            renderThinking(pending);
+          }
           pendingChatReplies.set(requestId, pending);
           qEl.disabled = true;
           try {
@@ -1078,19 +1550,41 @@
             if (result?.task) {
               // Real work is visible in the dedicated task sidebar instead.
               pendingChatReplies.delete(requestId);
-              pending?.remove();
+              if (!regenerateEl) pending?.remove();
+              else {
+                pending.classList.remove("pending");
+                setPlainMessage(pending, "Opened in the task sidebar.");
+              }
               return;
             }
           } catch {
             pendingChatReplies.delete(requestId);
             if (pending) {
               pending.classList.remove("pending");
-              pending.textContent = "Something went wrong. Please try again.";
+              setPlainMessage(pending, "Something went wrong. Please try again.");
             }
           } finally {
             qEl.disabled = false;
             qEl.focus();
           }
+        }
+
+        if (chatThreadEl) {
+          chatThreadEl.addEventListener("click", (e) => {
+            const btn = e.target.closest?.(".chat-act");
+            if (!btn) return;
+            const msg = btn.closest(".chat-message.assistant");
+            if (!msg || msg.classList.contains("pending")) return;
+            const act = btn.getAttribute("data-act");
+            if (act === "copy") void copyAnswer(msg, btn);
+            else if (act === "download") downloadAnswer(msg);
+            else if (act === "share") void shareAnswer(msg);
+            else if (act === "like" || act === "dislike") setReaction(msg, act);
+            else if (act === "regenerate") {
+              const prompt = String(msg.dataset.prompt || "").trim();
+              if (prompt) void go(prompt, { regenerateEl: msg });
+            }
+          });
         }
 
         if (typeof window.lyknBrowserWelcome?.onChatResult === "function") {
@@ -1102,7 +1596,7 @@
             if (result?.ok && String(result?.text || "").trim()) {
               typeResponse(pending, String(result.text).trim(), { final: true });
             } else {
-              pending.textContent = "Something went wrong. Please try again.";
+              setPlainMessage(pending, "Something went wrong. Please try again.");
             }
             chatThreadEl?.scrollTo({ top: chatThreadEl.scrollHeight, behavior: "smooth" });
           });
@@ -1120,7 +1614,10 @@
               typeResponse(pending, text, { final: !!event?.final });
             } else if (channel === "lykn:agent-error") {
               pending.classList.remove("pending");
-              pending.textContent = String(event?.message || "Something went wrong. Please try again.");
+              setPlainMessage(
+                pending,
+                String(event?.message || "Something went wrong. Please try again."),
+              );
             }
             chatThreadEl?.scrollTo({ top: chatThreadEl.scrollHeight, behavior: "smooth" });
           });

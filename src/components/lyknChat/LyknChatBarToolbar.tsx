@@ -57,7 +57,7 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
   const iconBtn = compact ? "h-8 w-8" : "h-9 w-9";
   const iconSm = compact ? "w-3 h-3" : "w-3.5 h-3.5";
   const dropdownCls =
-    "rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg p-1.5";
+    "lg-menu p-1.5";
 
   return (
     <div className={`flex items-center gap-1.5 ${compact ? "pt-0.5" : "pt-1"}`}>

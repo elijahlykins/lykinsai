@@ -132,6 +132,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
         id: el.raw.id,
         selector: el.raw.selector,
         label: el.label,
+        frameId: el.raw.frameId,
         clientX: el.raw.clientX,
         clientY: el.raw.clientY,
         // Never guess: fail (and re-observe) instead of fuzzy-matching a
@@ -163,6 +164,9 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
             id: el.raw.id,
             selector: el.raw.selector,
             label: el.label,
+            frameId: el.raw.frameId,
+            clientX: el.raw.clientX,
+            clientY: el.raw.clientY,
             text: String(text ?? ""),
             strictTarget: true,
             minLabelScore: 80,
@@ -192,6 +196,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
         id: el.raw.id,
         selector: el.raw.selector,
         label: el.label,
+        frameId: el.raw.frameId,
         clientX: el.raw.clientX,
         clientY: el.raw.clientY,
         text: String(text ?? ""),
@@ -219,14 +224,15 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
     if (error) return { ok: false, error };
     const needle = String(findText ?? "");
     if (!needle.trim()) return { ok: false, error: "missing_find_text" };
+    const evaluate = evaluatorFor(el);
+    if (!evaluate) return { ok: false, error: "frame_gone" };
     try {
-      const res = await wc().executeJavaScript(
+      const res = await evaluate(
         buildReplaceTextJs({
           selector: el.raw.selector || "",
           find: needle,
           replace: String(replaceWith ?? ""),
         }),
-        true,
       );
       if (res?.ok) invalidate();
       return res || { ok: false, error: "replace_failed" };
@@ -245,6 +251,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
         id: el.raw.id,
         selector: el.raw.selector,
         label: el.label,
+        frameId: el.raw.frameId,
         value: String(value ?? ""),
       },
       catalogItems(),
@@ -253,17 +260,109 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
     return res;
   }
 
-  async function scroll(direction = "down", amount = 600) {
-    return actuator.runAction(
-      wc(),
-      { type: "scroll", direction: direction === "up" ? "up" : "down", amount },
-      [],
-    );
+  /**
+   * Run page JS where the element actually lives. Elements cataloged from an
+   * embedded editor's iframe are absent from the main document, so reading or
+   * editing them from there always misses.
+   */
+  function evaluatorFor(el) {
+    const frameId = el?.raw?.frameId;
+    if (frameId == null || typeof actuator.frameByRoutingId !== "function") {
+      return (js) => wc().executeJavaScript(js, true);
+    }
+    const frame = actuator.frameByRoutingId(wc(), frameId);
+    if (!frame) return null;
+    return (js) => frame.executeJavaScript(js, true);
   }
 
-  async function pressKey(key = "Enter") {
-    const res = await actuator.runAction(wc(), { type: "press_key", key }, catalogItems());
-    if (/^enter$/i.test(String(key))) invalidate();
+  async function scroll(direction = "down", amount = 600, ref = "") {
+    const dir = direction === "up" ? "up" : "down";
+    // A ref means "scroll inside this thing" — editor palettes, block lists and
+    // side panels scroll internally and ignore window scrolling entirely.
+    if (ref) {
+      const { el, error } = resolveRef(ref);
+      if (error) return { ok: false, error };
+      return actuator.runAction(
+        wc(),
+        {
+          type: "scroll_element",
+          selector: el.raw.selector,
+          frameId: el.raw.frameId,
+          direction: dir,
+          amount,
+        },
+        catalogItems(),
+      );
+    }
+    return actuator.runAction(wc(), { type: "scroll", direction: dir, amount }, []);
+  }
+
+  /**
+   * Drag one element onto another. Both ends may be element refs or 0–1000
+   * screenshot coordinates, so this works on canvas editors where the drop
+   * target has no DOM presence at all.
+   */
+  async function drag(from, to, { mode = "" } = {}) {
+    const action = { type: "drag", mode };
+    if (from && typeof from === "object" && from.x != null) {
+      action.x = Number(from.x);
+      action.y = Number(from.y);
+    } else {
+      const { el, error } = resolveRef(from);
+      if (error) return { ok: false, error: `drag source: ${error}` };
+      action.selector = el.raw.selector;
+      action.label = el.label;
+      action.clientX = el.raw.clientX;
+      action.clientY = el.raw.clientY;
+      action.frameId = el.raw.frameId;
+    }
+    if (to && typeof to === "object" && to.x != null) {
+      action.toX = Number(to.x);
+      action.toY = Number(to.y);
+    } else {
+      const { el, error } = resolveRef(to);
+      if (error) return { ok: false, error: `drop target: ${error}` };
+      action.toSelector = el.raw.selector;
+      action.toLabel = el.label;
+      action.toClientX = el.raw.clientX;
+      action.toClientY = el.raw.clientY;
+      action.toFrameId = el.raw.frameId;
+    }
+    const res = await actuator.runAction(wc(), action, catalogItems());
+    invalidate();
+    return res;
+  }
+
+  /**
+   * Click a point read off the screenshot (0–1000 in each axis). The escape
+   * hatch for anything the DOM cannot describe: canvas editors, image maps,
+   * custom-drawn controls.
+   */
+  async function clickCoord(x, y, label = "") {
+    const nx = Number(x);
+    const ny = Number(y);
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
+      return { ok: false, error: "bad_coords" };
+    }
+    const res = await actuator.runAction(
+      wc(),
+      { type: "click_coord", x: nx, y: ny, label: String(label || "") },
+      catalogItems(),
+    );
+    invalidate();
+    return res;
+  }
+
+  async function pressKey(key = "Enter", modifiers = null) {
+    const mods = Array.isArray(modifiers) ? modifiers.filter(Boolean).map(String) : [];
+    const res = await actuator.runAction(
+      wc(),
+      { type: "press_key", key, modifiers: mods },
+      catalogItems(),
+    );
+    // Shortcuts are how design and editor tools are really driven, and most of
+    // them change the page as much as a click does.
+    if (/^enter$/i.test(String(key)) || mods.length) invalidate();
     return res;
   }
 
@@ -271,12 +370,13 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   async function extract(ref) {
     const { el, error } = resolveRef(ref);
     if (error) return { ok: false, error };
+    const evaluate = evaluatorFor(el);
+    if (!evaluate) return { ok: false, error: "frame_gone" };
     try {
-      const value = await wc().executeJavaScript(
+      const value = await evaluate(
         `(function(){try{var el=document.querySelector(${JSON.stringify(el.raw.selector || "")});` +
           `if(!el)return null;return {value:(el.value!=null?el.value:el.innerText||'').slice(0,2000),` +
           `checked:el.checked===true};}catch(e){return null;}})()`,
-        true,
       );
       if (!value) return { ok: false, error: "element_not_found" };
       return { ok: true, ref, label: el.label, ...value };
@@ -421,6 +521,8 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
     goBack,
     goForward,
     click,
+    clickCoord,
+    drag,
     type,
     replaceText,
     select,

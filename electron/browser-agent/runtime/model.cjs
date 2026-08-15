@@ -45,11 +45,13 @@ const DECISION_SCHEMA = {
         type: {
           type: "string",
           enum: [
-            "navigate", "click", "type", "replace_text", "select", "scroll", "go_back", "go_forward",
-            "press_key", "open_tab", "close_tab", "switch_tab", "extract", "wait", "screenshot",
+            "navigate", "click", "click_coord", "drag", "type", "replace_text", "select", "scroll",
+            "go_back", "go_forward", "press_key", "open_tab", "close_tab", "switch_tab", "extract",
+            "wait", "screenshot",
           ],
         },
-        target: { type: "string", description: "Element reference like e12 (click/type/replace_text/select/extract)" },
+        target: { type: "string", description: "Element reference like e12 (click/type/replace_text/select/extract/drag source; optional on scroll to scroll inside that container)" },
+        to: { type: "string", description: "drag only: element reference of the drop target" },
         url: { type: "string" },
         text: { type: "string" },
         value: { type: "string" },
@@ -57,9 +59,18 @@ const DECISION_SCHEMA = {
         mode: { type: "string", enum: ["append", "replace"], description: "type only: replace = overwrite the whole field (plain inputs)" },
         direction: { type: "string", enum: ["up", "down"] },
         key: { type: "string" },
+        modifiers: {
+          type: "array",
+          items: { type: "string" },
+          description: "press_key only: held modifiers, e.g. [\"control\"] or [\"meta\",\"shift\"]",
+        },
         tabId: { type: "string" },
         pressEnter: { type: "boolean" },
         ms: { type: "number" },
+        x: { type: "number", description: "click_coord/drag: horizontal position on the screenshot, 0-1000 left to right" },
+        y: { type: "number", description: "click_coord/drag: vertical position on the screenshot, 0-1000 top to bottom" },
+        toX: { type: "number", description: "drag only: drop position, 0-1000 horizontal" },
+        toY: { type: "number", description: "drag only: drop position, 0-1000 vertical" },
       },
       additionalProperties: false,
     },
@@ -74,6 +85,19 @@ const DECISION_SCHEMA = {
     candidateResults: { type: "array", items: { type: "string" } },
   },
   required: ["kind"],
+  additionalProperties: false,
+};
+
+const LEARN_SCHEMA = {
+  type: "object",
+  properties: {
+    notes: {
+      type: "array",
+      items: { type: "string" },
+      description: "Durable, reusable facts about how this website works",
+    },
+  },
+  required: ["notes"],
   additionalProperties: false,
 };
 
@@ -150,6 +174,14 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl } = {}) {
         planStepCompleted: out.planStepCompleted === true,
         factsLearned: Array.isArray(out.factsLearned) ? out.factsLearned.map(String) : [],
         candidateResults: Array.isArray(out.candidateResults) ? out.candidateResults.map(String) : [],
+      };
+    },
+
+    /** Distil a finished run into reusable knowledge about the site. */
+    async learn({ system, user }) {
+      const out = await call("learn", { system, user, schema: LEARN_SCHEMA, maxTokens: 400 });
+      return {
+        notes: Array.isArray(out.notes) ? out.notes.map(String).filter(Boolean).slice(0, 8) : [],
       };
     },
 

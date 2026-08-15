@@ -46,7 +46,9 @@ export function useUsageGate() {
       const res = await fetch(`${API_BASE_URL}/api/usage/me`);
       if (!res.ok) return 0;
       const data = await res.json();
-      const c = data.log_count || 0;
+      // billable_count matches what the server's cap counts; log_count also
+      // includes free background work and would trip this gate early.
+      const c = data.billable_count ?? data.log_count ?? 0;
       setAiRequestCount(c);
       return c;
     } catch {
@@ -200,7 +202,7 @@ export function useUsageGate() {
       const res = await fetch(`${API_BASE_URL}/api/usage/me`);
       if (res.ok) {
         const data = await res.json();
-        used = data.log_count || 0;
+        used = data.billable_count ?? data.log_count ?? 0;
         setAiRequestCount(used);
       }
     } catch {}

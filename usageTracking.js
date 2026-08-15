@@ -1,5 +1,6 @@
 // usageTracking.js — Session management and AI cost tracking
 import fetch from 'node-fetch';
+import { isTopupPayer, spendTopupCredits } from './lib/billing/creditWallet.js';
 
 // Read env vars lazily (dotenv runs after imports in server.js)
 const getSupabaseUrl = () => process.env.VITE_SUPABASE_URL;
@@ -203,7 +204,12 @@ function classifyActionType(endpoint, { promptLength = 0, responseLength = 0, ha
 }
 
 function getCreditCost(actionType) {
-  return CREDIT_COSTS[actionType] || 1;
+  const cost = CREDIT_COSTS[actionType];
+  // 0 is a real weight, not a missing one: the internal/system actions above
+  // (background embedding, profile refresh, chat naming…) are deliberately
+  // free. A `|| 1` fallback here silently charged every one of them a credit.
+  // Unknown action types still fall back to 1.
+  return Number.isFinite(cost) ? cost : 1;
 }
 
 function estimateTokens(text) {
@@ -363,6 +369,13 @@ async function logAiUsage({
 
   const inserted = await supabaseAdmin('POST', 'ai_usage_logs', { body: row });
 
+  // Charge purchased credits when the AI gates let this request through on a
+  // top-up rather than on the plan's included allowance. Fire-and-forget: the
+  // response is already on its way to the user.
+  if (userId && creditsUsed > 0 && isTopupPayer(userId)) {
+    void spendTopupCredits(userId, creditsUsed);
+  }
+
   // Update session totals in the background (only for logged-in users with sessions)
   if (sessionId) {
     try {
@@ -423,16 +436,24 @@ async function getUserMonthlyUsage(userId) {
   if (logs === null) return null;
 
   if (!logs.length) {
-    return { total_tokens: 0, total_cost: 0, total_credits: 0, action_breakdown: {}, log_count: 0 };
+    return {
+      total_tokens: 0,
+      total_cost: 0,
+      total_credits: 0,
+      action_breakdown: {},
+      log_count: 0,
+      billable_count: 0,
+    };
   }
 
-  let totalTokens = 0, totalCost = 0, totalCredits = 0;
+  let totalTokens = 0, totalCost = 0, totalCredits = 0, billableCount = 0;
   const breakdown = {};
 
   for (const log of logs) {
     totalTokens += log.total_tokens || 0;
     totalCost += parseFloat(log.cost_usd) || 0;
     totalCredits += log.credits_used || 0;
+    if ((log.credits_used || 0) > 0) billableCount++;
     const t = log.action_type || 'unknown';
     if (!breakdown[t]) breakdown[t] = { count: 0, tokens: 0, cost: 0, credits: 0 };
     breakdown[t].count++;
@@ -447,7 +468,40 @@ async function getUserMonthlyUsage(userId) {
     total_credits: totalCredits,
     action_breakdown: breakdown,
     log_count: logs.length,
+    // Rows the user was actually charged for. This — not log_count — is what
+    // the monthly request cap counts, so background indexing and other
+    // zero-credit system work never eats a plan's request allowance.
+    billable_count: billableCount,
   };
+}
+
+/**
+ * Total credits a user has consumed across ALL time — the meter behind the
+ * free plan's signup allowance (FREE_PLAN_CREDITS in server.js).
+ *
+ * PostgREST aggregates are disabled on this project, so we page the
+ * credits_used column. `stopAt` lets callers early-exit as soon as the
+ * running total crosses the allowance (free accounts never accumulate many
+ * rows past it, and paid accounts never call this).
+ *
+ * Returns null when the query fails — quota callers must fail closed.
+ */
+async function getUserLifetimeCredits(userId, { stopAt = Infinity } = {}) {
+  const PAGE = 1000;
+  // Bound the scan: 25k rows is far beyond any free allowance; if a user has
+  // more, they're unquestionably over.
+  const MAX_PAGES = 25;
+  let total = 0;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const rows = await supabaseAdmin('GET', 'ai_usage_logs', {
+      query: `user_id=eq.${userId}&select=credits_used&limit=${PAGE}&offset=${page * PAGE}`,
+    });
+    if (rows === null) return null;
+    for (const row of rows) total += row.credits_used || 0;
+    if (total >= stopAt) return total;
+    if (rows.length < PAGE) return total;
+  }
+  return total;
 }
 
 async function getUserSessions(userId, limit = 20) {
@@ -763,6 +817,7 @@ export {
   calculateCost,
   getCreditCost,
   getUserMonthlyUsage,
+  getUserLifetimeCredits,
   getUserSessions,
   getSessionWithLogs,
   startSessionCleanup,

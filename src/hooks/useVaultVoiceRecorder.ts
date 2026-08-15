@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { preferredAudioMimeType } from "@/lib/vault/saveVoiceNote";
+import { requestMicStream } from "@/lib/voice/micAccess";
 
 type RecorderPhase = "idle" | "recording" | "processing";
 
@@ -64,7 +65,7 @@ export function useVaultVoiceRecorder(opts: UseVaultVoiceRecorderOptions = {}) {
     mimeTypeRef.current = mimeType;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await requestMicStream({ audio: true });
       mediaStreamRef.current = stream;
       audioChunksRef.current = [];
 

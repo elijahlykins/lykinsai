@@ -133,6 +133,7 @@ const ARTIFACT_TOOLS = new Set([
   "lykn_generate_diagram",
   "lykn_generate_image",
   "lykn_process_image",
+  "local_pull_file",
 ]);
 
 function isHtmlString(raw: unknown): boolean {
@@ -615,6 +616,50 @@ function extractFromToolCall(call: ToolCallEvent): ChatArtifact[] {
           storageBucket: storagePath ? "user-files" : undefined,
           toolName: call.name,
           downloads: [{ format: "png", url, filename: "edited-image.png" }],
+        },
+      ];
+    }
+    // Local Mode: a file pulled off the user's Mac. Rendered from the exact
+    // signed URL the client minted at upload time — the model is told NOT to
+    // transcribe the URL into its reply (hand-copied signed tokens corrupt
+    // and 400 with InvalidJWT).
+    case "local_pull_file": {
+      const url = typeof call.result.url === "string" ? call.result.url.trim() : "";
+      if (!url) return [];
+      const name = String(call.result.name || "File").trim() || "File";
+      const mime = String(call.result.mime || "");
+      const fileKind = String(call.result.kind || "");
+      const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+      const storagePath =
+        typeof call.result.storagePath === "string" && call.result.storagePath.trim()
+          ? call.result.storagePath.trim()
+          : undefined;
+      const storageBucket =
+        typeof call.result.storageBucket === "string" && call.result.storageBucket.trim()
+          ? call.result.storageBucket.trim()
+          : storagePath
+            ? "user-files"
+            : undefined;
+      const kind: ChatArtifactKind =
+        fileKind === "image" || mime.startsWith("image/")
+          ? "image"
+          : fileKind === "video" || mime.startsWith("video/")
+            ? "video"
+            : "download";
+      return [
+        {
+          id: `${call.id}:pulled`,
+          kind,
+          title: name,
+          previewUrl: kind === "download" ? undefined : url,
+          downloadUrl: url,
+          filename: name,
+          format: ext || undefined,
+          storagePath,
+          storageBucket,
+          toolName: call.name,
+          toolCallId: call.id,
+          downloads: [{ format: ext || "file", url, filename: name }],
         },
       ];
     }

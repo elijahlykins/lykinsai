@@ -134,7 +134,7 @@ const ASPECT_OPTIONS = ["1:1", "3:2", "2:3", "16:9", "9:16"] as const;
 
 /** Shared glass/neutral chrome for the edit space (matches Studio bars). */
 const EDIT_PANEL =
-  "border border-black/10 bg-white/80 text-black/85 shadow-lg backdrop-blur-2xl " +
+  "border border-black/10 bg-white/80 text-black/85 shadow-none backdrop-blur-2xl " +
   "dark:border-white/12 dark:bg-black/45 dark:text-white/90";
 const EDIT_FIELD =
   "rounded-xl border border-black/10 bg-white/70 text-black/85 outline-none " +
@@ -468,6 +468,44 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
     });
   }, [prompt, aspect, attachments, startBatch]);
 
+  // Imagine's "conversation under way" signal for the Studio shell — batches
+  // rather than chat turns (the home desktop's rounded bar docks to the
+  // bottom once the canvas has content).
+  const hasBatches = batches.length > 0;
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("lykn-chat-activity-changed", { detail: { active: hasBatches } }),
+    );
+  }, [hasBatches]);
+
+  // Home-screen chat bar hand-off: a stashed Imagine prompt starts generating
+  // as soon as this page mounts (or via the seed event when already warm).
+  useEffect(() => {
+    const consume = (fallback = "") => {
+      let text = "";
+      try {
+        text = sessionStorage.getItem("lykn_pending_imagine_prompt") || "";
+        if (text) sessionStorage.removeItem("lykn_pending_imagine_prompt");
+      } catch {
+        /* storage blocked — fall back to the event payload */
+      }
+      text = (text || fallback).trim();
+      if (!text) return;
+      startBatch({
+        label: text,
+        prompt: text,
+        concept: text,
+        kind: "generate",
+        aspectRatio: aspect,
+      });
+    };
+    consume();
+    const onSeed = (e: Event) =>
+      consume(String((e as CustomEvent).detail?.text || ""));
+    window.addEventListener("lykn-imagine-seed", onSeed);
+    return () => window.removeEventListener("lykn-imagine-seed", onSeed);
+  }, [startBatch, aspect]);
+
   // "+" attachments — images ride as pixel references for the next batch.
   const handlePickFiles = useCallback((files: FileList | null) => {
     const list = Array.from(files || []).filter((f) => f.type.startsWith("image/"));
@@ -747,7 +785,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
   // Shared prompt bar — sits under the header on the empty page (same stack
   // as Build / Research), then docks to the bottom once batches exist.
   const promptBar = (
-    <div className="w-full">
+    <div className="lykn-imagine-prompt-bar w-full">
       {quotaNote ? (
         <p className="mb-1.5 text-center text-[11px] text-black/40 dark:text-white/40">{quotaNote}</p>
       ) : null}
@@ -858,7 +896,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
           {/* Center header + bar in the space ABOVE the showcase — never
               under it, so nothing needs to scroll on a normal viewport. */}
           <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-4 py-4">
-            <div className="mx-auto w-full max-w-2xl translate-y-10 space-y-8 sm:translate-y-14 sm:space-y-10">
+            <div className="lykn-imagine-hero mx-auto w-full max-w-2xl translate-y-10 space-y-8 sm:translate-y-14 sm:space-y-10">
               <div className="pointer-events-none space-y-2.5 text-center">
                 <p className="text-xl font-semibold tracking-tight text-black dark:text-white sm:text-3xl">
                   Generate any image
@@ -870,7 +908,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
               {promptBar}
             </div>
           </div>
-          <div className="mx-auto mb-12 w-full max-w-4xl shrink-0 px-6 sm:mb-14">
+          <div className="lykn-imagine-showcase mx-auto mb-12 w-full max-w-4xl shrink-0 px-6 sm:mb-14">
             <div className="flex gap-3">
               {[0, 1, 2].map((offset) => (
                 <ImagineShowcaseSlot
@@ -943,7 +981,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
           </div>
 
           {/* Prompt bar docks to the bottom once the first batch starts. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[60] flex justify-center px-4 pb-5">
+          <div className="lykn-imagine-dock pointer-events-none absolute inset-x-0 bottom-0 z-[60] flex justify-center px-4 pb-5">
             <div className="pointer-events-auto w-full max-w-2xl">{promptBar}</div>
           </div>
         </>
@@ -1020,7 +1058,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
                 src={lightboxUrl}
                 alt={lightboxBatch.label}
                 draggable={false}
-                className="max-h-[min(68vh,720px)] w-auto max-w-[min(92vw,920px)] select-none rounded-2xl object-contain shadow-[0_24px_80px_rgba(0,0,0,0.28)] ring-1 ring-black/10 dark:ring-white/12"
+                className="max-h-[min(68vh,720px)] w-auto max-w-[min(92vw,920px)] select-none rounded-2xl object-contain shadow-none ring-1 ring-black/10 dark:ring-white/12"
               />
               {pins.map((pin, i) => {
                 const active = pin.id === activePinId;
@@ -1039,7 +1077,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
                         setActivePinId(pin.id);
                         window.setTimeout(() => pinNoteRef.current?.focus(), 40);
                       }}
-                      className={`absolute flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full text-[11px] font-bold shadow-lg transition-transform ${
+                      className={`absolute flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full text-[11px] font-bold shadow-none transition-transform ${
                         active
                           ? "scale-110 bg-black text-white ring-2 ring-white dark:bg-white dark:text-black dark:ring-black/40"
                           : "bg-white/95 text-black ring-1 ring-black/15 hover:scale-105 dark:bg-black/80 dark:text-white dark:ring-white/25"
@@ -1050,7 +1088,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
                     </button>
                     {active ? (
                       <div
-                        className={`absolute top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full border border-black/10 bg-white px-1.5 py-1 shadow-lg dark:border-white/15 dark:bg-[#1c1c1e] ${
+                        className={`absolute top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full border border-black/10 bg-white px-1.5 py-1 shadow-none dark:border-white/15 dark:bg-[#1c1c1e] ${
                           barOnLeft
                             ? "right-full mr-4"
                             : "left-full ml-4"
@@ -1093,7 +1131,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
                           setActivePinId(pin.id);
                           window.setTimeout(() => pinNoteRef.current?.focus(), 40);
                         }}
-                        className={`absolute top-1/2 max-w-[9rem] -translate-y-1/2 truncate rounded-full bg-white/95 px-2 py-0.5 text-[10px] font-medium text-black/70 shadow ring-1 ring-black/10 dark:bg-black/80 dark:text-white/75 dark:ring-white/15 ${
+                        className={`absolute top-1/2 max-w-[9rem] -translate-y-1/2 truncate rounded-full bg-white/95 px-2 py-0.5 text-[10px] font-medium text-black/70 shadow-none ring-1 ring-black/10 dark:bg-black/80 dark:text-white/75 dark:ring-white/15 ${
                           barOnLeft ? "right-full mr-3.5" : "left-full ml-3.5"
                         }`}
                         title={pin.note}

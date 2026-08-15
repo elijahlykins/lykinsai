@@ -89,6 +89,14 @@ export function useUserPlan() {
     hasActiveSubscription: Boolean(data?.has_active_subscription),
     cancelAtPeriodEnd: Boolean(data?.cancel_at_period_end),
     currentPeriodEnd: data?.current_period_end || null,
+    // Free signup allowance meter ({ used, limit, remaining }) — present only
+    // for accounts riding the free credits (no subscription). Drives the
+    // "almost out of credits" upgrade nudge.
+    freeCredits: data?.free_credits || null,
+    // Purchased credit balance ({ granted, used, balance }) — only sent when
+    // it's what's keeping the account unwalled. The billing popup reads the
+    // full picture from /api/billing/credits instead.
+    topupCredits: data?.topup_credits || null,
     loading: isLoading || authLoading,
   };
 }

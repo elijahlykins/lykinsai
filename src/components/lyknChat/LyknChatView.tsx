@@ -14,10 +14,10 @@ import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS, normalizeMathDelimiters } fro
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import LocalToolApprovalCard from "@/components/lyknChat/LocalToolApprovalCard";
 import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/lyknChat/ChatArtifactCard";
-import LyknChatArtifactPanel, { ARTIFACT_PANEL_WIDTH } from "@/components/lyknChat/LyknChatArtifactPanel";
+import LyknChatArtifactPanel from "@/components/lyknChat/LyknChatArtifactPanel";
+import { isLiveBuildStatus } from "@/hooks/useThinkingStatus";
 
-// Studio Research rail width — narrower than the artifact panel; the chat
-// column insets by this much while the rail is open.
+// Studio Research rail width — floats over the right edge; chat stays put.
 const RESEARCH_SIDEBAR_WIDTH = "min(340px, 30vw)";
 import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact, type ChatArtifact } from "@/lib/ai/chatArtifacts";
 import ChatNeuronCard from "@/components/lyknChat/ChatNeuronCard";
@@ -33,7 +33,7 @@ import { labelForModelId } from "@/lib/ai/conversationFormat";
 import { KNOWN_MODEL_IDS } from "@/lib/modelCatalog";
 import { supabase } from "@/lib/supabase";
 import { safeExternalUrl, safeNavHref } from "@/lib/safeExternalUrl";
-import { handleLyknBrowserClick, openArtifactInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
+import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
 import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
 
 // Resolve a user-facing model name for the AI Response pill. The server
@@ -364,6 +364,9 @@ export interface LyknChatViewProps {
 
   chatBarToolbar: React.ReactNode;
 
+  /** Composer field min-height in px (the JS auto-grow floor). */
+  composerMinH?: number;
+
   chatReactions: Record<string, "like" | "dislike" | null>;
   onReaction: (msgId: string, kind: "like" | "dislike") => void;
 
@@ -400,13 +403,13 @@ export interface LyknChatViewProps {
   pinComposerToBottom?: boolean;
 
   /**
-   * Artifact open in the Claude-style side pullout. When set, the panel shows
+   * Artifact open in the floating preview popup. When set, the popup shows
    * it large and the next chat edit refines it in place. Owned by useChatEngine
    * so the send path can include it as edit context.
    */
   /** Studio Research page: right-hand rail with the deep-research source
-   *  links + Save report. When set (desktop), the chat column shrinks left
-   *  and the rail becomes a fixed right column like the artifact panel. */
+   *  links + Save report. When set (desktop), the rail floats over the right
+   *  edge as a fixed column — the chat column doesn't move. */
   researchSidebar?: React.ReactNode;
   /** Hide the per-message source chips under AI responses (Studio Research
    *  page shows the links in the right rail instead). */
@@ -423,6 +426,37 @@ export interface LyknChatViewProps {
 
   /** Patch / clear `factNeuron` after in-chat Yes / Edit / No. */
   onFactNeuronChange?: (msgId: string, next: FactNeuron | null) => void;
+
+  /**
+   * Build / Create sessions: keep the thinking/building spinner under the
+   * streamed description for the whole turn, not only after a tool reports
+   * "running". The long wait is argument streaming (the source itself),
+   * which happens before that event — without this the UI goes silent
+   * after "I'll build that out…".
+   */
+  keepThinkingWhileLoading?: boolean;
+}
+
+const IN_FLIGHT_TOOL_STATUSES = new Set([
+  "running",
+  "awaiting_client",
+  "awaiting_approval",
+]);
+
+function messageHasInFlightTools(msg: { toolCalls?: ToolCallEvent[] } | null | undefined): boolean {
+  const calls = msg?.toolCalls;
+  if (!Array.isArray(calls) || !calls.length) return false;
+  return calls.some((tc) => IN_FLIGHT_TOOL_STATUSES.has(tc.status));
+}
+
+/** Narration that means an artifact is actually being written (vs. a clarifying question). */
+function isBuildSlotStatus(status?: string): boolean {
+  const t = String(status || "").trim();
+  if (!t) return false;
+  if (/\(\s*[\d.]+k?\s*\)/.test(t)) {
+    return /^(building |writing the |filling in |composing |rendering )/i.test(t);
+  }
+  return /^building\s+(?!the\s(?:app|page|artifact)\b)\S/i.test(t);
 }
 
 /* ------------------------------------------------------------------ */
@@ -478,14 +512,14 @@ type MessageItemProps = {
    * greeting bubble (and dashboard panel) pick up the new state.
    */
   onLoadInGreetingRefresh?: () => void | Promise<void>;
-  /** Open an artifact in the side pullout panel (Claude-style). */
+  /** Open an artifact in the floating preview popup. */
   onOpenArtifact?: (art: ChatArtifact) => void;
   /** Patch / clear `factNeuron` after in-chat ratification. */
   onFactNeuronChange?: (msgId: string, next: FactNeuron | null) => void;
   /**
    * When set, render the thinking/building spinner under this turn's
-   * streamed description (build mode: description first, then the tool
-   * runs). Cleared when the turn finishes.
+   * streamed description — while a tool is in flight OR a build is still
+   * streaming its arguments (the long wait before "running").
    */
   inlineThinkingStatus?: string;
 };
@@ -520,7 +554,7 @@ const LoadInBubble: React.FC<{
       ? `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(group.domain)}`
       : null);
   return (
-    <div className="rounded-2xl border border-white/40 dark:border-white/10 bg-white/50 dark:bg-white/[0.04] backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
+    <div className="rounded-2xl border border-white/40 dark:border-white/10 bg-white/50 dark:bg-white/[0.04] backdrop-blur-md shadow-none overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -765,7 +799,7 @@ const LoadInUserSectionsComposer: React.FC<{
   }
 
   return (
-    <div className="rounded-2xl border border-white/40 dark:border-white/10 bg-white/55 dark:bg-white/[0.04] backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
+    <div className="rounded-2xl border border-white/40 dark:border-white/10 bg-white/55 dark:bg-white/[0.04] backdrop-blur-md shadow-none overflow-hidden">
       <div className="px-3 pt-3 pb-2 flex items-center justify-between">
         <div className="text-[11px] uppercase tracking-wider font-semibold text-black/55 dark:text-white/55">
           New section
@@ -899,7 +933,7 @@ const LoadInUserSectionEditor: React.FC<{
   const busy = saving || deleting;
 
   return (
-    <div className="rounded-2xl border border-white/40 dark:border-white/10 bg-white/55 dark:bg-white/[0.04] backdrop-blur-md shadow-[0_2px_10px_rgba(0,0,0,0.06)] overflow-hidden">
+    <div className="rounded-2xl border border-white/40 dark:border-white/10 bg-white/55 dark:bg-white/[0.04] backdrop-blur-md shadow-none overflow-hidden">
       <div className="px-3 pt-3 pb-2 flex items-center justify-between">
         <div className="text-[11px] uppercase tracking-wider font-semibold text-black/55 dark:text-white/55">
           Editing section
@@ -1034,7 +1068,7 @@ const MessageItem = React.memo(function MessageItem({
                 if (at === "youtube" && att.videoId) {
                   return (
                     <div key={att.id}>
-                      <div className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-sm">
+                      <div className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-none">
                         <iframe src={`https://www.youtube.com/embed/${att.videoId}`} className="w-full aspect-video" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen title={att.name || "YouTube"} />
                       </div>
                       {saveBtn}
@@ -1042,12 +1076,12 @@ const MessageItem = React.memo(function MessageItem({
                   );
                 }
                 if (at === "image" && att.url) {
-                  return <div key={att.id}><img src={att.url} alt={att.name || "Image"} className="max-w-[16.25rem] max-h-[200px] rounded-xl border border-white/30 object-cover shadow-sm" />{saveBtn}</div>;
+                  return <div key={att.id}><img src={att.url} alt={att.name || "Image"} className="max-w-[16.25rem] max-h-[200px] rounded-xl border border-white/30 object-cover shadow-none" />{saveBtn}</div>;
                 }
                 if (at === "video" && att.url) {
                   return (
                     <div key={att.id}>
-                      <div className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-sm"><video src={att.url} controls className="w-full" preload="metadata" /></div>
+                      <div className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-none"><video src={att.url} controls className="w-full" preload="metadata" /></div>
                       {saveBtn}
                     </div>
                   );
@@ -1193,30 +1227,24 @@ const MessageItem = React.memo(function MessageItem({
       {msg.role === "user" && msg.aiResponse && (
         <div className="flex justify-start">
           <div className="w-full">
+            {/* Expanded: just a small collapse button — no header pill.
+                Collapsed: slim transparent row with a one-line preview. */}
             {!isLoadInGreeting && (
               <button
                 type="button"
-                className={`w-full flex items-center gap-2 transition-all text-left ${
+                title={isAiExpanded ? "Collapse response" : "Expand response"}
+                aria-label={isAiExpanded ? "Collapse response" : "Expand response"}
+                className={`flex items-center gap-2 transition-all text-left ${
                   isAiExpanded
-                    ? "px-4 py-2.5 rounded-2xl border border-white/50 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-sm hover:bg-white/50 dark:hover:bg-white/10"
-                    : "px-0 py-0.5 rounded-none border border-transparent bg-transparent backdrop-blur-none hover:bg-transparent"
+                    ? "h-6 w-6 justify-center rounded-md text-black/35 hover:bg-black/5 hover:text-black/70 dark:text-white/35 dark:hover:bg-white/10 dark:hover:text-white/70"
+                    : "w-full px-0 py-0.5"
                 }`}
                 onClick={() => toggleAiExpanded(msg.id)}
               >
-                <ChevronRight className={`w-4 h-4 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${isAiExpanded ? "rotate-90" : ""}`} />
+                <ChevronRight className={`w-4 h-4 flex-shrink-0 transition-transform duration-200 ${isAiExpanded ? "rotate-90" : "text-black/40 dark:text-white/40"}`} />
                 {!isAiExpanded && (
                   <span className="text-sm text-black/60 dark:text-white/60 truncate leading-tight flex-1">
                     {(msg as any).aiImageUrl ? "Generated image" : getCollapsedPreview(msg.aiResponse || "")}
-                  </span>
-                )}
-                {isAiExpanded && (
-                  <span className="flex-1 flex items-center gap-2 min-w-0">
-                    <LyknWordmark className="h-[1.375rem] w-[1.375rem] shrink-0 drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]" />
-                    <span className="text-sm leading-none text-black/40 dark:text-white/40 font-medium">AI Response</span>
-                    {modelLabel && (
-                      <span className="text-sm leading-none font-medium text-black/35 dark:text-white/35 truncate">· {modelLabel}</span>
-                    )}
-                    <Check className="ml-auto shrink-0 w-4 h-4 text-green-500 dark:text-green-400" strokeWidth={2.5} />
                   </span>
                 )}
               </button>
@@ -1229,7 +1257,7 @@ const MessageItem = React.memo(function MessageItem({
               <div className="overflow-hidden min-h-0 group/aifocused">
                 {(msg as any).aiImageUrl ? (
                   <div className="px-4 py-3">
-                    <img src={(msg as any).aiImageUrl} alt="Generated image" className="max-w-full rounded-xl shadow-lg" style={{ maxHeight: "320px" }} />
+                    <img src={(msg as any).aiImageUrl} alt="Generated image" className="max-w-full rounded-xl shadow-none" style={{ maxHeight: "320px" }} />
                     <button type="button" className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${savedMediaUrls.has((msg as any).aiImageUrl) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/25 bg-white/35 backdrop-blur-sm text-black/60 hover:text-black/80 hover:border-black/30 hover:shadow-sm"}`} disabled={savedMediaUrls.has((msg as any).aiImageUrl)} onClick={() => { onSaveAiImage((msg as any).aiImageUrl, msg.content, { storagePath: (msg as any).aiImageStoragePath }); }}>
                       {savedMediaUrls.has((msg as any).aiImageUrl) ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
                     </button>
@@ -1290,15 +1318,10 @@ const MessageItem = React.memo(function MessageItem({
                         </div>
                       ) : htmlPending ? (
                         <div className="mt-2 max-w-[min(100%,42rem)] w-full">
-                          <ArtifactBuildingPlaceholder />
+                          <ArtifactBuildingPlaceholder status={inlineThinkingStatus} />
                         </div>
-                      ) : null}
-                      {/* Build mode: description streams first, then the tool
-                          runs with no more text — keep the thinking animation
-                          under the description so "still building" is obvious. */}
-                      {inlineThinkingStatus && !leakedArtifact && !htmlPending ? (
+                      ) : inlineThinkingStatus && !isBuildSlotStatus(inlineThinkingStatus) ? (
                         <div className="mt-3">
-                          {/* Full-size spinner — same as Research mode's thinking row. */}
                           <ThinkingIndicator status={inlineThinkingStatus} />
                         </div>
                       ) : null}
@@ -1676,7 +1699,7 @@ const MessageItem = React.memo(function MessageItem({
                   <div className="px-4 pb-3 space-y-3">
                     {(msg as any).aiYouTubeUrls.map((yt: { url: string; videoId: string }) => (
                       <div key={yt.videoId}>
-                        <div className="rounded-xl overflow-hidden border border-white/30 shadow-lg">
+                        <div className="rounded-xl overflow-hidden border border-white/30 shadow-none">
                           <iframe
                             src={`https://www.youtube-nocookie.com/embed/${yt.videoId}`}
                             className="w-full aspect-video"
@@ -1751,6 +1774,7 @@ const MessageItem = React.memo(function MessageItem({
                     })}
                   </div>
                 )}
+                {!inlineThinkingStatus && (
                 <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
                   {!isMobilePhone && !gridDisabled && (
                     <button type="button" title="Add to grid" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-blue-500 hover:bg-blue-500/10 transition-colors" onClick={() => addChatResponseToGrid(msg.aiResponse || "")}>
@@ -1777,14 +1801,29 @@ const MessageItem = React.memo(function MessageItem({
                     <ThumbsDown className="w-3.5 h-3.5" />
                   </button>
                 </div>
+                )}
               </div>
             </div>
             {(() => {
               const artifacts = sortArtifactsForDisplay(extractChatArtifacts(msg.toolCalls));
-              if (!artifacts.length) return null;
-              // With a panel handler, show a compact "open" chip (Claude-style)
-              // instead of the full inline preview; the artifact lives in the
-              // right-side pullout. Without a handler, fall back to the card.
+              if (!artifacts.length) {
+                // Once narration names the artifact / starts writing code,
+                // occupy the slot the card will take. Don't flash this on a
+                // clarifying question (those only get the under-text spinner).
+                const showBuildSlot =
+                  Boolean(inlineThinkingStatus) && isBuildSlotStatus(inlineThinkingStatus);
+                if (showBuildSlot) {
+                  return (
+                    <div className="px-1 mt-1 max-w-[min(100%,42rem)] w-full">
+                      <ArtifactBuildingPlaceholder status={inlineThinkingStatus} />
+                    </div>
+                  );
+                }
+                return null;
+              }
+              // With a popup handler, show a compact "open" chip instead of
+              // the full inline preview; the artifact lives in the popup.
+              // Without a handler, fall back to the card.
               if (onOpenArtifact) {
                 return (
                   <div className="px-1 flex flex-col gap-2 max-w-[min(100%,30rem)] w-full">
@@ -1793,7 +1832,7 @@ const MessageItem = React.memo(function MessageItem({
                         key={art.id}
                         type="button"
                         onClick={() => onOpenArtifact(art)}
-                        className="group flex items-center gap-3 rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] px-3.5 py-3 text-left shadow-sm transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.07] w-full"
+                        className="group flex items-center gap-3 rounded-2xl border border-black/10 dark:border-white/12 bg-white/70 dark:bg-white/[0.04] px-3.5 py-3 text-left shadow-none transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.07] w-full"
                       >
                         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/80 text-white dark:bg-white/15 dark:text-white">
                           <FileText className="h-4 w-4" />
@@ -1801,7 +1840,7 @@ const MessageItem = React.memo(function MessageItem({
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-[13px] font-semibold text-foreground">{art.title}</span>
                           <span className="block text-[11px] text-muted-foreground">
-                            {art.kind === "html" ? "Artifact · open in LYKN browser" : (art.format || "file").toUpperCase()}
+                            {art.kind === "html" ? "Artifact · open preview" : (art.format || "file").toUpperCase()}
                           </span>
                         </span>
                         <span className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-black/10 dark:border-white/12 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground group-hover:text-foreground transition-colors">
@@ -1841,25 +1880,23 @@ const MessageItem = React.memo(function MessageItem({
       {msg.role !== "user" && (
         <div className="flex justify-start">
           <div className="w-full">
+            {/* Same treatment as user-turn responses: small collapse button
+                when open, slim preview row when collapsed — no header pill. */}
             <button
               type="button"
-              className="w-full flex items-center gap-2 px-4 py-2.5 rounded-2xl border border-white/50 dark:border-white/15 bg-white/30 dark:bg-white/5 backdrop-blur-sm hover:bg-white/50 dark:hover:bg-white/10 transition-all text-left"
+              title={isAiExpanded ? "Collapse response" : "Expand response"}
+              aria-label={isAiExpanded ? "Collapse response" : "Expand response"}
+              className={`flex items-center gap-2 transition-all text-left ${
+                isAiExpanded
+                  ? "h-6 w-6 justify-center rounded-md text-black/35 hover:bg-black/5 hover:text-black/70 dark:text-white/35 dark:hover:bg-white/10 dark:hover:text-white/70"
+                  : "w-full px-0 py-0.5"
+              }`}
               onClick={() => toggleAiExpanded(msg.id)}
             >
-              <ChevronRight className={`w-4 h-4 text-black/40 dark:text-white/40 flex-shrink-0 transition-transform duration-200 ${isAiExpanded ? "rotate-90" : ""}`} />
+              <ChevronRight className={`w-4 h-4 flex-shrink-0 transition-transform duration-200 ${isAiExpanded ? "rotate-90" : "text-black/40 dark:text-white/40"}`} />
               {!isAiExpanded && (
                 <span className="text-sm text-black/60 dark:text-white/60 truncate leading-tight flex-1">
                   {getCollapsedPreview(msg.content || "")}
-                </span>
-              )}
-              {isAiExpanded && (
-                <span className="flex-1 flex items-center gap-2 min-w-0">
-                  <LyknWordmark className="h-[1.375rem] w-[1.375rem] shrink-0 drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]" />
-                  <span className="text-sm leading-none text-black/40 dark:text-white/40 font-medium">AI Response</span>
-                  {modelLabel && (
-                    <span className="text-sm leading-none font-medium text-black/35 dark:text-white/35 truncate">· {modelLabel}</span>
-                  )}
-                  <Check className="ml-auto shrink-0 w-4 h-4 text-green-500 dark:text-green-400" strokeWidth={2.5} />
                 </span>
               )}
             </button>
@@ -2005,6 +2042,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onDragOver,
   onDrop,
   chatBarToolbar,
+  composerMinH = 52,
   chatReactions,
   onReaction,
   onRegenerate,
@@ -2024,34 +2062,30 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onSaveArtifact,
   chatKey,
   onFactNeuronChange,
+  keepThinkingWhileLoading = false,
 }) {
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const chunkMapRef = useRef<Map<string, string>>(new Map());
-
-  // Claude-style artifact pullout + LYKN browser: clicking a card opens the
-  // side panel for edit/preview, and when a hosted preview URL exists also
-  // routes it into the Studio / agent browser.
-  const onOpenArtifact = useCallback(
-    (art: ChatArtifact) => {
-      onActiveArtifactChange?.(art);
-      openArtifactInStudioBrowser(art);
-    },
-    [onActiveArtifactChange],
-  );
-  // When the artifact panel is open on desktop, the chat column shrinks to the
-  // left and the panel becomes a fixed right column (Claude-style split view).
-  const panelOpen = !!activeArtifact && !!onActiveArtifactChange;
-  // Research rail (Studio Research page): fixed right column with the
-  // deep-research links + Save report. The artifact panel wins if both open.
-  const researchOpen = !!researchSidebar && !isMobilePhone && !panelOpen;
-  const chatRightInset = panelOpen && !isMobilePhone
-    ? ARTIFACT_PANEL_WIDTH
-    : researchOpen
-      ? RESEARCH_SIDEBAR_WIDTH
-      : "0px";
   const lastSeenArtifactRef = useRef<string | null>(null);
   const artifactChatKeyRef = useRef<string | undefined>(undefined);
   const artifactSeededRef = useRef(false);
+  const pendingArtifactOpenRef = useRef<ChatArtifact | null>(null);
+  const dismissedArtifactKeyRef = useRef<string | null>(null);
+
+  // Clicking a card opens the floating preview popup only. The LYKN browser
+  // is a separate action — the panel's top-bar Open button.
+  const onOpenArtifact = useCallback(
+    (art: ChatArtifact) => {
+      pendingArtifactOpenRef.current = null;
+      dismissedArtifactKeyRef.current = null;
+      onActiveArtifactChange?.(art);
+    },
+    [onActiveArtifactChange],
+  );
+  // Research rail (Studio Research page): fixed right column with the
+  // deep-research links + Save report. The rail floats OVER the page — the
+  // chat column keeps its width. The artifact is a popup, so both can show.
+  const researchOpen = !!researchSidebar && !isMobilePhone;
   useEffect(() => {
     if (!onActiveArtifactChange) return;
     let newest: ChatArtifact | null = null;
@@ -2063,7 +2097,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
         continue;
       }
       // Preview-only HTML the model leaked into the reply (srcDoc card, no
-      // tool call) — still auto-open the panel like a real artifact.
+      // tool call) — still auto-open the popup like a real artifact.
       // Prompt messages carry the assistant text on `aiResponse`.
       const reply = String(msg?.aiResponse || (msg?.role !== "user" ? msg?.content : "") || "");
       if (!reply) continue;
@@ -2072,13 +2106,15 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
     }
     const key = newest?.toolCallId || newest?.id || null;
 
-    // Switched chats: re-baseline auto-open tracking. Panel open/close is
+    // Switched chats: re-baseline auto-open tracking. Popup open/close is
     // owned by useChatEngine (per-board snapshot) so Smash Arena in chat A
     // does not clear-and-leak into chat B — and switching back restores A.
     if (artifactChatKeyRef.current !== chatKey) {
       artifactChatKeyRef.current = chatKey;
       artifactSeededRef.current = false;
       lastSeenArtifactRef.current = null;
+      pendingArtifactOpenRef.current = null;
+      dismissedArtifactKeyRef.current = null;
     }
 
     // First time this chat's messages populate — establish a baseline without
@@ -2091,13 +2127,28 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
       return;
     }
 
+    const openPopup = (art: ChatArtifact, artKey: string) => {
+      if (dismissedArtifactKeyRef.current === artKey) return;
+      pendingArtifactOpenRef.current = null;
+      onActiveArtifactChange?.(art);
+    };
+
     if (newest && key && key !== lastSeenArtifactRef.current) {
       lastSeenArtifactRef.current = key;
-      // Open the panel only — vault persistence is explicit (Save button or
-      // the user asking the AI to save via lykn_saveFileToVault).
-      onActiveArtifactChange?.(newest);
+      // Wait until the coding turn finishes so the popup is the done build,
+      // not a mid-stream preview. Vault save stays explicit (Save button or
+      // the user asking the AI via lykn_saveFileToVault).
+      if (isChatLoading) {
+        pendingArtifactOpenRef.current = newest;
+      } else {
+        openPopup(newest, key);
+      }
+    } else if (!isChatLoading && pendingArtifactOpenRef.current) {
+      const pending = pendingArtifactOpenRef.current;
+      const pendingKey = pending.toolCallId || pending.id;
+      openPopup(pending, pendingKey);
     }
-  }, [chatMessages, chatKey, onActiveArtifactChange]);
+  }, [chatMessages, chatKey, onActiveArtifactChange, isChatLoading]);
 
   const handleChunkClick = useCallback((e: React.MouseEvent, chunkKey: string, chunkText: string) => {
     chunkMapRef.current.set(chunkKey, chunkText);
@@ -2214,13 +2265,13 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           // overflow-y-auto + my-auto on the column (instead of items-center)
           // so when the docket/attachments make the empty state taller than
           // the viewport it scrolls instead of clipping both ends unreachably.
-          className={`${compactPreview ? "lykn-chat-focused-chat-preview absolute inset-0 z-[65]" : "fixed top-0 right-0 z-[65]"} flex justify-center overflow-y-auto px-4 py-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid && !compactPreview ? "pl-[232px]" : ""}`}
+          className={`lykn-chat-empty-state ${compactPreview ? "lykn-chat-focused-chat-preview absolute inset-0 z-[65]" : "fixed top-0 right-0 z-[65]"} flex justify-center overflow-y-auto px-4 py-4 transition-all duration-300 ${canvasFileBlocks.length > 0 && !isMobileGrid && !compactPreview ? "pl-[232px]" : ""}`}
           style={
             compactPreview
               ? undefined
               : {
                   left: isMobilePhone ? 0 : "var(--sidebar-offset, 0px)",
-                  right: chatRightInset,
+                  right: 0,
                   bottom: "var(--mobile-tabbar-clear, 0px)",
                 }
           }
@@ -2230,7 +2281,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           <div
             className={`mx-auto my-auto w-full max-w-2xl ${compactPreview ? "space-y-3 px-1" : "space-y-8 sm:space-y-10"}`}
           >
-            <div className={`pointer-events-none text-center ${compactPreview ? "space-y-1" : "space-y-2.5"}`}>
+            <div className={`lykn-chat-ink pointer-events-none text-center ${compactPreview ? "space-y-1" : "space-y-2.5"}`}>
               <p
                 className={`font-semibold tracking-tight text-black dark:text-white ${
                   compactPreview ? "text-sm min-h-0 line-clamp-2" : "text-xl sm:text-3xl min-h-0"
@@ -2266,7 +2317,8 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                 <textarea
                   ref={chatPanelInputRef}
                   autoFocus={isMobilePhone}
-                  data-min-h="52"
+                  data-min-h={String(composerMinH)}
+                  style={{ minHeight: composerMinH }}
                   {...(isControlledInput
                     ? { value: chatInputValue }
                     : { defaultValue: chatInputRef.current })}
@@ -2275,7 +2327,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
                   placeholder={composerPlaceholder}
                   rows={1}
-                  className="w-full min-h-[3.25rem] max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
+                  className="w-full max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
                 />
               )}
               {chatBarToolbar}
@@ -2286,11 +2338,11 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
       ) : (
         /* Active conversation: messages scrollable, input pinned to bottom */
         <div
-          className="fixed right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300"
+          className="lykn-chat-thread-stage fixed right-0 z-[65] flex flex-col items-center bg-transparent transition-all duration-300"
           style={{
             top: isMobilePhone ? "2.75rem" : "var(--header-height-sm, 4.2rem)",
             bottom: "var(--mobile-tabbar-clear, 0px)",
-            right: chatRightInset,
+            right: 0,
             left: isMobilePhone
               ? 0
               : canvasFileBlocks.length > 0 && !isMobileGrid
@@ -2300,20 +2352,30 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           onDragOver={onDragOver}
           onDrop={onDrop}
         >
-          <div ref={chatScrollRef} className="flex-1 w-full max-w-2xl overflow-y-auto scrollbar-hide px-4 pt-6 pb-4 flex flex-col">
+          {/* `lykn-chat-ink` — the transcript honors Appearance › AI chat ›
+              Text color; the composer and toolbars below stay app-colored. */}
+          <div ref={chatScrollRef} className="lykn-chat-ink flex-1 w-full max-w-2xl overflow-y-auto scrollbar-hide px-4 pt-6 pb-4 flex flex-col">
             {chatMessages.length > 0 ? (
               <div className="space-y-4">
                 {chatMessages.map((msg, idx) => {
-                  // Once the in-flight turn has streamed any description text,
-                  // park the thinking/building spinner under that text (not in
-                  // a separate row below the whole thread) so build mode stays
-                  // readable: description → Building… → artifact.
+                  // Park the spinner under streamed description text for
+                  // the rest of the turn (build: description → "Writing
+                  // the code… (12k)" → artifact). The long wait is the
+                  // tool's ARGUMENTS streaming — before status is
+                  // "running" — so gating on in-flight tools left a
+                  // silent gap after "I'll build that out…". Drop it
+                  // once loading ends, or in plain chat once the model
+                  // has finished talking and no tool/build status is live
+                  // (avoids a stale "Responding…" under a completed reply).
                   const isInFlightUserTurn =
                     isChatLoading &&
                     idx === chatMessages.length - 1 &&
                     msg.role === "user" &&
                     msg.kind !== "load-in-greeting" &&
-                    Boolean(String(msg.aiResponse || "").trim());
+                    Boolean(String(msg.aiResponse || "").trim()) &&
+                    (keepThinkingWhileLoading ||
+                      messageHasInFlightTools(msg) ||
+                      isLiveBuildStatus(thinkingStatus));
                   return (
                   <MessageItem
                     key={msg.id || idx}
@@ -2389,7 +2451,8 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                 <textarea
                   ref={chatPanelInputRef}
                   autoFocus={isMobilePhone}
-                  data-min-h="52"
+                  data-min-h={String(composerMinH)}
+                  style={{ minHeight: composerMinH }}
                   {...(isControlledInput
                     ? { value: chatInputValue }
                     : { defaultValue: chatInputRef.current })}
@@ -2398,7 +2461,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
                   placeholder={composerPlaceholder}
                   rows={1}
-                  className="w-full min-h-[3.25rem] max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
+                  className="w-full max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
                 />
               )}
               {chatBarToolbar}
@@ -2420,7 +2483,11 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           artifact={activeArtifact}
           isUpdating={isChatLoading}
           fullWidth={isMobilePhone}
-          onClose={() => onActiveArtifactChange(null)}
+          onClose={() => {
+            dismissedArtifactKeyRef.current = lastSeenArtifactRef.current;
+            pendingArtifactOpenRef.current = null;
+            onActiveArtifactChange(null);
+          }}
           onSaveToVault={onSaveArtifact}
           onArtifactUpdate={onActiveArtifactChange}
         />

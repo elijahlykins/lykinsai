@@ -52,7 +52,7 @@ export default function DatePickerPopover({
           sideOffset={8}
           collisionPadding={12}
           onClick={(e) => e.stopPropagation()}
-          className="z-[300] w-[17.5rem] rounded-[1.25rem] border border-black/[0.08] dark:border-white/[0.1] bg-panel shadow-[0_8px_30px_-12px_rgba(0,0,0,0.18),0_2px_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.65),0_1px_0_rgba(255,255,255,0.04)_inset] p-3.5 text-black dark:text-white data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 duration-150"
+          className="lg-menu z-[300] w-[17.5rem] p-3.5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 duration-150"
         >
           <DayPicker
             mode="single"

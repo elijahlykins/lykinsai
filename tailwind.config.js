@@ -13,6 +13,14 @@ module.exports = {
   			md: 'calc(var(--radius) - 2px)',
   			sm: 'calc(var(--radius) - 4px)'
   		},
+  		// Routing black and white through tokens lets a container recolor every
+  		// text utility below it — including hover, placeholder and dark:
+  		// variants — which is how the AI chat honors its own text color.
+  		// src/index.css holds them at plain black and white everywhere else.
+  		textColor: {
+  			black: 'hsl(var(--lykn-ink-on-light) / <alpha-value>)',
+  			white: 'hsl(var(--lykn-ink-on-dark) / <alpha-value>)'
+  		},
   		colors: {
   			background: 'hsl(var(--background))',
   			foreground: 'hsl(var(--foreground))',

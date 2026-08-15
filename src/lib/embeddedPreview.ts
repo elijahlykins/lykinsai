@@ -7,6 +7,18 @@
 let stickyEmbedded = false;
 let stickyGlass = false;
 
+const SS_EMBEDDED = "lykn.embed.embedded";
+const SS_GLASS = "lykn.embed.glass";
+
+function sessionFlag(key: string, on: boolean): boolean {
+  try {
+    if (on) sessionStorage.setItem(key, "1");
+    return on || sessionStorage.getItem(key) === "1";
+  } catch {
+    return on;
+  }
+}
+
 export function readEmbeddedPreviewParams(search: string): {
   isEmbedded: boolean;
   /** `glass=1` — the surface is inside LYKN Studio and should wear the
@@ -16,10 +28,9 @@ export function readEmbeddedPreviewParams(search: string): {
   const params = new URLSearchParams(search);
   if (params.get("embedded") === "1") stickyEmbedded = true;
   if (params.get("glass") === "1") stickyGlass = true;
-  return {
-    isEmbedded: stickyEmbedded || params.get("embedded") === "1",
-    isGlass: stickyGlass || params.get("glass") === "1",
-  };
+  const isEmbedded = sessionFlag(SS_EMBEDDED, stickyEmbedded || params.get("embedded") === "1");
+  const isGlass = sessionFlag(SS_GLASS, stickyGlass || params.get("glass") === "1");
+  return { isEmbedded, isGlass };
 }
 
 /** Append `glass=1` to an embed URL so the page mounts in its glass skin. */
@@ -36,6 +47,7 @@ export function isEmbeddedSurfacePath(pathname: string): boolean {
     pathname === "/projects" ||
     pathname.startsWith("/projects/") ||
     pathname === "/calendar" ||
+    pathname === "/todos" ||
     pathname === "/settings" ||
     pathname.startsWith("/chat/")
   );

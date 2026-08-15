@@ -36,7 +36,13 @@ const COLLECT_INTERACTABLES_JS =
   // Rich-text editors (contenteditable) have no .value — surface their text so
 // the agent can SEE what it already wrote instead of retyping it every round.
 "var val=el.value!=null?el.value:(el.isContentEditable?(el.innerText||''):'');" +
-"seen.add(el);items.push({id:'el'+items.length,tag:tag,type:type,role:role,selector:p(el),label:lab,value:(''+val).slice(0,80),checked:el.checked===true,href:(el.href||'').slice(0,200),clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+r.height/2),inView:inView,inDialog:!!dlg});return true;}" +
+// A disabled control reads as a normal button; clicking it changes nothing and
+// the agent scores that as its own failure. Say it up front instead.
+"var dis=el.disabled===true||el.getAttribute('aria-disabled')==='true'||el.getAttribute('disabled')!==null;" +
+// Panels, palettes and lists that scroll internally — window.scrollBy does
+// nothing for these, so the agent has to scroll the container itself.
+"var sc=false;try{sc=(el.scrollHeight-el.clientHeight>24||el.scrollWidth-el.clientWidth>24)&&/auto|scroll/.test(st.overflowY+' '+st.overflowX);}catch(e){}" +
+"seen.add(el);items.push({id:'el'+items.length,tag:tag,type:type,role:role,selector:p(el),label:lab,value:(''+val).slice(0,80),checked:el.checked===true,disabled:dis,scrollable:sc,href:(el.href||'').slice(0,200),clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+r.height/2),inView:inView,inDialog:!!dlg});return true;}" +
   "var dlgs=document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true]');" +
   "for(var d=0;d<dlgs.length;d++){var dels=dlgs[d].querySelectorAll(q);" +
   "for(var j=0;j<dels.length&&j<400;j++){add(dels[j],true);}}" +
@@ -69,6 +75,20 @@ const EXTRACT_PAGE_CONTEXT_JS =
 const EXTRACT_FRAME_TEXT_JS =
   "(function(){try{var t=((document.body&&document.body.innerText)||'').replace(/ +/g,' ').trim();" +
   "return t.slice(0,8000);}catch(e){return '';}})()";
+
+// A frame can't know where it sits in the top-level viewport (cross-origin
+// blocks walking up to window.parent), but its PARENT can measure the <iframe>
+// element. Run this in each parent to get the rects, then match them to child
+// frames by URL so element coordinates can be offset into page space — that is
+// what makes real input-event clicks land inside embedded editors.
+const COLLECT_FRAME_RECTS_JS =
+  "(function(){var out=[];try{var els=document.querySelectorAll('iframe,frame');" +
+  "for(var i=0;i<els.length&&i<40;i++){var el=els[i];var r=el.getBoundingClientRect();" +
+  "if(r.width<8||r.height<8)continue;" +
+  "var st=getComputedStyle(el);if(st.visibility==='hidden'||st.display==='none')continue;" +
+  "out.push({src:(el.src||'')+'',name:(el.getAttribute('name')||'')+''," +
+  "x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)});}" +
+  "}catch(e){}return out;})()";
 
 function buildActionJs(action) {
   const payload = Buffer.from(JSON.stringify(action || {}), "utf8").toString("base64");
@@ -180,6 +200,34 @@ async function sendRealKey(webContents, key, modifiers = []) {
   }
 }
 
+const MODIFIER_ALIASES = {
+  cmd: "meta",
+  command: "meta",
+  meta: "meta",
+  win: "meta",
+  ctrl: "control",
+  control: "control",
+  alt: "alt",
+  option: "alt",
+  opt: "alt",
+  shift: "shift",
+  get mod() {
+    return process.platform === "darwin" ? "meta" : "control";
+  },
+};
+
+/** Electron modifier names from whatever the model called them. */
+function normalizeModifiers(list) {
+  const out = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const key = String(raw || "").trim().toLowerCase();
+    if (!key) continue;
+    const mapped = MODIFIER_ALIASES[key] || key;
+    if (!out.includes(mapped)) out.push(mapped);
+  }
+  return out;
+}
+
 /**
  * Editor keyboard shortcut like "cmd+a", "ctrl+shift+v", "cmd+b". "mod" maps
  * to cmd on macOS / ctrl elsewhere so the planner doesn't have to care.
@@ -191,20 +239,7 @@ async function sendShortcut(webContents, combo) {
     .filter(Boolean);
   if (!parts.length) return { ok: false, error: "empty_shortcut" };
   const key = parts[parts.length - 1];
-  const modMap = {
-    cmd: "meta",
-    command: "meta",
-    meta: "meta",
-    win: "meta",
-    ctrl: "control",
-    control: "control",
-    alt: "alt",
-    option: "alt",
-    opt: "alt",
-    shift: "shift",
-    mod: process.platform === "darwin" ? "meta" : "control",
-  };
-  const modifiers = parts.slice(0, -1).map((m) => modMap[m] || m);
+  const modifiers = normalizeModifiers(parts.slice(0, -1));
   return sendRealKey(webContents, key.length === 1 ? key.toUpperCase() : key, modifiers);
 }
 
@@ -350,6 +385,189 @@ async function clickAtClientPoint(webContents, clientX, clientY) {
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
   }
+}
+
+/**
+ * Drag with real input events: press, move in small steps, release.
+ *
+ * Whole product categories are built around dragging — email builders drop
+ * content blocks into a layout, design tools drag elements onto a page, boards
+ * move cards between columns. Without this the agent cannot express the one
+ * action the task is made of, so it substitutes clicks that do nothing.
+ *
+ * Stepped movement matters: a single jump from source to target never triggers
+ * the dragover/pointermove handlers these UIs rely on to pick the drop slot.
+ */
+async function dragByInput(webContents, from, to, { steps = 20, settleMs = 90 } = {}) {
+  if (!webContents || webContents.isDestroyed?.()) return { ok: false, error: "no_webcontents" };
+  const x1 = Math.round(Number(from?.x));
+  const y1 = Math.round(Number(from?.y));
+  const x2 = Math.round(Number(to?.x));
+  const y2 = Math.round(Number(to?.y));
+  if (![x1, y1, x2, y2].every((n) => Number.isFinite(n) && n >= 0)) {
+    return { ok: false, error: "bad_points" };
+  }
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  try {
+    try {
+      webContents.focus();
+    } catch {
+      /* ignore */
+    }
+    webContents.sendInputEvent({ type: "mouseMove", x: x1, y: y1 });
+    await pause(60);
+    webContents.sendInputEvent({
+      type: "mouseDown",
+      x: x1,
+      y: y1,
+      button: "left",
+      clickCount: 1,
+    });
+    // A short hold before moving is what distinguishes a drag from a click for
+    // most libraries (many use a movement threshold plus a press delay).
+    await pause(settleMs);
+    const count = Math.max(4, Math.min(Number(steps) || 20, 60));
+    for (let i = 1; i <= count; i += 1) {
+      const t = i / count;
+      // Ease out so the pointer lingers near the drop target, giving the UI
+      // time to compute and show the insertion point.
+      const eased = 1 - (1 - t) * (1 - t);
+      webContents.sendInputEvent({
+        type: "mouseMove",
+        x: Math.round(x1 + (x2 - x1) * eased),
+        y: Math.round(y1 + (y2 - y1) * eased),
+        button: "left",
+        buttons: 1,
+      });
+      await pause(16);
+    }
+    await pause(settleMs);
+    webContents.sendInputEvent({ type: "mouseMove", x: x2, y: y2, button: "left", buttons: 1 });
+    await pause(60);
+    webContents.sendInputEvent({
+      type: "mouseUp",
+      x: x2,
+      y: y2,
+      button: "left",
+      clickCount: 1,
+    });
+    await pause(settleMs);
+    return { ok: true, type: "drag", via: "input_event", from: { x: x1, y: y1 }, to: { x: x2, y: y2 } };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * HTML5 drag-and-drop via a shared DataTransfer. Chromium's native drag
+ * controller does not reliably pick up synthetic mouse drags, so anything
+ * using `draggable="true"` needs the event sequence dispatched directly.
+ */
+function buildHtml5DragJs({ fromSelector = "", toSelector = "" }) {
+  const payload = Buffer.from(
+    JSON.stringify({ from: fromSelector, to: toSelector }),
+    "utf8",
+  ).toString("base64");
+  return (
+    "(function(){try{var a=JSON.parse(decodeURIComponent(escape(atob('" +
+    payload +
+    "'))));" +
+    "var src=document.querySelector(a.from),dst=document.querySelector(a.to);" +
+    "if(!src)return {ok:false,error:'drag_source_not_found'};" +
+    "if(!dst)return {ok:false,error:'drop_target_not_found'};" +
+    "var dt=new DataTransfer();" +
+    "function fire(el,name,rel){var r=el.getBoundingClientRect();" +
+    "var ev=new DragEvent(name,{bubbles:true,cancelable:true,composed:true,dataTransfer:dt," +
+    "clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+r.height/2)});" +
+    "el.dispatchEvent(ev);return ev;}" +
+    "fire(src,'pointerdown');fire(src,'mousedown');" +
+    "fire(src,'dragstart');fire(dst,'dragenter');fire(dst,'dragover');" +
+    "var drop=fire(dst,'drop');fire(src,'dragend');" +
+    "return {ok:true,dropped:drop.defaultPrevented!==false};" +
+    "}catch(e){return {ok:false,error:String(e&&e.message||e)};}})()"
+  );
+}
+
+/** True when a drag source opts into native HTML5 drag-and-drop. */
+async function elementUsesHtml5Drag(webContents, selector, frameId) {
+  if (!selector) return false;
+  const js =
+    `(function(){try{var el=document.querySelector(${JSON.stringify(selector)});` +
+    `if(!el)return false;` +
+    `if(el.draggable===true||el.getAttribute('draggable')==='true')return true;` +
+    `var p=el.closest&&el.closest('[draggable="true"]');return !!p;}catch(e){return false;}})()`;
+  try {
+    const frame = frameId != null ? frameByRoutingId(webContents, frameId) : null;
+    const out = frame
+      ? await frame.executeJavaScript(js, true)
+      : await webContents.executeJavaScript(js, true);
+    return out === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One end of a drag, in page coordinates. Accepts a selector/label (re-resolved
+ * live), catalog coordinates, or 0–1000 vision coordinates.
+ */
+async function resolveDragEndpoint(
+  webContents,
+  { selector = "", label = "", clientX, clientY, nx, ny, frameId } = {},
+) {
+  if (selector || label) {
+    const action = { selector, label };
+    const frame = frameId != null ? frameByRoutingId(webContents, frameId) : null;
+    if (frame) {
+      const offsets = await buildFrameOffsets(webContents).catch(() => null);
+      const offset = offsets?.get(frame.routingId) || { x: 0, y: 0, known: false };
+      const pt = await resolveFrameElementPoint(frame, action, offset);
+      if (pt?.pageCoords) return { x: pt.x, y: pt.y };
+    } else {
+      const pt = await resolveElementPoint(webContents, action);
+      if (pt) return { x: pt.x, y: pt.y };
+    }
+  }
+  if (Number.isFinite(Number(clientX)) && Number.isFinite(Number(clientY))) {
+    return { x: Number(clientX), y: Number(clientY) };
+  }
+  const vx = Number(nx);
+  const vy = Number(ny);
+  if (Number.isFinite(vx) && Number.isFinite(vy) && vx >= 0 && vx <= 1000 && vy >= 0 && vy <= 1000) {
+    try {
+      const metrics = await getViewportMetrics(webContents);
+      const shotMeta = lastScreenshotMeta.get(webContents) || null;
+      const mapped = mapNormCoordToClient(vx, vy, metrics, shotMeta);
+      return { x: mapped.x, y: mapped.y };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Scroll a specific container — window scrolling does nothing inside a panel. */
+function buildScrollElementJs({ selector = "", dy = 400, dx = 0 }) {
+  const payload = Buffer.from(JSON.stringify({ selector, dy, dx }), "utf8").toString("base64");
+  return (
+    "(function(){try{var a=JSON.parse(decodeURIComponent(escape(atob('" +
+    payload +
+    "'))));" +
+    "var el=document.querySelector(a.selector);" +
+    "if(!el)return {ok:false,error:'element_not_found'};" +
+    // The named element is often a child of the thing that actually scrolls.
+    "var box=el;var guard=0;" +
+    "while(box&&guard++<8){var st=getComputedStyle(box);" +
+    "if((box.scrollHeight-box.clientHeight>8&&/auto|scroll/.test(st.overflowY))||" +
+    "(box.scrollWidth-box.clientWidth>8&&/auto|scroll/.test(st.overflowX)))break;" +
+    "box=box.parentElement;}" +
+    "if(!box)return {ok:false,error:'no_scrollable_container'};" +
+    "var before=box.scrollTop;var beforeX=box.scrollLeft;" +
+    "box.scrollTop=before+Number(a.dy||0);box.scrollLeft=beforeX+Number(a.dx||0);" +
+    "return {ok:true,scrolled:box.scrollTop-before,scrolledX:box.scrollLeft-beforeX," +
+    "atEnd:box.scrollTop+box.clientHeight>=box.scrollHeight-2};" +
+    "}catch(e){return {ok:false,error:String(e&&e.message||e)};}})()"
+  );
 }
 
 /** Snapshot of the focused editable — used to verify typing landed. */
@@ -872,11 +1090,9 @@ async function typeWithFocusRetry(
  * hit-tests the point so the click lands on the intended element — not
  * wherever it sat when the catalog was scraped.
  */
-async function resolveElementPoint(webContents, action) {
-  if (!webContents || webContents.isDestroyed?.()) return null;
+function buildResolvePointJs(action) {
   const payload = Buffer.from(JSON.stringify(action || {}), "utf8").toString("base64");
-  try {
-    const pt = await webContents.executeJavaScript(
+  return (
       `(function(){try{var a=JSON.parse(decodeURIComponent(escape(atob('${payload}'))));` +
         `function visEl(el){if(!el)return null;var r=el.getBoundingClientRect();if(r.width<2||r.height<2)return null;` +
         `var st=getComputedStyle(el);if(st.visibility==='hidden'||st.display==='none')return null;return el;}` +
@@ -907,14 +1123,157 @@ async function resolveElementPoint(webContents, action) {
         `if(score>bestScore){bestScore=score;best=n;if(score>=100)break;}}` +
         // minLabelScore (strict callers): weak fuzzy matches click unrelated
         // elements — better to fail and let the agent re-observe.
-        `if(best&&bestScore>=(Number(a.minLabelScore)||1)){var pb=point(best);pb.label=labOf(best).slice(0,80);pb.via='label';return pb;}return null;}catch(e){return null;}})()`,
-      true,
-    );
+        `if(best&&bestScore>=(Number(a.minLabelScore)||1)){var pb=point(best);pb.label=labOf(best).slice(0,80);pb.via='label';return pb;}return null;}catch(e){return null;}})()`
+  );
+}
+
+async function resolveElementPoint(webContents, action) {
+  if (!webContents || webContents.isDestroyed?.()) return null;
+  try {
+    const pt = await webContents.executeJavaScript(buildResolvePointJs(action), true);
     if (pt && typeof pt.x === "number" && typeof pt.y === "number") return pt;
   } catch {
     /* ignore */
   }
   return null;
+}
+
+/** Same live re-resolve as the main frame, translated into page coordinates. */
+async function resolveFrameElementPoint(frame, action, offset) {
+  if (!frame) return null;
+  try {
+    const pt = await frame.executeJavaScript(buildResolvePointJs(action), true);
+    if (!pt || typeof pt.x !== "number" || typeof pt.y !== "number") return null;
+    if (!offset?.known) return { ...pt, pageCoords: false };
+    return { ...pt, x: pt.x + offset.x, y: pt.y + offset.y, pageCoords: true };
+  } catch {
+    return null;
+  }
+}
+
+/** Read a field's live value from inside its own frame — the typing evidence. */
+async function readFrameElementValue(frame, selector) {
+  if (!frame || !selector) return null;
+  try {
+    return await frame.executeJavaScript(
+      `(function(){try{var el=document.querySelector(${JSON.stringify(selector)});` +
+        `if(!el)return null;return ((el.value!=null?el.value:(el.innerText||''))+'').slice(0,2000);` +
+        `}catch(e){return null;}})()`,
+      true,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run an action against an element that lives in a sub-frame.
+ *
+ * Two mechanisms, in preference order. When the frame's position is known we
+ * send REAL input events at page coordinates — they cross the frame boundary
+ * like a user's mouse does, which is the only thing many editors respect, and
+ * it moves focus into the frame so `insertText` types there. When the position
+ * can't be measured we fall back to executing inside the frame, which is
+ * synthetic but at least addresses the right element.
+ */
+async function runFrameAction(webContents, frame, offset, action) {
+  const type = String(action?.type || "click").toLowerCase();
+  const inFrame = async (payload) => {
+    try {
+      return await frame.executeJavaScript(buildActionJs(payload), true);
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  };
+
+  if (type === "select") {
+    const res = await inFrame({ ...action, type: "select" });
+    return res?.ok ? { ...res, viaFrame: true } : res || { ok: false, error: "no_result" };
+  }
+
+  const point = await resolveFrameElementPoint(frame, action, offset);
+  const realClick = async () => {
+    if (!point?.pageCoords) return null;
+    const hit = await clickAtClientPoint(webContents, point.x, point.y);
+    return hit?.ok ? hit : null;
+  };
+
+  if (type === "click" || type === "tap" || type === "press_click") {
+    if (action.strictTarget && point && point.hit === false) {
+      return {
+        ok: false,
+        error: "element_obscured",
+        hint: "Something covers that target inside the embedded frame — re-observe first.",
+      };
+    }
+    const hit = await realClick();
+    if (hit) {
+      return { ...hit, resolved: "frame_point", viaFrame: true, frameId: frame.routingId };
+    }
+    const res = await inFrame({ ...action, type: "click" });
+    if (res?.ok) return { ...res, viaFrame: true, synthetic: true, frameId: frame.routingId };
+    return res || { ok: false, error: "frame_click_failed" };
+  }
+
+  if (type === "click_type" || type === "type" || type === "write" || type === "fill") {
+    const text = String(action.text ?? action.value ?? "");
+    if (!text) return { ok: false, error: "empty_text" };
+    const hit = await realClick();
+    if (hit) {
+      await new Promise((r) => setTimeout(r, 160));
+      try {
+        webContents.focus();
+        await webContents.insertText(text);
+      } catch (e) {
+        return { ok: false, error: e?.message || String(e) };
+      }
+      if (action.pressEnter) {
+        await new Promise((r) => setTimeout(r, 100));
+        await sendRealKey(webContents, "Enter");
+      }
+      await new Promise((r) => setTimeout(r, 260));
+      // Verify inside the frame — a main-frame read can't see this element at
+      // all, and calling that "no change" is what strands editor edits.
+      const landed = await readFrameElementValue(frame, action.selector || "");
+      const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const needle = norm(text).slice(0, 48);
+      const verified = !!needle && norm(landed).includes(needle);
+      return {
+        ok: true,
+        type: "click_type",
+        via: "frame_insert_text",
+        viaFrame: true,
+        frameId: frame.routingId,
+        chars: text.length,
+        verified,
+        // Some editors (code mirrors, canvases) never expose the value back —
+        // that is not the same as the typing having failed.
+        unverified: !verified,
+      };
+    }
+    const res = await inFrame({ ...action, type: "fill", text, value: text });
+    if (res?.ok) return { ...res, viaFrame: true, synthetic: true, frameId: frame.routingId };
+    return res || { ok: false, error: "frame_type_failed" };
+  }
+
+  if (type === "press" || type === "key" || type === "press_key") {
+    const hit = await realClick();
+    if (!hit) await inFrame({ ...action, type: "focus" });
+    return sendRealKey(webContents, action.key || "Enter", action.modifiers);
+  }
+
+  if (type === "hover" || type === "mouseover") {
+    if (!point?.pageCoords) return { ok: false, error: "frame_offset_unknown" };
+    try {
+      webContents.sendInputEvent({ type: "mouseMove", x: point.x, y: point.y });
+      return { ok: true, type: "hover", x: point.x, y: point.y, viaFrame: true };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+
+  const res = await inFrame(action);
+  return res?.ok ? { ...res, viaFrame: true } : res || { ok: false, error: "no_result" };
 }
 
 function enrichActionFromCatalog(action, catalogItems) {
@@ -932,6 +1291,9 @@ function enrichActionFromCatalog(action, catalogItems) {
     a.clientY = byId.clientY;
     if (!a.selector) a.selector = byId.selector;
     if (!a.label) a.label = byId.label;
+    // Without the owning frame the action would run against the main document,
+    // where this element does not exist.
+    if (a.frameId == null && byId.frameId != null) a.frameId = byId.frameId;
     return a;
   }
   const want = String(a.label || "").toLowerCase().trim();
@@ -945,6 +1307,7 @@ function enrichActionFromCatalog(action, catalogItems) {
       a.clientX = match.clientX;
       a.clientY = match.clientY;
       if (!a.selector) a.selector = match.selector;
+      if (a.frameId == null && match.frameId != null) a.frameId = match.frameId;
     }
   }
   return a;
@@ -1058,7 +1421,7 @@ async function navigate(webContents, url) {
   }
 }
 
-async function getDOMCatalog(webContents) {
+async function getDOMCatalog(webContents, { includeFrames = true } = {}) {
   if (!webContents || webContents.isDestroyed()) return { ok: false, error: "no_webcontents" };
   try {
     const data = await webContents.executeJavaScript(COLLECT_INTERACTABLES_JS, true);
@@ -1100,10 +1463,181 @@ async function getDOMCatalog(webContents) {
         inView: true,
       });
     }
-    return { ok: true, ...(data || {}), url, items };
+    // Embedded editors (Mailchimp campaigns, code/rich-text widgets) live in
+    // iframes. Without these the model can read the content but has no handle
+    // to click or type into it.
+    let frameHosts = [];
+    if (includeFrames) {
+      try {
+        const [offsets, viewport] = await Promise.all([
+          buildFrameOffsets(webContents),
+          getViewportMetrics(webContents),
+        ]);
+        const frameItems = await collectFrameInteractables(webContents, {
+          offsets,
+          viewport,
+        });
+        if (frameItems.length) {
+          items.push(...frameItems);
+          frameHosts = [...new Set(frameItems.map((it) => it.frameHost).filter(Boolean))];
+        }
+      } catch {
+        /* main-frame catalog still stands on its own */
+      }
+    }
+    return { ok: true, ...(data || {}), url, items, frameHosts };
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
   }
+}
+
+// ─── Cross-frame perception and action ──────────────────────────────────────
+// Whole categories of app — Mailchimp's campaign editor, embedded rich-text
+// and code editors, Stripe-style dashboards — render the part you actually
+// need to touch inside an iframe. A main-frame-only catalog gives the model
+// text it can read and no element it can act on, so it clicks the surrounding
+// chrome, sees nothing change, and burns its whole budget. These helpers
+// catalog every frame and route actions back to the frame that owns them.
+
+/** Total interactables allowed from sub-frames, on top of the main frame's. */
+const MAX_FRAME_CATALOG_ITEMS = 90;
+
+/**
+ * Pair a child frame with the <iframe> rect its parent measured. URL match
+ * first (consumed, so duplicate embeds don't both claim one rect), then
+ * document order for the leftovers.
+ */
+function takeFrameRect(rects, frameUrl, fallbackIndex) {
+  const list = Array.isArray(rects) ? rects : [];
+  const url = String(frameUrl || "");
+  let idx = list.findIndex((r) => r && !r._used && r.src && r.src === url);
+  if (idx < 0 && url) {
+    // src can differ from the frame's live URL after in-frame navigation —
+    // fall back to matching origin + path prefix.
+    const base = url.split(/[?#]/)[0];
+    idx = list.findIndex((r) => r && !r._used && r.src && r.src.split(/[?#]/)[0] === base);
+  }
+  if (idx < 0) {
+    const free = list.map((r, i) => ({ r, i })).filter((e) => e.r && !e.r._used);
+    if (free.length === 1) idx = free[0].i;
+    else if (fallbackIndex < free.length) idx = free[fallbackIndex].i;
+  }
+  if (idx < 0) return null;
+  list[idx]._used = true;
+  return list[idx];
+}
+
+/**
+ * Offset of every frame relative to the top-level viewport, walking the tree
+ * so nested embeds accumulate their ancestors' offsets. `known: false` means
+ * we could not measure it — actions on those elements run inside the frame
+ * instead of by coordinate.
+ */
+async function buildFrameOffsets(webContents) {
+  const offsets = new Map();
+  const main = webContents?.mainFrame;
+  if (!main) return offsets;
+  offsets.set(main.routingId, { x: 0, y: 0, known: true, depth: 0 });
+  const queue = [main];
+  while (queue.length) {
+    const parent = queue.shift();
+    const base = offsets.get(parent.routingId);
+    const children = parent.frames || [];
+    if (!children.length) continue;
+    let rects = [];
+    if (base?.known) {
+      rects =
+        (await parent.executeJavaScript(COLLECT_FRAME_RECTS_JS, true).catch(() => [])) || [];
+    }
+    let seen = 0;
+    for (const child of children) {
+      if (!child) continue;
+      const rect = base?.known ? takeFrameRect(rects, child.url, seen) : null;
+      seen += 1;
+      offsets.set(
+        child.routingId,
+        rect
+          ? {
+              x: base.x + rect.x,
+              y: base.y + rect.y,
+              w: rect.w,
+              h: rect.h,
+              known: true,
+              depth: (base.depth || 0) + 1,
+            }
+          : { x: 0, y: 0, known: false, depth: (base?.depth || 0) + 1 },
+      );
+      queue.push(child);
+    }
+  }
+  return offsets;
+}
+
+/**
+ * Interactables from every sub-frame, with coordinates translated into
+ * top-level page space and each item tagged with the frame that owns it.
+ */
+async function collectFrameInteractables(webContents, { offsets, viewport } = {}) {
+  const out = [];
+  try {
+    const main = webContents?.mainFrame;
+    const frames = main?.framesInSubtree || [];
+    if (frames.length <= 1) return out;
+    const vw = Number(viewport?.w) || 1200;
+    const vh = Number(viewport?.h) || 800;
+    let budget = MAX_FRAME_CATALOG_ITEMS;
+    for (const fr of frames) {
+      if (!fr || fr === main) continue;
+      if (budget <= 0) break;
+      const frUrl = String(fr.url || "");
+      if (!frUrl || frUrl === "about:blank") continue;
+      const data = await fr.executeJavaScript(COLLECT_INTERACTABLES_JS, true).catch(() => null);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      if (!items.length) continue;
+      const off = offsets?.get(fr.routingId) || { x: 0, y: 0, known: false };
+      // A frame scrolled out of the top-level viewport has nothing in view,
+      // however "in view" its own contents look from inside.
+      const frameOnScreen =
+        !off.known ||
+        (off.x < vw && off.y < vh && off.x + (off.w || vw) > 0 && off.y + (off.h || vh) > 0);
+      let host = "";
+      try {
+        host = new URL(frUrl).hostname.replace(/^www\./i, "");
+      } catch {
+        host = "";
+      }
+      for (const it of items.slice(0, budget)) {
+        if (!it) continue;
+        out.push({
+          ...it,
+          id: `f${fr.routingId}_${it.id}`,
+          frameId: fr.routingId,
+          frameUrl: frUrl,
+          frameHost: host,
+          frameOffsetKnown: !!off.known,
+          clientX: off.known ? Number(it.clientX) + off.x : Number(it.clientX),
+          clientY: off.known ? Number(it.clientY) + off.y : Number(it.clientY),
+          inView: frameOnScreen && it.inView !== false,
+        });
+      }
+      budget -= Math.min(items.length, budget);
+    }
+  } catch {
+    /* frame catalog is additive — never break the main-frame scrape */
+  }
+  return out;
+}
+
+/** The live WebFrameMain for a catalog item's frame, or null for the main frame. */
+function frameByRoutingId(webContents, frameId) {
+  const id = Number(frameId);
+  if (!Number.isFinite(id)) return null;
+  const main = webContents?.mainFrame;
+  if (!main || main.routingId === id) return null;
+  for (const fr of main.framesInSubtree || []) {
+    if (fr && fr.routingId === id) return fr;
+  }
+  return null;
 }
 
 /**
@@ -1182,6 +1716,26 @@ async function runAction(webContents, action, catalogItems) {
   if (!webContents || webContents.isDestroyed()) return { ok: false, error: "no_webcontents" };
   const enriched = enrichActionFromCatalog(action, catalogItems);
   const type = String(enriched?.type || "click").toLowerCase();
+  // Elements cataloged from a sub-frame need their action executed against
+  // that frame; the main document has no such element and every selector
+  // lookup would miss.
+  if (enriched?.frameId != null && !["navigate", "open", "wait", "scroll", "back", "forward"].includes(type)) {
+    const frame = frameByRoutingId(webContents, enriched.frameId);
+    if (frame) {
+      const offsets = await buildFrameOffsets(webContents).catch(() => null);
+      const offset = offsets?.get(frame.routingId) || { x: 0, y: 0, known: false };
+      return runFrameAction(webContents, frame, offset, enriched);
+    }
+    // The frame is gone (editor closed, page re-rendered) — the snapshot is
+    // stale, and guessing in the main document would click a stranger.
+    if (enriched.strictTarget) {
+      return {
+        ok: false,
+        error: "frame_gone",
+        hint: "The embedded frame that held this element no longer exists — re-observe the page.",
+      };
+    }
+  }
   if (type === "navigate" || type === "open") {
     return navigate(webContents, enriched.url || enriched.href || enriched.text);
   }
@@ -1242,6 +1796,79 @@ async function runAction(webContents, action, catalogItems) {
     } catch (e) {
       return { ok: false, error: e?.message || String(e) };
     }
+  }
+  // Scroll one container rather than the window — palettes, block lists and
+  // editor side panels all scroll internally.
+  if (type === "scroll_element" || type === "scroll_container") {
+    if (!enriched.selector) return { ok: false, error: "missing_selector" };
+    const amount = Math.min(Math.max(Number(enriched.amount) || 400, 60), 2400);
+    const dy = String(enriched.direction || "").toLowerCase() === "up" ? -amount : amount;
+    const js = buildScrollElementJs({ selector: enriched.selector, dy });
+    try {
+      const frame =
+        enriched.frameId != null ? frameByRoutingId(webContents, enriched.frameId) : null;
+      const res = frame
+        ? await frame.executeJavaScript(js, true)
+        : await webContents.executeJavaScript(js, true);
+      return res || { ok: false, error: "scroll_failed" };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+  // Drag one thing onto another — the core gesture of email builders, design
+  // tools and kanban boards.
+  if (type === "drag" || type === "drag_drop" || type === "drag_to") {
+    const toPoint = async () => {
+      const src = await resolveDragEndpoint(webContents, {
+        selector: enriched.selector,
+        label: enriched.label,
+        clientX: enriched.clientX,
+        clientY: enriched.clientY,
+        nx: enriched.x,
+        ny: enriched.y,
+        frameId: enriched.frameId,
+      });
+      const dst = await resolveDragEndpoint(webContents, {
+        selector: enriched.toSelector,
+        label: enriched.toLabel,
+        clientX: enriched.toClientX,
+        clientY: enriched.toClientY,
+        nx: enriched.toX,
+        ny: enriched.toY,
+        frameId: enriched.toFrameId != null ? enriched.toFrameId : enriched.frameId,
+      });
+      return { src, dst };
+    };
+    const { src, dst } = await toPoint();
+    if (!src) return { ok: false, error: "drag_source_not_found" };
+    if (!dst) return { ok: false, error: "drop_target_not_found" };
+    // Native HTML5 drag sources need the event sequence dispatched directly;
+    // Chromium's drag controller ignores synthetic mouse drags.
+    const html5 =
+      enriched.mode === "html5" ||
+      (enriched.mode !== "pointer" &&
+        enriched.selector &&
+        enriched.toSelector &&
+        (await elementUsesHtml5Drag(webContents, enriched.selector, enriched.frameId)));
+    if (html5) {
+      const js = buildHtml5DragJs({
+        fromSelector: enriched.selector,
+        toSelector: enriched.toSelector,
+      });
+      try {
+        const frame =
+          enriched.frameId != null ? frameByRoutingId(webContents, enriched.frameId) : null;
+        const res = frame
+          ? await frame.executeJavaScript(js, true)
+          : await webContents.executeJavaScript(js, true);
+        if (res?.ok) return { ...res, type: "drag", via: "html5" };
+      } catch {
+        /* fall through to a real pointer drag */
+      }
+    }
+    return dragByInput(webContents, src, dst, {
+      steps: Number(enriched.steps) || 20,
+    });
   }
   // Screenshot-guided click: x,y are 0–1000 normalized viewport coords. Real
   // input events land anywhere on screen — icons, canvases, even inside
@@ -1522,7 +2149,11 @@ async function runAction(webContents, action, catalogItems) {
         /* focus is best-effort — key still goes to the page */
       }
     }
-    return sendRealKey(webContents, enriched.key || "Enter", enriched.modifiers);
+    return sendRealKey(
+      webContents,
+      enriched.key || "Enter",
+      normalizeModifiers(enriched.modifiers),
+    );
   }
   // Hover: real mouseMove at the element's center (reveals menus/tooltips).
   if (type === "hover" || type === "mouseover") {
@@ -2912,9 +3543,42 @@ function extractBrowseGoalPhases(goal) {
   return phases;
 }
 
+/** Hosts that exist only to authenticate: login.*, accounts.*, auth.*, sso.*. */
+const AUTH_HOST_RE =
+  /^(?:login|log-in|signin|sign-in|accounts?|auth|oauth|sso|identity)\./i;
+
+/** Paths that exist only to authenticate. */
+const AUTH_PATH_RE =
+  /^\/(login|log-in|signin|sign-in|sign_in|signup|sign-up|sign_up|register|oauth|sso|auth|session\/new)(\/|$)/i;
+
+/**
+ * The page's only purpose is signing in.
+ *
+ * Worth stating as its own idea because the wording of a sign-in page and the
+ * wording of a marketing page overlap almost completely — both say "log in" and
+ * "sign up" — so text alone cannot separate them. The address can: nobody puts
+ * their product pitch on login.example.com.
+ */
+function looksLikeAuthUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    const host = parsed.hostname.replace(/^www\./i, "");
+    const path = (parsed.pathname || "/").replace(/\/+$/, "") || "/";
+    return AUTH_HOST_RE.test(host) || AUTH_PATH_RE.test(path);
+  } catch {
+    return false;
+  }
+}
+
 function looksLikeMarketingOrHomeUrl(url, pageText = "") {
   const u = String(url || "");
   const t = String(pageText || "").toLowerCase();
+  // A sign-in host is never a landing page, whatever its path looks like.
+  // Without this, login.mailchimp.com/ is "shallow" (its path is "/") and its
+  // form says "log in" and "sign up", so it scores as marketing — which tells
+  // the agent to click its way past a wall it should be waiting at, and hides
+  // the sign-in from the detector that knows how to hand it to the user.
+  if (looksLikeAuthUrl(u)) return false;
   try {
     const parsed = new URL(u);
     const path = (parsed.pathname || "/").replace(/\/+$/, "") || "/";
@@ -2965,14 +3629,17 @@ function detectBrowseBlocker({ url = "", pageText = "", title = "" } = {}) {
 
   if (looksLikeSignInWall({ url: u, text: t, title: titleL })) {
     const userAction = describeSignInUserAction({ url: u, pageText: t, title: titleL, host });
+    const note = signInPageThirdPartyNote({ pageText: t, title: titleL, url: u });
     return {
       kind: "signin",
       label: "Needs sign-in",
       userAction,
+      note,
       message: formatUserHelpBrief({
         userAction,
         host,
         kind: "signin",
+        note,
       }),
     };
   }
@@ -3056,6 +3723,40 @@ function describeSignInUserAction({ url = "", pageText = "", title = "", host = 
 }
 
 /**
+ * Google refuses its OAuth flow in embedded/desktop-shell browsers on more
+ * than the UA string, so "Continue with Google" can silently no-op even with
+ * popups allowed. When a sign-in page offers it, point at the path that works.
+ */
+function signInPageThirdPartyNote({ pageText = "", title = "", url = "" } = {}) {
+  const t = `${title}\n${pageText}`.toLowerCase();
+  if (
+    /\b(this browser or app may not be secure|couldn'?t sign you in|try using a different browser|disallowed_useragent)\b/.test(
+      t,
+    )
+  ) {
+    return (
+      `_Google refused this sign-in because it happened inside an app browser. ` +
+      `Go back and sign in with **email + password** instead — that path works here._`
+    );
+  }
+  const offersGoogle =
+    /\b(continue with google|sign in with google|log in with google|google sign-?in)\b/.test(
+      t,
+    ) || /accounts\.google\./i.test(String(url || ""));
+  if (!offersGoogle) return "";
+  if (/\b(password|email|username)\b/.test(t)) {
+    return (
+      `_If **Continue with Google** doesn't respond, use your email + password here — ` +
+      `Google restricts its sign-in button inside app-embedded browsers._`
+    );
+  }
+  return (
+    `_Google restricts its sign-in button inside app-embedded browsers. If it ` +
+    `won't open, use the email/password option instead._`
+  );
+}
+
+/**
  * Short, specific "needs you" brief — one action, bare minimum for the user.
  */
 function formatUserHelpBrief({
@@ -3064,9 +3765,10 @@ function formatUserHelpBrief({
   kind = "blocked",
   alreadyDone = [],
   stillTodo = [],
+  note = "",
 } = {}) {
   const action = String(userAction || "").trim() ||
-    "Take the next step in the agent browser tab, then say **continue**.";
+    "Take the next step in the agent browser tab.";
   const done = (Array.isArray(alreadyDone) ? alreadyDone : [])
     .map((s) => String(s || "").trim())
     .filter(Boolean)
@@ -3075,19 +3777,30 @@ function formatUserHelpBrief({
     .map((s) => String(s || "").trim())
     .filter(Boolean)
     .slice(0, 6);
+  // Sign-in / captcha / paywall walls are watched live, so lead with the fact
+  // that the run is paused and self-resuming — "say continue" as an escape
+  // hatch, never as the instruction.
+  const watched =
+    kind === "signin" ||
+    kind === "captcha" ||
+    kind === "paywall" ||
+    kind === "permission";
   const auto =
     kind === "signin"
-      ? `I'll notice when you're signed in and continue automatically (or say **"continue"**).`
-      : `When that's done, say **"continue"** and I'll finish the rest.`;
+      ? `**I'm paused and watching this tab.** The moment you're signed in I pick the task back up on my own — you don't have to tell me. (Stuck? Say **"continue"**.)`
+      : watched
+        ? `**I'm paused and watching this tab.** Say **"continue"** once it's clear and I'll finish the rest.`
+        : `When that's done, say **"continue"** and I'll finish the rest.`;
   return [
-    `## Needs you — 1 step`,
+    watched ? `## Waiting for you` : `## Needs you — 1 step`,
     ``,
-    `**Please:** ${action}`,
+    watched ? `**Waiting on you to:** ${action}` : `**Please:** ${action}`,
     ``,
     auto,
+    note ? `\n${String(note).trim()}` : "",
     done.length ? `\nAlready done:\n${done.map((s) => `- ${s}`).join("\n")}` : "",
     todo.length
-      ? `\nI'll finish after you:\n${todo.map((s) => `- ${s}`).join("\n")}`
+      ? `\nI'll finish the moment you're done:\n${todo.map((s) => `- ${s}`).join("\n")}`
       : "",
     host && kind === "signin" ? `\n_Tab: ${host}_` : "",
   ]
@@ -3115,6 +3828,11 @@ async function advanceTowardUserGate(
 
   const emails = String(goal || "").match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || [];
   const primaryEmail = emails[0] || "";
+  // Clicking the same control twice on the same page is never progress — the
+  // first click either worked or the control does not do what we hoped. Tracking
+  // this keeps a stall from being reported to the user as five identical
+  // actions, which reads as thrashing and tells them nothing about what to do.
+  const spentClicks = new Set();
 
   for (let step = 0; step < maxSteps; step += 1) {
     let page = { url: "", text: "", title: "" };
@@ -3145,8 +3863,11 @@ async function advanceTowardUserGate(
       ];
       let clicked = false;
       for (const hint of hints) {
+        const spendKey = `${url}|${hint}`;
+        if (spentClicks.has(spendKey)) continue;
         const hit = await clickInPageByHint(webContents, { hint });
         if (hit?.ok) {
+          spentClicks.add(spendKey);
           taken.push(`Clicked “${hit.label || hint}”`);
           clicked = true;
           break;
@@ -3397,7 +4118,17 @@ function describeStuckUserAction({ goal = "", gaps = [], url = "", pageText = ""
     }
     return `Click **Share** on **${host}**, add the recipient, and click **Send** — or say **continue** after you do.`;
   }
-  if (/create|write|type|marketing|home/i.test(gap0) || /\b(create|new page|write)\b/i.test(g)) {
+  // Whatever the goal says, a page asking for a password needs a password. This
+  // has to come before the create/marketing branch below, which otherwise reads
+  // the word "home" in a gap like "get past the home/marketing page" and asks
+  // for a "New page / Create / Blank" click that does not exist on a login form.
+  if (looksLikeSignInPageText(t) || looksLikeAuthUrl(url)) {
+    return `Sign in to **${host}** in the agent browser — I'll pick it up the moment you're through.`;
+  }
+  if (/marketing|home page/i.test(gap0)) {
+    return `Get into your **${host}** account in the agent browser (sign in, or click through to the dashboard) — I'll take it from there.`;
+  }
+  if (/create|write|type/i.test(gap0) || /\b(create|new page|write)\b/i.test(g)) {
     if (/\b(new page|add a page|blank|create)\b/i.test(t)) {
       return `Click **New page** / **Create** / **Blank** in the agent browser on **${host}** — I'll write and finish after that.`;
     }
@@ -8988,7 +9719,11 @@ function looksLikeSignInWall({ url, text, title } = {}) {
     return true;
   }
 
+  // A login path, or a host that exists only to log people in. Mailchimp,
+  // Constant Contact and AWS all put the login on their own subdomain and serve
+  // it from "/", so a path-only test misses the real wall completely.
   if (
+    looksLikeAuthUrl(u) ||
     /\/(login|log-in|signin|sign-in|sign_in|signup|sign-up|sign_up|register|oauth|sso|auth\/|session\/new)(\/|\?|#|$)/i.test(
       u,
     )
@@ -9081,6 +9816,110 @@ async function waitForSignInClear(
     await new Promise((r) => setTimeout(r, pollMs));
   }
   return { ok: false, error: "timeout" };
+}
+
+/** URL without the churn (tracking params, cache-busters) that changes on its own. */
+function urlIdentity(url) {
+  const raw = String(url || "");
+  try {
+    const u = new URL(raw);
+    for (const key of [...u.searchParams.keys()]) {
+      if (/^(utm_|_ga|fbclid|gclid|msclkid|ref|t|ts|_|cb|rand)/i.test(key)) {
+        u.searchParams.delete(key);
+      }
+    }
+    return `${u.origin}${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Did the visible content change enough to mean a person did something, rather
+ * than a clock ticking or an ad rotating?
+ */
+function pageBodyChangedMaterially(before, after) {
+  const a = String(before || "");
+  const b = String(after || "");
+  if (!a && !b) return false;
+  if (!a || !b) return true;
+  const threshold = Math.max(140, Math.round(a.length * 0.08));
+  return Math.abs(a.length - b.length) >= threshold;
+}
+
+/**
+ * Watch the tab while the user does the one thing the agent cannot — sign in,
+ * click a confirmation, clear a captcha — and resolve the moment they've acted
+ * so the caller can pick the task back up.
+ *
+ * Polling the page is the only signal available: the user is driving the
+ * browser directly, not through us. "Acted" means a sign-in wall cleared, the
+ * URL moved, or the visible content changed materially. While a wall is still
+ * up we keep waiting rather than reading a half-typed form as progress.
+ */
+async function waitForUserAssist(
+  webContents,
+  { signal, timeoutMs = 30 * 60 * 1000, pollMs = 1500, settleMs = 700, onTick } = {},
+) {
+  if (!webContents || webContents.isDestroyed?.()) {
+    return { ok: false, error: "no_webcontents" };
+  }
+  const start = Date.now();
+  const readPage = async () => {
+    let page = {};
+    try {
+      await waitForDomSettle(webContents, settleMs);
+      page = await getPageContext(webContents);
+    } catch {
+      page = {};
+    }
+    return {
+      url: page.url || webContents.getURL?.() || "",
+      title: page.title || webContents.getTitle?.() || "",
+      body: String(page.text || "").replace(/\s+/g, " ").trim(),
+    };
+  };
+
+  const base = await readPage();
+  const startedOnWall = looksLikeSignInWall({
+    url: base.url,
+    text: base.body,
+    title: base.title,
+  });
+
+  while (Date.now() - start < timeoutMs) {
+    if (signal?.aborted) return { ok: false, error: "aborted" };
+    await new Promise((r) => setTimeout(r, pollMs));
+    if (!webContents || webContents.isDestroyed?.()) {
+      return { ok: false, error: "no_webcontents" };
+    }
+    const now = await readPage();
+    const onWall = looksLikeSignInWall({ url: now.url, text: now.body, title: now.title });
+    const elapsedMs = Date.now() - start;
+
+    if (startedOnWall) {
+      // Only the wall clearing counts — everything else is the user typing.
+      if (!onWall) return { ok: true, url: now.url, change: "signed_in", elapsedMs };
+    } else if (onWall) {
+      // A wall appeared mid-wait (session expired) — that's still news.
+      return { ok: true, url: now.url, change: "sign_in_required", elapsedMs };
+    } else if (urlIdentity(now.url) !== urlIdentity(base.url)) {
+      return { ok: true, url: now.url, change: "navigated", elapsedMs };
+    } else if (now.title !== base.title) {
+      return { ok: true, url: now.url, change: "page_changed", elapsedMs };
+    } else if (pageBodyChangedMaterially(base.body, now.body)) {
+      return { ok: true, url: now.url, change: "page_changed", elapsedMs };
+    }
+
+    if (typeof onTick === "function") {
+      try {
+        onTick({ waiting: true, url: now.url, elapsedMs });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return { ok: false, error: "timeout", url: webContents.getURL?.() || "" };
 }
 
 async function waitForDomSettle(webContents, ms = 1200) {
@@ -10535,6 +11374,10 @@ const ACCOUNT_DASHBOARD_SITES = [
   { re: /\bgoogle\s+analytics\b|\bga4\b/i, url: "https://analytics.google.com" },
   { re: /\bsearch\s+console\b/i, url: "https://search.google.com/search-console" },
   {
+    re: /\b(?:meta|facebook)\s+business(?:\s+(?:suite|manager))?\b|\bbusiness\s+suite\b/i,
+    url: "https://business.facebook.com",
+  },
+  {
     re: /\b(?:facebook|meta)\s+(?:ads?|advertising|ads?\s*manager)\b|\bads?\s+manager\b/i,
     url: "https://adsmanager.facebook.com",
   },
@@ -10550,6 +11393,16 @@ const ACCOUNT_DASHBOARD_SITES = [
   { re: /\bquickbooks\b/i, url: "https://qbo.intuit.com" },
   { re: /\bhubspot\b/i, url: "https://app.hubspot.com" },
   { re: /\bmailchimp\b/i, url: "https://admin.mailchimp.com" },
+  // Email/newsletter platforms. Without an entry here a named product resolves
+  // to nothing, and "make a flyer in Klaviyo" reads as a plain image request.
+  { re: /\bklaviyo\b/i, url: "https://www.klaviyo.com/dashboard" },
+  { re: /\bbrevo\b|\bsendinblue\b/i, url: "https://app.brevo.com" },
+  { re: /\bconstant\s?contact\b/i, url: "https://login.constantcontact.com" },
+  { re: /\bactive\s?campaign\b/i, url: "https://www.activecampaign.com/login" },
+  { re: /\bconvert\s?kit\b/i, url: "https://app.kit.com" },
+  { re: /\bbeehiiv\b/i, url: "https://app.beehiiv.com" },
+  { re: /\bmailerlite\b/i, url: "https://dashboard.mailerlite.com" },
+  { re: /\bsubstack\b/i, url: "https://substack.com/home" },
   { re: /\bsquarespace\b/i, url: "https://account.squarespace.com" },
   { re: /\bwix\b/i, url: "https://manage.wix.com" },
   { re: /\bwordpress\b/i, url: "https://wordpress.com/home" },
@@ -10599,6 +11452,69 @@ function resolveAccountDashboardUrl(text) {
     }
   }
   return "";
+}
+
+// "in mailchimp", "on hubspot", "using notion" — the user naming WHERE the
+// work happens. This is the most explicit routing signal there is, so it wins
+// over every other heuristic: a task told to happen in a named product must
+// never be relocated to a different one just because the wording also
+// mentions "email", "calendar" or "docs".
+const WORK_VENUE_PHRASE_RE =
+  /\b(?:in|into|on|onto|via|using|use|with|inside|through|from|(?:go|head|hop|jump|switch|navigate|log\s*in|sign\s*in)\s+(?:on\s+)?(?:to|into|over\s+to)|over\s+(?:in|on|to)|open(?:\s+up)?|pull\s+up|to)\s+(?:my\s+|our\s+|the\s+|a\s+)?([a-z0-9][a-z0-9.&'-]*(?:\s+[a-z0-9][a-z0-9.&'-]*)?)/gi;
+
+const MAIL_VENUE_URL_RE =
+  /mail\.google\.com|google\.com\/gmail|outlook\.(?:live|office|com)|mail\.yahoo|proton\.me|zoho\.com\/mail|icloud\.com\/mail|mail\.aol/i;
+
+/** Is this destination an email client (vs. any other product)? */
+function isMailVenueUrl(url) {
+  return MAIL_VENUE_URL_RE.test(String(url || ""));
+}
+
+/** Known destination for a bare venue name, or "" when unrecognized. */
+function venueUrlForName(name) {
+  const n = String(name || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!n || n.length < 2 || n.length > 40) return "";
+  // People space product names however they like ("mail chimp", "square
+  // space"), so try the spelling as typed and then with spaces closed up.
+  const squashed = n.replace(/\s+/g, "");
+  const candidates = squashed === n ? [n] : [n, squashed];
+  for (const cand of candidates) {
+    for (const [re, url] of SITE_ALIAS_PHRASES) {
+      if (re.test(cand)) return url;
+    }
+    if (SITE_ALIASES[cand]) return SITE_ALIASES[cand];
+    for (const site of ACCOUNT_DASHBOARD_SITES) {
+      if (site.re.test(cand)) return site.url;
+    }
+  }
+  return "";
+}
+
+/**
+ * The product the user named as the place to do the work. Returns "" when no
+ * venue is named or the name is unfamiliar — unfamiliar names are left to the
+ * intent interpreter, which can search for the product instead of guessing.
+ */
+function resolveNamedWorkVenueUrl(text) {
+  const t = String(text || "").trim();
+  if (!t || t.length > 400) return "";
+  for (const m of t.matchAll(WORK_VENUE_PHRASE_RE)) {
+    const raw = String(m[1] || "").trim();
+    // Two-word phrases first ("google sheets"), then the leading word.
+    const url = venueUrlForName(raw) || venueUrlForName(raw.split(/\s+/)[0]);
+    if (url) return url;
+  }
+  return "";
+}
+
+/**
+ * The ask names a specific product that is NOT an email client. Callers use
+ * this to keep email-shaped wording ("draft an email in Mailchimp") from being
+ * hijacked into Gmail.
+ */
+function namesNonMailVenue(text) {
+  const url = resolveNamedWorkVenueUrl(text);
+  return !!url && !isMailVenueUrl(url);
 }
 
 /** Object of an "open/click/play/select …" ask — the thing the user wants opened. */
@@ -10663,7 +11579,37 @@ async function findNameOnPage(webContents, name) {
   return false;
 }
 
+/** "https://finance.yahoo.com/quote/TSLA" → "yahoo.com" */
+function registrableDomain(url) {
+  try {
+    const parts = new URL(String(url || "")).hostname.replace(/^www\./i, "").split(".");
+    return parts.slice(-2).join(".").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Where a browse ask should land.
+ *
+ * Naming a product settles WHICH product, and nothing inferred from the wording
+ * may override that — "draft an email in Mailchimp" is Mailchimp work, and the
+ * email deep-links must not drag it to Gmail. But naming a product does not
+ * settle WHERE INSIDE IT: "open Reddit and search for mechanical keyboards"
+ * names Reddit and also says where to land, and answering with the Reddit
+ * homepage throws the actual request away. So the specific destination wins
+ * whenever it agrees with the named product, and the product wins whenever the
+ * specific destination would leave it.
+ */
 function resolveBrowseTargetUrl(text, ctx = {}) {
+  const venueUrl = resolveNamedWorkVenueUrl(text);
+  const resolved = resolveBrowseTargetUrlIgnoringVenue(text, ctx);
+  if (!venueUrl) return resolved;
+  if (!resolved) return venueUrl;
+  return registrableDomain(resolved) === registrableDomain(venueUrl) ? resolved : venueUrl;
+}
+
+function resolveBrowseTargetUrlIgnoringVenue(text, ctx = {}) {
   // Stock intents first — "yahoo stocks + tesla" / "live tesla chart" with no domain.
   const stockUrl = resolveStockBrowseUrl(text);
   if (stockUrl) return stockUrl;
@@ -10764,6 +11710,9 @@ module.exports = {
   sendRealKey,
   sendShortcut,
   resolveAccountDashboardUrl,
+  resolveNamedWorkVenueUrl,
+  namesNonMailVenue,
+  isMailVenueUrl,
   extractOpenTargetName,
   isKnownSiteName,
   findNameOnPage,
@@ -10892,10 +11841,17 @@ module.exports = {
   detectBrowseBlocker,
   advanceTowardUserGate,
   formatUserHelpBrief,
+  frameByRoutingId,
+  buildFrameOffsets,
+  readFrameElementValue,
+  dragByInput,
+  resolveDragEndpoint,
   describeSignInUserAction,
+  signInPageThirdPartyNote,
   describeStuckUserAction,
   deliverableContentReady,
   waitForSignInClear,
+  waitForUserAssist,
   peekVenueDeepLinkFromSerp,
   peekSpotifyResultHref,
   looksLikePlayMediaAsk,

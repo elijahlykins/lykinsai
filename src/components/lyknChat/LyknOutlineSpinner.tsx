@@ -1,8 +1,9 @@
 // Lightweight loading spinner that draws the LYKN icon outline on a loop.
 // This is the same stroke-draw effect as the Remotion `LyknIconOutline`
 // composition, reimplemented as a self-contained SVG so it stays crisp at
-// any size, follows the text color (light/dark), and costs nothing to run.
-// The actual animation lives in index.css (`.lykn-outline-spinner`).
+// any size and costs nothing to run. The animation — and the ink, brand blue
+// on light and the surrounding text color on dark — lives in index.css
+// (`.lykn-outline-spinner`).
 
 const ICON_VIEWBOX = "0 0 204.29 204.29";
 const ICON_PATH =

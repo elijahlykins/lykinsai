@@ -592,7 +592,7 @@ function makeToolArgNarrator(onStatus) {
         }
       }
       const now = Date.now();
-      if (argsBuf.length >= 1500 && now - lastProgressAt >= 1500) {
+      if (argsBuf.length >= 400 && now - lastProgressAt >= 800) {
         lastProgressAt = now;
         const kb = argsBuf.length >= 1000 ? `${Math.round(argsBuf.length / 100) / 10}k` : `${argsBuf.length}`;
         onStatus(`${verb}… (${kb})`);

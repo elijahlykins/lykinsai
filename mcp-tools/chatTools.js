@@ -468,7 +468,7 @@ export function buildChatToolCtx(req, extras = {}) {
     /** Board/chat scope from req.body.projectId. */
     boardProjectId: extras.boardProjectId || null,
     /**
-     * JSX source of the React artifact open in the side panel (from
+     * JSX source of the React artifact open in the preview popup (from
      * req.body.activeArtifact). Lets lykn_build_react_artifact apply targeted
      * `edits` server-side instead of forcing a ground-up re-emit of the code.
      */

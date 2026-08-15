@@ -32,8 +32,10 @@ import {
 import { markdownToTiptap } from "@/lib/markdownToTiptap";
 import { isDemoLyknChatId } from "@/lib/demoLyknChats";
 import { toast } from "@/components/ui/use-toast";
+import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
 import { AI_TEMPORARY_FAILURE_TEXT, AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
+import { handOffAskToBrowserAgent } from "@/lib/ai/agentHandoff";
 import {
   addOpenThread,
   bindThreadStateCallbacks,
@@ -174,7 +176,7 @@ export interface UseChatEngineReturn {
   composerMode: ComposerMode;
   setComposerMode: (mode: ComposerMode) => void;
 
-  /* Artifact open in the side panel (Claude-style pullout). The model refines
+  /* Artifact open in the preview popup. The model refines
    * THIS artifact in place when the user sends an edit request. */
   activeArtifact: ChatArtifact | null;
   setActiveArtifact: (artifact: ChatArtifact | null) => void;
@@ -714,7 +716,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         alt: alt || "",
         loading: "lazy",
         className:
-          "my-3 max-h-[24rem] max-w-full rounded-xl border border-black/[0.08] dark:border-white/[0.08] shadow-sm object-contain",
+          "my-3 max-h-[24rem] max-w-full rounded-xl border border-black/[0.08] dark:border-white/[0.08] shadow-none object-contain",
       }),
     a: ({ href, children, ...rest }: any) => {
       const url = String(href || "").trim();
@@ -741,7 +743,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           className:
             "my-4 overflow-hidden rounded-2xl border border-black/[0.1] " +
             "bg-gradient-to-br from-white via-[#f7f6f4] to-[#ececea] " +
-            "shadow-[0_8px_28px_rgba(28,25,23,0.06)] " +
+            "shadow-none " +
             "dark:border-white/[0.1] dark:from-[#141413] dark:via-[#111110] dark:to-[#0c0c0b]",
         },
         React.createElement(
@@ -2149,6 +2151,32 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     if (lastSendSigRef.current.text === sig && now - lastSendSigRef.current.at < 900) return;
     lastSendSigRef.current = { text: sig, at: now };
 
+    // "Open Mailchimp and build the campaign" is work, not a question. Hand it
+    // to the browser agent before any streaming state exists, so there is
+    // nothing to unwind — and record the prompt in the thread either way, so
+    // the conversation still shows what was asked and where it went.
+    const handoff = await handOffAskToBrowserAgent(text, {
+      hasAttachments: hasAttachment,
+    });
+    if (handoff.handed) {
+      setChatInput("");
+      setComposerMode("none");
+      bindThreadStateCallbacks(streamChatId, {
+        setChatStatusText,
+        setChatMessages,
+        setIsChatLoading,
+        setChatFlowMode,
+      }).setChatMessages((prev): PromptMessage[] => [...prev, {
+        id: `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        role: "user",
+        content: text,
+        kind: "prompt",
+        createdAt: new Date().toISOString(),
+        aiResponse: handoff.note || "",
+      }]);
+      return;
+    }
+
     streamChatIdRef.current = streamChatId;
     const priorSnap = getThreadSnapshot(streamChatId);
     priorSnap?.abortController?.abort();
@@ -2588,8 +2616,14 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       try { if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") mediaRecorderRef.current.stop(); } catch {}
       return;
     }
+    if (typeof MediaRecorder === "undefined") {
+      toast({ title: "Dictation unavailable", description: "This device can't record audio.", variant: "destructive", duration: 6000 });
+      return;
+    }
     const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
-    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+    // Prompts for OS/browser mic permission first — inside the desktop shell
+    // getUserMedia alone never surfaces the macOS dialog.
+    requestMicStream({ audio: true }).then((stream) => {
       mediaStreamRef.current = stream;
       audioChunksRef.current = [];
       const recorder = new MediaRecorder(stream, { mimeType });
@@ -2618,7 +2652,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       };
       recorder.onerror = () => { setIsDictating(false); setIsTranscribing(false); };
       recorder.start(); setIsDictating(true);
-    }).catch(() => setIsDictating(false));
+    }).catch((err: unknown) => {
+      setIsDictating(false);
+      toast({ title: "Microphone needed", description: micErrorMessage(err), variant: "destructive", duration: 8000 });
+    });
   }, [isDictating, setChatInput]);
 
   /* ---------- Voice Mode ---------- */

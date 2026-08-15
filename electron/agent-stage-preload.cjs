@@ -33,4 +33,8 @@ contextBridge.exposeInMainWorld("lyknAgentStage", {
   toggleAgentChat: () => ipcRenderer.invoke("lykn:agent-chat-set", { toggle: true }),
   setAgentChat: (open) => ipcRenderer.invoke("lykn:agent-chat-set", { open: !!open }),
   close: () => ipcRenderer.send("lykn:agent-stage-set", { open: false }),
+  // Docked in the Studio: the tab strip doubles as the floating Browser
+  // window's title bar, so its traffic lights and drag drive that window.
+  windowControl: (payload) =>
+    ipcRenderer.send("lykn:studio-window-control", payload || {}),
 });

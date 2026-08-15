@@ -696,7 +696,7 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
   return (
     <>
       <div
-        className={`mt-2 rounded-xl border border-black/10 dark:border-white/12 bg-white dark:bg-[#1a1a1c] shadow-[0_2px_10px_rgba(0,0,0,0.04)] overflow-hidden ${className}`}
+        className={`mt-2 rounded-xl border border-black/10 dark:border-white/12 bg-white dark:bg-[#1a1a1c] shadow-none overflow-hidden ${className}`}
       >
         <div className="flex items-center gap-2 px-3 py-2 border-b border-black/5 dark:border-white/8 bg-black/[0.015] dark:bg-white/[0.02]">
           <Icon size={12} className="text-black/55 dark:text-white/55 flex-shrink-0" />

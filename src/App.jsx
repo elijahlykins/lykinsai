@@ -9,6 +9,8 @@ import { hasAppAccess, isSubscriptionGateExempt } from '@/lib/billingAccess';
 import { canUseWebApp } from '@/lib/webAppAccess';
 import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
+import FreeCreditsNudge from '@/components/billing/FreeCreditsNudge';
+import BriefSurface from '@/components/brief/BriefSurface';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 import { IntakeProvider } from '@/context/IntakeContext';
@@ -39,6 +41,7 @@ const Studio = React.lazy(() => import("./pages/Studio"));
 import VaultConnectionsShell from "./pages/VaultConnectionsShell";
 import TagManagement from "./pages/TagManagement";
 import LyknCalendarPage from "@/components/calendar/LyknCalendarPage";
+import LyknTodosPage from "@/components/todos/LyknTodosPage";
 import Billing from "./pages/Billing";
 import SignInPill from "./components/SignInPill";
 import {
@@ -567,6 +570,16 @@ function AppShell() {
               }
             />
             <Route
+              path="/todos"
+              element={
+                <ProtectedRoute>
+                  <LegacyProductToStudio>
+                    <LyknTodosPage />
+                  </LegacyProductToStudio>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/tag-management"
               element={
                 <ProtectedRoute>
@@ -612,6 +625,15 @@ function AppShell() {
           </Routes>
         </RouteErrorBoundary>
       </div>
+      {/* Free-plan upgrade nudge (90% of signup credits used). Skipped on
+          embedded/glass surfaces where a floating card would cover the UI. */}
+      {!isEmbeddedRoute && !isGlassSurface && <FreeCreditsNudge />}
+      {/* The day's brief: one card per launch when Settings → Notifications →
+          "Brief on startup" is on, plus the popup Studio's top bar opens on
+          demand. Skipped only on the embedded surfaces (Studio's iframes),
+          never on `glass` alone — the desktop's main window
+          IS /studio?glass=1, which is exactly where the brief belongs. */}
+      {!isEmbeddedRoute && <BriefSurface />}
     </>
   );
 }

@@ -8,6 +8,7 @@ import {
   safeAttachmentUrl,
   safeExternalUrl,
   safeHtmlPreviewUrl,
+  preferInlineHtmlPreview,
 } from "@/lib/safeExternalUrl";
 import { openArtifactInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
 import {
@@ -20,7 +21,7 @@ export type LyknChatArtifactPanelProps = {
   artifact: ChatArtifact | null;
   /** True while a chat turn is streaming — shows an "updating" hint over the preview. */
   isUpdating?: boolean;
-  /** Full-viewport width on phones; a fixed right column on desktop (split view). */
+  /** Near-fullscreen popup on phones; a centered floating window on desktop. */
   fullWidth?: boolean;
   onClose: () => void;
   /** Save the artifact to the vault. Resolves true on success. */
@@ -33,15 +34,18 @@ export type LyknChatArtifactPanelProps = {
   onArtifactUpdate?: (artifact: ChatArtifact) => void;
 };
 
-/** Desktop split-view width — kept in sync with the chat's right inset. */
-export const ARTIFACT_PANEL_WIDTH = "min(760px, 50vw)";
-
 // Inline (srcDoc) HTML is same-origin with the app; dropping allow-same-origin
 // runs AI-generated scripts in a null origin so they can't reach our DOM or the
 // Supabase session in localStorage. Cross-origin previewUrl frames keep
 // allow-same-origin (they're isolated by their own origin) via safeHtmlPreviewUrl.
 const IFRAME_SANDBOX_SRCDOC =
   "allow-scripts allow-popups allow-forms allow-presentation";
+
+/** Glass chrome buttons on the artifact title bar — same material as settings steppers. */
+const HDR_BTN =
+  "lg-stepper inline-flex items-center gap-1 rounded-[8px] px-2 py-1.5 text-[11px] font-medium text-black/60 transition-colors hover:text-black/90 dark:text-white/65 dark:hover:text-white/95 disabled:opacity-50";
+const HDR_BTN_ICON =
+  "lg-stepper inline-flex items-center justify-center rounded-[8px] p-1.5 text-black/60 transition-colors hover:text-black/90 dark:text-white/65 dark:hover:text-white/95";
 
 /**
  * Accept runtime/console errors only from this artifact's iframe — not from
@@ -87,21 +91,22 @@ function badgeFor(artifact: ChatArtifact): string {
 }
 
 /**
- * Claude-style artifact pullout. A right-side drawer that renders the active
- * artifact large and stays open while the user refines it in chat — each edit
- * rebuilds the artifact and updates this panel in place.
+ * Floating artifact popup. Renders the finished build large over chat (not as
+ * a side drawer) and stays open while the user refines it — each edit rebuilds
+ * the artifact and updates this window in place. Not a modal: the composer
+ * stays usable underneath.
  */
 export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth, onClose, onSaveToVault, onArtifactUpdate }: LyknChatArtifactPanelProps) {
   const open = !!artifact;
-  // Keep the last artifact rendered while the panel slides out — otherwise the
-  // content unmounts instantly and the close animation slides an empty shell.
+  // Keep the last artifact rendered while the popup scales out — otherwise the
+  // content unmounts instantly and the close animation scales an empty shell.
   const [lingering, setLingering] = useState<ChatArtifact | null>(artifact);
   useEffect(() => {
     if (artifact) {
       setLingering(artifact);
       return undefined;
     }
-    const t = window.setTimeout(() => setLingering(null), 320);
+    const t = window.setTimeout(() => setLingering(null), 220);
     return () => window.clearTimeout(t);
   }, [artifact]);
   const shown = artifact ?? lingering;
@@ -122,11 +127,13 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
 
   // Live preview URL for the iframe. Prefer a reminted file-proxy link when we
   // have storagePath — expired / poisoned previewUrl (or srcDoc under prod CSP)
-  // is what left click-to-open panels blank after vault save.
+  // is what left click-to-open panels blank after vault save. Locally we keep
+  // srcDoc (file-proxy iframes from 127.0.0.1 get frame-ancestors-blocked).
   const [livePreviewUrl, setLivePreviewUrl] = useState<string | null>(null);
   useEffect(() => {
     setLivePreviewUrl(null);
     if (!artifact || artifact.kind !== "html") return;
+    if (artifact.srcDoc && preferInlineHtmlPreview(artifact.previewUrl)) return;
     const path = typeof artifact.storagePath === "string" ? artifact.storagePath.trim() : "";
     if (!path) {
       setLivePreviewUrl(artifact.previewUrl || null);
@@ -396,28 +403,52 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
     }
   }, [shown, dlBusy]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   return (
-    <aside
-      className={`lykn-artifact-panel fixed right-0 top-0 z-[200] flex h-full flex-col border-l border-black/10 bg-panel shadow-2xl transition-transform duration-300 ease-out dark:border-white/10 ${
-        open ? "translate-x-0" : "translate-x-full"
-      }`}
-      style={{ width: fullWidth ? "100vw" : ARTIFACT_PANEL_WIDTH }}
+    <div
+      className="pointer-events-none fixed inset-0 z-[200] flex items-center justify-center p-2 sm:p-4"
+      style={{
+        // Leave the chat composer clear so a refine can be typed while the
+        // preview is up. Phones get a tight inset instead.
+        paddingTop: fullWidth ? 8 : "max(0.75rem, var(--header-height-sm, 4.2rem))",
+        paddingBottom: fullWidth ? 8 : "calc(var(--mobile-tabbar-clear, 0px) + 6.75rem)",
+      }}
       aria-hidden={!open}
     >
+      <div
+        className={`lykn-artifact-panel lg-window flex h-full max-h-full w-full flex-col overflow-hidden transition-[transform,opacity] duration-200 ease-out ${
+          open ? "pointer-events-auto scale-100 opacity-100" : "scale-95 opacity-0"
+        }`}
+        style={{ maxWidth: fullWidth ? "100%" : 920 }}
+        role="dialog"
+        aria-modal="false"
+        aria-label={shown?.title || "Artifact"}
+      >
         {shown ? (
           <>
-            <header className="flex items-center justify-between gap-3 border-b border-black/8 px-4 py-3 dark:border-white/10">
+            <header className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: "var(--lg-hairline)" }}>
               <div className="flex min-w-0 items-center gap-2.5">
                 <div className="min-w-0">
-                  <p className="truncate text-[13.5px] font-semibold text-foreground">{shown.title}</p>
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="truncate text-[13.5px] font-semibold text-black/85 dark:text-white/90">{shown.title}</p>
+                  <p className="text-[11px] text-black/45 dark:text-white/45">
                     {isUpdating ? "Updating…" : badgeFor(shown)}
                   </p>
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
                 {hasCode ? (
-                  <div className="inline-flex overflow-hidden rounded-lg border border-black/10 dark:border-white/12" role="tablist" aria-label="Artifact view">
+                  <div className="lg-stepper inline-flex overflow-hidden rounded-[8px]" role="tablist" aria-label="Artifact view">
                     <button
                       type="button"
                       role="tab"
@@ -425,8 +456,8 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       onClick={() => setView("preview")}
                       className={`inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${
                         view === "preview"
-                          ? "bg-black/[0.06] text-foreground dark:bg-white/[0.1]"
-                          : "text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.06]"
+                          ? "bg-black/[0.06] text-black/90 dark:bg-white/[0.12] dark:text-white"
+                          : "text-black/50 hover:text-black/80 dark:text-white/50 dark:hover:text-white/85"
                       }`}
                       title="Live preview"
                     >
@@ -438,11 +469,12 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       role="tab"
                       aria-selected={view === "code"}
                       onClick={() => setView("code")}
-                      className={`inline-flex items-center gap-1 border-l border-black/10 px-2 py-1.5 text-[11px] font-medium transition-colors dark:border-white/12 ${
+                      className={`inline-flex items-center gap-1 border-l px-2 py-1.5 text-[11px] font-medium transition-colors ${
                         view === "code"
-                          ? "bg-black/[0.06] text-foreground dark:bg-white/[0.1]"
-                          : "text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.06]"
+                          ? "bg-black/[0.06] text-black/90 dark:bg-white/[0.12] dark:text-white"
+                          : "text-black/50 hover:text-black/80 dark:text-white/50 dark:hover:text-white/85"
                       }`}
+                      style={{ borderColor: "var(--lg-hairline)" }}
                       title="View and edit the source code"
                     >
                       <Code2 className="h-3.5 w-3.5" />
@@ -459,7 +491,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       // Inside the Studio: open in its docked browser, not the OS browser.
                       if (shown && openArtifactInStudioBrowser(shown)) e.preventDefault();
                     }}
-                    className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
+                    className={HDR_BTN}
                     title="Open in LYKN browser"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
@@ -471,11 +503,11 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     type="button"
                     onClick={handleSaveToVault}
                     disabled={saveState !== "idle"}
-                    className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-medium transition-colors ${
+                    className={
                       saveState === "saved"
-                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                        : "border-black/10 text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
-                    }`}
+                        ? "inline-flex items-center gap-1 rounded-[8px] border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
+                        : HDR_BTN
+                    }
                     title="Save to your vault"
                   >
                     {saveState === "saving" ? (
@@ -488,14 +520,12 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     {saveState === "saved" ? "Saved" : "Save"}
                   </button>
                 ) : null}
-                {/* Quick PDF — also listed under Download. Print dialog → Save as PDF
-                    for apps/decks; images export a real .pdf file. */}
-                {(shown.kind === "html" || shown.kind === "image") && (shown.srcDoc || shown.previewUrl || shown.downloadUrl) ? (
+                {downloadOptions.some((d) => d.id === "pdf") ? (
                   <button
                     type="button"
                     onClick={() => void handleSavePdf()}
                     disabled={dlBusy}
-                    className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06] disabled:opacity-50"
+                    className={HDR_BTN}
                     title="Download as PDF"
                   >
                     {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
@@ -507,7 +537,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     type="button"
                     onClick={() => void handleDownloadOption(downloadOptions[0].id)}
                     disabled={dlBusy}
-                    className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06] disabled:opacity-50"
+                    className={HDR_BTN}
                     title={`Download ${downloadOptions[0].label} to your computer`}
                   >
                     {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
@@ -519,7 +549,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       type="button"
                       onClick={() => setDlMenuOpen((v) => !v)}
                       disabled={dlBusy}
-                      className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06] disabled:opacity-50"
+                      className={HDR_BTN}
                       title="Download to your computer"
                     >
                       {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
@@ -527,7 +557,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       <ChevronDown className="h-3 w-3 opacity-60" />
                     </button>
                     {dlMenuOpen ? (
-                      <div className="absolute right-0 top-full z-10 mt-1 min-w-[11rem] overflow-hidden rounded-xl border border-black/10 bg-panel py-1 shadow-lg dark:border-white/12">
+                      <div className="lg-menu absolute right-0 top-full z-10 mt-1 min-w-[11rem] overflow-hidden py-1">
                         {downloadOptions.map((d) => (
                           <button
                             key={d.id}
@@ -547,16 +577,16 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                 <button
                   type="button"
                   onClick={onClose}
-                  className="inline-flex items-center justify-center rounded-lg border border-black/10 p-1.5 text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
+                  className={HDR_BTN_ICON}
                   title="Close"
-                  aria-label="Close artifact panel"
+                  aria-label="Close artifact"
                 >
                   <XIcon className="h-4 w-4" />
                 </button>
               </div>
             </header>
 
-            <div className="relative flex-1 overflow-hidden bg-white dark:bg-black/40">
+            <div className="lykn-artifact-body relative flex-1 overflow-hidden">
               {isUpdating ? (
                 <div className="pointer-events-none absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur">
                   <Loader2 className="h-3 w-3 animate-spin" />
@@ -564,8 +594,8 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                 </div>
               ) : null}
               {hasCode && view === "code" ? (
-                <div className="flex h-full flex-col bg-panel">
-                  <div className="flex items-center justify-between gap-2 border-b border-black/8 px-3 py-2 dark:border-white/10">
+                <div className="flex h-full flex-col">
+                  <div className="flex items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: "var(--lg-hairline)" }}>
                     <p className="truncate text-[11px] text-muted-foreground">
                       {isMultiFile
                         ? (dirty ? `Edited ${activePath}. Run to update` : `${projectFiles!.length} files · ${activePath || "source"}`)
@@ -575,7 +605,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       <button
                         type="button"
                         onClick={handleCopyCode}
-                        className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
+                        className={HDR_BTN}
                         title="Copy code"
                       >
                         {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
@@ -584,7 +614,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                       <button
                         type="button"
                         onClick={handleDownloadCode}
-                        className="inline-flex items-center gap-1 rounded-lg border border-black/10 px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-black/[0.04] hover:text-foreground dark:border-white/12 dark:hover:bg-white/[0.06]"
+                        className={HDR_BTN}
                         title="Download as .jsx"
                       >
                         <Download className="h-3.5 w-3.5" />
@@ -645,13 +675,30 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                   </div>
                 </div>
               ) : shown.kind === "html" ? (
-                // Prefer a reminted/cross-origin file-proxy URL over srcDoc.
-                // srcdoc iframes inherit the parent page's CSP, and prod ships
-                // `script-src 'self'` (vercel.json) — that blocks React/Babel
-                // runners and deck navigation scripts, leaving a blank panel.
+                // Prod: prefer a reminted/cross-origin file-proxy URL — srcdoc
+                // iframes inherit the parent CSP (`script-src 'self'`) and go
+                // blank. Local Electron/Vite: prefer srcDoc. File-proxy URLs
+                // are served from localhost while the app is on 127.0.0.1, and
+                // frame-ancestors used to allow only localhost — blank panel,
+                // while Open (inline HTML in the LYKN browser) still worked.
                 (() => {
                   const previewSrc = livePreviewUrl || shown.previewUrl || "";
                   const htmlPreview = previewSrc ? safeHtmlPreviewUrl(previewSrc) : null;
+                  const useSrcDoc =
+                    Boolean(shown.srcDoc) &&
+                    (!htmlPreview || preferInlineHtmlPreview(previewSrc));
+                  if (useSrcDoc) {
+                    return (
+                      <iframe
+                        ref={previewIframeRef}
+                        title={shown.title}
+                        srcDoc={shown.srcDoc}
+                        className="h-full w-full border-0 bg-white"
+                        sandbox={IFRAME_SANDBOX_SRCDOC}
+                        referrerPolicy="no-referrer"
+                      />
+                    );
+                  }
                   if (htmlPreview) {
                     return (
                       <iframe
@@ -660,18 +707,6 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                         src={htmlPreview.url}
                         className="h-full w-full border-0 bg-white"
                         sandbox={htmlPreview.sandbox}
-                        referrerPolicy="no-referrer"
-                      />
-                    );
-                  }
-                  if (shown.srcDoc) {
-                    return (
-                      <iframe
-                        ref={previewIframeRef}
-                        title={shown.title}
-                        srcDoc={shown.srcDoc}
-                        className="h-full w-full border-0 bg-white"
-                        sandbox={IFRAME_SANDBOX_SRCDOC}
                         referrerPolicy="no-referrer"
                       />
                     );
@@ -711,6 +746,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
             </footer>
           </>
         ) : null}
-    </aside>
+      </div>
+    </div>
   );
 }

@@ -268,6 +268,14 @@ function shouldRouteDeliverableEdit(text, opts = {}) {
 function classifyAgentSkill(text, opts = {}) {
   const t = String(text || "").trim();
   const lower = t.toLowerCase();
+  // Where the user said the work happens. Naming a product names a
+  // destination, and the deliverable words sitting next to it — "newsletter",
+  // "flyer", "landing page", "report" — say what to make once we are there.
+  // They are not a reason to make it somewhere else instead. Without this, "log
+  // into Klaviyo and make a flyer" reads as an image commission and the user
+  // gets a picture in the chat rather than a flyer in Klaviyo, which is both
+  // the wrong artifact and the wrong place.
+  const namedWorkVenue = String(ownedBrowserAct.resolveNamedWorkVenueUrl?.(t) || "");
   if (
     /\b(monitor|watch for|alert me|notify me when|keep an eye|tell me when)\b/.test(lower)
   ) {
@@ -292,6 +300,7 @@ function classifyAgentSkill(text, opts = {}) {
   // "build me a presentation on the research report" is BUILD, not a new research crawl.
   // (Research regex matches build+…+report too eagerly.) Skip edit-style asks.
   if (
+    !namedWorkVenue &&
     !/\b(edit|change|update|tweak|adjust|modify|revise|improve|fix|shorter|longer|expand|tighten|punchier)\b/.test(
       lower,
     ) &&
@@ -328,7 +337,8 @@ function classifyAgentSkill(text, opts = {}) {
     if (opts.hasReport) return "report-edit";
   }
   if (
-    /\b(deep research|research report|investigate thoroughly|multi-?source analysis)\b/.test(
+    !namedWorkVenue &&
+    (/\b(deep research|research report|investigate thoroughly|multi-?source analysis)\b/.test(
       lower,
     ) ||
     (/^\s*research\b/.test(lower) && lower.length > 12) ||
@@ -338,7 +348,7 @@ function classifyAgentSkill(text, opts = {}) {
     ) ||
     /\b(report|brief|analysis|comparison|overview|landscape)\b.{0,40}\b(on|about|of|comparing|for)\b/.test(
       lower,
-    )
+    ))
   ) {
     return "research";
   }
@@ -405,26 +415,30 @@ function classifyAgentSkill(text, opts = {}) {
   // Skip when the user named an external tool as the venue (handled above).
   if (
     artifactBuildIntent.isTypedNewDeliverableAsk(t) &&
+    !namedWorkVenue &&
     !looksLikeCreateInToolVenueAsk(t, opts)
   ) {
     return "build";
   }
   // Image: "make me an ad like this" (esp. with a cropped reference).
   if (
-    detectImageIntent(t, { hasAttachedImage: !!opts.hasAttachedImage }) ||
-    detectReferenceImageAsk(t, !!opts.hasAttachedImage)
+    !namedWorkVenue &&
+    (detectImageIntent(t, { hasAttachedImage: !!opts.hasAttachedImage }) ||
+      detectReferenceImageAsk(t, !!opts.hasAttachedImage))
   ) {
     return "image";
   }
   if (
-    /\b(generate|create|make|draw)\b.{0,40}\b(image|picture|photo|illustration|logo|poster|wallpaper|avatar|meme|ad|flyer|banner|thumbnail)\b/.test(
+    !namedWorkVenue &&
+    (/\b(generate|create|make|draw)\b.{0,40}\b(image|picture|photo|illustration|logo|poster|wallpaper|avatar|meme|ad|flyer|banner|thumbnail)\b/.test(
       lower,
     ) ||
-    /\b(image of|picture of|photo of)\b/.test(lower)
+      /\b(image of|picture of|photo of)\b/.test(lower))
   ) {
     return "image";
   }
   if (
+    !namedWorkVenue &&
     !looksLikeCreateInToolVenueAsk(t, opts) &&
     (/\b(build|create|make|scaffold|code)\b.{0,40}\b(app|page|dashboard|deck|artifact|landing|tool|spreadsheet|worksheet|site|webapp|presentation|slideshow|slides?|calculator|quiz|tracker|form|widget|portal|simulator)\b/.test(
       lower,
@@ -435,6 +449,7 @@ function classifyAgentSkill(text, opts = {}) {
   }
   // "create me a budget" (no external tool named) → LYKN artifact.
   if (
+    !namedWorkVenue &&
     !looksLikeCreateInToolVenueAsk(t, opts) &&
     /\b(create|make|build|draft|generate|whip\s+up|put\s+together)\b(?:\s+(?:for\s+)?(?:me|us))?(?:\s+(?:a|an|my|the|some))\b/.test(
       lower,
@@ -484,7 +499,17 @@ function classifyAgentSkill(text, opts = {}) {
   const namedSiteSearch =
     !!extractedUrl &&
     /\b(search|find(?:\s+me)?|look(?:\s+(?:for|up))?)\b/.test(lower);
+  // The user named the product AND asked for work to happen in it. Say so
+  // directly rather than hoping one of the verb patterns below happens to
+  // match — an unfamiliar product ("in Klaviyo") resolves no browse target, so
+  // the generic rules would drop it back into chat.
+  const namedVenueWork =
+    !!namedWorkVenue &&
+    /\b(open|go|visit|launch|load|pull\s*up|head|navigate|log\s*in(?:to)?|sign\s*in(?:to)?|use|using|in|on|over)\b/.test(
+      lower,
+    );
   if (
+    namedVenueWork ||
     !!ownedBrowserAct.looksLikeBrowseActAsk?.(t) ||
     /\b(click|navigate|browse|fill (out|in)|go to|visit|open up)\b/.test(lower) ||
     /\bopen\b.{0,40}\b(browser|page|site|tab|url|link|website|chart|diagram|graph)\b/.test(
@@ -657,6 +682,9 @@ function createAgentRuntime(deps) {
   function publicAgent(a) {
     if (!a) return null;
     const role = a.role === "main" ? "main" : "worker";
+    // Every path that parks on the user sets this status, so it is the one
+    // reliable answer to "is this run waiting on me?".
+    const waiting = a.status === "waiting";
     return {
       id: a.id,
       title: a.title,
@@ -671,6 +699,18 @@ function createAgentRuntime(deps) {
       error: a.error || "",
       role,
       pinned: role === "main" || !!a.pinned,
+      // Parked-on-you state travels with the agent, not only on the transient
+      // agent-waiting event. A rail that mounts, reloads, or switches to this
+      // tab after the pause never saw that event, and would otherwise show a
+      // run that is still waiting as though it had finished.
+      waiting,
+      waitingKind: waiting
+        ? String(a.waitingReason || (a.pendingChoice ? "choice" : "blocked"))
+        : "",
+      waitingDetail: waiting
+        ? String(a.waitingUserAction || "").replace(/\*\*/g, "")
+        : "",
+      waitingHost: waiting ? String(a.waitingHost || "") : "",
     };
   }
 
@@ -1301,6 +1341,66 @@ function createAgentRuntime(deps) {
       type: "send-approval",
       message: String(message || ""),
       buttons,
+    });
+  }
+
+  /**
+   * Ask for a yes/no on one irreversible click, inline in the running task:
+   * buttons in the response area, resolved without restarting anything. "Yes"
+   * lets the agent make the click itself and carry on with whatever is left,
+   * so approving costs the user one tap instead of a re-run.
+   */
+  function awaitBrowseApproval(agent, { question }) {
+    return new Promise((resolve) => {
+      const choiceId = newId();
+      const buttons = [
+        { id: "approve", label: "Yes", primary: true },
+        { id: "decline", label: "No" },
+      ];
+      const msg = String(question || "").trim() || "Want me to go ahead?";
+      let settled = false;
+      const done = (approved) => {
+        if (settled) return;
+        settled = true;
+        if (agent.pendingChoice?.id === choiceId) agent.pendingChoice = null;
+        agent.status = "running";
+        agent.busy = true;
+        resolve(approved);
+      };
+      agent.pendingChoice = {
+        id: choiceId,
+        type: "browse-approval",
+        resolve: done,
+        buttons,
+        at: new Date().toISOString(),
+      };
+      agent.status = "waiting";
+      agent.busy = true;
+      agent.step = "Waiting for your go-ahead…";
+      agent.partialText = msg;
+      sendToAgentChannels(agent.id, "lykn:agent-delta", { text: msg, final: false });
+      sendToAgentChannels(agent.id, "lykn:agent-choice", {
+        choiceId,
+        type: "browse-approval",
+        message: msg,
+        buttons,
+      });
+      sendToAgentChannels(agent.id, "lykn:agent-status", {
+        status: "Waiting for your go-ahead…",
+      });
+      emitProgress(agent.id, {
+        status: "waiting",
+        step: "Waiting for your go-ahead…",
+        url: agent.url,
+        skill: "browse",
+      });
+      schedulePersist();
+      // Stopping or sending a new message while the box is up = not approved.
+      try {
+        agent.abort?.signal?.addEventListener?.("abort", () => done(false), { once: true });
+      } catch {
+        /* no signal */
+      }
     });
   }
 
@@ -2593,6 +2693,38 @@ function createAgentRuntime(deps) {
     emitList();
   }
 
+  /**
+   * A step label that means "parked on the user". Several guards key off this to
+   * avoid declaring work finished, or finishing more work, while blocked.
+   */
+  function stepAwaitsUser(step) {
+    return /^(needs |waiting for you|still waiting|still needs )/i.test(
+      String(step || "").trim(),
+    );
+  }
+
+  /**
+   * Persistent "I'm waiting on you" state for the chat UI. Unlike agent-status
+   * (which the UI drops as soon as the turn ends) this survives the finished
+   * turn, so a run parked on a sign-in wall keeps a live waiting indicator on
+   * screen until the wall clears.
+   */
+  function emitAgentWaiting(agentId, payload = {}) {
+    const waiting = !!payload.waiting;
+    try {
+      sendToAgentChannels(agentId, "lykn:agent-waiting", {
+        agentId,
+        waiting,
+        kind: String(payload.kind || (waiting ? "blocked" : "")),
+        label: String(payload.label || ""),
+        detail: String(payload.detail || ""),
+        host: String(payload.host || ""),
+      });
+    } catch {
+      /* UI-only signal */
+    }
+  }
+
   function schedulePersist() {
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
@@ -2720,6 +2852,7 @@ function createAgentRuntime(deps) {
     if (!agent) return;
     stopMonitor(agent);
     agent.generation += 1;
+    emitAgentWaiting(agent.id, { waiting: false });
     if (agent.abort) {
       try {
         agent.abort.abort();
@@ -5354,7 +5487,14 @@ function createAgentRuntime(deps) {
     const userAction =
       gate?.userAction ||
       `Type your password / finish signing in to **${host}** in the agent browser.`;
-    const waitStatus = `Needs you: ${String(userAction).replace(/\*\*/g, "").slice(0, 72)}`;
+    // Remembered so a later park (plan-level) repeats the same specific ask
+    // instead of falling back to a generic "take the next step".
+    agent.waitingUserAction = userAction;
+    agent.waitingHost = host;
+    agent.waitingNote = String(gate?.note || "");
+    const waitStatus = `Waiting for you: ${String(userAction)
+      .replace(/\*\*/g, "")
+      .slice(0, 72)}`;
     const resumeStatus = `Signed in on ${host} — continuing…`;
 
     // Raise the stage so the user can find the tab quickly.
@@ -5384,14 +5524,22 @@ function createAgentRuntime(deps) {
         userAction,
         host,
         kind: "signin",
+        note: agent.waitingNote,
         alreadyDone: gate?.actionsTaken || [],
       }) ||
-      (`## Needs you — 1 step\n\n**Please:** ${userAction}\n\n` +
+      (`## Waiting for you\n\n**Waiting on you to:** ${userAction}\n\n` +
         `I'll continue automatically when you're signed in${where}.`);
     agent.partialText = pauseNote;
     sendToAgentChannels(agent.id, "lykn:agent-delta", {
       text: pauseNote,
       final: false,
+    });
+    emitAgentWaiting(agent.id, {
+      waiting: true,
+      kind: "signin",
+      label: `Waiting for you to sign in to ${host}`,
+      detail: String(userAction).replace(/\*\*/g, ""),
+      host,
     });
     schedulePersist();
 
@@ -5434,12 +5582,26 @@ function createAgentRuntime(deps) {
         skill: "browse",
       });
       sendToAgentChannels(agent.id, "lykn:agent-status", { status: timeoutStatus });
+      if (waited?.error === "aborted") {
+        emitAgentWaiting(agent.id, { waiting: false });
+      } else {
+        emitAgentWaiting(agent.id, {
+          waiting: true,
+          kind: "signin",
+          label: `Still waiting for you to sign in to ${host}`,
+          detail: String(userAction).replace(/\*\*/g, ""),
+          host,
+        });
+      }
       return { blocked: true, cleared: false, message: timeoutStatus };
     }
 
     agent.status = "running";
     agent.busy = true;
     agent.waitingForSignIn = false;
+    agent.waitingUserAction = "";
+    agent.waitingNote = "";
+    emitAgentWaiting(agent.id, { waiting: false });
     agent.step = resumeStatus;
     agent.url = waited.url || wc.getURL?.() || agent.url;
     agent.partialText = "";
@@ -5470,23 +5632,38 @@ function createAgentRuntime(deps) {
       if (fallback) remaining.push(fallback);
     }
     const kind = String(reason || "blocked").trim() || "blocked";
-    const actionLine = String(userAction || "").trim();
+    // Reuse the specific ask the wall detector already produced ("type your
+    // password for admin.mailchimp.com") rather than a generic placeholder.
+    const actionLine =
+      String(userAction || "").trim() || String(agent.waitingUserAction || "").trim();
+    let waitHost = String(agent.waitingHost || "").trim();
+    if (!waitHost) {
+      try {
+        waitHost = new URL(agent.url || "").hostname.replace(/^www\./i, "");
+      } catch {
+        waitHost = "";
+      }
+    }
     const statusLabel = String(
       label ||
         (actionLine
-          ? `Needs you: ${actionLine.replace(/\*\*/g, "").slice(0, 56)}`
-          : "Needs you"),
-    ).trim() || "Needs you";
+          ? `Waiting for you: ${actionLine.replace(/\*\*/g, "").slice(0, 56)}`
+          : "Waiting for you"),
+    ).trim() || "Waiting for you";
     const resumeMsg =
       String(message || "").trim() ||
       ownedBrowserAct.formatUserHelpBrief?.({
         userAction:
           actionLine ||
-          "Take the next step in the agent browser tab, then say **continue**.",
+          (kind === "signin"
+            ? `Finish signing in${waitHost ? ` to **${waitHost}**` : ""} in the agent browser tab.`
+            : "Take the next step in the agent browser tab."),
         kind,
+        host: waitHost,
+        note: String(agent.waitingNote || ""),
         stillTodo: remaining.slice(0, 5),
       }) ||
-      (`## Needs you — 1 step\n\n**Please:** ${
+      (`## Waiting for you\n\n**Waiting on you to:** ${
         actionLine || "Help in the agent browser"
       }\n\n` +
         (remaining.length
@@ -5496,14 +5673,35 @@ function createAgentRuntime(deps) {
               .join("\n")}\n\n`
           : "") +
         `Say **"continue"** when ready.`);
-    // Already parked — don't spawn a second watcher.
-    if (agent.pendingPlan?.waitingSignIn && agent.pendingPlan?.steps?.length) {
+    const waitingLabel =
+      kind === "signin"
+        ? `Waiting for you to sign in${waitHost ? ` to ${waitHost}` : ""}`
+        : statusLabel;
+    // Whatever brought us here, the run is now parked on the user: say so in
+    // the agent's own state and on the waiting channel before deciding whether
+    // there is anything left to resume.
+    const markParked = () => {
       agent.step = statusLabel;
       agent.status = "waiting";
       agent.busy = false;
       agent.waitingForSignIn = true;
       agent.waitingReason = kind;
       agent.partialText = resumeMsg;
+      // Keep the ask and the site on the agent, not just in this message, so a
+      // surface that arrives later can still say what is needed and where.
+      if (actionLine) agent.waitingUserAction = actionLine;
+      if (waitHost) agent.waitingHost = waitHost;
+      emitAgentWaiting(agent.id, {
+        waiting: true,
+        kind,
+        label: waitingLabel,
+        detail: actionLine.replace(/\*\*/g, ""),
+        host: waitHost,
+      });
+    };
+    // Already parked — don't spawn a second watcher.
+    if (agent.pendingPlan?.waitingSignIn && agent.pendingPlan?.steps?.length) {
+      markParked();
       try {
         sendToAgentChannels(agent.id, "lykn:agent-delta", {
           text: resumeMsg,
@@ -5514,7 +5712,15 @@ function createAgentRuntime(deps) {
       }
       return resumeMsg;
     }
-    if (!remaining.length) return resumeMsg;
+    // No steps left to resume — but a wall we cannot get past is still a wall.
+    // Returning early without marking it left the reply asking for help while
+    // the agent read as idle, so nothing showed that we were still waiting.
+    if (!remaining.length) {
+      markParked();
+      schedulePersist();
+      emitProgress(agent.id, { status: "waiting", step: statusLabel });
+      return resumeMsg;
+    }
     const genAtPark = agent.generation;
     agent.pendingPlan = {
       steps: remaining,
@@ -5523,12 +5729,7 @@ function createAgentRuntime(deps) {
       waitingSignIn: true,
       waitingReason: kind,
     };
-    agent.step = statusLabel;
-    agent.status = "waiting";
-    agent.busy = false;
-    agent.waitingForSignIn = true;
-    agent.waitingReason = kind;
-    agent.partialText = resumeMsg;
+    markParked();
     schedulePersist();
     emitProgress(agent.id, {
       status: "waiting",
@@ -5572,6 +5773,9 @@ function createAgentRuntime(deps) {
         agent.pendingPlan = null;
         agent.waitingForSignIn = false;
         agent.waitingReason = "";
+        agent.waitingUserAction = "";
+        agent.waitingNote = "";
+        emitAgentWaiting(agent.id, { waiting: false });
         sendToAgentChannels(agent.id, "lykn:agent-status", {
           status: "Continuing…",
         });
@@ -5627,19 +5831,21 @@ function createAgentRuntime(deps) {
         gaps: stillTodo,
         url: agent.url || "",
       }) ||
-      "Take the next step in the agent browser, then say **continue**.";
+      "Take the next step in the agent browser.";
+    const parkKind = reason || gate?.blocker?.kind || "stuck";
     const message =
       ownedBrowserAct.formatUserHelpBrief?.({
         userAction,
-        kind: reason || gate?.blocker?.kind || "stuck",
+        kind: parkKind,
+        note: gate?.blocker?.note || gate?.note || "",
         alreadyDone: gate?.actionsTaken || [],
         stillTodo,
       }) || gate?.message || "";
     const resumeMsg = parkForUser(agent, {
       steps: stillTodo.length ? stillTodo : steps,
       ask,
-      reason: reason || gate?.blocker?.kind || "stuck",
-      label: gate?.label || "Needs you",
+      reason: parkKind,
+      label: gate?.label || "Waiting for you",
       userAction,
       message,
     });
@@ -5837,6 +6043,10 @@ function createAgentRuntime(deps) {
         return `Writing ${String(args.path || "a file")}…`;
       case "local_run_command":
         return `Running: ${String(args.command || "").slice(0, 60)}…`;
+      case "local_synced_folders":
+        return "Checking your synced folders…";
+      case "local_running_apps":
+        return "Checking your open apps…";
       default:
         return "Working on your Mac…";
     }
@@ -5972,10 +6182,112 @@ function createAgentRuntime(deps) {
       });
     };
 
+    // The agent hit something only the user can do — a login, a click it isn't
+    // allowed to make, a wall it can't get past. Show them exactly what's
+    // needed, then keep watching the tab so the task resumes the moment they've
+    // done it, instead of ending the run and making them ask again.
+    const onNeedsUser = async ({ kind, question }) => {
+      if (gen !== agent.generation) return { resumed: false };
+      const ask = String(question || "").trim() || "I need a hand with this step.";
+      const waitStatus =
+        kind === "input"
+          ? "Waiting for you in the browser…"
+          : kind === "approval"
+            ? "Waiting for your go-ahead…"
+            : "Waiting for you to nudge this along…";
+
+      try {
+        showBrowserWindow?.(agent.id, { focus: true, label: agent.title || "Agent" });
+      } catch {
+        /* ignore */
+      }
+      agent.status = "waiting";
+      agent.busy = true;
+      agent.step = waitStatus;
+      const note =
+        `## Waiting for you\n\n${ask}\n\n` +
+        `**I'm paused and watching this tab** — do it there and I'll keep going from where I left off.`;
+      agent.partialText = note;
+      emitProgress(agent.id, {
+        status: "waiting",
+        step: waitStatus,
+        url: wc.getURL?.() || agent.url,
+        skill: "browse",
+      });
+      sendToAgentChannels(agent.id, "lykn:agent-status", { status: waitStatus });
+      sendToAgentChannels(agent.id, "lykn:agent-delta", { text: note, final: false });
+      let waitHostName = "";
+      try {
+        waitHostName = new URL(wc.getURL?.() || agent.url || "").hostname.replace(
+          /^www\./i,
+          "",
+        );
+      } catch {
+        /* no host to show */
+      }
+      emitAgentWaiting(agent.id, {
+        waiting: true,
+        kind: kind === "input" ? "signin" : kind || "blocked",
+        label: waitStatus.replace(/…$/, ""),
+        detail: ask.replace(/\*\*/g, "").slice(0, 160),
+        host: waitHostName,
+      });
+      // Answering in chat stays available: the buttons resume through the normal
+      // message pipeline, which supersedes this wait.
+      if (kind === "approval") offerSendApprovalChoice(agent, ask);
+      schedulePersist();
+
+      const waited = await ownedBrowserAct
+        .waitForUserAssist(wc, {
+          signal: agent.abort?.signal,
+          timeoutMs: (kind === "input" ? 30 : 15) * 60 * 1000,
+          pollMs: 1500,
+          onTick: () => {
+            if (gen !== agent.generation) return;
+            sendToAgentChannels(agent.id, "lykn:agent-status", { status: waitStatus });
+          },
+        })
+        .catch(() => null);
+
+      if (gen !== agent.generation || !waited?.ok) {
+        if (gen === agent.generation) emitAgentWaiting(agent.id, { waiting: false });
+        return { resumed: false };
+      }
+
+      emitAgentWaiting(agent.id, { waiting: false });
+      agent.pendingChoice = null;
+      agent.status = "running";
+      agent.busy = true;
+      agent.partialText = "";
+      agent.url = waited.url || wc.getURL?.() || agent.url;
+      const resumeStatus =
+        waited.change === "signed_in" ? "Signed in — continuing…" : "Thanks — picking it back up…";
+      agent.step = resumeStatus;
+      emitProgress(agent.id, {
+        status: "running",
+        step: resumeStatus,
+        url: agent.url,
+        skill: "browse",
+      });
+      sendToAgentChannels(agent.id, "lykn:agent-status", { status: resumeStatus });
+      syncAgentBrowserTabs({ focusId: agent.id });
+      const changeNote =
+        waited.change === "signed_in"
+          ? "the user signed in"
+          : waited.change === "navigated"
+            ? `the user moved the browser to ${agent.url}`
+            : "the user changed the page by hand";
+      return { resumed: true, note: changeNote };
+    };
+
     const result = await browserAgent.runBrowserAgentTask({
       goal: browseGoal,
       userAsk,
       sendPolicy,
+      onNeedsUser,
+      // Yes/No in the response area for the one click that needs a decision.
+      onApprovalNeeded: async ({ question }) =>
+        gen === agent.generation ? awaitBrowseApproval(agent, { question }) : false,
       controller,
       model,
       memory,
@@ -6052,13 +6364,21 @@ function createAgentRuntime(deps) {
   async function runAdaptiveBrowse(agent, text, gen, wc, opts = {}) {
     let result = null;
     const goalForRounds = String(opts.adaptiveGoal || text || "");
+    // Connect/link/setup wizards run long: several screens of pickers and
+    // confirmations before the flow is actually finished.
     const multiStepBrowse =
-      /\b(then|after that|and then|complete|finish|solve|quiz|exercise|lesson|practice|work\s+through|fill|submit|all|every|entire|share|invite)\b/i.test(
+      /\b(then|after that|and then|complete|finish|solve|quiz|exercise|lesson|practice|work\s+through|fill|submit|all|every|entire|share|invite|link|connect|integrate|authorize|onboard|set\s*up|setup|configure|enable|migrate|import|campaign|schedule)\b/i.test(
+        goalForRounds,
+      ) ||
+      // Building something in a visual tool is inherently many steps: pick a
+      // template, place content, edit each piece, then save. On the short budget
+      // these ran out of rounds mid-design.
+      /\b(mailchimp|klaviyo|canva|figma|newsletter|design|poster|flyer|thumbnail|banner|logo|mockup|slide\s*deck|presentation|landing\s*page|template|brand\s*kit)\b/i.test(
         goalForRounds,
       );
     const maxRounds = Math.max(
       4,
-      Math.min(40, Number(opts.maxRounds) || (multiStepBrowse ? 28 : 16)),
+      Math.min(48, Number(opts.maxRounds) || (multiStepBrowse ? 36 : 18)),
     );
     const convHistory =
       (Array.isArray(opts.conversationHistory) && opts.conversationHistory.length
@@ -6109,9 +6429,12 @@ function createAgentRuntime(deps) {
           result = await runModularBrowserAgent(agent, browseGoal, gen, wc, {
             convHistory,
             maxRounds,
-            // Review-first: composing/sharing pauses before the final
-            // consequential click unless this message IS the user's approval.
-            sendPolicy: looksLikeSendApprovalFollowUp(text) ? "auto" : "ask",
+            // Run the task through. The agent's own safety gate stops for the
+            // outcomes that actually warrant it (spending money, destroying
+            // data, mailing an audience the ask didn't name); a blanket review
+            // pause here used to strand every task at its final click.
+            sendPolicy: "auto",
+            userAsk: text,
           });
         } catch (e) {
           if (e instanceof browserAgent.AgentModelUnavailableError) {
@@ -6637,9 +6960,15 @@ function createAgentRuntime(deps) {
       !!(agent.lastImage?.url || agent.lastArtifact?.code || agent.lastDownloadedFile?.path) &&
       /\b(attach|image|picture|photo|artifact|file|pdf|html|download)\b/i.test(effectiveText);
 
+    // The venue is Gmail only when the user didn't name somewhere else. An ask
+    // that says "in mailchimp" / "in hubspot" gets composed there instead.
+    const namedVenueUrl = ownedBrowserAct.resolveNamedWorkVenueUrl?.(effectiveText) || "";
+    const nonMailVenue = !!namedVenueUrl && !ownedBrowserAct.isMailVenueUrl?.(namedVenueUrl);
     const goalParts = [effectiveText.trim(), "", "Email task context:"];
     goalParts.push(
-      "- Work in Gmail (https://mail.google.com). If the browser is not on Gmail, navigate there first.",
+      nonMailVenue
+        ? `- The user named where this happens: ${namedVenueUrl}. Do the work there — navigate to it if the browser is elsewhere. Do NOT use Gmail or any other mail client as a substitute.`
+        : "- Work in Gmail (https://mail.google.com). If the browser is not on Gmail, navigate there first.",
     );
     if (ownedBrowserAct.isGmailComposeUrl?.(liveUrl)) {
       goalParts.push("- A compose window is already open on the current tab — use it; do not open a new one.");
@@ -6671,6 +7000,9 @@ function createAgentRuntime(deps) {
     }
     goalParts.push(
       "- Fill recipient, subject, and body completely, then verify the fields actually contain the content.",
+      // Picking a recipient out of contacts or past threads sends the user's
+      // work to someone they never mentioned.
+      "- Address this ONLY to a recipient the user named, or the thread you are replying to. If they named nobody, leave the recipient blank, finish the subject and body, and say who it still needs to go to — never choose someone from contacts, suggestions, recent mail, or memory.",
       "- Do NOT click Send unless the user's request explicitly asks to send. Otherwise leave the draft open and report it is ready.",
     );
     if (wantsAttachment) {
@@ -6698,15 +7030,16 @@ function createAgentRuntime(deps) {
       status: isRevision ? "Updating the draft…" : isReply ? "Writing the reply…" : "Composing the email…",
     });
 
-    // Review-first policy: a fresh compose ALWAYS stops before Send so the
-    // user can look the draft over and request edits — even when the ask says
-    // "send". Only a short approval reply ("send it", "looks good") releases
-    // the send.
+    // An ask that plainly says "send" gets sent; "draft"/"prep" asks finish the
+    // draft and stop there. That call is made by the agent's safety gate from
+    // the user's own words, not forced here. The attachment flow is the one
+    // exception: Send has to wait until the file is attached, which happens
+    // deterministically after this run.
     const sendApproved = looksLikeSendApprovalFollowUp(text);
     const result = await runModularBrowserAgent(agent, goalParts.join("\n"), gen, wc, {
       convHistory: historyForPlanner(agent),
       maxRounds: 18,
-      sendPolicy: sendApproved && !wantsAttachment ? "auto" : "ask",
+      sendPolicy: wantsAttachment ? "ask" : "auto",
       // Send pre-approval must be judged on the user's own words only — the
       // enriched goal above mentions "Send" in its instructions. When a file
       // still has to be attached, neutralize send verbs so the agent cannot
@@ -7027,6 +7360,7 @@ function createAgentRuntime(deps) {
     });
     if (
       !sharesCurrentPage &&
+      !ownedBrowserAct.namesNonMailVenue?.(text) &&
       (ownedBrowserAct.looksLikeMailComposeTask(text) ||
         ownedBrowserAct.looksLikePasteIntoCompose(text) ||
         (mailRevisionHere && (onMailTab || !!agent.lastMailDraft)))
@@ -7540,8 +7874,12 @@ function createAgentRuntime(deps) {
       ownedBrowserAct.looksLikeOpenSearchResult(text) ||
       signInNav ||
       !!browseCtx.forceContinuation;
-    const mailCompose = ownedBrowserAct.looksLikeMailComposeTask(text);
-    const pasteCompose = ownedBrowserAct.looksLikePasteIntoCompose(text);
+    // "draft an email in mailchimp" is a Mailchimp task, not a Gmail task.
+    // When the ask names a non-mail product, the email-shaped wording must not
+    // divert the work into a mail client.
+    const namedNonMailVenue = !!ownedBrowserAct.namesNonMailVenue?.(text);
+    const mailCompose = !namedNonMailVenue && ownedBrowserAct.looksLikeMailComposeTask(text);
+    const pasteCompose = !namedNonMailVenue && ownedBrowserAct.looksLikePasteIntoCompose(text);
     const currentIsMail =
       !!contextUrl &&
       (ownedBrowserAct.looksLikeSignedInMailUrl(contextUrl) ||
@@ -7591,6 +7929,7 @@ function createAgentRuntime(deps) {
     if (
       agent.pendingMailAsk &&
       Date.now() - (agent.pendingMailAsk.at || 0) < 15 * 60 * 1000 &&
+      !namedNonMailVenue &&
       !askNamesDifferentSite(text, contextUrl)
     ) {
       return runMailCompose(agent, text, gen, wc);
@@ -7600,13 +7939,14 @@ function createAgentRuntime(deps) {
     if (mailCompose || pasteCompose) {
       return runMailCompose(agent, text, gen, wc);
     }
-    if (mailRevision && (currentIsMail || agent.lastMailDraft)) {
+    if (mailRevision && !namedNonMailVenue && (currentIsMail || agent.lastMailDraft)) {
       return runMailCompose(agent, text, gen, wc);
     }
     // "send this to email@…" with nothing shareable open on this tab (or while
     // already on Gmail) → compose in Gmail to that person. NEVER fall through
     // to a literal web search of the sentence.
     if (
+      !namedNonMailVenue &&
       /\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/.test(text) &&
       /\b(send|share|email|forward|mail)\b/i.test(text) &&
       (!contextUrl || currentIsMail)
@@ -8523,7 +8863,10 @@ function createAgentRuntime(deps) {
     const agent = agents.get(agentId);
     if (!agent) return { ok: false, error: "not_found" };
     const pending = agent.pendingChoice;
-    if (!pending || !["complex-tool", "send-approval", "local-approval"].includes(pending.type)) {
+    if (
+      !pending ||
+      !["complex-tool", "send-approval", "local-approval", "browse-approval"].includes(pending.type)
+    ) {
       return { ok: false, error: "no_pending_choice" };
     }
     if (choiceId && pending.id !== choiceId) {
@@ -8531,6 +8874,19 @@ function createAgentRuntime(deps) {
     }
     const btn = String(buttonId || "").trim();
     agent.pendingChoice = null;
+
+    // Browse approval — the run is still open, waiting on this answer. Resolve
+    // it in place so the agent makes the click (or skips it) and finishes the
+    // rest of the task without starting over.
+    if (pending.type === "browse-approval") {
+      const approved = btn === "approve";
+      try {
+        pending.resolve?.(approved);
+      } catch {
+        /* run already moved on */
+      }
+      return { ok: true, agentId: agent.id, approved };
+    }
 
     // Local Mode approval — resolve the promise the paused local task is
     // awaiting; the task loop continues (or safely skips) from there.
@@ -8798,6 +9154,25 @@ function createAgentRuntime(deps) {
       }
     }
 
+    // Typed reply while the browse Yes/No box is up: yes/no answers it in
+    // place; anything else (an edit request) declines and continues as a new
+    // ask, so the prepared work is left alone rather than sent.
+    if (agent.pendingChoice?.type === "browse-approval") {
+      const pendingApproval = agent.pendingChoice;
+      if (/^(?:ok(?:ay)?|yes+|yep|yup|yeah|ya|sure|approved?|send(?:\s+it)?|go(?:\s+ahead)?|do\s+it|confirm(?:ed)?)[\s,!.]*$/i.test(q)) {
+        return resolveChoice(agent.id, { buttonId: "approve", choiceId: pendingApproval.id });
+      }
+      if (/^(?:no+|nope|don'?t|stop|cancel|wait|hold\s+off|never\s?mind|not\s+yet)[\s,!.]*$/i.test(q)) {
+        return resolveChoice(agent.id, { buttonId: "decline", choiceId: pendingApproval.id });
+      }
+      agent.pendingChoice = null;
+      try {
+        pendingApproval.resolve?.(false);
+      } catch {
+        /* run already moved on */
+      }
+    }
+
     // Typed reply while a complex-software choice is pending.
     if (agent.pendingChoice?.type === "complex-tool") {
       const lower = q.toLowerCase();
@@ -9019,6 +9394,8 @@ function createAgentRuntime(deps) {
     agent.status = "running";
     agent.step = "Starting…";
     agent.waitingForSignIn = false;
+    // A fresh turn takes over the screen — retire any stale waiting indicator.
+    emitAgentWaiting(agent.id, { waiting: false });
     // Stale click/write history from a prior ask must not mark this one done.
     agent.lastAdaptiveHistory = [];
     if (!presetSteps) {
@@ -9462,7 +9839,7 @@ function createAgentRuntime(deps) {
         if (
           (stepSkill === "browse" || stepSkill === "tool-create" || browsedInPlan) &&
           !agent.waitingForSignIn &&
-          !/^Needs /i.test(String(agent.step || ""))
+          !stepAwaitsUser(agent.step)
         ) {
           try {
             const wcVerify = getBrowserWebContents?.(agent.id);
@@ -9632,7 +10009,10 @@ function createAgentRuntime(deps) {
             steps: remaining.length ? remaining : [stepText || originalAsk || q],
             ask: originalAsk || q,
             reason: agent.waitingReason || "signin",
-            label: String(agent.step || "Needs you"),
+            // The wall detector already named the exact step — reuse it so the
+            // park doesn't degrade into a generic "take the next step".
+            userAction: String(agent.waitingUserAction || ""),
+            label: String(agent.step || "Waiting for you"),
           });
           if (resumeMsg) stepAnswers.push(resumeMsg);
           break;
@@ -9648,7 +10028,7 @@ function createAgentRuntime(deps) {
           lastSkill === "tool-create" ||
           browsedInPlan) &&
         ownedBrowserAct.askStillNeedsAdaptiveWork?.(originalAsk || q) &&
-        !/^Needs /i.test(String(agent.step || "")) &&
+        !stepAwaitsUser(agent.step) &&
         !agent.waitingForSignIn &&
         !agent.pendingPlan?.waitingSignIn
       ) {
@@ -9752,11 +10132,11 @@ function createAgentRuntime(deps) {
       }
 
       // Full model answer (for history / context). Glass/Studio show structured close.
-      // "Needs …" covers sign-in, paywall, captcha, and generic blocked pauses.
+      // Covers sign-in, paywall, captcha, and generic blocked pauses.
       const alreadyWaitingUser =
         agent.waitingForSignIn ||
         !!agent.pendingPlan?.waitingSignIn ||
-        /^Needs /i.test(String(agent.step || ""));
+        stepAwaitsUser(agent.step);
       sendToAgentChannels(agent.id, "lykn:agent-status", {
         status: alreadyWaitingUser
           ? String(agent.step || "Needs you")
@@ -9991,9 +10371,7 @@ function createAgentRuntime(deps) {
       agent._fromSuggestion = false;
       if (waitingUser) {
         agent.status = "waiting";
-        if (!agent.step || !/^Needs /i.test(agent.step)) {
-          agent.step = "Needs you";
-        }
+        if (!stepAwaitsUser(agent.step)) agent.step = "Waiting for you";
         agent.waitingForSignIn = true;
       } else {
         agent.status = waitingChoice ? "waiting" : "idle";
@@ -10004,6 +10382,19 @@ function createAgentRuntime(deps) {
             : "Done";
         agent.waitingForSignIn = false;
       }
+      // Announce the pause from the one place every turn passes through. The
+      // park helpers each emit as they park, but plenty of turns end up waiting
+      // without going through one — the honesty check above decides it from
+      // unmet gaps — and those ended with a reply that said "waiting for you"
+      // and no live indicator beside it. Also clears a stale indicator when the
+      // turn finished for real.
+      emitAgentWaiting(agent.id, {
+        waiting: waitingUser || waitingChoice,
+        kind: waitingChoice ? "choice" : agent.waitingReason || "blocked",
+        label: agent.step,
+        detail: String(agent.waitingUserAction || "").replace(/\*\*/g, ""),
+        host: String(agent.waitingHost || ""),
+      });
       agent.skill = waitingChoice ? "complex-offer" : lastSkill;
       agent.updatedAt = new Date().toISOString();
       const choiceOut = waitingChoice

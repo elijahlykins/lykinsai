@@ -7,6 +7,35 @@
 
 const contextRouter = require("./contextRouter.cjs");
 const { formatSnapshotForModel } = require("../browser/snapshot.cjs");
+const visionPolicy = require("./visionPolicy.cjs");
+
+/**
+ * Some surfaces genuinely cannot report back. A design tool's canvas, a code
+ * editor, a rendered email preview — the action lands, the pixels change, and
+ * the DOM says nothing. Scoring that as a failure is worse than useless: it
+ * sends the agent back through retry, find-equivalent and replan, undoing real
+ * progress and burning the round budget on work it already did. These actions
+ * are reported as done-but-unconfirmed so the agent moves on and confirms by
+ * looking at the page instead.
+ */
+function unconfirmed(evidence) {
+  return {
+    success: true,
+    unverified: true,
+    evidence,
+    reason: "",
+    next: "continue",
+    method: "deterministic",
+  };
+}
+
+/** Did this action operate on something that cannot describe its own state? */
+function targetIsOpaque(before, action) {
+  const el = before?.byRef?.get?.(String(action?.target || ""));
+  if (!el) return false;
+  const tag = String(el.raw?.tag || "").toLowerCase();
+  return tag === "canvas" || tag === "svg" || String(el.role || "") === "img";
+}
 
 /**
  * @returns {Promise<{success:boolean, evidence:string, reason:string, next:'continue'|'recover'|'replan', method:string}>}
@@ -117,6 +146,16 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
         method: "deterministic",
       };
     }
+    // Editors that never expose their value (code mirrors, canvas text, some
+    // embedded rich-text widgets) cannot confirm the text landed. The actuator
+    // says the keystrokes went in; calling that a failure makes the agent
+    // retype and duplicate content.
+    if (actionResult?.unverified) {
+      return unconfirmed(
+        `typed ${String(action.text || "").length} characters into "${extracted.label || action.target}" — ` +
+          "this editor does not report its contents back, so confirm it visually before relying on it",
+      );
+    }
     if (!action.pressEnter) {
       return {
         success: false,
@@ -126,6 +165,22 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
         method: "deterministic",
       };
     }
+  }
+  if (type === "type" && !extracted?.ok && actionResult?.unverified) {
+    return unconfirmed(
+      `typed ${String(action.text || "").length} characters — the field's contents are not readable back from this editor`,
+    );
+  }
+
+  // A drop that rearranged the document shows up as new or moved elements.
+  if (type === "drag" && diff && (diff.newLabels.length || diff.textChanged)) {
+    return {
+      success: true,
+      evidence: `the drop changed the layout (${diff.summary})`,
+      reason: "",
+      next: "continue",
+      method: "deterministic",
+    };
   }
 
   // 3. Clear page change matching a stated expectation → cheap keyword check.
@@ -148,7 +203,9 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
   }
 
   // 4. Nothing observable changed after an action that should change things.
-  if (["click", "press_key"].includes(type) && diff && !diff.urlChanged && !diff.titleChanged && !diff.textChanged && !diff.newLabels.length) {
+  const nothingChanged =
+    diff && !diff.urlChanged && !diff.titleChanged && !diff.textChanged && !diff.newLabels.length;
+  if (["click", "click_coord", "drag", "press_key"].includes(type) && nothingChanged) {
     // Clicking a text field to focus it legitimately changes nothing visible —
     // that is not a failure.
     const clicked = before?.byRef?.get?.(String(action.target || ""));
@@ -160,6 +217,25 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
         next: "continue",
         method: "deterministic",
       };
+    }
+    // On a page that draws itself, "no DOM change" is the normal result of a
+    // correct action, not evidence against it.
+    const drawnSurface =
+      visionPolicy.VISUAL_EDITOR_URL_RE.test(String(after?.url || "")) ||
+      targetIsOpaque(before, action) ||
+      visionPolicy.countDrawnSurfaces(after) > 0;
+    if (drawnSurface) {
+      return unconfirmed(
+        `${type.replace("_", " ")} executed on a rendered surface, which reports no DOM change — ` +
+          "check the attached screenshot next round to see whether it had the intended effect",
+      );
+    }
+    // A modifier shortcut (bold, group, duplicate, undo) usually alters state
+    // that no text scrape can see.
+    if (type === "press_key" && Array.isArray(action.modifiers) && action.modifiers.length) {
+      return unconfirmed(
+        `sent ${action.modifiers.join("+")}+${action.key || "Enter"} — shortcut effects are often invisible to a page scrape`,
+      );
     }
     return {
       success: false,

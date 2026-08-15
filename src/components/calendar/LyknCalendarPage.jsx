@@ -4,7 +4,6 @@ import {
   ArrowLeft,
   ArrowUpRight,
   CalendarClock,
-  CalendarDays,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -15,7 +14,6 @@ import {
   FolderClosed,
   Link2,
   Loader2,
-  ListTodo,
   MapPin,
   Plus,
   RefreshCw,
@@ -26,17 +24,18 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { API_BASE_URL } from "@/lib/api-config";
 import { toast } from "@/components/ui/use-toast";
-import LyknTodosPanel from "@/components/todos/LyknTodosPanel";
 import { listUserProjects } from "@/lib/userProjects";
 
 // ────────────────────────────────────────────────────────────────────────
-// LyknCalendarPage — Calendar / To-dos as a Studio (and standalone) page.
+// LyknCalendarPage — Calendar as a Studio (and standalone) popup page.
 //
 // Sits on the Studio frost panel in Glass mode (transparent stage) and the
 // regular opaque UI in Neutral. Reads/writes lykn_events through the
 // RLS-protected Supabase client and subscribes to realtime so events the AI
-// adds in text/voice appear live. Toggle Calendar ↔ To-dos at the top;
-// ?panel=todos deep-links the to-do list.
+// adds in text/voice appear live. To-dos live on their own popup page.
+//
+// `windowed`: hosted in a floating Home app window, which already provides
+// the card (title bar, frost, rounded edges) — so the page drops its own.
 // ────────────────────────────────────────────────────────────────────────
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -169,38 +168,10 @@ function AppleCalendarIcon() {
   );
 }
 
-// Segmented Calendar / To-dos switch shown at the top of the pop-up.
-function PanelToggle({ panel, onChange }) {
-  const base =
-    "inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-all duration-200 ease-out";
-  const activeCls = "bg-white text-black dark:bg-white dark:text-black shadow-sm";
-  const idleCls = "text-black/55 dark:text-white/55 hover:text-black dark:hover:text-white";
-  return (
-    <div className="inline-flex items-center gap-0.5 rounded-lg bg-black/5 dark:bg-white/10 p-0.5">
-      <button
-        type="button"
-        onClick={() => onChange("calendar")}
-        className={`${base} ${panel === "calendar" ? activeCls : idleCls}`}
-      >
-        <CalendarDays className="w-3.5 h-3.5" /> Calendar
-      </button>
-      <button
-        type="button"
-        onClick={() => onChange("todos")}
-        className={`${base} ${panel === "todos" ? activeCls : idleCls}`}
-      >
-        <ListTodo className="w-3.5 h-3.5" /> To-dos
-      </button>
-    </div>
-  );
-}
-
-export default function LyknCalendarPage() {
+export default function LyknCalendarPage({ windowed = false }) {
   const { user } = useAuth();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const panelParam = searchParams.get("panel") === "todos" ? "todos" : "calendar";
+  const [searchParams] = useSearchParams();
   const today = useMemo(() => new Date(), []);
-  const [panel, setPanel] = useState(panelParam); // "calendar" | "todos"
   const [cursor, setCursor] = useState(() => ({ year: today.getFullYear(), month: today.getMonth() }));
   const [events, setEvents] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -268,19 +239,22 @@ export default function LyknCalendarPage() {
     return m;
   }, [projects]);
 
-  // Deep-link Calendar ↔ To-dos via ?panel= (Studio widgets / nav).
+  // Deep-link straight into the new-event form via ?new= (the Studio desktop
+  // calendar widget's + button). The value changes per click so re-entry
+  // works even when the surface is already on /calendar.
+  const newParam = searchParams.get("new");
   useEffect(() => {
-    setPanel(panelParam);
-  }, [panelParam]);
-
-  const selectPanel = useCallback((next) => {
-    setPanel(next);
-    setView("month");
-    setSearchParams(
-      next === "todos" ? { panel: "todos" } : {},
-      { replace: true },
-    );
-  }, [setSearchParams]);
+    if (!newParam) return;
+    setForm({
+      ...EMPTY_FORM,
+      date: toLocalDateInput(new Date()),
+      startTime: "09:00",
+      endTime: "10:00",
+    });
+    setError("");
+    setFormReturnTo("month");
+    setView("form");
+  }, [newParam]);
 
   // Realtime: reflect events the AI adds in text/voice without a refresh.
   useEffect(() => {
@@ -662,35 +636,38 @@ export default function LyknCalendarPage() {
   const inputCls =
     "w-full px-3 py-2 text-sm bg-panel border border-black/10 dark:border-white/10 text-black dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-lg focus:outline-none focus:ring-1 focus:ring-black/20 dark:focus:ring-white/20";
 
+  /* In a floating window the calendar owns the whole frame: the month grid
+   * stretches to fill it (so zooming the window doesn't leave a short grid
+   * stranded above empty space) and the taller views scroll inside themselves
+   * rather than growing a scrollbar on the window. */
+  const headerCls = windowed ? "flex-shrink-0" : "";
+  const paneScroll = windowed ? "min-h-0 flex-1 overflow-y-auto scrollbar-hide" : "";
+
   return (
-    <div className="lykn-calendar-page h-full min-h-0 overflow-y-auto bg-transparent text-black dark:bg-[#121214] dark:text-white">
-      <div className="mx-auto w-full max-w-2xl px-6 py-8 sm:px-8">
-        {(panel === "todos" || view === "month") && (
-          <div className="flex items-center justify-center pb-4">
-            <PanelToggle panel={panel} onChange={selectPanel} />
-          </div>
-        )}
-
+    <div
+      className={`lykn-calendar-page bg-transparent text-black dark:text-white ${
+        windowed
+          ? "flex h-full min-h-0 flex-col overflow-hidden"
+          : "h-full min-h-0 overflow-y-auto dark:bg-[#121214]"
+      }`}
+    >
+      <div
+        className={`w-full ${
+          windowed
+            ? "flex min-h-0 flex-1 flex-col px-4 pb-4 pt-2"
+            : "mx-auto max-w-2xl px-6 py-8 sm:px-8"
+        }`}
+      >
         <div
-          className={`flex flex-col gap-4 rounded-[1.75rem] border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/[0.06] p-5 shadow-[0_8px_32px_rgba(0,0,0,0.08)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.28)] backdrop-blur-xl sm:p-6 ${
-            panel === "todos" || view === "month" ? "min-h-[30rem]" : ""
-          }`}
+          className={`flex flex-col gap-4 ${
+            windowed
+              ? "min-h-0 flex-1"
+              : "rounded-[1.75rem] border border-black/10 dark:border-white/10 bg-white/80 dark:bg-white/[0.06] p-5 shadow-[0_8px_32px_rgba(0,0,0,0.08)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.28)] backdrop-blur-xl sm:p-6"
+          } ${view === "month" && !windowed ? "min-h-[30rem]" : ""}`}
         >
-        {panel === "todos" && (
+        {view === "month" && (
           <>
-            <div className="flex flex-col space-y-1.5 text-left">
-              <h2 className="sr-only">To-dos</h2>
-              <p className="text-[0.625rem] text-black/40 dark:text-white/40">
-                Tasks you and LYKN are tracking. Ask LYKN in chat or voice to add, complete, or clear items. They sync here live.
-              </p>
-            </div>
-            <LyknTodosPanel active={panel === "todos"} />
-          </>
-        )}
-
-        {panel === "calendar" && view === "month" && (
-          <>
-            <div className="flex flex-col space-y-1.5 text-left">
+            <div className={`flex flex-col space-y-1.5 text-left ${headerCls}`}>
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold leading-none tracking-tight text-black dark:text-white">{monthLabel}</h2>
                 <div className="flex items-center gap-1">
@@ -729,13 +706,21 @@ export default function LyknCalendarPage() {
               <p className="sr-only">Your LYKN calendar</p>
             </div>
 
-            <div className="grid grid-cols-7 text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 mb-1">
+            <div
+              className={`grid grid-cols-7 text-[0.625rem] font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 mb-1 ${headerCls}`}
+            >
               {WEEKDAYS.map((w) => (
                 <div key={w} className="px-1 py-0.5 text-center">{w}</div>
               ))}
             </div>
 
-            <div className="grid grid-cols-7 gap-px bg-black/5 dark:bg-white/5 rounded-lg overflow-hidden border border-black/5 dark:border-white/5">
+            {/* grid-rows-6 is minmax(0,1fr) per row, so the six weeks split the
+                window's leftover height evenly however tall it's dragged. */}
+            <div
+              className={`grid grid-cols-7 gap-px bg-black/5 dark:bg-white/5 rounded-lg overflow-hidden border border-black/5 dark:border-white/5 ${
+                windowed ? "min-h-0 flex-1 grid-rows-6" : ""
+              }`}
+            >
               {grid.map((day) => {
                 const inMonth = day.getMonth() === cursor.month;
                 const isToday = sameDay(day, today);
@@ -745,9 +730,9 @@ export default function LyknCalendarPage() {
                     type="button"
                     key={day.toISOString()}
                     onClick={() => openDayView(day)}
-                    className={`relative min-h-[4.5rem] text-left p-1 bg-black/[0.02] dark:bg-white/[0.04] transition-colors hover:bg-blue-500/5 ${
-                      inMonth ? "" : "opacity-40"
-                    }`}
+                    className={`relative overflow-hidden text-left p-1 bg-black/[0.02] dark:bg-white/[0.04] transition-colors hover:bg-blue-500/5 ${
+                      windowed ? "min-h-0" : "min-h-[4.5rem]"
+                    } ${inMonth ? "" : "opacity-40"}`}
                   >
                     <span
                       className={`inline-flex items-center justify-center w-5 h-5 text-[0.6875rem] rounded-full ${
@@ -792,16 +777,18 @@ export default function LyknCalendarPage() {
               })}
             </div>
 
-            <div className="flex items-center justify-between text-[0.625rem] text-black/40 dark:text-white/40 pt-1">
+            <div
+              className={`flex items-center justify-between text-[0.625rem] text-black/40 dark:text-white/40 pt-1 ${headerCls}`}
+            >
               <span>Ask LYKN in chat or voice to add events. They appear here live.</span>
               {loading && <Loader2 className="w-3 h-3 animate-spin" />}
             </div>
           </>
         )}
 
-        {panel === "calendar" && view === "day" && (
+        {view === "day" && (
           <>
-            <div className="flex flex-col space-y-1.5 text-left">
+            <div className={`flex flex-col space-y-1.5 text-left ${headerCls}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 min-w-0">
                   <button type="button" onClick={() => setView("month")} className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors flex-shrink-0" title="Back to month">
@@ -832,7 +819,11 @@ export default function LyknCalendarPage() {
               <p className="sr-only">Events for the selected day</p>
             </div>
 
-            <div className="max-h-[60vh] overflow-y-auto -mx-1 px-1">
+            <div
+              className={`-mx-1 px-1 ${
+                windowed ? paneScroll : "max-h-[60vh] overflow-y-auto"
+              }`}
+            >
               {selectedDayEvents.length === 0 ? (
                 <button
                   type="button"
@@ -904,9 +895,9 @@ export default function LyknCalendarPage() {
           </>
         )}
 
-        {panel === "calendar" && view === "sync" && (
+        {view === "sync" && (
           <>
-            <div className="flex flex-col space-y-1.5 text-left">
+            <div className={`flex flex-col space-y-1.5 text-left ${headerCls}`}>
               <div className="flex items-center gap-2">
                 <button type="button" onClick={() => setView("month")} className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors" title="Back to month">
                   <ArrowLeft className="w-4 h-4" />
@@ -916,7 +907,7 @@ export default function LyknCalendarPage() {
               <p className="sr-only">Connect Google and Apple calendars</p>
             </div>
 
-            <div className="flex flex-col gap-3">
+            <div className={`flex flex-col gap-3 ${paneScroll}`}>
               {/* Google Calendar */}
               <div className="rounded-xl border border-black/5 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.04] p-3">
                 <div className="flex items-center gap-2">
@@ -1022,9 +1013,9 @@ export default function LyknCalendarPage() {
           </>
         )}
 
-        {panel === "calendar" && view === "form" && (
+        {view === "form" && (
           <>
-            <div className="flex flex-col space-y-1.5 text-left">
+            <div className={`flex flex-col space-y-1.5 text-left ${headerCls}`}>
               <div className="flex items-center gap-2">
                 <button type="button" onClick={() => setView(formReturnTo)} className="w-7 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center transition-colors" title="Back">
                   <ArrowLeft className="w-4 h-4" />
@@ -1037,7 +1028,9 @@ export default function LyknCalendarPage() {
             </div>
 
             {form.readOnly && (
-              <div className="flex items-start gap-2 rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2 text-xs text-black/60 dark:text-white/60">
+              <div
+                className={`flex items-start gap-2 rounded-lg bg-black/5 dark:bg-white/5 px-3 py-2 text-xs text-black/60 dark:text-white/60 ${headerCls}`}
+              >
                 <CalendarClock className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
                 <span>
                   Synced from {PROVIDER_LABEL[form.provider] || "an external calendar"}.
@@ -1046,7 +1039,7 @@ export default function LyknCalendarPage() {
               </div>
             )}
 
-            <form onSubmit={handleSave} className="flex flex-col gap-3">
+            <form onSubmit={handleSave} className={`flex flex-col gap-3 ${paneScroll}`}>
               <input
                 autoFocus={!form.readOnly}
                 type="text"

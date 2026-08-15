@@ -56,7 +56,7 @@ const LyknChatPlusMenu = React.memo(function LyknChatPlusMenu({
           side="top"
           align="start"
           sideOffset={8}
-          className="lykn-chat-bar-menu z-[260] w-[15rem] rounded-2xl bg-panel border border-black/[0.08] dark:border-white/[0.08] shadow-lg p-1.5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95"
+          className="lykn-chat-bar-menu lg-menu z-[260] w-[15rem] p-1.5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95"
         >
           <button type="button" className={itemCls} onClick={() => run(onAddFiles)}>
             <span className={iconWrapCls}><Paperclip className="w-[1.05rem] h-[1.05rem]" /></span>

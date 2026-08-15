@@ -6,7 +6,7 @@
 // full page (/projects/:projectId - ProjectDetailPage), the workspace where
 // tasks, calendar deadlines, knowledge, and AI activity for that project live.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Library, Plus, X } from "lucide-react";
 import { useAuth } from "@/lib/SupabaseAuth";
@@ -73,6 +73,7 @@ function projectRoleLine(project, isFocus) {
 export default function ProjectsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const isDark = useIsDark();
   const userId = user?.id;
@@ -106,6 +107,15 @@ export default function ProjectsPage() {
   const isGlassEmbed =
     typeof document !== "undefined" &&
     document.documentElement.classList.contains("lykn-glass-embed");
+
+  // Deep-link into the new-project dialog via ?new= (the Studio desktop
+  // projects widget's + button). The value changes per click so re-entry
+  // works even when the surface is already on /projects.
+  const newParam = searchParams.get("new");
+  useEffect(() => {
+    if (!newParam) return;
+    setCreateOpen(true);
+  }, [newParam]);
 
   // Only light up a card while hovered/focused - otherwise they all match.
   const featuredId = hoveredId;

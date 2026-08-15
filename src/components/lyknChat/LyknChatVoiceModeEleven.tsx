@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { API_BASE_URL } from "@/lib/api-config";
 import { VOICE_FIRST_MESSAGE_OVERRIDE } from "@/lib/voice/voiceConfig";
+import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import { getVoiceId } from "@/lib/ai-prefs";
 import { TUNE_VOICE_TOOL, applyVoiceInstructionTune } from "@/lib/voice/tuneInstructions";
 import VoiceTechOrb from "./VoiceTechOrb";
@@ -301,11 +302,11 @@ function VoiceInner({ open, onClose, chatId, buildInstructions, onUserTranscript
     try {
       // Prompt for permission only; the SDK opens its own mic stream, so stop
       // these throwaway tracks immediately or the mic stays "live" after exit.
-      const permStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const permStream = await requestMicStream({ audio: true });
       try { permStream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
-    } catch {
+    } catch (err: unknown) {
       if (cancelled()) return;
-      setErrorText("Microphone permission was denied. Enable it to use Voice Mode.");
+      setErrorText(micErrorMessage(err));
       setUiState("error");
       startedRef.current = false;
       return;

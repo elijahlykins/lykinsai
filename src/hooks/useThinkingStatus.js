@@ -39,6 +39,23 @@ const GENERIC_THINK_RE =
 const GENERIC_BUILD_RE =
   /^(building(?:\sthe\s(?:app|page|artifact))?|running\stools|designing\sthe\sbuild|sketching\sthe\slayout|writing\sthe\scode|wiring\sthe\sinteractions|assembling\sthe\spieces|drafting\sthe\sdocument|composing\sthe\svideo|laying\sout\sthe\sspreadsheet|almost\sready|putting\son\sthe\sfinishing\stouches)[\s.…]*$/i;
 
+/** Live build/create narration — title lines, byte ticks, and the rotating phrases. */
+const LIVE_BUILD_STATUS_RE =
+  /^(building|designing|drafting|composing|writing the|laying out|wiring|assembling|sketching|polishing|almost ready|putting on the finishing|creating the|rendering|filling in)/i;
+
+/**
+ * True when `status` is a live build/create activity line (including
+ * "Building Landing page…" and "Writing the code… (12k)"). Generic think /
+ * "Responding…" lines return false so a finished chat reply doesn't keep a
+ * spinner parked underneath it.
+ */
+export function isLiveBuildStatus(status) {
+  const t = String(status || "").trim();
+  if (!t) return false;
+  if (GENERIC_THINK_RE.test(t)) return false;
+  return GENERIC_BUILD_RE.test(t) || LIVE_BUILD_STATUS_RE.test(t);
+}
+
 /**
  * Returns a cycling status string that progresses through descriptive phases
  * while `active` is true. Resets when `active` flips to false.
@@ -48,11 +65,14 @@ const GENERIC_BUILD_RE =
  *   value (e.g. "Transcribing video…") is returned directly; a generic one
  *   (e.g. a bare "Thinking…" / "Building…") is ignored so the lively
  *   rotation shows instead.
+ * @param {boolean} [preferBuild=false] - Start (and stay) on the build-phrase
+ *   lane. Build mode uses this so the wait never falls back to "Thinking…"
+ *   after the model writes a short "I'll build that out" line.
  * @returns {string}
  */
-export function useThinkingStatus(active, override) {
+export function useThinkingStatus(active, override, preferBuild = false) {
   const [index, setIndex] = useState(0);
-  const [lane, setLane] = useState("think"); // "think" | "build"
+  const [lane, setLane] = useState(preferBuild ? "build" : "think"); // "think" | "build"
   const timerRef = useRef(null);
 
   const trimmedOverride = override && override.trim();
@@ -63,14 +83,13 @@ export function useThinkingStatus(active, override) {
 
   // Once we enter the build lane for this turn, stay there until `active`
   // flips off — empty/`Responding…` statuses mid-build must not snap back
-  // to the generic "Thinking…" phrases.
+  // to the generic "Thinking…" phrases. `preferBuild` (Build / Create mode)
+  // starts us here even before the first tool status arrives.
   const nextLane =
+    preferBuild ||
     lane === "build" ||
     isGenericBuild ||
-    (specificOverride &&
-      /^(building|designing|drafting|composing|writing\sthe|laying\sout)/i.test(
-        specificOverride,
-      ))
+    (specificOverride && LIVE_BUILD_STATUS_RE.test(specificOverride))
       ? "build"
       : "think";
 
