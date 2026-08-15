@@ -97,8 +97,10 @@ The split's long-term risk isn't the move — it's these implicit contracts beco
 
 ## 9. Suggested sequencing
 
-1. **Fix the electron-builder `files` gap** (defect 1) — ship-blocking, independent of everything.
-2. **Backend extraction first** — cleanest seam: nothing in `electron/` or `src/` imports the server files; resolve the 3 `server.js`→`src/lib` imports + intent trio by copy-with-contract-test. Move `render.yaml`, ops scripts, security/ops docs with it.
+> **Status 2026-08-15:** steps 1–2 are **done** — electron-builder fix committed (`75bb469`, verified via asar listing) and the backend extracted to the sibling repo `../lykn-backend` (history-preserving, 209 commits; lykinsai removal on branch `backend-extraction`).
+
+1. ~~**Fix the electron-builder `files` gap**~~ (defect 1) — done.
+2. ~~**Backend extraction first**~~ — done: `../lykn-backend`, with shared modules duplicated at original paths (see its README's cross-repo contracts table).
 3. **iOS extraction** — trivial (3 entries); take `IOS_RELEASE_COMPLIANCE_PLAN.md`; AASA ownership goes to whoever owns the domain.
 4. **Website extraction** — the 12-step sequence in §4; shell entry-URL repointing ships *first*.
 5. **Extension → artifact** consumption once it has its own repo/publishing (Decision C).
