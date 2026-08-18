@@ -395,11 +395,19 @@ browser. **This is load-bearing for sign-in and has no WKWebView equivalent**
 dissolves; verify early, because if it doesn't, there is no header-rewriting
 tool to fall back on.
 
-Related: **do not set `customUserAgent`** unless forced. The default WKWebView
-UA is already Safari-shaped, and a sloppy override (e.g. dropping the
-`Version/x` token) is a louder bot signal than anything it fixes. Use
-`applicationNameForUserAgent` to append, and `WKWebpagePreferences.preferredContentMode = .desktop`
-for desktop viewport/UA on iPad.
+Related: **do not set `customUserAgent`** unless forced — hand-rolling the whole
+string means hand-maintaining the OS and WebKit tokens WebKit already gets
+right. Use `applicationNameForUserAgent`, and
+`WKWebpagePreferences.preferredContentMode = .desktop` for desktop viewport/UA
+on iPad.
+
+**Corrected — see §11, bug 4.** The claim originally made here, that the default
+WKWebView UA is "already Safari-shaped", is false, and the port shipped a
+version-less UA on the strength of it. A default `WKWebView` stops after
+`(KHTML, like Gecko)`: no `Version/x`, no `Safari/x`.
+`applicationNameForUserAgent` is the slot Safari itself fills with those tokens,
+so passing a bare app name through it replaces a browser identity that was never
+there.
 
 ### Permissions
 
@@ -771,7 +779,9 @@ browser.
   so `wireAgentSessionClientHints` has no replacement. The premise probably
   dissolves — `Sec-CH-UA` is a Chromium construct Safari does not send, and the
   port sets no `customUserAgent` — but this is unverified and is the single
-  most likely thing to break Google sign-in.
+  most likely thing to break Google sign-in. Note that the "we are Safari-shaped
+  anyway" half of that argument only became true with §11 bug 4's fix; it was
+  false for the whole period this section describes.
 - **IME / composition is unimplemented, not merely degraded.** The typing
   ladder does not fabricate `compositionstart`/`update`/`end`, so CJK and emoji
   input has no path at all. `NSEvent` synthesis skips `interpretKeyEvents:`, so
@@ -972,6 +982,48 @@ the group entirely for a single continuation resumed by whichever of the
 delegate callback and a timer arrives first. Either way the regression test has
 to assert that `waitForLoad` *returns* on a load that never completes, which
 means a scenario built around a deliberately stalling page.
+
+### A fourth bug, found from the parity work and fixed
+
+**4. The port identified itself as a browser with no name and no version.**
+
+`TabManager.makeConfiguration` set `applicationNameForUserAgent = "LYKN"`, on the
+§4 reasoning that the default UA was already Safari-shaped and only needed an app
+name appended. Both halves are wrong. Measured on this machine:
+
+| configuration | resulting user agent | Docs |
+|---|---|---|
+| plain `WKWebView` | `…(KHTML, like Gecko)` | banner |
+| as shipped | `…(KHTML, like Gecko) LYKN` | banner |
+| `Version/26.0 Safari/605.1.15` | `…(KHTML, like Gecko) Version/26.0 Safari/605.1.15` | clean |
+
+A bare WKWebView emits neither token, so there was no Safari identity for `"LYKN"`
+to append to — it filled the slot instead. Google Docs reads the result as an
+unknown browser and serves a reduced build behind a "This browser version is no
+longer supported" banner.
+
+The cost is not the banner. Re-capturing the same public document through the
+real controller, the agent's catalog went from **21 elements to 28** once the
+tokens were restored: the two banner controls (`Learn More`, `Dismiss`) go away,
+and the live-presence layer — other viewers, sharing affordances — only appears
+in the second case. The agent was working a deliberately degraded page and
+nothing in the stack said so.
+
+This is the same shape as bugs 2 and 3: every request succeeded, every test
+passed, and the defect lived in what the page *was* rather than in any failure.
+
+**Fixed.** `SafariUserAgent` (`SafariUserAgent.swift`) derives the version from the
+installed Safari's `Info.plist`, falling back to a macOS-major map for sandboxed
+builds that cannot read another bundle — Safari majors only realigned with macOS
+at 26, so 14 and 15 are pinned. `TabManager` and `LYKNBench` both pass
+`SafariUserAgent.applicationName`; nothing is appended after the Safari tokens,
+because a unique app token is a fingerprint and the browser identity is what
+version-gating sites read.
+
+**Regression test.** `LYKNActuate`'s first scenario asserts the live
+`navigator.userAgent` carries `Version/` and `Safari/605.1.15`, and — with
+`hasSuffix`, not `contains` — that nothing trails them, so re-adding an app token
+fails the suite rather than shipping quietly.
 
 ### Why the runtime coverage lives in the harness, not `swift test`
 
