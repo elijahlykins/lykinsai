@@ -245,7 +245,13 @@ async function decideNext({
   // snapshot. "holo": targets are natural-language descriptions that a
   // grounding stage resolves to coordinates after this call returns, so ref
   // validation here would reject every one of them as an unknown reference.
+  // "assist": refs as normal, but this round may also describe its target.
   groundingMode = "refs",
+  // This round only: the recovery ladder has escalated to pixels, so the model
+  // may hand back a described target for the grounder to locate. Off by
+  // default — describing a target that a reference already names is a paid
+  // round-trip for a worse aim.
+  assistGrounding = false,
   signal = null,
 }) {
   const system = contextRouter.buildDecisionSystem({
@@ -285,6 +291,19 @@ async function decideNext({
       ].join(" "),
     );
   }
+  if (assistGrounding) {
+    userParts.push(
+      [
+        "TARGETING RESCUE (this round only): element references have failed repeatedly on this step.",
+        "If what you need is visible in the screenshot but you cannot name it with a reference from the",
+        "element list, put a description of it in `targetDescription` instead of `target` — what it looks",
+        'like and where it sits ("the blue Publish button in the top-right of the toolbar") — and it will be',
+        "located on the image for you. Keep using `target` whenever a reference genuinely matches; describe",
+        "only what the element list cannot express. `select`, `replace_text` and `extract` still need a real",
+        "reference and cannot be described.",
+      ].join(" "),
+    );
+  }
   userParts.push("Decide the next structured step now.");
 
   const decision = await model.decide({
@@ -294,7 +313,7 @@ async function decideNext({
     signal,
   });
 
-  return normalizeDecision(decision, snapshot, { groundingMode });
+  return normalizeDecision(decision, snapshot, { groundingMode, assistGrounding });
 }
 
 function coordPairValid(x, y) {
@@ -312,17 +331,28 @@ function validEndpoint(snapshot, ref, x, y) {
   return coordPairValid(x, y);
 }
 
-function normalizeDecision(decision, snapshot, { groundingMode = "refs" } = {}) {
+function normalizeDecision(decision, snapshot, { groundingMode = "refs", assistGrounding = false } = {}) {
   const describesTarget = groundingMode === "holo";
   if (decision.kind === "act") {
-    const action = decision.action || {};
+    let action = decision.action || {};
     const type = String(action.type || "").trim();
     if (!type) {
       return { ...decision, kind: "invalid", invalidReason: "action missing type" };
     }
+    // A described target is only meaningful on a round that invited one. The
+    // field lives in the schema permanently, so a model that reaches for it
+    // unprompted would otherwise route an ordinary action through a grounding
+    // call nobody asked for — and skip reference validation on the way.
+    let described = String(action.targetDescription || "").trim();
+    if (described && !assistGrounding) {
+      const { targetDescription: _ignored, ...rest } = action;
+      action = rest;
+      described = "";
+      decision = { ...decision, action };
+    }
     if (ACTIONS_NEEDING_TARGET.has(type)) {
       const ref = String(action.target || "").trim();
-      if (!ref) {
+      if (!ref && !described) {
         return {
           ...decision,
           kind: "invalid",
@@ -332,8 +362,10 @@ function normalizeDecision(decision, snapshot, { groundingMode = "refs" } = {}) 
         };
       }
       // In holo mode the grounding stage decides whether the described target
-      // exists; it can see the screen and this function cannot.
-      if (!describesTarget && snapshot && !snapshot.byRef.has(ref)) {
+      // exists; it can see the screen and this function cannot. The same is
+      // true of an assist round's description — but a reference it supplies
+      // alongside one is still a reference, and still has to be real.
+      if (!describesTarget && !described && snapshot && !snapshot.byRef.has(ref)) {
         return { ...decision, kind: "invalid", invalidReason: `unknown element reference ${ref}` };
       }
     }

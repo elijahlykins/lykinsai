@@ -185,3 +185,163 @@ test("onBeforeAct is awaited before the action lands", async () => {
   assert.ok(hookAt >= 0, "the hook should have fired");
   assert.ok(hookAt < clickAt, `the hook must complete before the click (${order.join(" -> ")})`);
 });
+
+// ── assist: refs first, Holo as the rescue ──────────────────────────────────
+//
+// Production no longer runs with the grounder switched off. It runs in "assist":
+// element references do the aiming, and only once the recovery ladder has given
+// up on them does the model get to describe what it can see. These pin down the
+// two ways that could go wrong — grounding on a round nobody asked for, and
+// failing to ground on the round that did.
+
+/** A page whose only control never responds, so the ladder has to escalate. */
+function createStubbornBrowser() {
+  const actuated = [];
+  const webContents = {
+    isDestroyed: () => false,
+    getURL: () => "https://design.example.com/edit",
+    getTitle: () => "Editor",
+  };
+  const actuator = {
+    async runAction(_wc, action) {
+      actuated.push(action);
+      return { ok: true, resolved: action.type, x: action.x, y: action.y, clickedLabel: action.label || "" };
+    },
+    async getDOMCatalog() {
+      return {
+        items: [
+          { id: "1", role: "button", label: "Zoom", selector: "#zoom", clientX: 700, clientY: 60, inView: true },
+        ],
+      };
+    },
+    async getPageContext() {
+      return { text: "Untitled design.", url: "https://design.example.com/edit", title: "Editor" };
+    },
+    async settle() {},
+    async waitForDomSettle() {},
+    async screenshotDataUrl() { return "data:image/jpeg;base64,ZmFrZQ=="; },
+  };
+  return { webContents, actuator, actuated };
+}
+
+/** Model that clicks a ref until the loop invites a description, then describes. */
+function makeAssistModel({ description = "the zoom control in the top toolbar", groundImpl, onDecide = null }) {
+  const groundCalls = [];
+  const prompts = [];
+  return {
+    groundCalls,
+    prompts,
+    async plan() {
+      return { plan: ["Zoom in"], constraints: [], knownFacts: {}, skills: [], clarification: "" };
+    },
+    async decide(ctx) {
+      prompts.push(ctx.user);
+      const invited = /TARGETING RESCUE/.test(String(ctx.user || ""));
+      if (onDecide) onDecide({ invited, ctx });
+      return {
+        kind: "act",
+        action: invited
+          ? { type: "click", targetDescription: description }
+          : { type: "click", target: "e1" },
+        reason: "", expectedOutcome: "the canvas zooms in", risk: "low",
+        answer: "", question: "", replanReason: "", planStepCompleted: false,
+        factsLearned: [], candidateResults: [],
+      };
+    },
+    async verify() {
+      return { success: false, evidence: "", reason: "nothing moved", next: "recover" };
+    },
+    async ground(args) {
+      groundCalls.push(args);
+      return groundImpl(args, groundCalls.length);
+    },
+    async learn() { return { notes: [], userNotes: [] }; },
+  };
+}
+
+test("production defaults to assist: references are never grounded while they work", async () => {
+  const fake = createFakeBrowser();
+  const model = makeModel({
+    decisions: [
+      { action: { type: "click", target: "e1" } },
+      { kind: "finish", answer: "done", factsLearned: ["the cart holds 1 item"] },
+    ],
+    groundImpl: null, // throws if the loop ever reaches it
+  });
+
+  // No groundingMode at all — exactly how agentRuntime calls the loop.
+  const result = await runTask({ fake, model, groundingMode: undefined });
+
+  assert.equal(model.groundCalls.length, 0, "a working element ref must never cost a grounding call");
+  const click = fake.actuated.find((a) => a.type === "click" || a.type === "click_coord");
+  assert.equal(click.type, "click", "assist must not turn an ordinary click into coordinates");
+  assert.equal(result.ok, true);
+});
+
+test("a described target on a round that did not invite one is refused, not grounded", async () => {
+  const fake = createFakeBrowser();
+  const model = makeModel({
+    decisions: [
+      { action: { type: "click", targetDescription: "the Checkout button" } },
+      { action: { type: "click", target: "e1" } },
+      { kind: "finish", answer: "done", factsLearned: ["the cart holds 1 item"] },
+    ],
+    groundImpl: null,
+  });
+
+  await runTask({ fake, model, groundingMode: undefined });
+
+  assert.equal(
+    model.groundCalls.length, 0,
+    "a description the loop did not ask for must not open a grounding call",
+  );
+  assert.equal(
+    fake.actuated.filter((a) => a.type === "click_coord").length, 0,
+    "and must never reach the actuator as a blind coordinate click",
+  );
+});
+
+test("once references have failed, the model may describe the target and it is grounded", async () => {
+  const fake = createStubbornBrowser();
+  const model = makeAssistModel({
+    groundImpl: () => ({ found: true, x: 742, y: 58, confidence: "high", note: "zoom control" }),
+  });
+
+  await runTask({ fake, model, groundingMode: undefined });
+
+  assert.ok(model.groundCalls.length >= 1, "the rescue round should reach the grounder");
+  assert.equal(model.groundCalls[0].description, "the zoom control in the top toolbar");
+  assert.ok(
+    String(model.groundCalls[0].imageUrl || "").startsWith("data:image/"),
+    "the grounder must read the same frame the decide model saw",
+  );
+
+  const coordClick = fake.actuated.find((a) => a.type === "click_coord");
+  assert.ok(coordClick, "the grounded point should have been actuated");
+  assert.equal(coordClick.x, 742);
+  assert.equal(coordClick.y, 58);
+  assert.equal(coordClick.label, "the zoom control in the top toolbar",
+    "the description rides along for the safety gate and the narration");
+
+  // The rescue is offered, not latched: the first rounds are plain ref clicks.
+  const refClicks = fake.actuated.filter((a) => a.type === "click");
+  assert.ok(refClicks.length >= 2, "references are tried first, repeatedly, before pixels");
+});
+
+test("a locator outage degrades to the agent's own eyes instead of ending the run", async () => {
+  const fake = createStubbornBrowser();
+  const model = makeAssistModel({
+    groundImpl: () => { throw new Error("grounding endpoint unavailable"); },
+  });
+
+  const result = await runTask({ fake, model, groundingMode: undefined });
+
+  // Unlike a holo arm, an assist outage is survivable: the run continues and
+  // ends on its own terms rather than on "Grounding is unavailable".
+  assert.doesNotMatch(String(result.answer), /grounding is unavailable/i);
+  assert.ok(model.groundCalls.length > 0, "it should have tried");
+  assert.ok(
+    model.groundCalls.length <= 3,
+    `assist must stop paying for a locator that is down (called ${model.groundCalls.length} times)`,
+  );
+});

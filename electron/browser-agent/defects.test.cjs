@@ -764,3 +764,28 @@ test("a checkbox reads back as its state, not as an empty field", async () => {
   });
   assert.match(v.evidence, /is checked/);
 });
+
+test("a controller that cannot screenshot does not throw the run away at the visual rung", async () => {
+  // The visual recovery rung was the one capture site with no guard, while the
+  // other three all use `.catch(() => null)` and `shot?.ok`. The shipped
+  // controller swallows its own capture errors, so this is a contract with the
+  // injected dependency rather than a live outage: a controller that rejects
+  // (or answers with nothing) threw a plain Error straight out of the loop,
+  // which the caller rethrows rather than falling back — losing a task that
+  // only wanted a look at the page.
+  const named = Array.from({ length: 10 }, (_, i) => makeElement({
+    name: `b${i}`, role: "button", label: `Button ${i}`,
+  }));
+  const fake = createFakeBrowser({ elements: named });
+  const controller = createBrowserController({ webContents: fake.webContents, actuator: fake.actuator });
+  controller.screenshot = async () => { throw new Error("capture device busy"); };
+  const model = createScriptedModel({
+    decisions: [{ kind: "act", action: { type: "click", target: "e1" }, expectedOutcome: "something happens" }],
+    verify: () => ({ success: false, evidence: "", reason: "nothing moved", next: "recover" }),
+  });
+
+  // Recovery escalates to `visual` on the third failure of the same action.
+  const result = await runTask(fake, model, { controller, maxRounds: 10 });
+  assert.equal(result.ok, false, "the task still fails — it just fails as a task, not as a crash");
+  assert.match(result.answer, /repeated attempts failed/i);
+});

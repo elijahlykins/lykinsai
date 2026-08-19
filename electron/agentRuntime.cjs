@@ -6291,6 +6291,10 @@ function createAgentRuntime(deps) {
       controller,
       model,
       memory,
+      // Kill switch for the Holo targeting rescue. Only ever consulted here, so
+      // the runtime itself stays free of environment lookups — grounding mode
+      // read from env is exactly what caused runs to die on a stray variable.
+      holoAssist: String(process.env.LYKN_BROWSER_HOLO_ASSIST || "").trim() !== "0",
       conversationHistory: (convHistory || []).map((m) => ({
         role: m?.role === "assistant" ? "assistant" : "user",
         content: String(m?.content || "").slice(0, 600),

@@ -123,10 +123,16 @@ async function runTask({
   // review the prepared work and request edits — used for first-run composes;
   // the user's approval reply then runs with "auto".
   sendPolicy = "auto",
-  // "refs": aim with element references from the snapshot (production).
+  // "refs": aim with element references from the snapshot only.
   // "holo": the model describes its target and a grounding model turns that
-  // description into a point. Only the eval harness sets this.
+  // description into a point, for the whole run. Only the eval harness sets this.
+  // Unset (production) resolves to "assist" when holoAssist is on.
   groundingMode = "",
+  // Production default: refs do the aiming, and when the recovery ladder
+  // escalates to pixels the model may describe its target for the grounder
+  // instead of reading coordinates off the screenshot itself. Kill switch for
+  // the caller; an outage of the grounder degrades rather than failing.
+  holoAssist = true,
   // Per-stage span timing. Off in production; the disabled timer is a no-op.
   timing = false,
   // Awaited pre-action hook. onProgress is fired-and-forgotten, so a harness
@@ -140,8 +146,16 @@ async function runTask({
   if (__holdDebug) __holdDebug.debug = debug;
   const recovery = createRecoveryTracker();
   const timer = createTimer({ enabled: timing === true, onSpan: (sp) => debug.log("span", sp) });
-  // null in refs mode — that null is the loop's only grounding-mode check.
-  const grounder = createGrounder({ mode: groundingMode, model });
+  // null only when grounding is off entirely — that null is the loop's only
+  // grounding-mode check. An explicit mode from the eval harness always wins.
+  const grounder = createGrounder({
+    mode: groundingMode || (holoAssist ? "assist" : "refs"),
+    model,
+  });
+  // Assist is a rescue, not a method: it is offered for one round at a time,
+  // only after element references have already failed on this step.
+  let assistAvailable = grounder?.mode === "assist";
+  let assistOffered = false;
   const userMemory = memory ? await memory.getUserMemory().catch(() => "") : "";
 
   let learned = false;
@@ -377,6 +391,9 @@ async function runTask({
         screenshotDataUrl: pendingScreenshot,
         visionHint,
         groundingMode: grounder ? grounder.mode : "refs",
+        // Only ever true on the round after the ladder reached for pixels, and
+        // only while the grounder is actually answering.
+        assistGrounding: assistOffered && assistAvailable && !!pendingScreenshot,
       }));
     } catch (e) {
       if (e instanceof AgentModelUnavailableError) throw e;
@@ -388,6 +405,7 @@ async function runTask({
     const decideImage = pendingScreenshot;
     pendingScreenshot = "";
     visionHint = "";
+    assistOffered = false;
     debug.log("decision", {
       round: task.round,
       kind: decision.kind,
@@ -418,7 +436,26 @@ async function runTask({
         // secretly a refs run makes the comparison worthless.
         return finish("failed", `Grounding is unavailable: ${g.error}`);
       }
-      decision = g.ok ? g.decision : { ...decision, kind: "invalid", invalidReason: g.invalidReason };
+      if (g.degraded) {
+        // Assist is the rescue, not the task. When the grounder cannot answer,
+        // the run falls back to what it did before assist existed — the model
+        // reads the point off the screenshot itself — and stops paying for a
+        // call that is not working.
+        assistAvailable = false;
+        debug.log("assist_degraded", { error: g.error });
+        pendingScreenshot = decideImage;
+        lastScreenshotRound = task.round + 1;
+        visionHint = "the target locator is unavailable, so read the point off this image yourself";
+        decision = {
+          ...decision,
+          kind: "invalid",
+          invalidReason:
+            "The target locator is unavailable, so a described target cannot be found. The screenshot is " +
+            "still attached: read the position off it yourself and act with click_coord using 0-1000 coordinates.",
+        };
+      } else {
+        decision = g.ok ? g.decision : { ...decision, kind: "invalid", invalidReason: g.invalidReason };
+      }
     }
 
     if (decision.kind === "invalid") {
@@ -768,8 +805,19 @@ async function runTask({
       continue;
     }
     if (step.mode === "visual") {
-      const shot = await controller.screenshot();
-      if (shot.ok) {
+      // The ladder has decided element references are not working on this step.
+      // The screenshot below is what the grounder will read, so this is exactly
+      // the round on which describing a target is worth its round-trip.
+      assistOffered = assistAvailable;
+      // Guarded like every other capture site. The shipped controller swallows
+      // its own capture errors, so this is a contract with the injected
+      // dependency rather than a live outage: a controller that rejects, or
+      // answers with nothing, threw a plain Error straight out of the loop —
+      // and the caller rethrows that instead of falling back, losing a task
+      // that only wanted a look at the page. Without an image the run simply
+      // continues on the recovery hint.
+      const shot = await controller.screenshot().catch(() => null);
+      if (shot?.ok) {
         pendingScreenshot = shot.dataUrl;
         lastScreenshotRound = task.round;
       }

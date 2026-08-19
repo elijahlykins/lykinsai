@@ -51,6 +51,11 @@ const DECISION_SCHEMA = {
           ],
         },
         target: { type: "string", description: "Element reference like e12 (click/type/replace_text/select/extract/drag source; optional on scroll to scroll inside that container)" },
+        targetDescription: {
+          type: "string",
+          description:
+            "Only when the round's instructions invite it: what the target LOOKS LIKE on the attached screenshot (\"the blue Publish button, top right\"), for when the element list cannot describe it. A locator finds it in the image. Prefer `target` whenever a reference exists.",
+        },
         to: { type: "string", description: "drag only: element reference of the drop target" },
         url: { type: "string" },
         text: { type: "string" },

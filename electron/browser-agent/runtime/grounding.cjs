@@ -48,11 +48,18 @@ const REF_ONLY_ACTIONS = new Map([
  * unavailable". The eval harness passes the mode explicitly from its job
  * config and never needed the fallback.
  *
- * @returns {"refs"|"holo"}
+ * Three modes:
+ *   refs    every target is an element reference; no grounder at all
+ *   holo    every target is a description, for the whole run (eval arms only)
+ *   assist  refs by default, with grounding available per action as a rescue
+ *
+ * @returns {"refs"|"holo"|"assist"}
  */
 function resolveGroundingMode(explicit) {
   const raw = String(explicit || "refs").trim().toLowerCase();
-  return raw === "holo" ? "holo" : "refs";
+  if (raw === "holo") return "holo";
+  if (raw === "assist") return "assist";
+  return "refs";
 }
 
 /** @returns {"none"|"nearest"|"label"} */
@@ -80,13 +87,28 @@ function resolveSnapMode(explicit) {
  * @returns {null|object} null in refs mode — the loop's only mode check
  */
 function createGrounder({ mode, model, snap = "", retries = 2 } = {}) {
-  if (resolveGroundingMode(mode) !== "holo") return null;
+  const resolved = resolveGroundingMode(mode);
+  if (resolved === "refs") return null;
+  // In assist mode refs are the working method and grounding is the rescue, so
+  // a description is opt-in per action and an outage is survivable. In holo
+  // mode grounding IS the aiming method: every spatial action needs it, and
+  // continuing on refs would make an eval arm a refs run wearing a holo label.
+  const assist = resolved === "assist";
   const snapMode = resolveSnapMode(snap);
 
   /** Terminal decisions and passthrough actions cost nothing. */
   function needsGrounding(decision) {
     if (!decision || decision.kind !== "act") return false;
     const type = String(decision.action?.type || "");
+    // Assist grounds one thing only: an action whose target the model chose to
+    // describe rather than reference. Everything else is a normal refs action
+    // and must not pay for a screenshot round-trip.
+    if (assist) {
+      return (
+        (NEEDS_SPATIAL_TARGET.has(type) || REF_ONLY_ACTIONS.has(type)) &&
+        !!String(decision.action?.targetDescription || "").trim()
+      );
+    }
     return NEEDS_SPATIAL_TARGET.has(type) || REF_ONLY_ACTIONS.has(type);
   }
 
@@ -114,7 +136,9 @@ function createGrounder({ mode, model, snap = "", retries = 2 } = {}) {
     if (REF_ONLY_ACTIONS.has(type)) {
       return {
         ok: false,
-        invalidReason: `\`${type}\` is not available when targets are described rather than referenced. ${REF_ONLY_ACTIONS.get(type)}`,
+        invalidReason: assist
+          ? `\`${type}\` cannot be aimed by description — it needs a real element reference. ${REF_ONLY_ACTIONS.get(type)}`
+          : `\`${type}\` is not available when targets are described rather than referenced. ${REF_ONLY_ACTIONS.get(type)}`,
         log: { type, skipped: "ref_only_action" },
       };
     }
@@ -137,7 +161,9 @@ function createGrounder({ mode, model, snap = "", retries = 2 } = {}) {
       return { ok: true, decision: { ...decision, action: rest }, log: { type, note: "scroll target dropped to page scroll" } };
     }
 
-    const description = String(action.target || "").trim();
+    // holo mode writes the description into `target`; assist keeps `target`
+    // meaning "element reference" and carries prose in its own field.
+    const description = String(action.targetDescription || action.target || "").trim();
     if (!description) {
       return { ok: false, invalidReason: "No target was described.", log: { type, skipped: "empty_description" } };
     }
@@ -150,7 +176,13 @@ function createGrounder({ mode, model, snap = "", retries = 2 } = {}) {
       title,
     });
     if (primary.transportError) {
-      return { ok: false, fatal: true, error: primary.transportError, log: { type, description, error: primary.transportError } };
+      return {
+        ok: false,
+        fatal: !assist,
+        degraded: assist,
+        error: primary.transportError,
+        log: { type, description, error: primary.transportError },
+      };
     }
     if (!primary.found) {
       return {
@@ -203,7 +235,13 @@ function createGrounder({ mode, model, snap = "", retries = 2 } = {}) {
     }
     const drop = await locate({ description: toDescription, imageUrl, intent: "drag_to", url, title });
     if (drop.transportError) {
-      return { ok: false, fatal: true, error: drop.transportError, log: { ...log, dropError: drop.transportError } };
+      return {
+        ok: false,
+        fatal: !assist,
+        degraded: assist,
+        error: drop.transportError,
+        log: { ...log, dropError: drop.transportError },
+      };
     }
     if (!drop.found) {
       return {
@@ -223,9 +261,13 @@ function createGrounder({ mode, model, snap = "", retries = 2 } = {}) {
   }
 
   return {
-    mode: "holo",
-    /** Holo reads the screen every round, so pixels are no longer conditional. */
-    needsPixelsEveryRound: true,
+    mode: resolved,
+    /**
+     * Holo reads the screen every round, so pixels are no longer conditional.
+     * Assist only looks when the recovery ladder has already attached a frame,
+     * so it must not force one on every ordinary round.
+     */
+    needsPixelsEveryRound: !assist,
     snap: snapMode,
     needsGrounding,
     ground,
