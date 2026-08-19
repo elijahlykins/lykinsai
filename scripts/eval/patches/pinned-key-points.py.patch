@@ -1,0 +1,37 @@
+# Applied by scripts/eval/judge-mind2web.mjs to a SCRATCH copy of
+# src/methods/webjudge_online_mind2web.py. The upstream file in
+# eval/mind2web/cache/ is never modified.
+#
+# WHY
+# ---
+# WebJudge_Online_Mind2Web_eval calls identify_key_points(task, model) once per
+# trajectory. Judging 288 trajectories therefore regenerates key points 288
+# times, so the same task is scored against slightly different criteria in each
+# of the four arms — noise injected straight into the comparison this eval
+# exists to make.
+#
+# This inserts a cache lookup at the top of that one function. Nothing else
+# changes: same signature, same return shape ("**Key Points**:" + text, which
+# the caller already splits on), same generation path on a miss.
+#
+# KEYED BY TASK TEXT, NOT TASK ID
+# -------------------------------
+# identify_key_points only ever receives the task string. Keying on it is also
+# self-validating: 60 of the 300 benchmark tasks were rewritten upstream, and
+# their published key points describe the OLD task. A text key misses on those
+# and the scorer generates fresh ones, which is the correct behaviour.
+INSERT_AFTER = "async def identify_key_points(task, model):"
+INSERT = '''    # --- lykn harness: pinned key points (see patches/pinned-key-points.py.patch)
+    import os as _os, json as _json
+    _kp_path = _os.environ.get("LYKN_KEYPOINTS", "")
+    if _kp_path and _os.path.exists(_kp_path):
+        try:
+            with open(_kp_path, "r") as _f:
+                _kp = _json.load(_f).get("byTask", {})
+            _hit = _kp.get(str(task).strip())
+            if _hit:
+                return "**Key Points**:\\n" + _hit
+        except Exception:
+            pass  # a broken cache must fall through to generation, never fail the run
+    # --- end lykn harness
+'''

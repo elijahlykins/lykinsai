@@ -1,7 +1,18 @@
 /**
- * Loads the agent's markdown instruction modules (progressive disclosure).
- * Files live under electron/browser-agent/agent/ and are cached after the
- * first read.
+ * Loads the agent's markdown instruction files. Files live under
+ * electron/browser-agent/agent/ and are cached after the first read.
+ *
+ * The operating rules are three files — core, browser, safety — and all three
+ * are always loaded. They used to be nine, routed in per round by a heuristic
+ * that guessed which ones the situation called for. That guessing cost more
+ * than it saved: the navigation rules were routed out on every round after the
+ * first click (leaving the agent with three "stay where you were told" rules
+ * and nothing about when moving on is correct), and the download rules were
+ * unreachable by any combination of inputs at all. The whole corpus is ~24KB;
+ * the snapshot it sits next to is bigger. Load it and be done.
+ *
+ * Skills stay routed — they are genuinely task-specific, and there is no
+ * situation where all five apply at once.
  */
 
 const fs = require("node:fs");
@@ -28,32 +39,20 @@ function loadAgentsMd() {
   return readCached(ROOT_AGENTS_MD);
 }
 
-/** Core identity + reasoning + loop + priorities — always loaded. */
+/** Identity, reasoning, the loop, and the priority order. */
 function loadCoreInstructions() {
-  return ["identity.md", "reasoning.md", "loop.md", "priorities.md"]
-    .map((f) => readCached(path.join(AGENT_DIR, "core", f)))
-    .filter(Boolean)
-    .join("\n\n");
+  return readCached(path.join(AGENT_DIR, "core.md"));
 }
 
-const BROWSER_MODULES = [
-  "navigation",
-  "observation",
-  "interaction",
-  "editing",
-  "builders",
-  "tabs",
-  "forms",
-  "downloads",
-  "recovery",
-];
+/** Observation, navigation, interaction, forms, editing, builders, tabs,
+ * downloads and recovery. */
+function loadBrowserRules() {
+  return readCached(path.join(AGENT_DIR, "browser.md"));
+}
 
-function loadBrowserModules(names = []) {
-  const wanted = names.filter((n) => BROWSER_MODULES.includes(n));
-  return wanted
-    .map((n) => readCached(path.join(AGENT_DIR, "browser", `${n}.md`)))
-    .filter(Boolean)
-    .join("\n\n");
+/** Permissions, purchases, destructive actions and credentials. */
+function loadSafetyRules() {
+  return readCached(path.join(AGENT_DIR, "safety.md"));
 }
 
 function listSkills() {
@@ -74,16 +73,6 @@ function loadSkill(name) {
   return readCached(path.join(AGENT_DIR, "skills", safe, "SKILL.md"));
 }
 
-const SAFETY_MODULES = ["permissions", "destructive-actions", "purchases", "credentials"];
-
-function loadSafetyModules(names = SAFETY_MODULES) {
-  return names
-    .filter((n) => SAFETY_MODULES.includes(n))
-    .map((n) => readCached(path.join(AGENT_DIR, "safety", `${n}.md`)))
-    .filter(Boolean)
-    .join("\n\n");
-}
-
 function loadMemorySeed(file) {
   return readCached(path.join(AGENT_DIR, "memory", file));
 }
@@ -96,14 +85,12 @@ function loadWebsiteSeed(host) {
 
 module.exports = {
   AGENT_DIR,
-  BROWSER_MODULES,
-  SAFETY_MODULES,
   loadAgentsMd,
   loadCoreInstructions,
-  loadBrowserModules,
+  loadBrowserRules,
+  loadSafetyRules,
   listSkills,
   loadSkill,
-  loadSafetyModules,
   loadMemorySeed,
   loadWebsiteSeed,
 };

@@ -51,17 +51,19 @@ current browser state.
   task resumes and you continue with whatever is left. So ask for the smallest
   possible action, and never repeat work that is already on screen.
 
-## Specialized instructions
+## Where the rest of the rules live
 
-Load specialized instructions only when relevant:
-
-- `agent/core/` — identity, reasoning, loop, priorities.
-- `agent/browser/` — navigation, observation, interaction, editing, builders,
-  tabs, forms, downloads, recovery.
+- `agent/core.md` — identity, reasoning, the loop, the priority order.
+- `agent/browser.md` — observation, navigation, interaction, forms, editing,
+  builders, tabs, downloads, recovery.
+- `agent/safety.md` — permissions, purchases, destructive actions, credentials.
 - `agent/skills/` — task strategies (research, shopping, communication,
-  scheduling, data-entry).
-- `agent/safety/` — permissions, destructive actions, purchases, credentials.
+  scheduling, data-entry), selected per task.
 - `agent/memory/` — durable user memory and per-website knowledge.
 
-Keep context small: core instructions + relevant skill + relevant browser
-rules + current task state + current page snapshot + recent actions.
+The first three are always loaded. They used to be nine files routed in per
+round by a heuristic, and the heuristic was wrong in both directions: it took
+the navigation rules away on every round after the first click, leaving the
+agent with three rules about staying where it was told and none about when
+moving on is correct, and it could not reach the download rules at all. Skills
+stay selected per task — no run needs all five.

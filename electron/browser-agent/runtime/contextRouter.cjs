@@ -1,13 +1,12 @@
 /**
- * Context router — decides what information the agent needs before each
- * reasoning cycle, and keeps everything else out of the context window.
+ * Context router — assembles the prompt for each stage of the loop.
  *
- * Progressive disclosure: core instructions always; skills, browser rules,
- * safety rules and website memory only when relevant.
+ * Operating rules (core, browser, safety) are always loaded; only skills and
+ * website memory are selected per task. See instructions.cjs for why the
+ * per-round routing of browser and safety rules was removed.
  */
 
 const instructions = require("./instructions.cjs");
-const visionPolicy = require("./visionPolicy.cjs");
 
 /** Keyword heuristic for candidate skills — cheap and deterministic. The
  * planner can confirm or extend this from the goal semantics. */
@@ -31,79 +30,21 @@ function routeSkills(goal, { maxSkills = 2 } = {}) {
   return matched.slice(0, maxSkills);
 }
 
-const EDIT_GOAL_RE =
-  /\b(edit|revise|reword|rewrite|re-?phrase|shorten|lengthen|expand|fix|correct|adjust|change|update|tweak|funnier|more formal|less formal|friendlier|different tone|draft revision)\b/i;
-
-/** Asks that mean building something in a visual/drag-driven tool. */
-const BUILDER_GOAL_RE =
-  /\b(campaign|newsletter|mailchimp|klaviyo|canva|figma|design|graphic|poster|flyer|thumbnail|logo|banner|slide deck|presentation|landing page|template|mockup|brand kit)\b/i;
-
-/** Browser rule modules relevant to the current situation. */
-function routeBrowserModules({
-  lastActionType = "",
-  recovering = false,
-  tabCount = 1,
-  formsLikely = false,
-  goal = "",
-  url = "",
-  hasDrawnSurface = false,
-  hasEmbeddedFrame = false,
-} = {}) {
-  const modules = new Set(["observation", "interaction"]);
-  if (!lastActionType || ["navigate", "go_back", "go_forward", "open_tab"].includes(lastActionType)) {
-    modules.add("navigation");
-  }
-  if (formsLikely || ["type", "replace_text", "select"].includes(lastActionType)) modules.add("forms");
-  // Builders and design tools need a different playbook than documents and
-  // forms: the surface is nested or drawn, the gestures include dragging, and
-  // most correct actions cannot be confirmed from the DOM.
-  if (
-    hasDrawnSurface ||
-    hasEmbeddedFrame ||
-    ["drag", "click_coord"].includes(lastActionType) ||
-    visionPolicy.VISUAL_EDITOR_URL_RE.test(String(url || "")) ||
-    visionPolicy.VISUAL_BUILDER_URL_RE.test(String(url || "")) ||
-    BUILDER_GOAL_RE.test(String(goal || ""))
-  ) {
-    modules.add("builders");
-  }
-  // Editing rules whenever the task revises existing content or the agent is
-  // already writing — this is what steers revisions to replace_text instead
-  // of wholesale retyping.
-  if (["type", "replace_text"].includes(lastActionType) || EDIT_GOAL_RE.test(String(goal || ""))) {
-    modules.add("editing");
-  }
-  if (tabCount > 1 || ["open_tab", "close_tab", "switch_tab"].includes(lastActionType)) {
-    modules.add("tabs");
-  }
-  if (recovering) modules.add("recovery");
-  return [...modules];
-}
-
-/** Safety modules relevant to the goal (permissions always ride along). */
-function routeSafetyModules(goal) {
-  const text = String(goal || "");
-  const modules = new Set(["permissions"]);
-  if (/\b(buy|purchase|order|checkout|pay|book|subscribe)\b/i.test(text)) modules.add("purchases");
-  if (/\b(delete|remove|cancel|unsubscribe|clear|erase|reset)\b/i.test(text)) modules.add("destructive-actions");
-  if (/\b(login|log in|sign in|password|account|credential)\b/i.test(text)) modules.add("credentials");
-  return [...modules];
-}
-
 /**
- * Assemble the system prompt for a decision cycle: core instructions +
- * relevant skills + relevant browser rules + safety rules + memory.
+ * Assemble the system prompt for a decision cycle: operating rules + relevant
+ * skills + memory + the output contract.
  */
-function buildDecisionSystem({ task, skills = [], browserModules = [], safetyModules = [], userMemory = "", websiteMemory = "" }) {
-  const parts = [instructions.loadAgentsMd(), instructions.loadCoreInstructions()];
-  const browserText = instructions.loadBrowserModules(browserModules);
-  if (browserText) parts.push(`# Browser Rules\n\n${browserText}`);
+function buildDecisionSystem({ task, skills = [], userMemory = "", websiteMemory = "" }) {
+  const parts = [
+    instructions.loadAgentsMd(),
+    instructions.loadCoreInstructions(),
+    instructions.loadBrowserRules(),
+  ];
   for (const name of skills) {
     const text = instructions.loadSkill(name);
     if (text) parts.push(text);
   }
-  const safetyText = instructions.loadSafetyModules(safetyModules);
-  if (safetyText) parts.push(`# Safety Rules\n\n${safetyText}`);
+  parts.push(instructions.loadSafetyRules());
   if (userMemory) parts.push(`# Remembered About the User\n\n${userMemory.slice(0, 1500)}`);
   // Site knowledge is the highest-value context the agent gets — it is the
   // difference between knowing where a feature lives and hunting for it. A
@@ -122,17 +63,17 @@ function decisionOutputContract() {
     "",
     "  Actions beyond the obvious ones, and when they are the right choice:",
     '  - `drag`: move something onto something else — a content block into an email layout, an element onto a design, a card to another column. Give `target` + `to` as element refs, or x/y + toX/toY screenshot coordinates, or one of each. In builders this is often the ONLY way to add content; do not substitute clicks for it.',
-    '  - `click_coord`: click a point you can see in an attached screenshot but cannot find in the element list (x and y in 0-1000 of the image). For drawn interfaces and unlabeled icons. Always prefer an element ref when one exists.',
+    '  - `click_coord`: click a point you can see in an attached screenshot but cannot find in the element list (x and y in 0-1000 of the image). For drawn interfaces and unlabeled icons. Always prefer an element ref when one exists. Set `label` to what you are clicking ("Send", "Delete") — it is the only description of the target anything downstream gets.',
     '  - `scroll` with a `target`: scroll INSIDE that element. Editor palettes, block lists and side panels scroll internally and do not respond to page scrolling.',
     '  - `press_key` with `modifiers`: keyboard shortcuts, e.g. key "b" modifiers ["meta"]. Design and text tools are built around these and they are often faster and more reliable than hunting for a toolbar button.',
-    '  - `screenshot`: look at the page when the element list plainly does not describe what you are working on.',
-    '- kind "finish": every part of the goal is done with evidence, or it is genuinely impossible; `answer` is the final user-facing report. Do NOT finish with plan steps still outstanding.',
+    '  - `screenshot`: look at the page when the element list plainly does not describe what you are working on. The image comes back attached to your next decision.',
+    '- kind "finish": every part of the goal is done with evidence, or it is genuinely impossible; `answer` is the final user-facing report. Do NOT finish with plan steps still outstanding unless you say in `answer` why each one no longer applies.',
     '- kind "ask_user": the task cannot continue without something only the user has — a credential, a verification code, payment details, or a fact that exists nowhere on screen. `question` names ONE concrete thing for them to do in the browser ("sign in to Meta with your password"), because they act in the live tab and you resume automatically once they have. This is a handover, not the end of the task.',
-    '  Never use ask_user to request permission to continue, to confirm a step you can take yourself, or to ask the user to click something. Clicking Confirm / Save / Continue / Allow / Connect / Link is your job.',
-    '- kind "replan": the current plan no longer fits reality; `replanReason` explains why.',
+    "  Never use ask_user to request permission to continue, to confirm a step you can take yourself, or to ask the user to click something. Clicking Confirm / Save / Continue / Allow / Connect / Link is your job.",
+    '- kind "replan": the current plan no longer fits reality; `replanReason` explains why. If a recorded constraint is what no longer fits, list the ones that still apply in `constraints` — an empty `constraints` array means "none of them still apply", and is how you drop a constraint the page has overtaken.',
     'Set `risk`: "consequential" ONLY when the action spends money, destroys data, or delivers to an audience the request did not name. Confirmations, saves, account links and settings changes inside the requested task are "low".',
     "Record new discoveries in `factsLearned` / `candidateResults` so they persist in working memory.",
-    "Set `planStepCompleted` true when the current plan step is finished.",
+    "Set `planStepCompleted` true when the current plan step is finished — including when you have established it does not need doing.",
   ].join("\n");
 }
 
@@ -146,9 +87,12 @@ function buildPlanningSystem() {
       "",
       "Convert the user's goal into a short high-level plan (3-8 steps).",
       "Steps are guidance, not click sequences — they must survive website changes.",
-      "If the request names a specific app, website or product, every step happens THERE. Record it as a hard constraint and never plan the work in a different tool, however similar. If you do not know its URL, plan to find it.",
       "Plan the task all the way to its finished outcome, including the confirmation or review screens at the end. Do not plan a step that hands work back to the user.",
-      "Extract hard constraints separately from preferences.",
+      "",
+      "Constraints are the things that would make the finished work WRONG if violated: a budget, a date, a recipient, a quantity, a required product for the deliverable. Record those, and only those.",
+      "A named app or website is a constraint on where the deliverable ends up — \"the email is sent from Gmail\", \"the design is saved in Canva\" — not a restriction on which pages may be visited along the way. Never write a constraint that forbids visiting other sites; the agent must stay free to follow an outbound link, check a fact elsewhere, or use a search engine, and it will come back.",
+      "If you do not know the named product's URL, plan to find it.",
+      "",
       "Record facts already known from the request in knownFacts.",
       "Pick relevant skills from the provided list only.",
       "Ask a clarification question ONLY if the task cannot even be started without it. A vague reference you could resolve by looking (\"the usual format\", \"our template\") is not a blocker — plan to go find it.",
@@ -182,6 +126,11 @@ function buildLearningSystem() {
     "",
     "One fact per note, phrased so it makes sense on its own months from now.",
     "Prefer 0 notes to speculation: return an empty array if nothing durable was learned.",
+    "",
+    "Separately, `userNotes` is for durable facts about the PERSON, not the site — what they call things,",
+    "a preference they stated, a detail about their work that would help on an unrelated task months from now.",
+    "Not what they asked for this time, not who they wrote to, not anything resembling a secret.",
+    "This is almost always empty. Leave it empty unless the fact would still be useful on a different site.",
   ].join("\n");
 }
 
@@ -191,17 +140,19 @@ function buildVerificationSystem() {
     "You verify whether a browser action achieved its expected outcome.",
     "You are given the action, the expected outcome, a deterministic diff of the page before/after, and the current page state.",
     "Judge ONLY from this evidence. A tool returning without error is not evidence.",
-    'Answer success=true only when the browser state shows the expected change (cite it in `evidence`).',
+    "Answer success=true only when the browser state shows the expected change (cite it in `evidence`).",
+    "Read the page for what it actually says. A page that reports an error, a rejection, a validation failure or a required extra step is evidence the action did NOT succeed, even when it repeats the words of the expected outcome back at you.",
     'When success=false: next="recover" if the same approach could work on the live page, next="replan" if the approach itself is invalid.',
   ].join("\n");
 }
 
 module.exports = {
   routeSkills,
-  routeBrowserModules,
-  routeSafetyModules,
   buildDecisionSystem,
   buildPlanningSystem,
   buildVerificationSystem,
   buildLearningSystem,
+  // Exported for the eval harness, which must drive the exact contract
+  // production sends rather than an approximation of it.
+  decisionOutputContract,
 };

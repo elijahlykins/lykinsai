@@ -114,27 +114,41 @@ function createMemoryStore({ userDataPath } = {}) {
     for (let i = 0; i + 2 <= labels.length; i += 1) {
       chain.push(labels.slice(i).join("."));
     }
+    // A single-label host — "localhost", an intranet name — has no parent
+    // domain, so the loop above produced nothing and notes written for it
+    // could never be read back.
+    if (!chain.length && labels.length) chain.push(labels.join("."));
     return chain;
   }
 
-  /** Learned + seeded knowledge about the current site. */
+  /**
+   * Learned + seeded knowledge about the current site.
+   *
+   * Hand-written playbooks come first, then what this machine has learned.
+   * The lookup chain runs most-specific-first, which put the learned notes for
+   * `us21.admin.mailchimp.com` ahead of the curated `mailchimp.com` playbook —
+   * and since the caller caps this text before sending it, a run's own notes
+   * quietly evicted the knowledge that was worth the most.
+   */
   async function getWebsiteMemory(urlOrHost) {
     const host = urlOrHost?.includes?.("/") ? hostFromUrl(urlOrHost) : String(urlOrHost || "").toLowerCase();
     if (!host) return "";
-    const parts = [];
+    const seeds = [];
+    const learnedParts = [];
     const seen = new Set();
+    const add = (bucket, text) => {
+      if (text && !seen.has(text)) {
+        seen.add(text);
+        bucket.push(text);
+      }
+    };
     for (const candidate of hostLookupChain(host)) {
-      const seed = instructions.loadWebsiteSeed(candidate);
+      add(seeds, instructions.loadWebsiteSeed(candidate));
       // Notes are written per exact host, so only that file is read back; the
       // parent domains contribute hand-written product knowledge.
-      const learned = candidate === host ? await readUserFile(path.join("websites", `${host}.md`)) : "";
-      for (const text of [seed, learned]) {
-        if (text && !seen.has(text)) {
-          seen.add(text);
-          parts.push(text);
-        }
-      }
+      if (candidate === host) add(learnedParts, await readUserFile(path.join("websites", `${host}.md`)));
     }
+    const parts = [...seeds, ...learnedParts];
     return parts.length ? `# Known about ${host}\n${parts.join("\n")}` : "";
   }
 
@@ -173,12 +187,31 @@ function createMemoryStore({ userDataPath } = {}) {
     return appendUserFile("user.md", text);
   }
 
+  /**
+   * Persist several durable facts about the person, skipping anything already
+   * known. The website half of memory has always learned; this half had a write
+   * function that nothing in the codebase ever called, so the user's seed file
+   * could be read forever and never grow.
+   */
+  async function rememberUserFacts(facts) {
+    const safe = (Array.isArray(facts) ? facts : [])
+      .map((f) => String(f || "").trim())
+      .filter((f) => f && f.length >= 8 && f.length <= 200 && !SECRET_RE.test(f));
+    if (!safe.length) return 0;
+    try {
+      return await appendNotesDeduped("user.md", safe);
+    } catch {
+      return 0;
+    }
+  }
+
   return {
     getUserMemory,
     getWebsiteMemory,
     rememberWebsiteNote,
     rememberWebsiteNotes,
     rememberUserFact,
+    rememberUserFacts,
     hostFromUrl,
   };
 }

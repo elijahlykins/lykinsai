@@ -748,15 +748,51 @@ test("context router: progressive skill loading", () => {
   );
   // Irrelevant skills stay out of context.
   assert.ok(!contextRouter.routeSkills("Send Sarah an email").includes("shopping"));
-  const modules = contextRouter.routeBrowserModules({ lastActionType: "type", recovering: true });
-  assert.ok(modules.includes("forms") && modules.includes("recovery"));
-  assert.ok(!modules.includes("downloads"));
-  // Editing rules load for revision-style goals and while writing.
-  assert.ok(modules.includes("editing"), "editing routed while typing");
+});
+
+// --- unit: the operating rules are never routed away -----------------------------
+//
+// Browser and safety rules used to be selected per round by a heuristic. It
+// routed the navigation rules out on every round after the first click — so
+// the agent kept "never substitute a different product" and lost every rule
+// about when moving on is correct — and it could not reach the download rules
+// under any combination of inputs at all. They are one file each now, always
+// loaded, and this test exists to keep them that way.
+
+test("context router: every operating rule reaches every decision", () => {
+  const task = { goal: "anything at all", skills: [] };
+  const system = contextRouter.buildDecisionSystem({ task });
+  for (const heading of [
+    "# Observation",
+    "# Navigation",
+    "## Leaving the site you are on",
+    "# Interaction",
+    "# Forms",
+    "# Editing existing text",
+    "# Builders and visual editors",
+    "# Tabs",
+    "# Downloads",
+    "# Recovery",
+    "# Permissions",
+    "# Purchases",
+    "# Destructive actions",
+    "# Credentials",
+    "# Priorities",
+  ]) {
+    assert.ok(system.includes(heading), `${heading} must be in every decision prompt`);
+  }
+  // The counterweight to the site constraint has to be there, or the agent is
+  // left with restrictions and no permission.
+  assert.match(system, /Going to another website is ordinary browsing/);
+});
+
+test("planning contract never manufactures a site lock", () => {
+  const planning = contextRouter.buildPlanningSystem();
+  assert.match(planning, /Never write a constraint that forbids visiting other sites/);
   assert.ok(
-    contextRouter.routeBrowserModules({ goal: "Revise the draft to sound friendlier" }).includes("editing"),
+    !/every step happens THERE/i.test(planning),
+    "the instruction that turned a named app into a navigation ban must be gone",
   );
-  assert.ok(!contextRouter.routeBrowserModules({ goal: "Find the cheapest flight" }).includes("editing"));
 });
 
 // --- unit: type verification tolerates editor whitespace rewrites ---------------

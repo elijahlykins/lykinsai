@@ -20,10 +20,37 @@ function createRecoveryTracker() {
   let totalRecoveries = 0;
   let visualUses = 0;
 
+  /**
+   * What counts as "the same action again".
+   *
+   * Coordinates, key names and select values all used to be missing, so every
+   * `click_coord` on a page shared one budget however far apart the points
+   * were, every `press_key` shared one whatever the key, and every `select` on
+   * a field shared one whatever the value. Two unrelated attempts read as one
+   * action failing twice, and the ladder answered with "do NOT repeat it" —
+   * on the canvas editors where coordinate clicking is the only method
+   * available, that spent the escalation path on the agent's second try.
+   */
   function signatureOf(decision) {
     const a = decision?.action || {};
-    const el = a.target || "";
-    return [a.type || "", el, String(a.url || "").slice(0, 80), String(a.text || "").slice(0, 40)]
+    // Coordinates get bucketed: a retry never lands on the exact same pixel,
+    // and a 20-unit bucket (2% of the frame) is close enough to be the same
+    // attempt while a different control is a different signature.
+    const bucket = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n) / 20) : "");
+    return [
+      a.type || "",
+      a.target || "",
+      String(a.url || "").slice(0, 80),
+      String(a.text || "").slice(0, 40),
+      String(a.value ?? "").slice(0, 40),
+      String(a.key || ""),
+      (Array.isArray(a.modifiers) ? a.modifiers : []).join("+"),
+      bucket(a.x),
+      bucket(a.y),
+      a.to || "",
+      bucket(a.toX),
+      bucket(a.toY),
+    ]
       .join("|")
       .toLowerCase();
   }

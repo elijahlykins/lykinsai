@@ -30,6 +30,8 @@ import { searchWeb, formatSearchResultsForPrompt, extractSourcesFromSearchPrompt
 import { runDeepResearchForPrompt } from './lib/exterior/deepResearch.js';
 import { fetchWebPage } from './lib/exterior/webFetch.js';
 import { assertUrlSafe, safeFetch } from './lib/exterior/ssrfGuard.js';
+import { callStructured, resolveAgentStageModel } from './lib/agentModelProviders.js';
+import { runHoloGrounding } from './lib/holo/grounding.js';
 import { verifyFileToken, FILE_PROXY_ROUTE, isArtifactsHost, buildFileProxyUrl } from './lib/exterior/fileProxy.js';
 import { buildReactArtifact } from './lib/exterior/capabilities/buildReactArtifact.js';
 import { pickDesignSystem, formatDesignSystemBlock } from './lib/exterior/designSystems.js';
@@ -20471,111 +20473,111 @@ app.post('/api/desktop/browser-plan', requireAuth, requireAppAccess, aiLimiter, 
 // provider/model change without touching browser control, state, or skills.
 app.post('/api/desktop/agent-model', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
   try {
-    if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: 'AI not configured' });
     const stage = String(req.body?.stage || 'decide').slice(0, 24);
     const system = String(req.body?.system || '').slice(0, 60000);
     const user = String(req.body?.user || '').slice(0, 60000);
     const imageUrl = String(req.body?.imageUrl || '').trim();
+    const imageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls.slice(0, 10) : null;
     const schema = req.body?.schema && typeof req.body.schema === 'object' ? req.body.schema : null;
-    const maxTokens = Math.min(Math.max(Number(req.body?.maxTokens) || 900, 100), 2000);
+    const maxTokens = Math.min(Math.max(Number(req.body?.maxTokens) || 900, 100), 4000);
+    const arm = String(req.body?.arm || '').slice(0, 40);
     if (!user || !schema) return res.status(400).json({ error: 'Missing user content or schema' });
 
-    // gpt-5.6-terra by default — 4.1-mini misread element catalogs (random
-    // clicks, wrong fields) and mis-verified steps. Verify can still be
-    // pointed at a cheaper model via BROWSER_AGENT_VERIFY_MODEL.
-    // Learning runs once per completed task and is plain summarization of text
-    // the agent already produced, so it does not need the reasoning model.
-    let model = String(process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra').trim();
-    if (stage === 'verify') {
-      model = String(
-        process.env.BROWSER_AGENT_VERIFY_MODEL || process.env.BROWSER_AGENT_MODEL || 'gpt-5.6-terra',
-      ).trim();
-    } else if (stage === 'learn') {
-      model = String(process.env.BROWSER_AGENT_LEARN_MODEL || 'gpt-4.1-mini').trim();
-    }
+    const { model, effort, armError } = resolveAgentStageModel({ stage, arm, userId: req.user?.id });
+    if (armError) return res.status(403).json({ ok: false, error: armError });
 
-    const userContent = imageUrl.startsWith('data:image/')
-      ? [{ type: 'text', text: user }, { type: 'image_url', image_url: { url: imageUrl, detail: 'low' } }]
-      : user;
-    const messages = [
-      ...(system ? [{ role: 'system', content: system }] : []),
-      { role: 'user', content: userContent },
-    ];
-
-    // gpt-5.6 family: max_completion_tokens, no temperature, explicit
-    // reasoning effort (reasoning tokens count against the cap, so give
-    // headroom when effort is enabled). Older models keep the classic params.
-    const isGpt5 = /^gpt-5/.test(model);
-    const effort = String(process.env.BROWSER_AGENT_REASONING || 'none').trim().toLowerCase();
-    const tokenParams = isGpt5
-      ? {
-          max_completion_tokens: effort !== 'none' ? maxTokens + 2000 : maxTokens,
-          reasoning_effort: effort,
-        }
-      : { temperature: 0.15, max_tokens: maxTokens };
-
-    const callOnce = async (responseFormat) => {
-      const r = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          ...tokenParams,
-          response_format: responseFormat,
-          messages,
-        }),
-      });
-      const data = await r.json().catch(() => ({}));
-      return { ok: r.ok, status: r.status, data };
-    };
-
-    // Prefer strict-ish structured output; fall back to json_object with the
-    // schema embedded in the prompt if the model/provider rejects json_schema.
-    let out = await callOnce({
-      type: 'json_schema',
-      json_schema: { name: `browser_agent_${stage}`.slice(0, 60), schema, strict: false },
+    const out = await callStructured({
+      model, system, user, imageUrl, imageUrls, schema, maxTokens, effort,
+      name: `browser_agent_${stage}`.slice(0, 60),
     });
-    if (!out.ok) {
-      messages[messages.length - 1] = {
-        role: 'user',
-        content:
-          typeof userContent === 'string'
-            ? `${user}\n\nRespond with a single JSON object matching this schema:\n${JSON.stringify(schema)}`
-            : [
-                { type: 'text', text: `${user}\n\nRespond with a single JSON object matching this schema:\n${JSON.stringify(schema)}` },
-                ...userContent.slice(1),
-              ],
-      };
-      out = await callOnce({ type: 'json_object' });
-    }
-    if (!out.ok) {
-      const msg = String(out.data?.error?.message || 'model call failed').slice(0, 300);
-      return res.status(502).json({ ok: false, error: msg });
-    }
-    let parsed = null;
-    try {
-      parsed = JSON.parse(out.data?.choices?.[0]?.message?.content || 'null');
-    } catch {
-      parsed = null;
-    }
-    if (parsed == null) return res.status(502).json({ ok: false, error: 'model returned unparseable output' });
 
-    const usage = out.data?.usage || {};
+    // Surface upstream time so the harness can separate provider latency from
+    // our own overhead without guessing.
+    res.set('X-Lykn-Upstream-Ms', String(out.upstreamMs || 0));
+
+    if (!out.ok) {
+      return res.status(out.status && out.status >= 400 ? out.status : 502)
+        .json({ ok: false, error: out.error || 'model call failed', model, provider: out.provider });
+    }
+
     getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
       logAiUsage({
         sessionId: session?.id, userId: req.user?.id, actionType: `browser_agent_${stage}`,
-        model, provider: 'openai',
-        inputTokens: usage.prompt_tokens || 0, outputTokens: usage.completion_tokens || 0,
+        model, provider: out.provider,
+        inputTokens: out.usage?.inputTokens || 0, outputTokens: out.usage?.outputTokens || 0,
+        metadata: { latency_ms: out.upstreamMs, arm: arm || undefined },
       });
     }).catch(() => {});
 
-    return res.json({ ok: true, json: parsed, model });
+    // usage is returned to the client so the harness can account for cost
+    // without reconstructing it from ai_usage_logs by time window.
+    return res.json({ ok: true, json: out.json, model, provider: out.provider, usage: out.usage, upstreamMs: out.upstreamMs });
   } catch (err) {
     console.error('❌ /api/desktop/agent-model:', err?.message || err);
     return res.status(500).json({ ok: false, error: 'Agent model call failed' });
+  }
+});
+
+/**
+ * Grounding stage: turn a described element into a point on the screenshot.
+ *
+ * A separate route rather than another `stage` on /api/desktop/agent-model,
+ * because that handler speaks the three JSON-schema dialects and this one
+ * speaks Holo's structured_outputs — they would share the middleware and
+ * nothing else. Keeping them apart also keeps the usage ledger honest:
+ * grounding is its own actionType with its own provider.
+ */
+app.post('/api/desktop/agent-ground', requireAuth, requireAppAccess, aiLimiter, async (req, res) => {
+  try {
+    const description = String(req.body?.description || '').slice(0, 300).trim();
+    const imageUrl = String(req.body?.imageUrl || '').trim();
+    const intent = ['click', 'type', 'drag_from', 'drag_to'].includes(req.body?.intent)
+      ? req.body.intent : 'click';
+    const url = String(req.body?.url || '').slice(0, 500);
+    const title = String(req.body?.title || '').slice(0, 200);
+    const hint = String(req.body?.hint || '').slice(0, 300);
+
+    if (!description || !imageUrl.startsWith('data:image/')) {
+      return res.status(400).json({ ok: false, error: 'Missing description or image' });
+    }
+    if (!process.env.HAI_API_KEY) {
+      return res.status(503).json({ ok: false, error: 'Grounding not configured' });
+    }
+
+    const out = await runHoloGrounding({ description, imageUrl, intent, url, title, hint });
+    res.set('X-Lykn-Upstream-Ms', String(out.upstreamMs || 0));
+
+    if (!out.ok) {
+      return res.status(out.status && out.status >= 400 ? out.status : 502)
+        .json({ ok: false, error: out.error });
+    }
+
+    getOrCreateSession(req.user?.id, req.body?.chatId).then((session) => {
+      logAiUsage({
+        sessionId: session?.id, userId: req.user?.id, actionType: 'browser_agent_ground',
+        model: out.model, provider: 'holo',
+        inputTokens: out.usage?.inputTokens || 0, outputTokens: out.usage?.outputTokens || 0,
+        metadata: { latency_ms: out.upstreamMs, found: out.found },
+      });
+    }).catch(() => {});
+
+    // found:false is a 200 on purpose — "I looked and it is not there" is a
+    // perception result, not a transport failure, and the client routes the
+    // two very differently (invalid decision vs. abort the run).
+    return res.json({
+      ok: true,
+      found: out.found,
+      ...(out.found ? { x: out.x, y: out.y } : {}),
+      confidence: out.confidence,
+      note: out.note,
+      model: out.model,
+      provider: 'holo',
+      usage: out.usage,
+      upstreamMs: out.upstreamMs,
+    });
+  } catch (err) {
+    console.error('❌ /api/desktop/agent-ground:', err?.message || err);
+    return res.status(500).json({ ok: false, error: 'Grounding call failed' });
   }
 });
 

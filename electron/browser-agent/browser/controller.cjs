@@ -71,6 +71,11 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
       actuator.getPageContext(w),
       listTabs(),
     ]);
+    // A collector that failed is not a page with no controls. Both look like an
+    // empty element list, and the agent reasons very differently about "this
+    // page has nothing on it" and "I could not read this page".
+    const catalogFailed = !catalogRes || catalogRes.ok === false || !Array.isArray(catalogRes.items);
+    const contextFailed = !contextRes || contextRes.ok === false;
     currentSnapshot = buildSnapshot({
       url: contextRes?.url || catalogRes?.url || w.getURL?.() || "",
       title: contextRes?.title || w.getTitle?.() || "",
@@ -78,6 +83,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
       text: contextRes?.text || "",
       tabs: tabList,
     });
+    currentSnapshot.collectorFailed = catalogFailed || contextFailed;
     snapshotStale = false;
     return currentSnapshot;
   }
@@ -87,7 +93,16 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   }
 
   async function settle(timeoutMs = 8000) {
-    const w = wc();
+    // Settling is best-effort by design, and that has to include getting hold
+    // of the tab: wc() throws when the window has gone, and the loop awaits
+    // this without a guard, so a closed window rejected out of the whole run
+    // instead of ending it as a task failure.
+    let w;
+    try {
+      w = wc();
+    } catch {
+      return;
+    }
     try {
       await actuator.waitForLoad(w, timeoutMs);
     } catch {
@@ -282,7 +297,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
     if (ref) {
       const { el, error } = resolveRef(ref);
       if (error) return { ok: false, error };
-      return actuator.runAction(
+      const res = await actuator.runAction(
         wc(),
         {
           type: "scroll_element",
@@ -293,8 +308,16 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
         },
         catalogItems(),
       );
+      invalidate();
+      return res;
     }
-    return actuator.runAction(wc(), { type: "scroll", direction: dir, amount }, []);
+    const res = await actuator.runAction(wc(), { type: "scroll", direction: dir, amount }, []);
+    // Scrolling is the whole point of scrolling: what is on screen changes, and
+    // every element's position changes with it. Leaving the cache warm meant the
+    // agent re-read the identical pre-scroll page every round and never saw a
+    // single thing it scrolled to.
+    invalidate();
+    return res;
   }
 
   /**
@@ -338,7 +361,16 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
    * hatch for anything the DOM cannot describe: canvas editors, image maps,
    * custom-drawn controls.
    */
-  async function clickCoord(x, y, label = "") {
+  /**
+   * Click a point in 0-1000 screenshot space.
+   *
+   * `snap` decides whether the actuator may nudge the click onto a nearby
+   * catalog element. "label" (the default) is production behaviour. "none" is
+   * for measuring a grounding model honestly: label snapping would let a
+   * mediocre grounder score like a good one on DOM-describable pages, and on
+   * drawn surfaces there is nothing in the catalog to snap to anyway.
+   */
+  async function clickCoord(x, y, label = "", { snap = "" } = {}) {
     const nx = Number(x);
     const ny = Number(y);
     if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
@@ -346,7 +378,38 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
     }
     const res = await actuator.runAction(
       wc(),
-      { type: "click_coord", x: nx, y: ny, label: String(label || "") },
+      { type: "click_coord", x: nx, y: ny, label: String(label || ""), ...(snap ? { snap } : {}) },
+      catalogItems(),
+    );
+    invalidate();
+    return res;
+  }
+
+  /**
+   * Focus a field at a screenshot point and type into it.
+   *
+   * The ref path resolves a field to a selector and types into it directly.
+   * With a described target there is no selector, so this rides the actuator's
+   * click_type, which clicks to place a real mouse focus before inserting text
+   * — the same reason the ref path exists at all.
+   */
+  async function typeAtCoord(x, y, text, { pressEnter = false, label = "", snap = "" } = {}) {
+    const nx = Number(x);
+    const ny = Number(y);
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
+      return { ok: false, error: "bad_coords" };
+    }
+    const res = await actuator.runAction(
+      wc(),
+      {
+        type: "click_type",
+        x: nx,
+        y: ny,
+        text: String(text ?? ""),
+        pressEnter: !!pressEnter,
+        label: String(label || ""),
+        ...(snap ? { snap } : {}),
+      },
       catalogItems(),
     );
     invalidate();
@@ -360,9 +423,12 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
       { type: "press_key", key, modifiers: mods },
       catalogItems(),
     );
-    // Shortcuts are how design and editor tools are really driven, and most of
-    // them change the page as much as a click does.
-    if (/^enter$/i.test(String(key)) || mods.length) invalidate();
+    // Every key can change the page: Enter submits, Escape closes, Tab moves
+    // focus and fires validation, arrows move through a combobox, Backspace
+    // edits. Invalidating only for Enter and modifier chords meant the loop
+    // diffed the pre-action snapshot against itself, so those keys were scored
+    // as "no observable page change" every single time they were used.
+    invalidate();
     return res;
   }
 
@@ -388,6 +454,9 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   async function wait(ms = 800) {
     const clamped = Math.min(Math.max(Number(ms) || 800, 100), 10000);
     await new Promise((r) => setTimeout(r, clamped));
+    // Waiting exists precisely because the page is expected to change while we
+    // do it. Keeping the old snapshot defeats the only reason to call this.
+    invalidate();
     return { ok: true, type: "wait", ms: clamped };
   }
 
@@ -522,6 +591,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
     goForward,
     click,
     clickCoord,
+    typeAtCoord,
     drag,
     type,
     replaceText,

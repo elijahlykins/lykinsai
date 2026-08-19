@@ -20,6 +20,8 @@ const { createAgentModel, AgentModelUnavailableError } = require("./runtime/mode
 const { createMemoryStore } = require("./runtime/memory.cjs");
 const { createDebugLog } = require("./runtime/debugLog.cjs");
 const { createRecoveryTracker } = require("./runtime/recovery.cjs");
+const { createTimer } = require("./runtime/timing.cjs");
+const { createGrounder } = require("./runtime/grounding.cjs");
 const taskState = require("./runtime/taskState.cjs");
 const planner = require("./runtime/planner.cjs");
 const executor = require("./runtime/executor.cjs");
@@ -33,6 +35,14 @@ const DEFAULT_MAX_ROUNDS = 24;
 const RESUME_ROUND_BONUS = 6;
 
 /**
+ * Actions that succeed mechanically and prove nothing about the task. They are
+ * real work — you have to scroll to read a list — but "it scrolled" is not
+ * evidence that the user's goal was met, and treating it as such is how a run
+ * ends `completed` with an invented answer.
+ */
+const EVIDENCE_FREE_ACTIONS = new Set(["scroll", "wait", "screenshot", "go_back", "go_forward"]);
+
+/**
  * Things only the user can supply. Any other `ask_user` question is the agent
  * punting work back — asking permission to continue, or which of two obvious
  * options to take — and gets pushed back once before it can end the run.
@@ -40,8 +50,18 @@ const RESUME_ROUND_BONUS = 6;
 const HUMAN_ONLY_QUESTION_RE =
   /\b(password|passcode|passphrase|2fa|two[- ]factor|mfa|otp|one[- ]time (?:code|password)|verification code|security code|auth(?:entication)? code|sign[- ]?in|log[- ]?in|credential|captcha|card number|cvv|billing address|payment method|social security|ssn|date of birth|which account)\b/i;
 
+/**
+ * Asking permission is a punt however it is phrased. "Do you want me to sign
+ * in?" contains "sign in", so the keyword test alone let the agent end the run
+ * by asking to do something it should simply have done.
+ */
+const ASKING_PERMISSION_RE =
+  /^\W*(?:do you want|would you like|should i|shall i|may i|can i|is it (?:ok|okay|alright)|are you (?:ok|happy)|let me know if|would you prefer|which (?:would|do) you)\b/i;
+
 function requiresHumanInput(question) {
-  return HUMAN_ONLY_QUESTION_RE.test(String(question || ""));
+  const text = String(question || "");
+  if (ASKING_PERMISSION_RE.test(text)) return false;
+  return HUMAN_ONLY_QUESTION_RE.test(text);
 }
 
 /**
@@ -66,7 +86,23 @@ function requiresHumanInput(question) {
  *   than being handed back. Absent → the run ends as before.
  * @returns {Promise<{ok:boolean, status:string, answer:string, task:object, history:Array}>}
  */
-async function runBrowserAgentTask({
+/**
+ * Thin wrapper so the debug stream is always closed.
+ *
+ * A model outage rethrows AgentModelUnavailableError straight out of the loop
+ * for the caller to fall back on, which skipped `finish()` — and with it the
+ * only `debug.close()`. Every such run leaked a write stream.
+ */
+async function runBrowserAgentTask(opts) {
+  const held = {};
+  try {
+    return await runTask({ ...opts, __holdDebug: held });
+  } finally {
+    held.debug?.close?.();
+  }
+}
+
+async function runTask({
   goal,
   // The user's raw ask, when `goal` was enriched with extra instructions.
   // Consequential-action pre-approval is judged against THIS text only, so
@@ -87,15 +123,44 @@ async function runBrowserAgentTask({
   // review the prepared work and request edits — used for first-run composes;
   // the user's approval reply then runs with "auto".
   sendPolicy = "auto",
+  // "refs": aim with element references from the snapshot (production).
+  // "holo": the model describes its target and a grounding model turns that
+  // description into a point. Only the eval harness sets this.
+  groundingMode = "",
+  // Per-stage span timing. Off in production; the disabled timer is a no-op.
+  timing = false,
+  // Awaited pre-action hook. onProgress is fired-and-forgotten, so a harness
+  // that screenshots there races the click; this is the place to capture the
+  // frame the action is about to change.
+  onBeforeAct = null,
+  __holdDebug = null,
 }) {
   const task = taskState.createTask({ goal, conversationHistory });
   const debug = createDebugLog({ userDataPath, taskId: task.id });
+  if (__holdDebug) __holdDebug.debug = debug;
   const recovery = createRecoveryTracker();
+  const timer = createTimer({ enabled: timing === true, onSpan: (sp) => debug.log("span", sp) });
+  // null in refs mode — that null is the loop's only grounding-mode check.
+  const grounder = createGrounder({ mode: groundingMode, model });
   const userMemory = memory ? await memory.getUserMemory().catch(() => "") : "";
 
-  const finish = (status, answer, extra = {}) => {
+  let learned = false;
+  /**
+   * Every exit goes through here, and every exit learns.
+   *
+   * Learning used to hang off the one clean-finish path, so a run that fought a
+   * site for twenty rounds and lost — the run with the most to teach the next
+   * one — recorded nothing at all. `finish` is async now; the call sites are
+   * all `return finish(...)` inside an async function, so they adopt the
+   * promise unchanged.
+   */
+  const finish = async (status, answer, extra = {}) => {
     task.status = status;
     task.completionReason = extra.completionReason || answer.slice(0, 200);
+    if (!learned) {
+      learned = true;
+      await recordWhatWeLearned(currentUrlSafe()).catch(() => {});
+    }
     debug.log("task_finished", { status, completionReason: task.completionReason, rounds: task.round });
     debug.close();
     return {
@@ -106,6 +171,14 @@ async function runBrowserAgentTask({
       history: task.recentActions,
       ...extra,
     };
+  };
+
+  const currentUrlSafe = () => {
+    try {
+      return controller.getCurrentSnapshot()?.url || controller.currentUrl() || "";
+    } catch {
+      return "";
+    }
   };
 
   const aborted = () => signal?.aborted === true;
@@ -125,11 +198,12 @@ async function runBrowserAgentTask({
     if (!host || task.round < 3) return;
     try {
       const existing = await memory.getWebsiteMemory(host).catch(() => "");
-      const { notes } = await model.learn({
+      const { notes, userNotes } = await timer.time("learn", () => model.learn({
         system: contextRouter.buildLearningSystem(),
+        signal,
         user: [
           `WEBSITE: ${host}`,
-          `TASK JUST COMPLETED: ${task.goal}`,
+          `TASK JUST ATTEMPTED: ${task.goal}`,
           existing ? `ALREADY KNOWN (do not repeat any of this):\n${existing.slice(0, 1500)}` : "",
           `WHAT HAPPENED:\n${taskState.formatHistoryForModel(task)}`,
           task.workingMemory.facts.length
@@ -139,9 +213,14 @@ async function runBrowserAgentTask({
         ]
           .filter(Boolean)
           .join("\n\n"),
-      });
+      }));
       const saved = await memory.rememberWebsiteNotes(host, notes);
-      debug.log("learned", { host, offered: notes.length, saved });
+      // The user half of memory had a write function nothing ever called, so
+      // the seed file could be read forever and never grow.
+      const savedUser = userNotes?.length && memory.rememberUserFacts
+        ? await memory.rememberUserFacts(userNotes)
+        : 0;
+      debug.log("learned", { host, offered: notes.length, saved, savedUser });
     } catch (e) {
       // Learning is a bonus; never let it turn a finished task into a failure.
       debug.log("learn_failed", { host, error: String(e?.message || e).slice(0, 200) });
@@ -151,7 +230,11 @@ async function runBrowserAgentTask({
   // Rounds are a budget, not a deadline: every time the user steps in to
   // unblock us, the task earns more of them so the wait itself can't be what
   // kills the run.
-  let roundBudget = Math.max(1, Number(maxRounds) || DEFAULT_MAX_ROUNDS);
+  const baseBudget = Math.max(1, Number(maxRounds) || DEFAULT_MAX_ROUNDS);
+  let roundBudget = baseBudget;
+  // Generous, but finite. Each hand-back used to add rounds with no ceiling, so
+  // a page that kept needing a nudge could keep a run alive indefinitely.
+  const maxRoundBudget = baseBudget + RESUME_ROUND_BONUS * 5;
 
   /**
    * Hand the browser to the user for one step, watch until they've taken it,
@@ -175,7 +258,7 @@ async function runBrowserAgentTask({
     // The page they left us is not the page we paused on.
     controller.invalidate();
     recovery.reset();
-    roundBudget += RESUME_ROUND_BONUS;
+    roundBudget = Math.min(maxRoundBudget, roundBudget + RESUME_ROUND_BONUS);
     taskState.addFact(task, note);
     onProgress({ phase: "working", resumedAfterUser: true });
     return note;
@@ -187,12 +270,16 @@ async function runBrowserAgentTask({
   // --- Plan -----------------------------------------------------------------
   let snapshot = null;
   try {
-    snapshot = await controller.getPageState();
+    snapshot = await timer.time("snapshot", () => controller.getPageState());
   } catch {
     snapshot = null;
   }
+  const initialWebsiteMemory = memory && snapshot?.url
+    ? await memory.getWebsiteMemory(snapshot.url).catch(() => "")
+    : "";
   try {
-    const { clarification } = await planner.planTask({ model, task, snapshot, userMemory });
+    const { clarification } = await timer.time("plan", () =>
+      planner.planTask({ model, task, snapshot, userMemory, websiteMemory: initialWebsiteMemory, signal }));
     if (clarification) {
       return finish("waiting_for_user", clarification, { needsUser: true });
     }
@@ -235,9 +322,9 @@ async function runBrowserAgentTask({
     // 1. Observe — always decide from a fresh snapshot when the last action
     //    could have changed the page.
     if (!controller.getCurrentSnapshot()) {
-      await controller.settle();
+      await timer.time("settle", () => controller.settle());
       try {
-        snapshot = await controller.getPageState();
+        snapshot = await timer.time("snapshot", () => controller.getPageState());
       } catch (e) {
         return finish("failed", `Lost access to the browser: ${e?.message || e}`);
       }
@@ -262,9 +349,10 @@ async function runBrowserAgentTask({
       const vision = visionPolicy.shouldSeePixels({
         snapshot,
         roundsSinceShot: task.round - lastScreenshotRound,
+        always: grounder?.needsPixelsEveryRound === true,
       });
       if (vision.see) {
-        const shot = await controller.screenshot().catch(() => null);
+        const shot = await timer.time("screenshot", () => controller.screenshot()).catch(() => null);
         if (shot?.ok) {
           pendingScreenshot = shot.dataUrl;
           lastScreenshotRound = task.round;
@@ -277,21 +365,27 @@ async function runBrowserAgentTask({
     // 2. Decide.
     let decision;
     try {
-      decision = await executor.decideNext({
+      decision = await timer.time("decide", () => executor.decideNext({
         model,
         task,
         snapshot,
+        signal,
         memoryContext: { userMemory, websiteMemory },
         recovering,
         recoveryHint,
         lastVerification,
         screenshotDataUrl: pendingScreenshot,
         visionHint,
-      });
+        groundingMode: grounder ? grounder.mode : "refs",
+      }));
     } catch (e) {
       if (e instanceof AgentModelUnavailableError) throw e;
       return finish("failed", `Could not decide the next step: ${e?.message || e}`);
     }
+    // Hold the exact frame the decide model saw: the grounder must reason over
+    // the same pixels, and mapNormCoordToClient can only map against the most
+    // recent capture. One screenshot per round keeps all three in agreement.
+    const decideImage = pendingScreenshot;
     pendingScreenshot = "";
     visionHint = "";
     debug.log("decision", {
@@ -309,6 +403,22 @@ async function runBrowserAgentTask({
       if (!task.workingMemory.candidateResults.includes(c)) {
         task.workingMemory.candidateResults.push(c);
       }
+    }
+
+    // 3.5 Ground — turn a described target into a point BEFORE the safety gate
+    //     or the actuator sees this action. classifyActionRisk reads an
+    //     element's label out of snapshot.byRef, and a description has no ref,
+    //     so grounding later would let an outbound action past the gate.
+    if (grounder?.needsGrounding(decision)) {
+      const g = await timer.time("ground", () =>
+        grounder.ground({ decision, snapshot, imageUrl: decideImage }));
+      debug.log("grounded", g.log);
+      if (g.fatal) {
+        // Never silently continue on element refs: a "holo" run that was
+        // secretly a refs run makes the comparison worthless.
+        return finish("failed", `Grounding is unavailable: ${g.error}`);
+      }
+      decision = g.ok ? g.decision : { ...decision, kind: "invalid", invalidReason: g.invalidReason };
     }
 
     if (decision.kind === "invalid") {
@@ -331,16 +441,40 @@ async function runBrowserAgentTask({
       // Completion verification: what did the user ask for, and what evidence
       // do we have? The executor's answer must be grounded — require either
       // gathered facts, candidate results, or verified consequential steps.
+      // Scrolling and waiting always "succeed" — they are mechanical, and the
+      // verifier confirms them deterministically. Counting them as evidence let
+      // two scrolls stand in for doing the task, and the answer that followed
+      // was whatever the model felt like writing. Evidence has to be something
+      // that changed the world or told us something about it.
+      const substantive = task.recentActions.filter(
+        (a) => a.result === "success" && !EVIDENCE_FREE_ACTIONS.has(String(a.action?.type || "")),
+      );
       const hasEvidence =
         task.workingMemory.facts.length > 0 ||
         task.workingMemory.candidateResults.length > 0 ||
-        task.recentActions.some((a) => a.result === "success");
-      if (!hasEvidence && task.round <= 2) {
+        substantive.length > 0;
+      // No round cap on this. The old `round <= 2` meant the requirement simply
+      // switched itself off after round 2, which is when an ungrounded finish is
+      // most likely, not least.
+      if (!hasEvidence && finishPushbacks < 2) {
+        finishPushbacks += 1;
         recovering = true;
         recoveryHint =
-          "You tried to finish without any evidence of progress. Either do the work first, or explain what makes the goal already satisfied.";
+          "You tried to finish without any evidence of progress: nothing has been learned, nothing has been changed, " +
+          "and scrolling and waiting do not count. Either do the work, or state plainly in `answer` what makes the " +
+          "goal already satisfied and record it in `factsLearned`.";
         debug.log("finish_rejected", { round: task.round });
         continue;
+      }
+      if (!hasEvidence) {
+        // It has been asked twice and still has nothing. Reporting an invented
+        // answer as a completed task is worse than reporting the failure.
+        return finish(
+          "failed",
+          "I couldn't complete this: I have no evidence that any of the work actually happened, " +
+            "so I won't report a result I can't stand behind.",
+          { completionReason: "finished without evidence" },
+        );
       }
       // Quitting with plan steps still open is the most common way a task ends
       // half-done. Make the agent account for them once before accepting it.
@@ -355,7 +489,6 @@ async function runBrowserAgentTask({
         debug.log("finish_pushback", { round: task.round, openSteps });
         continue;
       }
-      await recordWhatWeLearned(snapshot?.url || controller.currentUrl());
       return finish("completed", decision.answer, { completionReason: decision.reason || "goal achieved" });
     }
     if (decision.kind === "ask_user") {
@@ -388,8 +521,18 @@ async function runBrowserAgentTask({
       debug.log("replanning", { reason: decision.replanReason });
       onProgress({ phase: "replanning", reason: decision.replanReason });
       try {
-        await planner.replanTask({ model, task, snapshot, reason: decision.replanReason });
-        debug.log("plan_revised", { plan: task.plan.map((p) => p.step) });
+        await planner.replanTask({
+          model,
+          task,
+          snapshot,
+          reason: decision.replanReason,
+          signal,
+          // null when the model said nothing about constraints; an array (even
+          // an empty one) is the actor telling us which still apply. Without
+          // this distinction there was no way to drop a constraint at all.
+          constraints: decision.constraints,
+        });
+        debug.log("plan_revised", { plan: task.plan.map((p) => p.step), constraints: task.constraints });
       } catch (e) {
         if (e instanceof AgentModelUnavailableError) throw e;
         debug.log("replan_failed", { error: e?.message });
@@ -452,7 +595,20 @@ async function runBrowserAgentTask({
       targetLabel: targetEl?.label ? String(targetEl.label).slice(0, 60) : "",
       url: snapshot.url,
     });
-    const actionResult = await executeAction(controller, decision.action).catch((e) => ({
+    if (typeof onBeforeAct === "function") {
+      // Awaited on purpose — a screenshot taken here must land before the click.
+      await onBeforeAct({ round: task.round, decision, snapshot }).catch(() => {});
+    }
+    // Last gate before the world changes. Abort was only checked at the top of
+    // the round, so a Stop pressed while the model was deciding — which is when
+    // people press it — still let this round's action land. On a checkout page
+    // that meant Stop placed the order.
+    if (aborted()) {
+      debug.log("aborted_before_act", { round: task.round, action: decision.action });
+      return finish("failed", "Stopped before the next action ran.", { error: "aborted" });
+    }
+    const actionResult = await timer.time("actuate", () =>
+      executeAction(controller, decision.action)).catch((e) => ({
       ok: false,
       error: e?.message || String(e),
     }));
@@ -465,21 +621,34 @@ async function runBrowserAgentTask({
       x: actionResult?.x,
       y: actionResult?.y,
     });
+    // A screenshot the model asked for has to come back to it. The image was
+    // captured, handed to the verifier as "screenshot completed", and dropped —
+    // so the one deliberate way the agent has of looking at a page returned
+    // nothing but a spent round.
+    if (decision.action?.type === "screenshot" && actionResult?.ok && actionResult.dataUrl) {
+      pendingScreenshot = actionResult.dataUrl;
+      lastScreenshotRound = task.round + 1;
+      visionHint = "you asked to look at the page";
+    }
+
     // Extracted field content must persist across rounds — history lines are
     // truncated, and without this the model re-reads (or worse, retypes) the
     // same field forever.
-    if (decision.action?.type === "extract" && actionResult?.ok && actionResult.value != null) {
-      taskState.addFact(
-        task,
-        `field "${actionResult.label || decision.action.target}" contains: ${String(actionResult.value).slice(0, 500)}`,
-      );
+    if (decision.action?.type === "extract" && actionResult?.ok) {
+      const name = actionResult.label || decision.action.target;
+      if (actionResult.checked !== undefined && !String(actionResult.value || "").trim()) {
+        taskState.addFact(task, `"${name}" is ${actionResult.checked ? "checked" : "unchecked"}`);
+      } else if (actionResult.value != null) {
+        taskState.addFact(task, `field "${name}" contains: ${String(actionResult.value).slice(0, 500)}`);
+      }
     }
 
     // 6. Observe the result.
-    await controller.settle();
+    await timer.time("settle_after", () => controller.settle());
     let after = null;
     try {
-      after = controller.getCurrentSnapshot() || (await controller.getPageState());
+      after = controller.getCurrentSnapshot()
+        || (await timer.time("observe_after", () => controller.getPageState()));
     } catch {
       after = before;
     }
@@ -506,15 +675,16 @@ async function runBrowserAgentTask({
     // 7. Verify.
     let verification;
     try {
-      verification = await verifier.verifyOutcome({
+      verification = await timer.time("verify", () => verifier.verifyOutcome({
         model,
         decision,
+        signal,
         actionResult,
         before,
         after,
         diff,
         extracted,
-      });
+      }));
     } catch (e) {
       if (e instanceof AgentModelUnavailableError) throw e;
       verification = { success: false, evidence: "", reason: e?.message || String(e), next: "recover", method: "error" };
@@ -538,6 +708,9 @@ async function runBrowserAgentTask({
       observedOutcome: verification.evidence || verification.reason || diff.summary,
       retries: recovery.retriesFor(decision),
     });
+
+    const rollup = timer.roundRollup(task.round);
+    if (rollup) debug.log("round_timing", rollup);
 
     if (verification.success) {
       recovering = false;
@@ -585,7 +758,7 @@ async function runBrowserAgentTask({
     }
     if (step.mode === "replan") {
       try {
-        await planner.replanTask({ model, task, snapshot: after, reason: step.hint });
+        await planner.replanTask({ model, task, snapshot: after, reason: step.hint, signal });
         debug.log("plan_revised", { plan: task.plan.map((p) => p.step) });
       } catch (e) {
         if (e instanceof AgentModelUnavailableError) throw e;
@@ -622,7 +795,13 @@ async function executeAction(controller, action) {
     case "click":
       return controller.click(action.target);
     case "click_coord":
-      return controller.clickCoord(action.x, action.y, action.label);
+      return controller.clickCoord(action.x, action.y, action.label, { snap: action.snap });
+    case "type_coord":
+      return controller.typeAtCoord(action.x, action.y, action.text ?? action.value ?? "", {
+        pressEnter: action.pressEnter === true,
+        label: action.label,
+        snap: action.snap,
+      });
     case "drag":
       return controller.drag(
         action.target || { x: action.x, y: action.y },

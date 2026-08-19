@@ -270,26 +270,14 @@ test("visual inspection can be used again later in the same task", () => {
   );
 });
 
-test("builder rules load for design tools, campaign editors and drawn pages", () => {
-  assert.ok(
-    contextRouter
-      .routeBrowserModules({ url: "https://www.canva.com/design/X/edit", goal: "make a flyer" })
-      .includes("builders"),
-  );
-  assert.ok(
-    contextRouter
-      .routeBrowserModules({ url: "https://us21.admin.mailchimp.com/campaigns", goal: "write the email" })
-      .includes("builders"),
-  );
-  assert.ok(
-    contextRouter.routeBrowserModules({ url: "https://x.example", hasEmbeddedFrame: true }).includes("builders"),
-  );
-  assert.ok(
-    !contextRouter
-      .routeBrowserModules({ url: "https://news.example.com", goal: "what is the top story" })
-      .includes("builders"),
-    "ordinary browsing should not carry builder rules",
-  );
+test("builder rules are present whatever the page turns out to be", () => {
+  // These rules used to be routed in from the URL and the goal, which meant a
+  // design tool on an unrecognised domain, or a campaign editor reached from a
+  // goal that never mentioned one, got none of them. They ride along now.
+  const system = contextRouter.buildDecisionSystem({ task: { goal: "what is the top story", skills: [] } });
+  assert.ok(system.includes("# Builders and visual editors"));
+  assert.match(system, /dragging is the\s+gesture these products are built around/);
+  assert.match(system, /Never conclude a document is empty because the element list looks empty/);
 });
 
 // ── Not calling correct work a failure ──────────────────────────────────────

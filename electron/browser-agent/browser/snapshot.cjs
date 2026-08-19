@@ -81,27 +81,39 @@ function normalizeRole(item) {
  */
 function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 5000 } = {}) {
   if (!snapshot) return "(no snapshot)";
+  // A snapshot reaches here from several paths, including `after = before` on a
+  // failed re-observe, so nothing is assumed to be populated.
+  const tabs = Array.isArray(snapshot.tabs) ? snapshot.tabs : [];
+  const elements = Array.isArray(snapshot.elements) ? snapshot.elements : [];
   const lines = [];
   lines.push("PAGE");
   lines.push(`Title: ${snapshot.title || "(untitled)"}`);
   lines.push(`URL: ${snapshot.url || "(blank)"}`);
-  if (snapshot.tabs.length) {
+  if (tabs.length) {
     lines.push("");
     lines.push("TABS");
-    for (const tab of snapshot.tabs) {
+    for (const tab of tabs) {
       lines.push(
         `[${tab.id}] ${String(tab.title || tab.url || "(blank)").slice(0, 80)}${tab.active ? " (active)" : ""}`,
       );
     }
   }
   lines.push("");
+  if (snapshot.collectorFailed) {
+    lines.push(
+      "(WARNING: the page could not be read this round — the list below is incomplete or empty " +
+        "because the collector failed, NOT because the page is empty. Wait and observe again, " +
+        "or take a screenshot.)",
+    );
+    lines.push("");
+  }
   lines.push("INTERACTIVE ELEMENTS");
   // A modal changes what every other element means — say so before listing.
-  if (snapshot.elements.some((e) => e.inDialog)) {
+  if (elements.some((e) => e.inDialog)) {
     lines.push("(A dialog is open. Elements marked [dialog] belong to it; the rest are behind it.)");
   }
   const embeddedHosts = [
-    ...new Set(snapshot.elements.map((e) => e.frameHost).filter(Boolean)),
+    ...new Set(elements.map((e) => e.frameHost).filter(Boolean)),
   ];
   if (embeddedHosts.length) {
     lines.push(
@@ -110,9 +122,16 @@ function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 500
         `Embedded documents here: ${embeddedHosts.join(", ")}.)`,
     );
   }
-  const chosen = chooseElements(snapshot.elements, maxElements);
+  const chosen = chooseElements(elements, maxElements);
   for (const el of chosen) {
     let line = `[${el.ref}] ${el.role} "${el.label}"`;
+    // Where a link goes is the single most useful thing about it, and it was
+    // collected, stored, and then dropped on the floor here. Without it the
+    // agent cannot tell an outbound link from an internal one, cannot choose
+    // between two links with the same text, and cannot skip the click and
+    // navigate straight to the URL it is already holding.
+    const href = linkDestination(el);
+    if (href) line += ` -> ${href}`;
     if (el.value) line += ` value="${el.value}"`;
     if (el.checked) line += " (checked)";
     if (el.disabled) line += " (disabled — not clickable until something enables it)";
@@ -122,13 +141,40 @@ function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 500
     if (!el.inView) line += " (below fold)";
     lines.push(line);
   }
-  if (snapshot.elements.length > chosen.length) {
-    lines.push(`(+${snapshot.elements.length - chosen.length} more elements)`);
+  if (elements.length > chosen.length) {
+    lines.push(`(+${elements.length - chosen.length} more elements)`);
   }
   lines.push("");
   lines.push("VISIBLE CONTENT");
-  lines.push(snapshot.visibleText.slice(0, maxTextChars) || "(no visible text)");
+  const fullText = String(snapshot.visibleText || "");
+  lines.push(fullText.slice(0, maxTextChars) || "(no visible text)");
+  if (fullText.length > maxTextChars) {
+    lines.push(`… (${fullText.length - maxTextChars} more characters — scroll or extract to read the rest)`);
+  }
   return lines.join("\n");
+}
+
+/**
+ * A link's destination, trimmed to what is worth spending prompt on.
+ *
+ * Tracking parameters and long opaque ids are noise — the host and path are
+ * what tell the agent whether this leaves the site and where it lands.
+ */
+function linkDestination(el) {
+  const href = String(el?.href || "").trim();
+  if (!href) return "";
+  if (/^(?:javascript:|#|about:blank$)/i.test(href)) return "";
+  try {
+    const u = new URL(href);
+    if (!/^https?:$/i.test(u.protocol)) return href.slice(0, 60);
+    const path = u.pathname === "/" ? "" : u.pathname;
+    const base = `${u.host}${path}`;
+    const q = u.search ? "?…" : "";
+    return `${base.length > 78 ? `${base.slice(0, 77)}…` : base}${q}`;
+  } catch {
+    // Relative or malformed — still more useful to the agent than nothing.
+    return href.slice(0, 60);
+  }
 }
 
 /**
@@ -144,7 +190,13 @@ function chooseElements(elements, maxElements) {
   const embedded = elements.filter((e) => e.frameHost).sort((a, b) => rank(a) - rank(b));
   const main = elements.filter((e) => !e.frameHost).sort((a, b) => rank(a) - rank(b));
   if (!embedded.length) return main.slice(0, maxElements);
-  const embeddedQuota = Math.min(embedded.length, Math.max(30, Math.floor(maxElements / 3)));
+  // A third of the budget, floored at 30 only when the budget is big enough to
+  // spare it. The absolute floor starved the main page at the verifier's
+  // 40-element budget, leaving it ten slots for the whole outer application.
+  const embeddedQuota = Math.min(
+    embedded.length,
+    Math.max(Math.floor(maxElements / 3), Math.min(30, Math.floor(maxElements / 2))),
+  );
   const kept = [
     ...main.slice(0, Math.max(0, maxElements - embeddedQuota)),
     ...embedded.slice(0, embeddedQuota),
@@ -193,7 +245,7 @@ function diffSnapshots(before, after) {
 
 function labelSet(snapshot) {
   const set = new Set();
-  for (const el of snapshot.elements) {
+  for (const el of Array.isArray(snapshot?.elements) ? snapshot.elements : []) {
     const label = normText(el.label);
     if (label && label.length >= 2) set.add(label);
   }
