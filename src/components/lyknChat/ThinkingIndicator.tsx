@@ -11,6 +11,11 @@ interface ThinkingIndicatorProps {
    * both themes, where the blue would sink into the glass.
    */
   tone?: "brand" | "inherit";
+  /**
+   * The run is parked on the user, not inferencing. Stops both the mark and the
+   * label shimmer so the row reads as "your turn" rather than "hold on".
+   */
+  paused?: boolean;
   className?: string;
 }
 
@@ -24,6 +29,7 @@ export default function ThinkingIndicator({
   status,
   compact = false,
   tone = "brand",
+  paused = false,
   className = "",
 }: ThinkingIndicatorProps) {
   const text = status && status.trim() ? status : "Thinking…";
@@ -36,8 +42,8 @@ export default function ThinkingIndicator({
       } ${className}`}
       aria-live="polite"
     >
-      <LyknOutlineSpinner size={compact ? 16 : 24} />
-      <span className="lykn-chat-thinking-text">{text}</span>
+      <LyknOutlineSpinner size={compact ? 16 : 24} paused={paused} />
+      <span className={paused ? "" : "lykn-chat-thinking-text"}>{text}</span>
     </div>
   );
 }

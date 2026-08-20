@@ -96,6 +96,7 @@ const appDock = require("./appDock.cjs");
 const chromeSync = require("./chromeSync.cjs");
 const { createAgentRuntime } = require("./agentRuntime.cjs");
 const { decideChatRoute } = require("./chatAgentRoute.cjs");
+const { buildDiagnosticsReport } = require("./diagnostics.cjs");
 const {
   wrapReportAsStageHtml,
   titleFromMarkdown: titleFromStageMarkdown,
@@ -13139,6 +13140,61 @@ function registerOverlayIpc() {
   });
 }
 
+/**
+ * Write a shareable diagnostics report next to wherever the user asks for it.
+ *
+ * Every browser-agent run already writes a detailed JSONL trace under
+ * userData/browser-agent-logs/, and until now there was no way to get anything
+ * out of it: nothing in the app referenced the folder, and the bug-report form
+ * could not attach it. So the most common support question about the agent —
+ * "which runtime did this actually use, and where did it stop?" — had no answer
+ * that did not involve talking someone through Finder.
+ *
+ * What gets written is a summary, never a trace. buildDiagnosticsReport reads
+ * the traces and emits counts; the traces themselves stay on the machine. That
+ * keeps the user's own task text and page content private, and keeps the plans,
+ * skills and models out of a file that is, by design, about to be emailed to
+ * someone.
+ */
+async function saveDiagnosticsReport() {
+  let report = "";
+  try {
+    report = buildDiagnosticsReport({
+      userDataPath: app.getPath("userData"),
+      env: {
+        appVersion: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        electron: process.versions.electron,
+        packaged: app.isPackaged,
+      },
+    });
+  } catch (e) {
+    dialog.showErrorBox(
+      "Could not build diagnostics",
+      String(e?.message || e).slice(0, 500),
+    );
+    return;
+  }
+
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    title: "Save LYKN Diagnostics",
+    defaultPath: path.join(app.getPath("downloads"), `lykn-diagnostics-${stamp}.txt`),
+    filters: [{ name: "Text", extensions: ["txt"] }],
+  });
+  if (canceled || !filePath) return;
+
+  try {
+    await fs.writeFile(filePath, report, "utf8");
+    // Reveal rather than open: the point is to attach it to something, and a
+    // revealed file is one drag away from an email.
+    shell.showItemInFolder(filePath);
+  } catch (e) {
+    dialog.showErrorBox("Could not save diagnostics", String(e?.message || e).slice(0, 500));
+  }
+}
+
 function buildAppMenu() {
   // macOS: standard app/edit/window menu. Windows: File + Edit so Alt shortcuts
   // and copy/paste still work with autoHideMenuBar.
@@ -13149,6 +13205,19 @@ function buildAppMenu() {
     enabled: app.isPackaged,
     click: (item) => setLoginItemEnabled(item.checked),
   };
+  // TODO(devtools): we want a developer mode here — a `toggleDevTools` role,
+  // gated so it is unreachable on a normal install (an env var we set, or an
+  // internal-account check), plus a raw trace viewer for browser-agent runs.
+  //
+  // It is deliberately absent for now rather than half-built. DevTools on any
+  // LYKN window exposes the whole product: the agent's prompt corpus and skill
+  // files, the IPC surface, the snapshot format the agent builds from a page,
+  // and every request to our own API. Shipping that behind nothing but an
+  // obscure shortcut hands the architecture to anyone who goes looking. When it
+  // is built, the gate is the feature — not the toggle.
+  //
+  // "Save Diagnostics…" below is the supported path in the meantime: it answers
+  // support questions from the same data without exposing any of it.
   const viewMenu = {
     label: "View",
     submenu: [
@@ -13162,10 +13231,29 @@ function buildAppMenu() {
       { role: "togglefullscreen" },
     ],
   };
+  // Diagnostics is an internal tool and is not part of the shipped product.
+  //
+  // Even though the report it writes is counts-only, the menu item itself
+  // advertises that the agent has more than one runtime, that runs have rounds,
+  // recoveries and grounding — the shape of the architecture, handed to anyone
+  // who opens the Help menu. So it exists in dev builds, and in a packaged build
+  // only when someone deliberately launches with LYKN_DIAGNOSTICS=1, which is
+  // how we would walk an internal tester through producing one.
+  //
+  // If this ever needs to reach real users for support, gate it on the account
+  // (the internal-email list the server already keeps) rather than by making it
+  // visible to everybody.
+  const diagnosticsEnabled = !app.isPackaged || process.env.LYKN_DIAGNOSTICS === "1";
   const helpMenu = {
     role: "help",
     submenu: [
       { label: "Set Up LYKN / Permissions…", click: () => createOnboardingWindow() },
+      ...(diagnosticsEnabled
+        ? [
+            { type: "separator" },
+            { label: "Save Diagnostics…", click: () => saveDiagnosticsReport() },
+          ]
+        : []),
     ],
   };
 

@@ -34,7 +34,7 @@
     "test": "node --test",
     "test:vault": "node --import ./scripts/test-alias-loader.mjs --test src/lib/vault/attachmentsMarker.test.ts src/lib/synthesis/sourceText.test.ts src/lib/vaultContent.test.ts",
     "test:rag": "node --test lib/rag/rag.test.mjs",
-    "test:agent": "node --test electron/chatAgentRoute.test.mjs electron/signInWall.test.mjs electron/agentWaiting.test.mjs electron/browser-agent/*.test.cjs electron/browser-agent/*.test.mjs lib/agentSkillRouting.test.cjs lib/agentModelProviders.test.mjs && node --import ./scripts/test-alias-loader.mjs --test src/lib/ai/agentHandoff.test.ts src/lib/agentWaitingRow.test.ts",
+    "test:agent": "node --test electron/chatAgentRoute.test.mjs electron/signInWall.test.mjs electron/agentWaiting.test.mjs electron/agentPersist.test.cjs electron/diagnostics.test.cjs electron/browser-agent/*.test.cjs electron/browser-agent/*.test.mjs lib/agentSkillRouting.test.cjs lib/agentModelProviders.test.mjs lib/browseWorkLog.test.cjs && node --import ./scripts/test-alias-loader.mjs --test src/lib/ai/agentHandoff.test.ts src/lib/agentWaitingRow.test.ts src/lib/agentChoiceRow.test.ts",
     "typecheck": "tsc -p ./jsconfig.json",
     "preview": "vite preview",
     "remotion:studio": "remotion studio remotion/index.ts",

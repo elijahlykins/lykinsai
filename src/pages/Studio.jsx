@@ -54,6 +54,7 @@ import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import { openBrief } from "@/lib/brief";
 import { STUDIO_OPEN_TAB_EVENT } from "@/lib/studioTabs";
 import { agentWaitingRow } from "@/lib/agentWaitingRow";
+import { agentChoiceRow } from "@/lib/agentChoiceRow";
 import {
   MemoryRouter,
   Route,
@@ -1035,9 +1036,12 @@ function RailMarkdown({ children }) {
 
 // Agent icon color: grey idle → blue while working → green when finished.
 function agentToneClass(a) {
-  if (a.status === "running" || a.status === "waiting" || a.busy) {
+  if (a.status === "running" || a.busy) {
     return "animate-pulse text-[#3b78ff]";
   }
+  // Parked on the user: brand blue, but at rest. Same "this agent is live"
+  // signal without the pulse that means "working, wait".
+  if (a.status === "waiting") return "text-[#3b78ff]";
   if (a.status === "error") return "text-red-400";
   const step = String(a.step || "").trim().toLowerCase();
   // A worker that has run leaves a step behind ("Done", "Stopped", last action).
@@ -1076,6 +1080,11 @@ function StudioAgentRail({ desktop }) {
   const [draft, setDraft] = useState("");
   const [liveStep, setLiveStep] = useState("");
   const [agentWaiting, setAgentWaiting] = useState(null);
+  // Live choice offered by the running agent. Event-sourced only: the
+  // runtime holds `pendingChoice` in memory and never persists it, so a row
+  // rebuilt from restored state would resolve to "no_pending_choice".
+  const [agentChoice, setAgentChoice] = useState(null);
+  const [choiceBusy, setChoiceBusy] = useState(false);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
   // Custom post-finish chips for the active agent (runtime + LLM). Cleared on send.
@@ -1202,6 +1211,10 @@ function StudioAgentRail({ desktop }) {
       // The event-carried row belongs to the agent we just left. Drop it and
       // let the newly active agent's own state say whether it is waiting.
       setAgentWaiting(null);
+      // Same for the choice: it was raised against the previous agent's
+      // pendingChoice, which this agent does not share.
+      setAgentChoice(null);
+      setChoiceBusy(false);
       const chips = mapAgentSuggestionChips(p?.suggestions);
       setCustomSuggestions(chips.length && !p?.busy ? chips : []);
       setSourceLinks([]);
@@ -1323,6 +1336,15 @@ function StudioAgentRail({ desktop }) {
         detail: String(p.detail || "").trim(),
       });
     });
+    // A question with buttons. Deliberately NOT cleared on agent-done:
+    // offerSendApprovalChoice ends the turn and still expects an answer.
+    const offChoice = window.lykn.onAgentChoice?.((p) => {
+      if (dead || (p?.agentId && p.agentId !== activeIdRef.current)) return;
+      const row = agentChoiceRow(p, activeIdRef.current);
+      if (!row) return;
+      setAgentChoice(row);
+      setChoiceBusy(false);
+    });
     return () => {
       dead = true;
       offList?.();
@@ -1331,6 +1353,7 @@ function StudioAgentRail({ desktop }) {
       offDelta?.();
       offDone?.();
       offWaiting?.();
+      offChoice?.();
     };
   }, [desktop]);
 
@@ -1398,6 +1421,10 @@ function StudioAgentRail({ desktop }) {
     // in parallel, so switching to an idle agent always lets you prompt it.
     const target = agents.find((a) => a.id === activeIdRef.current);
     if (target && (target.busy || target.status === "running")) return;
+    // The runtime treats a new message while a choice is open as declining it,
+    // so the buttons must not linger and imply they are still answerable.
+    setAgentChoice(null);
+    setChoiceBusy(false);
     const targetId = activeIdRef.current;
     const fromSuggestion = !!opts?.fromSuggestion;
     // Thread shows the short chip label; runtime still gets the grounded prompt.
@@ -1457,6 +1484,31 @@ function StudioAgentRail({ desktop }) {
   // A paused run has to look paused even when this rail never caught the
   // agent-waiting event — mounted late, reloaded, or was on another tab.
   const waitingRow = agentWaitingRow(active, agentWaiting);
+  // Only ever the active agent's own live question.
+  const choiceRow =
+    agentChoice && active?.id === agentChoice.agentId ? agentChoice : null;
+
+  const resolveAgentChoice = useCallback(
+    async (buttonId) => {
+      if (!choiceRow || !buttonId || choiceBusy) return;
+      setChoiceBusy(true);
+      try {
+        await window.lykn?.agentChoiceResolve?.(
+          choiceRow.agentId,
+          choiceRow.choiceId,
+          buttonId,
+        );
+      } catch {
+        /* fall through — the question closes either way */
+      }
+      // Whatever came back, this question is over: it either resolved, or the
+      // run had already moved on (no_pending_choice / stale_choice) and these
+      // buttons were never going to work. Leaving them up would be the lie.
+      setAgentChoice(null);
+      setChoiceBusy(false);
+    },
+    [choiceRow, choiceBusy],
+  );
   // Topic + visibility for post-finish suggestions (mirrors Build / Research).
   const latestAgentTopic = (() => {
     for (let i = thread.length - 1; i >= 0; i--) {
@@ -1577,16 +1629,39 @@ function StudioAgentRail({ desktop }) {
               </div>
             )}
             {waitingRow && (
-              // Waiting is the same mark still drawing, just saying something
-              // else — a pause is the agent alive and holding the task, not an
-              // alert to acknowledge.
+              // Parked on the user: the mark rests on its solid frame and the
+              // label stops shimmering. Motion here would read as "still
+              // inferencing" and rush the person we are waiting on — the agent
+              // is holding the task, and the next move is theirs.
               <div className="min-w-0 text-[0.72rem] text-white/70">
-                <ThinkingIndicator status={waitingRow.label} compact tone="inherit" />
+                <ThinkingIndicator status={waitingRow.label} compact tone="inherit" paused />
                 {waitingRow.detail && (
                   <p className="mt-1 break-words pl-6 text-[0.68rem] leading-snug text-white/55">
                     {waitingRow.detail}
                   </p>
                 )}
+              </div>
+            )}
+            {choiceRow && (
+              // The affordance the pause was missing: until now Studio could
+              // show the question but had no way to answer it, because preload
+              // never bridged "lykn:agent-choice-resolve".
+              <div className="mt-2 flex flex-wrap gap-2 pl-6">
+                {choiceRow.buttons.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    disabled={choiceBusy}
+                    onClick={() => void resolveAgentChoice(b.id)}
+                    className={`rounded-full px-3 py-1 text-[0.7rem] font-medium transition disabled:opacity-40 ${
+                      b.primary
+                        ? "bg-[#3b78ff] text-white hover:bg-[#5b8fff]"
+                        : "border border-white/20 text-white/75 hover:bg-white/10"
+                    }`}
+                  >
+                    {b.label}
+                  </button>
+                ))}
               </div>
             )}
           </div>

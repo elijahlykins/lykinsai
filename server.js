@@ -20368,6 +20368,7 @@ app.post('/api/desktop/browser-plan', requireAuth, requireAppAccess, aiLimiter, 
         items,
         conversationContext,
         isPreview: true,
+        cacheKey: `browser-screen-read:${(req.user?.id || 'anon').slice(0, 32)}`,
       });
       if (!readerResult.ok) {
         console.error('❌ /api/desktop/browser-plan screen-reader:', readerResult.status, readerResult.error?.slice(0, 200));
@@ -20489,6 +20490,11 @@ app.post('/api/desktop/agent-model', requireAuth, requireAppAccess, aiLimiter, a
     const out = await callStructured({
       model, system, user, imageUrl, imageUrls, schema, maxTokens, effort,
       name: `browser_agent_${stage}`.slice(0, 60),
+      // Per stage, not per task: the stable prefix is the stage's system
+      // prompt, so every task this user runs through a stage shares it. Scoped
+      // by user because the key is only a routing hint and a shared one would
+      // pull unrelated tenants onto the same backend for no gain.
+      cacheKey: `browser-agent:${stage}:${(req.user?.id || 'anon').slice(0, 32)}`,
     });
 
     // Surface upstream time so the harness can separate provider latency from
@@ -20660,6 +20666,7 @@ app.post('/api/desktop/browser-plan-next', requireAuth, requireAppAccess, aiLimi
         completedSteps,
         conversationContext,
         items,
+        cacheKey: `browser-screen-read:${(req.user?.id || 'anon').slice(0, 32)}`,
       });
       if (!readerResult.ok) {
         console.error('❌ /api/desktop/browser-plan-next screen-reader:', readerResult.status, readerResult.error?.slice(0, 200));

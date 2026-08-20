@@ -164,6 +164,17 @@ contextBridge.exposeInMainWorld("lykn", {
     ipcRenderer.on("lykn:agent-list", fn);
     return () => ipcRenderer.removeListener("lykn:agent-list", fn);
   },
+  // A parked run asks its question over "lykn:agent-choice" and waits on
+  // resolveChoice. Without these two the main-process handler
+  // ("lykn:agent-choice-resolve", main.cjs) is unreachable from Studio, so the
+  // rail can show the question but never answer it.
+  onAgentChoice: (cb) => {
+    const fn = (_e, p) => cb(p || {});
+    ipcRenderer.on("lykn:agent-choice", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-choice", fn);
+  },
+  agentChoiceResolve: (agentId, choiceId, buttonId) =>
+    ipcRenderer.invoke("lykn:agent-choice-resolve", { agentId, choiceId, buttonId }),
   onAgentProgress: (cb) => {
     const fn = (_e, p) => cb(p || {});
     ipcRenderer.on("lykn:agent-progress", fn);

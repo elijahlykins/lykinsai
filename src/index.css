@@ -2429,6 +2429,21 @@ html.dark .lykn-outline-spinner,
   }
 }
 
+/* The mark at rest: the same solid frame the reduced-motion branch settles on,
+   available on demand. Used when a run is parked on the user — motion there
+   reads as "still inferencing", which rushes the person whose answer we are
+   actually waiting for. */
+.lykn-outline-spinner--static,
+.lykn-outline-spinner--static path {
+  animation: none;
+  transform: none;
+}
+.lykn-outline-spinner--static path {
+  stroke-dashoffset: 0;
+  stroke-opacity: 0;
+  fill-opacity: 1;
+}
+
 /* Full-logo loading screen animation: the icon + wordmark draw on together,
    crossfade to the solid logo, hold, then fade out and loop. Reuses the same
    lyknOutlineDraw / lyknOutlinePop keyframes as the chat spinner. */
