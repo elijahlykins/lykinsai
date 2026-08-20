@@ -19,14 +19,22 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
   const id = `snap-${snapshotCounter}`;
   const elements = [];
   const byRef = new Map();
+  const byLoc = new Map();
   for (let i = 0; i < catalog.length; i += 1) {
     const item = catalog[i];
     if (!item) continue;
-    const ref = `e${i + 1}`;
+    // The uid is minted in page context and pinned to the element for the
+    // document's lifetime. A catalog from an older collector has none, so fall
+    // back to position — a stale ref is better than a crash.
+    const uid = item.uid === undefined || item.uid === null || item.uid === "" ? `p${i + 1}` : item.uid;
+    const ref = `e${uid}`;
+    const role = normalizeRole(item);
+    const label = String(item.label || "").slice(0, 120);
     const el = {
       ref,
-      role: normalizeRole(item),
-      label: String(item.label || "").slice(0, 120),
+      loc: elementLocator(item, role, label),
+      role,
+      label,
       value: item.value ? String(item.value).slice(0, 80) : "",
       checked: item.checked === true,
       href: item.href ? String(item.href).slice(0, 200) : "",
@@ -43,7 +51,11 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
       raw: item,
     };
     elements.push(el);
-    byRef.set(ref, el);
+    // Two elements can collide on a ref only if the collector handed out a
+    // duplicate uid. First writer wins so the earlier (usually in-view) element
+    // keeps the handle the model was given.
+    if (!byRef.has(ref)) byRef.set(ref, el);
+    if (el.loc && !byLoc.has(el.loc)) byLoc.set(el.loc, el);
   }
   return {
     id,
@@ -53,6 +65,7 @@ function buildSnapshot({ url = "", title = "", catalog = [], text = "", tabs = [
     tabs: Array.isArray(tabs) ? tabs : [],
     elements,
     byRef,
+    byLoc,
     visibleText: String(text || ""),
   };
 }
@@ -73,6 +86,34 @@ function normalizeRole(item) {
   }
   if (tag === "img" || tag === "picture" || tag === "canvas") return "img";
   return tag || "element";
+}
+
+/**
+ * A locator that outlives the snapshot that produced it.
+ *
+ * A uid dies with its document, so after a navigation or a framework remount
+ * the model has nothing durable to aim at and has to re-read the page. These
+ * are ordered by how well each survives a re-render: an author-written DOM id
+ * essentially always does, a link's path nearly always does, and role+label
+ * survives anything short of a copy change. The generated `nth-of-type` chain
+ * is last because it is the one that breaks the moment the DOM shifts —
+ * exactly the failure the uid already fixed.
+ */
+function elementLocator(item, role, label) {
+  const selector = String(item?.selector || "").trim();
+  if (/^#[^ >]+$/.test(selector)) return `css:${selector}`;
+  const href = String(item?.href || "").trim();
+  if (href && !/^(?:javascript:|#)/i.test(href)) {
+    try {
+      const u = new URL(href);
+      if (/^https?:$/i.test(u.protocol)) return `href:${u.pathname}${u.search}`.slice(0, 120);
+    } catch {
+      /* relative or malformed — fall through */
+    }
+  }
+  const text = String(label || "").trim().slice(0, 60);
+  if (role && text) return `role:${role}|${text}`;
+  return selector ? `css:${selector}`.slice(0, 120) : "";
 }
 
 /**
@@ -139,6 +180,9 @@ function formatSnapshotForModel(snapshot, { maxElements = 90, maxTextChars = 500
     if (el.scrollable) line += " (scrollable — scroll this ref to reach its contents)";
     if (el.frameHost) line += ` [embedded: ${el.frameHost}]`;
     if (!el.inView) line += " (below fold)";
+    // The durable handle. Refs die with the document; this survives a reload,
+    // so the model can re-aim after a navigation without another observe round.
+    if (el.loc) line += ` loc=${el.loc}`;
     lines.push(line);
   }
   if (elements.length > chosen.length) {
@@ -256,4 +300,4 @@ function normText(s) {
   return String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-module.exports = { buildSnapshot, formatSnapshotForModel, diffSnapshots };
+module.exports = { buildSnapshot, formatSnapshotForModel, diffSnapshots, elementLocator };

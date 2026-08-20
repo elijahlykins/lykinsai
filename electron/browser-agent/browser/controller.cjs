@@ -16,10 +16,21 @@ const { buildSnapshot, diffSnapshots } = require("./snapshot.cjs");
  * @param {object} [deps.tabs] optional multi-tab adapter:
  *   { list(), open(url), close(tabId), activate(tabId) } — when absent the
  *   controller runs in single-tab mode (openTab falls back to navigate).
+ * @param {object} [deps.ownership] optional ownership store (browser/ownership.cjs).
+ *   When absent the controller behaves exactly as it did before ownership
+ *   existed: every action is permitted and nothing is suppressed.
  */
-function createBrowserController({ webContents, actuator, tabs = null }) {
+function createBrowserController({ webContents, actuator, tabs = null, ownership = null }) {
   let currentSnapshot = null;
   let snapshotStale = true;
+  /**
+   * ref -> label, for every ref this run has ever minted.
+   *
+   * "unknown_reference" alone tells the model its ref is gone but not whether
+   * the control is gone too, so it re-observes and guesses. Naming what the
+   * ref used to be turns a wasted round into a retarget.
+   */
+  const seenRefs = new Map();
 
   function wc() {
     const live = tabs?.getActiveWebContents?.() || webContents;
@@ -31,12 +42,71 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
     snapshotStale = true;
   }
 
+  /**
+   * Actions that change the page, and so may only run while the agent holds
+   * the browser. Observation is deliberately absent: the agent watching while
+   * the user signs in is exactly what makes a hand-off resumable.
+   */
+  const MUTATING = new Set([
+    "navigate", "goBack", "goForward", "click", "clickCoord", "typeAtCoord",
+    "drag", "type", "replaceText", "select", "scroll", "pressKey",
+    "openTab", "closeTab", "switchTab",
+  ]);
+
+  /**
+   * Refuse an action the agent is not entitled to perform.
+   * @returns {null|{ok: false, error: "user_controlling", reason: string}}
+   */
+  function ownershipBlock(name) {
+    if (!ownership || !MUTATING.has(name)) return null;
+    if (ownership.mayAct()) return null;
+    return {
+      ok: false,
+      error: "user_controlling",
+      reason: ownership.reason() || "the user has control of the browser",
+      state: ownership.state(),
+    };
+  }
+
+  /**
+   * Run an actuator call inside the suppression window.
+   *
+   * Electron raises `input-event` for synthetic input as well as real input,
+   * so without this every click the agent makes reads as the user taking the
+   * wheel — the agent would stop itself on its own first action.
+   */
+  async function asAgent(fn) {
+    ownership?.beginAgentInput?.();
+    try {
+      return await fn();
+    } finally {
+      ownership?.endAgentInput?.();
+    }
+  }
+
   function resolveRef(ref) {
     const wanted = String(ref || "").trim();
     if (!wanted) return { error: "missing_target" };
     if (!currentSnapshot || snapshotStale) return { error: "stale_reference" };
+    // A durable locator from a previous snapshot. Refs die with the document;
+    // this is how the model re-aims after a reload without another observe.
+    if (wanted.startsWith("loc=")) {
+      const loc = wanted.slice(4).trim();
+      const hit = currentSnapshot.byLoc?.get(loc);
+      if (hit) return { el: hit };
+      return { error: "unknown_reference", hint: `No element on this page matches ${wanted}.` };
+    }
     const el = currentSnapshot.byRef.get(wanted);
-    if (!el) return { error: "unknown_reference" };
+    if (!el) {
+      const was = seenRefs.get(wanted);
+      return {
+        error: "unknown_reference",
+        hint: was
+          ? `${wanted} was "${was}" earlier in this run and is not on the page now. ` +
+            `Re-read the element list and aim at what is there.`
+          : `${wanted} is not on this page. Re-read the element list.`,
+      };
+    }
     return { el };
   }
 
@@ -84,6 +154,14 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
       tabs: tabList,
     });
     currentSnapshot.collectorFailed = catalogFailed || contextFailed;
+    for (const el of currentSnapshot.elements) {
+      if (el.label) seenRefs.set(el.ref, el.label);
+    }
+    // A long run on a big app can mint thousands of refs; the ledger only
+    // exists to explain the last few, so keep it bounded.
+    if (seenRefs.size > 4000) {
+      for (const key of [...seenRefs.keys()].slice(0, seenRefs.size - 4000)) seenRefs.delete(key);
+    }
     snapshotStale = false;
     return currentSnapshot;
   }
@@ -120,27 +198,35 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   // --- deterministic actions -------------------------------------------------
 
   async function navigate(url) {
-    const res = await actuator.navigate(wc(), url);
+    const blocked = ownershipBlock("navigate");
+    if (blocked) return blocked;
+    const res = await asAgent(() => actuator.navigate(wc(), url));
     invalidate();
     return res;
   }
 
   async function goBack() {
-    const res = await actuator.runAction(wc(), { type: "back" }, []);
+    const blocked = ownershipBlock("goBack");
+    if (blocked) return blocked;
+    const res = await asAgent(() => actuator.runAction(wc(), { type: "back" }, []));
     invalidate();
     return res;
   }
 
   async function goForward() {
-    const res = await actuator.runAction(wc(), { type: "forward" }, []);
+    const blocked = ownershipBlock("goForward");
+    if (blocked) return blocked;
+    const res = await asAgent(() => actuator.runAction(wc(), { type: "forward" }, []));
     invalidate();
     return res;
   }
 
   async function click(ref) {
-    const { el, error } = resolveRef(ref);
-    if (error) return { ok: false, error };
-    const res = await actuator.runAction(
+    const blocked = ownershipBlock("click");
+    if (blocked) return blocked;
+    const { el, error, hint } = resolveRef(ref);
+    if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
+    const res = await asAgent(() => actuator.runAction(
       wc(),
       {
         type: "click",
@@ -156,7 +242,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
         minLabelScore: 80,
       },
       catalogItems(),
-    );
+    ));
     // Clicks routinely change the page (navigation, dialogs, menus) — force a
     // re-observe before the next element interaction.
     invalidate();
@@ -164,15 +250,17 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   }
 
   async function type(ref, text, { pressEnter = false, mode = "append" } = {}) {
-    const { el, error } = resolveRef(ref);
-    if (error) return { ok: false, error };
+    const blocked = ownershipBlock("type");
+    if (blocked) return blocked;
+    const { el, error, hint } = resolveRef(ref);
+    if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
     // mode "replace": set the field's whole value deterministically (inputs /
     // textareas). Rich-text bodies should use replaceText for targeted edits
     // instead of wiping and retyping.
     if (mode === "replace") {
       const tag = String(el.raw.tag || "").toLowerCase();
       if (tag === "input" || tag === "textarea") {
-        const res = await actuator.runAction(
+        const res = await asAgent(() => actuator.runAction(
           wc(),
           {
             type: "fill",
@@ -187,7 +275,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
             minLabelScore: 80,
           },
           catalogItems(),
-        );
+        ));
         invalidate();
         return res;
       }
@@ -204,7 +292,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
         };
       }
     }
-    const res = await actuator.runAction(
+    const res = await asAgent(() => actuator.runAction(
       wc(),
       {
         type: "click_type",
@@ -220,7 +308,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
         minLabelScore: 80,
       },
       catalogItems(),
-    );
+    ));
     // Typing changes field values that the catalog now displays — decide the
     // next step from a fresh snapshot, or the model sees pre-typing "empty"
     // fields and fills them again (duplicated email bodies).
@@ -235,20 +323,22 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
    * for revisions — never retype a whole document to change one passage.
    */
   async function replaceText(ref, findText, replaceWith) {
-    const { el, error } = resolveRef(ref);
-    if (error) return { ok: false, error };
+    const blocked = ownershipBlock("replaceText");
+    if (blocked) return blocked;
+    const { el, error, hint } = resolveRef(ref);
+    if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
     const needle = String(findText ?? "");
     if (!needle.trim()) return { ok: false, error: "missing_find_text" };
     const evaluate = evaluatorFor(el);
     if (!evaluate) return { ok: false, error: "frame_gone" };
     try {
-      const res = await evaluate(
+      const res = await asAgent(() => evaluate(
         buildReplaceTextJs({
           selector: el.raw.selector || "",
           find: needle,
           replace: String(replaceWith ?? ""),
         }),
-      );
+      ));
       if (res?.ok) invalidate();
       return res || { ok: false, error: "replace_failed" };
     } catch (e) {
@@ -257,9 +347,11 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   }
 
   async function select(ref, value) {
-    const { el, error } = resolveRef(ref);
-    if (error) return { ok: false, error };
-    const res = await actuator.runAction(
+    const blocked = ownershipBlock("select");
+    if (blocked) return blocked;
+    const { el, error, hint } = resolveRef(ref);
+    if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
+    const res = await asAgent(() => actuator.runAction(
       wc(),
       {
         type: "select",
@@ -270,7 +362,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
         value: String(value ?? ""),
       },
       catalogItems(),
-    );
+    ));
     invalidate();
     return res;
   }
@@ -291,13 +383,15 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   }
 
   async function scroll(direction = "down", amount = 600, ref = "") {
+    const blocked = ownershipBlock("scroll");
+    if (blocked) return blocked;
     const dir = direction === "up" ? "up" : "down";
     // A ref means "scroll inside this thing" — editor palettes, block lists and
     // side panels scroll internally and ignore window scrolling entirely.
     if (ref) {
-      const { el, error } = resolveRef(ref);
-      if (error) return { ok: false, error };
-      const res = await actuator.runAction(
+      const { el, error, hint } = resolveRef(ref);
+      if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
+      const res = await asAgent(() => actuator.runAction(
         wc(),
         {
           type: "scroll_element",
@@ -307,11 +401,12 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
           amount,
         },
         catalogItems(),
-      );
+      ));
       invalidate();
       return res;
     }
-    const res = await actuator.runAction(wc(), { type: "scroll", direction: dir, amount }, []);
+    const res = await asAgent(() =>
+      actuator.runAction(wc(), { type: "scroll", direction: dir, amount }, []));
     // Scrolling is the whole point of scrolling: what is on screen changes, and
     // every element's position changes with it. Leaving the cache warm meant the
     // agent re-read the identical pre-scroll page every round and never saw a
@@ -326,13 +421,15 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
    * target has no DOM presence at all.
    */
   async function drag(from, to, { mode = "" } = {}) {
+    const blocked = ownershipBlock("drag");
+    if (blocked) return blocked;
     const action = { type: "drag", mode };
     if (from && typeof from === "object" && from.x != null) {
       action.x = Number(from.x);
       action.y = Number(from.y);
     } else {
-      const { el, error } = resolveRef(from);
-      if (error) return { ok: false, error: `drag source: ${error}` };
+      const { el, error, hint } = resolveRef(from);
+      if (error) return { ok: false, error: `drag source: ${error}`, ...(hint ? { hint } : {}) };
       action.selector = el.raw.selector;
       action.label = el.label;
       action.clientX = el.raw.clientX;
@@ -343,15 +440,15 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
       action.toX = Number(to.x);
       action.toY = Number(to.y);
     } else {
-      const { el, error } = resolveRef(to);
-      if (error) return { ok: false, error: `drop target: ${error}` };
+      const { el, error, hint } = resolveRef(to);
+      if (error) return { ok: false, error: `drop target: ${error}`, ...(hint ? { hint } : {}) };
       action.toSelector = el.raw.selector;
       action.toLabel = el.label;
       action.toClientX = el.raw.clientX;
       action.toClientY = el.raw.clientY;
       action.toFrameId = el.raw.frameId;
     }
-    const res = await actuator.runAction(wc(), action, catalogItems());
+    const res = await asAgent(() => actuator.runAction(wc(), action, catalogItems()));
     invalidate();
     return res;
   }
@@ -371,16 +468,18 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
    * drawn surfaces there is nothing in the catalog to snap to anyway.
    */
   async function clickCoord(x, y, label = "", { snap = "" } = {}) {
+    const blocked = ownershipBlock("clickCoord");
+    if (blocked) return blocked;
     const nx = Number(x);
     const ny = Number(y);
     if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
       return { ok: false, error: "bad_coords" };
     }
-    const res = await actuator.runAction(
+    const res = await asAgent(() => actuator.runAction(
       wc(),
       { type: "click_coord", x: nx, y: ny, label: String(label || ""), ...(snap ? { snap } : {}) },
       catalogItems(),
-    );
+    ));
     invalidate();
     return res;
   }
@@ -394,12 +493,14 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
    * — the same reason the ref path exists at all.
    */
   async function typeAtCoord(x, y, text, { pressEnter = false, label = "", snap = "" } = {}) {
+    const blocked = ownershipBlock("typeAtCoord");
+    if (blocked) return blocked;
     const nx = Number(x);
     const ny = Number(y);
     if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
       return { ok: false, error: "bad_coords" };
     }
-    const res = await actuator.runAction(
+    const res = await asAgent(() => actuator.runAction(
       wc(),
       {
         type: "click_type",
@@ -411,18 +512,20 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
         ...(snap ? { snap } : {}),
       },
       catalogItems(),
-    );
+    ));
     invalidate();
     return res;
   }
 
   async function pressKey(key = "Enter", modifiers = null) {
+    const blocked = ownershipBlock("pressKey");
+    if (blocked) return blocked;
     const mods = Array.isArray(modifiers) ? modifiers.filter(Boolean).map(String) : [];
-    const res = await actuator.runAction(
+    const res = await asAgent(() => actuator.runAction(
       wc(),
       { type: "press_key", key, modifiers: mods },
       catalogItems(),
-    );
+    ));
     // Every key can change the page: Enter submits, Escape closes, Tab moves
     // focus and fires validation, arrows move through a combobox, Backspace
     // edits. Invalidating only for Enter and modifier chords meant the loop
@@ -434,8 +537,8 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
 
   /** Read an element's live value/text — the evidence for form verification. */
   async function extract(ref) {
-    const { el, error } = resolveRef(ref);
-    if (error) return { ok: false, error };
+    const { el, error, hint } = resolveRef(ref);
+    if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
     const evaluate = evaluatorFor(el);
     if (!evaluate) return { ok: false, error: "frame_gone" };
     try {
@@ -473,8 +576,10 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   }
 
   async function openTab(url) {
+    const blocked = ownershipBlock("openTab");
+    if (blocked) return blocked;
     if (tabs?.open) {
-      const res = await tabs.open(url);
+      const res = await asAgent(() => tabs.open(url));
       invalidate();
       return res?.ok === false ? res : { ok: true, ...res };
     }
@@ -483,8 +588,10 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   }
 
   async function closeTab(tabId) {
+    const blocked = ownershipBlock("closeTab");
+    if (blocked) return blocked;
     if (tabs?.close) {
-      const res = await tabs.close(tabId);
+      const res = await asAgent(() => tabs.close(tabId));
       invalidate();
       return res?.ok === false ? res : { ok: true, ...res };
     }
@@ -492,8 +599,10 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
   }
 
   async function switchTab(tabId) {
+    const blocked = ownershipBlock("switchTab");
+    if (blocked) return blocked;
     if (tabs?.activate) {
-      const res = await tabs.activate(tabId);
+      const res = await asAgent(() => tabs.activate(tabId));
       invalidate();
       return res?.ok === false ? res : { ok: true, ...res };
     }
@@ -607,6 +716,7 @@ function createBrowserController({ webContents, actuator, tabs = null }) {
     listTabs,
     currentUrl,
     diffSnapshots,
+    ownership: () => ownership,
   };
 }
 

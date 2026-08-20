@@ -43,6 +43,26 @@ const {
   detectReferenceImageAsk,
 } = require("../lib/imageGenIntent.cjs");
 const { buildAgentPlan } = require("../lib/agentMultiStep.cjs");
+// User-facing rendering of a browse run's history. Lives outside this file
+// because it is the one place that decides what internal detail a user is
+// allowed to see, and that rule deserves its own tests.
+const { formatBrowseWorkLog, humanLabel } = require("../lib/browseWorkLog.cjs");
+const diagnostics = require("./diagnostics.cjs");
+
+/**
+ * App version for diagnostics records.
+ *
+ * Read from package.json rather than electron's `app`, because this module is
+ * deliberately electron-free — everything it needs from the shell arrives
+ * through `deps`, which is what lets the test suite drive it in plain node.
+ */
+function getAppVersion() {
+  try {
+    return String(require("../package.json").version || "");
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Compact Agent Mode doctrine — invent steps, use full chat + open app,
@@ -695,7 +715,11 @@ function createAgentRuntime(deps) {
       partialText: a.partialText || "",
       updatedAt: a.updatedAt,
       createdAt: a.createdAt,
-      busy: !!a.busy,
+      // `busy` means "a turn is inferencing", which is what locks the
+      // composer. A run parked on the user is NOT busy: the whole point of
+      // the pause is that we want their answer, and send() routes a typed
+      // yes/no straight into resolveChoice.
+      busy: !!a.busy && !waiting,
       error: a.error || "",
       role,
       pinned: role === "main" || !!a.pinned,
@@ -2704,6 +2728,23 @@ function createAgentRuntime(deps) {
   }
 
   /**
+   * "running" and "waiting" both describe a live turn. `load()` restores
+   * neither the abort handle nor `pendingChoice`, so a restored agent in either
+   * state is a ghost: it renders a permanent "Waiting for your go-ahead…" row
+   * for a run that no longer exists, with no way to answer it. Both rest to
+   * "idle" — on the way to disk and on the way back.
+   */
+  function restedStatus(status) {
+    return status === "running" || status === "waiting" ? "idle" : status;
+  }
+
+  /** The matching step label — dropped whenever it describes a live turn. */
+  function restedStep(status, step) {
+    if (status === "running" || status === "waiting") return "";
+    return stepAwaitsUser(step) ? "" : step;
+  }
+
+  /**
    * Persistent "I'm waiting on you" state for the chat UI. Unlike agent-status
    * (which the UI drops as soon as the turn ends) this survives the finished
    * turn, so a run parked on a sign-in wall keeps a live waiting indicator on
@@ -2740,10 +2781,10 @@ function createAgentRuntime(deps) {
         title: a.title,
         role: a.role === "main" ? "main" : "worker",
         pinned: a.role === "main" || !!a.pinned,
-        status: a.status === "running" ? "idle" : a.status,
+        status: restedStatus(a.status),
         skill: a.skill,
         url: a.url,
-        step: a.step,
+        step: restedStep(a.status, a.step),
         history: Array.isArray(a.history) ? a.history.slice(-80) : [],
         createdAt: a.createdAt,
         updatedAt: a.updatedAt,
@@ -2787,10 +2828,10 @@ function createAgentRuntime(deps) {
           title: row.title || "Agent",
           role,
           pinned: false,
-          status: row.status || "idle",
+          status: restedStatus(row.status || "idle"),
           skill: row.skill || "general",
           url: row.url || "",
-          step: row.step || "",
+          step: restedStep(row.status || "idle", row.step || ""),
           history: Array.isArray(row.history) ? row.history : [],
           createdAt: row.createdAt || new Date().toISOString(),
           updatedAt: row.updatedAt || new Date().toISOString(),
@@ -4287,34 +4328,11 @@ function createAgentRuntime(deps) {
     );
   }
 
-  /** Compact action log from adaptive browse history. */
-  function formatBrowseWorkLog(history, { max = 8 } = {}) {
-    const acts = (Array.isArray(history) ? history : []).filter((h) => h?.result?.ok);
-    const lines = [];
-    const seen = new Set();
-    for (const h of acts) {
-      const rawType = String(h?.action?.type || "act").toLowerCase();
-      const type =
-        /click_coord|tap_coord|press_click|click|tap/i.test(rawType)
-          ? "Clicked"
-          : /os_write|write|type|fill|paste|click_type/i.test(rawType)
-            ? "Typed"
-            : /navigate|open|goto/i.test(rawType)
-              ? "Opened"
-              : String(h?.action?.type || "Act").replace(/_/g, " ");
-      const label = String(h?.action?.label || h?.result?.label || h?.action?.value || "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 72);
-      const line = label ? `${type}: ${label}` : type;
-      const key = line.toLowerCase();
-      if (!line || seen.has(key)) continue;
-      seen.add(key);
-      lines.push(`- ${line}`);
-      if (lines.length >= max) break;
-    }
-    return lines.join("\n");
-  }
+  // The compact action log from adaptive browse history now lives in
+  // lib/browseWorkLog.cjs (imported at the top of this file). It moved because
+  // it is the boundary between the agent's internals and what a user reads:
+  // this version rendered whatever sat in `label`, which is how element
+  // references — "Clicked: e4" — ended up in finished task summaries.
 
   /** Live Glass narrative while the browser agent is still clicking. */
   function formatBrowseWorkingNarrative({ history, status, taskPlan, url } = {}) {
@@ -4686,7 +4704,10 @@ function createAgentRuntime(deps) {
     const okActs = (Array.isArray(history) ? history : []).filter((h) => h?.result?.ok);
     if (okActs.length && !needsLlmBrowseSummary(goal)) {
       const last = okActs[okActs.length - 1];
-      const actLabel = String(last?.action?.label || last?.result?.label || "").trim();
+      // Same rule as the work log: an element reference is not a place, and
+      // "I finished the step on **e11**." is what reading it raw produced.
+      // Falling through to the page title is the better failure.
+      const actLabel = humanLabel(last);
       const snippet = extractReadablePageSnippets(pageText, { maxLines: 3, maxChars: 700 });
       let msg = actLabel
         ? `I finished the step on **${actLabel.slice(0, 80)}**.`
@@ -6159,9 +6180,38 @@ function createAgentRuntime(deps) {
    * (finishBrowseResult, needs-help surfacing, history) works unchanged.
    */
   async function runModularBrowserAgent(agent, browseGoal, gen, wc, { convHistory, maxRounds, userAsk = "", sendPolicy = "auto" }) {
+    // Who holds this tab. Real input from the user seizes it; the controller
+    // refuses to act until they hand it back.
+    const ownership = browserAgent.createOwnership();
+    // Electron raises this for the agent's synthetic input as well as the
+    // user's, so the store's suppression window — not this listener — is what
+    // tells them apart. Filtering to down-events only keeps mouse-move and
+    // key-up noise out of it.
+    const onTabInput = (_event, input) => {
+      // Every emitter in this function is generation-guarded; the listener is
+      // detached in the .finally below, but input landing inside that window
+      // would otherwise post a stale run's status into a newer one's UI.
+      if (gen !== agent.generation) return;
+      const type = String(input?.type || "");
+      if (type !== "mouseDown" && type !== "keyDown" && type !== "mouseWheel") return;
+      if (ownership.noteInput("user")) {
+        emitProgress(agent.id, {
+          status: "waiting",
+          step: "You've taken the browser — I've paused.",
+          url: wc.getURL?.() || agent.url,
+          skill: "browse",
+        });
+      }
+    };
+    try {
+      wc.on("input-event", onTabInput);
+    } catch {
+      /* older Electron without input-event: ownership stays agent-only */
+    }
     const controller = browserAgent.createBrowserController({
       webContents: wc,
       actuator: ownedBrowserAct,
+      ownership,
     });
     const model = browserAgent.createAgentModel({ apiBase, getAuthToken });
     const memory = browserAgent.createMemoryStore({ userDataPath });
@@ -6255,6 +6305,8 @@ function createAgentRuntime(deps) {
       }
 
       emitAgentWaiting(agent.id, { waiting: false });
+      // They are done with the tab; the agent may drive again.
+      ownership.release();
       agent.pendingChoice = null;
       agent.status = "running";
       agent.busy = true;
@@ -6329,15 +6381,32 @@ function createAgentRuntime(deps) {
           else emitStatus("Working on the page…");
         }
       },
+    // The run is over, however it ended — a thrown error must not leave the
+    // listener holding this closure alive on a tab we no longer drive.
+    }).finally(() => {
+      try {
+        wc.off?.("input-event", onTabInput);
+      } catch {
+        /* the tab may already be gone */
+      }
     });
 
     if (gen !== agent.generation) return { ok: false, error: "aborted" };
 
     // Legacy-shape history so browse narratives / summaries keep working.
+    //
+    // `label` is a USER-FACING field — the work log renders it verbatim. The
+    // modular runtime aims with element references ("e4"), which are internal
+    // addressing and meaningless outside the snapshot that minted them, so the
+    // reference goes to `target` where nothing renders it, and `label` carries
+    // only what the model described in words (coordinate clicks and drags are
+    // required to fill it). A ref-targeted click therefore has no label, and
+    // the work log degrades to a bare verb rather than printing "Clicked: e4".
     const history = (result.history || []).map((h) => ({
       action: {
         type: h.action?.type || "",
-        label: String(h.action?.target || "").slice(0, 80),
+        label: String(h.action?.label || "").slice(0, 80),
+        target: String(h.action?.target || "").slice(0, 40),
         value: String(h.action?.text || h.action?.value || "").slice(0, 60),
         url: h.action?.url || undefined,
       },
@@ -6442,6 +6511,16 @@ function createAgentRuntime(deps) {
           });
         } catch (e) {
           if (e instanceof browserAgent.AgentModelUnavailableError) {
+            // Falling back is right — the user's task should still run — but it
+            // used to happen in total silence, which made a version-skewed
+            // deploy (app shipped ahead of the server route) indistinguishable
+            // from a healthy one. Record it so it is answerable after the fact.
+            diagnostics.recordRuntimeFallback({
+              userDataPath,
+              surface: "browse",
+              reason: e?.message,
+              appVersion: getAppVersion(),
+            });
             result = null; // graceful fallback to the legacy loop below
           } else {
             throw e;
@@ -7150,6 +7229,12 @@ function createAgentRuntime(deps) {
         return await runMailComposeModular(agent, text, gen, wc, opts);
       } catch (e) {
         if (!(e instanceof browserAgent.AgentModelUnavailableError)) throw e;
+        diagnostics.recordRuntimeFallback({
+          userDataPath,
+          surface: "mail",
+          reason: e?.message,
+          appVersion: getAppVersion(),
+        });
       }
     }
     return runAdaptiveBrowse(agent, text, gen, wc, { maxRounds: 18 });

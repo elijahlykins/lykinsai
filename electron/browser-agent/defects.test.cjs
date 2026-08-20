@@ -58,7 +58,9 @@ function createFakeBrowser({ url = "https://example.com", title = "Page", text =
   const actuator = {
     async navigate(_w, to) { state.url = to; return { ok: true, url: to }; },
     async getDOMCatalog() {
-      return { ok: true, url: state.url, title: state.title, items: state.elements.map((e) => ({ ...e })) };
+      // The real collector mints a uid per element in page context; these
+      // fixtures predate it, so number them in catalog order.
+      return { ok: true, url: state.url, title: state.title, items: state.elements.map((e, i) => ({ uid: i + 1, ...e })) };
     },
     async getPageContext() { return { ok: true, url: state.url, title: state.title, text: state.text }; },
     async runAction(_w, action) {
@@ -281,10 +283,10 @@ test("link destinations reach the model", () => {
   const snap = buildSnapshot({
     url: "https://lykn.io/blog", title: "Blog", text: "…",
     catalog: [
-      { id: "a1", tag: "a", label: "MLPerf results", href: "https://mlcommons.org/benchmarks?utm_source=x" },
-      { id: "a2", tag: "a", label: "About us", href: "https://lykn.io/about" },
-      { id: "a3", tag: "a", label: "Menu", href: "javascript:void(0)" },
-      { id: "b1", tag: "button", label: "Subscribe" },
+      { uid: 1, id: "a1", tag: "a", label: "MLPerf results", href: "https://mlcommons.org/benchmarks?utm_source=x" },
+      { uid: 2, id: "a2", tag: "a", label: "About us", href: "https://lykn.io/about" },
+      { uid: 3, id: "a3", tag: "a", label: "Menu", href: "javascript:void(0)" },
+      { uid: 4, id: "b1", tag: "button", label: "Subscribe" },
     ],
   });
   const rendered = formatSnapshotForModel(snap);
@@ -292,7 +294,7 @@ test("link destinations reach the model", () => {
     "without the destination the agent cannot tell an outbound link from an internal one");
   assert.match(rendered, /\[e2\] link "About us" -> lykn\.io\/about/);
   assert.doesNotMatch(rendered, /javascript:/, "javascript: hrefs are noise");
-  assert.match(rendered, /\[e4\] button "Subscribe"$/m, "non-links are unchanged");
+  assert.match(rendered, /\[e4\] button "Subscribe"(?! ->)/, "non-links get no destination");
 });
 
 test("a screenshot the model asked for comes back to it", async () => {

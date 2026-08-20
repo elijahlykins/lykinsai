@@ -26,7 +26,7 @@ function createFakeBrowser() {
     async getDOMCatalog() {
       return {
         items: [
-          { id: "1", role: "button", label: "Checkout", selector: "#checkout", clientX: 700, clientY: 300, inView: true },
+          { uid: 1, id: "1", role: "button", label: "Checkout", selector: "#checkout", clientX: 700, clientY: 300, inView: true },
         ],
       };
     },
@@ -210,7 +210,7 @@ function createStubbornBrowser() {
     async getDOMCatalog() {
       return {
         items: [
-          { id: "1", role: "button", label: "Zoom", selector: "#zoom", clientX: 700, clientY: 60, inView: true },
+          { uid: 1, id: "1", role: "button", label: "Zoom", selector: "#zoom", clientX: 700, clientY: 60, inView: true },
         ],
       };
     },

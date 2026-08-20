@@ -103,7 +103,9 @@ function createFakeBrowser(pages, startUrl = "about:blank") {
       return { ok: true, url: state.url };
     },
     async getDOMCatalog() {
-      return { ok: true, url: state.url, title: page().title, items: page().elements.map((e) => ({ ...e })) };
+      // The real collector mints a uid per element in page context; these
+      // fixtures predate it, so number them in catalog order.
+      return { ok: true, url: state.url, title: page().title, items: page().elements.map((e, i) => ({ uid: i + 1, ...e })) };
     },
     async getPageContext() {
       return { ok: true, url: state.url, title: page().title, text: page().text };

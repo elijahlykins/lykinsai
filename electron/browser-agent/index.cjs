@@ -16,6 +16,7 @@
  */
 
 const { createBrowserController } = require("./browser/controller.cjs");
+const { createOwnership } = require("./browser/ownership.cjs");
 const { createAgentModel, AgentModelUnavailableError } = require("./runtime/model.cjs");
 const { createMemoryStore } = require("./runtime/memory.cjs");
 const { createDebugLog } = require("./runtime/debugLog.cjs");
@@ -28,6 +29,7 @@ const executor = require("./runtime/executor.cjs");
 const verifier = require("./runtime/verifier.cjs");
 const visionPolicy = require("./runtime/visionPolicy.cjs");
 const contextRouter = require("./runtime/contextRouter.cjs");
+const batchPolicy = require("./runtime/batch.cjs");
 
 const DEFAULT_MAX_ROUNDS = 24;
 
@@ -323,6 +325,15 @@ async function runTask({
     // Out of rounds. Before giving up, offer the user the wheel — one nudge is
     // usually all a long flow needs, and the work so far is still on screen.
     if (task.round > roundBudget) {
+      // The budget has a ceiling, and once we are at it another hand-back buys
+      // no further rounds. Asking anyway left the guard true, waitForUser kept
+      // resolving, and `continue` spun here forever — with mocked I/O it is a
+      // tight microtask loop that starves even a timer. A user who keeps
+      // nudging a task that is out of budget is owed an ending, not a loop.
+      if (roundBudget >= maxRoundBudget) {
+        debug.log("round_budget_ceiling", { round: task.round, roundBudget });
+        break;
+      }
       const resumeNote = await waitForUser(
         "exhausted",
         "I've taken this as far as I can in one go. Move it forward a step in the browser and I'll carry on from there.",
@@ -624,6 +635,11 @@ async function runTask({
     const targetEl = decision.action?.target
       ? snapshot?.byRef?.get?.(String(decision.action.target))
       : null;
+    // A batch runs the whole planned sequence; everything else is one action.
+    // `decision.steps` is only ever populated when normalizeDecision admitted
+    // it, so this branch never needs to re-check what is in it. Declared here,
+    // above onProgress, because the progress event reads it too.
+    const batched = Array.isArray(decision.steps) && decision.steps.length > 1;
     onProgress({
       phase: "acting",
       round: task.round,
@@ -631,6 +647,7 @@ async function runTask({
       reason: String(decision.reason || "").slice(0, 160),
       targetLabel: targetEl?.label ? String(targetEl.label).slice(0, 60) : "",
       url: snapshot.url,
+      batch: batched ? batchPolicy.describeBatch(decision.steps) : "",
     });
     if (typeof onBeforeAct === "function") {
       // Awaited on purpose — a screenshot taken here must land before the click.
@@ -645,10 +662,51 @@ async function runTask({
       return finish("failed", "Stopped before the next action ran.", { error: "aborted" });
     }
     const actionResult = await timer.time("actuate", () =>
-      executeAction(controller, decision.action)).catch((e) => ({
+      batched
+        ? executeBatch(controller, decision.steps)
+        : executeAction(controller, decision.action)).catch((e) => ({
       ok: false,
       error: e?.message || String(e),
     }));
+    if (batched) {
+      debug.log("batch_ran", {
+        round: task.round,
+        steps: batchPolicy.describeBatch(decision.steps),
+        ran: actionResult?.ran,
+        total: actionResult?.total,
+        ok: actionResult?.ok !== false,
+      });
+      // The batch spent one round for several actions; say so in history or the
+      // model reads the transcript as though only the first step happened.
+      taskState.addFact(
+        task,
+        `ran ${actionResult?.ran ?? 0}/${actionResult?.total ?? 0} steps in one round: ` +
+          batchPolicy.describeBatch(decision.steps),
+      );
+    }
+    // The user has the browser. This is not an obstacle to route around: they
+    // took it deliberately, usually because this run is going wrong. Retrying,
+    // recovering or replanning would all be the agent fighting them for the
+    // page. The only correct move is to ask and wait.
+    if (actionResult?.error === "user_controlling") {
+      debug.log("user_controlling", { round: task.round, reason: actionResult.reason || "" });
+      const question =
+        "You've taken over the browser — I've stopped so we're not both driving. " +
+        "Tell me when you'd like me to pick it back up and I'll carry on from where you leave it.";
+      const resumed = await waitForUser("handover", question);
+      // A resume is not enough on its own: control comes back only when the
+      // ownership store says so. Anything else would let a stray callback hand
+      // the agent a browser the user is still using.
+      if (resumed && controller.ownership?.()?.mayAct?.()) {
+        recovering = true;
+        recoveryHint =
+          `You stopped because the user took over the browser. They have handed it back (${resumed}). ` +
+          `Read the page before doing anything — they may have moved it on, or done the step ` +
+          `themselves. Do not repeat work that is already on screen.`;
+        continue;
+      }
+      return finish("waiting_for_user", question, { needsUser: true, handover: true });
+    }
     debug.log("acted", {
       round: task.round,
       ok: actionResult?.ok !== false,
@@ -889,6 +947,54 @@ async function executeAction(controller, action) {
   }
 }
 
+/**
+ * Run an admitted batch as one unit.
+ *
+ * Steps are ordered and the page settles between them, because a scroll that
+ * has not painted yet extracts the previous screen. The first failure ends the
+ * batch: the sequence was planned against a page that has now behaved
+ * unexpectedly, so everything after it was planned on a false premise.
+ *
+ * Nothing here re-validates the steps — `normalizeDecision` has already
+ * guaranteed they are ref-free and non-committing, and duplicating that rule
+ * is how the two copies drift apart.
+ */
+async function executeBatch(controller, steps) {
+  const list = Array.isArray(steps) ? steps : [];
+  const results = [];
+  let lastType = "";
+  for (let i = 0; i < list.length; i += 1) {
+    const step = list[i];
+    lastType = String(step?.type || "");
+    let res;
+    try {
+      res = await executeAction(controller, step);
+    } catch (e) {
+      res = { ok: false, error: e?.message || String(e) };
+    }
+    results.push(res);
+    if (!res || res.ok === false) {
+      return {
+        ok: false,
+        error: res?.error || "batch_step_failed",
+        ran: i + 1,
+        total: list.length,
+        results,
+        lastType,
+      };
+    }
+    // Let the page catch up before the next step reads or scrolls it.
+    if (i < list.length - 1) {
+      try {
+        await controller.settle(2500);
+      } catch {
+        /* settling is best-effort */
+      }
+    }
+  }
+  return { ok: true, error: "", ran: list.length, total: list.length, results, lastType };
+}
+
 function describeConsequence(decision, el, { brief = false } = {}) {
   const label = String(el?.label || "").trim();
   const expected = brief ? "" : String(decision.expectedOutcome || "").trim();
@@ -906,7 +1012,9 @@ function describeConsequence(decision, el, { brief = false } = {}) {
 module.exports = {
   runBrowserAgentTask,
   createBrowserController,
+  createOwnership,
   createAgentModel,
   createMemoryStore,
   AgentModelUnavailableError,
+  executeBatch,
 };

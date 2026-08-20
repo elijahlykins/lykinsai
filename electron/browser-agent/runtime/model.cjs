@@ -87,6 +87,27 @@ const DECISION_SCHEMA = {
       required: ["type"],
       additionalProperties: false,
     },
+    steps: {
+      type: "array",
+      description:
+        "Optional. A short sequence to run in one go INSTEAD of stopping after `action`, for when the " +
+        "result of each step cannot change what the next one should be — scrolling down a long list to " +
+        "make it load, or navigate → wait → screenshot. Every entry must be one of scroll, wait, screenshot, " +
+        "navigate, go_back, go_forward, open_tab, switch_tab, and NONE may name an element (no target, " +
+        "no coordinates) — element references stop meaning anything once the first step has run. " +
+        "The first entry must equal `action`. Maximum 6. Anything else is ignored and only `action` runs.",
+      items: {
+        type: "object",
+        properties: {
+          type: { type: "string" },
+          url: { type: "string" },
+          direction: { type: "string", enum: ["up", "down"] },
+          ms: { type: "number" },
+          tabId: { type: "string" },
+        },
+        required: ["type"],
+      },
+    },
     reason: { type: "string" },
     expectedOutcome: { type: "string", description: "What the page should show if this action works" },
     risk: { type: "string", enum: ["read", "low", "consequential"] },
@@ -253,6 +274,7 @@ function createAgentModel({ apiBase, getAuthToken, fetchImpl, arm = "", onUsage 
       return {
         kind,
         action: out.action && typeof out.action === "object" ? out.action : null,
+        steps: Array.isArray(out.steps) ? out.steps : null,
         reason: String(out.reason || ""),
         expectedOutcome: String(out.expectedOutcome || ""),
         risk: ["read", "low", "consequential"].includes(out.risk) ? out.risk : "low",

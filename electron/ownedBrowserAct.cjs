@@ -11,8 +11,29 @@ const pathMod = require("node:path");
 // END of the DOM and used to fall past the item cap behind 200+ inbox rows),
 // then the rest of the page with repetitive rows capped so long lists can't
 // crowd real controls out of the catalog.
+/**
+ * Document-lifetime element identity, injected ahead of every catalog scan.
+ *
+ * Refs used to be the element's index in the scan, so anything that inserted a
+ * node — a cookie banner, a lazy-loaded row, a re-render — renumbered every
+ * element after it. The model would read "[e12] button Checkout", the page
+ * would shift by one, and e12 would resolve to something else entirely with
+ * nothing in the system able to notice.
+ *
+ * The WeakMap hangs off `window`, so it survives across executeJavaScript
+ * calls for as long as the document lives and is collected with it. Numbers
+ * are handed out monotonically and never reused, so a stale ref is always
+ * unknown rather than quietly wrong. Guarded with `||` so re-injection on a
+ * later scan reuses the existing store instead of resetting it.
+ */
+const REF_STORE_JS =
+  "var __lyknRefStore=window.__lyknRefStore||(window.__lyknRefStore={m:new WeakMap(),n:0});" +
+  "function __lyknUid(el){try{var v=__lyknRefStore.m.get(el);" +
+  "if(!v){v=++__lyknRefStore.n;__lyknRefStore.m.set(el,v);}return v;}catch(e){return 0;}}";
+
 const COLLECT_INTERACTABLES_JS =
-  "(function(){function p(el){if(!el||el.nodeType!==1)return'';if(el.id)return '#'+CSS.escape(el.id);" +
+  "(function(){" + REF_STORE_JS +
+  "function p(el){if(!el||el.nodeType!==1)return'';if(el.id)return '#'+CSS.escape(el.id);" +
   "var a=[],n=el;while(n&&n.nodeType===1&&a.length<6){var t=n.nodeName.toLowerCase();" +
   "if(n.id){a.unshift('#'+CSS.escape(n.id));break;}var s=n,x=1;" +
   "while(s=s.previousElementSibling){if(s.nodeName===n.nodeName)x++;}" +
@@ -42,7 +63,7 @@ const COLLECT_INTERACTABLES_JS =
 // Panels, palettes and lists that scroll internally — window.scrollBy does
 // nothing for these, so the agent has to scroll the container itself.
 "var sc=false;try{sc=(el.scrollHeight-el.clientHeight>24||el.scrollWidth-el.clientWidth>24)&&/auto|scroll/.test(st.overflowY+' '+st.overflowX);}catch(e){}" +
-"seen.add(el);items.push({id:'el'+items.length,tag:tag,type:type,role:role,selector:p(el),label:lab,value:(''+val).slice(0,80),checked:el.checked===true,disabled:dis,scrollable:sc,href:(el.href||'').slice(0,200),clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+r.height/2),inView:inView,inDialog:!!dlg});return true;}" +
+"seen.add(el);items.push({uid:__lyknUid(el),id:'el'+items.length,tag:tag,type:type,role:role,selector:p(el),label:lab,value:(''+val).slice(0,80),checked:el.checked===true,disabled:dis,scrollable:sc,href:(el.href||'').slice(0,200),clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+r.height/2),inView:inView,inDialog:!!dlg});return true;}" +
   "var dlgs=document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true]');" +
   "for(var d=0;d<dlgs.length;d++){var dels=dlgs[d].querySelectorAll(q);" +
   "for(var j=0;j<dels.length&&j<400;j++){add(dels[j],true);}}" +
@@ -1610,6 +1631,9 @@ async function collectFrameInteractables(webContents, { offsets, viewport } = {}
         if (!it) continue;
         out.push({
           ...it,
+          // Each frame counts from 1 in its own window — namespace by routing
+          // id or frame uid 3 and main-frame uid 3 collide into one ref.
+          uid: `${fr.routingId}_${it.uid}`,
           id: `f${fr.routingId}_${it.id}`,
           frameId: fr.routingId,
           frameUrl: frUrl,
@@ -11685,6 +11709,7 @@ module.exports = {
   looksLikeSendApprovalFollowUp,
   navigate,
   getDOMCatalog,
+  REF_STORE_JS,
   getPageContext,
   getPageContextRich,
   waitForDomSettle,

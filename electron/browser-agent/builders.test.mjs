@@ -34,8 +34,9 @@ test("elements from an embedded editor are usable and marked as embedded", () =>
     url: "https://us21.admin.mailchimp.com/campaigns/edit?id=9",
     title: "Edit campaign",
     catalog: [
-      { id: "el0", tag: "button", label: "Save and Close", clientX: 900, clientY: 40 },
+      { uid: 1, id: "el0", tag: "button", label: "Save and Close", clientX: 900, clientY: 40 },
       {
+        uid: 2,
         id: "f7_el0",
         tag: "div",
         role: "textbox",
@@ -171,7 +172,7 @@ test("a drag can use screenshot coordinates on either end", async () => {
 
 test("drag is rejected without a destination, and accepted with coordinates", () => {
   const snapshot = buildSnapshot({
-    catalog: [{ id: "el0", tag: "div", label: "Block", selector: "#b" }],
+    catalog: [{ uid: 1, id: "el0", tag: "div", label: "Block", selector: "#b" }],
   });
   const sourceOnly = executor.normalizeDecision(
     { kind: "act", action: { type: "drag", target: "e1" } },
@@ -205,7 +206,7 @@ test("dragging is not treated as a consequential action", () => {
   // "Send block" is a real Mailchimp palette item — dragging it into a layout
   // must not read as sending anything.
   const snapshot = buildSnapshot({
-    catalog: [{ id: "el0", tag: "div", label: "Send block", selector: "#s" }],
+    catalog: [{ uid: 1, id: "el0", tag: "div", label: "Send block", selector: "#s" }],
   });
   const risk = executor.classifyActionRisk(
     {
@@ -233,8 +234,8 @@ test("a page that draws itself and names almost nothing gets pixels", () => {
   const snapshot = buildSnapshot({
     url: "https://someeditor.example/app",
     catalog: [
-      { id: "el0", tag: "canvas", label: "", selector: "canvas" },
-      { id: "el1", tag: "button", label: "File", selector: "#file" },
+      { uid: 1, id: "el0", tag: "canvas", label: "", selector: "canvas" },
+      { uid: 2, id: "el1", tag: "button", label: "File", selector: "#file" },
     ],
   });
   assert.equal(visionPolicy.shouldSeePixels({ snapshot }).see, true);
@@ -242,6 +243,7 @@ test("a page that draws itself and names almost nothing gets pixels", () => {
 
 test("an ordinary page does not pay for a screenshot", () => {
   const catalog = Array.from({ length: 14 }, (_, i) => ({
+    uid: i + 1,
     id: `el${i}`,
     tag: "a",
     label: `Story ${i + 1}`,
@@ -406,6 +408,7 @@ test("scrolling with a target scrolls that container, not the window", async () 
 test("outer page chrome cannot crowd the embedded editor out of the list", () => {
   const catalog = [
     ...Array.from({ length: 120 }, (_, i) => ({
+      uid: i + 1,
       id: `el${i}`,
       tag: "button",
       label: `Chrome control ${i + 1}`,
@@ -413,6 +416,7 @@ test("outer page chrome cannot crowd the embedded editor out of the list", () =>
       inView: true,
     })),
     ...Array.from({ length: 12 }, (_, i) => ({
+      uid: 121 + i,
       id: `f7_el${i}`,
       tag: "div",
       role: "textbox",
@@ -431,7 +435,7 @@ test("outer page chrome cannot crowd the embedded editor out of the list", () =>
 
 test("a scrollable container is pointed out to the model", () => {
   const snapshot = buildSnapshot({
-    catalog: [{ id: "el0", tag: "div", role: "button", label: "Blocks panel", scrollable: true }],
+    catalog: [{ uid: 1, id: "el0", tag: "div", role: "button", label: "Blocks panel", scrollable: true }],
   });
   assert.match(formatSnapshotForModel(snapshot), /scrollable/i);
 });
@@ -439,8 +443,8 @@ test("a scrollable container is pointed out to the model", () => {
 test("disabled controls and open dialogs are called out", () => {
   const snapshot = buildSnapshot({
     catalog: [
-      { id: "el0", tag: "button", label: "Send", disabled: true },
-      { id: "el1", tag: "button", label: "Confirm", inDialog: true },
+      { uid: 1, id: "el0", tag: "button", label: "Send", disabled: true },
+      { uid: 2, id: "el1", tag: "button", label: "Confirm", inDialog: true },
     ],
   });
   const rendered = formatSnapshotForModel(snapshot);
@@ -516,7 +520,9 @@ function makeController({ actuator = {}, catalog = [], url = "https://app.exampl
   return createBrowserController({
     webContents,
     actuator: {
-      getDOMCatalog: async () => ({ ok: true, url, items: catalog }),
+      // The real collector mints a uid per element in page context; these
+      // fixtures predate it, so number them in catalog order.
+      getDOMCatalog: async () => ({ ok: true, url, items: catalog.map((it, i) => ({ uid: i + 1, ...it })) }),
       getPageContext: async () => ({ ok: true, url, title: "App", text: "content" }),
       waitForLoad: async () => {},
       waitForDomSettle: async () => {},

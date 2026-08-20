@@ -11,6 +11,7 @@
 const contextRouter = require("./contextRouter.cjs");
 const taskState = require("./taskState.cjs");
 const { formatSnapshotForModel } = require("../browser/snapshot.cjs");
+const batchPolicy = require("./batch.cjs");
 
 const ACTIONS_NEEDING_TARGET = new Set(["click", "type", "replace_text", "select", "extract"]);
 
@@ -332,6 +333,32 @@ function validEndpoint(snapshot, ref, x, y) {
 }
 
 function normalizeDecision(decision, snapshot, { groundingMode = "refs", assistGrounding = false } = {}) {
+  // Screen any proposed batch before anything else, so every exit below —
+  // including the invalid ones — carries a decision whose `steps` is either
+  // admitted or absent. An inadmissible batch is never a failed round: it
+  // degrades to its first action, which is the one the safety gate judges.
+  let batchRejected = "";
+  if (Array.isArray(decision.steps) && decision.steps.length) {
+    const first = decision.steps[0];
+    if (decision.kind !== "act") {
+      batchRejected = "only an act decision may carry steps";
+      decision = { ...decision, steps: null };
+    } else if (String(first?.type || "") !== String(decision.action?.type || "")) {
+      batchRejected = "the first step must be the same action as `action`";
+      decision = { ...decision, steps: null };
+    } else {
+      const admitted = batchPolicy.admitBatch(decision.steps);
+      if (admitted.admitted) {
+        decision = { ...decision, steps: admitted.steps };
+      } else {
+        batchRejected = admitted.reason;
+        decision = { ...decision, steps: null };
+      }
+    }
+  } else if (decision.steps !== null && decision.steps !== undefined) {
+    decision = { ...decision, steps: null };
+  }
+  if (batchRejected) decision = { ...decision, batchRejected };
   const describesTarget = groundingMode === "holo";
   if (decision.kind === "act") {
     let action = decision.action || {};

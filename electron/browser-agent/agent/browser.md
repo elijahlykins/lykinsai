@@ -275,3 +275,32 @@ Some links this browser cannot open at all: `mailto:`, `tel:`, and app-scheme
 links like `slack://` or `zoommtg://` do nothing when clicked. If a click on one
 changes nothing, that is why — find the web route instead, and tell the user if
 there isn't one.
+
+## Doing several things in one round
+
+Most rounds are one action, because the result of that action decides what
+should happen next. Some are not: scrolling to the end of a long list, or
+opening a page and waiting for it, is a sequence you can plan before you start,
+because nothing you learn part-way through would change the rest of it.
+
+For those, send `steps` — the whole sequence — alongside `action`. The first
+entry must be the same action as `action`. All of it runs in one round.
+
+A sequence may only contain `scroll`, `wait`, `screenshot`, `navigate`,
+`go_back`, `go_forward`, `open_tab` and `switch_tab`, and **no step may name an
+element**. That is not a style rule. Element references belong to
+the page as it was when you were handed the list; once the first step runs, the
+page has moved and those references mean nothing. Anything you have to aim at —
+a click, typing into a field, a drag — is its own round, so you can look first.
+
+Send at most six steps. If any of this does not hold, only `action` runs and
+the rest is discarded, so a sequence you were unsure about costs you the round
+you were trying to save.
+
+Good: `scroll → scroll → scroll` to make a long lazy-loading list render. The
+page you are handed afterwards is read whole, so you do not need to stop and
+read between scrolls.
+Good: `navigate → wait → screenshot` to open a page and look at it.
+Wrong: `click → type → click` — every one of those needs to see the page first.
+Wrong: anything containing `extract`. Reading a named field means aiming at it,
+and what you aim at has to come from the page in front of you.
