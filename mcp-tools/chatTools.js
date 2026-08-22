@@ -1,11 +1,10 @@
 // ============================================================================
 // mcp-tools/chatTools.js — tools the IN-APP LYKN chat can call
 // ============================================================================
-// The MCP surface in mcp-tools/index.js exposes every synthesis-layer tool
-// to OUTSIDE AI clients (Claude Desktop, Cursor, Claude Code, ChatGPT) via
-// /mcp + the REST mirror at /api/v1/synthesis/*.
+// mcp-tools/index.js is the full registry of synthesis-layer tools; the
+// voice agent dispatches against all of them.
 //
-// This file is the IN-APP equivalent: the subset of those tools that the
+// This file is the text-chat equivalent: the subset of those tools that the
 // LYKN chat itself (the one at /api/ai/stream) is allowed to function-call
 // AND the per-provider schema translators so the same tool surface works
 // across OpenAI / Anthropic / Gemini / Grok native function calling.
@@ -19,12 +18,12 @@
 // + the block's intent regex so it isn't silently undocumented. The schema
 // converters below pick the tool up automatically.
 //
-// We deliberately do NOT re-export the full MCP_TOOLS list. The defaults
-// for in-app chat should always be an explicit whitelist; broad write
-// access via tool calls is exactly the failure mode that makes "the chat
-// nuked my projects" stories. New tools opt in here explicitly.
+// We deliberately do NOT re-export the full SYNTHESIS_TOOLS list. The
+// defaults for in-app chat should always be an explicit whitelist; broad
+// write access via tool calls is exactly the failure mode that makes "the
+// chat nuked my projects" stories. New tools opt in here explicitly.
 
-import { MCP_TOOLS_BY_NAME, errorContent } from './index.js';
+import { SYNTHESIS_TOOLS_BY_NAME, errorContent } from './index.js';
 import { EXTERIOR_TOOLS_BY_NAME } from './exterior/index.js';
 import { delegateToSubModelTool } from './delegateToSubModel.js';
 import { listSubModelTasksTool } from './listSubModelTasks.js';
@@ -43,13 +42,21 @@ import { uploadToProjectTool } from './uploadToProject.js';
 // persisted client-side to the user's custom instructions. Voice parity for
 // update_voice_instructions; external MCP clients have no settings store.
 import { updateAssistantInstructionsTool } from './updateAssistantInstructions.js';
+// In-app-only: opens the user's Settings window on the pane they asked about,
+// for the changes LYKN can't make for them (wallpaper, plan, connected apps).
+// External MCP clients have no LYKN window to open.
+import { openSettingsTool } from './openSettings.js';
+// In-app-only: opens a LYKN page (To-dos, Calendar, Projects…) or an app the
+// user built in LYKN. Needs ctx.installedApps, which only the desktop client
+// can supply, and a LYKN window to open into.
+import { openAppTool } from './openApp.js';
 // Schema-only "Local Mode" tools (file + terminal). The server NEVER runs
 // these — they execute in the Electron main process. Included in the tool
 // schemas only when the caller enables Local Mode for the turn.
 import { LOCAL_CHAT_TOOLS_BY_NAME, LOCAL_TOOL_NAMES } from './localTools.js';
 
 const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
-  ...MCP_TOOLS_BY_NAME,
+  ...SYNTHESIS_TOOLS_BY_NAME,
   ...EXTERIOR_TOOLS_BY_NAME,
   [delegateToSubModelTool.name]: delegateToSubModelTool,
   [listSubModelTasksTool.name]: listSubModelTasksTool,
@@ -59,6 +66,8 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
   [createProjectTool.name]: createProjectTool,
   [uploadToProjectTool.name]: uploadToProjectTool,
   [updateAssistantInstructionsTool.name]: updateAssistantInstructionsTool,
+  [openSettingsTool.name]: openSettingsTool,
+  [openAppTool.name]: openAppTool,
 });
 
 // ---------------------------------------------------------------------------
@@ -69,7 +78,7 @@ const ALL_CHAT_TOOLS_BY_NAME = Object.freeze({
 // rough "this is how a single conversation flows":
 //
 //   discovery → read   → cluster → mutate → propose-new
-//   listProjects → findConnections / searchVault → addProjectNeurons /
+//   listProjects → findConnections → addProjectNeurons /
 //   removeProjectNeurons → updateProject / setActiveProject / deleteProject →
 //   proposeFact
 //
@@ -90,7 +99,6 @@ export const CHAT_TOOL_NAMES = [
   'lykn_findConnections',
   'lykn_loadNeuron',
   'lykn_loadNeurons',
-  'lykn_searchVault',
   'lykn_getNeuronLinks',
   'lykn_getRecentActivity',
   // ── Project working-memory write (git-style, reversible) ─────────
@@ -155,23 +163,22 @@ export const CHAT_TOOL_NAMES = [
   // Async — the server poller surfaces completion; deploy stays manual.
   'lykn_build_with_cursor',
   'lykn_check_cursor_build',
-  // ── Universal app access (bring-your-own API key for any app) ────
-  // Discover the user's custom API connections and call them, with the
-  // stored key injected server-side. Writes gated per-connection.
-  'lykn_list_apps',
-  'lykn_call_app',
   // ── Preference write (ASK FIRST — see tool description) ──────────
   'lykn_updateUserPreference',
   // ── Self-tuning (change LYKN's own default tone/style; client-persisted) ──
   // Voice parity for update_voice_instructions. The system prompt's SELF-TUNING
   // block teaches when to call it; the chat orchestrator persists the result.
   'lykn_update_assistant_instructions',
-  // ── Capability-aware routing (read-only catalog lookup) ──────────
-  // Called when the user asks LYKN to do something it can't (send email,
-  // generate images, run code in their repo, etc.). Returns a small
-  // list of outside tools the user can connect via /connections. Pull
-  // model only — LYKN never dispatches.
-  'lykn_recommendTools',
+  // ── Settings (the changes LYKN can't make for the user) ──────────
+  // Opens the Settings window on the pane they asked about — wallpaper, plan,
+  // connected apps. Sits next to self-tuning because the two are easy to
+  // confuse, and both tool descriptions point at each other.
+  'lykn_open_settings',
+  // Opens a LYKN page (To-dos, Calendar, Projects, Vault) or an app the user
+  // built in LYKN. Distinct from local_open_app, which launches a real macOS
+  // application — both tool descriptions say so, because the ask sounds
+  // identical ("open my notes").
+  'lykn_open_app',
   // ── Exterior capabilities (on-demand, server-executed) ───────────
   'lykn_web_search',
   'lykn_web_fetch',
@@ -349,10 +356,10 @@ export function buildGeminiTools(toolNames) {
 // Tool runner (provider-agnostic — the agent loop calls this for every hop)
 // ---------------------------------------------------------------------------
 /**
- * Run an in-app chat tool by name. Mirrors `runRestTool` in server.js
- * but is scoped to the chat whitelist (so a model can't smuggle a
- * non-whitelisted MCP tool through the agent loop just by emitting its
- * name) and returns a plain JS object instead of an Express response.
+ * Run an in-app chat tool by name. Scoped to the chat whitelist (so a
+ * model can't smuggle a non-whitelisted synthesis tool through the agent
+ * loop just by emitting its name) and returns a plain JS object instead
+ * of an Express response.
  *
  *   const { ok, payload, isError, latencyMs } = await runChatTool(
  *     'lykn_listProjects',
@@ -429,16 +436,15 @@ export async function runChatTool(toolName, args, ctx, options = {}) {
 }
 
 /**
- * Build the ctx an MCP tool handler expects from an Express `req`. This
- * deliberately mirrors `buildToolCtx` / `buildContext` in server.js +
- * mcp-server.js so the same tool handler behaves identically across all
- * three transports (MCP / REST / in-app chat).
+ * Build the ctx a synthesis tool handler expects from an Express `req`.
+ * This deliberately mirrors `buildToolCtx` in server.js (the voice path)
+ * so the same tool handler behaves identically in chat and voice.
  *
  *   const ctx = buildChatToolCtx(req);
  *   await runChatTool('lykn_listProjects', args, ctx);
  *
  * Surface convention: in-app chat traffic is always `lykn-chat` (matches
- * what the <applied> tag funnel uses), and `mcpAuth` is null (JWT path).
+ * what the <applied> tag funnel uses).
  */
 /**
  * Label for the in-app chat model (custom display name or served model id).
@@ -458,10 +464,8 @@ export function buildChatToolCtx(req, extras = {}) {
   return {
     supabaseAdmin: req.app.get('supabaseAdmin'),
     userId: req.user?.id || null,
-    mcpAuth: null,
     clientLabel: String(req.headers['user-agent'] || '').slice(0, 240),
     attribSurface: 'lykn-chat',
-    tokenId: null,
     chatModelLabel: extras.chatModelLabel || null,
     /** Custom model linked_project_id — default target for project writes. */
     boundProjectId: extras.boundProjectId || null,
@@ -531,7 +535,101 @@ export function buildChatToolCtx(req, extras = {}) {
      * resort for image attachments lacking a storagePath.
      */
     turnImageUrls: (Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : []).slice(0, 8),
+    /**
+     * The apps the user has built in LYKN, as { id, name }. They live in the
+     * local store on the user's machine, so the server only knows about them
+     * because the desktop client sends them with the turn. lykn_open_app
+     * matches a spoken name against this. Empty in the browser.
+     */
+    installedApps: sanitizeInstalledApps(req.body?.installedApps),
+    /**
+     * The applications on the user's Mac, by name. lykn_open_app checks this to
+     * tell an app they HAVE (open the real thing) from one they don't (the web
+     * is the right answer) — which differs per machine, so it can't be a fixed
+     * list. Empty in the browser, where there is no Mac.
+     */
+    macApps: sanitizeMacApps(req.body?.macApps),
+    /**
+     * Whether the local_* tools are live this turn. lykn_open_app reads it so
+     * that "open Chrome" with Local Mode off explains why it can't rather than
+     * opening LYKN's browser as a stand-in.
+     */
+    localMode: req.body?.localMode === true,
+    /**
+     * What is in AI Drive — the artifacts and generated images LYKN has made
+     * for this user, as { id, name, folder }. `id` is the vault row, which is
+     * what a deep link into the drive needs. Same reason as installedApps: the
+     * server has no way to know what they have made unless it is told.
+     */
+    aiDrive: sanitizeAiDrive(req.body?.aiDrive),
+    /**
+     * How much is in AI Drive, as opposed to how much of it is named above.
+     * Only the newest items are sent by name, so without this the model reads
+     * a truncated list as a total and tells the user they have made three
+     * images when they have made forty.
+     */
+    aiDriveTotals: sanitizeAiDriveTotals(req.body?.aiDriveTotals),
+    // In-app chat never searches the retired connected-apps vault library.
+    // Files live in the Finder window: [AI DRIVE] + local_* for Mac folders.
+    skipVaultSearch: true,
   };
+}
+
+/** Non-negative counts, and whether the client got to the end of the vault. */
+function sanitizeAiDriveTotals(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const count = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 100_000) : 0;
+  };
+  return {
+    artifacts: count(raw.artifacts),
+    images: count(raw.images),
+    complete: raw.complete === true,
+  };
+}
+
+/** Vault-row id, display name and which of AI Drive's two folders it sits in. */
+function sanitizeAiDrive(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw.slice(0, 40)) {
+    if (!item || typeof item !== 'object') continue;
+    const id = typeof item.id === 'string' ? item.id.trim().slice(0, 120) : '';
+    const name = typeof item.name === 'string' ? item.name.trim().slice(0, 120) : '';
+    if (!id || !name) continue;
+    out.push({ id, name, folder: item.folder === 'images' ? 'images' : 'artifacts' });
+  }
+  return out;
+}
+
+/** Names only, capped and coerced. Accepts the bare strings the client sends
+ *  and the { name } objects the Mac dock uses, so either shape works. */
+function sanitizeMacApps(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const app of raw.slice(0, 200)) {
+    const name = String(typeof app === 'string' ? app : app?.name || '').trim().slice(0, 80);
+    if (name) out.push(name);
+  }
+  return out;
+}
+
+/** Same defensive treatment as the attachments below: known fields only,
+ *  capped, coerced, so a malformed payload can't reach a tool handler. */
+function sanitizeInstalledApps(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const app of raw.slice(0, 60)) {
+    if (!app || typeof app !== 'object') continue;
+    const id = typeof app.id === 'string' ? app.id.trim().slice(0, 120) : '';
+    if (!id) continue;
+    out.push({
+      id,
+      name: typeof app.name === 'string' ? app.name.trim().slice(0, 120) : '',
+    });
+  }
+  return out;
 }
 
 // Defensive cleaner for the client-supplied per-turn attachment metadata: we

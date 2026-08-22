@@ -72,6 +72,13 @@ export const searchVaultTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
+    if (ctx?.skipVaultSearch) {
+      return errorContent(
+        'The old vault search is retired. Use [AI DRIVE] + lykn_open_app for things LYKN built, ' +
+          'and local_search_files / local_list_dir / local_pull_file for files on their Mac. ' +
+          'Do not search connected apps or a media library.',
+      );
+    }
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

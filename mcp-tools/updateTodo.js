@@ -12,7 +12,7 @@
 // supplied. Scoped to the caller's own rows (handler filters on user_id; RLS
 // enforces it again under JWT).
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 import { resolveInstant } from './_time.js';
 
 const TITLE_MAX = 280;
@@ -101,8 +101,6 @@ export const updateTodoTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

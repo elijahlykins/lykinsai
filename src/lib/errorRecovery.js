@@ -81,13 +81,17 @@ export function isLikelyStaleBundleError(error) {
 export function reportClientError(error, errorInfo, source = 'route') {
   try {
     if (typeof window === 'undefined') return;
+    // Clamped to what /api/client-error accepts. A long-lived install
+    // accumulates well over a hundred of these (every desktop icon position is
+    // one), and an oversized list used to fail validation and take the whole
+    // report down with it — losing the crash we were trying to record.
     const lsKeysSnapshot = (() => {
       try {
         const keys = [];
-        for (let i = 0; i < localStorage.length; i++) {
+        for (let i = 0; i < localStorage.length && keys.length < 100; i++) {
           const k = localStorage.key(i);
           if (k && (k.startsWith('lykn_') || k.startsWith('lyknchat_') || k.startsWith('lykinsai_'))) {
-            keys.push(k);
+            keys.push(k.slice(0, 200));
           }
         }
         return keys;

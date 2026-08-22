@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { isConnectOnboardingDone } from "@/lib/landingHandoff";
 import { resolvePostAuthPath } from "@/lib/webAppAccess";
 import { motion, AnimatePresence } from "framer-motion";
 import { Eye, EyeOff } from "lucide-react";
@@ -162,15 +161,6 @@ function friendlyError(raw) {
   return "Something went wrong. Please try again.";
 }
 
-const NEW_USER_WINDOW_MS = 10 * 60 * 1000;
-
-function isFreshlyCreatedUser(user) {
-  if (!user?.created_at) return false;
-  const createdMs = Date.parse(user.created_at);
-  if (!Number.isFinite(createdMs)) return false;
-  return Date.now() - createdMs < NEW_USER_WINDOW_MS;
-}
-
 function formatCountdown(ms) {
   const total = Math.max(0, Math.ceil(ms / 1000));
   const m = Math.floor(total / 60);
@@ -294,8 +284,6 @@ export default function Login() {
       dest = from;
     } else if (pendingShareDest) {
       dest = pendingShareDest;
-    } else if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
-      dest = "/onboarding/connect";
     }
     nav(resolvePostAuthPath(dest), { replace: true });
   }, [loading, signingOut, nav, user, from, location.state]);

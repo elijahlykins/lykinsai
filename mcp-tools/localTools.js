@@ -23,6 +23,8 @@ export const LOCAL_TOOL_NAMES = [
   'local_running_apps',
   'local_read_app',
   'local_open_app',
+  'local_open_path',
+  'local_organize_desktop',
 ];
 
 export const LOCAL_CHAT_TOOLS = [
@@ -60,7 +62,7 @@ export const LOCAL_CHAT_TOOLS = [
   {
     name: 'local_search_files',
     description:
-      'Search the user\'s files by name pattern and/or by text content, starting from a folder. ' +
+      'Search the user\'s files and folders by name pattern and/or files by text content, starting from a folder. ' +
       'Read-only; runs immediately. Provide namePattern (glob-like, e.g. "*.ts"), query (text to ' +
       'find inside files), or both. Skips node_modules, .git, caches, and system folders.',
     inputSchema: {
@@ -173,11 +175,15 @@ export const LOCAL_CHAT_TOOLS = [
   {
     name: 'local_open_app',
     description:
-      'Open a Mac application as a normal window — the same as clicking its icon in the ' +
+      'Open a MAC application as a normal window — the same as clicking its icon in the ' +
       'LYKN dock. The app launches (or comes to the front if already running). Use it when ' +
-      'the user asks to open, launch, or pull up an app ("open Spotify", "pull up Safari"). ' +
-      'Matches installed apps by name; runs immediately without asking permission. After ' +
-      'opening, use local_read_app to see what the app is showing.',
+      'the user asks to open, launch, or pull up a Mac app ("open Spotify", "pull up ' +
+      'Safari"). Matches the applications installed on their Mac by name; runs immediately ' +
+      'without asking permission. After opening, use local_read_app to see what the app is ' +
+      'showing. NOT for anything inside LYKN: a LYKN page (To-dos, Calendar, Projects, ' +
+      'Vault, Files) or an app the user BUILT in LYKN is lykn_open_app, and LYKN Settings ' +
+      'is lykn_open_settings. When a name could be either — "Notes", "Calendar" — prefer ' +
+      'the LYKN one if it is listed in the [LYKN APPS] section of your context.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -187,6 +193,51 @@ export const LOCAL_CHAT_TOOLS = [
         },
       },
       required: ['app'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_open_path',
+    description:
+      'Open a file or folder on the user\'s Mac. A FILE (image, PDF, video, document) opens in ' +
+      'LYKN\'s preview pop — the same overlay as clicking it in Files. A FOLDER opens in the Vault ' +
+      'Finder window. Use this for paths and named files/folders. Resolve an uncertain path with ' +
+      'local_list_dir or local_search_files first. Runs immediately without asking permission.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'File or folder to open (absolute, ~-relative, or home-relative).',
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'local_organize_desktop',
+    description:
+      'Tidy the icons on the user\'s LYKN Home desktop into a neat grid, filling columns from ' +
+      'the top-right the way the Finder does. Covers everything on Home: files mirrored from ' +
+      'their real Mac desktop, folders they made, and the Files and Vault shortcuts. Nothing ' +
+      'is renamed, moved on disk, or deleted — only where the icons sit on screen changes, and ' +
+      'the user can drag them back. Runs immediately without asking permission. Use this for ' +
+      '"organize/clean up/tidy/arrange my desktop", including "sort my desktop by name". Not ' +
+      'for moving files between folders — that is a file operation, not this.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        by: {
+          type: 'string',
+          enum: ['kind', 'name', 'date'],
+          description:
+            'How to order the icons. "kind" groups folders, then apps, images, movies and ' +
+            'documents; "name" is alphabetical; "date" is newest first. Omit to leave the ' +
+            'icons in the order they are already in and only straighten the alignment, which ' +
+            'is what a plain "clean up my desktop" asks for.',
+        },
+      },
       additionalProperties: false,
     },
   },
@@ -233,7 +284,14 @@ export function looksLikeLocalSystemAsk(text) {
   if (/\b(terminal|shell|command line|run\s+(the\s+)?command|zsh|bash|(npm|yarn|pnpm|pip3?|brew)\s+(run|install|uninstall|update|upgrade|list)|git\s+(status|commit|clone|pull|push)|chmod|mkdir)\b/.test(t)) {
     return true;
   }
-  // Local file operations with a file/folder-ish reference (but not artifact
+  // Tidying the Home desktop ("organise my desktop", "clean up the desktop
+  // into a grid") — answered by local_organize_desktop. "desktop" on its own
+  // is too common to key on, so it has to be paired with a tidying verb.
+  if (/\b(organi[sz]e|tidy|clean\s*up|arrange|straighten|line\s*up|sort)\b[^.?!]*\bdesktop\b/.test(t)) {
+    return true;
+  }
+  if (/\bdesktop\b[^.?!]*\b(into|in|on)\s+(a\s+)?grid\b/.test(t)) return true;
+  // file operations with a file/folder-ish reference (but not artifact
   // builds like "create a document/deck/presentation").
   if (
     /\b(read|open|edit|create|write|delete|rename|move|search|find|list|show|check)\b/.test(t) &&
@@ -242,6 +300,9 @@ export function looksLikeLocalSystemAsk(text) {
   ) {
     return true;
   }
+  // The Vault Finder window (file icon): AI Drive + Mac folders.
+  if (/\b(ai\s*drive|the\s+vault|my\s+vault|in\s+(?:the\s+|my\s+)?vault)\b/.test(t)) return true;
+  if (/\b(open|show|pull\s*up|browse)\b.{0,24}\b(finder|files\s+app|file\s+browser)\b/.test(t)) return true;
   // Path-like tokens are a strong local signal.
   if (/(^|\s)(~\/[\w./-]+|\/(users|applications|library|volumes)\/[\w./-]+)/.test(t)) {
     return true;

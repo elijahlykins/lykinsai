@@ -2,6 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Check, Minus, Plus, Search } from "lucide-react";
 
 import {
+  isAppInstallAvailable,
+  listInstalledApps,
+  onAppsChanged,
+} from "@/lib/apps/installApp";
+import { appIconFor } from "@/lib/apps/appIcon";
+import {
   GRID_PAD,
   GRID_PITCH,
   SIZE_ORDER,
@@ -20,6 +26,7 @@ import {
 } from "@/lib/desktopWidgets";
 import { hasMacApps, useMacApps } from "@/lib/macApps";
 
+import { useDesktopVisibility } from "@/components/macdesktop/desktopVisibility";
 import { WIDGET_TYPES, resolveSize, widgetType } from "./widgetCatalog";
 
 /**
@@ -285,8 +292,75 @@ function AppPicker({ onPick, onBack }) {
   );
 }
 
-function Gallery({ step, counts, onAddType, onAddApp, onStep, onClose }) {
+function LyknAppPicker({ onPick, onBack }) {
+  const [apps, setApps] = useState([]);
+  const [query, setQuery] = useState("");
+
+  const refresh = useCallback(async () => {
+    setApps(await listInstalledApps());
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    return onAppsChanged(() => void refresh());
+  }, [refresh]);
+
+  const needle = query.trim().toLowerCase();
+  const filtered = needle
+    ? apps.filter((app) => app.name.toLowerCase().includes(needle))
+    : apps;
+
+  return (
+    <>
+      <div className="mb-2 flex items-center gap-2 rounded-xl bg-black/[0.05] px-2.5 py-1.5 dark:bg-white/[0.08]">
+        <Search className="h-3.5 w-3.5 shrink-0 text-black/45 dark:text-white/45" />
+        <input
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search apps built in LYKN…"
+          className="w-full bg-transparent text-[0.8rem] text-black/85 outline-none placeholder:text-black/40 dark:text-white/90 dark:placeholder:text-white/40"
+        />
+      </div>
+      <div className="grid max-h-[19rem] grid-cols-2 gap-1 overflow-y-auto scrollbar-hide sm:grid-cols-3">
+        {filtered.map((app) => {
+          const Icon = appIconFor(app.icon, app.id);
+          return (
+            <button
+              key={app.id}
+              type="button"
+              onClick={() => onPick(app)}
+              className="flex items-center gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
+            >
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[22%] bg-black/10 text-black/60 dark:bg-white/15 dark:text-white/70">
+                <Icon className="h-3.5 w-3.5" strokeWidth={1.9} />
+              </span>
+              <span className="truncate text-[0.78rem] text-black/85 dark:text-white/90">
+                {app.name}
+              </span>
+            </button>
+          );
+        })}
+        {!filtered.length && (
+          <p className="col-span-full px-2 py-6 text-center text-[0.78rem] text-black/45 dark:text-white/45">
+            {apps.length ? `No apps match “${query}”` : "Build and install an app in LYKN first."}
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onBack}
+        className="mt-2 text-[0.75rem] text-black/50 hover:text-black/80 dark:text-white/50 dark:hover:text-white/80"
+      >
+        ← All widgets
+      </button>
+    </>
+  );
+}
+
+function Gallery({ step, counts, onAddType, onAddApp, onAddLyknApp, onStep, onClose }) {
   const macApps = hasMacApps();
+  const lyknApps = isAppInstallAvailable();
 
   return (
     <div className="pointer-events-auto absolute inset-0 z-50 flex items-center justify-center p-6">
@@ -298,7 +372,7 @@ function Gallery({ step, counts, onAddType, onAddApp, onStep, onClose }) {
       <div className="lg-desktop-surface relative w-full max-w-[34rem] rounded-[18px] p-3.5">
         <div className="mb-2.5 flex items-baseline justify-between gap-3">
           <h2 className="text-[0.95rem] font-semibold text-black/90 dark:text-white/95">
-            {step === "apps" ? "Pick an app" : "Add a widget"}
+            {step === "apps" || step === "lyknApps" ? "Pick an app" : "Add a widget"}
           </h2>
           <button
             type="button"
@@ -311,9 +385,16 @@ function Gallery({ step, counts, onAddType, onAddApp, onStep, onClose }) {
 
         {step === "apps" ? (
           <AppPicker onPick={onAddApp} onBack={() => onStep("types")} />
+        ) : step === "lyknApps" ? (
+          <LyknAppPicker onPick={onAddLyknApp} onBack={() => onStep("types")} />
         ) : (
           <div className="grid max-h-[22rem] grid-cols-2 gap-1.5 overflow-y-auto scrollbar-hide sm:grid-cols-3">
-            {WIDGET_TYPES.filter((spec) => !spec.desktopOnly || macApps).map((spec) => {
+            {WIDGET_TYPES.filter(
+              (spec) =>
+                !spec.desktopOnly ||
+                (spec.pickApp && macApps) ||
+                (spec.pickLyknApp && lyknApps),
+            ).map((spec) => {
               const count = counts[spec.type] || 0;
               const disabled = count > 0 && !spec.repeatable;
               return (
@@ -321,7 +402,13 @@ function Gallery({ step, counts, onAddType, onAddApp, onStep, onClose }) {
                   key={spec.type}
                   type="button"
                   disabled={disabled}
-                  onClick={() => (spec.pickApp ? onStep("apps") : onAddType(spec))}
+                  onClick={() =>
+                    spec.pickApp
+                      ? onStep("apps")
+                      : spec.pickLyknApp
+                        ? onStep("lyknApps")
+                        : onAddType(spec)
+                  }
                   title={disabled ? `${spec.label} is already on the desktop` : spec.description}
                   className={`flex flex-col gap-1 rounded-[14px] border p-2.5 text-left transition-colors ${
                     disabled
@@ -357,11 +444,12 @@ function Gallery({ step, counts, onAddType, onAddApp, onStep, onClose }) {
 
 export default function WidgetCanvas({ userId, onOpen, editing = false, onEditingChange }) {
   const layerRef = useRef(null);
+  const [{ hideWidgets }] = useDesktopVisibility();
   const [layer, setLayer] = useState({ w: 0, h: 0 });
   const [items, setItems] = useState(readWidgetLayout);
   const [drag, setDrag] = useState(null); // { id, dx, dy, col, row }
   const [menu, setMenu] = useState(null); // { x, y, id }
-  const [gallery, setGallery] = useState(null); // null | "types" | "apps"
+  const [gallery, setGallery] = useState(null); // null | "types" | "apps" | "lyknApps"
   const dragRef = useRef(null);
 
   useEffect(() => subscribeWidgetLayout(setItems), []);
@@ -509,6 +597,19 @@ export default function WidgetCanvas({ userId, onOpen, editing = false, onEditin
     [placeCapacity, onEditingChange],
   );
 
+  const addLyknApp = useCallback(
+    (app) => {
+      addWidget("lyknApp", {
+        size: "small",
+        capacity: placeCapacity,
+        props: { appId: app.id, appName: app.name, appIcon: app.icon || "" },
+      });
+      setGallery(null);
+      onEditingChange?.(true);
+    },
+    [placeCapacity, onEditingChange],
+  );
+
   const menuItem = menu ? placed.find((p) => p.item.id === menu.id) : null;
   const dragBox = drag ? sizeBox(placed.find((p) => p.item.id === drag.id)?.item.size) : null;
 
@@ -552,7 +653,8 @@ export default function WidgetCanvas({ userId, onOpen, editing = false, onEditin
         />
       )}
 
-      {placed.map(({ item, spec }) => (
+      {(!hideWidgets || editing) &&
+        placed.map(({ item, spec }) => (
         <CanvasWidget
           key={item.id}
           item={item}
@@ -659,6 +761,7 @@ export default function WidgetCanvas({ userId, onOpen, editing = false, onEditin
           counts={counts}
           onAddType={addType}
           onAddApp={addApp}
+          onAddLyknApp={addLyknApp}
           onStep={setGallery}
           onClose={() => setGallery(null)}
         />

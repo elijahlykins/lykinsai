@@ -34,7 +34,7 @@
 // saveLinkToVault.ts uses client-side. Same URL → same note (returns
 // the existing row instead of creating a duplicate).
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
 
 const URL_MAX = 2048;
@@ -181,8 +181,6 @@ export const saveLinkToVaultTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

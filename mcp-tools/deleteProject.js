@@ -24,7 +24,7 @@
 //   to remove rather than blindly forwarding a UUID it parsed out of
 //   the user's last message.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 function normaliseNameKey(name) {
   return String(name || '')
@@ -81,8 +81,6 @@ export const deleteProjectTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

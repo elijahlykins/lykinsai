@@ -29,6 +29,18 @@
         clip-path: inset(0 round 16px);
       }
       * { box-sizing: border-box; }
+      /* No scrollbar is ever drawn in LYKN: panes still scroll by wheel,
+         trackpad, keyboard and drag, only the gutter is gone. This window has
+         its own document, so it can't inherit the app-wide rule in index.css. */
+      * {
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      *::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+        display: none !important;
+      }
       html, body {
         margin: 0;
         height: 100%;
@@ -158,13 +170,6 @@
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
-        scrollbar-width: thin;
-        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
-      }
-      .live-pane::-webkit-scrollbar { width: 6px; }
-      .live-pane::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.16);
-        border-radius: 999px;
       }
       /* Live assist cards — Cluely-style in-call help, newest on top. */
       .assist-feed { display: flex; flex-direction: column; gap: 8px; }

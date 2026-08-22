@@ -3,32 +3,27 @@
 // A visionOS-style glass panel — the app's primary shell. The Electron main
 // window loads this route over HUD vibrancy (see createMainWindow). The
 // Home tab is a blank macOS-style desktop (just the sidebar over the
-// wallpaper); Chat / Projects / Vault mount the real product pages
-// in-document (each inside its own MemoryRouter so internal navigation
-// stays inside the panel while the window URL stays on /studio). Browser /
-// Calendar / To-dos / Settings pop up as floating windows on Home.
+// wallpaper); Chat mounts the real product page in-document (inside its own
+// MemoryRouter so internal navigation stays inside the panel while the window
+// URL stays on /studio). Browser / Projects / Vault / Files / Calendar /
+// To-dos / Settings pop up as floating windows on Home.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUp,
-  Bell,
-  BellOff,
   CalendarDays,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   Clock,
+  File as FileIcon,
   Folder,
   FolderKanban,
   Globe,
   Home,
   ListTodo,
-  Lock,
-  Maximize2,
+  Loader2,
   MessageCircle,
-  Minimize2,
-  Newspaper,
   Paperclip,
   Plus,
   Search,
@@ -45,13 +40,14 @@ import LyknCalendarPage from "@/components/calendar/LyknCalendarPage";
 import LyknTodosPage from "@/components/todos/LyknTodosPage";
 import SettingsModal from "@/components/notes/SettingsModal";
 import { useAuth } from "@/lib/SupabaseAuth";
-import { listUserProjects } from "@/lib/userProjects";
 import {
+  fetchLyknChatsPage,
   fetchLyknChatsWithContext,
+  invalidateLyknChatListQueries,
   searchLyknChatsByTitle,
+  SIDEBAR_PAGE_SIZE,
 } from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
-import { openBrief } from "@/lib/brief";
 import { STUDIO_OPEN_TAB_EVENT } from "@/lib/studioTabs";
 import { agentWaitingRow } from "@/lib/agentWaitingRow";
 import {
@@ -67,7 +63,7 @@ import ProjectsPage from "./ProjectsPage";
 import ProjectDetailPage from "./ProjectDetailPage";
 import SettingsPage from "./Settings";
 import { subscribeLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
-import { applyTheme, isDarkTheme, readSavedTheme } from "@/lib/theme";
+import { isDarkTheme, readSavedTheme } from "@/lib/theme";
 import { readAppearance, subscribeAppearance } from "@/lib/appearance";
 import { isDesktopShell } from "@/lib/webAppAccess";
 import ReactMarkdown from "react-markdown";
@@ -77,32 +73,61 @@ import {
   normalizeMathDelimiters,
 } from "@/lib/chat/chatMarkdown";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
+import { ChatPopImage } from "@/components/lyknChat/LyknMediaPop";
 import StudioHoverTips from "@/components/StudioHoverTips";
 import MacAppDock from "@/components/macdock/MacAppDock";
-import MacFilesBrowser from "@/components/macfiles/MacFilesBrowser";
+import InstalledAppDock from "@/components/macdock/InstalledAppDock";
+import { DockContextMenu, openLyknChat } from "@/components/macdock/DockContextMenu";
+import InstalledAppFrame from "@/components/macdesktop/InstalledAppFrame";
+import {
+  OPEN_APP_EVENT,
+  appIdFromWindowId,
+  appWindowId,
+  appWindowUrl,
+  isAppInstallAvailable,
+  listInstalledApps,
+  onAppsChanged,
+} from "@/lib/apps/installApp";
+import { appIconFor } from "@/lib/apps/appIcon";
+import { stashAppEdit } from "@/lib/apps/editApp";
 import {
   DesktopFolders,
   FilesWidget,
+  VaultFolderWidget,
   useHomeWidgetOn,
   useWelcomeWidgetSync,
 } from "@/components/macdesktop/DesktopWidgets";
+import { useDesktopVisibility } from "@/components/macdesktop/desktopVisibility";
+import {
+  DesktopLayerProvider,
+  useDesktopIconVars,
+  useMeasuredLayer,
+} from "@/components/macdesktop/desktopGrid";
+import { movablePaths, normalizeDir } from "@/components/macfiles/filesDrag";
+import { describeFilesError } from "@/components/macfiles/errors";
+import { addDesktopDrops } from "@/lib/macDesktopSync";
+import { moveFilesInto, placeDesktopIcons } from "@/components/macdesktop/fileDrop";
+import { useDragState, useDropZone } from "@/lib/drag/dragEngine";
+import {
+  DesktopSelectProvider,
+  moveDesktopGroup,
+  shiftPositions,
+} from "@/components/macdesktop/desktopSelect";
 import DesktopAppWindow from "@/components/macdesktop/DesktopAppWindow";
+import FileWindowContent from "@/components/files/FileWindowContent";
+import { fileSourceName } from "@/lib/files/fileSource";
+import {
+  closeFileWindow,
+  isFileWindowId,
+  listFileWindows,
+  OPEN_FILE_WINDOW_EVENT,
+  subscribeFileWindows,
+} from "@/lib/files/fileWindows";
+import StudioPop from "@/components/macdesktop/StudioPop";
+import StudioSplit from "@/components/macdesktop/StudioSplit";
 import HomeChatBar from "@/components/macdesktop/HomeChatBar";
 import MacDesktopMirror from "@/components/macdesktop/MacDesktopMirror";
 import WidgetCanvas from "@/components/macdesktop/WidgetCanvas";
-
-const THEME_STORAGE_KEY = "lykinsai_settings";
-
-function persistTheme(theme) {
-  try {
-    const saved = JSON.parse(localStorage.getItem(THEME_STORAGE_KEY) || "{}");
-    saved.theme = theme;
-    localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(saved));
-  } catch {
-    /* preference still applies for this session */
-  }
-  applyTheme(theme);
-}
 
 // Pages that open as macOS-style floating windows over the Home desktop
 // instead of taking over the studio stage. `src` is the MemoryRouter entry
@@ -131,6 +156,28 @@ const WINDOW_APPS = {
     width: 480,
     height: 600,
   },
+  // Wide enough for the card rail to show several projects at once, and for
+  // the detail page's two-column body to stay two columns. The extra height
+  // over Vault's clears the rail's paging arrows below the cards.
+  projects: {
+    label: "Projects",
+    icon: FolderKanban,
+    src: "/projects",
+    width: 1120,
+    height: 800,
+  },
+  // The vault is a folder you open, not a place you navigate to, so it gets a
+  // real window like Calendar rather than swallowing the stage. It's also the
+  // Mac file browser: its sidebar switches between the vault and folders on
+  // disk, which is why there's no separate Files window. Wide enough that the
+  // masonry grid still lands three or four columns next to that sidebar.
+  vault: {
+    label: "Vault",
+    icon: Folder,
+    src: "/vault",
+    width: 1180,
+    height: 760,
+  },
   settings: {
     label: "Settings",
     icon: Settings,
@@ -145,9 +192,11 @@ const WINDOW_APPS = {
 const SECTIONS = [
   { id: "dashboard", label: "Dashboard", icon: Home },
   { id: "chat", label: "Chat", icon: MessageCircle, src: "/app" },
-  { id: "projects", label: "Projects", icon: FolderKanban, src: "/projects" },
-  { id: "vault", label: "Vault", icon: Lock, src: "/vault" },
-  { id: "files", label: "Files", icon: Folder, src: "/files" },
+  // No `src` on these: they open as floating windows (see WINDOW_APPS), so
+  // they must not also mount into the stage card behind those windows.
+  { id: "projects", label: "Projects", icon: FolderKanban },
+  { id: "vault", label: "Vault", icon: Folder },
+  { id: "files", label: "Files", icon: Folder },
   { id: "browser", label: "Browser", icon: Globe },
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "todos", label: "To-dos", icon: ListTodo },
@@ -162,6 +211,10 @@ const SETTINGS_VIEWS = [
   "workspace",
   "assistant",
   "notifications",
+  // Desktop-only panes: SettingsModal hides them in the browser, where they
+  // land on Account like any other section it doesn't recognise.
+  "localVault",
+  "installedApps",
   "privacy",
   "appearance",
   "integrations",
@@ -174,23 +227,119 @@ const SETTINGS_VIEWS = [
   "payment",
 ];
 
-// Left rail (icons) + bottom dock (words). Browser / Calendar / To-dos /
-// Settings pop up as app windows on the Home desktop (see WINDOW_APPS); the
-// rest are embedded-page tabs that take over the studio stage.
+// Left rail (icons) + bottom dock (words). Every entry but Home pops up as an
+// app window on the Home desktop (see WINDOW_APPS).
 const NAV_ITEMS = [
   // No Chat entry — Home IS the chat page: the desktop hosts the chat
   // surface and its rounded bar. Chats open there via openTab("chat", …).
   { id: "dashboard", label: "Home", icon: Home, action: "tab" },
   { id: "browser", label: "Browser", icon: Globe, action: "tab" },
   { id: "projects", label: "Projects", icon: FolderKanban, action: "tab" },
-  { id: "vault", label: "Vault", icon: Lock, action: "tab" },
+  { id: "vault", label: "Vault", icon: Folder, action: "tab" },
   { id: "files", label: "Files", icon: Folder, action: "tab" },
   { id: "calendar", label: "Calendar", icon: CalendarDays, action: "tab" },
   { id: "todos", label: "To-dos", icon: ListTodo, action: "tab" },
   { id: "settings", label: "Settings", icon: Settings, action: "tab" },
 ];
 
-// Floating chrome (top bar pills, left rail, bottom dock). Glass (dark) =
+// Home is the default and lives on the LYKN icon's double-click. Files,
+// Projects, Calendar, To-dos, and Settings are available from the Vault
+// sidebar, so they stay reachable if they're pulled off the dock. Calendar
+// and To-dos also render beside the user's custom apps in the dock.
+const DOCK_ITEMS = NAV_ITEMS.filter(
+  (item) =>
+    !["dashboard", "files", "projects", "settings", "calendar", "todos"].includes(item.id),
+);
+const CUSTOM_APP_NEIGHBORS = NAV_ITEMS.filter((item) =>
+  ["calendar", "todos"].includes(item.id),
+);
+const STUDIO_DOCK_HIDEABLE = new Set(["calendar", "todos"]);
+const STUDIO_DOCK_HIDDEN_KEY = "lykn_studio_dock_hidden";
+
+function loadHiddenDockIds() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STUDIO_DOCK_HIDDEN_KEY) || "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((id) => STUDIO_DOCK_HIDEABLE.has(String(id)));
+  } catch {
+    return [];
+  }
+}
+
+function saveHiddenDockIds(ids) {
+  try {
+    localStorage.setItem(STUDIO_DOCK_HIDDEN_KEY, JSON.stringify(ids));
+  } catch {
+    /* stays for this session */
+  }
+}
+
+const SPLIT_APPS = [
+  { id: "chat", label: "Chat", icon: MessageCircle },
+  ...NAV_ITEMS.filter((item) => item.id !== "dashboard").map((item) => ({
+    id: item.id,
+    label: item.label,
+    icon: item.icon,
+  })),
+];
+
+function splitCells(split) {
+  if (!split) return [];
+  if (Array.isArray(split.cells) && split.cells.length) return split.cells;
+  return [split.left || null, split.right || null];
+}
+
+function splitHasApp(split, id) {
+  return !!id && splitCells(split).includes(id);
+}
+
+function splitSpan(split) {
+  return split?.span === "left" || split?.span === "right" ? split.span : null;
+}
+
+function splitColumnOf(index) {
+  return index % 2 === 0 ? "left" : "right";
+}
+
+function splitSibling(index) {
+  return index ^ 2;
+}
+
+function splitSpanIndex(cells, side) {
+  if (side === "left") return cells[0] ? 0 : cells[2] ? 2 : 0;
+  return cells[1] ? 1 : cells[3] ? 3 : 1;
+}
+
+function visibleSplitIndexes(split) {
+  const cells = splitCells(split);
+  if ((split?.layout || 2) !== 4) return cells.map((_, i) => i);
+  const span = splitSpan(split);
+  if (span === "left") return [splitSpanIndex(cells, "left"), 1, 3];
+  if (span === "right") return [splitSpanIndex(cells, "right"), 0, 2];
+  return [0, 1, 2, 3];
+}
+
+function hiddenSplitIndex(split) {
+  const cells = splitCells(split);
+  const span = splitSpan(split);
+  if (span === "left") return cells[0] ? 2 : 0;
+  if (span === "right") return cells[1] ? 3 : 1;
+  return -1;
+}
+
+/** Drop a query key from a MemoryRouter entry like `/vault?pane=drive&pick=chat`. */
+function stripQueryParam(path, key) {
+  const raw = String(path || "");
+  const q = raw.indexOf("?");
+  if (q < 0) return raw;
+  const params = new URLSearchParams(raw.slice(q + 1));
+  if (!params.has(key)) return raw;
+  params.delete(key);
+  const search = params.toString();
+  return search ? `${raw.slice(0, q)}?${search}` : raw.slice(0, q);
+}
+
+// Floating chrome (left rail, bottom dock). Glass (dark) =
 // smoked frost over the window's vibrancy with light text; Neutral = the
 // regular light UI: near-solid white surfaces with dark ink over the opaque
 // backdrop. The rest of the shell's hardcoded white/NN utilities get
@@ -220,41 +369,55 @@ function StudioSurface({ entry, windowed = false }) {
   // mounts as if it were the root router (the standard nested-router escape
   // hatch — the surfaces genuinely need independent navigation).
   return (
-    <UNSAFE_RouteContext.Provider
-      value={{ outlet: null, matches: [], isDataRoute: false }}
+    <div className="h-full min-h-0 overflow-hidden">
+      <UNSAFE_RouteContext.Provider
+        value={{ outlet: null, matches: [], isDataRoute: false }}
+      >
+        <UNSAFE_LocationContext.Provider value={null}>
+          <MemoryRouter key={entry} initialEntries={[entry || "/"]}>
+            <Routes>
+              <Route path="/app" element={<LyknChat studioSurface />} />
+              <Route path="/chat/:chatId" element={<LyknChat studioSurface />} />
+              <Route path="/vault" element={<VaultConnectionsShell studioSurface />} />
+              <Route path="/projects" element={<ProjectsPage />} />
+              <Route
+                path="/projects/:projectId"
+                element={<ProjectDetailPage windowed={windowed} />}
+              />
+              {/* In a floating window the frame supplies the card chrome, so
+                  these render bare (no centered frost card of their own). */}
+              <Route path="/calendar" element={<LyknCalendarPage windowed={windowed} />} />
+              <Route path="/todos" element={<LyknTodosPage windowed={windowed} />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="*" element={null} />
+            </Routes>
+          </MemoryRouter>
+        </UNSAFE_LocationContext.Provider>
+      </UNSAFE_RouteContext.Provider>
+    </div>
+  );
+}
+
+function StudioChatPane({ entry, live, view, onOpen, name }) {
+  return (
+    <div
+      className="lykn-home-chat-host relative h-full min-h-0 overflow-hidden"
+      style={{ "--mobile-tabbar-clear": "5.5rem" }}
     >
-      <UNSAFE_LocationContext.Provider value={null}>
-        <MemoryRouter key={entry} initialEntries={[entry]}>
-          <Routes>
-            <Route path="/app" element={<LyknChat studioSurface />} />
-            <Route path="/chat/:chatId" element={<LyknChat studioSurface />} />
-            <Route path="/vault" element={<VaultConnectionsShell studioSurface />} />
-            <Route path="/files" element={<MacFilesBrowser />} />
-            <Route path="/projects" element={<ProjectsPage />} />
-            <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
-            {/* In a floating window the frame supplies the card chrome, so
-                these render bare (no centered frost card of their own). */}
-            <Route path="/calendar" element={<LyknCalendarPage windowed={windowed} />} />
-            <Route path="/todos" element={<LyknTodosPage windowed={windowed} />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={null} />
-          </Routes>
-        </MemoryRouter>
-      </UNSAFE_LocationContext.Provider>
-    </UNSAFE_RouteContext.Provider>
+      <StudioSurface entry={entry} />
+      <HomeChatBar
+        contained
+        active
+        live={live}
+        surfaceView={view}
+        onOpen={onOpen}
+        name={name}
+      />
+    </div>
   );
 }
 
 /* ── Small helpers ─────────────────────────────────────────────────────── */
-
-function useDebounced(value, ms = 250) {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setV(value), ms);
-    return () => clearTimeout(t);
-  }, [value, ms]);
-  return v;
-}
 
 function relTime(ms) {
   const t = typeof ms === "string" ? new Date(ms).getTime() : Number(ms);
@@ -270,83 +433,189 @@ function relTime(ms) {
   return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function CircleIconButton({ icon: Icon, active, label, onClick, expanded = false }) {
+/** Dock icon popover — paginates the full chat history, same as the in-app sidebar. */
+function DockChatsList({ userId, search, onOpen }) {
+  const needle = String(search || "").trim().toLowerCase();
+  const sentinelRef = useRef(null);
+
+  const {
+    data: pageData,
+    isLoading: listLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ["sidebar-boards-paged", userId],
+    queryFn: ({ pageParam }) => fetchLyknChatsPage(userId, pageParam, SIDEBAR_PAGE_SIZE),
+    enabled: !!userId && !needle,
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
+  });
+
+  const { data: searchResults = [], isLoading: searchLoading } = useQuery({
+    queryKey: ["sidebar-boards-search", userId, needle],
+    queryFn: () => searchLyknChatsByTitle(userId, needle, 200),
+    enabled: !!userId && !!needle,
+  });
+
+  const listChats = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const page of pageData?.pages || []) {
+      for (const chat of page.rows || []) {
+        if (seen.has(chat.id)) continue;
+        seen.add(chat.id);
+        out.push(chat);
+      }
+    }
+    return out;
+  }, [pageData]);
+
+  const chats = needle ? searchResults : listChats;
+  const isLoading = needle ? searchLoading : listLoading;
+
+  useEffect(() => {
+    if (needle) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    let root = el.parentElement;
+    while (root && root !== document.body) {
+      const oy = getComputedStyle(root).overflowY;
+      if (oy === "auto" || oy === "scroll") break;
+      root = root.parentElement;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting) && hasNextPage && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { root: root && root !== document.body ? root : null, rootMargin: "120px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [needle, hasNextPage, isFetchingNextPage, fetchNextPage, isLoading, chats.length]);
+
+  if (!userId) {
+    return <p className="px-3 py-2 text-[0.68rem] text-white/35">No chats yet</p>;
+  }
+
+  if (isLoading && chats.length === 0) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 text-[0.68rem] text-white/35">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Loading…
+      </div>
+    );
+  }
+
+  const waitingOnOlder = !needle && (hasNextPage || isFetchingNextPage);
+  if (chats.length === 0 && !waitingOnOlder) {
+    return (
+      <p className="px-3 py-2 text-[0.68rem] text-white/35">
+        {needle ? "No matches" : "No chats yet"}
+      </p>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={expanded ? undefined : label}
-      aria-label={label}
-      style={NO_DRAG}
-      className={`flex h-10 flex-shrink-0 items-center overflow-hidden rounded-full transition-all duration-200 ${
-        expanded ? "w-full px-3" : "w-10 justify-center"
-      } ${
-        active
-          ? "bg-black/85 text-white shadow-lg dark:bg-white dark:text-black"
-          : "text-white/65 hover:bg-white/15"
-      }`}
-    >
-      <Icon className="h-[1.05rem] w-[1.05rem] flex-shrink-0" />
-      {/* Always mounted so the label slides/fades with the width animation
-          instead of popping in mid-transition. */}
-      <span
-        aria-hidden={!expanded}
-        className={`min-w-0 truncate text-[0.78rem] font-medium transition-all duration-150 ${
-          expanded ? "ml-2.5 max-w-full opacity-100 delay-75" : "ml-0 max-w-0 opacity-0"
-        }`}
-      >
-        {label}
-      </span>
-    </button>
+    <>
+      {chats.map((chat) => (
+        <button
+          key={chat.id}
+          type="button"
+          onClick={() => onOpen(chat.id)}
+          className="flex w-full items-center gap-2 rounded-xl px-3 py-1.5 text-left hover:bg-white/[0.08] transition-colors"
+        >
+          <MessageCircle className="h-3.5 w-3.5 flex-shrink-0 text-white/35" />
+          <span className="min-w-0 flex-1 truncate text-[0.74rem] text-white/80">
+            {chat.title || "Untitled chat"}
+          </span>
+          <span className="flex-shrink-0 text-[0.58rem] text-white/30">
+            {relTime(chat.updated_at)}
+          </span>
+        </button>
+      ))}
+      {!needle && (
+        <>
+          <div ref={sentinelRef} aria-hidden className="h-px w-full" />
+          {isFetchingNextPage ? (
+            <div className="flex items-center gap-2 px-3 py-1.5 text-[0.68rem] text-white/35">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading…
+            </div>
+          ) : hasNextPage ? (
+            <button
+              type="button"
+              onClick={() => fetchNextPage()}
+              className="w-full rounded-xl px-3 py-1.5 text-left text-[0.68rem] text-white/45 hover:bg-white/[0.08] hover:text-white/70 transition-colors"
+            >
+              Load older chats
+            </button>
+          ) : null}
+        </>
+      )}
+    </>
   );
 }
 
-/* ── Data hooks ────────────────────────────────────────────────────────── */
-
-function useUserProjects(userId, enabled = true) {
-  return useQuery({
-    queryKey: ["studio-projects", userId || "guest"],
-    enabled: !!userId && enabled,
-    staleTime: 60_000,
-    queryFn: () => listUserProjects(userId),
-  });
-}
-
-/* ── Studio-wide search (top bar) ──────────────────────────────────────── */
-
-const SEARCH_INPUT_CLS =
-  "w-full min-w-0 bg-transparent text-[0.8rem] text-inherit outline-none " +
-  "ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 " +
-  "placeholder:text-white/40 caret-white/80";
-
-/** Google-style link guess: "nike" → "nike.com". */
-function studioLinkGuess(raw) {
-  const q = String(raw || "").trim();
-  if (!q || /\s/.test(q) || /^https?:\/\//i.test(q)) return null;
-  if (!/^[a-z0-9][a-z0-9.-]*$/i.test(q)) return null;
-  if (/^[a-z0-9-]+$/i.test(q)) {
-    return {
-      host: `${q}.com`,
-      complete: `${q}.com`,
-      url: `https://${q.toLowerCase()}.com/`,
-    };
-  }
-  const m = q.match(/^([a-z0-9-]+)\.(com?)?$/i);
-  if (m && (!m[2] || m[2].toLowerCase() !== "com")) {
-    return {
-      host: `${m[1]}.com`,
-      complete: `${m[1]}.com`,
-      url: `https://${m[1].toLowerCase()}.com/`,
-    };
-  }
-  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+/i.test(q)) {
-    return {
-      host: q.replace(/\/$/, ""),
-      complete: q,
-      url: `https://${q.toLowerCase().replace(/^www\./, "")}`,
-    };
-  }
-  return null;
+function CircleIconButton({
+  icon: Icon,
+  active,
+  label,
+  onClick,
+  expanded = false,
+  menuItems,
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  return (
+    <div className="relative flex-shrink-0" style={NO_DRAG}>
+      <button
+        type="button"
+        onClick={(e) => {
+          setMenuOpen(false);
+          onClick?.(e);
+        }}
+        onContextMenu={
+          menuItems
+            ? (e) => {
+                e.preventDefault();
+                setMenuOpen((v) => !v);
+              }
+            : undefined
+        }
+        title={expanded ? undefined : `${label} · ⌥-click to split`}
+        aria-label={label}
+        style={NO_DRAG}
+        className={`flex h-10 flex-shrink-0 items-center overflow-hidden rounded-full transition-all duration-200 active:scale-90 ${
+          expanded ? "w-full px-3" : "w-10 justify-center"
+        } ${
+          active
+            ? "bg-black/85 text-white shadow-lg dark:bg-white dark:text-black"
+            : "text-white/65 hover:bg-white/15"
+        }`}
+      >
+        <Icon className="h-[1.05rem] w-[1.05rem] flex-shrink-0" />
+        {/* Always mounted so the label slides/fades with the width animation
+            instead of popping in mid-transition. */}
+        <span
+          aria-hidden={!expanded}
+          className={`min-w-0 truncate text-[0.78rem] font-medium transition-all duration-150 ${
+            expanded ? "ml-2.5 max-w-full opacity-100 delay-75" : "ml-0 max-w-0 opacity-0"
+          }`}
+        >
+          {label}
+        </span>
+      </button>
+      {menuItems ? (
+        <DockContextMenu
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          items={menuItems}
+        />
+      ) : null}
+    </div>
+  );
 }
 
 function openStudioLink(url) {
@@ -433,191 +702,6 @@ function PageFavicon({ url, fallback: Fallback = Globe, className = "h-4 w-4" })
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}
     />
-  );
-}
-
-function StudioSearch({ userId, onOpen }) {
-  const [q, setQ] = useState("");
-  const [focused, setFocused] = useState(false);
-  const needle = q.trim().toLowerCase();
-  const debounced = useDebounced(needle);
-  const linkGuess = useMemo(() => studioLinkGuess(q), [q]);
-
-  const { data: recentChats = [] } = useQuery({
-    queryKey: ["studio-search-recent", userId || "guest"],
-    enabled: !!userId && focused,
-    staleTime: 30_000,
-    queryFn: () => fetchLyknChatsWithContext(userId, 6),
-  });
-  const { data: chatHits = [] } = useQuery({
-    queryKey: ["studio-search-chats", userId || "guest", debounced],
-    enabled: !!userId && debounced.length >= 1,
-    staleTime: 30_000,
-    queryFn: () => searchLyknChatsByTitle(userId, debounced, 5),
-  });
-  const { data: projects = [] } = useUserProjects(userId, focused);
-  const projectHits = needle
-    ? projects.filter((p) => (p.name || "").toLowerCase().includes(needle)).slice(0, 4)
-    : projects.slice(0, 3);
-
-  const suggestions = useMemo(() => {
-    const rows = [];
-    const push = (row) => {
-      if (!rows.some((r) => r.key === row.key)) rows.push(row);
-    };
-
-    // Link autofill first — "nike" → open nike.com in the LYKN browser.
-    if (linkGuess) {
-      push({
-        key: `link-${linkGuess.host}`,
-        icon: Globe,
-        faviconUrl: linkGuess.url,
-        primary: linkGuess.host,
-        secondary: "Link",
-        complete: linkGuess.complete,
-        onPick: () => {
-          onOpen?.("browser");
-          openStudioLink(linkGuess.url);
-        },
-      });
-    }
-
-    const sections = needle
-      ? SECTIONS.filter((s) => s.label.toLowerCase().includes(needle))
-      : SECTIONS;
-    for (const s of sections) {
-      push({
-        key: `section-${s.id}`,
-        icon: s.icon,
-        primary: s.label,
-        secondary: "Section",
-        complete: s.label,
-        onPick: () => onOpen?.(s.id),
-      });
-    }
-    for (const p of projectHits) {
-      const name = p.name || "Untitled project";
-      if (needle && !name.toLowerCase().includes(needle)) continue;
-      push({
-        key: `project-${p.id}`,
-        icon: FolderKanban,
-        primary: name,
-        secondary: "Project",
-        complete: name,
-        onPick: () => onOpen?.("projects", `/projects/${encodeURIComponent(p.id)}`),
-      });
-    }
-    const chats = needle.length >= 1 ? chatHits : recentChats;
-    for (const c of chats) {
-      const title = c.title || "Untitled chat";
-      push({
-        key: `chat-${c.id}`,
-        icon: MessageCircle,
-        primary: title,
-        secondary: "Chat",
-        complete: title,
-        onPick: () => onOpen?.("chat", `/chat/${encodeURIComponent(c.id)}`),
-      });
-    }
-    return rows.slice(0, 10);
-  }, [needle, projectHits, chatHits, recentChats, onOpen, linkGuess]);
-
-  const choose = (fn) => {
-    fn();
-    setQ("");
-    setFocused(false);
-  };
-
-  const Row = ({ icon: Icon, faviconUrl, primary, secondary, onPick }) => (
-    <button
-      type="button"
-      onClick={() => choose(onPick)}
-      className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
-    >
-      {faviconUrl ? (
-        <PageFavicon
-          url={faviconUrl}
-          fallback={Icon || Globe}
-          className="h-[18px] w-[18px] text-black/40 dark:text-white/45"
-        />
-      ) : (
-        <Icon className="h-[18px] w-[18px] shrink-0 text-black/40 dark:text-white/45" strokeWidth={1.75} />
-      )}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-normal leading-snug text-black/90 dark:text-white/90">
-          {primary}
-        </span>
-        {secondary ? (
-          <span className="mt-0.5 block truncate text-[12px] font-normal leading-snug text-black/45 dark:text-white/45">
-            {secondary}
-          </span>
-        ) : null}
-      </span>
-    </button>
-  );
-
-  return (
-    <div
-      className={`relative flex min-w-0 flex-1 items-center gap-2.5 rounded-full px-3 py-2 ${BAR} ${
-        focused ? "ring-0" : ""
-      }`}
-    >
-      <Search className="h-4 w-4 flex-shrink-0 text-white/45" />
-      <div className="relative min-w-0 flex-1">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setTimeout(() => setFocused(false), 140)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              setQ("");
-              e.currentTarget.blur();
-              return;
-            }
-            if (e.key === "Enter") {
-              e.preventDefault();
-              if (suggestions[0]) choose(suggestions[0].onPick);
-              else if (linkGuess) {
-                choose(() => {
-                  onOpen?.("browser");
-                  openStudioLink(linkGuess.url);
-                });
-              }
-            }
-          }}
-          placeholder="Search LYKN Studio…"
-          className={SEARCH_INPUT_CLS}
-          style={NO_DRAG}
-          autoComplete="off"
-          spellCheck={false}
-        />
-      </div>
-      {focused && (
-        <div
-          className="lykn-studio-search-menu lg-menu absolute left-0 right-0 top-[calc(100%+6px)] z-[90] max-h-[min(220px,32vh)] overflow-y-auto overscroll-contain py-1.5"
-          style={NO_DRAG}
-          onMouseDown={(e) => e.preventDefault()}
-        >
-          {suggestions.length === 0 ? (
-            <p className="px-4 py-3 text-center text-[12px] text-black/40 dark:text-white/40">
-              No matches in Studio
-            </p>
-          ) : (
-            suggestions.map((s) => (
-              <Row
-                key={s.key}
-                icon={s.icon}
-                faviconUrl={s.faviconUrl}
-                primary={s.primary}
-                secondary={s.secondary}
-                onPick={s.onPick}
-              />
-            ))
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -957,7 +1041,7 @@ const RAIL_MD_COMPONENTS = {
     }
     if (/^https?:\/\//i.test(s) || /^data:image\//i.test(s)) {
       return (
-        <img
+        <ChatPopImage
           src={s}
           alt={a}
           className="my-1.5 h-auto max-h-44 w-auto max-w-full rounded-lg border border-white/15"
@@ -1951,10 +2035,115 @@ export default function Studio() {
   // steps aside while it's up.
   const [homeView, setHomeView] = useState("chat");
   // The desktop's widgets live in their own layout (position and size per
-  // widget); the walkthrough's picks are seeded into it on first run. Only the
-  // Files desktop icon is still a plain on/off, because it's an icon.
+  // widget); the walkthrough's picks are seeded into it on first run. The
+  // Files and Vault desktop folders are still plain on/offs, because they're
+  // icons rather than widgets.
   useWelcomeWidgetSync();
-  const showFilesWidget = useHomeWidgetOn("files");
+  const [{ hideFolders }] = useDesktopVisibility();
+  const showFilesWidget = useHomeWidgetOn("files") && !hideFolders;
+  const showVaultFolder = useHomeWidgetOn("vaultFolder") && !hideFolders;
+
+  // Dropping a file on the wallpaper puts it on the real Desktop folder, which
+  // is what MacDesktopMirror shows — so it lands where it was dropped rather
+  // than needing a separate notion of "LYKN's desktop".
+  const [desktopFolder, setDesktopFolder] = useState("");
+  const [dropNote, setDropNote] = useState("");
+  const dropNoteTimer = useRef(null);
+  const desktopLayerRef = useRef(null);
+
+  useEffect(() => {
+    window.lykn?.macFsHome?.()
+      .then((r) => {
+        if (r?.ok) setDesktopFolder(r.desktop || "");
+      })
+      .catch(() => {});
+    return () => clearTimeout(dropNoteTimer.current);
+  }, []);
+
+  const showDropNote = (text) => {
+    setDropNote(text);
+    clearTimeout(dropNoteTimer.current);
+    dropNoteTimer.current = setTimeout(() => setDropNote(""), 3400);
+  };
+
+  /**
+   * The wallpaper. Two things can land here and they're told apart by whether
+   * the drag started on the desktop:
+   *
+   *  - an icon already on Home is being rearranged, so the whole selection
+   *    keeps its formation and stops exactly where it was let go;
+   *  - something dragged out of a Files window arrives, which means a real
+   *    move into the Desktop folder — and then its new icon is parked at the
+   *    drop point rather than filed into the next free grid slot.
+   */
+  const wallpaperDrop = useDropZone({
+    accept: (payload) => payload.paths.length > 0 || payload.iconIds.length > 0,
+    onDrop: async (payload) => {
+      const box = desktopLayerRef.current?.getBoundingClientRect();
+      // Where the icon's top-left goes: under whatever was following the
+      // cursor, so it lands on the spot the user was aiming at rather than
+      // half an icon away from it.
+      const at = box
+        ? {
+            x: payload.x + (payload.offsetX ?? -48) - box.left,
+            y: payload.y + (payload.offsetY ?? -40) - box.top,
+          }
+        : null;
+
+      const rearranging = !!payload.bases && Object.keys(payload.bases).length > 0;
+      if (rearranging) {
+        moveDesktopGroup(
+          shiftPositions(
+            payload.bases,
+            payload.x - payload.grabX,
+            payload.y - payload.grabY,
+          ),
+          true,
+        );
+      }
+
+      const dest = normalizeDir(desktopFolder);
+      const incoming = dest ? movablePaths(payload.paths, dest) : [];
+      if (!incoming.length) {
+        // Already on the Desktop, dragged in from a Files window: nothing to
+        // move, it just gets a new spot.
+        if (!rearranging && at && payload.paths.length) {
+          placeDesktopIcons(payload.paths, at.x, at.y);
+        }
+        return;
+      }
+
+      const result = await moveFilesInto(incoming, dest, { copy: payload.copy });
+      if (result?.ok === false) {
+        showDropNote(describeFilesError(result));
+        return;
+      }
+      const landed = result?.paths || [];
+      if (!landed.length) return;
+      addDesktopDrops(landed);
+      if (at) placeDesktopIcons(landed, at.x, at.y);
+    },
+  });
+
+  const setDesktopLayer = useCallback(
+    (el) => {
+      desktopLayerRef.current = el;
+      wallpaperDrop.ref(el);
+    },
+    [wallpaperDrop.ref],
+  );
+
+  // Measured once here, for every icon layer inside. Icon sizes ride down as
+  // CSS variables and positions are resolved against it, so moving the window
+  // to a different display re-lays the desktop out to fit.
+  const desktopLayer = useMeasuredLayer(desktopLayerRef);
+  useDesktopIconVars(desktopLayer);
+
+  // The dashed "drop here" frame is for files arriving from somewhere else.
+  // Shuffling icons that are already on Home shouldn't light the desktop up.
+  const drag = useDragState();
+  const wallpaperArmed =
+    wallpaperDrop.hot && drag.dragging && drag.payload?.source !== "desktop";
   // Edit mode: widgets lift off the desktop to be moved, resized and added.
   const [widgetsEditing, setWidgetsEditing] = useState(false);
   useEffect(() => {
@@ -1982,6 +2171,18 @@ export default function Studio() {
   // widget.
   const [appWins, setAppWins] = useState([]);
   const [minimized, setMinimized] = useState({});
+  // Apps LYKN built for this user. They open as desktop windows like the
+  // built-ins, so they have to be part of the same window vocabulary — but they
+  // arrive at runtime, which is why WINDOW_APPS can't be the only source.
+  const [installedApps, setInstalledApps] = useState([]);
+  // Split View — two Studio apps tiled left/right, macOS style.
+  const [split, setSplit] = useState(null);
+  const [snapHint, setSnapHint] = useState(null);
+  const [fillWin, setFillWin] = useState(null);
+  // Installed apps (and anything else that paints over the dock when zoomed)
+  // report in here so the window layer can sit above the bottom bar.
+  const [dockCover, setDockCover] = useState({});
+  const coveringZoom = Object.values(dockCover).some(Boolean);
   // Clicking the bare wallpaper sweeps every window off the sides to reveal the
   // desktop, macOS style; clicking it again brings them all back.
   const [desktopPeek, setDesktopPeek] = useState(false);
@@ -1994,36 +2195,17 @@ export default function Studio() {
   const [bgImage, setBgImage] = useState("");
   // Wallpaper choice + dim/blur from Settings › Appearance.
   const [appearance, setAppearance] = useState(readAppearance);
-  const [notifMuted, setNotifMuted] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [settingsView, setSettingsView] = useState("account");
   const settingsControls = useRef(null);
-  // The top bar stays tucked away by default (Home is a clean desktop); the
-  // tiny toggle in the window's top-right corner pulls it back in. The bottom
-  // dock is always visible.
-  const [chromeShown, setChromeShown] = useState(false);
   // Dock chats popover — the LYKN icon in the bottom dock opens a panel with
-  // search + recent chats, like the in-app sidebar.
+  // search + the full chat history, like the in-app sidebar.
   const [chatsOpen, setChatsOpen] = useState(false);
   const [chatsSearch, setChatsSearch] = useState("");
+  const [lyknMenuOpen, setLyknMenuOpen] = useState(false);
+  const [hiddenDockIds, setHiddenDockIds] = useState(loadHiddenDockIds);
   const dockRef = useRef(null);
   const queryClient = useQueryClient();
-
-  // The glass window shows native macOS traffic lights in its top-left
-  // corner; the top bar shifts right so the welcome pill doesn't hide
-  // underneath them.
-  const macTrafficLights =
-    glassWindow && /Mac/i.test(navigator.platform || navigator.userAgent || "");
-
-  // Home is a blank macOS-style desktop: the top bar tucks away there too,
-  // leaving just the bottom dock over the wallpaper. The tiny top-right
-  // chevron pulls the full chrome (top bar) back on any tab.
-  const focused = !chromeShown;
-
-  useEffect(() => {
-    document.documentElement.classList.toggle("lykn-studio-focused", focused);
-    return () => document.documentElement.classList.remove("lykn-studio-focused");
-  }, [focused]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -2051,9 +2233,10 @@ export default function Studio() {
     };
   }, [chatsOpen]);
 
-  const { data: railChats = [] } = useQuery({
+  useQuery({
     queryKey: ["studio-rail-chats", user?.id || "guest"],
-    // Prefetch so the list is already there when the dock popover opens.
+    // Prefetch for the Home "Chats" widget. The dock popover paginates the
+    // full history separately so older chats stay reachable.
     enabled: !!user?.id,
     staleTime: 30_000,
     queryFn: () => fetchLyknChatsWithContext(user.id, 30),
@@ -2068,13 +2251,9 @@ export default function Studio() {
       queryClient.invalidateQueries({ queryKey: ["studio-rail-chats"] });
       queryClient.invalidateQueries({ queryKey: ["studio-chats"] });
       queryClient.invalidateQueries({ queryKey: ["studio-search-chats"] });
+      invalidateLyknChatListQueries(queryClient, user?.id);
     });
-  }, [queryClient]);
-
-  const chatsNeedle = chatsSearch.trim().toLowerCase();
-  const visibleRailChats = chatsNeedle
-    ? railChats.filter((c) => (c.title || "").toLowerCase().includes(chatsNeedle))
-    : railChats;
+  }, [queryClient, user?.id]);
 
   // Same behavior as the in-app sidebar's New chat: create the chat row
   // immediately, then open it (here: deep-link the embedded chat frame).
@@ -2083,6 +2262,7 @@ export default function Studio() {
     try {
       const { chatId } = await createNewChat(user.id);
       queryClient.invalidateQueries({ queryKey: ["studio-rail-chats"] });
+      invalidateLyknChatListQueries(queryClient, user.id);
       openTab("chat", `/chat/${encodeURIComponent(chatId)}`);
     } catch {
       // Fall back to the fresh-composer state if creation fails.
@@ -2112,31 +2292,10 @@ export default function Studio() {
     };
   }, []);
 
-  // Global notifications mute lives in the Electron main process so it can
-  // gate OS notifications; mirror it here for the bell button state.
-  useEffect(() => {
-    let cancelled = false;
-    window.lykn
-      ?.getNotificationsMuted?.()
-      .then((res) => {
-        if (!cancelled) setNotifMuted(!!res?.muted);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const toggleNotifications = () => {
-    const next = !notifMuted;
-    setNotifMuted(next);
-    window.lykn?.setNotificationsMuted?.(next);
-  };
-
-  // Fullscreen — Studio will take over the whole UI, so the glass window can
-  // fill the screen. Desktop drives the native Electron window; the web
-  // preview falls back to browser fullscreen. State follows the window (the
-  // app menu / OS can also toggle it), so the button never goes stale.
+  // Fullscreen — Studio takes over the whole UI, so the glass window can fill
+  // the screen. Toggled from outside the page (native traffic lights, the app
+  // menu, the OS); tracked here because the layout has to clear the notch and
+  // run the panes to the window's edges.
   useEffect(() => {
     if (window.lykn?.onStudioFullscreen) {
       let cancelled = false;
@@ -2157,15 +2316,6 @@ export default function Studio() {
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
-  const toggleFullscreen = () => {
-    if (window.lykn?.setStudioFullscreen) {
-      window.lykn.setStudioFullscreen(!fullscreen);
-      return;
-    }
-    if (fullscreen) void document.exitFullscreen?.();
-    else void document.documentElement.requestFullscreen?.();
-  };
-
   // The agent browser is native Electron views, not a web page, so the main
   // process docks them over the body of the floating Browser window (left of
   // the agent rail). Report that body's window-relative rect and keep it fresh
@@ -2179,12 +2329,15 @@ export default function Studio() {
   // animation, and not swept aside by a desktop peek (a CSS transform can't
   // carry them off with the frame, so they undock for the duration instead).
   const [browserAnimating, setBrowserAnimating] = useState(false);
-  const browserDocked =
-    tab === "dashboard" &&
-    appWins.includes("browser") &&
-    !minimized.browser &&
-    !browserAnimating &&
-    !desktopPeek;
+  const splitHasBrowser = splitHasApp(split, "browser");
+  const browserDocked = splitHasBrowser
+    ? !browserAnimating
+    : tab === "dashboard" &&
+      appWins.includes("browser") &&
+      !minimized.browser &&
+      !browserAnimating &&
+      !desktopPeek &&
+      !split;
   useEffect(() => {
     if (!browserDocked || !window.lykn?.setStudioBrowser) return undefined;
     const el = browserHostRef.current;
@@ -2237,14 +2390,31 @@ export default function Studio() {
   // lights and the drag there run in that view and come back through the main
   // process as window controls for the frame.
   const browserControls = useRef(null);
+  const splitRef = useRef(null);
+  const splitActionsRef = useRef({});
+  splitRef.current = split;
   useEffect(() => {
     if (!window.lykn?.onStudioWindowControl) return undefined;
     return window.lykn.onStudioWindowControl(({ action, dx, dy } = {}) => {
+      const current = splitRef.current;
+      const browserIndex = splitCells(current).indexOf("browser");
+      if (browserIndex >= 0) {
+        if (action === "close") splitActionsRef.current.closePane?.(browserIndex);
+        else if (action === "zoom" || action === "minimize") {
+          splitActionsRef.current.fillPane?.(browserIndex);
+        } else if (action === "tile-quad") {
+          splitActionsRef.current.tile?.("browser", "quad");
+        }
+        return;
+      }
       const c = browserControls.current;
       if (!c) return;
       if (action === "close") c.close();
       else if (action === "minimize") c.minimize();
       else if (action === "zoom") c.zoom();
+      else if (action === "tile-left") splitActionsRef.current.tile?.("browser", "left");
+      else if (action === "tile-right") splitActionsRef.current.tile?.("browser", "right");
+      else if (action === "tile-quad") splitActionsRef.current.tile?.("browser", "quad");
       else if (action === "drag-start") {
         focusAppWindow("browser");
         c.dragStart();
@@ -2264,11 +2434,30 @@ export default function Studio() {
     window.addEventListener("lykn-studio-show-browser", onShowBrowser);
     // "Ask AI" in the Mac Files surface hands the prompt to the chat surface
     // and fires this so the Studio flips to the Chat tab.
-    const onOpenChat = () => {
+    const onOpenChat = (event) => {
       // Chat lives on Home now — surface the conversation over the desktop.
+      if (event?.detail?.forceHome) setSplit(null);
       setTab("dashboard");
       setHomeChat(true);
+      if (event?.detail?.vaultPayload) setHomeView("chat");
       setVisited((v) => (v.chat ? v : { ...v, chat: true }));
+      const src = event?.detail?.src;
+      if (src) setFrameSrc((f) => (f.chat === src ? f : { ...f, chat: src }));
+      const dismissApp = event?.detail?.dismissApp;
+      if (dismissApp) setMinimized((m) => ({ ...m, [dismissApp]: true }));
+      const vaultPayload = event?.detail?.vaultPayload;
+      if (vaultPayload) {
+        // React commits the Home chat before the next frame. Delivering the
+        // payload then handles both an already-mounted chat and a fresh mount;
+        // sessionStorage remains the reload-safe fallback.
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            window.dispatchEvent(
+              new CustomEvent("lykn-chat-vault-add", { detail: vaultPayload }),
+            );
+          });
+        });
+      }
     };
     window.addEventListener("lykn-studio-open-chat", onOpenChat);
     return () => {
@@ -2309,23 +2498,441 @@ export default function Studio() {
   const closeAppWindow = (id) => {
     setAppWins((w) => w.filter((x) => x !== id));
     setMinimized((m) => (m[id] ? { ...m, [id]: false } : m));
+    setFillWin((f) => (f === id ? null : f));
+    setDockCover((m) => (m[id] ? { ...m, [id]: false } : m));
     // Drop the deep link so the next open starts on the page's own entry.
     setFrameSrc((f) => (f[id] ? { ...f, [id]: undefined } : f));
+    // A file window is only ever this one frame, so closing it retires the
+    // registry row too — otherwise the same file could never be re-opened.
+    if (isFileWindowId(id)) closeFileWindow(id);
+  };
+
+  // ── Files opened as windows. Whoever asks — the Files browser, a desktop
+  // icon, the chat, the AI — dispatches through the file-window registry and
+  // the desktop claims it here, so a photo from the Mac and a photo LYKN drew
+  // land in the same kind of frame as the Browser and the installed apps.
+  const [fileWins, setFileWins] = useState(listFileWindows);
+  useEffect(() => subscribeFileWindows(() => setFileWins(listFileWindows())), []);
+
+  useEffect(() => {
+    const onOpenFile = (e) => {
+      const id = e?.detail?.id;
+      if (!id) return;
+      e.preventDefault();
+      setTab("dashboard");
+      setSplit(null);
+      focusAppWindow(id);
+    };
+    window.addEventListener(OPEN_FILE_WINDOW_EVENT, onOpenFile);
+    return () => window.removeEventListener(OPEN_FILE_WINDOW_EVENT, onOpenFile);
+  }, []);
+
+  // A window closed through the registry rather than through its own red light
+  // would otherwise leave a frame here with no file behind it.
+  useEffect(() => {
+    setAppWins((w) =>
+      w.filter((id) => !isFileWindowId(id) || fileWins.some((f) => f.id === id)),
+    );
+  }, [fileWins]);
+
+  useEffect(() => {
+    if (!isAppInstallAvailable()) return undefined;
+    const load = () => void listInstalledApps().then(setInstalledApps);
+    load();
+    // Installing happens in this window, but removing can happen in Settings in
+    // another one; main broadcasts either way.
+    return onAppsChanged(load);
+  }, []);
+
+  // The same shape WINDOW_APPS holds, so every window path can treat an
+  // installed app as just another app window.
+  const installedWindowApps = useMemo(() => {
+    const out = {};
+    for (const app of installedApps) {
+      out[appWindowId(app.id)] = {
+        label: app.name,
+        icon: appIconFor(app.icon, app.id),
+        width: 900,
+        height: 660,
+        appId: app.id,
+        installed: true,
+      };
+    }
+    return out;
+  }, [installedApps]);
+
+  const windowAppFor = useCallback(
+    (id) => {
+      if (!id) return null;
+      if (isFileWindowId(id)) {
+        const entry = fileWins.find((w) => w.id === id);
+        if (!entry) return null;
+        return {
+          label: fileSourceName(entry.source),
+          icon: FileIcon,
+          width: 860,
+          height: 640,
+          file: entry.source,
+        };
+      }
+      return WINDOW_APPS[id] || installedWindowApps[id] || null;
+    },
+    [installedWindowApps, fileWins],
+  );
+
+  // Opening an app from the dock, Settings, or a chat all arrive here; claiming
+  // the event is what keeps it on the desktop instead of in a window of its own.
+  useEffect(() => {
+    const onOpen = (e) => {
+      const id = e?.detail?.id;
+      if (!id) return;
+      e.preventDefault();
+      setTab("dashboard");
+      setSplit(null);
+      focusAppWindow(appWindowId(id));
+    };
+    window.addEventListener(OPEN_APP_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_APP_EVENT, onOpen);
+  }, []);
+
+  // An app removed while its window is open would otherwise leave a frame with
+  // nothing behind it.
+  useEffect(() => {
+    setAppWins((w) =>
+      w.filter((id) => {
+        const appId = appIdFromWindowId(id);
+        return !appId || installedApps.some((a) => a.id === appId);
+      }),
+    );
+  }, [installedApps]);
+
+  const prepareSplitApp = (id) => {
+    if (!id) return;
+    if (windowAppFor(id)) {
+      setAppWins((w) => (w.includes(id) ? w : [...w, id]));
+      setMinimized((m) => (m[id] ? { ...m, [id]: false } : m));
+    } else if (id === "chat") {
+      setVisited((v) => (v.chat ? v : { ...v, chat: true }));
+    } else {
+      setVisited((v) => (v[id] ? v : { ...v, [id]: true }));
+    }
+  };
+
+  const enterSplit = (next) => {
+    const layout = next.layout === 4 ? 4 : 2;
+    let cells =
+      Array.isArray(next.cells) && next.cells.length
+        ? [...next.cells]
+        : [next.left || null, next.right || null];
+    while (cells.length < layout) cells.push(null);
+    cells = cells.slice(0, layout);
+    cells.forEach(prepareSplitApp);
+    setTab("dashboard");
+    setHomeChat(false);
+    setDesktopPeek(false);
+    setChatsOpen(false);
+    setSnapHint(null);
+    setFillWin(null);
+    const focusRaw = next.focus;
+    const focus =
+      typeof focusRaw === "number"
+        ? focusRaw
+        : focusRaw === "right"
+          ? 1
+          : 0;
+    setSplit({
+      layout,
+      cells,
+      span: layout === 4 ? splitSpan(next) : null,
+      vRatio: Number.isFinite(next.vRatio)
+        ? next.vRatio
+        : Number.isFinite(next.ratio)
+          ? next.ratio
+          : 0.5,
+      hRatio: Number.isFinite(next.hRatio) ? next.hRatio : 0.5,
+      focus: Math.max(0, Math.min(cells.length - 1, focus)),
+    });
+  };
+
+  const tileWindow = (id, side) => {
+    if (side === "quad") {
+      if (split) {
+        const cells = [...splitCells(split)];
+        while (cells.length < 4) cells.push(null);
+        if (!cells.includes(id)) {
+          const empty = cells.findIndex((c) => !c);
+          if (empty >= 0) cells[empty] = id;
+          else cells[typeof split.focus === "number" ? split.focus : 0] = id;
+        }
+        enterSplit({
+          ...split,
+          layout: 4,
+          span: null,
+          cells: cells.slice(0, 4),
+          focus: Math.max(0, cells.indexOf(id)),
+        });
+        return;
+      }
+      const others = appWins.filter((w) => w !== id && !minimized[w]);
+      enterSplit({
+        layout: 4,
+        cells: [id, others[0] || null, others[1] || null, others[2] || null],
+        focus: 0,
+      });
+      return;
+    }
+    const others = appWins.filter((w) => w !== id && !minimized[w]);
+    const partner = others.length ? others[others.length - 1] : null;
+    if (side === "left") enterSplit({ layout: 2, cells: [id, partner], focus: 0 });
+    else enterSplit({ layout: 2, cells: [partner, id], focus: 1 });
+  };
+
+  const expandSplitQuad = () => {
+    if (!split) return;
+    const cells = [...splitCells(split)];
+    while (cells.length < 4) cells.push(null);
+    enterSplit({ ...split, layout: 4, span: null, cells: cells.slice(0, 4) });
+  };
+
+  const exitSplit = (keepId) => {
+    setSplit(null);
+    setSnapHint(null);
+    if (!keepId) {
+      setFillWin(null);
+      return;
+    }
+    if (windowAppFor(keepId)) {
+      setTab("dashboard");
+      focusAppWindow(keepId);
+      setFillWin(keepId);
+      return;
+    }
+    setFillWin(null);
+    if (keepId === "chat") {
+      setTab("dashboard");
+      setHomeChat(true);
+      setVisited((v) => (v.chat ? v : { ...v, chat: true }));
+      return;
+    }
+    setTab(keepId);
+    setVisited((v) => (v[keepId] ? v : { ...v, [keepId]: true }));
+  };
+
+  const closeSplitPane = (index) => {
+    if (!split) return;
+    const cells = [...splitCells(split)];
+    const closedId = cells[index] || null;
+    const dismissingPicker = !closedId;
+    cells[index] = null;
+    const remaining = cells.filter(Boolean);
+
+    if (remaining.length <= 1) {
+      if (closedId && windowAppFor(closedId) && closedId !== remaining[0]) {
+        closeAppWindow(closedId);
+      }
+      exitSplit(remaining[0] || null);
+      return;
+    }
+
+    if ((split.layout || 2) === 4) {
+      const closedCol = splitColumnOf(index);
+      const span = splitSpan(split);
+      if (!span) {
+        enterSplit({
+          ...split,
+          layout: 4,
+          span: closedCol,
+          cells,
+          focus: splitSibling(index),
+        });
+        return;
+      }
+      if (span === closedCol) {
+        if (dismissingPicker) {
+          const other =
+            closedCol === "left"
+              ? [cells[1] || null, cells[3] || null]
+              : [cells[0] || null, cells[2] || null];
+          const leftover = other.filter(Boolean);
+          if (leftover.length <= 1) {
+            exitSplit(leftover[0] || null);
+            return;
+          }
+          enterSplit({
+            layout: 2,
+            cells: other,
+            vRatio: split.vRatio,
+            hRatio: split.hRatio,
+            focus: 0,
+          });
+          return;
+        }
+        const slots = closedCol === "left" ? [0, 2] : [1, 3];
+        slots.forEach((i) => {
+          cells[i] = null;
+        });
+        const leftover = cells.filter(Boolean);
+        if (leftover.length <= 1) {
+          if (closedId && windowAppFor(closedId) && closedId !== leftover[0]) {
+            closeAppWindow(closedId);
+          }
+          exitSplit(leftover[0] || null);
+          return;
+        }
+        enterSplit({
+          ...split,
+          layout: 4,
+          span,
+          cells,
+          focus: slots[0],
+        });
+        return;
+      }
+      enterSplit({
+        layout: 2,
+        cells: [cells[0] || cells[2] || null, cells[1] || cells[3] || null],
+        vRatio: split.vRatio,
+        hRatio: split.hRatio,
+        focus: closedCol === "left" ? 0 : 1,
+      });
+      return;
+    }
+
+    if (closedId && windowAppFor(closedId) && closedId !== remaining[0]) {
+      closeAppWindow(closedId);
+    }
+    exitSplit(remaining[0] || null);
+  };
+
+  const fillSplitPane = (index) => {
+    if (!split) return;
+    const cells = splitCells(split);
+    const id = cells[index] || null;
+    if (id) {
+      exitSplit(id);
+      return;
+    }
+    exitSplit(visibleSplitIndexes(split).map((i) => cells[i]).find(Boolean) || null);
+  };
+
+  const pickSplitApp = (index, id) => {
+    const cells = [...splitCells(split)];
+    const from = cells.indexOf(id);
+    if (from >= 0 && from !== index) {
+      cells[from] = cells[index];
+      cells[index] = id;
+    } else {
+      cells[index] = id;
+    }
+    enterSplit({ ...split, cells, focus: index });
+  };
+
+  const openBeside = (id) => {
+    if (split) {
+      const cells = [...splitCells(split)];
+      const visible = visibleSplitIndexes(split);
+      const existing = cells.indexOf(id);
+      if (existing >= 0 && visible.includes(existing)) {
+        setSplit((s) => (s ? { ...s, focus: existing } : s));
+        return;
+      }
+      const empty = visible.find((i) => !cells[i]);
+      if (empty != null) {
+        cells[empty] = id;
+        enterSplit({ ...split, cells, focus: empty });
+        return;
+      }
+      if ((split.layout || 2) === 2) {
+        enterSplit({
+          ...split,
+          layout: 4,
+          span: null,
+          cells: [cells[0] || null, cells[1] || null, id, null],
+          focus: 2,
+        });
+        return;
+      }
+      const hidden = hiddenSplitIndex(split);
+      if (hidden >= 0) {
+        cells[hidden] = id;
+        enterSplit({ ...split, layout: 4, span: null, cells, focus: hidden });
+        return;
+      }
+      const focus = typeof split.focus === "number" ? split.focus : 0;
+      cells[focus] = id;
+      enterSplit({ ...split, cells, focus });
+      return;
+    }
+    const current =
+      tab !== "dashboard"
+        ? tab
+        : homeChat
+          ? "chat"
+          : appWins.filter((w) => !minimized[w]).at(-1) || null;
+    if (current && current !== id) {
+      enterSplit({ layout: 2, cells: [current, id], focus: 1 });
+    } else {
+      enterSplit({ layout: 2, cells: [id, null], focus: 0 });
+    }
+  };
+
+  const setSplitRatio = useCallback((patch) => {
+    setSplit((s) => {
+      if (!s) return s;
+      if (typeof patch === "number") return { ...s, vRatio: patch };
+      return { ...s, ...patch };
+    });
+  }, []);
+
+  splitActionsRef.current = {
+    tile: tileWindow,
+    closePane: closeSplitPane,
+    fillPane: fillSplitPane,
   };
 
   const openTab = (id, src) => {
     setChatsOpen(false);
-    // Calendar / To-dos / Settings / Browser are app windows on the desktop:
-    // land on Home and pop the window up over it rather than swapping the
-    // whole stage. Settings `src` names a section to land on (the desktop
+    // Files is not its own app any more — it's the Vault window with a folder
+    // picked in the sidebar. Translate the old callers (dock button, desktop
+    // icon, and the desktop mirror's /files?path=… deep link) into that, ahead
+    // of the split-view branch so it holds there too.
+    if (id === "files") {
+      const deep = /[?&]path=([^&]+)/.exec(String(src || ""));
+      openTab("vault", deep ? `/vault?loc=${deep[1]}` : "/vault?pane=files");
+      return;
+    }
+    if (id === "dashboard" && split) {
+      setSplit(null);
+    } else if (split && id !== "dashboard") {
+      if (id === "settings" && SETTINGS_VIEWS.includes(src)) setSettingsView(src);
+      else if (src) setFrameSrc((f) => (f[id] === src ? f : { ...f, [id]: src }));
+      openBeside(id);
+      return;
+    }
+    // Calendar / To-dos / Vault / Settings / Browser are app windows on the
+    // desktop: land on Home and pop the window up over it rather than swapping
+    // the whole stage. Settings `src` names a section to land on (the desktop
     // menu's Edit Widgets / Show View Options open Display).
-    if (WINDOW_APPS[id]) {
+    if (windowAppFor(id)) {
       setTab("dashboard");
       if (id === "settings") {
         if (SETTINGS_VIEWS.includes(src)) setSettingsView(src);
         else if (!appWins.includes("settings")) setSettingsView("account");
       } else if (src) {
         setFrameSrc((f) => (f[id] === src ? f : { ...f, [id]: src }));
+      } else if (id === "vault") {
+        // Dock / desktop icon is browsing, not the chat-bar attach picker.
+        setFrameSrc((f) => {
+          const cur = f.vault;
+          if (!cur) return f;
+          const next = stripQueryParam(cur, "pick");
+          try {
+            sessionStorage.removeItem("lykn_vault_pick_for_chat");
+          } catch {
+            /* ignore */
+          }
+          return next === cur ? f : { ...f, vault: next };
+        });
       }
       focusAppWindow(id);
       return;
@@ -2335,14 +2942,12 @@ export default function Studio() {
     // layered over the desktop.
     if (id === "chat") {
       setTab("dashboard");
-      setChromeShown(false);
       setHomeChat(true);
       setVisited((v) => (v.chat ? v : { ...v, chat: true }));
       if (src) setFrameSrc((f) => (f.chat === src ? f : { ...f, chat: src }));
       return;
     }
     setTab(id);
-    setChromeShown(false); // every page entry starts in clean focused mode
     if (id === "dashboard") {
       // Already on Home: dismiss the conversation to the clean desktop.
       // Coming back from another tab keeps the chat where you left it.
@@ -2353,11 +2958,13 @@ export default function Studio() {
     if (src) setFrameSrc((f) => (f[id] === src ? f : { ...f, [id]: src }));
   };
 
-  // Surfaces outside the studio tree (the brief popup, mounted app-wide) ask
-  // for a tab by name rather than routing to it. Through a ref so the listener
-  // can be installed once and still see the current openTab.
+  // Surfaces outside the studio tree ask for a tab by name rather than routing
+  // to it. Through a ref so the listener can be installed once and still see
+  // the current openTab.
   const openTabRef = useRef(openTab);
   openTabRef.current = openTab;
+  const closeAppWindowRef = useRef(closeAppWindow);
+  closeAppWindowRef.current = closeAppWindow;
   useEffect(() => {
     const onOpenTab = (e) => {
       const { id, src } = e.detail || {};
@@ -2365,11 +2972,51 @@ export default function Studio() {
       e.preventDefault(); // tells the caller not to fall back to a route
       openTabRef.current(id, src);
     };
+    const onCloseApp = (e) => {
+      const id = e?.detail?.id;
+      if (id) closeAppWindowRef.current(id);
+    };
     window.addEventListener(STUDIO_OPEN_TAB_EVENT, onOpenTab);
-    return () => window.removeEventListener(STUDIO_OPEN_TAB_EVENT, onOpenTab);
+    window.addEventListener("lykn-studio-close-app", onCloseApp);
+    return () => {
+      window.removeEventListener(STUDIO_OPEN_TAB_EVENT, onOpenTab);
+      window.removeEventListener("lykn-studio-close-app", onCloseApp);
+    };
   }, []);
 
-  const handleNavItem = (item) => {
+  /**
+   * Take an installed app back into Build mode.
+   *
+   * Hands over the app id and nothing else. The chat attaches the source so
+   * the next message can patch it — it does not open the live app, or a
+   * preview of it. Reading the source belongs to the chat surface: doing it
+   * here meant the click had to wait out a round-trip before anything was
+   * handed over, and a failed one left the user on an empty chat with no
+   * explanation.
+   *
+   * The stash is written before the surface opens so a cold mount finds it
+   * without depending on the event arriving after the listener is up.
+   */
+  const handleEditApp = (app) => {
+    if (!app?.id) return;
+    stashAppEdit({ appId: app.id, name: app.name || "" });
+    openTab("chat", `/app?nc=${Date.now()}`);
+  };
+
+  const handleNavItem = (item, e) => {
+    if (item.id === "dashboard" && split) {
+      setSplit(null);
+      setTab("dashboard");
+      return;
+    }
+    if (e?.altKey && item.id !== "dashboard") {
+      openBeside(item.id);
+      return;
+    }
+    if (split && item.id !== "dashboard") {
+      openBeside(item.id);
+      return;
+    }
     // The dock toggles an app window: clicking the front one tucks it away.
     const front = appWins[appWins.length - 1] === item.id && !minimized[item.id];
     if (WINDOW_APPS[item.id] && front && tab === "dashboard") {
@@ -2380,16 +3027,58 @@ export default function Studio() {
   };
 
   const navActive = (item) => {
+    if (split) return splitHasApp(split, item.id);
     if (WINDOW_APPS[item.id]) {
       return tab === "dashboard" && appWins.includes(item.id) && !minimized[item.id];
     }
     return item.action === "tab" && tab === item.id;
   };
 
-  const setTheme = (nextDark) => {
-    setDark(nextDark);
-    persistTheme(nextDark ? "dark" : "light");
+  const hideFromDock = (id) => {
+    setHiddenDockIds((prev) => {
+      if (prev.includes(id)) return prev;
+      const next = [...prev, id];
+      saveHiddenDockIds(next);
+      return next;
+    });
   };
+  const keepInDock = (id) => {
+    setHiddenDockIds((prev) => {
+      const next = prev.filter((x) => x !== id);
+      saveHiddenDockIds(next);
+      return next;
+    });
+  };
+
+  const dockMenuFor = (item) => {
+    const winOpen = !!WINDOW_APPS[item.id] && appWins.includes(item.id);
+    const rows = [{ label: "Open", onClick: () => openTab(item.id) }];
+    if (winOpen) {
+      rows.push({ label: "Close", onClick: () => closeAppWindow(item.id) });
+    }
+    if (STUDIO_DOCK_HIDEABLE.has(item.id)) {
+      const hidden = hiddenDockIds.includes(item.id);
+      rows.push(
+        { separator: true },
+        hidden
+          ? { label: "Keep in Dock", onClick: () => keepInDock(item.id) }
+          : { label: "Remove from Dock", onClick: () => hideFromDock(item.id) },
+      );
+    }
+    rows.push(
+      { separator: true },
+      { label: "Chat with LYKN", onClick: () => openLyknChat() },
+    );
+    return rows;
+  };
+
+  const dockNeighbors = CUSTOM_APP_NEIGHBORS.filter(
+    (item) => !hiddenDockIds.includes(item.id) || appWins.includes(item.id),
+  );
+
+  const minimizedFileWins = fileWins.filter(
+    (entry) => appWins.includes(entry.id) && minimized[entry.id],
+  );
 
   const wallpaperDim = appearance.wallpaperDim / 100;
   const wallpaperBlur = appearance.wallpaperBlur;
@@ -2451,138 +3140,10 @@ export default function Studio() {
         className={`relative z-10 flex h-full flex-col items-center ${
           // Fullscreen covers the whole display, so the top row must clear
           // the camera notch / menu-bar strip (~38px on notched MacBooks).
-          fullscreen ? "px-2 pb-2 pt-11" : "px-5 pb-4 pt-4"
+          // Split View hides the dock and runs panes to the bottom edge.
+          fullscreen ? "px-2 pb-2 pt-11" : split ? "px-5 pb-2 pt-4" : "px-5 pb-4 pt-4"
         }`}
       >
-        {/* ── Top bar (drag region) — tucks away upward in focused mode; the
-            welcome pill collapses leftward, "merging" into the rail, whose
-            LYKN icon fades in to take its place. ── */}
-        <div
-          // max-width snaps (never transition): `none` doesn't interpolate, so
-          // transition-all made the stage sit at 1240px then jump late.
-          // Focused-mode tuck still animates height/opacity only.
-          //
-          // Important: do NOT put WebkitAppRegion:drag on this outer row —
-          // paddingLeft still counts as a drag hit-target and steals clicks
-          // from the native macOS traffic lights (close / minimize).
-          // relative z-30: search suggestions hang below this row and must
-          // paint above the main frost panel (next sibling in the column).
-          className={`relative z-30 flex w-full flex-shrink-0 items-center gap-3 select-none transition-[max-height,opacity,margin,transform] duration-500 ease-out ${
-            fullscreen ? "max-w-full" : "max-w-[1240px]"
-          } ${
-            focused
-              ? "mb-0 max-h-0 opacity-0 pointer-events-none"
-              : "mb-3 max-h-14 opacity-100 delay-200"
-          }`}
-          style={{
-            // Clear the native macOS traffic lights in the window's top-left.
-            paddingLeft: macTrafficLights ? (fullscreen ? 64 : 56) : undefined,
-          }}
-        >
-          <div
-            className="flex min-w-0 flex-1 items-center gap-3"
-            style={DRAG}
-          >
-          <div
-            className={`flex items-center gap-2.5 rounded-full px-2 py-1.5 pr-4 transition-[transform,opacity] duration-500 ease-out ${BAR} ${
-              focused ? "-translate-x-12 scale-90 opacity-0" : "translate-x-0 scale-100 opacity-100 delay-200"
-            }`}
-          >
-            <img
-              src={dark ? lyknIconUrl : lyknIconBlueUrl}
-              alt="LYKN"
-              className="h-8 w-8 flex-shrink-0 object-contain"
-              draggable={false}
-            />
-            <span className="whitespace-nowrap font-serif text-[1.05rem] italic tracking-tight">
-              Welcome, {firstName}
-            </span>
-          </div>
-
-          {/* Everything except the welcome pill exits upward. */}
-          <div
-            className={`flex min-w-0 flex-1 items-center gap-3 transition-[transform,opacity] duration-500 ease-out ${
-              focused ? "-translate-y-10 opacity-0" : "translate-y-0 opacity-100 delay-200"
-            }`}
-          >
-            <StudioSearch userId={user?.id} onOpen={openTab} />
-
-            <div
-              className={`flex flex-shrink-0 items-center rounded-full p-1 ${BAR}`}
-              style={NO_DRAG}
-            >
-              <button
-                type="button"
-                onClick={() => setTheme(true)}
-                title="Glass theme"
-                aria-label="Glass theme"
-                aria-pressed={dark}
-                className={`rounded-full px-3 py-1.5 text-[0.7rem] font-medium transition-all ${
-                  dark ? "bg-white text-black shadow" : "text-white/60"
-                }`}
-              >
-                Glass
-              </button>
-              <button
-                type="button"
-                onClick={() => setTheme(false)}
-                title="Neutral theme"
-                aria-label="Neutral theme"
-                aria-pressed={!dark}
-                className={`rounded-full px-3 py-1.5 text-[0.7rem] font-medium transition-all ${
-                  !dark ? "bg-black/85 text-white shadow" : "text-white/60"
-                }`}
-              >
-                Neutral
-              </button>
-            </div>
-
-            {/* The day's brief on demand — the same popup the startup card
-                opens, whether or not that switch is on. */}
-            <button
-              type="button"
-              onClick={openBrief}
-              title="Show my brief"
-              aria-label="Show my brief"
-              style={NO_DRAG}
-              className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full !text-white/70 transition-colors hover:bg-white/15 ${BAR}`}
-            >
-              <Newspaper className="h-4 w-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={toggleNotifications}
-              title={notifMuted ? "Notifications are off — click to turn on" : "Notifications are on — click to turn off"}
-              aria-label="Toggle notifications"
-              aria-pressed={!notifMuted}
-              style={NO_DRAG}
-              className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full transition-colors ${BAR} ${
-                notifMuted ? "!text-white/35" : "!text-white/70 hover:bg-white/15"
-              }`}
-            >
-              {notifMuted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-            </button>
-
-            {/* macOS has native traffic lights for this; only Windows and the
-                web preview need an in-page fullscreen control. */}
-            {!macTrafficLights && (
-              <button
-                type="button"
-                onClick={toggleFullscreen}
-                title={fullscreen ? "Exit full screen" : "Enter full screen"}
-                aria-label={fullscreen ? "Exit full screen" : "Enter full screen"}
-                aria-pressed={fullscreen}
-                style={NO_DRAG}
-                className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full !text-white/70 transition-colors hover:bg-white/15 ${BAR}`}
-              >
-                {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              </button>
-            )}
-          </div>
-          </div>
-        </div>
-
         {/* ── Main glass panel ── */}
         <div
           className={`flex w-full flex-1 min-h-0 items-stretch ${
@@ -2593,18 +3154,20 @@ export default function Studio() {
               desktop where only the wallpaper shows through. Every other tab
               gets the frost card; embedded section frames paint their own
               opaque app background inside it. */}
-          <div
-            className={`relative flex-1 min-w-0 overflow-hidden ${
-              tab === "dashboard"
-                ? ""
-                : `rounded-[2.2rem] shadow-[0_24px_80px_rgba(0,0,0,0.28)] ${FROST_PANEL}`
-            }`}
-          >
-            {/* Home desktop widgets — macOS style, sitting on the wallpaper.
+          <div className="relative flex-1 min-w-0 overflow-hidden">
+            {/* Home desktop widgets — always mounted so closing a stage app
+                can reveal them instead of snapping the wallpaper back in.
                 They stay put during a home conversation (homeChat) — the
                 transparent chat surface simply layers over them. */}
-            {tab === "dashboard" && (
-              <>
+            <div
+              ref={setDesktopLayer}
+              className={`lykn-studio-desktop absolute inset-0 ${
+                tab === "dashboard" && !split ? "" : "is-dimmed"
+              } ${wallpaperArmed ? "lykn-desktop-drop" : ""}`}
+              aria-hidden={tab !== "dashboard" || !!split}
+            >
+                <DesktopLayerProvider layer={desktopLayer}>
+                <DesktopSelectProvider>
                 {/* Behind the widgets: right-click for the desktop context
                     menu (New Folder, Open LYKN Glass, open a folder/page);
                     folders drag around like real desktop icons. */}
@@ -2628,30 +3191,54 @@ export default function Studio() {
                 {/* Free-floating desktop icon — drag it anywhere; the spot
                     sticks. It positions against this panel (offsetParent). */}
                 {showFilesWidget && <FilesWidget onOpen={openTab} />}
-              </>
-            )}
+                {showVaultFolder && <VaultFolderWidget onOpen={openTab} />}
+                {/* Only speaks up when a drop needs explaining — it failed, or
+                    it just turned the Desktop mirror on. */}
+                {dropNote && (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-28 flex justify-center">
+                    <span className="rounded-full bg-black/65 px-3.5 py-1.5 text-[0.75rem] text-white/90 shadow-lg backdrop-blur">
+                      {dropNote}
+                    </span>
+                  </div>
+                )}
+                </DesktopSelectProvider>
+                </DesktopLayerProvider>
+            </div>
             {/* Chat is NOT in this list — it's hosted full-bleed over the
                 whole desktop (below, outside this inset panel) so no panel
                 edges/corners ever show around a home conversation. */}
-            {SECTIONS.filter((s) => s.src && s.id !== "chat" && visited[s.id]).map(({ id, src }) => (
-              <div
-                key={id}
-                className={`absolute inset-0 h-full w-full overflow-y-auto scrollbar-hide ${
-                  // `invisible` (visibility:hidden) fully removes warm hidden
-                  // tabs from hit-testing — pointer-events-none alone isn't
-                  // enough because page innards re-enable pointer-events-auto
-                  // and would silently eat clicks meant for the studio chrome.
-                  tab === id ? "" : "pointer-events-none opacity-0 invisible"
-                }`}
-                // The transform makes this wrapper the containing block for
-                // position:fixed INSIDE the page (toolbars, docks, overlays),
-                // so they anchor to the panel exactly like the old iframe
-                // viewport instead of floating over the studio rail/chrome.
-                style={{ transform: "translateZ(0)" }}
-              >
-                <StudioSurface entry={frameSrc[id] || src} />
-              </div>
-            ))}
+            <StudioPop
+              open={tab !== "dashboard" && !split}
+              stay
+              // The card itself stays click-through: every section is mounted
+              // in here at once and `.lykn-studio-page.is-active` hands hits to
+              // whichever one is showing. Taking them at this level instead
+              // would put a sheet of glass over the inactive pages.
+              hit={false}
+              className={`absolute inset-0 overflow-hidden rounded-[2.2rem] shadow-[0_24px_80px_rgba(0,0,0,0.28)] ${FROST_PANEL}`}
+            >
+              {SECTIONS.filter(
+                (s) =>
+                  s.src &&
+                  s.id !== "chat" &&
+                  visited[s.id] &&
+                  !(split && splitHasApp(split, s.id)),
+              ).map(({ id, src }) => (
+                <div
+                  key={id}
+                  className={`lykn-studio-page absolute inset-0 h-full w-full overflow-y-auto scrollbar-hide ${
+                    tab === id ? "is-active" : ""
+                  }`}
+                  // The transform makes this wrapper the containing block for
+                  // position:fixed INSIDE the page (toolbars, docks, overlays),
+                  // so they anchor to the panel exactly like the old iframe
+                  // viewport instead of floating over the studio rail/chrome.
+                  style={{ transform: "translateZ(0)" }}
+                >
+                  <StudioSurface entry={frameSrc[id] || src} />
+                </div>
+              ))}
+            </StudioPop>
 
           </div>
         </div>
@@ -2661,42 +3248,48 @@ export default function Studio() {
             no panel edges or corners show). Warm once visited; hidden on
             other tabs and on the idle desktop. --mobile-tabbar-clear lifts
             the chat's content above the dock + rounded bar. ── */}
-        {visited.chat && (
-          <div
-            className={`absolute inset-0 z-20 overflow-hidden ${
-              tab === "dashboard" && homeChat
-                ? "lykn-home-chat-host"
-                : "pointer-events-none opacity-0 invisible"
-            }`}
-            // translateZ makes this the containing block for position:fixed
-            // inside the chat page, anchoring its overlays to the window.
-            // no-drag punches the live chat out of the desktop's window-drag
-            // region — otherwise its buttons (mode pill etc.) lose clicks to
-            // the drag region. Only while live, so the idle desktop still
-            // drags the window by the wallpaper.
+        {visited.chat && !splitHasApp(split, "chat") && (
+          <StudioPop
+            open={tab === "dashboard" && homeChat && !splitHasApp(split, "chat")}
+            stay
+            hit={false}
+            className="lykn-home-chat-host absolute inset-0 z-20 overflow-hidden"
+            // The pop transform is the containing block for position:fixed
+            // inside the chat page. no-drag punches the live chat out of the
+            // desktop's window-drag region — otherwise its buttons lose clicks
+            // to the drag region. Only while live, so the idle desktop still
+            // drags by the wallpaper.
             style={{
-              transform: "translateZ(0)",
               WebkitAppRegion:
                 tab === "dashboard" && homeChat ? "no-drag" : undefined,
               "--mobile-tabbar-clear": "8.75rem",
             }}
           >
             <StudioSurface entry={frameSrc.chat || "/app"} />
-          </div>
+          </StudioPop>
         )}
         {/* ── Home app windows — Browser / Calendar / To-dos / Settings as
             floating macOS-style windows over the desktop (and over a live
             conversation).
             Window-anchored like the chat layer, over the home chat bar / mode
-            pill / welcome headline (z-22) but under the top bar and dock
-            (both z-30) so the chrome always stays clickable. The layer itself
-            is click-through; only the windows take pointer events. Windows
-            stay mounted on other tabs so their state (and any open form)
-            survives a trip to Projects and back. ── */}
+            pill / welcome headline (z-22) but under the dock (z-30) so the
+            chrome always stays clickable — unless a zoomed
+            installed app is covering the dock, in which case this layer lifts
+            above the strip. The layer itself is click-through; only the
+            windows take pointer events. Windows stay mounted on other tabs so
+            their state (and any open form) survives a trip to Projects and
+            back. ── */}
         {appWins.length > 0 && (
-          <div className="pointer-events-none absolute inset-0 z-[25]">
+          <div
+            className={`pointer-events-none absolute inset-0 ${
+              coveringZoom ? "z-[35]" : "z-[25]"
+            }`}
+          >
             {appWins.map((id, i) => {
-              const app = WINDOW_APPS[id];
+              const app = windowAppFor(id);
+              // An app uninstalled from another window can leave its id here
+              // for the render between the broadcast and the state catching up.
+              if (!app) return null;
               return (
                 <DesktopAppWindow
                   key={id}
@@ -2708,12 +3301,16 @@ export default function Studio() {
                   cascade={i}
                   z={i + 1}
                   active={i === appWins.length - 1}
-                  hidden={tab !== "dashboard"}
+                  hidden={tab !== "dashboard" || !!split}
                   minimized={!!minimized[id]}
                   peeked={desktopPeek}
+                  fill={fillWin === id}
+                  onFillEnd={() => setFillWin((f) => (f === id ? null : f))}
                   onFocus={() => focusAppWindow(id)}
                   onMinimize={() => setMinimized((m) => ({ ...m, [id]: true }))}
                   onClose={() => closeAppWindow(id)}
+                  onTile={(side) => tileWindow(id, side)}
+                  onSnapHint={setSnapHint}
                   // Browser tab strip and Settings sidebar each draw their
                   // own traffic lights and drag the frame through `controls`.
                   chromeless={!!(app.native || app.chromeless)}
@@ -2724,17 +3321,36 @@ export default function Studio() {
                         ? settingsControls
                         : undefined
                   }
-                  // Zoomed, the Browser fills the desktop over the dock: its
-                  // native page paints above every React layer, so stopping
-                  // short of the bottom just leaves a dead strip.
-                  zoomCoversDock={app.native}
+                  // Zoomed, the Browser, Projects, and installed apps fill
+                  // over the dock.
+                  // Native Browser views already paint above every React
+                  // layer; Projects and installed apps render in-page, so the
+                  // window layer lifts above the dock while they're zoomed.
+                  zoomCoversDock={
+                    !!(app.native || app.installed || app.file || id === "projects")
+                  }
+                  onZoomChange={
+                    app.installed || app.file || id === "projects"
+                      ? (on) =>
+                          setDockCover((m) =>
+                            m[id] === on ? m : { ...m, [id]: on },
+                          )
+                      : undefined
+                  }
                   // Dragging moves the native browser views with the frame.
                   onGeometry={app.native ? reportBrowserBounds : undefined}
                   // …and the frame's open/close/minimize animations park them
                   // until it settles (CSS can't scale a native view).
                   onAnimating={app.native ? setBrowserAnimating : undefined}
                 >
-                  {app.native ? (
+                  {split ? null : app.file ? (
+                    <FileWindowContent
+                      source={app.file}
+                      onAskedLykn={() => closeAppWindow(id)}
+                    />
+                  ) : app.installed ? (
+                    <InstalledAppFrame appId={app.appId} url={appWindowUrl(app.appId)} />
+                  ) : app.native ? (
                     <StudioBrowserBody
                       hostRef={browserHostRef}
                       desktop={desktop}
@@ -2745,7 +3361,13 @@ export default function Studio() {
                       embedded
                       isOpen
                       initialView={settingsView}
-                      onClose={() => closeAppWindow("settings")}
+                      onClose={() => {
+                        if (typeof settingsControls.current?.close === "function") {
+                          settingsControls.current.close();
+                        } else {
+                          closeAppWindow("settings");
+                        }
+                      }}
                       windowControls={settingsControls}
                     />
                   ) : (
@@ -2756,11 +3378,81 @@ export default function Studio() {
             })}
           </div>
         )}
+        {snapHint && !split && (
+          <div
+            aria-hidden
+            className={`lykn-split-snap lykn-split-snap-${snapHint}`}
+          />
+        )}
+        {split && (
+          <StudioSplit
+            split={split}
+            apps={SPLIT_APPS}
+            onFocus={(index) => setSplit((s) => (s ? { ...s, focus: index } : s))}
+            onClosePane={closeSplitPane}
+            onFill={fillSplitPane}
+            onPick={pickSplitApp}
+            onRatio={setSplitRatio}
+            onExpandQuad={expandSplitQuad}
+            renderApp={(id) => {
+              if (id === "browser") {
+                return (
+                  <StudioBrowserBody
+                    hostRef={browserHostRef}
+                    desktop={desktop}
+                    shot={browserShot}
+                  />
+                );
+              }
+              if (id === "settings") {
+                const index = splitCells(split).indexOf("settings");
+                return (
+                  <SettingsModal
+                    embedded
+                    isOpen
+                    initialView={settingsView}
+                    onClose={() => closeSplitPane(index >= 0 ? index : 0)}
+                  />
+                );
+              }
+              const win = windowAppFor(id);
+              if (win?.installed) {
+                return <InstalledAppFrame appId={win.appId} url={appWindowUrl(win.appId)} />;
+              }
+              if (win?.src) {
+                return <StudioSurface entry={frameSrc[id] || win.src} windowed />;
+              }
+              if (id === "chat") {
+                return (
+                  <StudioChatPane
+                    entry={frameSrc.chat || "/app"}
+                    live={homeChatLive}
+                    view={homeView}
+                    onOpen={openTab}
+                    name={user ? firstName : ""}
+                  />
+                );
+              }
+              const section = SECTIONS.find((s) => s.id === id);
+              if (section?.src) {
+                return <StudioSurface entry={frameSrc[id] || section.src} />;
+              }
+              return (
+                <div className="flex h-full items-center justify-center px-6 text-sm text-black/45 dark:text-white/45">
+                  This app can’t open in Split View.
+                </div>
+              );
+            }}
+          />
+        )}
         {/* Rounded chat bar + idle mode pill — window-anchored siblings of
             the chat layer so idle and live states line up exactly. Hidden
-            while the full-screen voice overlay is up, and on the Imagine
-            page (its own full prompt bar takes over there). */}
-        {tab === "dashboard" && !homeVoice && !(homeChat && homeView === "imagine") && (
+            while the full-screen voice overlay is up. Imagine shares this
+            bar with the other modes so typed text and attachments stay. */}
+        {tab === "dashboard" &&
+          !split &&
+          !coveringZoom &&
+          !homeVoice && (
           <HomeChatBar
             active={homeChat}
             live={homeChatLive}
@@ -2770,16 +3462,22 @@ export default function Studio() {
           />
         )}
 
-        {/* ── Bottom dock — the studio sidebar, macOS style. Always visible:
-            LYKN chats popover, section icons, then the user's Mac apps with
-            running indicators (Sync with Mac). ── */}
-        <div ref={dockRef} className="relative z-30 mt-3 flex-shrink-0 select-none">
-          {/* Chats popover — search + new chat + recent chats, like the
+        {/* ── Bottom dock — the studio sidebar, macOS style. Hidden in Split
+            View and while a zoomed installed app covers this strip, so the
+            window can run to the bottom of the screen. ── */}
+        <div
+          ref={dockRef}
+          className={`relative z-30 mt-3 flex-shrink-0 select-none ${
+            split || coveringZoom ? "hidden" : ""
+          }`}
+        >
+          {/* Chats popover — search + new chat + full history, like the
               in-app sidebar. Hangs above the dock, macOS-Dock style. */}
-          {chatsOpen && (
-            <div
-              className={`absolute bottom-full left-0 mb-3 flex max-h-[24rem] w-80 flex-col rounded-[1.6rem] p-2 ${BAR}`}
-            >
+          <StudioPop
+            open={chatsOpen}
+            origin="12% 100%"
+            className={`absolute bottom-full left-0 z-10 mb-3 flex max-h-[32rem] w-80 flex-col rounded-[1.6rem] p-2 ${BAR}`}
+          >
               <div className="flex flex-shrink-0 items-center gap-1 whitespace-nowrap px-1">
                 <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-1.5 text-white/55">
                   <Search className="h-3.5 w-3.5 flex-shrink-0" />
@@ -2810,67 +3508,117 @@ export default function Studio() {
               </div>
               <div className="mt-1.5 flex-shrink-0 whitespace-nowrap px-3">
                 <span className="text-[0.6rem] font-semibold uppercase tracking-widest text-white/40">
-                  Recent chats
+                  Chat history
                 </span>
               </div>
               <div className="mt-1 min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5 scrollbar-hide">
-                {visibleRailChats.length === 0 ? (
-                  <p className="px-3 py-2 text-[0.68rem] text-white/35">
-                    {chatsNeedle ? "No matches" : "No chats yet"}
-                  </p>
-                ) : (
-                  visibleRailChats.map((chat) => (
-                    <button
-                      key={chat.id}
-                      type="button"
-                      onClick={() =>
-                        openTab("chat", `/chat/${encodeURIComponent(chat.id)}`)
-                      }
-                      className="flex w-full items-center gap-2 rounded-xl px-3 py-1.5 text-left hover:bg-white/[0.08] transition-colors"
-                    >
-                      <MessageCircle className="h-3.5 w-3.5 flex-shrink-0 text-white/35" />
-                      <span className="min-w-0 flex-1 truncate text-[0.74rem] text-white/80">
-                        {chat.title || "Untitled chat"}
-                      </span>
-                      <span className="flex-shrink-0 text-[0.58rem] text-white/30">
-                        {relTime(chat.updated_at)}
-                      </span>
-                    </button>
-                  ))
-                )}
+                <DockChatsList
+                  userId={user?.id}
+                  search={chatsSearch}
+                  onOpen={(id) =>
+                    openTab("chat", `/chat/${encodeURIComponent(id)}`)
+                  }
+                />
               </div>
-            </div>
-          )}
+          </StudioPop>
 
           {/* The pill itself is a window drag surface; every control inside
               opts out with no-drag so clicks land normally. */}
-          <div className={`flex items-center gap-1 rounded-full p-1.5 ${BAR}`} style={DRAG}>
-            {/* LYKN icon — recent chats, like the app sidebar's header. */}
-            <button
-              type="button"
-              onClick={() => setChatsOpen((v) => !v)}
-              title={chatsOpen ? "Close chats" : "Recent chats"}
-              aria-label={chatsOpen ? "Close chats" : "Recent chats"}
-              aria-expanded={chatsOpen}
-              style={NO_DRAG}
-              className={`grid h-10 w-10 flex-shrink-0 place-items-center rounded-full transition-colors ${
-                chatsOpen ? "bg-white/15" : "hover:bg-white/15"
-              }`}
-            >
-              <img
-                src={dark ? lyknIconUrl : lyknIconBlueUrl}
-                alt=""
-                className="h-8 w-8 object-contain"
-                draggable={false}
+          <div
+            className={`flex items-center gap-1 rounded-full p-1.5 ${BAR}`}
+            style={DRAG}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setChatsOpen(false);
+            }}
+          >
+            {/* LYKN icon — full chat history, like the app sidebar's header. */}
+            <div className="relative flex-shrink-0" style={NO_DRAG}>
+              <button
+                type="button"
+                onClick={() => {
+                  setLyknMenuOpen(false);
+                  setChatsOpen((v) => !v);
+                }}
+                onDoubleClick={() => openTab("dashboard")}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setChatsOpen(false);
+                  setLyknMenuOpen((v) => !v);
+                }}
+                title={chatsOpen ? "Close chats" : "Chat history · Double-click for Home"}
+                aria-label={chatsOpen ? "Close chats" : "Chat history"}
+                aria-expanded={chatsOpen}
+                className={`grid h-10 w-10 flex-shrink-0 place-items-center rounded-full transition-colors ${
+                  chatsOpen || lyknMenuOpen ? "bg-white/15" : "hover:bg-white/15"
+                }`}
+              >
+                <img
+                  src={dark ? lyknIconUrl : lyknIconBlueUrl}
+                  alt=""
+                  className="h-8 w-8 object-contain"
+                  draggable={false}
+                />
+              </button>
+              <DockContextMenu
+                open={lyknMenuOpen}
+                onClose={() => setLyknMenuOpen(false)}
+                align="start"
+                items={[
+                  { label: "Chat with LYKN", onClick: () => openLyknChat() },
+                  { label: "New Chat", onClick: () => void startNewChat() },
+                  {
+                    label: chatsOpen ? "Hide chat history" : "Chat history",
+                    onClick: () => setChatsOpen((v) => !v),
+                  },
+                  { separator: true },
+                  { label: "Home", onClick: () => openTab("dashboard") },
+                  ...(homeChat
+                    ? [{ label: "Close chat", onClick: () => setHomeChat(false) }]
+                    : []),
+                  ...(hiddenDockIds.length
+                    ? [
+                        { separator: true },
+                        ...CUSTOM_APP_NEIGHBORS.filter((item) =>
+                          hiddenDockIds.includes(item.id),
+                        ).map((item) => ({
+                          label: `Add ${item.label} to Dock`,
+                          onClick: () => keepInDock(item.id),
+                        })),
+                      ]
+                    : []),
+                ]}
               />
-            </button>
-            {NAV_ITEMS.map((item) => (
+            </div>
+            {DOCK_ITEMS.map((item) => (
               <CircleIconButton
                 key={item.id}
                 icon={item.icon}
                 label={item.label}
                 active={navActive(item)}
-                onClick={() => handleNavItem(item)}
+                onClick={(e) => handleNavItem(item, e)}
+                menuItems={dockMenuFor(item)}
+              />
+            ))}
+            {/* Apps LYKN built for this user. Each opens in its own window on
+                its own origin, so these launch rather than open a stage tab.
+                Renders nothing until something is installed. */}
+            {desktop && (
+              <InstalledAppDock
+                noDragStyle={NO_DRAG}
+                onEdit={handleEditApp}
+                openIds={appWins}
+                onCloseWindow={closeAppWindow}
+              />
+            )}
+            {dockNeighbors.map((item) => (
+              <CircleIconButton
+                key={item.id}
+                icon={item.icon}
+                label={item.label}
+                active={navActive(item)}
+                onClick={(e) => handleNavItem(item, e)}
+                menuItems={dockMenuFor(item)}
               />
             ))}
             {/* The user's Mac apps — launchable from inside LYKN, with
@@ -2880,24 +3628,24 @@ export default function Studio() {
                 <MacAppDock />
               </div>
             )}
+            {/* Minimized file windows. A file has no dock icon of its own to
+                drop back into, so it keeps a tile here while it's tucked away
+                — otherwise the yellow light would be a one-way door. */}
+            {minimizedFileWins.map((entry) => (
+              <CircleIconButton
+                key={entry.id}
+                icon={FileIcon}
+                label={fileSourceName(entry.source)}
+                onClick={() => focusAppWindow(entry.id)}
+                menuItems={[
+                  { label: "Open", onClick: () => focusAppWindow(entry.id) },
+                  { label: "Close", onClick: () => closeAppWindow(entry.id) },
+                ]}
+              />
+            ))}
           </div>
         </div>
       </div>
-
-      {/* Tiny chrome toggle — pinned to the window's top-right corner, over
-          the studio background itself. */}
-      <button
-        type="button"
-        onClick={() => setChromeShown((v) => !v)}
-        title={focused ? "Show studio controls" : "Hide studio controls"}
-        aria-label={focused ? "Show studio controls" : "Hide studio controls"}
-        style={NO_DRAG}
-        className={`absolute right-1.5 top-1.5 z-40 flex h-6 w-6 items-center justify-center transition-colors ${
-          dark ? "text-white/80 hover:text-white" : "text-black/70 hover:text-black"
-        }`}
-      >
-        {focused ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
-      </button>
     </div>
   );
 }

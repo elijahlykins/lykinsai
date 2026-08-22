@@ -10,6 +10,8 @@ import {
   Copy,
   Download,
   FileText,
+  FolderInput,
+  FolderKanban,
   Globe,
   Grid2X2,
   Layers,
@@ -39,6 +41,25 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/SupabaseAuth";
+import {
+  createVaultWrites,
+  getVaultRepository,
+  isLocalTarget,
+  localBlobUrl,
+} from "@/lib/vault/repository";
+import {
+  AI_DRIVE_FOLDER,
+  AI_DRIVE_FOLDERS,
+  clearAiDriveCache,
+  isAiGeneratedVaultRow,
+} from "@/lib/vault/aiDriveContents";
+import {
+  VAULT_PICK_ITEMS_EVENT,
+  VAULT_PICK_PROJECT_EVENT,
+  closeVaultPicker,
+  deliverVaultPick,
+  pickTargetFromParams,
+} from "@/lib/vault/vaultPicker";
 import { lazyBackfillCardVariants } from "@/lib/vault/lazyVariantBackfill";
 import {
   addNeuronsToProject,
@@ -77,6 +98,11 @@ import { SocialEmbedInline } from "@/components/media/SocialEmbedInline";
 import LoadingScreen from "@/components/LoadingScreen";
 import LinkPreview from "@/components/LinkPreview";
 import AddLinkDialog from "@/components/AddLinkDialog";
+import DriveListing from "@/components/macfiles/DriveListing";
+import { driveEntryFor } from "@/components/macfiles/driveKinds";
+import { openFileWindow } from "@/lib/files/fileWindows";
+import { canSaveFileAs, saveFileToChosenFolder } from "@/lib/files/downloadToComputer";
+import LyknMediaPop from "@/components/lyknChat/LyknMediaPop";
 import ReactMarkdown from "react-markdown";
 import { CHAT_REMARK_PLUGINS, CHAT_REHYPE_PLUGINS } from "@/lib/chat/chatMarkdown";
 import { buildWakeVaultDemoCards, WAKE_DEMO_CONNECTOR_CARD_IDS } from "@/lib/wake/wakeVaultDemoCards";
@@ -154,6 +180,35 @@ const SOURCE_TO_CONNECTOR_ID = {
   mastodon_bookmark: "mastodon",
 };
 
+// AI Drive holds what LYKN made, and only that. Uploads, connector syncs and
+// notes stay on the Vault page; two folders is the whole structure. Shared with
+// aiDriveContents.ts, which lists the same items for the AI — the drive the
+// model is told about has to be the drive the user is looking at.
+const DRIVE_FOLDERS = AI_DRIVE_FOLDERS.map((f) => ({ id: f.id, name: f.name }));
+
+const isAiGeneratedNote = isAiGeneratedVaultRow;
+
+// Files whose first lines are worth showing as their preview. Everything the AI
+// writes that isn't a picture or a framed page ends up here: React source, a
+// CSV, a rendered document's markup. Binary formats are excluded — their bytes
+// as text are noise.
+const TEXT_PREVIEW_EXTS = new Set([
+  "txt", "md", "markdown", "csv", "tsv", "json", "jsx", "tsx", "js", "mjs",
+  "cjs", "ts", "css", "html", "htm", "xml", "yml", "yaml", "py", "rb", "sh",
+  "sql", "log",
+]);
+
+// Ceiling on markup we'll inline into a preview frame. A generated page is tens
+// of kilobytes; anything past this is a data blob, and its thumbnail isn't worth
+// holding in memory.
+const ARTIFACT_MARKUP_LIMIT = 2_000_000;
+
+/** Which of the two folders an item belongs in, or "" when it isn't AI output. */
+function driveFolderIdFor(card) {
+  if (!card?.aiGenerated) return "";
+  return card.kind === "attachment" && String(card.type || "") === "image" ? "images" : "artifacts";
+}
+
 // Resolve a note's `source` value to the display config used by the
 // folder tile. Caches lookups so the per-card visibleCards loop doesn't
 // pay a CONNECTORS.find() cost on every render.
@@ -218,6 +273,27 @@ function isVoiceNoteCard(card = {}) {
 //
 // Returns `null` for empty input or strings that can't possibly be
 // URLs (e.g. a single word with no dot like "asdf"), so callers can
+/**
+ * What the AI Drive tells the shared file window it is looking at. Anything not
+ * named here still opens in that window — the window sniffs the name and the
+ * mime — so this is only for the types the vault classifies better than a file
+ * extension can (an artifact is HTML that should run, not HTML to read).
+ */
+const DRIVE_WINDOW_MEDIA = {
+  image: "image",
+  video: "video",
+  audio: "audio",
+  pdf: "pdf",
+  html: "html",
+};
+
+/** Drive rows that are an address rather than bytes; the vault reader keeps these. */
+const DRIVE_LINK_TYPES = new Set(["youtube", "bookmark", "link"]);
+
+// The one entry in the move menu that isn't a folder name — it leaves the vault
+// entirely. Fenced off so a folder someone actually names can't collide with it.
+const MOVE_TO_DEVICE = "\u0000device";
+
 function parseStorageTarget(attachment = {}, prefer = null) {
   const explicitBucket = String(attachment.storageBucket || "user-files").trim() || "user-files";
   const thumb = String(attachment.variantThumbPath || "").trim();
@@ -1057,7 +1133,12 @@ function WhyEditor({ initialValue = "", onSave, busy = false, variant = "default
 // `studioSurface` — mounted in-document inside the LYKN Studio panel, which
 // draws its own chrome; floating affordances like the drag-to-delete trash
 // can stay hidden there.
-export default function Vault({ wakePreview = false, onWakePreviewTabChange, studioSurface = false } = {}) {
+export default function Vault({
+  wakePreview = false,
+  onWakePreviewTabChange,
+  studioSurface = false,
+  pickTarget = null,
+} = {}) {
   const location = useLocation();
   const nav = useNavigate();
   const { user, loading } = useAuth();
@@ -1071,6 +1152,22 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     () => !isWakePreview && new URLSearchParams(location.search).get("picker") === "1",
     [location.search, isWakePreview]
   );
+  // Who opened this window as a picker — a chat bar, an open chat, or a
+  // project — or null when it was opened to browse. A click then selects
+  // rather than opening a preview, and the status bar becomes Cancel / Add,
+  // matching what Finder's own picker does.
+  const activePickTarget = useMemo(() => {
+    if (isWakePreview) return null;
+    if (pickTarget) return pickTarget;
+    const fromUrl = pickTargetFromParams(new URLSearchParams(location.search));
+    if (fromUrl) return fromUrl;
+    try {
+      return sessionStorage.getItem("lykn_vault_pick_for_chat") === "1" ? "home" : null;
+    } catch {
+      return null;
+    }
+  }, [location.search, isWakePreview, pickTarget]);
+  const isChatPickMode = activePickTarget !== null;
   // Origin to pass to `window.parent.postMessage`. Targeting "*" (the
   // previous behaviour) leaks vault drag payloads to whoever happens to
   // be embedding us, including a malicious parent. The Omnia overlay
@@ -1188,6 +1285,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
   // Used as the <video poster> so grid cards show a real frame instead of a
   // black box while the video itself only preloads metadata.
   const [resolvedVideoPosterUrls, setResolvedVideoPosterUrls] = useState({});
+  // AI Drive previews artifacts from their own markup (cardId → HTML source)
+  // rather than by framing the file proxy. See `resolveDriveMarkupForCard`.
+  const [driveMarkup, setDriveMarkup] = useState({});
+  const driveMarkupTriedRef = useRef(new Set());
   const [failedImageIds, setFailedImageIds] = useState(new Set());
   const imageRetryCountsRef = useRef(new Map());
   // projects fetched via React Query above
@@ -1211,6 +1312,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
   const [showSignInBlocker, setShowSignInBlocker] = useState(false);
   const [walkthroughGateOpen, setWalkthroughGateOpen] = useState(false);
   const [previewCard, setPreviewCard] = useState(null);
+  const [previewDetailsOpen, setPreviewDetailsOpen] = useState(false);
   // Share sheet anchored to the preview modal's Share button.
   const [previewShareMenuRect, setPreviewShareMenuRect] = useState(null);
   const [previewProjectDropdownOpen, setPreviewProjectDropdownOpen] = useState(false);
@@ -1224,6 +1326,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
   // grid then renders only that connector's items plus a "back to all"
   // affordance. null = normal mixed view.
   const [openSourceFolder, setOpenSourceFolder] = useState(null);
+  // Which of AI Drive's two folders is open ("artifacts" / "images"), or null
+  // for the drive's root. See DRIVE_FOLDERS and visibleCards.
+  const [openDriveFolder, setOpenDriveFolder] = useState(null);
   // Display data for the folder-view header (name, domain, favicon).
   // Derived from the shared CONNECTORS catalog so we don't duplicate
   // app metadata in this file — any change to a connector's branding
@@ -1244,6 +1349,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
   }, [openSourceFolder]);
   const [isSaveLinkSaving, setIsSaveLinkSaving] = useState(false);
   const [vaultSearch, setVaultSearch] = useState("");
+  // Collage/Grid/Tags/Type belong to the Vault page. AI Drive is a folder
+  // listing with its own icons/list preference (see DriveListing), so it has no
+  // stake in this one.
+  const viewStorageKey = "lykn_vault_view";
   const [vaultView, setVaultView] = useState(() => {
     // The wake walkthrough preview always uses the uniform grid view: the
     // collage/masonry layout gives cards Pinterest-style variable heights,
@@ -1255,7 +1364,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
         const params = new URLSearchParams(window.location.search);
         if (params.get("picker") === "1") return "collage";
       }
-      return localStorage.getItem("lykn_vault_view") || "collage";
+      return localStorage.getItem(viewStorageKey) || "collage";
     } catch {
       return "collage";
     }
@@ -1385,15 +1494,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     chatChunkDragDepthRef.current = 0;
     if (!(await checkVaultLimit())) return;
     try {
-      const { data: insertedNote, error } = await supabase
-        .from("vault_items")
-        .insert({
-          user_id: user.id,
-          title: "Quick Note",
-          content: chatText,
-        })
-        .select("id, title, content, created_at, updated_at")
-        .single();
+      const { data: insertedNote, error } = await vaultWrites.insert({
+        title: "Quick Note",
+        content: chatText,
+      });
       if (error || !insertedNote?.id) throw error || new Error("Save failed");
       setNotes((prev) => [insertedNote, ...prev]);
       incrementVaultCount();
@@ -1490,21 +1594,19 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     }
   }, []);
 
-  const resolvedColumnsRef = useRef(null);
+  // Every row write in this file goes through here rather than straight to
+  // Supabase, so the whole vault follows whichever backend is active. The
+  // helpers return `{ data, error }` to match what the call sites already
+  // expect — see repository/writes.ts.
+  const vaultWrites = useMemo(() => createVaultWrites(user?.id), [user?.id]);
 
   // Attachments live inside `notes.content` as an `[ATTACHMENTS_JSON:[…]]`
   // marker (see `attachmentsMarker.ts`) — there is intentionally no
   // `attachments` column on the `notes` table. Older revisions probed for
   // one and ate a 400 on every cold load; the probe is gone.
-  const COLUMN_SETS = [
-    // Richest first; PostgREST errors on an unknown column so we fall back
-    // through these on older DBs that lack `comments`/`why`.
-    "id, title, content, tags, created_at, updated_at, comments, why",
-    "id, title, content, tags, created_at, updated_at, comments",
-    "id, title, content, tags, created_at, updated_at",
-    "id, title, content, created_at, updated_at",
-  ];
-
+  //
+  // Which columns a given database actually has is now the repository's
+  // problem; see supabaseRepository.ts for the progressive fallback.
   const fetchNotesBatch = useCallback(
     async (cursor) => {
       // Paginate by `created_at` (UPLOAD time) DESC so the fetch order
@@ -1519,41 +1621,21 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       // that shares the boundary timestamp with the last item of the previous
       // page, silently dropping notes; the `.or(...and(...id.lt))` form is a
       // stable secondary keyset on `id` (we order by both).
-      const buildQuery = (cols) => {
-        let q = supabase
-          .from("vault_items")
-          .select(cols)
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-          .order("id", { ascending: false })
-          .limit(MEMORY_PAGE_SIZE);
-        if (cursor && cursor.createdAt) {
-          if (cursor.id) {
-            q = q.or(
-              `created_at.lt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
-            );
-          } else {
-            q = q.lt("created_at", cursor.createdAt);
-          }
-        }
-        return q;
-      };
-
-      if (resolvedColumnsRef.current) {
-        const { data, error } = await buildQuery(resolvedColumnsRef.current);
-        return { data, error };
+      // Which store answers this is decided by the repository, not here. On
+      // the cloud backend it runs exactly the query this function used to
+      // build — including the progressive column fallback for older
+      // databases — so nothing changes until local mode is switched on.
+      try {
+        const page = await getVaultRepository(user.id).listPage({
+          cursor: cursor ?? null,
+          limit: MEMORY_PAGE_SIZE,
+        });
+        return { data: page.rows, error: null };
+      } catch (error) {
+        // Keep returning errors rather than throwing: the query below already
+        // knows which Postgres codes mean "empty vault" instead of "broken".
+        return { data: null, error };
       }
-
-      for (const cols of COLUMN_SETS) {
-        const { data, error } = await buildQuery(cols);
-        if (!error) {
-          resolvedColumnsRef.current = cols;
-          return { data, error: null };
-        }
-      }
-
-      resolvedColumnsRef.current = COLUMN_SETS[COLUMN_SETS.length - 1];
-      return await buildQuery(resolvedColumnsRef.current);
     },
     [user?.id]
   );
@@ -1646,6 +1728,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     enabled: !!user?.id && !loading,
     staleTime: 60 * 1000,
   });
+
+  // A file window outlives the render that opened it, and its menus are read
+  // when the user opens them — so they read the list through here.
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
 
   const invalidateVaultProjects = useCallback(() => {
     vaultQueryClient.invalidateQueries({ queryKey: ["lykn_projects", user?.id || "guest"] });
@@ -2090,6 +2177,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       const createdAtMs = note?.created_at ? new Date(note.created_at).getTime() : 0;
       const lastTouchedMs = Math.max(updatedAtMs, createdAtMs);
       const noteTags = Array.isArray(note.tags) ? note.tags : [];
+      const aiGenerated = isAiGeneratedNote(note, noteSource, noteTags);
       const noteBody = String(cleanContent || "").replace(/\r\n/g, "\n").trim();
       const textNoteStyle = resolveTextNoteStyle(noteSource, noteTags, note.title, noteBody);
       const isFormattedTextNote = textNoteStyle !== "quick";
@@ -2128,6 +2216,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           dateLabel,
           tags: noteTags,
           source: noteSource,
+          aiGenerated,
           lastTouchedMs,
           createdAtMs,
         });
@@ -2154,6 +2243,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
             dateLabel,
             tags: noteTags,
             source: noteSource,
+            aiGenerated,
             lastTouchedMs,
             createdAtMs,
           });
@@ -2173,6 +2263,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           dateLabel,
           tags: noteTags,
           source: noteSource,
+          aiGenerated,
           lastTouchedMs,
           createdAtMs,
         });
@@ -2196,6 +2287,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           tags: noteTags,
           comments: parseQuickNoteComments(note),
           source: noteSource,
+          aiGenerated,
           lastTouchedMs,
           createdAtMs,
         });
@@ -2387,6 +2479,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
   // noteId — the order in `vaultCards` mirrors how the user sees
   // them, so the first match is the visually-leading tile.
   useEffect(() => {
+    // In the Studio this surface is AI Drive, a listing rather than a collage:
+    // there is no tile to scroll to, and the link means "open this". That is
+    // handled by the drive deep-link effect below.
+    if (studioSurface) return;
     const params = new URLSearchParams(location.search);
     const targetNoteId = params.get("note");
     if (!targetNoteId) return;
@@ -2444,7 +2540,22 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.search, location.pathname, vaultCards, isLoadingNotes, hasMoreNotes]);
+  }, [studioSurface, location.search, location.pathname, vaultCards, isLoadingNotes, hasMoreNotes]);
+
+  /**
+   * Drops the deep-link params once they've been acted on, so a re-render (or
+   * a refresh) doesn't reopen what the user has since closed. Routed rather
+   * than replaceState'd: the effect that reads them watches the router's
+   * location, and history alone would leave it looking at a stale search.
+   */
+  const clearDriveLinkParams = useCallback(() => {
+    const next = new URLSearchParams(location.search);
+    if (!next.has("folder") && !next.has("note")) return;
+    next.delete("folder");
+    next.delete("note");
+    const search = next.toString();
+    nav({ pathname: location.pathname, search: search ? `?${search}` : "" }, { replace: true });
+  }, [location.pathname, location.search, nav]);
 
   const [allTagsRaw, setAllTagsRaw] = useState([]);
 
@@ -2452,15 +2563,14 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     if (!user?.id) { setAllTagsRaw([]); return; }
     let cancelled = false;
     (async () => {
-      // Prefer the server-side aggregation (migration 053). It returns
-      // pre-sorted (tag, count) rows from a single SQL pass, scoped by
-      // `auth.uid()`. For large accounts this avoids pulling every
-      // tag cell into the browser and aggregating on the main thread.
+      // Prefer the backend's own aggregation: migration 053's RPC in the
+      // cloud, a single SQL pass over the local table on device. Either way
+      // this avoids pulling every tag cell into the browser and counting them
+      // on the main thread.
       try {
-        const { data: rpcData, error: rpcError } = await supabase
-          .rpc("vault_tag_counts");
+        const rpcData = await getVaultRepository(user.id).tagCounts();
         if (cancelled) return;
-        if (!rpcError && Array.isArray(rpcData)) {
+        if (Array.isArray(rpcData)) {
           setAllTagsRaw(
             rpcData
               .map((row) => ({
@@ -2471,14 +2581,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           );
           return;
         }
-        // Fall through to legacy path if the RPC isn't deployed yet
-        // (PGRST202 = function not found). Other RPC errors also degrade
-        // gracefully so a transient blip doesn't blank the directory.
-        if (rpcError && import.meta.env.DEV) {
-          // eslint-disable-next-line no-console
-          console.info("[Vault] vault_tag_counts RPC unavailable, using fallback:", rpcError?.message || rpcError);
-        }
+        // Anything else falls through to the legacy path below.
       } catch (e) {
+        // The RPC may simply not be deployed yet (PGRST202 = function not
+        // found); a transient blip must not blank the directory either.
         if (cancelled) return;
         if (import.meta.env.DEV) {
           // eslint-disable-next-line no-console
@@ -2489,6 +2595,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       // Legacy in-browser aggregation. Kept as a safety net for envs
       // missing migration 053. Capped at 5000 rows so a runaway account
       // can't OOM the tab while the RPC migration is pending.
+      //
+      // Cloud-only: the local store has no such gap, and falling back here
+      // would quietly read the vault the user just migrated away from.
+      if (getVaultRepository(user.id).backend !== "supabase") {
+        setAllTagsRaw([]);
+        return;
+      }
       const { data, error } = await supabase
         .from("vault_items")
         .select("tags")
@@ -2543,12 +2656,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
   const updateNoteTags = useCallback(
     async (noteId, newTags) => {
       if (!user?.id) return false;
-      if (resolvedColumnsRef.current && !resolvedColumnsRef.current.includes("tags")) return false;
-      const { error } = await supabase
-        .from("vault_items")
-        .update({ tags: newTags })
-        .eq("id", noteId)
-        .eq("user_id", user.id);
+      const { error } = await vaultWrites.update(noteId, { tags: newTags });
       if (error) {
         if (import.meta.env.DEV) console.error("Failed to update tags:", error);
         return false;
@@ -2753,6 +2861,18 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
         });
       }
     };
+    // Bytes already on this device need no signing, no cache and no expiry —
+    // the protocol handler in the main process serves them straight off disk.
+    // Checked before the cache so a local card never takes an entry that
+    // exists only to track a TTL it does not have.
+    if (isLocalTarget(target)) {
+      const blobUrl = localBlobUrl(target.path);
+      if (blobUrl) {
+        commitUrl(blobUrl, { force: true });
+        return;
+      }
+    }
+
     const cachedFresh = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
     // Ignore a poisoned cache entry that somehow stored a storage URL as
     // a "file-proxy" result from an older build.
@@ -2842,6 +2962,90 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     visibleCardIdsRef.current.delete(card.id);
   }, [resolveImageDimsAndCommit, user?.id]);
 
+  /**
+   * Reads an artifact's markup so AI Drive can render it itself.
+   *
+   * The obvious way to preview an artifact is to frame the file proxy, which is
+   * what the Vault grid does — but the proxy names the origins allowed to embed
+   * it in `frame-ancestors`, and the desktop shell isn't one of them, so the
+   * frame is refused and paints nothing. Fetching the markup and handing it to
+   * a `srcDoc` frame has no such header to satisfy: the document is inlined by
+   * this app, not loaded from the proxy.
+   *
+   * Storage is signed directly (rather than proxied) because only storage
+   * answers a cross-origin fetch. Local-first vaults read straight off disk.
+   */
+  const resolveDriveMarkupForCard = useCallback(async (card) => {
+    if (!studioSurface || card?.kind !== "attachment") return;
+    if (resolveAttachmentType(card.attachment || {}) !== "html") return;
+    if (driveMarkupTriedRef.current.has(card.id)) return;
+    driveMarkupTriedRef.current.add(card.id);
+
+    const target = parseStorageTarget(card.attachment || {});
+    if (!target?.path || !target?.bucket) {
+      driveMarkupTriedRef.current.delete(card.id);
+      return;
+    }
+
+    let url = "";
+    if (isLocalTarget(target)) {
+      url = localBlobUrl(target.path) || "";
+    } else {
+      const cacheKey = `${target.bucket}:${target.path}`;
+      url = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey) || "";
+      if (!url) {
+        try {
+          const { data } = await supabase.storage
+            .from(target.bucket)
+            .createSignedUrl(target.path, SIGNED_URL_TTL_SECONDS);
+          url = data?.signedUrl || "";
+          if (url) writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, url);
+        } catch {
+          driveMarkupTriedRef.current.delete(card.id);
+          return;
+        }
+      }
+    }
+    if (!url) {
+      driveMarkupTriedRef.current.delete(card.id);
+      return;
+    }
+
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        driveMarkupTriedRef.current.delete(card.id);
+        return;
+      }
+      const size = Number(resp.headers.get("content-length") || 0);
+      if (size > ARTIFACT_MARKUP_LIMIT) {
+        driveMarkupTriedRef.current.delete(card.id);
+        return;
+      }
+      const markup = await resp.text();
+      if (!markup.trim()) {
+        driveMarkupTriedRef.current.delete(card.id);
+        return;
+      }
+      setDriveMarkup((prev) => (prev[card.id] ? prev : { ...prev, [card.id]: markup.slice(0, ARTIFACT_MARKUP_LIMIT) }));
+    } catch {
+      // Offline, most likely — worth another go when it scrolls back into view.
+      // The cover stands in for it meanwhile.
+      driveMarkupTriedRef.current.delete(card.id);
+    }
+  }, [studioSurface]);
+
+  // Opening the viewport must not wait on artifact I/O. Once it is mounted,
+  // resolve any missing markup and let the portal re-render with srcDoc.
+  useEffect(() => {
+    const card = previewCard;
+    if (!studioSurface || card?.kind !== "attachment") return;
+    if (resolveAttachmentType(card.attachment || {}) !== "html") return;
+    if (driveMarkup[card.id]) return;
+    driveMarkupTriedRef.current.delete(card.id);
+    void resolveDriveMarkupForCard(card);
+  }, [previewCard, studioSurface, driveMarkup, resolveDriveMarkupForCard]);
+
   const cardElementsRef = useRef(new Map());
 
   const registerCardRef = useCallback((cardId, element) => {
@@ -2865,12 +3069,15 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     drainPromiseRef.current = (async () => {
       while (urlResolveQueueRef.current.length > 0) {
         const batch = urlResolveQueueRef.current.splice(0, 20);
+        // Artifact markup is read alongside the signing pass, not after it: the
+        // proxy URL it would otherwise wait on is the thing AI Drive can't use.
+        for (const card of batch) void resolveDriveMarkupForCard(card);
         await Promise.allSettled(batch.map((card) => resolveSignedUrlForCard(card)));
       }
       urlResolveDrainingRef.current = false;
     })();
     return drainPromiseRef.current;
-  }, [resolveSignedUrlForCard]);
+  }, [resolveSignedUrlForCard, resolveDriveMarkupForCard]);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -2965,12 +3172,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
         const job = persistDimsQueueRef.current.shift();
         if (!job?.noteId || !user?.id) continue;
         try {
-          const { data: note } = await supabase
-            .from("vault_items")
-            .select("content, updated_at")
-            .eq("id", job.noteId)
-            .eq("user_id", user.id)
-            .single();
+          const { data: note } = await vaultWrites.readForUpdate(job.noteId);
           if (!note?.content) continue;
           const span = findAttachmentsMarker(String(note.content));
           if (!span) continue;
@@ -2986,12 +3188,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           // Lost-update guard: only commit if the row hasn't changed since
           // we read it, so we never clobber a concurrent edit / description
           // backfill writing the same row.
-          const { error } = await supabase
-            .from("vault_items")
-            .update({ content: updatedContent })
-            .eq("id", job.noteId)
-            .eq("user_id", user.id)
-            .eq("updated_at", note.updated_at);
+          const { error } = await vaultWrites.updateIfUnchanged(
+            job.noteId,
+            { content: updatedContent },
+            note.updated_at,
+          );
           if (error) continue;
           // Intentionally NOT updating the in-memory notes here. Feeding the
           // freshly-learned dims back into the live card would change its
@@ -3232,8 +3433,53 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
 
   const visibleCards = useMemo(() => {
     const baseline = vaultCards.filter(
-      (card) => card.kind !== "chat-preview" && !pendingDeleteCardIds.has(card.id),
+      (card) =>
+        card.kind !== "chat-preview" &&
+        !pendingDeleteCardIds.has(card.id) &&
+        // The drive and the vault divide what LYKN made from what the user
+        // put in, and the split runs both ways: generated work is filed in
+        // the AI Drive and only there, so saving an image doesn't also leave
+        // a copy of it in the middle of the Vault page.
+        (studioSurface || !driveFolderIdFor(card)),
     );
+
+    // AI Drive is not a view of the vault — it's the drive for what LYKN made.
+    // Two folders, the AI's output sorted between them, and nothing else: no
+    // uploads, no connector syncs, no notes. Those stay on the Vault page,
+    // which is why none of the passes below apply here.
+    if (studioSurface) {
+      const generated = baseline.filter((card) => driveFolderIdFor(card));
+      if (openDriveFolder) {
+        return generated.filter((card) => driveFolderIdFor(card) === openDriveFolder);
+      }
+      // Searching looks through the drive rather than at it, so matches surface
+      // as items instead of as the folders they happen to live in.
+      const searching =
+        Boolean(String(embeddedSearch || "").trim()) ||
+        Boolean(String(vaultSearch || "").trim()) ||
+        conceptResultIds !== null;
+      if (searching) return generated;
+
+      // Both folders show even while empty: they're where the AI's next image
+      // and next artifact will land, and a drive that changes shape as it fills
+      // is harder to learn than one that doesn't.
+      return DRIVE_FOLDERS.map(({ id, name }) => {
+        const items = generated.filter((card) => driveFolderIdFor(card) === id);
+        const lastTouchedMs = items.reduce((max, card) => Math.max(max, card.lastTouchedMs || 0), 0);
+        return {
+          id: `__drive_folder:${id}`,
+          kind: "drive-folder",
+          folderId: id,
+          folderName: name,
+          title: name,
+          count: items.length,
+          dateLabel: lastTouchedMs ? formatDate(new Date(lastTouchedMs).toISOString()) : "",
+          tags: [],
+          allTags: [],
+          lastTouchedMs,
+        };
+      });
+    }
 
     // Folder-view: when the user has tapped into a connector tile, the
     // grid is dedicated to that connector's items. We skip the collapse
@@ -3337,7 +3583,17 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       result.push(card);
     }
     return result;
-  }, [vaultCards, pendingDeleteCardIds, openSourceFolder, vaultView, embeddedSearch, vaultSearch, conceptResultIds]);
+  }, [
+    vaultCards,
+    pendingDeleteCardIds,
+    openSourceFolder,
+    openDriveFolder,
+    studioSurface,
+    vaultView,
+    embeddedSearch,
+    vaultSearch,
+    conceptResultIds,
+  ]);
 
   const initialCardIdsRef = useRef(null);
   if (vaultReady && initialCardIdsRef.current === null) {
@@ -3427,12 +3683,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
 
           // Fetch with `updated_at` so we can guard against trampling user
           // edits made between the AI request and the persist below.
-          const { data: note } = await supabase
-            .from("vault_items")
-            .select("content, updated_at")
-            .eq("id", card.noteId)
-            .eq("user_id", user.id)
-            .single();
+          const { data: note } = await vaultWrites.readForUpdate(card.noteId);
           if (!note?.content) continue;
 
           const span = findAttachmentsMarker(String(note.content));
@@ -3447,12 +3698,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
 
           // Lost-update guard: only commit if the row hasn't been updated
           // since we read it.
-          const { error: updateError } = await supabase
-            .from("vault_items")
-            .update({ content: updatedContent })
-            .eq("id", card.noteId)
-            .eq("user_id", user.id)
-            .eq("updated_at", note.updated_at);
+          const { error: updateError } = await vaultWrites.updateIfUnchanged(
+            card.noteId,
+            { content: updatedContent },
+            note.updated_at,
+          );
           if (updateError) continue;
 
           if (!cancelled) {
@@ -3552,8 +3802,8 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     // clobber the stored preference, so the next normal vault load would wrongly
     // default to the forced view.
     if (isWakePreview || isPickerMode) return;
-    try { localStorage.setItem("lykn_vault_view", vaultView); } catch {}
-  }, [vaultView, isWakePreview, isPickerMode]);
+    try { localStorage.setItem(viewStorageKey, vaultView); } catch {}
+  }, [vaultView, isWakePreview, isPickerMode, viewStorageKey]);
 
   const orderedVisibleCards = useMemo(() => {
     // Source-folder tiles (the Notion/Gmail/Slack/etc. summary cards) are
@@ -3577,7 +3827,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     const folderCards = [];
     const otherCards = [];
     for (const card of filteredVisibleCards) {
-      if (card.kind === "source-folder") folderCards.push(card);
+      if (card.kind === "source-folder" || card.kind === "drive-folder") folderCards.push(card);
       else otherCards.push(card);
     }
     folderCards.sort((a, b) => (b.lastTouchedMs || 0) - (a.lastTouchedMs || 0));
@@ -3891,6 +4141,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                     draggable={false}
                     onDragStart={handleCardDragStart}
                     onClick={(e) => handleCardPress(e, card)}
+                    // The card menu was previously reachable only from a ⋯
+                    // button that no longer exists, so right-click is now how
+                    // you get at project, tag, comment, and delete.
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      openCardMenuForAnchor(card.id, e.currentTarget);
+                    }}
                     // Browser-native off-screen culling for large vaults.
                     // While being dragged, opt OUT — `content-visibility:
                     // hidden` (which the browser applies under the hood
@@ -4507,14 +4764,96 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       setPreviewCard(null);
       return;
     }
+    setPreviewCard(null);
+    if (studioSurface) {
+      // The Studio-owned Home bar receives and visibly holds this payload; it
+      // hands it to the real chat surface only when the user sends.
+      window.dispatchEvent(
+        new CustomEvent("lykn-studio-open-chat", {
+          detail: {
+            src: `/app?vault=${Date.now()}`,
+            dismissApp: "vault",
+            forceHome: true,
+            vaultPayload: payload,
+          },
+        }),
+      );
+      return;
+    }
     try {
       sessionStorage.setItem("lykn_pending_vault_chat_add", JSON.stringify({ ...payload, timestamp: Date.now() }));
     } catch {
       /* ignore */
     }
-    setPreviewCard(null);
     nav("/app");
-  }, [buildEmbeddedVaultPayload, isEmbeddedMode, embeddedTargetOrigin, nav]);
+  }, [buildEmbeddedVaultPayload, isEmbeddedMode, embeddedTargetOrigin, nav, studioSurface]);
+
+  /**
+   * Confirm a pick, and send it wherever it was asked for. A project wants the
+   * rows themselves, so it gets ids; the chat surfaces want something they can
+   * attach, so they get the payload a drag onto the bar would have carried.
+   * The desktop bar is the one that has to be brought forward first — the other
+   * two are already looking at the thing that asked.
+   */
+  const addSelectedVaultToChat = useCallback(() => {
+    const byId = new Map((vaultCardsRef.current || []).map((card) => [card.id, card]));
+    const cards = [...selectedCardIds].map((id) => byId.get(id)).filter(Boolean);
+    if (!cards.length) {
+      toast({ title: "Select something", description: "Click an item, then Add." });
+      return;
+    }
+
+    if (activePickTarget === "project") {
+      const noteIds = [...new Set(cards.map((card) => String(card.noteId || "")).filter(Boolean))];
+      if (!noteIds.length) {
+        toast({ title: "Couldn't add", description: "This item can't be added to a project." });
+        return;
+      }
+      deliverVaultPick(VAULT_PICK_PROJECT_EVENT, { noteIds });
+    } else {
+      const payloads = cards.map(buildEmbeddedVaultPayload).filter(Boolean);
+      if (!payloads.length) {
+        toast({ title: "Couldn't add", description: "This item can't be added to chat." });
+        return;
+      }
+      for (const payload of payloads) {
+        if (activePickTarget === "thread") {
+          deliverVaultPick(VAULT_PICK_ITEMS_EVENT, payload);
+        } else {
+          window.dispatchEvent(
+            new CustomEvent("lykn-studio-open-chat", {
+              detail: {
+                src: `/app?vault=${Date.now()}`,
+                dismissApp: "vault",
+                forceHome: true,
+                vaultPayload: payload,
+              },
+            }),
+          );
+        }
+      }
+    }
+
+    setPreviewCard(null);
+    clearSelection();
+    // The home bar's route dismisses the window itself as it brings the
+    // desktop forward; the others have to be sent away here.
+    if (activePickTarget === "home") {
+      try {
+        sessionStorage.removeItem("lykn_vault_pick_for_chat");
+      } catch {
+        /* the pick param goes with the window */
+      }
+    } else {
+      closeVaultPicker();
+    }
+  }, [selectedCardIds, buildEmbeddedVaultPayload, clearSelection, activePickTarget]);
+
+  const cancelVaultChatPick = useCallback(() => {
+    setPreviewCard(null);
+    clearSelection();
+    closeVaultPicker();
+  }, [clearSelection]);
 
   const resolvePreviewShareUrl = useCallback((card, urlHint = "") => {
     const url = String(urlHint || card?.attachment?.url || "").trim();
@@ -5066,17 +5405,12 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       let insertedNote = null;
       let noteError = null;
 
-      ({ data: insertedNote, error: noteError } = await supabase
-        .from("vault_items")
-        .insert({
-          user_id: user.id,
-          title: "Quick Note",
-          content,
-          source: "quick_note",
-          tags: ["note"],
-        })
-        .select("id, title, content, tags, created_at, updated_at")
-        .single());
+      ({ data: insertedNote, error: noteError } = await vaultWrites.insert({
+        title: "Quick Note",
+        content,
+        source: "quick_note",
+        tags: ["note"],
+      }));
 
       const missingColumnError =
         noteError &&
@@ -5086,16 +5420,13 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           String(noteError.message || "").toLowerCase().includes("does not exist")
         );
 
+      // Older cloud databases lack `source` / `tags`; retry with the columns
+      // every deployment is guaranteed to have.
       if (missingColumnError) {
-        ({ data: insertedNote, error: noteError } = await supabase
-          .from("vault_items")
-          .insert({
-            user_id: user.id,
-            title: "Quick Note",
-            content,
-          })
-          .select("id, title, content, created_at, updated_at")
-          .single());
+        ({ data: insertedNote, error: noteError } = await vaultWrites.insert({
+          title: "Quick Note",
+          content,
+        }));
       }
 
       if (noteError || !insertedNote?.id) {
@@ -5171,15 +5502,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
         authorHandle: saveLinkPreview.authorHandle || "",
       }];
       const noteContent = `${saveLinkPreview.title || safeUrl}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-      const { data: insertedNote, error } = await supabase
-        .from("vault_items")
-        .insert({
-          user_id: user.id,
-          title: saveLinkPreview.title || safeUrl,
-          content: noteContent,
-        })
-        .select("id, title, content, created_at, updated_at")
-        .single();
+      const { data: insertedNote, error } = await vaultWrites.insert({
+        title: saveLinkPreview.title || safeUrl,
+        content: noteContent,
+      });
       if (error) throw error;
       if (insertedNote) {
         setNotes((prev) => [insertedNote, ...prev]);
@@ -6098,11 +6424,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
         if (!url) return;
         const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const stripped = String(note.content || "").replace(new RegExp(escaped, "g"), "").replace(/\n{3,}/g, "\n\n").trim();
-        const { error: stripError } = await supabase
-          .from("vault_items")
-          .update({ content: stripped, updated_at: new Date().toISOString() })
-          .eq("id", card.noteId)
-          .eq("user_id", user.id);
+        const { error: stripError } = await vaultWrites.update(card.noteId, {
+          content: stripped,
+          updated_at: new Date().toISOString(),
+        });
         if (stripError) {
           notifyVaultCapIfApplicable(stripError);
           if (import.meta.env.DEV) console.error("[Vault] strip youtube link failed:", stripError);
@@ -6121,11 +6446,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
 
       let storageRemovalAllowed = false;
       if (!Number.isFinite(idx) || idx < 0 || idx >= attachments.length || attachments.length <= 1) {
-        const { error: deleteError } = await supabase
-          .from("vault_items")
-          .delete()
-          .eq("id", card.noteId)
-          .eq("user_id", user.id);
+        const { error: deleteError } = await vaultWrites.remove(card.noteId);
         if (deleteError) {
           notifyVaultCapIfApplicable(deleteError);
           if (import.meta.env.DEV) console.error("[Vault] delete note failed:", deleteError);
@@ -6145,14 +6466,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
         const nextAttachments = attachments.filter((_, i) => i !== idx);
         const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
         let updateError = null;
-        ({ error: updateError } = await supabase
-          .from("vault_items")
-          .update({
-            content: nextContent,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", card.noteId)
-          .eq("user_id", user.id));
+        ({ error: updateError } = await vaultWrites.update(card.noteId, {
+          content: nextContent,
+          updated_at: new Date().toISOString(),
+        }));
         if (updateError) {
           // Bail without touching storage — otherwise the file disappears
           // while the DB row still references it.
@@ -6174,7 +6491,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
 
       if (storageRemovalAllowed) {
         const storageTarget = parseStorageTarget(card.attachment || {});
-        if (storageTarget?.bucket && storageTarget?.path) {
+        // Local files are already gone: deleting the row takes its whole blob
+        // directory with it, so there is nothing left to clean up here.
+        if (storageTarget?.bucket && storageTarget?.path && !isLocalTarget(storageTarget)) {
           const { error: storageError } = await supabase.storage
             .from(storageTarget.bucket)
             .remove([storageTarget.path]);
@@ -6198,11 +6517,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       // silently remove the row from local state and leak it on the
       // server until the next refetch — which made deleted-then-
       // reappearing cards a user-visible mystery.
-      const { error: deleteError } = await supabase
-        .from("vault_items")
-        .delete()
-        .eq("id", card.noteId)
-        .eq("user_id", user.id);
+      const { error: deleteError } = await vaultWrites.remove(card.noteId);
       if (deleteError) {
         notifyVaultCapIfApplicable(deleteError);
         if (import.meta.env.DEV) console.error("[Vault] delete quick note failed:", deleteError);
@@ -6276,14 +6591,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       nextAttachments[idx] = { ...target, notes: nextAttachmentNotes };
       const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
 
-      const { error: updateError } = await supabase
-        .from("vault_items")
-        .update({
-          content: nextContent,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", card.noteId)
-        .eq("user_id", user.id);
+      const { error: updateError } = await vaultWrites.update(card.noteId, {
+        content: nextContent,
+        updated_at: new Date().toISOString(),
+      });
 
       if (!updateError) {
         setNotes((prev) =>
@@ -6313,14 +6624,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       const newComment = { id: crypto.randomUUID(), text, created_at: new Date().toISOString() };
       const nextComments = [...existing, newComment];
 
-      const { error: updateError } = await supabase
-        .from("vault_items")
-        .update({
-          comments: nextComments,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", card.noteId)
-        .eq("user_id", user.id);
+      const { error: updateError } = await vaultWrites.update(card.noteId, {
+        comments: nextComments,
+        updated_at: new Date().toISOString(),
+      });
 
       if (updateError) {
         // Column not deployed yet — surface a clear error rather than
@@ -6351,11 +6658,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     const why = String(textInput || "").trim().slice(0, 2000);
     setIsCardActionBusy(true);
     try {
-      const { error: updateError } = await supabase
-        .from("vault_items")
-        .update({ why, updated_at: new Date().toISOString() })
-        .eq("id", card.noteId)
-        .eq("user_id", user.id);
+      const { error: updateError } = await vaultWrites.update(card.noteId, {
+        why,
+        updated_at: new Date().toISOString(),
+      });
 
       if (updateError) {
         if (updateError.code === "PGRST204" || updateError.message?.toLowerCase().includes("does not exist")) {
@@ -6406,14 +6712,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       nextAttachments[idx] = { ...target, notes: nextAttachmentNotes };
       const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
 
-      const { error: updateError } = await supabase
-        .from("vault_items")
-        .update({
-          content: nextContent,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", card.noteId)
-        .eq("user_id", user.id);
+      const { error: updateError } = await vaultWrites.update(card.noteId, {
+        content: nextContent,
+        updated_at: new Date().toISOString(),
+      });
 
       if (!updateError) {
         setNotes((prev) =>
@@ -6441,14 +6743,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       const nextComments = existing.filter((entry) => entry.id !== commentId);
       if (nextComments.length === existing.length) return false;
 
-      const { error: updateError } = await supabase
-        .from("vault_items")
-        .update({
-          comments: nextComments,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", card.noteId)
-        .eq("user_id", user.id);
+      const { error: updateError } = await vaultWrites.update(card.noteId, {
+        comments: nextComments,
+        updated_at: new Date().toISOString(),
+      });
 
       if (updateError) {
         if (updateError.code === "PGRST204" || updateError.message?.toLowerCase().includes("does not exist")) {
@@ -6495,14 +6793,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       nextAttachments[idx] = { ...target, notes: nextAttachmentNotes };
       const nextContent = withAttachmentJsonMarker(note.content || "", nextAttachments);
 
-      const { error: updateError } = await supabase
-        .from("vault_items")
-        .update({
-          content: nextContent,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", card.noteId)
-        .eq("user_id", user.id);
+      const { error: updateError } = await vaultWrites.update(card.noteId, {
+        content: nextContent,
+        updated_at: new Date().toISOString(),
+      });
 
       if (!updateError) {
         setNotes((prev) =>
@@ -6537,14 +6831,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
       });
       if (!changed) return false;
 
-      const { error: updateError } = await supabase
-        .from("vault_items")
-        .update({
-          comments: nextComments,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", card.noteId)
-        .eq("user_id", user.id);
+      const { error: updateError } = await vaultWrites.update(card.noteId, {
+        comments: nextComments,
+        updated_at: new Date().toISOString(),
+      });
 
       if (updateError) {
         if (updateError.code === "PGRST204" || updateError.message?.toLowerCase().includes("does not exist")) {
@@ -6799,6 +7089,423 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     setOpenCardMenuId(cardId);
   }, [isWakePreview, requireSignInForAction]);
 
+  // ── AI Drive (the Studio's folder listing) ────────────────────────────────
+  //
+  // Same cards, same previews, same deletes — a different way of drawing them.
+  // Everything below translates between the two: a card into a row, a click on
+  // a row back into the card handler it belongs to.
+
+  /**
+   * What a row shows before you open it, in descending order of how much it
+   * tells you.
+   *
+   * Anything with real image bytes — a photo, a video's poster frame, a link's
+   * card art — is an image. A web artifact or a PDF has no such bytes, so it's
+   * drawn by rendering it (`embed`). Everything else the AI writes is text at
+   * bottom — React source, a CSV, markup we couldn't frame — and the head of
+   * that text is its own best preview (`textUrl`). `paper` is the floor: a
+   * document we can't read still gets drawn as a document.
+   */
+  const driveArtFor = useCallback((card) => {
+    if (card.kind !== "attachment") return {};
+    const att = card.attachment || {};
+    const type = String(card.type || "");
+    const resolved = resolvedAttachmentUrls[card.id] || "";
+    if (type === "image") {
+      if (resolved) return { thumb: resolved };
+      // An unsigned storage URL would only paint a broken image.
+      const raw = String(att.url || "");
+      if (!raw || isSupabaseStorageUrlText(raw) || att.storagePath) return {};
+      return { thumb: raw };
+    }
+    if (type === "video") return { thumb: resolvedVideoPosterUrls[card.id] || "" };
+    if (type === "youtube") {
+      const videoId = att.videoId || extractYouTubeVideoId(att.url || "");
+      return { thumb: videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : "" };
+    }
+    // The URL stored with the attachment is a live proxy link too, so a preview
+    // doesn't have to wait for (or depend on) a freshly minted one.
+    const fileUrl = resolved || String(att.url || "");
+
+    if (type === "pdf") {
+      // The viewer's own chrome would be most of what you see at this size.
+      return fileUrl ? { embed: vaultPdfEmbedUrl(fileUrl), portrait: true } : { paper: true };
+    }
+    if (type === "html") {
+      // The artifact's own markup, rendered inline. Preferred over framing the
+      // proxied page because it doesn't need the shell's origin to appear in
+      // the proxy's frame-ancestors — see `resolveDriveMarkupForCard`.
+      const markup = driveMarkup[card.id];
+      if (markup) return { srcDoc: markup };
+      // Not read yet (or unreadable): a raw storage URL must never go in a frame
+      // — wrong MIME and a blocking CSP leave it permanently blank — so let
+      // safeHtmlPreviewUrl decide the host allowlist and the sandbox.
+      const isStorageUrl = isSupabaseStorageUrlText(fileUrl);
+      const preview = isStorageUrl ? null : safeHtmlPreviewUrl(fileUrl);
+      if (preview) return { embed: preview.url, sandbox: preview.sandbox, paper: true };
+      return { paper: true };
+    }
+    if (type === "spreadsheet" || type === "file") {
+      const name = String(att.name || card.title || "");
+      const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+      return { textUrl: TEXT_PREVIEW_EXTS.has(ext) ? fileUrl : "", paper: true };
+    }
+    return { thumb: att.image || att.favicon || "" };
+  }, [resolvedAttachmentUrls, resolvedVideoPosterUrls, driveMarkup]);
+
+  const driveEntries = useMemo(() => {
+    if (!studioSurface) return [];
+    return orderedVisibleCards.map((card) => ({
+      ...driveEntryFor(card),
+      ...driveArtFor(card),
+    }));
+  }, [studioSurface, orderedVisibleCards, driveArtFor]);
+
+  // Only the tags actually worn by the AI's output. `allTags` covers the whole
+  // vault, and offering a filter for tags nothing in this drive carries would
+  // just be a menu of ways to empty the window.
+  const driveTags = useMemo(() => {
+    if (!studioSurface) return [];
+    const counts = new Map();
+    for (const card of vaultCards) {
+      if (!driveFolderIdFor(card)) continue;
+      for (const raw of card.tags || []) {
+        const tag = String(raw).trim();
+        if (tag) counts.set(tag, (counts.get(tag) || 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([name, count]) => ({ name, count }));
+  }, [studioSurface, vaultCards]);
+
+  const selectableIdsAmong = useCallback((ids) => {
+    const byId = new Map((vaultCardsRef.current || []).map((c) => [c.id, c]));
+    return ids.filter((id) => isSelectableCard(byId.get(id)));
+  }, [isSelectableCard]);
+
+  // A listing selects on click and opens on double-click, so this deliberately
+  // does NOT go through `handleCardPress` (which opens a preview on a single
+  // click, the right behaviour for a collage tile and the wrong one here).
+  const handleDriveSelect = useCallback((event, entry, orderedIds) => {
+    const card = entry?.card;
+    if (!card) return;
+    closeAllVaultPopovers();
+    if (!isSelectableCard(card)) {
+      clearSelection();
+      return;
+    }
+    const anchorId = lastSelectedCardIdRef.current;
+    if (event?.shiftKey && anchorId) {
+      const from = orderedIds.indexOf(anchorId);
+      const to = orderedIds.indexOf(card.id);
+      if (from !== -1 && to !== -1) {
+        const [lo, hi] = from < to ? [from, to] : [to, from];
+        setSelectedCardIds(new Set(selectableIdsAmong(orderedIds.slice(lo, hi + 1))));
+        return;
+      }
+    }
+    if (event?.metaKey || event?.ctrlKey) {
+      toggleCardSelection(card);
+      return;
+    }
+    setSelectedCardIds(new Set([card.id]));
+    lastSelectedCardIdRef.current = card.id;
+  }, [closeAllVaultPopovers, isSelectableCard, clearSelection, selectableIdsAmong, toggleCardSelection]);
+
+  const handleDriveEnterFolder = useCallback((entry) => {
+    const folderId = entry?.card?.folderId;
+    if (!folderId) return;
+    closeAllVaultPopovers();
+    clearSelection();
+    setOpenDriveFolder(folderId);
+  }, [closeAllVaultPopovers, clearSelection]);
+
+  const handleDriveExitFolder = useCallback(() => {
+    setOpenDriveFolder(null);
+  }, []);
+
+  /** What the breadcrumb says we're inside. */
+  const driveFolder = useMemo(() => {
+    const match = DRIVE_FOLDERS.find((f) => f.id === openDriveFolder);
+    return match ? { id: match.id, name: match.name } : null;
+  }, [openDriveFolder]);
+
+  /**
+   * The address for a card's bytes. Bytes on this device resolve at once, a
+   * cloud object is signed (and cached the same way the grid caches), and an
+   * artifact goes through the file proxy, whose relaxed script policy is what
+   * interactive React/Babel builds need to actually run.
+   */
+  const resolveCardMediaUrl = useCallback(async (card, type) => {
+    if (!card) return "";
+    const att = card.attachment || {};
+
+    const bytesUrl = async () => {
+      const target = parseStorageTarget(att);
+      if (target?.bucket && target?.path) {
+        if (isLocalTarget(target)) return localBlobUrl(target.path) || "";
+        const cacheKey = `full:${target.bucket}:${target.path}`;
+        const cached = readCachedSignedUrl(signedUrlCacheRef.current, cacheKey);
+        if (cached) return cached;
+        try {
+          const { data } = await supabase.storage
+            .from(target.bucket)
+            .createSignedUrl(target.path, SIGNED_URL_TTL_SECONDS);
+          if (data?.signedUrl) {
+            writeCachedSignedUrl(signedUrlCacheRef.current, cacheKey, data.signedUrl);
+            return data.signedUrl;
+          }
+        } catch {
+          /* fall back to whatever address the card already carries */
+        }
+      }
+      return resolvedAttachmentUrls[card.id] || String(att.url || "").trim();
+    };
+
+    if (type !== "html") return bytesUrl();
+
+    const proxied = await resolveHtmlArtifactOpenUrl(card);
+    if (proxied) return proxied;
+    // Nothing hosted it — a build that only exists on this device, or the proxy
+    // is down. Frame the markup itself; a blob URL is its own opaque origin, so
+    // the artifact still runs without reaching anything of the user's.
+    const direct = await bytesUrl();
+    if (!direct) return "";
+    try {
+      const resp = await fetch(direct);
+      if (!resp.ok) return "";
+      return URL.createObjectURL(new Blob([await resp.text()], { type: "text/html" }));
+    } catch {
+      return "";
+    }
+  }, [resolveHtmlArtifactOpenUrl, resolvedAttachmentUrls]);
+
+  /**
+   * The folders the vault actually has — the distinct names rows are filed
+   * under. There is no folder table; a folder exists because something is in
+   * it, which is also why AI Drive's own name is left off this list (it has its
+   * own entry in the move menu).
+   */
+  const vaultFolders = useMemo(() => {
+    const names = new Set();
+    for (const note of notes) {
+      const name = String(note?.folder || "").trim();
+      if (name && name !== AI_DRIVE_FOLDER) names.add(name);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [notes]);
+
+  // A file window outlives the render that opened it and reads its menus when
+  // the user opens them, so these go through refs rather than closed-over state.
+  const vaultFoldersRef = useRef(vaultFolders);
+  vaultFoldersRef.current = vaultFolders;
+  const notesRef = useRef(notes);
+  notesRef.current = notes;
+
+  const moveCardToFolder = useCallback(async (card, folder) => {
+    if (!card?.noteId) {
+      toast({
+        title: "Couldn't move this",
+        description: "This item isn't linked to a vault note yet.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const next = String(folder || "").trim();
+    const updatedAt = new Date().toISOString();
+    setIsCardActionBusy(true);
+    try {
+      const { error } = await vaultWrites.update(card.noteId, {
+        folder: next,
+        updated_at: updatedAt,
+      });
+      if (error) {
+        notifyVaultCapIfApplicable(error);
+        if (import.meta.env.DEV) console.error("[Vault] move to folder failed:", error);
+        toast({
+          title: "Couldn't move this",
+          description: "Something went wrong. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+      setNotes((prev) =>
+        prev.map((n) =>
+          String(n?.id) === String(card.noteId) ? { ...n, folder: next, updated_at: updatedAt } : n,
+        ),
+      );
+      // What the model is told the drive holds is cached; this just changed it.
+      clearAiDriveCache();
+      toast({
+        title: "Moved",
+        description: next === AI_DRIVE_FOLDER ? "AI Drive" : next,
+      });
+    } finally {
+      setIsCardActionBusy(false);
+    }
+  }, []);
+
+  /** Out of the vault and onto the disk, wherever the save sheet is pointed. */
+  const saveCardToDevice = useCallback(async (card, type) => {
+    const name = String(card?.attachment?.name || card?.title || "file");
+    try {
+      const url = await resolveCardMediaUrl(card, type);
+      const response = url ? await fetch(url) : null;
+      if (!response?.ok) throw new Error("no bytes");
+      const blob = await response.blob();
+      const saved = await saveFileToChosenFolder(blob, name, blob.type);
+      // No path means they closed the sheet, which needs no announcement.
+      if (saved) toast({ title: "Saved to this Mac", description: saved });
+    } catch {
+      toast({
+        title: "Couldn't save this",
+        description: "The file couldn't be read. Try again in a moment.",
+        variant: "destructive",
+      });
+    }
+  }, [resolveCardMediaUrl]);
+
+  const handleDriveOpen = useCallback((entry) => {
+    const card = entry?.card;
+    if (!card) return;
+    closeAllVaultPopovers();
+    // Chat-bar "+" is a picker: click selects, Add confirms. Don't steal
+    // the listing out from under the Add / Cancel bar.
+    if (isChatPickMode) return;
+
+    // What LYKN made opens in the same window a document on the Desktop opens
+    // in. A generated image and a downloaded one are both just files, and
+    // there was no reason left for them to behave differently.
+    const att = card.attachment || {};
+    const type = resolveAttachmentType(att) || card.type;
+    if (card.kind === "attachment" && !DRIVE_LINK_TYPES.has(type)) {
+      openFileWindow({
+        itemId: card.id,
+        name: att.name || card.title || "File",
+        mime: att.mimeType || att.mime || null,
+        size: att.size ?? att.fileSize ?? null,
+        media: DRIVE_WINDOW_MEDIA[type] || null,
+        resolveUrl: () => resolveCardMediaUrl(card, type),
+        picks: [
+          {
+            id: "project",
+            label: "Add to project",
+            icon: FolderKanban,
+            empty: "No projects yet.",
+            options: () =>
+              projectsRef.current.map((project) => ({
+                id: String(project.id),
+                label: project.name,
+              })),
+            onPick: (projectId) => addCardToProject(card, projectId),
+          },
+          {
+            id: "move",
+            label: "Move to",
+            icon: FolderInput,
+            options: () => {
+              const note = notesRef.current.find(
+                (n) => String(n?.id) === String(card.noteId),
+              );
+              const at = String(note?.folder || "").trim();
+              return [
+                { id: AI_DRIVE_FOLDER, label: "AI Drive", current: at === AI_DRIVE_FOLDER },
+                ...(canSaveFileAs()
+                  ? [{ id: MOVE_TO_DEVICE, label: "A folder on this Mac…" }]
+                  : []),
+                ...vaultFoldersRef.current.map((name) => ({
+                  id: name,
+                  label: name,
+                  current: at === name,
+                })),
+              ];
+            },
+            onPick: (choice) =>
+              choice === MOVE_TO_DEVICE
+                ? saveCardToDevice(card, type)
+                : moveCardToFolder(card, choice),
+          },
+        ],
+      });
+      return;
+    }
+
+    // Notes and links aren't files; they keep the vault's own reader.
+    setPreviewDetailsOpen(false);
+    setPreviewCard(card);
+  }, [
+    closeAllVaultPopovers,
+    isChatPickMode,
+    resolveCardMediaUrl,
+    addCardToProject,
+    moveCardToFolder,
+    saveCardToDevice,
+  ]);
+
+  /**
+   * `/vault?pane=drive[&folder=…][&note=…]` — how something in AI Drive gets
+   * put on screen from outside. lykn_open_app settles WHICH item was meant and
+   * hands the vault tab this route; landing on it happens here.
+   *
+   * A row older than the first page isn't loaded yet, so the link survives
+   * until the pages run out rather than being dropped on the first miss — this
+   * re-runs as each page lands.
+   */
+  useEffect(() => {
+    if (!studioSurface) return;
+    const params = new URLSearchParams(location.search);
+    const wantFolder = params.get("folder");
+    const wantNote = params.get("note");
+    if (!wantFolder && !wantNote) return;
+
+    if (wantNote) {
+      const match = vaultCards.find(
+        (card) => card && String(card.noteId) === wantNote && driveFolderIdFor(card),
+      );
+      if (!match) {
+        if (isLoadingNotes) return;
+        if (hasMoreNotes) { void loadMoreNotes(); return; }
+        // Deleted, or never in the drive. Fall through to the folder so the
+        // window still shows something related rather than nothing.
+      } else {
+        setOpenDriveFolder(driveFolderIdFor(match));
+        handleDriveOpen({ card: match });
+        clearDriveLinkParams();
+        return;
+      }
+    }
+
+    if (wantFolder === "artifacts" || wantFolder === "images") setOpenDriveFolder(wantFolder);
+    clearDriveLinkParams();
+  }, [
+    studioSurface, location.search, vaultCards, isLoadingNotes, hasMoreNotes,
+    loadMoreNotes, handleDriveOpen, clearDriveLinkParams,
+  ]);
+
+  const handleDriveMenu = useCallback((entry, element) => {
+    if (!entry?.card) return;
+    // Folder tiles are synthetic — there's no row behind them to tag or delete.
+    if (entry.card.kind === "source-folder" || entry.card.kind === "drive-folder") return;
+    openCardMenuForAnchor(entry.id, element);
+  }, [openCardMenuForAnchor]);
+
+  const handleDriveSelectAll = useCallback((ids) => {
+    setSelectedCardIds(new Set(selectableIdsAmong(ids)));
+  }, [selectableIdsAmong]);
+
+  const handleDriveClearSearch = useCallback(() => {
+    setEmbeddedSearch("");
+    setVaultSearch("");
+    setConceptResultIds(null);
+  }, []);
+
+  const handleDriveToggleTag = useCallback((tag) => {
+    setSelectedFilterTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    );
+  }, []);
+
   if ((loading || isLoadingNotes || !vaultReady) && user && !isWakePreview) {
     return <LoadingScreen isLoading={true} />;
   }
@@ -6807,7 +7514,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
     <div
       ref={vaultPreviewRootRef}
       className={`${
-        isWakePreview ? "lykn-wake-vault-live-preview h-full min-h-0" : "min-h-screen"
+        isWakePreview || studioSurface ? "lykn-vault-boxed h-full min-h-0" : "min-h-screen"
+      } ${
+        isWakePreview ? "lykn-wake-vault-live-preview" : ""
       } bg-transparent text-black dark:text-white relative overflow-x-hidden`}
     >
       {!isWakePreview && (
@@ -6836,7 +7545,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
         <>
           {!isWakePreview && (
           <>
-          {/* Bottom-right FAB: voice or written note chooser. */}
+          {/* Bottom-right FAB: voice or written note chooser. Not in AI Drive
+              — `fixed` anchors to the viewport, so inside the file-manager
+              window it would float over the whole Studio instead of the pane
+              it belongs to. */}
+          {!studioSurface && (
           <button
             type="button"
             onClick={handleToggleQuickNote}
@@ -6853,6 +7566,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           >
             <Plus className="w-5 h-5" />
           </button>
+          )}
 
           {/* Bottom-center app dock lives one level up in
               VaultConnectionsShell so a single instance renders across
@@ -6864,6 +7578,53 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
         </>
       )}
 
+      {/*
+        In the Studio the same items are listed as a folder instead of laid out
+        as a collage, so the window doesn't change its mind about what a file
+        looks like between AI Drive and the Mac's own folders. That surface
+        brings its own toolbar and status bar and owns the pane's full height,
+        so it stands in for the page shell rather than sitting inside it.
+      */}
+      {studioSurface ? (
+        <DriveListing
+          entries={driveEntries}
+          loading={isLoadingNotes || isLoadingMoreNotes}
+          folder={driveFolder}
+          onExitFolder={handleDriveExitFolder}
+          onEnterFolder={handleDriveEnterFolder}
+          query={embeddedSearch}
+          onQueryChange={setEmbeddedSearch}
+          onQuerySubmit={handleConceptSearch}
+          searching={isConceptSearching}
+          onClearSearch={handleDriveClearSearch}
+          tags={driveTags}
+          selectedTags={selectedFilterTags}
+          onToggleTag={handleDriveToggleTag}
+          onClearTags={() => setSelectedFilterTags([])}
+          selectedIds={selectedCardIds}
+          onSelect={handleDriveSelect}
+          onOpen={handleDriveOpen}
+          onMenu={handleDriveMenu}
+          onClearSelection={clearSelection}
+          onSelectAll={handleDriveSelectAll}
+          onRefresh={refreshNotes}
+          registerRef={registerCardRef}
+          hasMore={hasMoreNotes}
+          onLoadMore={loadMoreNotes}
+          error={notesError}
+          pickMode={isChatPickMode}
+          onPickAdd={addSelectedVaultToChat}
+          onPickCancel={cancelVaultChatPick}
+        />
+      ) : (
+      /*
+        Three layouts, and only two of them scroll the page itself. Standalone
+        grows with its content and lets the document scroll. The wake preview
+        and the Studio window are both boxed to their host's height by the
+        root's `.lykn-wake-vault-live-preview`, which is `overflow: hidden` —
+        so whichever one is active, this element has to own the scrolling or
+        the grid simply gets cut off at the bottom of the frame.
+      */
       <main
         className={`vault-preview-shell relative z-20 mx-auto w-full ${
           isWakePreview
@@ -7041,7 +7802,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                 </>
               )}
               <div
-                className="mt-4 flex flex-wrap items-center gap-3 relative z-[400]"
+                className="relative z-[400] mt-4 flex flex-wrap items-center gap-3"
                 style={{ minHeight: 1 }}
               >
                 <form
@@ -7051,7 +7812,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                     handleConceptSearch(vaultSearch);
                   }}
                 >
-                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-black/35 dark:text-white/35 pointer-events-none" />
+                  <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-black/35 dark:text-white/35" />
                   <input
                     type="text"
                     value={vaultSearch}
@@ -7205,7 +7966,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                     )}
                   </div>
                 )}
-                {!isWakePreview && (
+                {!isWakePreview && !studioSurface && (
                   <button
                     type="button"
                     onClick={() => nav("/settings?section=connections")}
@@ -7373,6 +8134,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                           draggable={false}
                           onDragStart={handleCardDragStart}
                           onClick={(e) => handleCardPress(e, card)}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            openCardMenuForAnchor(card.id, e.currentTarget);
+                          }}
                           // Same browser-native culling as the main grid;
                           // tag view often renders the largest single
                           // page (every card duplicated per tag).
@@ -7469,6 +8234,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                             draggable={false}
                             onDragStart={handleCardDragStart}
                             onClick={(e) => handleCardPress(e, card)}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              openCardMenuForAnchor(card.id, e.currentTarget);
+                            }}
                             // See `virtualizedCardStyle` definition above:
                             // browser-native off-screen culling kicks in
                             // once the rendered count crosses
@@ -7617,7 +8386,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                     : "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2"
                 }>
                   {vaultView === "grid" && !isWakePreview && (
-                    <div className="rounded-2xl border-2 border-dashed border-blue-500/30 p-4 flex flex-col items-center justify-center text-center aspect-square gap-2">
+                    <div className="rounded-2xl border-2 border-dashed border-blue-500/30 flex flex-col items-center justify-center text-center aspect-square gap-2 p-4">
                       <div className="text-xs font-medium text-black/40 dark:text-white/40">Add attachments</div>
                       <div className="flex gap-1.5">
                         <button type="button" onClick={handleRequestAddMedia} className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center hover:bg-blue-500/20 transition-colors">
@@ -7652,6 +8421,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           </motion.div>
         )}
       </main>
+      )}
 
       {isWakePreview && (
         <button
@@ -8327,7 +9097,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                 <img
                   src={imagePreviewUrl}
                   alt={title}
-                  className="w-full h-full max-h-full object-contain bg-black/[0.03]"
+                  className="max-h-full max-w-full w-auto h-auto object-contain bg-black/[0.03]"
                   draggable={false}
                   onError={() => {
                     setFailedImageIds((prev) => new Set(prev).add(card.id));
@@ -8342,7 +9112,7 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                 controls
                 autoPlay
                 playsInline
-                className="w-full h-full max-h-full rounded-xl bg-black"
+                className="max-h-full max-w-full w-auto h-auto object-contain rounded-xl bg-black"
               />
             );
           } else if (card.kind === "attachment" && type === "audio") {
@@ -8369,8 +9139,9 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           } else if (card.kind === "attachment" && type === "html") {
             const htmlStorage = parseStorageTarget(att);
             const htmlIsStorage = !!(htmlStorage?.bucket && htmlStorage?.path);
-            // Wait for the file-proxy mint when storage-backed — painting a
-            // raw Supabase signed URL blanks the iframe (wrong MIME / CSP).
+            const markup = driveMarkup[card.id] || "";
+            // Non-storage artifacts may still frame their original safe URL.
+            // Storage-backed artifacts render from fetched markup above.
             const candidate =
               resolvedAttachmentUrls[card.id] || (!htmlIsStorage ? resolvedUrl : "");
             const htmlEmbed = /supabase\.co\/storage\//i.test(candidate || "")
@@ -8382,6 +9153,14 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                 src={htmlEmbed.url}
                 className="w-full h-full min-h-[24rem] rounded-xl border border-white/30 dark:border-white/10 bg-[#15130f]"
                 sandbox={htmlEmbed.sandbox}
+                referrerPolicy="no-referrer"
+              />
+            ) : markup ? (
+              <iframe
+                title={title}
+                srcDoc={markup}
+                className="w-full h-full min-h-[24rem] rounded-xl border border-white/30 dark:border-white/10 bg-white"
+                sandbox="allow-scripts allow-popups allow-forms allow-modals allow-presentation"
                 referrerPolicy="no-referrer"
               />
             ) : (
@@ -8621,51 +9400,155 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
             void removeQuickNoteCard(card);
             setPreviewCard(null);
           };
+          const togglePreviewShare = (event) => {
+            event.stopPropagation();
+            if (previewShareMenuRect) {
+              setPreviewShareMenuRect(null);
+              return;
+            }
+            setPreviewProjectDropdownOpen(false);
+            setOpenCardMenuId(null);
+            setOpenCardMenuRect(null);
+            setTagPickerCardId(null);
+            const rect = event.currentTarget.getBoundingClientRect();
+            const anchor = {
+              left: rect.left,
+              top: rect.top,
+              right: rect.right,
+              bottom: rect.bottom,
+              width: rect.width,
+              height: rect.height,
+            };
+            const nativeShare = window.lykn?.nativeShare;
+            if (typeof nativeShare === "function") {
+              const safeUrl = resolvePreviewShareUrl(card, shareUrl);
+              // Images, video, PDFs and files share as attachments; artifacts
+              // and links share as a URL (that's what the recipient needs).
+              const shareType = String(type || resolveAttachmentType(att) || "");
+              const shareAsFile =
+                card.kind === "attachment" &&
+                ["image", "video", "audio", "pdf", "file", "spreadsheet"].includes(shareType);
+              void nativeShare({
+                title: title || "LYKN vault item",
+                text: resolvePreviewShareText(card),
+                url: safeUrl || "",
+                asFile: shareAsFile,
+                filename: String(att.name || title || ""),
+                x: Math.round(rect.left),
+                y: Math.round(rect.bottom),
+              })
+                .then((result) => {
+                  // A main process from before the last restart still answers
+                  // `ok` while showing nothing, so require the current API too:
+                  // otherwise the click has no visible effect at all.
+                  if (!result?.ok || result.api !== 2) setPreviewShareMenuRect(anchor);
+                })
+                .catch(() => setPreviewShareMenuRect(anchor));
+              return;
+            }
+            setPreviewShareMenuRect(anchor);
+          };
 
           return (
-            <div
-              className="fixed inset-0 z-[9999] bg-black/50 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 lg:p-10"
-              onClick={() => setPreviewCard(null)}
+            <LyknMediaPop
+              open
+              onClose={() => setPreviewCard(null)}
+              title={title || "Preview"}
+              zIndex={9999}
             >
-              <div
-                className="relative w-full max-w-[min(96vw,72rem)] h-[min(90vh,52rem)] flex flex-col lg:flex-row rounded-[1.5rem] lg:rounded-[1.75rem] bg-white dark:bg-[#1c1c1e] shadow-[0_28px_100px_rgba(0,0,0,0.4)] overflow-hidden"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* Floating close — overlaps the card corner like the mock. */}
-                <button
-                  type="button"
-                  onClick={() => setPreviewCard(null)}
-                  className="absolute top-3 right-3 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-white/95 dark:bg-[#2c2c2e] text-black/70 dark:text-white/80 shadow-md border border-black/8 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/[0.08] transition-colors"
-                  title="Close (Esc)"
-                  aria-label="Close"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+              <div className="flex max-h-[min(78vh,820px)] w-[min(96vw,980px)] flex-col overflow-hidden">
+                <div className="mb-2 flex items-center justify-end gap-0.5 self-end rounded-full border border-black/10 bg-white/80 px-1.5 py-1 backdrop-blur-2xl dark:border-white/12 dark:bg-black/45">
+                    {canExpandExternally ? (
+                      <button
+                        type="button"
+                        onClick={() => { void openCardFullyInBrowser(card); }}
+                        className="flex h-6 w-6 items-center justify-center rounded-md text-black/55 hover:bg-black/[0.06] hover:text-black/85 dark:text-white/70 dark:hover:bg-white/10 dark:hover:text-white transition-colors"
+                        title="Open in a separate window"
+                        aria-label="Open in a separate window"
+                      >
+                        <Maximize2 className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setPreviewDetailsOpen((open) => !open)}
+                      className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+                        previewDetailsOpen
+                          ? "bg-black/10 text-black/85 dark:bg-white/15 dark:text-white"
+                          : "text-black/55 hover:bg-black/[0.06] hover:text-black/85 dark:text-white/70 dark:hover:bg-white/10 dark:hover:text-white"
+                      }`}
+                      title={previewDetailsOpen ? "Hide details" : "Show details"}
+                      aria-label={previewDetailsOpen ? "Hide details" : "Show details"}
+                      aria-pressed={previewDetailsOpen}
+                    >
+                      <Layers className="h-3.5 w-3.5" />
+                    </button>
+                    {card.noteId && !isWakePreview ? (
+                      <button
+                        type="button"
+                        data-vault-popover-trigger=""
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openTagsPicker(event.currentTarget);
+                        }}
+                        className="flex h-6 w-6 items-center justify-center rounded-md text-black/55 hover:bg-black/[0.06] hover:text-black/85 dark:text-white/70 dark:hover:bg-white/10 dark:hover:text-white transition-colors"
+                        title="Tags"
+                        aria-label="Tags"
+                      >
+                        <Tag className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => chatAboutPreviewCard(card)}
+                      className="inline-flex h-6 items-center gap-1 rounded-md bg-blue-500/15 px-2 text-[0.68rem] font-semibold text-blue-700 hover:bg-blue-500/25 dark:text-blue-200 dark:hover:bg-blue-500/30 transition-colors"
+                      title="Chat about this"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Chat
+                    </button>
+                    <button
+                      type="button"
+                      data-vault-popover-trigger=""
+                      onClick={togglePreviewShare}
+                      className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+                        previewShareMenuRect
+                          ? "bg-black/10 text-black/85 dark:bg-white/15 dark:text-white"
+                          : "text-black/55 hover:bg-black/[0.06] hover:text-black/85 dark:text-white/70 dark:hover:bg-white/10 dark:hover:text-white"
+                      }`}
+                      title="Share"
+                      aria-label="Share"
+                    >
+                      <Share className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCardActionBusy}
+                      onClick={deleteFromPreview}
+                      className="flex h-6 w-6 items-center justify-center rounded-md text-black/40 hover:bg-red-500/15 hover:text-red-600 dark:text-white/50 dark:hover:text-red-300 disabled:opacity-40 transition-colors"
+                      title="Delete"
+                      aria-label="Delete"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
 
-                {/* Media / body — dominant pane on laptop.
-                    Always use `body` so image load/error/retry states render
-                    (a bare <img> here used to hide Try again and flash raw URLs). */}
-                <div className="relative min-h-0 flex-1 lg:flex-[1.7] overflow-hidden bg-black/[0.03] dark:bg-white/[0.04] border-b lg:border-b-0 lg:border-r border-black/6 dark:border-white/8">
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl lg:flex-row">
+                <div className="relative min-h-0 flex-1 overflow-hidden lg:flex-[1.9]">
                   <div className="h-full min-h-[16rem] lg:min-h-0 overflow-y-auto flex items-center justify-center">
-                    <div className={`w-full h-full ${type === "image" ? "" : "p-4 sm:p-5 lg:p-6"}`}>
+                    <div className={`w-full h-full ${
+                      type === "image"
+                        ? "flex items-center justify-center p-5 sm:p-8"
+                        : "p-3 sm:p-4"
+                    }`}>
                       {body}
                     </div>
                   </div>
-                  {canExpandExternally ? (
-                    <button
-                      type="button"
-                      onClick={() => { void openCardFullyInBrowser(card); }}
-                      className="absolute bottom-4 right-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-black/55 hover:bg-black/70 text-white backdrop-blur-sm transition-colors shadow-md"
-                      title="Open fully in a separate window"
-                      aria-label="Expand"
-                    >
-                      <Maximize2 className="w-5 h-5" />
-                    </button>
-                  ) : null}
                 </div>
 
-                {/* Meta + actions — side panel on laptop. */}
-                <div className="shrink-0 w-full lg:w-[22rem] xl:w-[24rem] flex flex-col min-h-0 lg:max-h-full overflow-visible px-5 sm:px-6 pt-5 pb-5">
+                {/* Inspector stays tucked away by default, like Preview's sidebar. */}
+                {previewDetailsOpen ? (
+                <div className="shrink-0 w-full lg:w-[20rem] xl:w-[22rem] flex flex-col min-h-0 lg:max-h-full overflow-visible bg-[#f4f4f4] dark:bg-[#242424] px-5 sm:px-6 pt-5 pb-5">
                   <div className="min-h-0 flex-1 overflow-y-auto space-y-4 pr-0.5">
                     {title ? (
                       <h2 className="pr-10 text-lg font-semibold text-black/85 dark:text-white/90 leading-snug line-clamp-3">
@@ -9003,64 +9886,11 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-3 pt-4 mt-4 shrink-0 border-t border-black/8 dark:border-white/10">
-                    <button
-                      type="button"
-                      data-vault-popover-trigger=""
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (previewShareMenuRect) {
-                          setPreviewShareMenuRect(null);
-                          return;
-                        }
-                        setPreviewProjectDropdownOpen(false);
-                        setOpenCardMenuId(null);
-                        setOpenCardMenuRect(null);
-                        setTagPickerCardId(null);
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        setPreviewShareMenuRect({
-                          left: rect.left,
-                          top: rect.top,
-                          right: rect.right,
-                          bottom: rect.bottom,
-                          width: rect.width,
-                          height: rect.height,
-                        });
-                      }}
-                      className={`flex h-11 w-11 items-center justify-center rounded-full transition-colors ${
-                        previewShareMenuRect
-                          ? "bg-black/[0.08] dark:bg-white/[0.12] text-black/80 dark:text-white/85"
-                          : "text-black/55 dark:text-white/55 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
-                      }`}
-                      title="Share"
-                      aria-label="Share"
-                      aria-expanded={!!previewShareMenuRect}
-                    >
-                      <Share className="w-5 h-5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => chatAboutPreviewCard(card)}
-                      className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-[#dbeafe] dark:bg-blue-500/25 px-5 py-2.5 text-[0.9375rem] font-semibold text-blue-700 dark:text-blue-200 hover:bg-[#cfe3ff] dark:hover:bg-blue-500/35 transition-colors"
-                      title="Chat about this"
-                    >
-                      <Sparkles className="w-4 h-4" />
-                      Chat
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isCardActionBusy}
-                      onClick={deleteFromPreview}
-                      className="flex h-11 w-11 items-center justify-center rounded-full bg-red-500/10 text-red-600 hover:bg-red-500/15 disabled:opacity-50 transition-colors"
-                      title="Delete"
-                      aria-label="Delete"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
                 </div>
+                ) : null}
               </div>
-            </div>
+              </div>
+            </LyknMediaPop>
           );
         })(),
         document.body
@@ -9221,8 +10051,10 @@ export default function Vault({ wakePreview = false, onWakePreviewTabChange, stu
           selected via shift/cmd-click. Centered on desktop, sits above the
           mobile tab bar on phones. Esc and Delete/Backspace also work as
           keyboard shortcuts (see the keydown effect alongside
-          `deleteSelectedCards`). */}
-      {selectedCardIds.size > 0 && !isPickerMode && createPortal(
+          `deleteSelectedCards`). Not in AI Drive: it's `fixed`, so in the
+          file-manager window it would float over the whole Studio, and the
+          listing's status bar already reports the count. */}
+      {selectedCardIds.size > 0 && !isPickerMode && !studioSurface && createPortal(
         <div
           // 6rem on desktop clears the bottom-center app dock so the two
           // don't pile up; phones sit just above the mobile tab bar.

@@ -55,6 +55,19 @@ contextBridge.exposeInMainWorld("lykn", {
   // own origin would stay inside the shell window.
   openExternal: (url, title) =>
     ipcRenderer.send("lykn:open-url", { url: String(url || ""), title }),
+  // Native macOS sharing-services menu, anchored to the renderer button.
+  nativeShare: (payload = {}) =>
+    ipcRenderer.invoke("lykn:native-share", {
+      title: String(payload.title || ""),
+      text: String(payload.text || ""),
+      url: String(payload.url || ""),
+      // Share the asset itself (AirDrop, Photos, Mail attachment) instead of
+      // a signed link, for anything that is really a file.
+      asFile: !!payload.asFile,
+      filename: String(payload.filename || ""),
+      x: Number(payload.x) || 0,
+      y: Number(payload.y) || 0,
+    }),
   // LYKN Glass — the always-on-top ⌘/Ctrl+L chat overlay. Same path as the
   // global hotkey: summon the bar and focus its composer for typing.
   openGlass: () => ipcRenderer.send("lykn:show-overlay"),
@@ -156,6 +169,9 @@ contextBridge.exposeInMainWorld("lykn", {
     return () => ipcRenderer.removeListener("lykn:agent-browser-history", fn);
   },
   pickFiles: () => ipcRenderer.invoke("lykn:pick-files"),
+  // Native macOS Open panel, parented to the calling window — the same
+  // selector a Mac app shows when the user wants to add files.
+  pickOpenFiles: () => ipcRenderer.invoke("lykn:pick-open-files"),
   // Cluely-style follow-ups after an agent/answer finishes (same as Glass).
   suggest: (question, answer, opts = {}) =>
     ipcRenderer.invoke("lykn:suggest", { question, answer, ...opts }),
@@ -206,10 +222,186 @@ contextBridge.exposeInMainWorld("lykn", {
       args: args || {},
       approved: opts?.approved === true,
     }),
+  // Local store — the device-side home for vault items, chat threads,
+  // artifacts, and the retrieval index. Every call resolves to
+  // { ok: true, data } or { ok: false, error }; main never rejects, because a
+  // rejected invoke loses its stack crossing the bridge.
+  //
+  // Namespaced rather than flattened onto window.lykn: the surface is wide and
+  // grows with each phase of the local-first migration, and grouping keeps it
+  // obvious which calls touch the user's own data.
+  store: {
+    run: (op, args = {}) =>
+      ipcRenderer.invoke("lykn:store-run", { op: String(op || ""), args: args || {} }),
+
+    // Items — vault notes, attachments, generated images, artifacts.
+    putItem: (item) => ipcRenderer.invoke("lykn:store-run", { op: "item.put", args: { item } }),
+    getItem: (id) => ipcRenderer.invoke("lykn:store-run", { op: "item.get", args: { id } }),
+    getItems: (ids = []) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "item.getMany", args: { ids } }),
+    updateItem: (id, patch, opts = {}) =>
+      ipcRenderer.invoke("lykn:store-run", {
+        op: "item.update",
+        args: { id, patch, ifUpdatedAt: opts?.ifUpdatedAt || null },
+      }),
+    listItems: (args = {}) => ipcRenderer.invoke("lykn:store-run", { op: "item.list", args }),
+    softDeleteItem: (id) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "item.softDelete", args: { id } }),
+    restoreItem: (id) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "item.restore", args: { id } }),
+    deleteItem: (id) => ipcRenderer.invoke("lykn:store-run", { op: "item.delete", args: { id } }),
+    countItems: (args = {}) => ipcRenderer.invoke("lykn:store-run", { op: "item.count", args }),
+    tagCounts: () => ipcRenderer.invoke("lykn:store-run", { op: "item.tagCounts", args: {} }),
+
+    // Threads and messages — chat history and grid boards.
+    putThread: (thread) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "thread.put", args: { thread } }),
+    getThread: (id) => ipcRenderer.invoke("lykn:store-run", { op: "thread.get", args: { id } }),
+    listThreads: (args = {}) => ipcRenderer.invoke("lykn:store-run", { op: "thread.list", args }),
+    deleteThread: (id, opts = {}) =>
+      ipcRenderer.invoke("lykn:store-run", {
+        op: "thread.delete",
+        args: { id, hard: opts?.hard === true },
+      }),
+    appendMessage: (threadId, message) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "message.append", args: { threadId, message } }),
+    listMessages: (threadId, args = {}) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "message.list", args: { threadId, ...args } }),
+
+    // Save + index in one call. Prefer this over putItem for anything the user
+    // should be able to find later; putItem writes the row but leaves its
+    // vectors to the next backfill.
+    saveItem: (item) => ipcRenderer.invoke("lykn:store-run", { op: "item.save", args: { item } }),
+
+    // Retrieval — FTS5 lexical, cosine semantic, and the fusion of the two.
+    // `search` embeds the query on-device and degrades to lexical when the
+    // model is unavailable, so callers never have to branch on it.
+    search: (query, args = {}) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "search.local", args: { query, ...args } }),
+    searchLexical: (query, args = {}) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "search.lexical", args: { query, ...args } }),
+    searchMessages: (query, args = {}) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "search.messages", args: { query, ...args } }),
+    putChunks: (sourceKind, sourceId, chunks, model) =>
+      ipcRenderer.invoke("lykn:store-run", {
+        op: "chunks.put",
+        args: { sourceKind, sourceId, chunks, model },
+      }),
+    staleChunkSources: (model) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "chunks.stale", args: { model } }),
+
+    // On-device embeddings. `embedStatus().data.runtimeAvailable` is false on
+    // platforms with no ONNX Runtime build; search still works, lexically.
+    embedStatus: () => ipcRenderer.invoke("lykn:store-run", { op: "embed.status", args: {} }),
+    embedWarmup: () => ipcRenderer.invoke("lykn:store-run", { op: "embed.warmup", args: {} }),
+    embedQuery: (text) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "embed.query", args: { text } }),
+
+    // Indexing — one source at a time, or a resumable pass over everything.
+    indexItem: (id, opts = {}) =>
+      ipcRenderer.invoke("lykn:store-run", {
+        op: "index.item",
+        args: { id, force: opts?.force === true },
+      }),
+    indexThread: (id, opts = {}) =>
+      ipcRenderer.invoke("lykn:store-run", {
+        op: "index.thread",
+        args: { id, force: opts?.force === true },
+      }),
+    indexPending: () => ipcRenderer.invoke("lykn:store-run", { op: "index.pending", args: {} }),
+
+    // Chunked binary writes. Prefer these over `writeBlob` for anything that
+    // could be large: a single-message write holds the whole file in memory on
+    // both sides of the bridge at once.
+    beginBlobWrite: (itemId, opts = {}) =>
+      ipcRenderer.invoke("lykn:store-run", {
+        op: "blob.beginWrite",
+        args: { itemId, ...opts },
+      }),
+    appendBlobWrite: (token, data) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "blob.appendWrite", args: { token, data } }),
+    finishBlobWrite: (token) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "blob.finishWrite", args: { token } }),
+    abortBlobWrite: (token) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "blob.abortWrite", args: { token } }),
+
+    // Migration from Supabase. The renderer owns the session, so it hands the
+    // access token down; the main process only ever reads with it.
+    importConfigure: ({ url, accessToken, apiKey, userId } = {}) =>
+      ipcRenderer.invoke("lykn:store-run", {
+        op: "import.configure",
+        args: { url, accessToken, apiKey, userId },
+      }),
+    importPreflight: () =>
+      ipcRenderer.invoke("lykn:store-run", { op: "import.preflight", args: {} }),
+    importStart: (args = {}) => ipcRenderer.invoke("lykn:store-run", { op: "import.start", args }),
+    importStatus: () => ipcRenderer.invoke("lykn:store-run", { op: "import.status", args: {} }),
+    importCancel: () => ipcRenderer.invoke("lykn:store-run", { op: "import.cancel", args: {} }),
+    importVerify: (args = {}) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "import.verify", args }),
+    importReset: () => ipcRenderer.invoke("lykn:store-run", { op: "import.reset", args: {} }),
+    indexBackfill: (args = {}) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "index.backfill", args }),
+    indexStatus: () => ipcRenderer.invoke("lykn:store-run", { op: "index.status", args: {} }),
+    indexCancel: () => ipcRenderer.invoke("lykn:store-run", { op: "index.cancel", args: {} }),
+
+    // Binaries.
+    writeBlob: (itemId, data, opts = {}) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "blob.write", args: { itemId, data, ...opts } }),
+    readBlob: (path) => ipcRenderer.invoke("lykn:store-run", { op: "blob.read", args: { path } }),
+    blobPath: (path) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "blob.absolutePath", args: { path } }),
+
+    // Maintenance.
+    stats: () => ipcRenderer.invoke("lykn:store-run", { op: "store.stats", args: {} }),
+    snapshot: () => ipcRenderer.invoke("lykn:store-run", { op: "backup.snapshot", args: {} }),
+    listSnapshots: () => ipcRenderer.invoke("lykn:store-run", { op: "backup.list", args: {} }),
+  },
+
+  // Apps LYKN built for the user, installed on this device.
+  //
+  // This surface manages apps from the outside — install, launch, uninstall,
+  // review permissions. It is NOT how an app reaches its own data: that runs
+  // over a separate channel only a lykn-app:// origin can reach, so nothing
+  // here can be used to read one app's data from another.
+  apps: {
+    list: () => ipcRenderer.invoke("lykn:app-list"),
+    install: (payload = {}) => ipcRenderer.invoke("lykn:app-install", payload),
+    open: (id) => ipcRenderer.invoke("lykn:app-open", { id }),
+    uninstall: (id) => ipcRenderer.invoke("lykn:app-uninstall", { id }),
+    /** The user's own icon choice — a lucide name, or null for the default. */
+    setIcon: (id, icon) => ipcRenderer.invoke("lykn:app-set-icon", { id, icon }),
+    /** Recompile and load the app for real, returning anything that broke. */
+    verify: (id) => ipcRenderer.invoke("lykn:app-verify", { id }),
+    permissions: (id) => ipcRenderer.invoke("lykn:app-permissions", { id }),
+    setPermission: (id, capability, allowed) =>
+      ipcRenderer.invoke("lykn:app-set-permission", { id, capability, allowed }),
+
+    // Files and versions, for an editor surface and for rollback.
+    files: (id) => ipcRenderer.invoke("lykn:store-run", { op: "app.files.list", args: { id } }),
+    versions: (id) => ipcRenderer.invoke("lykn:store-run", { op: "app.version.list", args: { id } }),
+    rollback: (id, version) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "app.version.rollback", args: { id, version } }),
+    stats: (id) => ipcRenderer.invoke("lykn:store-run", { op: "app.stats", args: { id } }),
+    dataCollections: (id) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "app.data.collections", args: { id } }),
+    clearData: (id, collection = null) =>
+      ipcRenderer.invoke("lykn:store-run", { op: "app.data.clear", args: { id, collection } }),
+
+    /** Fires when an app is installed or removed, in any window. */
+    onChanged: (cb) => {
+      const fn = (_e, p) => cb(p || {});
+      ipcRenderer.on("lykn:apps-changed", fn);
+      return () => ipcRenderer.removeListener("lykn:apps-changed", fn);
+    },
+  },
   // Sync with Mac — synced-folders allowlist that scopes Local Mode.
   macSyncGet: () => ipcRenderer.invoke("lykn:mac-sync-get"),
   macSyncSet: ({ syncAll, syncedFolders } = {}) =>
     ipcRenderer.invoke("lykn:mac-sync-set", { syncAll, syncedFolders }),
+  // One folder's sync switch — the button on each Mac folder page in the Vault.
+  macSyncSetFolder: ({ folder, synced } = {}) =>
+    ipcRenderer.invoke("lykn:mac-sync-folder", { folder, synced: synced === true }),
   macSyncPickFolder: () => ipcRenderer.invoke("lykn:mac-sync-pick-folder"),
   onMacSyncChanged: (cb) => {
     const fn = (_e, p) => cb(p || {});
@@ -221,9 +413,38 @@ contextBridge.exposeInMainWorld("lykn", {
   macFsOpen: (path, opts = {}) =>
     ipcRenderer.invoke("lykn:mac-fs-open", { path, reveal: opts?.reveal === true }),
   macFsHome: () => ipcRenderer.invoke("lykn:mac-fs-home"),
+  // Downloads land in the user's Downloads folder, not wherever Chromium's
+  // settings happen to point.
+  saveToDownloads: ({ name, bytes } = {}) =>
+    ipcRenderer.invoke("lykn:save-to-downloads", { name, bytes }),
+  // "Put this in a folder on my Mac" — the native save sheet picks the folder.
+  saveFileAs: ({ name, bytes } = {}) =>
+    ipcRenderer.invoke("lykn:save-file-as", { name, bytes }),
+  // Files browser — the Vault's Locations sidebar. Browsing, editing, and a
+  // per-folder watch so the view follows what actually happens on disk.
+  files: {
+    list: (args = {}) => ipcRenderer.invoke("lykn:files-list", args),
+    // A QuickLook preview (PDF page, video frame, app icon) as a data URL.
+    thumbnail: (path, size) => ipcRenderer.invoke("lykn:files-thumbnail", { path, size }),
+    roots: () => ipcRenderer.invoke("lykn:files-roots"),
+    mkdir: (args = {}) => ipcRenderer.invoke("lykn:files-mkdir", args),
+    rename: (args = {}) => ipcRenderer.invoke("lykn:files-rename", args),
+    move: (args = {}) => ipcRenderer.invoke("lykn:files-move", args),
+    copy: (args = {}) => ipcRenderer.invoke("lykn:files-copy", args),
+    duplicate: (args = {}) => ipcRenderer.invoke("lykn:files-duplicate", args),
+    trash: (args = {}) => ipcRenderer.invoke("lykn:files-trash", args),
+    watch: (path) => ipcRenderer.invoke("lykn:files-watch", { path }),
+    unwatch: (path) => ipcRenderer.invoke("lykn:files-unwatch", { path }),
+    onChanged: (cb) => {
+      const fn = (_e, p) => cb(p || {});
+      ipcRenderer.on("lykn:files-changed", fn);
+      return () => ipcRenderer.removeListener("lykn:files-changed", fn);
+    },
+  },
   // Mac app dock — installed apps, launch, and running-state.
   macAppsList: () => ipcRenderer.invoke("lykn:mac-apps-list"),
   macAppLaunch: (path) => ipcRenderer.invoke("lykn:mac-app-launch", { path }),
+  macAppQuit: (path) => ipcRenderer.invoke("lykn:mac-app-quit", { path }),
   macAppsRunning: () => ipcRenderer.invoke("lykn:mac-apps-running"),
   macAppsWatch: (on) => ipcRenderer.send("lykn:mac-apps-watch", { on: !!on }),
   macDockPinsGet: () => ipcRenderer.invoke("lykn:mac-dock-pins-get"),
@@ -271,11 +492,6 @@ contextBridge.exposeInMainWorld("lykn", {
   micStatus: () => ipcRenderer.invoke("lykn:onboarding-mic-status"),
   ensureMic: () => ipcRenderer.invoke("lykn:ensure-mic"),
   openMicSettings: () => ipcRenderer.send("lykn:onboarding-open-mic-settings"),
-  // Global notifications mute — gates update/agent OS notifications, the
-  // agent-finished popup, and renderer Notification permission requests.
-  getNotificationsMuted: () => ipcRenderer.invoke("lykn:notifications-muted-get"),
-  setNotificationsMuted: (muted) =>
-    ipcRenderer.send("lykn:notifications-muted-set", { muted: !!muted }),
   // Subscribe to deep-linked Supabase session tokens (see lykn://auth flow).
   onAuthTokens: (callback) => {
     authTokensCallback = typeof callback === "function" ? callback : null;

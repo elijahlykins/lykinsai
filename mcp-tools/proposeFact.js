@@ -16,7 +16,7 @@
 // panel where they can thumbs-down dismiss anything that's wrong.
 
 import { recordLearnedFactFromChat, FACT_KINDS } from '../userModelLearning.js';
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 const FACT_KIND_LIST = Array.isArray(FACT_KINDS) && FACT_KINDS.length
   ? FACT_KINDS
@@ -71,8 +71,6 @@ export const proposeFactTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }
@@ -80,15 +78,13 @@ export const proposeFactTool = {
     if (!text) return errorContent('text is required.');
     const kind = typeof args?.kind === 'string' ? args.kind.trim().toLowerCase() : 'identity';
     const reason = args?.reason ? String(args.reason).trim().slice(0, 240) : null;
-    const sourceId = `mcp:${ctx.attribSurface || 'mcp:other'}`.slice(0, 200);
+    const sourceId = String(ctx.attribSurface || 'lykn-chat').slice(0, 200);
 
-    // Provenance plumbing (migration 047). The MCP context tells us which
-    // client wrote this fact; the user's synthesis profile tells us
-    // which project (if any) is currently active. Both stamp first-class
-    // columns the nightly synthesis job will use for cluster thresholds.
-    const clientSlug = ctx.mcpAuth?.clientKind
-      ? String(ctx.mcpAuth.clientKind).toLowerCase().slice(0, 64)
-      : 'lykn-chat';
+    // Provenance plumbing (migration 047). The user's synthesis profile
+    // tells us which project (if any) is currently active, which stamps a
+    // first-class column the nightly synthesis job uses for cluster
+    // thresholds.
+    const clientSlug = 'lykn-chat';
 
     let activeProjectId = null;
     try {

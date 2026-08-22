@@ -8,6 +8,11 @@ import { preloadVideoCompressor } from "@/lib/vault/compressMedia";
 import { startVaultUploads } from "@/lib/vault/uploadPipeline";
 import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
 import { useUserPlan } from "@/lib/useUserPlan";
+import {
+  onVaultMacPathsQueued,
+  takeQueuedVaultMacPaths,
+  vaultEntriesFromMacPaths,
+} from "@/lib/homeChatFiles";
 import { toast } from "@/components/ui/use-toast";
 
 /**
@@ -31,7 +36,16 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
 
   const processFileList = useCallback(async (fileList) => {
     const files = [];
-    for (const file of fileList) {
+    for (const item of fileList) {
+      if (item?.file instanceof File) {
+        files.push({
+          file: item.file,
+          folderPath: item.folderPath || null,
+          filename: item.filename || item.file.name,
+        });
+        continue;
+      }
+      const file = item;
       if (file.webkitRelativePath) {
         files.push({
           file,
@@ -201,6 +215,17 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
   );
 
   useEffect(() => {
+    const ingestQueuedDesktopPaths = async () => {
+      const paths = takeQueuedVaultMacPaths();
+      if (!paths.length) return;
+      const desktopEntries = await vaultEntriesFromMacPaths(paths);
+      if (desktopEntries.length > 0) await onDrop(desktopEntries);
+    };
+    void ingestQueuedDesktopPaths();
+    return onVaultMacPathsQueued(ingestQueuedDesktopPaths);
+  }, [onDrop]);
+
+  useEffect(() => {
     const handleFileSelect = async (e) => {
       const files = Array.from(e.detail?.files || []);
       if (files.length > 0) await handleFileUpload(files);
@@ -252,6 +277,8 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
       // the full-screen "Drop files here" takeover even though a text drop
       // usually does nothing. Links dragged from browsers always include
       // text/uri-list alongside text/plain, so they still work.
+      // Files dragged inside LYKN never reach here — those are pointer drags,
+      // and the drop zones that want them say so explicitly.
       return allTypes.includes("Files") || allTypes.includes("text/uri-list");
     };
 
@@ -263,10 +290,30 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
       return extractFirstUrl(plain);
     };
 
+    // A drag is only ours when the pointer is genuinely over an active drop
+    // pane, which means asking what it's actually over rather than whether it
+    // falls inside the pane's rectangle. A Vault window sitting behind the Home
+    // desktop still has a rectangle, and testing that let it swallow icons
+    // someone was only rearranging on the wallpaper.
+    const isInsideDropScope = (event) => {
+      const scopes = Array.from(document.querySelectorAll("[data-vault-drop-scope]"));
+      // Standalone /vault owns the viewport.
+      if (scopes.length === 0) return true;
+      const target = event.target instanceof Node ? event.target : null;
+      if (!target) return false;
+      return scopes.some(
+        (scope) =>
+          scope.getAttribute("data-vault-drop-scope") === "active" &&
+          scope.contains(target),
+      );
+    };
+
     const onWindowDragEnter = (event) => {
       if (internalCollageDragRef.current) return;
       if (!hasSupportedDropData(event)) return;
+      if (!isInsideDropScope(event)) return;
       event.preventDefault();
+      event.stopImmediatePropagation();
       if (dragHideTimeoutRef.current) {
         window.clearTimeout(dragHideTimeoutRef.current);
         dragHideTimeoutRef.current = null;
@@ -278,7 +325,13 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
     const onWindowDragOver = (event) => {
       if (internalCollageDragRef.current) return;
       if (!hasSupportedDropData(event)) return;
+      if (!isInsideDropScope(event)) {
+        setIsDragging(false);
+        return;
+      }
       event.preventDefault();
+      event.stopImmediatePropagation();
+      event.dataTransfer.dropEffect = "copy";
       if (dragHideTimeoutRef.current) {
         window.clearTimeout(dragHideTimeoutRef.current);
         dragHideTimeoutRef.current = null;
@@ -301,7 +354,9 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
     const onWindowDrop = async (event) => {
       if (internalCollageDragRef.current) return;
       if (!hasSupportedDropData(event)) return;
+      if (!isInsideDropScope(event)) return;
       event.preventDefault();
+      event.stopImmediatePropagation();
       if (dragHideTimeoutRef.current) {
         window.clearTimeout(dragHideTimeoutRef.current);
         dragHideTimeoutRef.current = null;
@@ -333,16 +388,18 @@ export default function DragDropFileUpload({ onUploadComplete, onFileComplete, o
       }
     };
 
-    window.addEventListener("dragenter", onWindowDragEnter);
-    window.addEventListener("dragover", onWindowDragOver);
-    window.addEventListener("dragleave", onWindowDragLeave);
-    window.addEventListener("drop", onWindowDrop);
+    // Capture on document before the Studio wallpaper can accept the same
+    // icon-group drop and commit a position behind the Vault window.
+    document.addEventListener("dragenter", onWindowDragEnter, true);
+    document.addEventListener("dragover", onWindowDragOver, true);
+    document.addEventListener("dragleave", onWindowDragLeave, true);
+    document.addEventListener("drop", onWindowDrop, true);
 
     return () => {
-      window.removeEventListener("dragenter", onWindowDragEnter);
-      window.removeEventListener("dragover", onWindowDragOver);
-      window.removeEventListener("dragleave", onWindowDragLeave);
-      window.removeEventListener("drop", onWindowDrop);
+      document.removeEventListener("dragenter", onWindowDragEnter, true);
+      document.removeEventListener("dragover", onWindowDragOver, true);
+      document.removeEventListener("dragleave", onWindowDragLeave, true);
+      document.removeEventListener("drop", onWindowDrop, true);
       if (dragHideTimeoutRef.current) {
         window.clearTimeout(dragHideTimeoutRef.current);
         dragHideTimeoutRef.current = null;

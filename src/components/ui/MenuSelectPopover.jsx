@@ -86,7 +86,7 @@ export default function MenuSelectPopover({
         >
           <div
             ref={listRef}
-            className="max-h-56 overflow-y-auto overscroll-contain space-y-0.5 pr-0.5 [scrollbar-width:thin] [scrollbar-color:rgba(0,0,0,0.25)_transparent] dark:[scrollbar-color:rgba(255,255,255,0.25)_transparent]"
+            className="max-h-56 overflow-y-auto overscroll-contain space-y-0.5 pr-0.5 scrollbar-hide"
           >
             {options.map((opt) => {
               const isSelected = String(opt.value) === String(value);

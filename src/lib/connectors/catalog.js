@@ -172,12 +172,6 @@ export const CONNECTORS = [
     status: "available",
     statusLabel: "Live",
     summary: "Workspace pages you share with LYKN become searchable inside the Vault.",
-    // Notion is a dual-role app: a data source (pull pages in) AND an AI
-    // surface (push LYKN into Notion AI's Custom Agents). The Connections
-    // grid renders ONE Notion card; clicking it asks which direction(s) the
-    // user wants. This id points at the matching OUTBOUND_TARGETS entry,
-    // which is then suppressed from the standalone AI-tools list.
-    outboundTargetId: "notion-ai",
   },
   // Google Keep has no consumer API - Google explicitly restricts the
   // Keep REST API to Workspace accounts and excludes @gmail.com users
@@ -1457,14 +1451,12 @@ export const CONNECTORS = [
     pulls: ["Any MCP-compatible tool"],
     realtime: "Live",
     status: "soon",
-    // NOTE: this is the INBOUND direction - LYKN as MCP CLIENT pulling
-    // data from someone else's MCP server. The opposite direction (LYKN
-    // exposing its synthesis layer TO Claude / Cursor / Claude Code via
-    // its OWN MCP server) lives in src/lib/connectors/outboundTargets.js
-    // and is rendered as a separate "Use LYKN with your AI" section on
-    // the Connections page. Don't conflate the two.
+    // LYKN as MCP CLIENT: the user points LYKN at someone else's MCP
+    // server and its tools become callable from LYKN chat. This is the
+    // only MCP direction we support - LYKN is not exposed as an MCP
+    // server to outside AI models.
     summary:
-      "Future: connect any external MCP server as a LYKN data source. Today the more interesting direction is OUTBOUND - see 'Use LYKN with your AI' below.",
+      "Coming soon: point LYKN at any MCP server and its tools become available in chat.",
   },
   {
     id: "zapier",

@@ -21,7 +21,7 @@
 //     and beta flags. Letting the chat agent fiddle with it would
 //     silently break UI state the user manages elsewhere.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 const BOOL_FIELDS = new Set([
   'memory_paused',
@@ -98,8 +98,6 @@ export const updateUserPreferenceTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

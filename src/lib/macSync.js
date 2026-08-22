@@ -44,7 +44,7 @@ function rememberConsent() {
 export function useMacSync() {
   const api = useMemo(() => macSyncBridge(), []);
   const [localModeOn, setLocalModeOn] = useState(getLocalModeCached);
-  const [sync, setSync] = useState({ syncAll: true, folders: [] });
+  const [sync, setSync] = useState({ syncAll: true, folders: [], excluded: [] });
   const [busy, setBusy] = useState(false);
   // True while the access explainer is up, before Local Mode is granted.
   const [confirming, setConfirming] = useState(false);
@@ -59,6 +59,7 @@ export function useMacSync() {
       setSync({
         syncAll: payload?.syncAll !== false,
         folders: payload?.syncedFolders || [],
+        excluded: payload?.excludedFolders || [],
       });
     };
     api
@@ -100,6 +101,8 @@ export function useMacSync() {
     enabled: localModeOn,
     syncAll: sync.syncAll,
     folders: sync.folders,
+    /** Folders whose own sync switch is off, whatever the rest allows. */
+    excluded: sync.excluded,
     busy,
     confirming,
     /** Nothing is readable: a hand-picked list with nothing picked yet. */
@@ -146,5 +149,24 @@ export function useMacSync() {
 
     removeFolder: (folder) =>
       void save({ ...sync, folders: sync.folders.filter((f) => f !== folder) }),
+
+    /** One folder's switch. Main decides what that means for the allowlist. */
+    setFolderSynced: (folder, next) => void setFolderSynced(api, folder, next),
   };
+}
+
+/**
+ * Turn a single folder's sync on or off, the way the button on each Mac folder
+ * page does. Turning one on turns Local Mode on too — a folder nothing may read
+ * isn't synced in any sense the user would recognise.
+ */
+export async function setFolderSynced(api, folder, next) {
+  const bridge = api || macSyncBridge();
+  if (!bridge || typeof bridge.macSyncSetFolder !== "function" || !folder) return;
+  try {
+    await bridge.macSyncSetFolder({ folder, synced: next === true });
+    if (next) await setLocalMode(true);
+  } catch {
+    /* main broadcasts the authoritative state back */
+  }
 }

@@ -29,6 +29,11 @@ import { LyknSynthesisZoom, SYNTHESIS_ZOOM_DURATION } from "./LyknSynthesisZoom"
 import { LyknPlusMacos, PLUS_MACOS_DURATION } from "./LyknPlusMacos";
 import { LyknSayHello, SAY_HELLO_DURATION } from "./LyknSayHello";
 import { LyknWastingTime, WASTING_TIME_DURATION } from "./LyknWastingTime";
+import {
+  LyknStillWastingTime,
+  STILL_WASTING_TIME_DURATION,
+} from "./LyknStillWastingTime";
+import { LyknStudioPrompts, STUDIO_PROMPTS_DURATION } from "./LyknStudioPrompts";
 import { LyknImessage, IMESSAGE_DURATION } from "./LyknImessage";
 import { LyknIconNodes, ICON_NODES_DURATION } from "./LyknIconNodes";
 import { LyknClickButton, CLICK_BUTTON_DURATION } from "./LyknClickButton";
@@ -308,6 +313,22 @@ export const RemotionRoot: React.FC = () => {
         id="LyknWastingTime"
         component={LyknWastingTime}
         durationInFrames={WASTING_TIME_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknStillWastingTime"
+        component={LyknStillWastingTime}
+        durationInFrames={STILL_WASTING_TIME_DURATION}
+        fps={30}
+        width={1920}
+        height={1080}
+      />
+      <Composition
+        id="LyknStudioPrompts"
+        component={LyknStudioPrompts}
+        durationInFrames={STUDIO_PROMPTS_DURATION}
         fps={30}
         width={1920}
         height={1080}

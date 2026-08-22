@@ -14,7 +14,7 @@
 // explicit `project_id` wins, otherwise we fall back to the user's
 // active project.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const NODE_ID_MAX = 200;
@@ -65,8 +65,6 @@ export const removeProjectNeuronsTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

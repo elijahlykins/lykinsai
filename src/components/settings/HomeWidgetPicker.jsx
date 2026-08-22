@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Switch } from '@/components/ui/switch';
 import { HOME_WIDGET_DEFAULTS } from '@/components/macdesktop/DesktopWidgets';
 import { WIDGET_TYPES } from '@/components/macdesktop/widgetCatalog';
+import { isAppInstallAvailable } from '@/lib/apps/installApp';
 import { hasMacApps } from '@/lib/macApps';
 import {
   addWidget,
@@ -61,6 +62,7 @@ export default function HomeWidgetPicker({ value, onToggle }) {
 
   const countOf = (type) => items.filter((i) => i.type === type).length;
   const macApps = hasMacApps();
+  const lyknApps = isAppInstallAvailable();
   const filesOn =
     typeof value?.files === 'boolean' ? value.files : (HOME_WIDGET_DEFAULTS.files ?? true);
 
@@ -71,8 +73,13 @@ export default function HomeWidgetPicker({ value, onToggle }) {
 
   return (
     <div className="space-y-2">
-      <div className="grid gap-2 sm:grid-cols-2">
-        {WIDGET_TYPES.filter((spec) => !spec.desktopOnly || macApps).map((spec) => {
+      <div className="lykn-settings-grid gap-2" style={{ '--lykn-settings-grid-min': '186px' }}>
+        {WIDGET_TYPES.filter(
+          (spec) =>
+            !spec.desktopOnly ||
+            (spec.pickApp && macApps) ||
+            (spec.pickLyknApp && lyknApps),
+        ).map((spec) => {
           const count = countOf(spec.type);
           return (
             <Row

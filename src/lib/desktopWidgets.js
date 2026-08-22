@@ -203,7 +203,16 @@ export function subscribeWidgetLayout(onChange) {
   };
 }
 
-/** Add one widget, parked in the first cell it fits. */
+/**
+ * Add one widget, parked in the first cell it fits.
+ *
+ * @param {string} type
+ * @param {{
+ *   size?: string;
+ *   props?: Record<string, unknown>;
+ *   capacity?: { cols: number; rows: number };
+ * }} options
+ */
 export function addWidget(type, { size = 'small', props = {}, capacity } = {}) {
   const items = readWidgetLayout();
   const at = findFreeCell(items, size, capacity || { cols: 4, rows: 4 });

@@ -1,29 +1,12 @@
-// Landing-page localStorage keys (LandingPrototype only) and post-signup
-// connect onboarding. App routes require auth — no guest handoff into the
-// product.
+// Landing-page localStorage keys (LandingPrototype only). App routes require
+// auth — no guest handoff into the product.
 
 export const PROTOTYPE_NEURONS_LS_KEY = "lykn_prototype_neurons";
 export const PROTOTYPE_CHAT_LS_KEY = "lykn_prototype_chat";
 
-export const CONNECT_ONBOARDING_DONE_LS_KEY = "lykn_connect_onboarding_done";
-
-export const isConnectOnboardingDone = (): boolean => {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(CONNECT_ONBOARDING_DONE_LS_KEY) === "1";
-  } catch {
-    return false;
-  }
-};
-
-export const markConnectOnboardingDone = (): void => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(CONNECT_ONBOARDING_DONE_LS_KEY, "1");
-  } catch {
-    // ignore quota / private-mode errors
-  }
-};
+// Retired: the post-signup "connect your AI tools" flow installed LYKN into
+// other AI clients. Still cleared on sign-out so the key doesn't linger.
+const CONNECT_ONBOARDING_DONE_LS_KEY = "lykn_connect_onboarding_done";
 
 /** Wipe landing prototype + legacy guest session keys on sign-out. */
 export const clearPrototypeState = (): void => {

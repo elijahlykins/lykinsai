@@ -735,12 +735,60 @@ document
   ?.addEventListener("click", () => sendWindow({ action: "minimize" }));
 document
   .getElementById("win-zoom")
-  ?.addEventListener("click", () => sendWindow({ action: "zoom" }));
+  ?.addEventListener("click", () => {
+    clearTimeout(zoomTimer);
+    hideZoomMenu();
+    sendWindow({ action: "zoom" });
+  });
+
+const zoomBtn = document.getElementById("win-zoom");
+const zoomMenu = document.getElementById("win-zoom-menu");
+let zoomTimer = 0;
+const placeZoomMenu = () => {
+  if (!zoomBtn || !zoomMenu) return;
+  const r = zoomBtn.getBoundingClientRect();
+  const width = 248;
+  const left = Math.min(window.innerWidth - width - 8, Math.max(8, r.left));
+  zoomMenu.style.top = `${r.bottom + 6}px`;
+  zoomMenu.style.left = `${left}px`;
+};
+const showZoomMenu = () => {
+  if (!zoomMenu) return;
+  placeZoomMenu();
+  zoomMenu.hidden = false;
+};
+const hideZoomMenu = () => {
+  if (zoomMenu) zoomMenu.hidden = true;
+};
+zoomBtn?.addEventListener("mouseenter", () => {
+  clearTimeout(zoomTimer);
+  zoomTimer = setTimeout(showZoomMenu, 350);
+});
+zoomBtn?.addEventListener("mouseleave", () => {
+  clearTimeout(zoomTimer);
+  zoomTimer = setTimeout(hideZoomMenu, 180);
+});
+zoomMenu?.addEventListener("mouseenter", () => clearTimeout(zoomTimer));
+zoomMenu?.addEventListener("mouseleave", () => {
+  clearTimeout(zoomTimer);
+  zoomTimer = setTimeout(hideZoomMenu, 180);
+});
+zoomMenu?.addEventListener("click", (e) => {
+  const action = e.target.closest("[data-action]")?.getAttribute("data-action");
+  if (!action) return;
+  hideZoomMenu();
+  sendWindow({ action });
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!zoomMenu || zoomMenu.hidden) return;
+  if (e.target.closest("#win-zoom-wrap, #win-zoom-menu")) return;
+  hideZoomMenu();
+});
 
 if (tabRowEl) {
   // Empty strip only — never off a tab, the + button or a traffic light.
   const grabbable = (e) =>
-    docked && e.button === 0 && !e.target.closest(".tab, .tab-new, #winbtns");
+    docked && e.button === 0 && !e.target.closest(".tab, .tab-new, #winbtns, #win-zoom-menu");
   let drag = null;
   tabRowEl.addEventListener("pointerdown", (e) => {
     if (!grabbable(e)) return;

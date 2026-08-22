@@ -66,6 +66,100 @@ export const INKS = [
   { id: 'plum', name: 'Plum', hsl: '284 48% 34%' },
 ];
 
+/**
+ * Chat sizing and geometry — the rest of Settings › Appearance › AI chat.
+ *
+ * Each list leads with the size or shape the app shipped with, so "Default"
+ * is a real entry rather than an absence, and applyAppearance() can hold the
+ * corresponding CSS off entirely while it's selected. That's what keeps an
+ * untouched install pixel-identical to what it had before these existed.
+ *
+ * The numbers are absolute px rather than multipliers because the chat's own
+ * type is written in px; the app-wide `fontSize` scale still rides on top.
+ */
+export const CHAT_TEXT_SIZES = [
+  { id: 'small', name: 'Small', px: 12.5 },
+  { id: 'default', name: 'Default', px: 14 },
+  { id: 'large', name: 'Large', px: 17 },
+  // Largest is the accessibility end of the scale, not one more nudge — it's
+  // meant to be readable across the room, so it steps well clear of Large.
+  { id: 'xlarge', name: 'Largest', px: 25 },
+];
+
+/**
+ * `minH` is the composer's floor in px — the empty bar's height before the
+ * textarea grows. `padHome` is the Home desktop pill, which is a single row
+ * and so wants far less breathing room than the page's stacked composer.
+ */
+export const CHAT_BAR_SIZES = [
+  { id: 'small', name: 'Small', font: 11, pad: 8, padHome: 3, minH: 44 },
+  { id: 'default', name: 'Default', font: 12, pad: 12, padHome: 6, minH: 52 },
+  { id: 'large', name: 'Large', font: 14, pad: 15, padHome: 9, minH: 62 },
+  { id: 'xlarge', name: 'Largest', font: 16.5, pad: 18, padHome: 12, minH: 72 },
+];
+
+/**
+ * The composer's geometry. `radius` is worn by both the page composer and the
+ * Home pill; the rest applies to the page composer, which is the only one with
+ * a toolbar row under the field to give room to.
+ *
+ * Two of these are more than a corner. Rectangle carries a skin (see
+ * index.css) — flat glass behind a single hairline instead of the raised
+ * neumorphic shell, which is what makes it read as a box rather than a slab.
+ * Slate keeps the shell and grows it: a deep radius over a tall, roomy field,
+ * for people who write more than a line at a time.
+ *
+ * `chipRadius` is what the settings picker draws instead, for a shape whose
+ * real radius would swallow a 46×30 chip whole and read as a pill.
+ */
+export const CHAT_BAR_SHAPES = [
+  { id: 'soft', name: 'Default', radius: '14px' },
+  { id: 'rectangle', name: 'Rectangle', radius: '10px' },
+  { id: 'slate', name: 'Slate', radius: '28px', chipRadius: '11px', pad: 18, minH: 104 },
+  { id: 'leaf', name: 'Leaf', radius: '22px 6px 22px 6px' },
+];
+
+/** The shipped bubble is a 15px box with its bottom-right corner pulled in to
+ *  4px — the notch that points the message back at the person who sent it. */
+export const CHAT_BUBBLE_SHAPES = [
+  { id: 'tail', name: 'Default', radius: '15px 15px 4px 15px' },
+  { id: 'round', name: 'Rounded', radius: '16px' },
+  { id: 'pill', name: 'Pill', radius: '9999px' },
+  { id: 'rectangle', name: 'Rectangle', radius: '0px' },
+  { id: 'leaf', name: 'Leaf', radius: '18px 4px 18px 4px' },
+];
+
+/**
+ * The send button's glyph. Only the ids and names live here — the token module
+ * has no business importing components — and `sendGlyph` in lib/chatSendIcon
+ * maps each id to the icon that draws it.
+ */
+export const CHAT_SEND_ICONS = [
+  { id: 'arrow', name: 'Arrow' },
+  { id: 'arrowRight', name: 'Forward' },
+  { id: 'plane', name: 'Plane' },
+  { id: 'return', name: 'Return' },
+  { id: 'chevron', name: 'Chevron' },
+  { id: 'sparkle', name: 'Sparkle' },
+];
+
+/**
+ * The button the glyph sits in. The two chat bars disagree at rest — the page
+ * composer is a 10px block, the Home pill is a circle — so Default is the one
+ * entry that paints nothing and lets each keep its own. Every other choice is
+ * a radius both of them wear, which is the only way to make the two match.
+ *
+ * The chips are square, so a percentage radius is a squircle rather than the
+ * ellipse it would be on the wider bar/bubble chips.
+ */
+export const CHAT_SEND_SHAPES = [
+  { id: 'default', name: 'Default', chipRadius: '10px' },
+  { id: 'circle', name: 'Circle', radius: '9999px' },
+  { id: 'squircle', name: 'Squircle', radius: '32%' },
+  { id: 'rounded', name: 'Rounded', radius: '10px' },
+  { id: 'square', name: 'Square', radius: '4px' },
+];
+
 export const WALLPAPER_DIM_MAX = 80;
 export const WALLPAPER_BLUR_MAX = 40;
 export const GLASS_BLUR_MIN = 4;
@@ -93,6 +187,13 @@ export const DEFAULT_APPEARANCE = {
   chatAiTextHue: CUSTOM_INK_HUE_DEFAULT,
   chatBubbleColor: INK_DEFAULT_ID,
   chatBubbleHue: CUSTOM_INK_HUE_DEFAULT,
+  chatUserTextSize: 'default',
+  chatAiTextSize: 'default',
+  chatBarSize: 'default',
+  chatBubbleShape: 'tail',
+  chatBarShape: 'soft',
+  chatSendIcon: 'arrow',
+  chatSendShape: 'default',
   typeface: 'inter',
   // 45 with the light multiplier below reproduces the scrim the Home desktop
   // shipped with, so an untouched install looks unchanged.
@@ -143,6 +244,60 @@ export function typefaceById(id) {
   return TYPEFACES.find((t) => t.id === id) || TYPEFACES[0];
 }
 
+/** 'custom' once a preset stops matching the shipped one — the switch every
+ *  chat size/shape rule in index.css hangs off. */
+function flagFor(id, defaultId) {
+  return id === defaultId ? 'default' : 'custom';
+}
+
+/** Look one preset up, falling back to whichever entry the app ships with. */
+function presetById(list, id, fallbackId) {
+  return list.find((p) => p.id === id) || list.find((p) => p.id === fallbackId) || list[0];
+}
+
+export function chatTextSizeById(id) {
+  return presetById(CHAT_TEXT_SIZES, id, DEFAULT_APPEARANCE.chatAiTextSize);
+}
+
+export function chatBarSizeById(id) {
+  return presetById(CHAT_BAR_SIZES, id, DEFAULT_APPEARANCE.chatBarSize);
+}
+
+export function chatBarShapeById(id) {
+  return presetById(CHAT_BAR_SHAPES, id, DEFAULT_APPEARANCE.chatBarShape);
+}
+
+export function chatBubbleShapeById(id) {
+  return presetById(CHAT_BUBBLE_SHAPES, id, DEFAULT_APPEARANCE.chatBubbleShape);
+}
+
+export function chatSendIconById(id) {
+  return presetById(CHAT_SEND_ICONS, id, DEFAULT_APPEARANCE.chatSendIcon);
+}
+
+export function chatSendShapeById(id) {
+  return presetById(CHAT_SEND_SHAPES, id, DEFAULT_APPEARANCE.chatSendShape);
+}
+
+/**
+ * The composer's height floor in px — also what its auto-grow measures
+ * against, which is why this is the one part of the bar's geometry that can't
+ * be a CSS token.
+ *
+ * The size preset sets it, except at the shipped size, where `fallback` (the
+ * caller's own `composerMinH`) still has the say. A shape that asks for a
+ * roomier bar raises that floor rather than replacing it, so Slate stays tall
+ * even at Small, and a size taller than the shape would still win.
+ */
+export function chatBarMinHeight(appearance, fallback) {
+  const { chatBarSize, chatBarShape } = normalizeAppearance(appearance);
+  const size = chatBarSizeById(chatBarSize);
+  const shape = chatBarShapeById(chatBarShape);
+  const base =
+    size.id === DEFAULT_APPEARANCE.chatBarSize && Number.isFinite(fallback) ? fallback : size.minH;
+  return Math.max(base, shape.minH || 0);
+}
+
 /** CSS background for a swatch chip / accent fill. */
 export function accentSwatchBackground(accent) {
   if (accent?.iridescent) {
@@ -167,6 +322,11 @@ function clampHue(value) {
 function inkIdOrNull(value) {
   if (value === INK_CUSTOM_ID || INKS.some((i) => i.id === value)) return value;
   return null;
+}
+
+/** A stored preset id, or the shipped default when it's missing or retired. */
+function presetIdOrDefault(list, value, fallbackId) {
+  return list.some((p) => p.id === value) ? value : fallbackId;
 }
 
 export function normalizeAppearance(raw) {
@@ -198,6 +358,37 @@ export function normalizeAppearance(raw) {
     chatAiTextHue: clampHue(source.chatAiTextHue ?? legacyHue ?? DEFAULT_APPEARANCE.chatAiTextHue),
     chatBubbleColor,
     chatBubbleHue: clampHue(source.chatBubbleHue ?? DEFAULT_APPEARANCE.chatBubbleHue),
+    chatUserTextSize: presetIdOrDefault(
+      CHAT_TEXT_SIZES,
+      source.chatUserTextSize,
+      DEFAULT_APPEARANCE.chatUserTextSize,
+    ),
+    chatAiTextSize: presetIdOrDefault(
+      CHAT_TEXT_SIZES,
+      source.chatAiTextSize,
+      DEFAULT_APPEARANCE.chatAiTextSize,
+    ),
+    chatBarSize: presetIdOrDefault(CHAT_BAR_SIZES, source.chatBarSize, DEFAULT_APPEARANCE.chatBarSize),
+    chatBubbleShape: presetIdOrDefault(
+      CHAT_BUBBLE_SHAPES,
+      source.chatBubbleShape,
+      DEFAULT_APPEARANCE.chatBubbleShape,
+    ),
+    chatBarShape: presetIdOrDefault(
+      CHAT_BAR_SHAPES,
+      source.chatBarShape,
+      DEFAULT_APPEARANCE.chatBarShape,
+    ),
+    chatSendIcon: presetIdOrDefault(
+      CHAT_SEND_ICONS,
+      source.chatSendIcon,
+      DEFAULT_APPEARANCE.chatSendIcon,
+    ),
+    chatSendShape: presetIdOrDefault(
+      CHAT_SEND_SHAPES,
+      source.chatSendShape,
+      DEFAULT_APPEARANCE.chatSendShape,
+    ),
     typeface: TYPEFACES.some((t) => t.id === source.typeface) ? source.typeface : DEFAULT_APPEARANCE.typeface,
     wallpaperDim: clampNumber(source.wallpaperDim, 0, WALLPAPER_DIM_MAX, DEFAULT_APPEARANCE.wallpaperDim),
     wallpaperBlur: clampNumber(source.wallpaperBlur, 0, WALLPAPER_BLUR_MAX, DEFAULT_APPEARANCE.wallpaperBlur),
@@ -257,6 +448,42 @@ export function applyAppearance(raw) {
   root.style.setProperty('--lykn-chat-bubble', bubble || '0 0% 100%');
   root.dataset.chatInkUser = userInk ? 'on' : 'off';
   root.dataset.chatBubble = bubble ? 'on' : 'off';
+
+  // Chat sizing and geometry. The tokens are always published so the settings
+  // preview can read them, but each flag stays 'default' until the choice
+  // actually differs from the shipped one — and index.css only overrides the
+  // chat's own sizes and radii while a flag reads 'custom'.
+  const userSize = chatTextSizeById(appearance.chatUserTextSize);
+  const aiSize = chatTextSizeById(appearance.chatAiTextSize);
+  const barSize = chatBarSizeById(appearance.chatBarSize);
+  const bubbleShape = chatBubbleShapeById(appearance.chatBubbleShape);
+  const barShape = chatBarShapeById(appearance.chatBarShape);
+  const sendShape = chatSendShapeById(appearance.chatSendShape);
+
+  root.style.setProperty('--lykn-chat-user-size', `${userSize.px}px`);
+  root.style.setProperty('--lykn-chat-ai-size', `${aiSize.px}px`);
+  root.style.setProperty('--lykn-chat-bar-font', `${barSize.font}px`);
+  // A roomy shape and a large size both want a padded shell; the more generous
+  // of the two wins so neither has to know about the other.
+  root.style.setProperty('--lykn-chat-bar-pad', `${Math.max(barSize.pad, barShape.pad || 0)}px`);
+  root.style.setProperty('--lykn-chat-bar-pad-home', `${barSize.padHome}px`);
+  root.style.setProperty('--lykn-chat-bar-min-h', `${barSize.minH}px`);
+  root.style.setProperty('--lykn-chat-bubble-radius', bubbleShape.radius);
+  root.style.setProperty('--lykn-chat-bar-radius', barShape.radius);
+  // Default carries no radius of its own — the flag below holds the CSS off
+  // entirely — so the fallback here is only ever read by the settings preview.
+  root.style.setProperty('--lykn-chat-send-radius', sendShape.radius || '10px');
+
+  // Sizes publish a flag, because all a size does is carry numbers and the CSS
+  // only needs to know whether to read them. Shapes publish their id instead:
+  // a shape can bring a whole skin along, not just a radius — Rectangle
+  // restores the old chat page's bar — so the stylesheet has to know which.
+  root.dataset.chatUserSize = flagFor(userSize.id, DEFAULT_APPEARANCE.chatUserTextSize);
+  root.dataset.chatAiSize = flagFor(aiSize.id, DEFAULT_APPEARANCE.chatAiTextSize);
+  root.dataset.chatBarSize = flagFor(barSize.id, DEFAULT_APPEARANCE.chatBarSize);
+  root.dataset.chatBubbleShape = bubbleShape.id;
+  root.dataset.chatBarShape = barShape.id;
+  root.dataset.chatSendShape = sendShape.id;
 
   // Wallpaper knobs, for surfaces that would rather read a token than the
   // appearance blob. The Home desktop draws from the blob directly.

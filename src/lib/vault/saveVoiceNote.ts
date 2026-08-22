@@ -4,6 +4,7 @@ import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { uploadFileToStorage } from "@/lib/vault/uploadFileToStorage";
 import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
 import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
+import { insertWithSchemaFallback } from "@/lib/vault/insertWithSchemaFallback";
 
 export const VOICE_NOTE_MIN_BYTES = 2000;
 
@@ -93,30 +94,20 @@ async function insertVoiceNoteRow(
     ...buildAttachmentColumns(primaryAttachment),
   };
 
-  let insertedNote: Record<string, unknown> | null = null;
-  let noteError: { message?: string; code?: string } | null = null;
-
-  ({ data: insertedNote, error: noteError } = await supabase
-    .from("vault_items")
-    .insert(richInsert)
-    .select("id, title, content, tags, created_at, updated_at")
-    .single());
-
-  const missingColumnError =
-    noteError &&
-    (
-      noteError.code === "PGRST204" ||
-      noteError.message?.includes("Could not find") ||
-      String(noteError.message || "").toLowerCase().includes("does not exist")
-    );
-
-  if (missingColumnError) {
-    ({ data: insertedNote, error: noteError } = await supabase
-      .from("vault_items")
-      .insert({ user_id: userId, title, content })
-      .select("id, title, content, created_at, updated_at")
-      .single());
-  }
+  const { data: insertedNote, error: noteError } = await insertWithSchemaFallback<
+    Record<string, unknown>
+  >(
+    async (row) => {
+      const { data, error } = await supabase
+        .from("vault_items")
+        .insert(row)
+        .select("id, title, content, tags, created_at, updated_at")
+        .single();
+      return { data, error };
+    },
+    richInsert,
+    ["user_id", "title", "content"],
+  );
 
   if (noteError || !insertedNote?.id) {
     return { error: noteError?.message || "Unable to save voice note." };

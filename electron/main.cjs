@@ -62,6 +62,17 @@ protocol.registerSchemesAsPrivileged([
       bypassCSP: true,
     },
   },
+  // Locally stored vault media. The window loads a remote origin and so cannot
+  // read file://; this is how an <img> or <video> gets at bytes on disk.
+  require("./localStore/blobProtocol.cjs").schemeRegistration(),
+  // Files on this Mac, so the Files browser can show them in LYKN rather than
+  // handing them off to another app.
+  require("./macFileProtocol.cjs").schemeRegistration(),
+  // Apps LYKN built for the user. Registered `standard` + `secure` so each app
+  // gets a real, trustworthy origin — that is what makes IndexedDB and
+  // localStorage work inside a generated app at all, and it is what isolates
+  // one app's storage from another's (the app id is the hostname).
+  require("./appProtocol.cjs").schemeRegistration(),
 ]);
 
 // Force dark appearance for the whole shell. The glass overlay family (bar,
@@ -92,6 +103,8 @@ const {
 const ownedBrowserAct = require("./ownedBrowserAct.cjs");
 const agentRecentVisits = require("./agentRecentVisits.cjs");
 const localSystem = require("./localSystem.cjs");
+const macFiles = require("./macFiles.cjs");
+const localStore = require("./localStore/index.cjs");
 const appDock = require("./appDock.cjs");
 const chromeSync = require("./chromeSync.cjs");
 const { createAgentRuntime } = require("./agentRuntime.cjs");
@@ -354,6 +367,13 @@ const OVERLAY_REDESIGN_INTENT_RE = {
 // would call preventDefault and leave a zombie process that users Force Quit.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  // Say so before leaving. A crash can leave a stale Singleton* in userData,
+  // and then every relaunch lands here and exits with no window and no output,
+  // which reads as "the app is broken" rather than "another instance owns it".
+  console.error(
+    "[LYKN] another instance already holds the lock — exiting. If no LYKN window " +
+      "is open, delete Singleton* from the userData folder and relaunch.",
+  );
   app.quit();
   process.exit(0);
 }
@@ -914,28 +934,10 @@ function ensureAppSurfacedForUpdate() {
   return null;
 }
 
-// ── Global notifications mute ───────────────────────────────────────────────
-// Toggled from LYKN Studio's bell button (lykn:notifications-muted-set) and
-// persisted in overlay-settings.json. Gates every OS notification the app
-// fires (update-ready, agent monitor alerts, the agent-finished glass chip)
-// plus renderer Notification permission requests.
-let notificationsMuted = null;
-function isNotificationsMuted() {
-  if (notificationsMuted === null) {
-    notificationsMuted = !!readOverlaySettings().notificationsMuted;
-  }
-  return notificationsMuted;
-}
-function setNotificationsMuted(muted) {
-  notificationsMuted = !!muted;
-  writeOverlaySettings({ notificationsMuted: notificationsMuted });
-}
-
 function notifyUpdateReady(version) {
   const key = version || "pending";
   if (updateNotifiedForVersion === key) return;
   updateNotifiedForVersion = key;
-  if (isNotificationsMuted()) return;
   const ver = version ? ` ${version}` : "";
   try {
     if (Notification.isSupported()) {
@@ -1179,7 +1181,6 @@ function notifyAgentFinished({
   };
 
   // One compact glass chip only — no stage toast / overlay / OS duplicates.
-  if (isNotificationsMuted()) return;
   try {
     showAgentFinishedPopup(payload);
   } catch (e) {
@@ -1313,7 +1314,23 @@ let overlayAnchorLeft = null;
 let overlayAnchorBottomY = null;
 let overlayProgrammaticMove = false;
 
+let mainWindowDeferred = false;
+
 function createMainWindow() {
+  // `second-instance` and `open-url` can both arrive while this instance is
+  // still starting, and `screen` below throws if it is touched before ready.
+  // Deferring is the correct behaviour rather than a guard: the user asked for
+  // a window, so we still owe them one once there is a display to size it against.
+  if (!app.isReady()) {
+    if (mainWindowDeferred) return;
+    mainWindowDeferred = true;
+    app.whenReady().then(() => {
+      mainWindowDeferred = false;
+      if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+    });
+    return;
+  }
+
   // Coming back from background (menu-bar-only) mode: restore the Dock icon
   // before the window appears so it can take focus like a normal app window.
   if (IS_MAC && app.dock) {
@@ -1383,10 +1400,36 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Installed apps open as windows on the desktop, and a <webview> is what
+      // lets them do that without giving up what makes them apps: a subframe
+      // gets no preload, so an <iframe> would cost them the bridge and their
+      // own storage. Guests are held to that shape by `will-attach-webview`.
+      webviewTag: true,
       // Auth provider for the overlay — keep token refresh alive while hidden.
       backgroundThrottling: false,
       disableHtmlFullscreenWindowResize: true,
     },
+  });
+
+  // Nothing but an installed app may attach, and only as itself: the guest is
+  // pinned to the app preload and the app's own partition here, so markup in
+  // the renderer can't ask for Node, a different preload, or another origin.
+  mainWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+    const appProtocol = require("./appProtocol.cjs");
+    const appHost = require("./appHost.cjs");
+    const appId = appProtocol.appIdFromOrigin(params.src || "");
+    if (!appId) {
+      event.preventDefault();
+      return;
+    }
+    delete webPreferences.preloadURL;
+    webPreferences.preload = appHost.PRELOAD;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.webSecurity = true;
+    // Also binds the app scheme on that partition, which has to happen before
+    // the guest navigates or it opens to a failed load.
+    params.partition = appHost.partitionFor(appId);
   });
   // Studio features (browser dock, fullscreen IPC) attach to this same window.
   studioWindow = mainWindow;
@@ -1660,7 +1703,6 @@ function installPermissionHandler() {
     // window — allow it the same media (mic) access for dictation.
     const allow =
       ALLOWED.has(permission) &&
-      !(permission === "notifications" && isNotificationsMuted()) &&
       (originAllowed(webContents) || isOverlayContents(webContents));
     callback(allow);
   });
@@ -4892,20 +4934,39 @@ function wireAgentSessionDownloads(sess) {
   });
 }
 
+/**
+ * A free path in ~/Downloads for this name, Finder style: "report.pdf",
+ * then "report (2).pdf". Shared by every route that writes a download, so a
+ * second copy never silently overwrites the first.
+ */
+function uniqueDownloadPath(filename) {
+  const fsSync = require("node:fs");
+  const dir = app.getPath("downloads");
+  const safe =
+    String(filename || "download")
+      .replace(/[\\/:*?"<>|]+/g, "-")
+      .replace(/^\.+/, "")
+      .trim()
+      .slice(0, 120) || "download";
+  const ext = path.extname(safe);
+  const stem = safe.slice(0, safe.length - ext.length) || "download";
+  let target = path.join(dir, safe);
+  for (let i = 2; fsSync.existsSync(target); i += 1) {
+    target = path.join(dir, `${stem} (${i})${ext}`);
+  }
+  return target;
+}
+
 /** Save the given HTML to ~/Downloads under a page-title filename. */
 function saveHtmlToDownloads(html, title) {
   const fsSync = require("node:fs");
-  const downloadsDir = app.getPath("downloads");
   const stem =
     String(title || "artifact")
       .replace(/[\\/:*?"<>|]+/g, "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 60) || "artifact";
-  let target = path.join(downloadsDir, `${stem}.html`);
-  for (let i = 2; fsSync.existsSync(target); i += 1) {
-    target = path.join(downloadsDir, `${stem} (${i}).html`);
-  }
+  const target = uniqueDownloadPath(`${stem}.html`);
   fsSync.writeFileSync(target, String(html), "utf8");
   return target;
 }
@@ -6428,6 +6489,71 @@ async function fetchOverlayMedia(url) {
   } catch (e) {
     console.warn("[overlay-vault] media fetch failed:", e?.message || e);
     return null;
+  }
+}
+
+// macOS share sheet: AirDrop / Photos / Mail want a file, not a signed link.
+// Pull the asset into a temp folder once per URL and hand the path to the
+// sharing item. Files live in the OS temp dir, so cleanup is the OS's job.
+const SHARE_STAGE_MAX_BYTES = 128 * 1024 * 1024;
+const shareStagedFiles = new Map();
+
+async function stageNativeShareFile(url, nameHint = "") {
+  const cached = shareStagedFiles.get(url);
+  if (cached && fsSync.existsSync(cached)) return cached;
+  try {
+    const res = await fetchOverlayMedia(url);
+    if (!res || !res.ok) return "";
+    const declared = Number(res.headers.get("content-length") || 0);
+    if (declared > SHARE_STAGE_MAX_BYTES) return "";
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf.length || buf.length > SHARE_STAGE_MAX_BYTES) return "";
+    const mime = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+
+    let filename = String(nameHint || "").trim();
+    if (!filename) {
+      try {
+        filename = decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+      } catch {
+        /* fall through to the generic name */
+      }
+    }
+    filename =
+      filename.replace(/[/\\:*?"<>|]+/g, "-").replace(/^\.+/, "").slice(0, 120) ||
+      "LYKN item";
+    if (!/\.[a-z0-9]{1,8}$/i.test(filename)) {
+      filename += {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/svg+xml": ".svg",
+        "image/heic": ".heic",
+        "video/mp4": ".mp4",
+        "video/quicktime": ".mov",
+        "video/webm": ".webm",
+        "audio/mpeg": ".mp3",
+        "audio/wav": ".wav",
+        "audio/mp4": ".m4a",
+        "application/pdf": ".pdf",
+        "text/html": ".html",
+        "text/csv": ".csv",
+        "text/plain": ".txt",
+      }[mime] || "";
+    }
+
+    const dir = path.join(
+      app.getPath("temp"),
+      `lykn-share-${crypto.randomBytes(6).toString("hex")}`,
+    );
+    await fs.mkdir(dir, { recursive: true });
+    const target = path.join(dir, filename);
+    await fs.writeFile(target, buf);
+    shareStagedFiles.set(url, target);
+    return target;
+  } catch (err) {
+    console.warn("[share] staging failed:", err?.message || err);
+    return "";
   }
 }
 
@@ -10701,13 +10827,6 @@ function registerOverlayIpc() {
     if (!win) return;
     afterStudioFullscreenExit(win, () => win.minimize());
   });
-  // Global notifications mute (Studio bell button).
-  ipcMain.handle("lykn:notifications-muted-get", () => ({
-    muted: isNotificationsMuted(),
-  }));
-  ipcMain.on("lykn:notifications-muted-set", (_e, { muted } = {}) => {
-    setNotificationsMuted(!!muted);
-  });
   ipcMain.on("lykn:resize", (_e, payload) => {
     // Back-compat: a bare number is height-only; an object carries width too.
     if (payload && typeof payload === "object") {
@@ -11507,6 +11626,40 @@ function registerOverlayIpc() {
       } catch (_) {}
     }
   };
+  // The Files browser watches whichever folder it's showing, so a change made
+  // in Finder relists it here without the user having to hit refresh.
+  macFiles.configure({
+    userDataPath: app.getPath("userData"),
+    onChange: (dirPath) => broadcastToAllWindows("lykn:files-changed", { path: dirPath }),
+  });
+  // File access for installed apps rides on Local Mode rather than inventing a
+  // second allowlist: the user already chose which folders LYKN may touch, and
+  // an app should never be able to reach further than LYKN itself can.
+  require("./appBridge.cjs").configure({
+    onFilesList: async (dirPath) => {
+      const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
+      if (!enabled) throw new Error("Local mode is off — enable it in the Vault first.");
+      const res = await localSystem.run(
+        "local_list_dir",
+        { path: dirPath || "~" },
+        { userDataPath: app.getPath("userData") },
+      );
+      if (!res?.ok) throw new Error(res?.error || "could not list that folder");
+      return { path: res.path, entries: res.entries };
+    },
+    onFilesRead: async (filePath) => {
+      const { enabled } = localSystem.readLocalMode(app.getPath("userData"));
+      if (!enabled) throw new Error("Local mode is off — enable it in the Vault first.");
+      const res = await localSystem.run(
+        "local_read_file",
+        { path: filePath },
+        { userDataPath: app.getPath("userData") },
+      );
+      if (!res?.ok) throw new Error(res?.error || "could not read that file");
+      return { path: res.path, content: res.content, truncated: res.truncated };
+    },
+  });
+
   ipcMain.handle("lykn:local-mode-get", () => {
     const { enabled, syncAll, syncedFolders } = localSystem.readLocalMode(app.getPath("userData"));
     return { ok: true, enabled, syncAll, syncedFolders };
@@ -11528,19 +11681,133 @@ function registerOverlayIpc() {
     });
   });
 
-  // --- Sync with Mac: synced-folders allowlist -----------------------------
-  ipcMain.handle("lykn:mac-sync-get", () => {
-    const cfg = localSystem.readLocalMode(app.getPath("userData"));
-    return { ok: true, enabled: cfg.enabled, syncAll: cfg.syncAll, syncedFolders: cfg.syncedFolders };
+  // Serve files from this Mac to the Files browser. Independent of the local
+  // store below — it gates on Local Mode and the sync allowlist instead — so
+  // it binds out here rather than inside that try.
+  require("./macFileProtocol.cjs").bind(session.defaultSession);
+
+  // --- Local store: the on-device home for vault, chat, and artifacts -------
+  // Unlike Local Mode this is not gated on a user switch — it is the app's own
+  // storage, not access to the user's filesystem. The renderer loads a remote
+  // origin, so IPC is the only way it can reach the database.
+  try {
+    const opened = localStore.configure(app.getPath("userData"));
+    console.log(`[LYKN] local store ready (schema v${opened.version ?? "?"})`);
+
+    // Serve locally stored media to the window. Bound only once the store is
+    // open, because the handler resolves paths through it.
+    require("./localStore/blobProtocol.cjs").bind(session.defaultSession);
+
+    // Installed apps. Each app runs in its own session partition, so the
+    // protocol is bound there on open rather than only on the default session.
+    require("./appProtocol.cjs").bind(session.defaultSession);
+    require("./appBridge.cjs").bind();
+
+    // Catch the retrieval index up on anything saved while the model was
+    // unavailable, or left over from a previous model version. Deferred and
+    // conditional: loading the model costs ~400 MB, so a launch with nothing
+    // outstanding must not pay for it. Progress is polled via `index.status`.
+    setTimeout(() => {
+      try {
+        const pending = localStore.indexer.pendingCount();
+        const total = pending.items + pending.threads;
+        if (!total) return;
+        console.log(`[LYKN] embedding backfill: ${total} source(s) outstanding`);
+        localStore.indexer.backfill().catch((err) => {
+          console.error("[LYKN] backfill failed to start:", err?.message);
+        });
+      } catch (err) {
+        console.error("[LYKN] backfill check failed:", err?.message);
+      }
+    }, 30_000).unref?.();
+  } catch (err) {
+    // A store that will not open must not take the whole app down with it —
+    // everything still reads from Supabase at this stage.
+    console.error("[LYKN] local store failed to open:", err?.message);
+  }
+
+  ipcMain.handle("lykn:store-run", async (_e, { op, args } = {}) =>
+    localStore.run(String(op || ""), args || {}),
+  );
+
+  // --- Installed apps ------------------------------------------------------
+  // Managing apps (install, open, uninstall) is the main renderer's job. What
+  // an app can do to the user's data is a different surface entirely and lives
+  // on lykn:app-bridge, which only frames on a lykn-app:// origin can reach.
+  const appHost = require("./appHost.cjs");
+
+  ipcMain.handle("lykn:app-install", async (_e, payload = {}) => {
+    const result = await appHost.installApp(payload || {});
+    if (result.ok) {
+      broadcastToAllWindows("lykn:apps-changed", { id: result.app.id, action: "install" });
+    }
+    return result;
   });
+
+  ipcMain.handle("lykn:app-open", (_e, { id } = {}) => appHost.openApp(id));
+
+  ipcMain.handle("lykn:app-uninstall", (_e, { id } = {}) => {
+    const result = appHost.uninstallApp(id);
+    broadcastToAllWindows("lykn:apps-changed", { id: String(id || ""), action: "uninstall" });
+    return result;
+  });
+
+  ipcMain.handle("lykn:app-verify", async (_e, { id } = {}) => appHost.rebuildAndVerify(id));
+
+  // Picking an icon is a user action, so it sticks: `icon_source` keeps the
+  // next rebuild from handing the manifest's icon back.
+  ipcMain.handle("lykn:app-set-icon", (_e, { id, icon } = {}) => {
+    const record = localStore.apps.getApp(id);
+    if (!record) return { ok: false, error: "app not found" };
+    const app = localStore.apps.setAppIcon(id, icon);
+    broadcastToAllWindows("lykn:apps-changed", { id: String(id), action: "update" });
+    return { ok: true, app };
+  });
+
+  ipcMain.handle("lykn:app-list", () => ({ ok: true, apps: localStore.apps.listApps() }));
+
+  ipcMain.handle("lykn:app-permissions", (_e, { id } = {}) => {
+    const record = localStore.apps.getApp(id);
+    if (!record) return { ok: false, error: "app not found" };
+    return {
+      ok: true,
+      capabilities: record.capabilities || [],
+      grants: record.grants || {},
+      catalog: require("./appBridge.cjs").CAPABILITIES,
+    };
+  });
+
+  // Revoking is a user action from settings; the app cannot do it to itself.
+  ipcMain.handle("lykn:app-set-permission", (_e, { id, capability, allowed } = {}) => {
+    const record = localStore.apps.getApp(id);
+    if (!record) return { ok: false, error: "app not found" };
+    const grants = { ...(record.grants || {}), [String(capability)]: allowed === true };
+    localStore.apps.updateApp(id, { grants });
+    return { ok: true, grants };
+  });
+
+  // --- Sync with Mac: synced-folders allowlist -----------------------------
+  const macSyncState = (cfg) => ({
+    ok: true,
+    enabled: cfg.enabled,
+    syncAll: cfg.syncAll,
+    syncedFolders: cfg.syncedFolders,
+    excludedFolders: cfg.excludedFolders,
+  });
+  ipcMain.handle("lykn:mac-sync-get", () =>
+    macSyncState(localSystem.readLocalMode(app.getPath("userData")))
+  );
   ipcMain.handle("lykn:mac-sync-set", (_e, { syncAll, syncedFolders } = {}) => {
     const next = localSystem.writeMacSync(app.getPath("userData"), { syncAll, syncedFolders });
-    broadcastToAllWindows("lykn:mac-sync-changed", {
-      enabled: next.enabled,
-      syncAll: next.syncAll,
-      syncedFolders: next.syncedFolders,
-    });
-    return { ok: true, syncAll: next.syncAll, syncedFolders: next.syncedFolders };
+    broadcastToAllWindows("lykn:mac-sync-changed", macSyncState(next));
+    return macSyncState(next);
+  });
+  // One folder's switch, from its page in the Vault. Main works out what that
+  // means for the allowlist so the renderer never has to reason about it.
+  ipcMain.handle("lykn:mac-sync-folder", (_e, { folder, synced } = {}) => {
+    const next = localSystem.writeFolderSync(app.getPath("userData"), { folder, synced });
+    broadcastToAllWindows("lykn:mac-sync-changed", macSyncState(next));
+    return macSyncState(next);
   });
   ipcMain.handle("lykn:mac-sync-pick-folder", async (e) => {
     const parent = BrowserWindow.fromWebContents(e.sender) || BrowserWindow.getFocusedWindow();
@@ -11580,6 +11847,69 @@ function registerOverlayIpc() {
       return { ok: false, error: err?.message || "open failed" };
     }
   });
+  // --- Files browser (the Vault's Locations sidebar) ------------------------
+  // Richer than mac-fs-list above: sorting, hidden files, sidebar roots, the
+  // editing operations, and a watcher so the view tracks the real disk. Each
+  // op re-checks Local Mode and the allowlist inside macFiles itself.
+  ipcMain.handle("lykn:files-list", (_e, args = {}) => macFiles.list(args));
+  ipcMain.handle("lykn:files-thumbnail", (_e, args = {}) => macFiles.thumbnail(args));
+  ipcMain.handle("lykn:files-roots", () => macFiles.roots());
+  ipcMain.handle("lykn:files-mkdir", (_e, args = {}) => macFiles.mkdir(args));
+  ipcMain.handle("lykn:files-rename", (_e, args = {}) => macFiles.rename(args));
+  ipcMain.handle("lykn:files-move", (_e, args = {}) => macFiles.move(args));
+  ipcMain.handle("lykn:files-copy", (_e, args = {}) => macFiles.copy(args));
+  ipcMain.handle("lykn:files-duplicate", (_e, args = {}) => macFiles.duplicate(args));
+  ipcMain.handle("lykn:files-trash", (_e, args = {}) => macFiles.trash(args));
+  ipcMain.handle("lykn:files-watch", (_e, args = {}) => macFiles.watch(args));
+  ipcMain.handle("lykn:files-unwatch", (_e, args = {}) => macFiles.unwatch(args));
+
+  /**
+   * Write bytes the renderer already holds into ~/Downloads.
+   *
+   * Chromium's own download plumbing is what an `<a download>` reaches, and
+   * where it puts the file depends on the user's browser settings — which is
+   * the wrong answer inside a desktop app that promises "it's in Downloads".
+   * The bytes come over as a transferable buffer rather than a URL because
+   * they're often a `lykn-blob://` or a data URL that only the renderer can
+   * read.
+   */
+  ipcMain.handle("lykn:save-to-downloads", async (_e, { name, bytes } = {}) => {
+    try {
+      const buf = Buffer.from(bytes || []);
+      if (!buf.length) return { ok: false, error: "empty" };
+      const target = uniqueDownloadPath(name);
+      await fs.writeFile(target, buf);
+      return { ok: true, path: target };
+    } catch (err) {
+      return { ok: false, error: err?.message || "write failed" };
+    }
+  });
+
+  /**
+   * The same bytes, but somewhere the user points at. The Mac's own save sheet
+   * is the folder picker — it names the file and chooses the folder in one
+   * step, and it is the panel people already know for "put this over there".
+   */
+  ipcMain.handle("lykn:save-file-as", async (e, { name, bytes } = {}) => {
+    try {
+      const buf = Buffer.from(bytes || []);
+      if (!buf.length) return { ok: false, error: "empty" };
+      const parent =
+        BrowserWindow.fromWebContents(e.sender) ||
+        BrowserWindow.getFocusedWindow() ||
+        undefined;
+      const res = await dialog.showSaveDialog(parent, {
+        defaultPath: path.join(app.getPath("downloads"), String(name || "file")),
+        properties: ["createDirectory", "showOverwriteConfirmation"],
+      });
+      if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+      await fs.writeFile(res.filePath, buf);
+      return { ok: true, path: res.filePath };
+    } catch (err) {
+      return { ok: false, error: err?.message || "write failed" };
+    }
+  });
+
   // The real, localized locations of the user's folders — Settings needs the
   // absolute Desktop path to mirror it and to add it to the sync allowlist.
   ipcMain.handle("lykn:mac-fs-home", () => {
@@ -11607,6 +11937,9 @@ function registerOverlayIpc() {
   });
   ipcMain.handle("lykn:mac-app-launch", (_e, { path: bundlePath } = {}) =>
     appDock.launchApp(bundlePath)
+  );
+  ipcMain.handle("lykn:mac-app-quit", (_e, { path: bundlePath } = {}) =>
+    appDock.quitApp(bundlePath)
   );
   ipcMain.handle("lykn:mac-apps-running", () => appDock.getRunningApps());
   // Studio dock subscribes while visible; polling stops when nobody listens.
@@ -11985,6 +12318,46 @@ function registerOverlayIpc() {
           } else {
             out.push({ kind: "text", name, text: "(Unsupported file type — not included.)" });
           }
+        } catch {
+          /* skip unreadable file */
+        }
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  });
+
+  // Studio chat-bar Finder: the ordinary macOS Open panel, parented to the
+  // window that asked so it isn't attached to the Glass overlay (which is
+  // often hidden, so the picker would appear to do nothing). Returns the
+  // chosen files as bytes the renderer can wrap in File objects.
+  ipcMain.handle("lykn:pick-open-files", async (e) => {
+    try {
+      const parent =
+        BrowserWindow.fromWebContents(e.sender) ||
+        BrowserWindow.getFocusedWindow() ||
+        undefined;
+      const res = await dialog.showOpenDialog(parent, {
+        title: "Choose files",
+        buttonLabel: "Add",
+        properties: ["openFile", "multiSelections"],
+      });
+      if (res.canceled || !Array.isArray(res.filePaths) || !res.filePaths.length) {
+        return [];
+      }
+      const out = [];
+      for (const p of res.filePaths) {
+        try {
+          const [buf, st] = await Promise.all([fs.readFile(p), fs.stat(p)]);
+          if (st.isDirectory()) continue;
+          const ext = path.extname(p).toLowerCase();
+          out.push({
+            name: path.basename(p),
+            type: IMAGE_MIME_BY_EXT[ext] || "",
+            lastModified: Math.round(st.mtimeMs) || Date.now(),
+            data: buf,
+          });
         } catch {
           /* skip unreadable file */
         }
@@ -12421,6 +12794,57 @@ function registerOverlayIpc() {
         ? String(payload.title || "")
         : "";
     void openUrlPreferAgentBrowser(url, { title });
+  });
+
+  // macOS sharing-services picker (AirDrop, Messages, Mail, Notes, Photos…).
+  // Electron only exposes it through the native `shareMenu` role, and the
+  // services are attached by AppKit when the menu holding that item is built —
+  // the item's JS `submenu` is always empty, so it must never be popped on its
+  // own (that shows an empty, invisible menu, i.e. "the button does nothing").
+  ipcMain.handle("lykn:native-share", async (event, payload = {}) => {
+    if (!IS_MAC) return { ok: false, error: "unsupported" };
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { ok: false, error: "no_window" };
+    const title = String(payload.title || "").trim().slice(0, 500);
+    const text = String(payload.text || "").trim().slice(0, 20_000);
+    const rawUrl = String(payload.url || "").trim().slice(0, 8_000);
+    let url = "";
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") url = parsed.href;
+    } catch {
+      /* text-only sharing remains available */
+    }
+
+    // Sharing the bytes (not a signed link) is what unlocks AirDrop, Add to
+    // Photos, and Mail attachments — the services a Mac user expects to see.
+    let filePath = "";
+    if (url && payload.asFile) {
+      filePath = await stageNativeShareFile(url, payload.filename || title);
+    }
+
+    const sharingItem = {};
+    if (filePath) sharingItem.filePaths = [filePath];
+    const texts = [text || title].filter(Boolean);
+    if (texts.length) sharingItem.texts = texts;
+    // A signed asset URL alongside the file only duplicates the payload, and
+    // some services then offer the link instead of the attachment.
+    if (url && !filePath) sharingItem.urls = [url];
+    if (!sharingItem.filePaths && !sharingItem.texts && !sharingItem.urls) {
+      return { ok: false, error: "empty" };
+    }
+
+    const bounds = win.getContentBounds();
+    const x = Math.max(0, Math.min(Math.round(Number(payload.x) || 0), Math.max(0, bounds.width - 1)));
+    const y = Math.max(0, Math.min(Math.round(Number(payload.y) || 0), Math.max(0, bounds.height - 1)));
+    const menu = Menu.buildFromTemplate([{ role: "shareMenu", sharingItem }]);
+    // positioningItem puts "Share" itself under the cursor, so the services
+    // list is one hover away — same feel as Finder's Share menu.
+    menu.popup({ window: win, x, y, positioningItem: 0 });
+    // `api` lets the renderer tell this handler apart from an older main
+    // process still loaded from before a restart — without it, a stale build
+    // answers `ok` while showing nothing and the Share button looks dead.
+    return { ok: true, api: 2, sharedFile: !!filePath };
   });
 
   // Download a generated file (image mode picture, Build-mode artifact) into
@@ -14767,7 +15191,11 @@ app.on("before-quit", (event) => {
 app.on("will-quit", () => {
   stopLiveWatch();
   extensionBridge?.stop?.();
+  macFiles.closeWatchers();
   globalShortcut.unregisterAll();
+  // Checkpoints the WAL so the database file on disk is complete on its own —
+  // matters for snapshots and for anything the user copies out.
+  localStore.shutdown();
 });
 
 app.on("window-all-closed", () => {

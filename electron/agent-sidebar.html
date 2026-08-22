@@ -25,6 +25,18 @@
         clip-path: inset(0 round 16px);
       }
       * { box-sizing: border-box; }
+      /* No scrollbar is ever drawn in LYKN: panes still scroll by wheel,
+         trackpad, keyboard and drag, only the gutter is gone. This window has
+         its own document, so it can't inherit the app-wide rule in index.css. */
+      * {
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      *::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+        display: none !important;
+      }
       html, body {
         margin: 0;
         height: 100%;
@@ -94,8 +106,6 @@
         display: flex;
         flex-direction: column;
         gap: 5px;
-        scrollbar-width: thin;
-        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
       }
       .empty {
         font-size: 12px;

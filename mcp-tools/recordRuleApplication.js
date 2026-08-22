@@ -18,7 +18,7 @@
 // genuinely change the answer.
 
 import { recordRuleApplication } from '../beliefSystem.js';
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 export const recordRuleApplicationTool = {
   name: 'lykn_recordRuleApplication',
@@ -63,8 +63,6 @@ export const recordRuleApplicationTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }
@@ -80,7 +78,7 @@ export const recordRuleApplicationTool = {
       ruleId,
       messageId,
       reason,
-      surface: ctx.attribSurface || 'mcp:other',
+      surface: ctx.attribSurface || 'lykn-chat',
       surfaceId,
     });
     if (!out.ok) {

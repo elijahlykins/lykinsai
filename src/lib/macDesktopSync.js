@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { getLocalModeCached, setLocalMode, subscribeLocalMode } from "@/lib/localMode";
+import { setFolderSynced } from "@/lib/macSync";
+import { attachMacPathsToHomeChat } from "@/lib/homeChatFiles";
 
 /**
  * "Sync my Desktop" — the folders and files sitting on the user's real Mac
  * desktop, mirrored onto the LYKN Home desktop.
  *
- * The mirror is read-only on purpose: LYKN lists the folder and opens items in
- * the app that owns them, but never moves, renames, or deletes anything on
- * disk. Dragging a mirrored icon around Home only stores a position here.
+ * The mirror itself only reads: it lists the folder and opens items in the app
+ * that owns them, and dragging a mirrored icon around Home stores a position
+ * here rather than touching disk. Dropping a file onto the LYKN desktop does
+ * write — it moves the file into the Desktop folder — but that's an explicit
+ * act by the user, and it shows that one file without turning the mirror on.
  *
  * Which folders are mirrored lives on the same `lykinsai_settings` blob as the
  * Home widget switches, so Settings → Display keeps one persist path. Reading
@@ -101,6 +105,72 @@ export async function resolveDesktopPath(api) {
   return FALLBACK_DESKTOP_PATH;
 }
 
+/* ── Dropped items ────────────────────────────────────────────────────────
+   Files the user dragged onto the LYKN desktop. These show up on Home whether
+   or not the folder mirror is on, and they're deliberately NOT the same thing:
+   mirroring pulls in everything in a folder, while this is only what the user
+   put here by hand. Dropping one file is not consent to surface the rest.
+
+   Only paths are kept. The files themselves live on disk in the Desktop
+   folder, so this list is a view, not a copy — anything that disappears from
+   disk gets pruned on the next read. ────────────────────────────────────── */
+
+const DROPS_KEY = "lykn_desktop_drops";
+const DROPS_EVENT = "lykn_desktop_drops_changed";
+
+export function readDesktopDrops() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(DROPS_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((p) => typeof p === "string" && p) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDesktopDrops(paths) {
+  try {
+    localStorage.setItem(DROPS_KEY, JSON.stringify(paths));
+  } catch {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent(DROPS_EVENT));
+}
+
+/** Remember items just dropped on Home. Returns how many were new. */
+export function addDesktopDrops(paths) {
+  const current = readDesktopDrops();
+  const added = paths.filter((p) => p && !current.includes(p));
+  if (added.length) writeDesktopDrops([...current, ...added]);
+  return added.length;
+}
+
+/** Forget items that are no longer on disk, or that the user cleared. */
+export function forgetDesktopDrops(paths) {
+  const gone = new Set(paths);
+  const current = readDesktopDrops();
+  const next = current.filter((p) => !gone.has(p));
+  if (next.length !== current.length) writeDesktopDrops(next);
+}
+
+/** Live view of the dropped items, following drops from anywhere. */
+export function useDesktopDrops() {
+  const [drops, setDrops] = useState(readDesktopDrops);
+  useEffect(() => {
+    const sync = () =>
+      setDrops((prev) => {
+        const next = readDesktopDrops();
+        return prev.join("|") === next.join("|") ? prev : next;
+      });
+    window.addEventListener(DROPS_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(DROPS_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  return drops;
+}
+
 /**
  * Make the mirrored folders readable: Local Mode on, and each folder covered
  * by the synced-folders allowlist (a no-op while the whole home folder is
@@ -111,14 +181,18 @@ export async function grantMirrorAccess(api, folders) {
   await setLocalMode(true);
   try {
     const cfg = await api.macSyncGet();
-    if (!cfg?.ok || cfg.syncAll !== false) return;
+    if (!cfg?.ok) return;
     const synced = cfg.syncedFolders || [];
-    const missing = folders.filter(
-      (f) => !f.startsWith("~") && !synced.some((s) => isInsideFolder(f, s)),
-    );
-    if (missing.length) {
-      await api.macSyncSet({ syncAll: false, syncedFolders: [...synced, ...missing] });
-    }
+    const excluded = cfg.excludedFolders || [];
+    // A folder is missing if the allowlist doesn't reach it, and also if its own
+    // sync switch is off — mirroring the Desktop is a request to see it, so a
+    // Desktop that was switched off has to come back on.
+    const missing = folders.filter((f) => {
+      if (f.startsWith("~")) return false;
+      if (excluded.some((e) => isInsideFolder(f, e))) return true;
+      return cfg.syncAll === false && !synced.some((s) => isInsideFolder(f, s));
+    });
+    for (const folder of missing) await setFolderSynced(api, folder, true);
   } catch {
     /* main broadcasts the authoritative state back */
   }
@@ -229,16 +303,9 @@ export function useDesktopMirrorSettings(value, onChange) {
 
 /**
  * Hand a mirrored item to LYKN chat. Same handoff the Files browser uses: the
- * prompt goes in sessionStorage (survives the chat surface mounting) and the
- * events open Home's chat with it prefilled.
+ * file lands on the desktop chat bar as an attachment, and the question is
+ * whatever the user types next.
  */
 export function askLyknAboutPath(fullPath) {
-  const prompt = `Read "${shortenHome(fullPath)}" on my Mac and give me a quick summary of what's in it.`;
-  try {
-    sessionStorage.setItem("lykn_pending_local_file_ask", prompt);
-  } catch {
-    /* chat falls back to the event payload */
-  }
-  window.dispatchEvent(new CustomEvent("lykn-local-file-ask", { detail: { text: prompt } }));
-  window.dispatchEvent(new CustomEvent("lykn-studio-open-chat"));
+  attachMacPathsToHomeChat([fullPath]);
 }

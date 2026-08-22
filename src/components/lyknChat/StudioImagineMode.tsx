@@ -1,20 +1,61 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowUp,
   Bookmark,
   Check,
-  ChevronLeft,
-  ChevronRight,
+  ChevronDown,
   Download,
-  ImagePlus,
+  FileText,
+  Folder as FolderIcon,
+  FolderOpen,
+  Library,
   Loader2,
-  MapPin,
+  Monitor,
+  MoreHorizontal,
+  PenLine,
+  Plus,
+  RectangleHorizontal,
+  RectangleVertical,
   RefreshCw,
-  Shuffle,
-  Sparkles,
+  Smartphone,
+  Square as SquareIcon,
   X as XIcon,
+  type LucideIcon,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { API_BASE_URL } from "@/lib/api-config";
+import ChatSendIcon from "@/lib/chatSendIcon";
+import { useAppearance } from "@/lib/useAppearance";
+import { CHAT_REHYPE_PLUGINS, CHAT_REMARK_PLUGINS } from "@/lib/chat/chatMarkdown";
+import LyknMediaPop, { MEDIA_POP_PANEL } from "@/components/lyknChat/LyknMediaPop";
+import GeneratedImage from "@/components/lyknChat/GeneratedImage";
+import ImagineMaskCanvas, {
+  type ImagineMaskCanvasHandle,
+} from "@/components/lyknChat/ImagineMaskCanvas";
+import { buildEditPrompt } from "@/lib/chat/imagineMask";
+import {
+  buildImaginePrompt,
+  imagineAttachmentFromFolder,
+  imagineReferenceUrls,
+  ingestImagineFiles,
+  IMAGINE_FILE_ACCEPT,
+  MAX_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENTS,
+  type ImagineAttachment,
+} from "@/lib/chat/imagineAttachments";
+import {
+  fileNameFromPath,
+  filesFromMacPaths,
+  snapshotMacFolders,
+  takePendingHomeChatFiles,
+  takePendingHomeChatFolders,
+} from "@/lib/homeChatFiles";
+import { useDropZone } from "@/lib/drag/dragEngine";
+import { barMenuOffset } from "@/lib/chat/barMenuOffset";
+import { VAULT_PICK_ITEMS_EVENT, VAULT_PICK_PATHS_EVENT } from "@/lib/vault/vaultPicker";
+import { deviceLocalUrlToDataUrl, isDeviceLocalUrl } from "@/lib/chat/deviceLocalImages";
+import { isLocalVaultEnabled } from "@/lib/vault/repository";
+import { storeLocalGeneration } from "@/lib/vault/repository/localGenerations";
+import { downloadToComputer } from "@/lib/files/downloadToComputer";
 // Same AI-generated pool as the landing page Imagine collage.
 import imagineSneaker from "@/assets/imagine-sneaker.png";
 import imaginePorsche from "@/assets/imagine-porsche-gt3.png";
@@ -29,11 +70,10 @@ import imagineFigure from "@/assets/imagine-figure.png";
 /**
  * LYKN Studio "Imagine" — a Midjourney-style image session. Each prompt
  * renders a centered batch of four variations generated in parallel (each
- * slot pops in as its request finishes). Clicking an image opens an edit
- * space: the image is large and centered, with overall comments plus
- * click-to-flag region notes. Submitting generates a NEW batch grounded in
- * that image's pixels (images/edits path) — Midjourney's "vary + remix"
- * loop. All requests hit POST /api/ai/imagine-image — one image per call.
+ * slot pops in as its request finishes). Clicking an image opens a mask
+ * editor: outline the area to change, write a prompt, submit. That starts
+ * a new batch grounded in the image's pixels plus the mask. All requests
+ * hit POST /api/ai/imagine-image — one image per call.
  */
 
 const SHOWCASE_IMAGES: { src: string; name: string }[] = [
@@ -115,43 +155,105 @@ export type ImagineBatch = {
   kind: BatchKind;
   /** Pixel references: attached images and/or the generation being refined. */
   referenceUrls?: string[];
+  /** White-on-black PNG — white is the region to edit. */
+  maskImage?: string;
   aspectRatio: string;
   slots: ImagineSlot[];
   createdAt: number;
 };
 
-type ImagineAttachment = { id: string; dataUrl: string; name: string };
+/** Layout picker in the prompt bar — mirrors the research "sources" select. */
+const IMAGE_LAYOUT_OPTIONS: {
+  value: string;
+  label: string;
+  shortLabel: string;
+  icon: LucideIcon;
+}[] = [
+  { value: "1:1", label: "Square · 1:1", shortLabel: "Square", icon: SquareIcon },
+  { value: "3:2", label: "Landscape · 3:2", shortLabel: "Landscape", icon: RectangleHorizontal },
+  { value: "2:3", label: "Portrait · 2:3", shortLabel: "Portrait", icon: RectangleVertical },
+  { value: "16:9", label: "Widescreen · 16:9", shortLabel: "Wide", icon: Monitor },
+  { value: "9:16", label: "Vertical · 9:16", shortLabel: "Vertical", icon: Smartphone },
+];
 
-/** Region flag on the edit canvas — percent coords from the image top-left. */
-type ImagePin = {
-  id: string;
-  x: number; // 0–100
-  y: number; // 0–100
-  note: string;
-};
-
-const ASPECT_OPTIONS = ["1:1", "3:2", "2:3", "16:9", "9:16"] as const;
-
-/** Shared glass/neutral chrome for the edit space (matches Studio bars). */
-const EDIT_PANEL =
-  "border border-black/10 bg-white/80 text-black/85 shadow-none backdrop-blur-2xl " +
-  "dark:border-white/12 dark:bg-black/45 dark:text-white/90";
-const EDIT_FIELD =
-  "rounded-xl border border-black/10 bg-white/70 text-black/85 outline-none " +
-  "placeholder:text-black/35 focus:border-black/25 " +
-  "dark:border-white/15 dark:bg-white/[0.07] dark:text-white/90 " +
-  "dark:placeholder:text-white/35 dark:focus:border-white/30";
-const MAX_ATTACHMENTS = 4;
-const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+/* Chrome copied from the desktop's HomeChatBar so Imagine reads as the same
+ * rounded pill as normal chat — same surface, icon buttons and menu rows. */
+const BAR_SURFACE = "lg-desktop-surface";
+const ICON_BTN =
+  "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-black/60 transition-colors hover:bg-black/10 hover:text-black/85 dark:text-white/65 dark:hover:bg-white/15 dark:hover:text-white/90";
+const SEND_BTN =
+  "lykn-chat-send-btn flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-black/85 text-white shadow transition-all enabled:hover:scale-105 disabled:opacity-35 dark:bg-white dark:text-black";
 
 // Session-scoped batch memory keyed by chat id — survives pill flips
 // (component unmounts) within the same Studio session. Not persisted.
 const sessionBatches = new Map<string, ImagineBatch[]>();
+/** Batch ids already written into the chat, so a remount cannot commit twice. */
+const sessionCommitted = new Map<string, Set<string>>();
 
-/** Studio "New chat" while on the Imagine page — clears the canvas in place
- *  (Imagine sessions don't write chat turns, so a fresh chat row would
- *  change nothing visible). The mounted component listens and resets. */
+function markSessionCommitted(key: string, id: string, into?: Set<string>) {
+  const set = into || sessionCommitted.get(key) || new Set<string>();
+  set.add(id);
+  sessionCommitted.set(key, set);
+  return set;
+}
+
+/** Studio "New chat" while on the Imagine page — clears the canvas in place.
+ *  The page still moves to a fresh chat row like every other mode; this only
+ *  wipes the canvas immediately rather than waiting for the remount. */
 export const IMAGINE_CLEAR_EVENT = "lykn-imagine-clear";
+
+/** A settled batch, flattened for the chat turn it becomes. */
+export type ImagineCommit = {
+  id: string;
+  prompt: string;
+  /** The stable brief, which edit rounds stay anchored to. */
+  concept: string;
+  kind: BatchKind;
+  aspectRatio: string;
+  images: { url: string; storagePath?: string }[];
+};
+
+/**
+ * Rebuild the canvas from the conversation. Imagine turns carry their images,
+ * so a chat loaded from Supabase can show its past generations again instead
+ * of opening blank — the batches themselves are never persisted separately.
+ */
+export function imagineBatchesFromTurns(
+  msgs: Array<{
+    id: string;
+    content?: string;
+    aiImages?: { url: string; storagePath?: string }[];
+    imagine?: { aspect?: string; kind?: BatchKind; concept?: string };
+    createdAt?: string;
+  }>,
+): ImagineBatch[] {
+  const out: ImagineBatch[] = [];
+  const seen = new Set<string>();
+  for (const m of msgs || []) {
+    const images = Array.isArray(m.aiImages) ? m.aiImages.filter((i) => i?.url) : [];
+    if (!images.length) continue;
+    const sig = images.map((i) => i.url).join("\n");
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    const label = String(m.content || "").trim();
+    out.push({
+      id: `turn-${m.id}`,
+      label,
+      prompt: label,
+      concept: String(m.imagine?.concept || label),
+      kind: m.imagine?.kind || "generate",
+      aspectRatio: String(m.imagine?.aspect || "1:1"),
+      slots: images.map((img, i) => ({
+        id: `turn-${m.id}-${i}`,
+        status: "done" as SlotStatus,
+        url: img.url,
+        storagePath: img.storagePath,
+      })),
+      createdAt: (m.createdAt ? Date.parse(m.createdAt) : NaN) || Date.now(),
+    });
+  }
+  return out;
+}
 
 function newId() {
   return typeof crypto !== "undefined" && crypto.randomUUID
@@ -200,69 +302,48 @@ function isTransientImagineFailure(err: string, httpStatus?: number): boolean {
 
 const SLOT_STAGGER_MS = 280;
 const SLOT_MAX_ATTEMPTS = 3;
-/** Keep edit notes intact; only trim inherited concept if the prompt grows large. */
-const IMAGINE_PROMPT_BUDGET = 3500;
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 }
 
-function truncateMiddle(text: string, max: number): string {
-  const s = String(text || "").trim();
-  if (s.length <= max) return s;
-  if (max < 40) return s.slice(0, max);
-  const head = Math.floor(max * 0.65);
-  const tail = max - head - 5;
-  return `${s.slice(0, head)} … ${s.slice(-tail)}`;
+/**
+ * Reference images the server can actually fetch.
+ *
+ * A generation kept on this device is addressed by `lykn-blob://`, which means
+ * nothing outside this process, so those are read off disk and sent inline —
+ * the endpoint accepts `data:image/` references for exactly this reason. Any
+ * that cannot be read are dropped rather than sent broken: refining without
+ * the reference still produces an image, refining with a dead URL fails the
+ * whole request.
+ */
+async function imagineReferencePayload(urls?: string[]): Promise<string[]> {
+  const list = (urls || []).filter(Boolean);
+  if (!list.length) return [];
+
+  const out: string[] = [];
+  for (const url of list) {
+    if (!isDeviceLocalUrl(url)) {
+      out.push(url);
+      continue;
+    }
+    const read = await deviceLocalUrlToDataUrl(url, "reference");
+    if (read) out.push(read.dataUrl);
+  }
+  return out;
 }
 
-/** Build the model prompt for an edit / remix batch — user notes lead. */
-function buildEditPrompt(opts: {
-  concept: string;
-  overallNotes?: string;
-  regions?: Array<{ x: number; y: number; note: string }>;
-  mode: "refine" | "variations";
-}): string {
-  const concept = String(opts.concept || "").trim();
-  const overall = String(opts.overallNotes || "").trim();
-  const regions = Array.isArray(opts.regions) ? opts.regions : [];
-
-  const instructionParts: string[] = [];
-  if (opts.mode === "refine") {
-    instructionParts.push(
-      "EDIT THE REFERENCE IMAGE.",
-      "Apply the directed changes below precisely. Keep subject, style, composition, and lighting intact unless a note asks otherwise.",
-    );
-  } else {
-    instructionParts.push(
-      "Create a fresh variation of the REFERENCE IMAGE.",
-      "Keep the subject, overall style, and composition, but vary details, pose, angle, or background.",
-    );
-  }
-
-  if (overall) {
-    instructionParts.push("", "User direction (highest priority):", overall);
-  }
-
-  if (regions.length) {
-    instructionParts.push(
-      "",
-      "Region-specific changes (percent coordinates from the top-left of the reference image):",
-      ...regions.map(
-        (p, i) =>
-          `${i + 1}. Around (${Math.round(p.x)}% from left, ${Math.round(p.y)}% from top): ${p.note}`,
-      ),
-    );
-  }
-
-  const instructions = instructionParts.join("\n");
-  const reserved = instructions.length + 48;
-  const conceptBudget = Math.max(200, IMAGINE_PROMPT_BUDGET - reserved);
-  const conceptBlock = concept
-    ? `\n\nOriginal concept (context only — do not ignore the edits above):\n${truncateMiddle(concept, conceptBudget)}`
-    : "";
-
-  return `${instructions}${conceptBlock}`.slice(0, IMAGINE_PROMPT_BUDGET);
+/** A filename for a download, built from the batch's own concept label. */
+function imageFilename(label: string, mime: string): string {
+  const stem =
+    String(label || "")
+      .replace(/[\\/:*?"<>|]+/g, "-")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60) || "lykn-image";
+  const ext =
+    mime === "image/jpeg" ? "jpg" : mime === "image/webp" ? "webp" : "png";
+  return `${stem}.${ext}`;
 }
 
 /** Aspect-ratio → CSS ratio for the grid cells ("3:2" → "3 / 2"). */
@@ -271,9 +352,124 @@ function cssAspect(ar: string): string {
   return m ? `${m[1]} / ${m[2]}` : "1 / 1";
 }
 
+const BUBBLE_MD = {
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="mb-4 last:mb-0 whitespace-pre-wrap leading-[1.65]">{children}</p>
+  ),
+};
+
+/** Same user-prompt bubble the rest of chat uses — Appearance tokens ride on
+ *  `lykn-user-prompt-bubble`, so size / color / tail stay in lockstep. */
+function ImagineUserPrompt({
+  text,
+  referenceUrls,
+  expanded,
+  onToggleExpand,
+}: {
+  text: string;
+  referenceUrls?: string[];
+  expanded: boolean;
+  onToggleExpand: () => void;
+}) {
+  const refs = (referenceUrls || []).filter(Boolean);
+  const isLong = text.length > 320;
+  const clamp =
+    isLong && !expanded
+      ? {
+          display: "-webkit-box" as const,
+          WebkitLineClamp: 5 as const,
+          WebkitBoxOrient: "vertical" as const,
+          overflow: "hidden" as const,
+        }
+      : undefined;
+  return (
+    <div className="flex flex-col items-end gap-2">
+      {refs.length > 0 ? (
+        <div className="flex max-w-[80%] flex-wrap justify-end gap-2">
+          {refs.map((url) => (
+            <GeneratedImage
+              key={url}
+              src={url}
+              alt=""
+              className="h-14 w-14 rounded-xl object-cover ring-1 ring-black/10 dark:ring-white/12"
+            />
+          ))}
+        </div>
+      ) : null}
+      {text ? (
+        <div className="group flex max-w-[80%] flex-col items-end">
+          <div
+            className="lykn-user-prompt-bubble rounded-[15px] rounded-br-[4px] border border-black/8 bg-background px-3 py-1 text-[14px] leading-[1.25] text-black/90 shadow-[0_2px_8px_rgba(0,0,0,0.045)] dark:border-white/10 dark:text-white/90 [&_table]:my-1 [&_td]:px-2 [&_th]:px-2"
+            style={clamp}
+          >
+            <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={BUBBLE_MD}>
+              {text}
+            </ReactMarkdown>
+          </div>
+          {isLong ? (
+            <button
+              type="button"
+              onClick={onToggleExpand}
+              title={expanded ? "Show less" : "Show full prompt"}
+              aria-label={expanded ? "Show less" : "Show full prompt"}
+              className="mt-1 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs text-black/55 transition-colors hover:bg-black/5 hover:text-black/85 dark:text-white/55 dark:hover:bg-white/10 dark:hover:text-white/85"
+            >
+              {expanded ? (
+                <span className="leading-none">Show less</span>
+              ) : (
+                <>
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                  <span className="leading-none">Show more</span>
+                </>
+              )}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Older session batches predate the concept field; keep their brief stable. */
+function withConcept(list: ImagineBatch[]): ImagineBatch[] {
+  return list.map((b) =>
+    b.concept ? b : { ...b, concept: String(b.label || b.prompt || "").trim() },
+  );
+}
+
+/** Live session memory wins over history — it holds in-flight batches too. */
+function hydrateBatches(key: string, seed: ImagineBatch[]): ImagineBatch[] {
+  const live = sessionBatches.get(key) || [];
+  return withConcept(live.length ? live : seed || []);
+}
+
+export type ImagineGenerateInput = {
+  text?: string;
+  referenceUrls?: string[];
+  documents?: { name: string; text: string }[];
+};
+
+export type ImagineEditInput = {
+  url: string;
+  prompt?: string;
+  aspect?: string;
+  storagePath?: string;
+};
+
+export type StudioImagineHandle = {
+  generate: (input: ImagineGenerateInput) => boolean;
+  openEdit: (input: ImagineEditInput) => void;
+};
+
 export type StudioImagineModeProps = {
   /** Keys the session batch memory (per chat). */
   chatKey: string;
+  /** Past Imagine turns in this chat, so a reloaded canvas isn't blank. */
+  seedBatches?: ImagineBatch[];
+  /** Called once per batch when every slot has settled, to write a chat turn. */
+  onCommitBatch?: (commit: ImagineCommit) => void;
+  /** Opens the chat page's vault picker for the bar's "Vault" menu row. */
+  onPullVault?: () => void;
   /** Optional Save-to-vault for a generated image (url, prompt, storage meta). */
   onSaveImage?: (
     url: string,
@@ -281,68 +477,204 @@ export type StudioImagineModeProps = {
     meta?: { storagePath?: string; mimeType?: string },
   ) => void | Promise<boolean | void>;
   savedUrls?: Set<string>;
+  /**
+   * Share the chat thread and composer. Imagine then only draws in-flight
+   * batches, the empty-page showcase, and the mask editor — the conversation
+   * and the bar stay on LyknChatView so switching modes doesn't drop them.
+   */
+  sharedThread?: boolean;
+  /** The chat already has turns — hide the empty-page showcase. */
+  hasThread?: boolean;
+  /** When false the overlay hides but in-flight work keeps running. */
+  visible?: boolean;
+  /** Showcase tile picked on the empty Imagine page — attach to the shared bar. */
+  onAttachReference?: (dataUrl: string, name: string) => void;
 };
 
-export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: StudioImagineModeProps) {
+const StudioImagineMode = forwardRef<StudioImagineHandle, StudioImagineModeProps>(function StudioImagineMode({
+  chatKey,
+  seedBatches,
+  onCommitBatch,
+  onPullVault,
+  onSaveImage,
+  savedUrls,
+  sharedThread = false,
+  hasThread = false,
+  visible = true,
+  onAttachReference,
+}, ref) {
   const key = chatKey || "unkeyed";
-  const [batches, setBatches] = useState<ImagineBatch[]>(() => {
-    const raw = sessionBatches.get(key) || [];
-    // Older session batches (pre-concept field) still need a stable brief.
-    return raw.map((b) =>
-      b.concept
-        ? b
-        : { ...b, concept: String(b.label || b.prompt || "").trim() },
-    );
-  });
+  const [batches, setBatches] = useState<ImagineBatch[]>(() => hydrateBatches(key, seedBatches || []));
   const batchesRef = useRef(batches);
   batchesRef.current = batches;
+  const seedRef = useRef(seedBatches);
+  seedRef.current = seedBatches;
+  /** Batches already written into the conversation, so none is written twice. */
+  const committedRef = useRef<Set<string>>(new Set(sessionCommitted.get(key) || []));
   useEffect(() => {
     sessionBatches.set(key, batches);
   }, [key, batches]);
-  // Chat switch: swap in that chat's session batches.
+  // Chat switch: swap in that chat's batches and the commits already recorded
+  // for it. A remount must not treat live session batches as new turns.
   useEffect(() => {
-    const raw = sessionBatches.get(key) || [];
-    setBatches(
-      raw.map((b) =>
-        b.concept
-          ? b
-          : { ...b, concept: String(b.label || b.prompt || "").trim() },
-      ),
-    );
+    committedRef.current = new Set(sessionCommitted.get(key) || []);
+    setBatches(hydrateBatches(key, seedRef.current || []));
   }, [key]);
+  // A chat loads asynchronously, so its turns often arrive after this mounted.
+  // Adopt them once, and only while this chat's canvas is still empty.
+  useEffect(() => {
+    if (!seedBatches?.length) return;
+    if ((sessionBatches.get(key) || []).length) return;
+    setBatches(withConcept(seedBatches));
+  }, [key, seedBatches]);
+
+  // Write each finished batch into the conversation as a real turn, so the
+  // images survive a reload and the other modes see what was made here.
+  useEffect(() => {
+    if (!onCommitBatch) return;
+    for (const b of batches) {
+      if (committedRef.current.has(b.id)) continue;
+      // Batches rebuilt from history already are turns.
+      if (b.id.startsWith("turn-")) {
+        committedRef.current = markSessionCommitted(key, b.id, committedRef.current);
+        continue;
+      }
+      if (b.slots.some((s) => s.status === "loading")) continue;
+      const done = b.slots.filter((s) => s.status === "done" && s.url);
+      if (!done.length) continue;
+      committedRef.current = markSessionCommitted(key, b.id, committedRef.current);
+      onCommitBatch({
+        id: b.id,
+        prompt: b.label,
+        concept: b.concept,
+        kind: b.kind,
+        aspectRatio: b.aspectRatio,
+        images: done.map((s) => ({ url: String(s.url), storagePath: s.storagePath })),
+      });
+    }
+  }, [batches, onCommitBatch]);
 
   const [prompt, setPrompt] = useState("");
   const [aspect, setAspect] = useState<string>("1:1");
+  const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
+  /** Prompt wrapped past one line — the pill squares off like the Home bar. */
+  const [promptTall, setPromptTall] = useState(false);
+  const [remarksTall, setRemarksTall] = useState(false);
   const [quotaNote, setQuotaNote] = useState<string>("");
   const [attachments, setAttachments] = useState<ImagineAttachment[]>([]);
+  /** "+" menu open state, and whether files are still being read. */
+  const [addOpen, setAddOpen] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
+  /** A Finder drag is over the bar. */
+  const [dropping, setDropping] = useState(false);
   // Edit space: batch + slot index. null = closed.
   const [lightbox, setLightbox] = useState<{ batchId: string; index: number } | null>(null);
+  /** An image opened from the shared chat thread — not one of this canvas's slots. */
+  const [guestEdit, setGuestEdit] = useState<{ batch: ImagineBatch; index: number } | null>(null);
   const [remarks, setRemarks] = useState("");
-  /** Clicked region flags on the open image. */
-  const [pins, setPins] = useState<ImagePin[]>([]);
-  const [activePinId, setActivePinId] = useState<string | null>(null);
+  const [hasMask, setHasMask] = useState(false);
   const [savedFlash, setSavedFlash] = useState<Set<string>>(new Set());
   const [savingUrl, setSavingUrl] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  /** Long Imagine prompts clamp like chat until the user opens them. */
+  const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(() => new Set());
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const remarksRef = useRef<HTMLTextAreaElement | null>(null);
-  const pinNoteRef = useRef<HTMLInputElement | null>(null);
+  const maskRef = useRef<ImagineMaskCanvasHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const imageWrapRef = useRef<HTMLDivElement | null>(null);
+  const finderInputId = useId();
+  const layoutRef = useRef<HTMLDivElement | null>(null);
+  const layoutPanelRef = useRef<HTMLDivElement | null>(null);
+  const addRef = useRef<HTMLDivElement | null>(null);
+  const addPanelRef = useRef<HTMLDivElement | null>(null);
+  const menuWrapRef = useRef<HTMLDivElement | null>(null);
+  const [addPos, setAddPos] = useState<{ left?: number; bottom?: number }>({});
+  const [layoutPos, setLayoutPos] = useState<{ left?: number; bottom?: number }>({});
+  /** Set below — lets the vault listener reuse the url→reference path. */
+  const attachShowcaseRef = useRef<((src: string, name: string) => Promise<void>) | null>(null);
+
+  // Grow the prompt with its content and flag the two-line case, so the pill
+  // squares off instead of stretching into a lozenge. The empty height is the
+  // one-line baseline — measuring beats guessing at the line box.
+  const promptBaseHRef = useRef(0);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const full = el.scrollHeight;
+    if (full > 0 && !promptBaseHRef.current) promptBaseHRef.current = full;
+    el.style.height = `${Math.min(full, 128)}px`;
+    setPromptTall(Boolean(promptBaseHRef.current) && full > promptBaseHRef.current + 4);
+  }, [prompt]);
+
+  const remarksBaseHRef = useRef(0);
+  useEffect(() => {
+    const el = remarksRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const full = el.scrollHeight;
+    if (full > 0 && !remarksBaseHRef.current) remarksBaseHRef.current = full;
+    el.style.height = `${Math.min(full, 128)}px`;
+    setRemarksTall(Boolean(remarksBaseHRef.current) && full > remarksBaseHRef.current + 4);
+  }, [remarks, lightbox, guestEdit]);
+
+  // Layout menu: click-away / Escape, matching the Home bar's popovers.
+  useEffect(() => {
+    if (!layoutMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (layoutRef.current?.contains(t) || layoutPanelRef.current?.contains(t)) return;
+      setLayoutMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLayoutMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [layoutMenuOpen]);
+
+  // Same click-away / Escape handling as the desktop chat bar's "+" menu:
+  // the panel hangs as a sibling of the bar, so outside-click has to clear
+  // both the trigger and the panel.
+  useEffect(() => {
+    if (!addOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (addRef.current?.contains(t) || addPanelRef.current?.contains(t)) return;
+      setAddOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAddOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [addOpen]);
 
   // Studio "New chat" while this page is up → wipe the canvas back to the
   // centered empty state.
   useEffect(() => {
     const onClear = () => {
       sessionBatches.delete(key);
+      sessionCommitted.delete(key);
+      committedRef.current = new Set();
       setBatches([]);
       setPrompt("");
       setAttachments([]);
       setLightbox(null);
+      setGuestEdit(null);
       setRemarks("");
-      setPins([]);
-      setActivePinId(null);
+      setHasMask(false);
+      maskRef.current?.clear();
     };
     window.addEventListener(IMAGINE_CLEAR_EVENT, onClear);
     return () => window.removeEventListener(IMAGINE_CLEAR_EVENT, onClear);
@@ -366,6 +698,10 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
   const runSlot = useCallback(
     async (batch: ImagineBatch, slot: ImagineSlot, attempt = 0) => {
       try {
+        const wantsBytes = isLocalVaultEnabled();
+        // A local reference lives behind lykn-blob://, which only this machine
+        // can resolve — inline it so the provider has real pixels to work from.
+        const references = await imagineReferencePayload(batch.referenceUrls);
         // Do NOT attach Authorization here — installAuthFetch injects a
         // refreshed JWT and retries on 401. A stale getSession() token would
         // lock out that refresh path and every slot would land as failed.
@@ -375,11 +711,13 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
           body: JSON.stringify({
             prompt: batch.prompt,
             aspectRatio: batch.aspectRatio === "1:1" ? undefined : batch.aspectRatio,
-            referenceImages: batch.referenceUrls?.length ? batch.referenceUrls : undefined,
+            referenceImages: references.length ? references : undefined,
+            maskImage: batch.maskImage || undefined,
+            deliverBytes: wantsBytes || undefined,
           }),
         });
         const data = await res.json().catch(() => null);
-        if (!res.ok || !data?.ok || !data.imageUrl) {
+        if (!res.ok || !data?.ok || !(data.imageUrl || data.imageBase64)) {
           const rawErr = String(data?.error || `http_${res.status}`);
           // Keep the tile spinning and retry transient provider/rate blips
           // automatically — firing 4 parallel gens often trips one slot.
@@ -393,11 +731,24 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
           });
           return;
         }
-        patchSlot(batch.id, slot.id, {
-          status: "done",
-          url: data.imageUrl,
-          storagePath: typeof data.storagePath === "string" ? data.storagePath : undefined,
-        });
+
+        if (typeof data.imageBase64 === "string" && data.imageBase64) {
+          // Bytes never went to a bucket, so this is the only copy — a failed
+          // write has to surface as a failed slot rather than an empty tile.
+          const stored = await storeLocalGeneration({
+            base64: data.imageBase64,
+            mimeType: typeof data.mimeType === "string" ? data.mimeType : undefined,
+          });
+          // The blob directory is named for its row, so this URL is the only
+          // handle a save needs — no separate id to carry around.
+          patchSlot(batch.id, slot.id, { status: "done", url: stored.url });
+        } else {
+          patchSlot(batch.id, slot.id, {
+            status: "done",
+            url: data.imageUrl,
+            storagePath: typeof data.storagePath === "string" ? data.storagePath : undefined,
+          });
+        }
         if (data.monthlyRemaining !== undefined && data.monthlyRemaining !== "unlimited") {
           setQuotaNote(`${data.monthlyRemaining} image${data.monthlyRemaining === 1 ? "" : "s"} left this month`);
         }
@@ -419,6 +770,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
       concept: string;
       kind: BatchKind;
       referenceUrls?: string[];
+      maskImage?: string;
       aspectRatio: string;
     }) => {
       const batch: ImagineBatch = {
@@ -428,6 +780,7 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
         concept: opts.concept,
         kind: opts.kind,
         referenceUrls: opts.referenceUrls,
+        maskImage: opts.maskImage,
         aspectRatio: opts.aspectRatio,
         slots: Array.from({ length: IMAGINE_BATCH_SIZE }, () => ({
           id: newId(),
@@ -453,14 +806,12 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
   const handleSend = useCallback(() => {
     const text = prompt.trim();
     if (!text) return;
-    const refs = attachments.map((a) => a.dataUrl);
+    const refs = imagineReferenceUrls(attachments);
     setPrompt("");
     setAttachments([]);
     startBatch({
       label: text,
-      prompt: refs.length
-        ? `${text}\n\nUse the attached reference image${refs.length > 1 ? "s" : ""} as the visual base.`
-        : text,
+      prompt: buildImaginePrompt(text, attachments),
       concept: text,
       kind: "generate",
       referenceUrls: refs.length ? refs : undefined,
@@ -468,19 +819,57 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
     });
   }, [prompt, aspect, attachments, startBatch]);
 
+  const generate = useCallback(
+    (input: ImagineGenerateInput) => {
+      const text = String(input.text || "").trim();
+      const refs = (input.referenceUrls || []).filter(Boolean);
+      const docs = (input.documents || []).filter((d) => String(d.text || "").trim());
+      if (!text && !refs.length) return false;
+      const atts: ImagineAttachment[] = [
+        ...refs.map((url, i) => ({
+          id: `r${i}-${Date.now()}`,
+          name: `ref-${i + 1}`,
+          kind: "image" as const,
+          dataUrl: url,
+        })),
+        ...docs.map((d, i) => ({
+          id: `d${i}-${Date.now()}`,
+          name: d.name || "note",
+          kind: "text" as const,
+          text: d.text,
+        })),
+      ];
+      startBatch({
+        label: text || "Image",
+        prompt: buildImaginePrompt(text || "Generate an image from the reference.", atts),
+        concept: text || "the reference image",
+        kind: "generate",
+        referenceUrls: refs.length ? refs : undefined,
+        aspectRatio: aspect,
+      });
+      return true;
+    },
+    [startBatch, aspect],
+  );
+
   // Imagine's "conversation under way" signal for the Studio shell — batches
   // rather than chat turns (the home desktop's rounded bar docks to the
-  // bottom once the canvas has content).
+  // bottom once the canvas has content). When the chat thread is shared,
+  // that page already broadcasts turns; only signal while a fresh canvas
+  // is generating so the bar docks before the first commit lands.
   const hasBatches = batches.length > 0;
   useEffect(() => {
+    if (sharedThread && hasThread) return;
     window.dispatchEvent(
       new CustomEvent("lykn-chat-activity-changed", { detail: { active: hasBatches } }),
     );
-  }, [hasBatches]);
+  }, [hasBatches, sharedThread, hasThread]);
 
   // Home-screen chat bar hand-off: a stashed Imagine prompt starts generating
   // as soon as this page mounts (or via the seed event when already warm).
+  // Shared-thread Imagine takes sends through the chat composer instead.
   useEffect(() => {
+    if (sharedThread) return;
     const consume = (fallback = "") => {
       let text = "";
       try {
@@ -490,40 +879,194 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
         /* storage blocked — fall back to the event payload */
       }
       text = (text || fallback).trim();
-      if (!text) return;
-      startBatch({
-        label: text,
-        prompt: text,
-        concept: text,
-        kind: "generate",
-        aspectRatio: aspect,
-      });
+      // Files the home bar sent along. Claimed before the empty-prompt bail so
+      // they can't linger and reappear against some later prompt.
+      const files = takePendingHomeChatFiles();
+      const folders = takePendingHomeChatFolders();
+      if (!text && !files.length && !folders.length) return;
+
+      if (!files.length && !folders.length) {
+        startBatch({
+          label: text,
+          prompt: text,
+          concept: text,
+          kind: "generate",
+          aspectRatio: aspect,
+        });
+        return;
+      }
+
+      // Reading them has to finish before the batch starts, or the references
+      // would miss the generation they were dropped for.
+      void (async () => {
+        setIngesting(true);
+        try {
+          const read = await ingestImagineFiles(files, [], API_BASE_URL);
+          const folderAtts = (folders || [])
+            .filter((f: { name: string; listing: string }) => f?.listing)
+            .map((f: { name: string; listing: string }) =>
+              imagineAttachmentFromFolder(f.name, f.listing),
+            );
+          const all = [...read, ...folderAtts];
+          if (!text) {
+            // Dropped with nothing to make yet — hold them on the bar.
+            setAttachments((prev) => [...prev, ...all]);
+            return;
+          }
+          const refs = imagineReferenceUrls(all);
+          startBatch({
+            label: text,
+            prompt: buildImaginePrompt(text, all),
+            concept: text,
+            kind: "generate",
+            referenceUrls: refs.length ? refs : undefined,
+            aspectRatio: aspect,
+          });
+        } finally {
+          setIngesting(false);
+        }
+      })();
     };
     consume();
     const onSeed = (e: Event) =>
       consume(String((e as CustomEvent).detail?.text || ""));
     window.addEventListener("lykn-imagine-seed", onSeed);
     return () => window.removeEventListener("lykn-imagine-seed", onSeed);
-  }, [startBatch, aspect]);
+  }, [startBatch, aspect, sharedThread]);
 
-  // "+" attachments — images ride as pixel references for the next batch.
-  const handlePickFiles = useCallback((files: FileList | null) => {
-    const list = Array.from(files || []).filter((f) => f.type.startsWith("image/"));
-    for (const file of list) {
-      if (file.size > MAX_ATTACHMENT_BYTES) continue;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = String(reader.result || "");
-        if (!dataUrl.startsWith("data:image/")) return;
-        setAttachments((prev) =>
-          prev.length >= MAX_ATTACHMENTS
-            ? prev
-            : [...prev, { id: newId(), dataUrl, name: file.name }],
-        );
-      };
-      reader.readAsDataURL(file);
+  // "+" attachments. Images ride as pixel references for the next batch;
+  // documents are read for their words and become prompt context, so a brand
+  // sheet or a spec can steer a generation it has no pixels for.
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+
+  const handlePickFiles = useCallback(async (files: FileList | File[] | null) => {
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    setIngesting(true);
+    try {
+      const added = await ingestImagineFiles(list, attachmentsRef.current, API_BASE_URL);
+      if (added.length) setAttachments((prev) => [...prev, ...added]);
+    } finally {
+      setIngesting(false);
     }
   }, []);
+
+  /** Mac paths (desktop icons, Files window, internal drags) → attachments. */
+  const ingestMacPaths = useCallback(async (paths: string[]) => {
+    const list = (paths || []).filter(Boolean);
+    if (!list.length) return;
+    setIngesting(true);
+    try {
+      const files = await filesFromMacPaths(list).catch(() => [] as File[]);
+      if (files.length) {
+        const added = await ingestImagineFiles(files, attachmentsRef.current, API_BASE_URL);
+        if (added.length) setAttachments((prev) => [...prev, ...added]);
+      }
+      // Whatever couldn't be read as a file is treated as a folder and
+      // attached as its listing, the same way the desktop bar does it.
+      const readNames = new Set(files.map((f) => f.name));
+      const folderPaths = list.filter((p) => !readNames.has(fileNameFromPath(p)));
+      if (folderPaths.length) {
+        const snaps = await snapshotMacFolders(folderPaths).catch(() => []);
+        const folderAtts = snaps
+          .filter((s: { name: string; listing: string }) => s?.listing)
+          .map((s: { name: string; listing: string }) =>
+            imagineAttachmentFromFolder(s.name, s.listing),
+          );
+        if (folderAtts.length) {
+          setAttachments((prev) => [
+            ...prev,
+            ...folderAtts.filter((f) => !prev.some((p) => p.name === f.name)),
+          ]);
+        }
+      }
+    } finally {
+      setIngesting(false);
+    }
+  }, []);
+
+  const openAddFinder = useCallback(() => {
+    const pick = typeof window !== "undefined" ? (window as any).lykn?.pickOpenFiles : null;
+    if (typeof pick !== "function") return;
+    setAddOpen(false);
+    setIngesting(true);
+    pick()
+      .then((rows: any[]) => {
+        const files = (Array.isArray(rows) ? rows : [])
+          .map((row) => {
+            if (!row?.name || row.data == null) return null;
+            let body = row.data;
+            if (body?.type === "Buffer" && Array.isArray(body.data)) {
+              body = new Uint8Array(body.data);
+            }
+            return new File([body], row.name, {
+              type: row.type || "",
+              lastModified: Number(row.lastModified) || Date.now(),
+            });
+          })
+          .filter(Boolean) as File[];
+        if (files.length) void handlePickFiles(files);
+      })
+      .catch(() => {
+        /* cancelled or bridge unavailable */
+      })
+      .finally(() => setIngesting(false));
+  }, [handlePickFiles]);
+
+  /** Opens the same vault picker the chat page's "+" menu uses. */
+  const openAddVault = useCallback(() => {
+    setAddOpen(false);
+    onPullVault?.();
+  }, [onPullVault]);
+
+  // A pick from the vault window lands here while Imagine is the visible
+  // surface. A saved image becomes a pixel reference; anything else
+  // contributes its text. Files chosen from a folder on the Mac arrive as
+  // paths instead and go through the same ingest a drag onto the bar uses.
+  useEffect(() => {
+    if (sharedThread) return;
+    const onVaultPaths = (e: Event) => {
+      const picked = (e as CustomEvent).detail?.paths;
+      if (Array.isArray(picked) && picked.length) void ingestMacPaths(picked);
+    };
+    window.addEventListener(VAULT_PICK_PATHS_EVENT, onVaultPaths);
+    return () => window.removeEventListener(VAULT_PICK_PATHS_EVENT, onVaultPaths);
+  }, [ingestMacPaths, sharedThread]);
+
+  useEffect(() => {
+    if (sharedThread) return;
+    const onVaultAdd = (e: Event) => {
+      const d = ((e as CustomEvent).detail || {}) as any;
+      const att = d.attachment || (Array.isArray(d.attachments) ? d.attachments[0] : null);
+      const name = String(d.title || att?.name || "Vault item").trim();
+      const isImage =
+        att && (att.type === "image" || String(att.mime || "").startsWith("image/"));
+
+      if (isImage && att.url) {
+        void attachShowcaseRef.current?.(String(att.url), name);
+        return;
+      }
+      const body = String(
+        d.content || att?.extractedText || att?.pdfText || att?.transcript || "",
+      ).trim();
+      if (!body) return;
+      setAttachments((prev) =>
+        prev.some((a) => a.name === name)
+          ? prev
+          : [...prev, imagineAttachmentFromFolder(name, body)],
+      );
+    };
+    window.addEventListener(VAULT_PICK_ITEMS_EVENT, onVaultAdd);
+    return () => window.removeEventListener(VAULT_PICK_ITEMS_EVENT, onVaultAdd);
+  }, [sharedThread]);
+
+  // Internal LYKN drags (desktop icons, Files window) carry Mac paths.
+  const barDrop = useDropZone({
+    copies: true,
+    accept: (payload: { paths: string[] }) => payload.paths.length > 0,
+    onDrop: (payload: { paths: string[] }) => void ingestMacPaths(payload.paths),
+  });
 
   // Landing-page showcase tile → attach as a reference for the next generate.
   const attachShowcase = useCallback(async (src: string, name: string) => {
@@ -538,16 +1081,21 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
         reader.readAsDataURL(blob);
       });
       if (!dataUrl.startsWith("data:image/")) return;
+      if (onAttachReference) {
+        onAttachReference(dataUrl, name);
+        return;
+      }
       setAttachments((prev) => {
         if (prev.some((a) => a.name === name)) return prev;
-        if (prev.length >= MAX_ATTACHMENTS) return prev;
-        return [...prev, { id: newId(), dataUrl, name }];
+        if (prev.filter((a) => a.kind === "image").length >= MAX_IMAGE_ATTACHMENTS) return prev;
+        return [...prev, { id: newId(), name, kind: "image", dataUrl }];
       });
       inputRef.current?.focus();
     } catch {
       /* ignore fetch/attach failures */
     }
-  }, []);
+  }, [onAttachReference]);
+  attachShowcaseRef.current = attachShowcase;
 
   const retrySlot = useCallback(
     (batch: ImagineBatch, slot: ImagineSlot) => {
@@ -559,19 +1107,54 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
 
   /* ---------- lightbox ---------- */
 
-  const lightboxBatch = lightbox ? batches.find((b) => b.id === lightbox.batchId) || null : null;
-  const lightboxSlot = lightboxBatch && lightbox ? lightboxBatch.slots[lightbox.index] : null;
+  const lightboxBatch =
+    guestEdit?.batch || (lightbox ? batches.find((b) => b.id === lightbox.batchId) || null : null);
+  const lightboxIndex = guestEdit ? guestEdit.index : lightbox?.index ?? 0;
+  const lightboxSlot = lightboxBatch ? lightboxBatch.slots[lightboxIndex] : null;
   const lightboxUrl = lightboxSlot?.status === "done" ? lightboxSlot.url : undefined;
 
   const resetEditNotes = useCallback(() => {
     setRemarks("");
-    setPins([]);
-    setActivePinId(null);
+    setHasMask(false);
+    maskRef.current?.clear();
   }, []);
 
   const openLightbox = useCallback(
     (batchId: string, index: number) => {
+      setGuestEdit(null);
       setLightbox({ batchId, index });
+      resetEditNotes();
+      window.setTimeout(() => remarksRef.current?.focus(), 50);
+    },
+    [resetEditNotes],
+  );
+
+  const openEdit = useCallback(
+    (input: ImagineEditInput) => {
+      const url = String(input.url || "");
+      if (!url) return;
+      const note = String(input.prompt || "");
+      setLightbox(null);
+      setGuestEdit({
+        batch: {
+          id: `guest-${url}`,
+          label: note,
+          prompt: note,
+          concept: note || "the reference image",
+          kind: "generate",
+          aspectRatio: input.aspect || "1:1",
+          slots: [
+            {
+              id: "g0",
+              status: "done",
+              url,
+              storagePath: input.storagePath,
+            },
+          ],
+          createdAt: Date.now(),
+        },
+        index: 0,
+      });
       resetEditNotes();
       window.setTimeout(() => remarksRef.current?.focus(), 50);
     },
@@ -580,12 +1163,15 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
 
   const closeLightbox = useCallback(() => {
     setLightbox(null);
+    setGuestEdit(null);
     resetEditNotes();
   }, [resetEditNotes]);
 
+  useImperativeHandle(ref, () => ({ generate, openEdit }), [generate, openEdit]);
+
   const stepLightbox = useCallback(
     (dir: 1 | -1) => {
-      if (!lightbox || !lightboxBatch) return;
+      if (guestEdit || !lightbox || !lightboxBatch) return;
       const done = lightboxBatch.slots
         .map((s, i) => ({ s, i }))
         .filter(({ s }) => s.status === "done");
@@ -595,111 +1181,42 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
       resetEditNotes();
       setLightbox({ batchId: lightbox.batchId, index: next.i });
     },
-    [lightbox, lightboxBatch, resetEditNotes],
+    [guestEdit, lightbox, lightboxBatch, resetEditNotes],
   );
 
-  const handleImageClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const wrap = imageWrapRef.current;
-    const img = wrap?.querySelector("img");
-    if (!img) return;
-    const rect = img.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-    if (x < 0 || x > 100 || y < 0 || y > 100) return;
-    const id =
-      typeof crypto !== "undefined" && crypto.randomUUID
-        ? crypto.randomUUID()
-        : `pin-${Date.now()}`;
-    const pin: ImagePin = { id, x, y, note: "" };
-    setPins((prev) => [...prev, pin]);
-    setActivePinId(id);
-    window.setTimeout(() => pinNoteRef.current?.focus(), 40);
-  }, []);
-
-  const updatePinNote = useCallback((id: string, note: string) => {
-    setPins((prev) => prev.map((p) => (p.id === id ? { ...p, note } : p)));
-  }, []);
-
-  const removePin = useCallback((id: string) => {
-    setPins((prev) => prev.filter((p) => p.id !== id));
-    setActivePinId((cur) => (cur === id ? null : cur));
-  }, []);
-
-  // Submit overall remarks + region flags → new batch grounded in this image.
-  // User notes lead the prompt so the model treats them as the edit brief,
-  // not a buried footnote under the stacked original prompt.
+  // Outline + prompt → new batch grounded in this image and the mask.
   const handleRefine = useCallback(() => {
     if (!lightboxBatch || !lightboxUrl) return;
     const note = remarks.trim();
-    const flagged = pins
-      .map((p) => ({ ...p, note: p.note.trim() }))
-      .filter((p) => p.note.length > 0);
-    if (!note && !flagged.length) return;
+    if (!note) return;
 
     const concept =
       String(lightboxBatch.concept || "").trim() ||
       String(lightboxBatch.label || "").trim() ||
       "the reference image";
 
+    const maskImage = maskRef.current?.exportLuma() || undefined;
     const combined = buildEditPrompt({
       concept,
-      overallNotes: note,
-      regions: flagged,
-      mode: "refine",
+      notes: note,
+      hasMask: Boolean(maskImage),
     });
-
-    const label =
-      note ||
-      (flagged.length === 1 ? flagged[0].note : `${flagged.length} region edits`);
 
     resetEditNotes();
     setLightbox(null);
+    setGuestEdit(null);
     startBatch({
-      label,
+      label: note,
       prompt: combined,
-      // Keep the original creative brief stable across edit rounds.
       concept,
       kind: "refine",
       referenceUrls: [lightboxUrl],
+      maskImage,
       aspectRatio: lightboxBatch.aspectRatio,
     });
-  }, [lightboxBatch, lightboxUrl, remarks, pins, startBatch, resetEditNotes]);
+  }, [lightboxBatch, lightboxUrl, remarks, startBatch, resetEditNotes]);
 
-  // Midjourney "V" — variations of the selected image. If the user already
-  // typed overall notes / pin notes, fold those in so the AI still hears them.
-  const handleVariations = useCallback(() => {
-    if (!lightboxBatch || !lightboxUrl) return;
-    const note = remarks.trim();
-    const flagged = pins
-      .map((p) => ({ ...p, note: p.note.trim() }))
-      .filter((p) => p.note.length > 0);
-
-    const concept =
-      String(lightboxBatch.concept || "").trim() ||
-      String(lightboxBatch.label || "").trim() ||
-      "the reference image";
-
-    const combined = buildEditPrompt({
-      concept,
-      overallNotes: note || undefined,
-      regions: flagged.length ? flagged : undefined,
-      mode: "variations",
-    });
-
-    resetEditNotes();
-    setLightbox(null);
-    startBatch({
-      label: note || (flagged.length ? "Variations + edits" : "Variations"),
-      prompt: combined,
-      concept,
-      kind: "variations",
-      referenceUrls: [lightboxUrl],
-      aspectRatio: lightboxBatch.aspectRatio,
-    });
-  }, [lightboxBatch, lightboxUrl, remarks, pins, startBatch, resetEditNotes]);
-
-  const handleSave = useCallback(() => {
+  const saveLightboxImage = useCallback(async () => {
     // Only the open lightbox slot — never the rest of the batch.
     if (!lightboxUrl || !onSaveImage || !lightboxBatch || !lightboxSlot) return;
     if (lightboxSlot.status !== "done" || !lightboxSlot.url) return;
@@ -707,22 +1224,20 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
     if (savingUrl === url || savedFlash.has(url) || savedUrls?.has(url)) return;
 
     setSavingUrl(url);
-    void (async () => {
-      try {
-        const result = await onSaveImage(
-          url,
-          // Short concept/label only — full batch prompt is shared by all 4 slots.
-          lightboxBatch.concept || lightboxBatch.label,
-          {
-            storagePath: lightboxSlot.storagePath,
-          },
-        );
-        if (result === false) return;
-        setSavedFlash((p) => new Set(p).add(url));
-      } finally {
-        setSavingUrl((cur) => (cur === url ? null : cur));
-      }
-    })();
+    try {
+      const result = await onSaveImage(
+        url,
+        // Short concept/label only — full batch prompt is shared by all 4 slots.
+        lightboxBatch.concept || lightboxBatch.label,
+        {
+          storagePath: lightboxSlot.storagePath,
+        },
+      );
+      if (result === false) return;
+      setSavedFlash((p) => new Set(p).add(url));
+    } finally {
+      setSavingUrl((cur) => (cur === url ? null : cur));
+    }
   }, [
     lightboxUrl,
     lightboxBatch,
@@ -733,36 +1248,49 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
     savedUrls,
   ]);
 
+  const handleSave = useCallback(() => {
+    void saveLightboxImage();
+  }, [saveLightboxImage]);
+
+  /**
+   * Downloading files the image in the AI Drive first. The copy that lands in
+   * the user's Downloads folder is a copy — the drive is where the image
+   * lives, and an image that only ever existed as a download would be gone
+   * from LYKN the moment the generation was swept.
+   */
+  const handleDownload = useCallback(() => {
+    const url = lightboxUrl;
+    if (!url || downloading) return;
+    setDownloading(true);
+    void (async () => {
+      try {
+        await saveLightboxImage();
+        const response = await fetch(url);
+        if (!response.ok) return;
+        const blob = await response.blob();
+        const label = lightboxBatch?.concept || lightboxBatch?.label || "lykn-image";
+        await downloadToComputer(blob, imageFilename(label, blob.type), blob.type);
+      } catch {
+        /* nothing written; the image is still in the drive */
+      } finally {
+        setDownloading(false);
+      }
+    })();
+  }, [downloading, lightboxBatch, lightboxUrl, saveLightboxImage]);
+
   const isSaved = !!lightboxUrl && (savedUrls?.has(lightboxUrl) || savedFlash.has(lightboxUrl));
   const isSaving = !!lightboxUrl && savingUrl === lightboxUrl;
 
-  const canRefine =
-    remarks.trim().length > 0 || pins.some((p) => p.note.trim().length > 0);
-
-  // Edit-space keyboard: Esc closes, arrows step (unless typing).
-  useEffect(() => {
-    if (!lightbox) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeLightbox();
-        return;
-      }
-      const tag = (document.activeElement as HTMLElement | null)?.tagName;
-      if (tag === "TEXTAREA" || tag === "INPUT") return;
-      if (e.key === "ArrowRight") stepLightbox(1);
-      if (e.key === "ArrowLeft") stepLightbox(-1);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [lightbox, closeLightbox, stepLightbox]);
+  const canRefine = remarks.trim().length > 0;
 
   /* ---------- render ---------- */
 
-  const kindLabel = (b: ImagineBatch) =>
-    b.kind === "refine" ? "Edit" : b.kind === "variations" ? "Variations" : null;
-
-  const empty = batches.length === 0;
+  const empty = sharedThread
+    ? !hasThread && !anyLoading
+    : batches.length === 0;
+  const overlayBatches = sharedThread
+    ? batches.filter((b) => !b.id.startsWith("turn-") && !committedRef.current.has(b.id))
+    : [];
 
   // Bottom showcase: three slots at a time, advance by three so the whole
   // row rotates to a fresh set (landing-page Imagine collage cadence).
@@ -782,122 +1310,399 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
   }, [empty]);
   const showcaseN = SHOWCASE_IMAGES.length;
 
-  // Shared prompt bar — sits under the header on the empty page (same stack
-  // as Build / Research), then docks to the bottom once batches exist.
+  const activeLayout =
+    IMAGE_LAYOUT_OPTIONS.find((o) => o.value === aspect) || IMAGE_LAYOUT_OPTIONS[0];
+  const ActiveLayoutIcon = activeLayout.icon;
+  const barTall = promptTall || attachments.length > 0;
+  // Appearance › Chat bar shape. This bar is the desktop pill in another mode,
+  // so it wears the same class and answers the same choice — including Slate,
+  // which is a two-row layout rather than a radius.
+  const slate = useAppearance().chatBarShape === "slate";
+
+  useLayoutEffect(() => {
+    if (!addOpen && !layoutMenuOpen) return;
+    const place = () => {
+      if (addOpen) {
+        setAddPos(barMenuOffset(menuWrapRef.current, addRef.current, addPanelRef.current));
+      }
+      if (layoutMenuOpen) {
+        setLayoutPos(
+          barMenuOffset(menuWrapRef.current, layoutRef.current, layoutPanelRef.current),
+        );
+      }
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [addOpen, layoutMenuOpen, slate, barTall]);
+
+  const addButton = (
+    <div ref={addRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => {
+          setLayoutMenuOpen(false);
+          setAddOpen((o) => !o);
+        }}
+        title="Add from Vault or Finder"
+        aria-label="Add from Vault or Finder"
+        aria-expanded={addOpen}
+        className={`${ICON_BTN} ${
+          addOpen ? "bg-black/10 text-black/85 dark:bg-white/15 dark:text-white/90" : ""
+        }`}
+      >
+        {ingesting || dropping ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Plus className="h-4 w-4" />
+        )}
+      </button>
+    </div>
+  );
+
+  const finderInput = (
+    <input
+      id={finderInputId}
+      ref={fileInputRef}
+      type="file"
+      accept={IMAGINE_FILE_ACCEPT}
+      multiple
+      className="pointer-events-none absolute h-px w-px opacity-0"
+      onChange={(e) => {
+        void handlePickFiles(e.target.files);
+        e.target.value = "";
+        setAddOpen(false);
+      }}
+    />
+  );
+
+  const field = (
+    <textarea
+      ref={inputRef}
+      value={prompt}
+      onChange={(e) => setPrompt(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          handleSend();
+        }
+      }}
+      rows={1}
+      placeholder="Describe the image you want…"
+      // flex-auto, not flex-1: the auto-grown height is the flex basis, so the
+      // field fills the tall Slate shell and then pushes it taller. flex-1
+      // would zero that basis and leave the bar stuck at its minimum.
+      className={`min-w-0 resize-none bg-transparent py-1 text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40 ${
+        slate ? "w-full flex-auto px-2 text-[0.92rem]" : "flex-1 self-center text-[0.85rem]"
+      }`}
+    />
+  );
+
+  const layoutButton = (
+    <div ref={layoutRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => {
+          setAddOpen(false);
+          setLayoutMenuOpen((o) => !o);
+        }}
+        title="Image layout"
+        aria-label="Image layout"
+        aria-expanded={layoutMenuOpen}
+        className={`flex h-8 max-w-[8.25rem] items-center gap-1 rounded-full px-2 text-[0.68rem] font-medium transition-colors ${
+          layoutMenuOpen
+            ? "bg-black/10 text-black/85 dark:bg-white/15 dark:text-white/90"
+            : "text-black/60 hover:bg-black/10 hover:text-black/85 dark:text-white/65 dark:hover:bg-white/15 dark:hover:text-white/90"
+        }`}
+      >
+        <ActiveLayoutIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+        <span className="truncate">{activeLayout.shortLabel}</span>
+        <ChevronDown className="h-3 w-3 shrink-0 opacity-40" />
+      </button>
+    </div>
+  );
+
+  const sendButton = (
+    <button
+      type="button"
+      onClick={handleSend}
+      disabled={!prompt.trim()}
+      title="Generate 4 images"
+      aria-label="Generate 4 images"
+      className={SEND_BTN}
+    >
+      {anyLoading ? (
+        <Loader2 className="h-4 w-4 animate-spin" />
+      ) : (
+        <ChatSendIcon className="h-4 w-4" />
+      )}
+    </button>
+  );
+
+  // Shared prompt bar — the desktop's rounded chat pill, with a layout menu
+  // where normal chat puts its research sources. Sits under the header on the
+  // empty page, then docks to the bottom once batches exist.
   const promptBar = (
-    <div className="lykn-imagine-prompt-bar w-full">
+    <div className="lykn-imagine-prompt-bar pointer-events-none w-full">
       {quotaNote ? (
         <p className="mb-1.5 text-center text-[11px] text-black/40 dark:text-white/40">{quotaNote}</p>
       ) : null}
-      <div className="flex flex-col gap-1.5 rounded-3xl border border-black/10 bg-white/70 p-2 shadow-xl backdrop-blur-2xl dark:border-white/15 dark:bg-black/40">
-        {attachments.length > 0 ? (
-          <div className="flex flex-wrap gap-2 px-1.5 pt-1.5">
-            {attachments.map((a) => (
-              <div key={a.id} className="group relative">
-                <img
-                  src={a.dataUrl}
-                  alt={a.name}
-                  className="h-14 w-14 rounded-xl border border-black/10 object-cover dark:border-white/15"
-                />
-                <button
-                  type="button"
-                  onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
-                  className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/75 text-white opacity-0 shadow transition-opacity group-hover:opacity-100 dark:bg-white dark:text-black"
-                  title="Remove"
-                >
-                  <XIcon className="h-3 w-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        <div className="flex items-end gap-2 pl-1">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              handlePickFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-full text-black/45 transition-colors hover:bg-black/[0.06] hover:text-black/75 dark:text-white/45 dark:hover:bg-white/[0.1] dark:hover:text-white/80"
-            title="Add reference images"
-          >
-            <ImagePlus className="h-4 w-4" />
-          </button>
-          <textarea
-            ref={inputRef}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            rows={1}
-            placeholder="Describe the image you want…"
-            className="max-h-32 min-h-[38px] flex-1 resize-none self-center bg-transparent py-2 text-[14px] text-black/85 outline-none placeholder:text-black/35 dark:text-white/90 dark:placeholder:text-white/35"
-            style={{ fieldSizing: "content" } as React.CSSProperties}
-          />
-          <div className="flex shrink-0 items-center gap-1.5">
-            <div className="flex items-center gap-0.5 rounded-full bg-black/[0.05] p-0.5 dark:bg-white/[0.08]">
-              {ASPECT_OPTIONS.map((ar) => (
-                <button
-                  key={ar}
-                  type="button"
-                  onClick={() => setAspect(ar)}
-                  className={`rounded-full px-2 py-1 text-[10px] font-medium transition-colors ${
-                    aspect === ar
-                      ? "bg-black/80 text-white dark:bg-white dark:text-black"
-                      : "text-black/45 hover:text-black/75 dark:text-white/45 dark:hover:text-white/80"
-                  }`}
-                  title={`Aspect ratio ${ar}`}
-                >
-                  {ar}
-                </button>
-              ))}
+      {/* The pill blurs its own backdrop, so it is a backdrop root: a popover
+          nested inside it would have nothing to blur and would render flat.
+          The layout menu is therefore a sibling of the bar, not a child. */}
+      <div
+        ref={menuWrapRef}
+        className="pointer-events-none relative mx-auto flex w-full max-w-xl justify-center"
+      >
+        <div
+          ref={barDrop.ref}
+          onDragOver={(e) => {
+            if (!e.dataTransfer?.types?.includes("Files")) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+            setDropping(true);
+          }}
+          onDragLeave={(e) => {
+            if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+            setDropping(false);
+          }}
+          onDrop={(e) => {
+            if (!e.dataTransfer?.files?.length) return;
+            e.preventDefault();
+            setDropping(false);
+            void handlePickFiles(e.dataTransfer.files);
+          }}
+          className={`lykn-home-chat-bar pointer-events-auto relative flex w-full flex-col ${BAR_SURFACE} ${
+            slate
+              ? "min-h-[6.5rem] gap-1.5 rounded-[28px] p-2.5"
+              : barTall
+                ? "gap-1 rounded-[1.6rem] py-2 pl-1.5 pr-1.5"
+                : "rounded-full py-1.5 pl-1.5 pr-1.5"
+          } ${dropping || barDrop.hot ? "ring-2 ring-blue-400/60" : ""}`}
+        >
+          {finderInput}
+          {attachments.length > 0 ? (
+            <div className="flex max-h-32 flex-wrap items-end gap-1.5 overflow-y-auto px-1.5 pt-0.5">
+              {attachments.map((a) => {
+                const remove = (
+                  <button
+                    type="button"
+                    onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-black/55 text-white opacity-0 transition-opacity hover:bg-black/75 group-hover:opacity-100"
+                    title="Remove"
+                  >
+                    <XIcon className="h-3 w-3" />
+                  </button>
+                );
+                if (a.kind === "image") {
+                  return (
+                    <span
+                      key={a.id}
+                      className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-black/10"
+                    >
+                      <img
+                        src={a.dataUrl}
+                        alt={a.name}
+                        draggable={false}
+                        className="h-full w-full object-cover"
+                      />
+                      <span className="absolute right-0.5 top-0.5">{remove}</span>
+                    </span>
+                  );
+                }
+                // Documents and folders have no pixels to preview — they read
+                // as a named chip so it's clear the model gets their text.
+                const isFolder = !/\.[a-z0-9]{1,5}$/i.test(a.name);
+                return (
+                  <span
+                    key={a.id}
+                    className="group flex h-14 shrink-0 items-center gap-2 rounded-xl bg-black/10 px-2.5 dark:bg-white/10"
+                    title={a.name}
+                  >
+                    {isFolder ? (
+                      <FolderIcon className="h-4 w-4 shrink-0 opacity-60" />
+                    ) : (
+                      <FileText className="h-4 w-4 shrink-0 opacity-60" />
+                    )}
+                    <span className="max-w-[7rem] truncate text-[0.7rem] text-black/70 dark:text-white/75">
+                      {a.name}
+                    </span>
+                    {remove}
+                  </span>
+                );
+              })}
             </div>
+          ) : null}
+          {slate ? (
+            <>
+              {field}
+              {/* Controls along the bottom: what shapes the prompt on the left,
+                  what acts on it on the right — same split as the chat pill. */}
+              <div className="flex w-full items-center gap-1.5 px-0.5">
+                {addButton}
+                {layoutButton}
+                <span className="flex-1" />
+                {sendButton}
+              </div>
+            </>
+          ) : (
+            <div className="flex w-full items-center gap-1.5">
+              {addButton}
+              {field}
+              {layoutButton}
+              {sendButton}
+            </div>
+          )}
+        </div>
+
+        {addOpen && (
+          <div
+            ref={addPanelRef}
+            style={addPos}
+            className={`pointer-events-auto absolute z-40 w-48 rounded-[14px] p-1.5 ${BAR_SURFACE}`}
+          >
             <button
               type="button"
-              onClick={handleSend}
-              disabled={!prompt.trim()}
-              className={`h-9 w-9 !rounded-full lykn-chat-neu-chat-send-btn flex items-center justify-center shrink-0 ${
-                !prompt.trim()
-                  ? "opacity-40 cursor-not-allowed"
-                  : "text-blue-600 dark:text-blue-400"
-              }`}
-              title="Generate 4 images"
+              onClick={openAddVault}
+              className="lg-menu-row flex w-full items-center gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] text-black/70 dark:text-white/75"
             >
-              {anyLoading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.25} />
-              )}
+              <Library className="h-3.5 w-3.5 shrink-0 opacity-70" />
+              Vault
             </button>
+            <label
+              htmlFor={finderInputId}
+              className="lg-menu-row relative flex w-full cursor-pointer items-center gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] text-black/70 dark:text-white/75"
+              onClick={(e) => {
+                if (typeof (window as any).lykn?.pickOpenFiles === "function") {
+                  e.preventDefault();
+                  openAddFinder();
+                }
+              }}
+            >
+              <FolderOpen className="h-3.5 w-3.5 shrink-0 opacity-70" />
+              Finder
+            </label>
           </div>
-        </div>
+        )}
+
+        {layoutMenuOpen && (
+          <div
+            ref={layoutPanelRef}
+            style={layoutPos}
+            className={`pointer-events-auto absolute z-40 w-52 rounded-[14px] p-1.5 ${BAR_SURFACE}`}
+          >
+            {IMAGE_LAYOUT_OPTIONS.map((opt) => {
+              const Icon = opt.icon;
+              const on = opt.value === aspect;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  data-active={on || undefined}
+                  onClick={() => {
+                    setAspect(opt.value);
+                    setLayoutMenuOpen(false);
+                  }}
+                  className={`lg-menu-row flex w-full items-center gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] ${
+                    on ? "font-medium text-black dark:text-white" : "text-black/70 dark:text-white/75"
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const showcaseRow = (
+    <div className="lykn-imagine-showcase pointer-events-none absolute inset-x-0 bottom-12 mx-auto w-full max-w-4xl px-6 sm:bottom-14">
+      <div className="pointer-events-auto flex gap-3">
+        {[0, 1, 2].map((offset) => (
+          <ImagineShowcaseSlot
+            key={offset}
+            active={(showcaseTick + offset) % showcaseN}
+            delayMs={offset * 140}
+            onPick={(src, name) => void attachShowcase(src, name)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+
+  const overlayGrid = (
+    <div className="pointer-events-none absolute inset-x-0 bottom-24 z-[1] mx-auto w-full max-w-2xl px-4">
+      <div className="space-y-4">
+        {overlayBatches.map((b) => (
+          <div key={b.id} className="pointer-events-auto">
+            <div className="mt-1 px-4 py-3">
+              <div className={`grid gap-2 ${b.slots.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
+                {b.slots.map((s, i) => (
+                  <div
+                    key={s.id}
+                    className="group/img relative overflow-hidden rounded-xl bg-black/[0.04] dark:bg-white/[0.05]"
+                    style={{ aspectRatio: cssAspect(b.aspectRatio) }}
+                  >
+                    {s.status === "done" && s.url ? (
+                      <button
+                        type="button"
+                        onClick={() => openLightbox(b.id, i)}
+                        className="block w-full cursor-zoom-in"
+                        title="Open to edit"
+                      >
+                        <GeneratedImage
+                          src={s.url}
+                          alt={b.label}
+                          className="w-full object-cover"
+                          style={{ aspectRatio: cssAspect(b.aspectRatio) }}
+                          loading="lazy"
+                        />
+                      </button>
+                    ) : s.status === "error" ? (
+                      <button
+                        type="button"
+                        onClick={() => retrySlot(b, s)}
+                        className="flex h-full w-full flex-col items-center justify-center gap-2 text-black/45 transition-colors hover:text-black/70 dark:text-white/45 dark:hover:text-white/75"
+                        title="Retry"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        <span className="px-3 text-center text-[11px] leading-snug">{s.error}</span>
+                      </button>
+                    ) : (
+                      <div className="lykn-imagine-shimmer absolute inset-0" />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
 
   return (
-    <div className="absolute inset-0 flex flex-col">
-      {empty ? (
-        // Centered header + chat bar. Three large rounded showcase tiles
-        // sit above the bottom edge and fade-rotate through the pool.
-        <div className="relative flex flex-1 flex-col overflow-hidden pt-16">
-          {/* Center header + bar in the space ABOVE the showcase — never
-              under it, so nothing needs to scroll on a normal viewport. */}
-          <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-4 py-4">
-            <div className="lykn-imagine-hero mx-auto w-full max-w-2xl translate-y-10 space-y-8 sm:translate-y-14 sm:space-y-10">
-              <div className="pointer-events-none space-y-2.5 text-center">
+    <div
+      className={`lykn-imagine-root pointer-events-none absolute inset-0 ${
+        sharedThread ? "z-[70]" : "flex flex-col"
+      } ${sharedThread && !visible ? "hidden" : ""}`}
+    >
+      {sharedThread ? (
+        <>
+          {visible && empty ? showcaseRow : null}
+          {visible && overlayBatches.length > 0 ? overlayGrid : null}
+        </>
+      ) : empty ? (
+        // Same empty-page stack as Chat / Build: headline + bar centered as a
+        // unit. Showcase tiles are out of flow so they cannot raise the bar.
+        // The full-screen frames stay click-through so desktop icons remain live.
+        <div className="pointer-events-none relative flex flex-1 flex-col overflow-hidden">
+          <div className="lykn-imagine-empty pointer-events-none relative flex min-h-0 flex-1 justify-center overflow-hidden px-4 py-4">
+            <div className="lykn-imagine-stack pointer-events-none mx-auto my-auto flex w-full max-w-2xl flex-col gap-8 sm:gap-10">
+              <div className="lykn-imagine-hero pointer-events-none space-y-2.5 text-center">
                 <p className="text-xl font-semibold tracking-tight text-black dark:text-white sm:text-3xl">
                   Generate any image
                 </p>
@@ -905,59 +1710,65 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
                   Describe any image and LYKN generates a set of variations you can refine.
                 </p>
               </div>
-              {promptBar}
+              <div className="lykn-imagine-empty-bar pointer-events-none">{promptBar}</div>
             </div>
           </div>
-          <div className="lykn-imagine-showcase mx-auto mb-12 w-full max-w-4xl shrink-0 px-6 sm:mb-14">
-            <div className="flex gap-3">
-              {[0, 1, 2].map((offset) => (
-                <ImagineShowcaseSlot
-                  key={offset}
-                  active={(showcaseTick + offset) % showcaseN}
-                  delayMs={offset * 140}
-                  onPick={(src, name) => void attachShowcase(src, name)}
-                />
-              ))}
-            </div>
-          </div>
+          {showcaseRow}
         </div>
       ) : (
         <>
-          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 pb-40 pt-16 scrollbar-hide">
-            <div className="mx-auto flex w-full max-w-[720px] flex-col gap-10">
+          {/* pb-40's worth of clearance for the docked bar, plus whatever a
+              taller shape adds — it grows up off a fixed bottom edge, so all
+              of the extra height eats into the batches rather than half. */}
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center"
+            style={{ top: "var(--header-height-sm, 4.2rem)" }}
+          >
+          <div
+            ref={scrollRef}
+            className="lykn-chat-ink pointer-events-auto w-full max-w-2xl flex-1 overflow-y-auto px-4 pt-6 scrollbar-hide"
+            style={{ paddingBottom: "calc(10rem + 2 * var(--lykn-home-bar-grow))" }}
+          >
+              <div className="space-y-4">
               {batches.map((b) => (
-                <div key={b.id} className="flex flex-col gap-2.5">
-                  <div className="flex items-baseline gap-2 px-1">
-                    {kindLabel(b) ? (
-                      <span className="shrink-0 rounded-full border border-black/10 bg-black/[0.05] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black/55 dark:border-white/15 dark:bg-white/[0.08] dark:text-white/60">
-                        {kindLabel(b)}
-                      </span>
-                    ) : null}
-                    <p className="truncate text-[13px] text-black/60 dark:text-white/60" title={b.label}>
-                      {b.label}
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2.5">
+                <React.Fragment key={b.id}>
+                  <ImagineUserPrompt
+                    text={b.label}
+                    referenceUrls={b.referenceUrls}
+                    expanded={expandedPrompts.has(b.id)}
+                    onToggleExpand={() =>
+                      setExpandedPrompts((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(b.id)) next.delete(b.id);
+                        else next.add(b.id);
+                        return next;
+                      })
+                    }
+                  />
+                  <div className="w-full">
+                    <div className="h-6" aria-hidden />
+                    <div className="mt-1 px-4 py-3">
+                    <div className={`grid gap-2 ${b.slots.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
                     {b.slots.map((s, i) => (
                       <div
                         key={s.id}
-                        className="relative overflow-hidden rounded-2xl border border-black/10 bg-black/[0.04] dark:border-white/12 dark:bg-white/[0.05]"
+                        className="group/img relative overflow-hidden rounded-xl bg-black/[0.04] dark:bg-white/[0.05]"
                         style={{ aspectRatio: cssAspect(b.aspectRatio) }}
                       >
                         {s.status === "done" && s.url ? (
                           <button
                             type="button"
                             onClick={() => openLightbox(b.id, i)}
-                            className="group block h-full w-full cursor-zoom-in"
-                            title="Open — write edit remarks"
+                            className="block w-full cursor-zoom-in"
+                            title="Open to edit"
                           >
-                            <img
+                            <GeneratedImage
                               src={s.url}
                               alt={b.label}
-                              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                              className="w-full object-cover"
+                              style={{ aspectRatio: cssAspect(b.aspectRatio) }}
                               loading="lazy"
                             />
-                            <span className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/10" />
                           </button>
                         ) : s.status === "error" ? (
                           <button
@@ -974,244 +1785,155 @@ export default function StudioImagineMode({ chatKey, onSaveImage, savedUrls }: S
                         )}
                       </div>
                     ))}
+                    </div>
+                    </div>
                   </div>
-                </div>
+                </React.Fragment>
               ))}
-            </div>
+              </div>
+          </div>
           </div>
 
           {/* Prompt bar docks to the bottom once the first batch starts. */}
           <div className="lykn-imagine-dock pointer-events-none absolute inset-x-0 bottom-0 z-[60] flex justify-center px-4 pb-5">
-            <div className="pointer-events-auto w-full max-w-2xl">{promptBar}</div>
+            <div className="pointer-events-none w-full max-w-2xl">{promptBar}</div>
           </div>
         </>
       )}
 
-      {/* Edit space — large centered image, overall notes + click-to-flag regions */}
-      {lightbox && lightboxBatch && lightboxUrl ? (
-        <div
-          className="fixed inset-0 z-[110] flex flex-col"
-          onClick={closeLightbox}
-        >
-          {/* Dense frosted veil — hides/blurs the studio behind edit mode.
-              Extra layer because Electron vibrancy often weakens backdrop-filter. */}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 bg-[#e8e8e6]/95 backdrop-blur-3xl dark:bg-black/90 dark:backdrop-blur-3xl"
-          />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/10 via-transparent to-black/20 dark:from-black/40 dark:via-black/20 dark:to-black/50"
-          />
-
-          {/* Top chrome */}
-          <div
-            className="relative z-20 flex shrink-0 items-center justify-between gap-3 px-4 pb-2 pt-4 sm:px-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className={`flex items-center gap-2 rounded-full px-3 py-1.5 ${EDIT_PANEL}`}>
-              <MapPin className="h-3.5 w-3.5 opacity-60" />
-              <span className="text-[11px] font-medium text-black/55 dark:text-white/60">
-                Click the image to flag a spot
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
+      <LyknMediaPop
+        open={!!(lightboxBatch && lightboxUrl && (lightbox || guestEdit))}
+        onClose={closeLightbox}
+        title={lightboxBatch?.label}
+        hint={
+          <span className="flex items-center gap-2">
+            <PenLine className="h-3.5 w-3.5 opacity-60" />
+            <span className="text-[11px] font-medium text-black/55 dark:text-white/60">
+              Click dots or drag to outline
+            </span>
+          </span>
+        }
+        onPrev={() => stepLightbox(-1)}
+        onNext={() => stepLightbox(1)}
+        topBar={
+          lightboxUrl ? (
+            <>
               <button
                 type="button"
-                onClick={() => stepLightbox(-1)}
-                className={`flex h-9 w-9 items-center justify-center rounded-full ${EDIT_PANEL}`}
-                title="Previous"
+                onClick={handleDownload}
+                disabled={downloading}
+                className={`flex h-9 w-9 items-center justify-center rounded-full ${MEDIA_POP_PANEL} disabled:opacity-40`}
+                title="Download — also saves to the AI Drive"
+                aria-label="Download"
               >
-                <ChevronLeft className="h-4 w-4" />
+                {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
               </button>
-              <button
-                type="button"
-                onClick={() => stepLightbox(1)}
-                className={`flex h-9 w-9 items-center justify-center rounded-full ${EDIT_PANEL}`}
-                title="Next"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={closeLightbox}
-                className={`flex h-9 w-9 items-center justify-center rounded-full ${EDIT_PANEL}`}
-                title="Close"
-              >
-                <XIcon className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* Hero image — front and center */}
-          <div
-            className="relative z-20 flex min-h-0 flex-1 items-center justify-center px-4 py-2 sm:px-8"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              ref={imageWrapRef}
-              className="relative max-h-full max-w-full cursor-crosshair"
-              onClick={handleImageClick}
-              title="Click to flag this part of the image"
-            >
-              <img
-                src={lightboxUrl}
-                alt={lightboxBatch.label}
-                draggable={false}
-                className="max-h-[min(68vh,720px)] w-auto max-w-[min(92vw,920px)] select-none rounded-2xl object-contain shadow-none ring-1 ring-black/10 dark:ring-white/12"
-              />
-              {pins.map((pin, i) => {
-                const active = pin.id === activePinId;
-                // Flip the note bar to the left when the pin sits on the right half.
-                const barOnLeft = pin.x > 58;
-                return (
-                  <div
-                    key={pin.id}
-                    className="absolute z-10"
-                    style={{ left: `${pin.x}%`, top: `${pin.y}%` }}
-                  >
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActivePinId(pin.id);
-                        window.setTimeout(() => pinNoteRef.current?.focus(), 40);
-                      }}
-                      className={`absolute flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full text-[11px] font-bold shadow-none transition-transform ${
-                        active
-                          ? "scale-110 bg-black text-white ring-2 ring-white dark:bg-white dark:text-black dark:ring-black/40"
-                          : "bg-white/95 text-black ring-1 ring-black/15 hover:scale-105 dark:bg-black/80 dark:text-white dark:ring-white/25"
-                      }`}
-                      title={pin.note || `Flag ${i + 1}`}
-                    >
-                      {i + 1}
-                    </button>
-                    {active ? (
-                      <div
-                        className={`absolute top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full border border-black/10 bg-white px-1.5 py-1 shadow-none dark:border-white/15 dark:bg-[#1c1c1e] ${
-                          barOnLeft
-                            ? "right-full mr-4"
-                            : "left-full ml-4"
-                        }`}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <input
-                          ref={pinNoteRef}
-                          value={pin.note}
-                          onChange={(e) => updatePinNote(pin.id, e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              setActivePinId(null);
-                            }
-                            if (e.key === "Escape") {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              if (!pin.note.trim()) removePin(pin.id);
-                              else setActivePinId(null);
-                            }
-                          }}
-                          placeholder="Change this spot…"
-                          className="w-[11rem] bg-transparent px-1.5 text-[12px] text-black/85 outline-none placeholder:text-black/35 dark:text-white/90 dark:placeholder:text-white/35 sm:w-[14rem]"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removePin(pin.id)}
-                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-black/40 transition-colors hover:bg-black/[0.06] hover:text-black/70 dark:text-white/40 dark:hover:bg-white/10 dark:hover:text-white/85"
-                          title="Remove flag"
-                        >
-                          <XIcon className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ) : pin.note.trim() ? (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setActivePinId(pin.id);
-                          window.setTimeout(() => pinNoteRef.current?.focus(), 40);
-                        }}
-                        className={`absolute top-1/2 max-w-[9rem] -translate-y-1/2 truncate rounded-full bg-white/95 px-2 py-0.5 text-[10px] font-medium text-black/70 shadow-none ring-1 ring-black/10 dark:bg-black/80 dark:text-white/75 dark:ring-white/15 ${
-                          barOnLeft ? "right-full mr-3.5" : "left-full ml-3.5"
-                        }`}
-                        title={pin.note}
-                      >
-                        {pin.note}
-                      </button>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Compact bottom bar — overall notes + actions */}
-          <div
-            className="relative z-20 mx-auto w-full max-w-2xl shrink-0 px-4 pb-5 pt-1 sm:px-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className={`flex items-end gap-2 rounded-2xl p-2.5 sm:p-3 ${EDIT_PANEL}`}>
-              <textarea
-                ref={remarksRef}
-                value={remarks}
-                onChange={(e) => setRemarks(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleRefine();
-                  }
-                }}
-                rows={1}
-                placeholder="Overall comments for the next batch…"
-                className={`min-h-[40px] max-h-24 flex-1 resize-none px-3 py-2.5 text-[13px] leading-relaxed ${EDIT_FIELD}`}
-              />
-              <button
-                type="button"
-                onClick={handleVariations}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-black/10 text-black/60 transition-colors hover:bg-black/[0.05] dark:border-white/15 dark:text-white/70 dark:hover:bg-white/10"
-                title="Variations"
-              >
-                <Shuffle className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={handleRefine}
-                disabled={!canRefine}
-                className="flex h-10 shrink-0 items-center gap-1.5 rounded-xl bg-black/90 px-3.5 text-[12px] font-semibold text-white transition-opacity disabled:opacity-30 dark:bg-white dark:text-black"
-                title="Generate edited batch"
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Generate</span>
-              </button>
-              <a
-                href={lightboxUrl}
-                download
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-black/45 transition-colors hover:bg-black/[0.05] hover:text-black/75 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-white/85"
-                title="Download"
-              >
-                <Download className="h-4 w-4" />
-              </a>
               {onSaveImage ? (
                 <button
                   type="button"
                   onClick={handleSave}
                   disabled={isSaved || isSaving}
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors ${
-                    isSaved
-                      ? "text-emerald-700 dark:text-emerald-300"
-                      : "text-black/45 hover:bg-black/[0.05] hover:text-black/75 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-white/85"
+                  className={`flex h-9 w-9 items-center justify-center rounded-full ${MEDIA_POP_PANEL} ${
+                    isSaved ? "text-emerald-700 dark:text-emerald-300" : ""
                   }`}
                   title={isSaved ? "Saved" : isSaving ? "Saving…" : "Save this image only"}
+                  aria-label={isSaved ? "Saved" : "Save"}
                 >
                   {isSaved ? <Check className="h-4 w-4" /> : isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bookmark className="h-4 w-4" />}
                 </button>
               ) : null}
+            </>
+          ) : null
+        }
+        footer={
+          lightboxUrl ? (
+            <div className="mx-auto w-full max-w-xl">
+              <div
+                className={`lykn-home-chat-bar flex w-full flex-col ${BAR_SURFACE} ${
+                  slate
+                    ? "min-h-[6.5rem] gap-1.5 rounded-[28px] p-2.5"
+                    : remarksTall
+                      ? "gap-1 rounded-[1.6rem] py-2 pl-1.5 pr-1.5"
+                      : "rounded-full py-1.5 pl-1.5 pr-1.5"
+                }`}
+              >
+                {slate ? (
+                  <>
+                    <textarea
+                      ref={remarksRef}
+                      value={remarks}
+                      onChange={(e) => setRemarks(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handleRefine();
+                        }
+                      }}
+                      rows={1}
+                      placeholder={hasMask ? "Describe the change…" : "Describe the edit — or outline a region first"}
+                      className="lykn-home-chat-bar-input min-w-0 w-full flex-auto resize-none bg-transparent px-2 py-1 text-[0.92rem] text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40"
+                    />
+                    <div className="flex w-full items-center gap-1.5 px-0.5">
+                      <span className="flex-1" />
+                      <button
+                        type="button"
+                        onClick={handleRefine}
+                        disabled={!canRefine}
+                        className={SEND_BTN}
+                        title="Apply edit"
+                        aria-label="Apply edit"
+                      >
+                        <ChatSendIcon className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex w-full items-center gap-1.5">
+                    <textarea
+                      ref={remarksRef}
+                      value={remarks}
+                      onChange={(e) => setRemarks(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handleRefine();
+                        }
+                      }}
+                      rows={1}
+                      placeholder={hasMask ? "Describe the change…" : "Describe the edit — or outline a region first"}
+                      className="lykn-home-chat-bar-input min-w-0 flex-1 self-center resize-none bg-transparent py-1 text-[0.85rem] text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleRefine}
+                      disabled={!canRefine}
+                      className={SEND_BTN}
+                      title="Apply edit"
+                      aria-label="Apply edit"
+                    >
+                      <ChatSendIcon className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        </div>
-      ) : null}
+          ) : null
+        }
+      >
+        {lightboxUrl && lightboxBatch ? (
+          <ImagineMaskCanvas
+            key={lightboxUrl}
+            ref={maskRef}
+            src={lightboxUrl}
+            alt={lightboxBatch.label}
+            onMaskChange={setHasMask}
+          />
+        ) : null}
+      </LyknMediaPop>
     </div>
   );
-}
+});
+
+StudioImagineMode.displayName = "StudioImagineMode";
+
+export default StudioImagineMode;

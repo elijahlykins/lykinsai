@@ -15,7 +15,7 @@
 // becomes the active focus. Name-key dedup means "yes, start that" can't fork
 // the same project twice.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 import { createUserAuthorizedProject } from '../lib/projectWriteTarget.js';
 
 export const createProjectTool = {
@@ -61,8 +61,6 @@ export const createProjectTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

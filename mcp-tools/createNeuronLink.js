@@ -32,7 +32,7 @@
 // surfaces overlap; the link is for "the user themselves would draw
 // this edge if they saw it").
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 const LABEL_MAX = 80;
 const NODE_ID_MAX = 200;
@@ -109,8 +109,6 @@ export const createNeuronLinkTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

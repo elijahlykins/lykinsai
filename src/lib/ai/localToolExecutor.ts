@@ -11,6 +11,9 @@ import { runLocalTool, subscribeLocalMode, type LocalToolResult } from "@/lib/lo
 import { requestLocalApproval } from "@/lib/ai/localToolApproval";
 import { supabase } from "@/lib/supabase";
 import { uploadFileToStorage } from "@/lib/vault/uploadFileToStorage";
+import { openStudioTab } from "@/lib/studioTabs";
+import { openLyknMediaPop } from "@/lib/lyknMediaPop";
+import { arrangeDesktop } from "@/components/macdesktop/desktopArrange";
 
 /**
  * Read-class tools don't change anything on disk, but browsing someone's
@@ -141,6 +144,42 @@ async function uploadPulledFile(result: LocalToolResult): Promise<LocalToolResul
   }
 }
 
+function openLocalPathResult(result: LocalToolResult): void {
+  if (!result.ok || typeof result.path !== "string" || !result.path) return;
+  const type = result.type === "dir" ? "dir" : "file";
+  if (type === "file") {
+    const name = result.path.split("/").filter(Boolean).pop();
+    openLyknMediaPop({ type: "file", path: result.path, name });
+    return;
+  }
+  const parent = result.path;
+  const params = new URLSearchParams({ loc: parent });
+  const target = `/vault?${params.toString()}`;
+  if (!openStudioTab("vault", target) && typeof window !== "undefined") {
+    window.location.assign(target);
+  }
+}
+
+/**
+ * The desktop lives in the renderer, so the main process settles only what was
+ * asked for and the arranging happens here. Done before the result is posted
+ * rather than after, so what goes back to the model is what actually happened.
+ */
+function organizeDesktopResult(result: LocalToolResult): LocalToolResult {
+  if (!result.ok) return result;
+  const by = typeof result.by === "string" ? result.by : null;
+  const moved = arrangeDesktop({ by });
+  if (!moved) {
+    return {
+      ok: false,
+      error:
+        "There is nothing on the user's LYKN Home desktop to arrange — it has no icons yet. " +
+        "Files appear there once Settings → Display → Sync my Desktop is on.",
+    };
+  }
+  return { ...result, icons: moved, note: `${result.note} ${moved} icons were lined up.` };
+}
+
 /**
  * Run one local tool call and report the result to the server. Safe to call
  * fire-and-forget; never throws.
@@ -180,6 +219,10 @@ export async function executeAwaitingLocalTool(
     result = await uploadPulledFile(result);
   }
 
+  if (name === "local_organize_desktop") {
+    result = organizeDesktopResult(result);
+  }
+
   if (result?.needsApproval === true) {
     const approved = await requestLocalApproval({
       tool: name,
@@ -194,4 +237,5 @@ export async function executeAwaitingLocalTool(
   }
 
   await postResult(apiBase, streamId, tc.id, result);
+  if (name === "local_open_path") openLocalPathResult(result);
 }

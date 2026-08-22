@@ -19,6 +19,11 @@ const IMAGE_EXTS = new Set([
   "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic", "heif", "avif",
 ]);
 
+// Pages read out of an attached PDF. Higher than the vault's cap because chat
+// answers from this text directly instead of indexing it, and cheap: walking
+// pages is fast next to the round trip that follows.
+const PDF_TEXT_PAGE_CAP = 12;
+
 function isImageFile(mime: string, ext: string): boolean {
   return mime.startsWith("image/") || IMAGE_EXTS.has(ext);
 }
@@ -199,9 +204,18 @@ export async function ingestChatFiles(
 
     try {
       const dataUrl = await readFileAsDataUrl(file);
-      const type = mime === "application/pdf" || ext === "pdf" ? "pdf" : "file";
+      const isPdf = mime === "application/pdf" || ext === "pdf";
+      const type = isPdf ? "pdf" : "file";
       const attId = makeAttId();
       const attName = file.name || "Pasted file";
+      // A PDF's url is a data URL: fine for the preview chip, useless to a
+      // model. Read the text layer here — the same pass the vault runs on
+      // upload — or the turn ships nothing but a filename.
+      let pdfText = "";
+      if (isPdf) {
+        const { extractPdfText } = await import("@/lib/extract-text");
+        pdfText = (await extractPdfText(file, PDF_TEXT_PAGE_CAP)).text;
+      }
       addFocusedAttachment({
         id: attId,
         type,
@@ -209,6 +223,7 @@ export async function ingestChatFiles(
         name: attName,
         mime,
         size: file.size,
+        ...(pdfText ? { pdfText } : {}),
       });
       if (uploadCtx?.userId) {
         void uploadChatAttachmentBytes(file, attName, uploadCtx.userId).then((meta) => {

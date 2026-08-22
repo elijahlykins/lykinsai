@@ -36,6 +36,18 @@
         clip-path: inset(0 round 16px);
       }
       * { box-sizing: border-box; }
+      /* No scrollbar is ever drawn in LYKN: panes still scroll by wheel,
+         trackpad, keyboard and drag, only the gutter is gone. This window has
+         its own document, so it can't inherit the app-wide rule in index.css. */
+      * {
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      *::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+        display: none !important;
+      }
       html, body {
         margin: 0;
         height: 100%;
@@ -105,17 +117,8 @@
         overflow-y: auto;
         overflow-x: hidden;
         border-bottom: 1px solid var(--divider);
-        scrollbar-width: thin;
-        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
       }
       #thread.show { display: block; }
-      #thread::-webkit-scrollbar { width: 6px; }
-      #thread::-webkit-scrollbar-track { background: transparent; }
-      #thread::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.16);
-        border-radius: 999px;
-      }
-      #thread::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
 
       .chat { border-top: 1px solid rgba(255, 255, 255, 0.05); }
       .chat:first-child { border-top: none; }
@@ -1381,13 +1384,6 @@
         min-height: 0;
         overflow-y: auto;
         padding: 4px 2px;
-        scrollbar-width: thin;
-        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
-      }
-      .history-list::-webkit-scrollbar { width: 6px; }
-      .history-list::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.16);
-        border-radius: 999px;
       }
       .history-group {
         padding: 6px 10px 2px;
@@ -1582,15 +1578,8 @@
         min-height: var(--bar-min-h);
         max-height: 180px;
         overflow-y: auto;
-        scrollbar-width: thin;
-        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
       }
       #ask::placeholder { color: var(--muted); }
-      #ask::-webkit-scrollbar { width: 6px; }
-      #ask::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.16);
-        border-radius: 999px;
-      }
 
       .hint {
         -webkit-app-region: no-drag;

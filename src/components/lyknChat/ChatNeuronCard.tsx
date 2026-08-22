@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -15,9 +15,9 @@ import {
   Sparkles,
 } from "lucide-react";
 import VaultAttachment from "@/components/synthesis/VaultAttachment";
-import VaultDocumentViewer from "@/components/lyknChat/VaultDocumentViewer";
 import { parseVaultContent } from "@/lib/vaultContent";
 import { flushAndNavigate } from "@/lib/chat/flushAndNavigate";
+import { openLyknMediaPop } from "@/lib/lyknMediaPop";
 import { supabase } from "@/lib/supabase";
 import {
   addNeuronsToProject,
@@ -659,25 +659,21 @@ export type ChatNeuronCardProps = {
 export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardProps) {
   const navigate = useNavigate();
   const payload = attachment.payload;
-  // A vault item is the one kind that gets a full embedded reader — it's the
-  // "document" the user means by "pull that up". Beliefs/facts/concepts are
-  // already shown in full on the card itself.
   const isVault = payload?.kind === "vault";
-  const [viewerOpen, setViewerOpen] = useState(false);
 
-  // Auto-open the reader once when the orchestrator flagged this attachment
-  // (user said "bring that up" / "pull it up" or affirmed the AI's offer).
-  // Guarded by a ref so re-renders don't reopen it after the user closes it.
+  const pullUp = useCallback(() => {
+    if (!payload || payload.kind !== "vault") return;
+    openLyknMediaPop({ type: "vault-payload", payload });
+  }, [payload]);
+
   const autoOpenedRef = React.useRef(false);
   useEffect(() => {
-    // Only auto-open for a FRESH turn. The flag persists with the message, so
-    // without the recency check a reloaded conversation would re-pop the modal.
     const isFresh = Date.now() - (attachment.addedAt || 0) < 15_000;
     if (attachment.autoOpen && isVault && isFresh && !autoOpenedRef.current) {
       autoOpenedRef.current = true;
-      setViewerOpen(true);
+      pullUp();
     }
-  }, [attachment.autoOpen, attachment.addedAt, isVault]);
+  }, [attachment.autoOpen, attachment.addedAt, isVault, pullUp]);
 
   // Keep this hook above the early return so the hook order stays stable
   // regardless of payload validity (Rules of Hooks).
@@ -712,7 +708,7 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
           {isVault ? (
             <button
               type="button"
-              onClick={() => setViewerOpen(true)}
+              onClick={pullUp}
               className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[0.625rem] font-medium text-black/70 dark:text-white hover:bg-black/[0.05] dark:hover:bg-white/10 transition-colors"
               title="Pull up the full document"
               aria-label="Pull up the full document"
@@ -740,11 +736,11 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
           <div
             role="button"
             tabIndex={0}
-            onClick={() => setViewerOpen(true)}
+            onClick={pullUp}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                setViewerOpen(true);
+                pullUp();
               }
             }}
             className="block w-full text-left px-3 py-2.5 hover:bg-black/[0.02] dark:hover:bg-white/[0.03] transition-colors cursor-pointer"
@@ -759,13 +755,6 @@ export function ChatNeuronCard({ attachment, className = "" }: ChatNeuronCardPro
           <SaveBackRow member={member} />
         </div>
       </div>
-      {isVault ? (
-        <VaultDocumentViewer
-          payload={payload as ChatNeuronVaultPayload}
-          open={viewerOpen}
-          onClose={() => setViewerOpen(false)}
-        />
-      ) : null}
     </>
   );
 }

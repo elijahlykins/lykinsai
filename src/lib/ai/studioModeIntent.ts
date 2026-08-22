@@ -1,10 +1,9 @@
 /**
  * Cross-mode ask detection for the Studio's sticky mode pages (Build /
- * Imagine / Research). Each page force-routes every send down its own
- * pipeline, so a clearly out-of-lane ask ("generate an image of a dog" on
- * the Research page) must be caught BEFORE dispatch — otherwise the wrong
- * pipeline runs to completion (e.g. a full research report about a dog)
- * before the model can say anything. Phrase lists are trimmed-down mirrors
+ * Imagine / Research). Explicit deliverable requests route down the active
+ * page's pipeline, so a clearly out-of-lane commission ("generate an image
+ * of a dog" on Research) must be caught BEFORE dispatch. Ordinary questions
+ * remain conversational in every mode. Phrase lists are trimmed-down mirrors
  * of lib/imageGenIntent.cjs and lib/artifactBuildIntent.cjs.
  */
 

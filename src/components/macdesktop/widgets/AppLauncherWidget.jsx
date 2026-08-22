@@ -2,7 +2,7 @@ import { AppWindow } from 'lucide-react';
 
 import { isAppFrontmost, isAppRunning, launchMacApp, useMacApps } from '@/lib/macApps';
 
-import { WidgetFrame } from './shared';
+import { NO_DRAG, WidgetFrame } from './shared';
 
 /**
  * A Mac app, parked on the Home desktop. Click launches it as an ordinary
@@ -23,8 +23,7 @@ export default function AppLauncherWidget({ size = 'small', props = {} }) {
   const running = isAppRunning(state, app);
   const frontmost = isAppFrontmost(state, app);
 
-  const iconSize =
-    size === 'large' ? 'h-24 w-24' : size === 'medium' ? 'h-14 w-14' : 'h-16 w-16';
+  const iconSize = 'h-16 w-16';
 
   const icon = app.icon ? (
     <img src={app.icon} alt="" draggable={false} className={`${iconSize} rounded-[22%]`} />
@@ -36,7 +35,33 @@ export default function AppLauncherWidget({ size = 'small', props = {} }) {
     </span>
   );
 
-  const status = running ? (frontmost ? 'Frontmost' : 'Running') : 'Click to open';
+  const iconWithStatus = (
+    <span className="relative flex flex-shrink-0 items-center justify-center">
+      {icon}
+      {running ? (
+        <span
+          className={`absolute -bottom-1 h-1.5 w-1.5 rounded-full ${
+            frontmost ? 'bg-sky-400' : 'bg-black/45 dark:bg-white/70'
+          }`}
+        />
+      ) : null}
+    </span>
+  );
+
+  if (size === 'small') {
+    return (
+      <button
+        type="button"
+        onClick={() => launchMacApp(app)}
+        title={app.name}
+        aria-label={`Open ${app.name}`}
+        style={NO_DRAG}
+        className="flex h-full w-full items-center justify-center transition-transform active:scale-[0.94]"
+      >
+        {iconWithStatus}
+      </button>
+    );
+  }
 
   return (
     <WidgetFrame
@@ -44,29 +69,13 @@ export default function AppLauncherWidget({ size = 'small', props = {} }) {
       type="button"
       onClick={() => launchMacApp(app)}
       title={app.name}
-      className={`flex items-center transition-transform active:scale-[0.98] ${
-        size === 'medium' ? 'gap-3 p-3.5 text-left' : 'flex-col justify-center gap-2 p-3'
-      }`}
+      className="flex flex-col items-center justify-center gap-2 p-3 text-center transition-transform active:scale-[0.98]"
     >
-      <span className="relative flex flex-shrink-0 items-center justify-center">
-        {icon}
-        {running ? (
-          <span
-            className={`absolute -bottom-1 h-1.5 w-1.5 rounded-full ${
-              frontmost ? 'bg-sky-400' : 'bg-black/45 dark:bg-white/70'
-            }`}
-          />
-        ) : null}
-      </span>
-      <span className={size === 'medium' ? 'min-w-0 flex-1' : 'min-w-0 max-w-full text-center'}>
+      {iconWithStatus}
+      <span className="min-w-0 max-w-full">
         <span className="block truncate text-[0.78rem] font-medium text-black/85 dark:text-white/90">
           {app.name}
         </span>
-        {size === 'small' ? null : (
-          <span className="mt-0.5 block truncate text-[0.62rem] text-black/40 dark:text-white/40">
-            {status}
-          </span>
-        )}
       </span>
     </WidgetFrame>
   );

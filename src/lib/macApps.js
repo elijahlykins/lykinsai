@@ -71,6 +71,30 @@ export function useMacApps() {
   return state;
 }
 
+/**
+ * Just the names of the user's Mac applications.
+ *
+ * The chat sends these with each turn so the model can tell an app this person
+ * actually has from one they don't — "pull up Spotify" should open Spotify
+ * when it is installed and fall back to the web when it isn't, and that answer
+ * differs per machine. Empty off the desktop app, where there is no Mac to
+ * open anything on. Reuses the shared snapshot, so the scan happens once.
+ */
+export async function macAppNames() {
+  const api = bridge();
+  if (!api) return [];
+  const names = (apps) => (apps || []).map((a) => a?.name).filter(Boolean);
+  if (snapshot.apps.length) return names(snapshot.apps);
+  try {
+    const r = await api.macAppsList();
+    if (!r?.ok) return [];
+    publish({ apps: r.apps || [] });
+    return names(r.apps);
+  } catch {
+    return [];
+  }
+}
+
 export function isAppRunning(state, app) {
   const name = String(app?.name || '').toLowerCase();
   if (!name) return false;
@@ -87,4 +111,11 @@ export function launchMacApp(app) {
   const api = bridge();
   if (!api || !app?.path) return;
   void api.macAppLaunch?.(app.path).catch(() => {});
+}
+
+/** Quit a Mac app the same way the Dock's Quit item does. */
+export function quitMacApp(app) {
+  const api = bridge();
+  if (!api || !app?.path) return;
+  void api.macAppQuit?.(app.path).catch(() => {});
 }

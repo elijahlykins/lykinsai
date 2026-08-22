@@ -36,6 +36,7 @@ import { pickDesignSystem, formatDesignSystemBlock } from './lib/exterior/design
 import { pickDesignGuide, formatDesignGuideBlock } from './lib/exterior/designGuides.js';
 import { mimeTypeForFilename, persistCapabilityArtifact } from './lib/exterior/capabilityStorage.js';
 import { buildAttachmentColumns } from './lib/vault/attachmentType.js';
+import { insertWithSchemaFallback } from './lib/vault/insertWithSchemaFallback.js';
 import { inferAttachmentKind } from './lib/vaultAttachment.js';
 import { exchangeAppleAuthorizationCode, revokeAppleToken, appleAuthConfigured } from './lib/appleAuth.js';
 import { chunkTextForSynthesis } from './synthesis-service.js';
@@ -199,16 +200,7 @@ import {
 } from './beliefSystem.js';
 import { buildRelatedNeighborhoodSection } from './lib/synthesis/relatedNeighborhood.js';
 import { embedAndPersistConcept } from './conceptEmbedding.js';
-import {
-  makeRequireAuthOrMcpToken,
-  createMcpToken,
-  listMcpTokens,
-  revokeMcpToken,
-  MCP_CLIENT_KINDS,
-} from './mcp-service.js';
-import { buildMcpHandler, buildMcpStreamHandler, mcpMethodNotAllowed, MCP_DISCOVERY } from './mcp-server.js';
-import { mountOauthServer } from './oauth-server.js';
-import { MCP_TOOLS, MCP_TOOLS_BY_NAME } from './mcp-tools/index.js';
+import { SYNTHESIS_TOOLS_BY_NAME } from './mcp-tools/index.js';
 import { EXTERIOR_TOOLS_BY_NAME } from './mcp-tools/exterior/index.js';
 import { generateChatImage } from './lib/exterior/generateImage.js';
 import { communicateWithModelTool } from './mcp-tools/communicateWithModel.js';
@@ -334,9 +326,9 @@ app.use((req, res, next) => {
 });
 
 // Routes that intentionally serve HTML and need looser COOP/CSP so the
-// connector OAuth-popup flow + the OAuth consent / error pages still
-// work. Everything else gets the strict defaults below.
-const HTML_OAUTH_PATH_RE = /^\/(oauth\/|\.well-known\/oauth)/;
+// connector OAuth-popup flow (Google, Notion, GitHub, … → LYKN) still
+// works. Everything else gets the strict defaults below.
+const HTML_OAUTH_PATH_RE = /^\/oauth\//;
 
 app.use((req, res, next) => {
   // Two years, all subdomains. No `preload` — we don't commit to the
@@ -1020,7 +1012,10 @@ const clientErrorSchema = z.object({
     w: z.number().int().nonnegative().max(20_000),
     h: z.number().int().nonnegative().max(20_000),
   }).optional(),
-  lsKeys: z.array(z.string().max(200)).max(100).optional(),
+  // Purely diagnostic, and the least important field here — a misshapen or
+  // oversized list degrades to nothing rather than rejecting the report and
+  // costing us the crash it was attached to.
+  lsKeys: z.array(z.string().max(200)).max(100).optional().catch([]),
 });
 
 app.post(
@@ -1291,30 +1286,9 @@ async function requireAuth(req, res, next) {
   }
 }
 
-// ============================================
-// MCP / REST AUTH BRIDGE
-// ============================================
-// Same shape as requireAuth on success (sets req.user.id) but also accepts
-// per-user `lkn_live_…` MCP bearer tokens. Used by /api/v1/synthesis/* and
-// /mcp so the same routes work for the LYKN web app (Supabase JWT) AND
-// for outside AI clients (Claude Desktop, Cursor, Claude Code, etc.).
-// On the MCP path, also sets req.mcpAuth = { tokenId, scopes, clientKind, label }.
-const requireAuthOrMcpToken = makeRequireAuthOrMcpToken({
-  supabaseAdmin,
-  requireAuth,
-  // So 401s from /mcp emit `WWW-Authenticate: Bearer ... resource_metadata=...`,
-  // which is how Cursor / ChatGPT / Claude.ai discover LYKN's OAuth metadata
-  // on the first failed call (RFC 9728 §5.1 + MCP-OAuth draft). Without this
-  // an MCP-OAuth client just gives up at the 401 instead of starting the flow.
-  getPublicBaseUrl: () =>
-    process.env.PUBLIC_API_BASE_URL ||
-    process.env.RENDER_EXTERNAL_URL ||
-    `http://localhost:${PORT}`,
-});
-
-// Make the service-role Supabase client available to mcp-server.js's
-// per-request context builder without re-importing it. `app.get(...)` is
-// the express idiom for sharing instance-level deps.
+// Make the service-role Supabase client available to the per-request tool
+// context builders without re-importing it. `app.get(...)` is the express
+// idiom for sharing instance-level deps.
 app.set('supabaseAdmin', supabaseAdmin);
 
 // ============================================
@@ -4483,21 +4457,13 @@ const userOrIpKey = (req) => req.user?.id || req.ip;
 
 const rlValidateOff = { keyGeneratorIpFallback: false };
 
-// ─── OAuth provider tier (Agent 04) ──────────────────────────────────────
+// ─── Credential tier ─────────────────────────────────────────────────────
 //
-// `authLimiter` covers the credential-equivalent OAuth endpoints:
-//   POST /oauth/token        — code+verifier + refresh-token grants
-//   POST /oauth/register     — Dynamic Client Registration (RFC 7591)
-//   GET  /oauth/authorize    — consent screen entry
-//   POST /oauth/authorize/decide  — covered by /oauth/authorize prefix
-//
-// All four are reachable to the public internet (DCR is intentionally
-// unauthenticated; /token + /authorize are public per OAuth spec). Without
-// rate limiting, /token is brute-forceable for refresh tokens / PKCE
-// verifiers and /register is a registration-flood vector. Agent 02
-// explicitly handed this off — /oauth/register has its own in-memory
-// per-IP cap (MAX_REGISTRATIONS_PER_IP_PER_HOUR=30 in oauth-server.js)
-// which we keep as DiD; this is the middleware-layer ceiling.
+// `authLimiter` covers the credential-equivalent auth endpoints — signup
+// start / resend / verify, password-reset start / confirm, and the Apple
+// token exchange. All are reachable from the public internet, so without a
+// ceiling they are brute-forceable (OTP guessing, reset-token fishing) and
+// a signup-flood vector.
 //
 // Keyed on req.ip — Agent 01's `app.set('trust proxy', 1)` makes that
 // truthful behind Render's edge.
@@ -4512,26 +4478,6 @@ const authLimiter = rateLimit({
   // Agent 06: RATE_LIMIT_AUTH is the dedicated high-severity event for
   // OAuth credential-mint brute-force signals.
   handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_AUTH, 'authLimiter'),
-});
-
-// `oauthReadLimiter` covers the sensitive-but-not-credential-mint OAuth
-// endpoints: /oauth/userinfo (token-authenticated), /oauth/revoke, and
-// /oauth/introspect (confidential-client-authenticated). Looser than
-// authLimiter because legitimate clients call userinfo every session and
-// revoke at logout; tighter than the general 120/min globalLimiter
-// because /api/* doesn't actually cover /oauth/*.
-const oauthReadLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => req.ip,
-  validate: rlValidateOff,
-  message: { error: 'Too many requests. Please slow down.' },
-  // Agent 06: still RATE_LIMIT_AUTH — /oauth/revoke, /oauth/introspect,
-  // /oauth/userinfo are all credential-adjacent and belong on the same
-  // alerting bucket as authLimiter.
-  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_AUTH, 'oauthReadLimiter'),
 });
 
 const aiLimiter = rateLimit({
@@ -4692,32 +4638,6 @@ const profileRefreshLimiter = rateLimit({
   validate: rlValidateOff,
   message: { error: 'Profile refresh rate limit — try again later' },
   handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'profileRefreshLimiter'),
-});
-
-// MCP / REST mirror traffic — keyed by the MCP token id when present, else
-// the user id, else the IP. Tighter than the global per-API limiter because
-// outside clients can hammer this from scripts. Per-minute and per-day
-// stack so a single token can't slow-drip past the daily ceiling.
-const mcpKey = (req) => req.mcpAuth?.tokenId || req.user?.id || req.ip;
-const mcpMinuteLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: mcpKey,
-  validate: rlValidateOff,
-  message: { error: 'MCP rate limit — slow down (60/min per token)' },
-  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'mcpMinuteLimiter'),
-});
-const mcpDailyLimiter = rateLimit({
-  windowMs: 24 * 60 * 60 * 1000,
-  max: 5000,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: mcpKey,
-  validate: rlValidateOff,
-  message: { error: 'MCP daily quota reached — re-issue the token tomorrow' },
-  handler: buildRateLimitHandler(SecurityEvent.RATE_LIMIT_HIT, 'mcpDailyLimiter'),
 });
 
 app.use('/api/', globalLimiter);
@@ -5393,7 +5313,7 @@ const LYKN_VOICE_DIRECT = LYKN_VOICE_DIRECT_LINES.join('\n');
 // vendors (OpenAI, Anthropic, Google/Gemini, ElevenLabs, Together AI, Render,
 // Vercel, Supabase, etc.). Reused across every persona below.
 const LYKN_NO_VENDOR_DISCLOSURE =
-  "VENDOR SILENCE (absolute): You are LYKN — one product. NEVER name, hint at, or describe the third-party companies or infrastructure that power you under the hood: not the voice/speech engines (ElevenLabs, Whisper, Deepgram), not the inference/hosting vendors (Together AI, Render, Vercel, Supabase, AWS), not the image/media tools, not any API or SaaS we call. When asked what powers you, what voice you use, who built you, or what's 'under the hood', the answer is LYKN — it's all LYKN's own technology. Never volunteer things like 'ElevenLabs handles my voice', 'powered by Together AI', or 'running on Render'. Do NOT name a provider for your default brain, your voice, your transcription, your image work, or your hosting. TWO narrow exceptions only: (1) the Pro model menu is a real product feature — you may say Pro members can switch to alternate frontier models by name in that menu, but never claim any vendor powers LYKN by default or powers your voice/synthesis; (2) [CONNECTED_TOOLS] — the user's OWN connected apps (Notion, Gmail, Slack, Linear, etc.) you reference freely. Everything else in LYKN's internal supply chain stays unnamed.";
+  "VENDOR SILENCE (absolute): You are LYKN — one product. NEVER name, hint at, or describe the third-party companies or infrastructure that power you under the hood: not the voice/speech engines (ElevenLabs, Whisper, Deepgram), not the inference/hosting vendors (Together AI, Render, Vercel, Supabase, AWS), not the image/media tools, not any API or SaaS we call. When asked what powers you, what voice you use, who built you, or what's 'under the hood', the answer is LYKN — it's all LYKN's own technology. Never volunteer things like 'ElevenLabs handles my voice', 'powered by Together AI', or 'running on Render'. Do NOT name a provider for your default brain, your voice, your transcription, your image work, or your hosting. ONE narrow exception only: the Pro model menu is a real product feature — you may say Pro members can switch to alternate frontier models by name in that menu, but never claim any vendor powers LYKN by default or powers your voice/synthesis. Everything in LYKN's internal supply chain stays unnamed.";
 
 // ============================================
 // MEMORY MODEL — three buckets (knows you on any screen)
@@ -5406,29 +5326,28 @@ const LYKN_MEMORY_MODEL = [
   '',
   '1) [WHO_I_AM] — preferences, facts, beliefs, rules. Keep this living: learn new signal; when they contradict or refine something, UPDATE it (<updated> / tools) instead of clinging to stale facts.',
   '2) [WHAT_IM_ON] — projects they are doing. ONLY when this chat is scoped to a project, or they explicitly ask about a project in their message. Never search, name-drop, or propose updating a project from ambient topic fit.',
-  '3) [WHAT_IVE_SAVED] — Vault items (files, notes, links, synced apps). ONLY when they ask for something saved. Never dump or surface vault items on a normal chat turn.',
+  '3) [AI DRIVE] / the Vault Finder — things LYKN built (artifacts, generated images), listed this turn, plus files on their Mac in the same Finder window. ONLY when they ask for something saved. Never dump files on a normal chat turn. There is no connected-apps library.',
   '',
   'Also in this prompt when present:',
   '- [USER_IDENTITY] — first name + project name hints (substance only; do not name-lead replies).',
-  '- [CONNECTED_TOOLS] — apps they OAuthed; tailor suggestions to these only.',
-  '- [VAULT_URL_MATCHES] — exact URL/item they pasted from a synced service (SUMMARY first, BODY if needed).',
+  '- [AI DRIVE] — artifacts and generated images already listed this turn.',
+  '- Mac files — same Vault Finder window; local_* tools when Local Mode is on.',
   '- [CONVERSATION] — this thread. Prefer over older [CONVERSATION_MEMORY].',
-  '- [WORKSPACE_CONTEXT] — broader Vault listing when embedded (same bucket as WHAT_IVE_SAVED).',
   '- Web / YouTube / [ATTACHED_IMAGES] blocks when present.',
   '',
   'PRIORITY EACH TURN:',
   '1. Screen + [CONVERSATION] (what is in front of them now)',
   '2. [WHO_I_AM] when judgment / taste / "how I work" / identity matters',
   '3. [WHAT_IM_ON] ONLY when scoped into a project or they asked about a project',
-  '4. [WHAT_IVE_SAVED] / Vault ONLY when they explicitly asked for saved stuff',
+  '4. [AI DRIVE] / Vault Finder ONLY when they explicitly asked for saved stuff',
   '',
   'ONE PERSONAL ANCHOR: unless they asked for a full recall, use at most ONE clear personal pull per reply (one belief/fact) — never a vault card or project pitch unless they asked. Do not brief them with everything you know.',
   'PURE GREETINGS ("hey", "hi", "hello", "good morning"): ZERO personal anchors. Reply naturally in your own words — not a canned script, not a WHO_I_AM summary, not a project name-drop.',
   '',
   'USER-RECALL TURNS: if they ask "what do you know about me?", "tell me about myself", "what have you learned about me?", or similar — answer from [WHO_I_AM] (User Facts: identity, prefs, people, style, goals). That is a full personal recall. Do NOT answer with a project inventory from [WHAT_IM_ON] / [USER_IDENTITY] projects. A project may appear only as a light color if it is part of who they are — never as the whole reply. If they ask again or say "go deeper" / "tell me more", expand into uncovered facets — never recycle the same portrait.',
-  'VAULT-FOCUSED TURNS: if they ask what is in the Vault / what they saved / "find that thing I saved", answer from Vault / [WHAT_IVE_SAVED] / lykn_searchVault first — do not pivot to a project unless they asked.',
+  'VAULT-FOCUSED TURNS: if they ask what is in the Vault / Finder / AI Drive / what they saved, answer from [AI DRIVE] and (when Local Mode is on) local_* file tools — never from a connected-apps library. Do not pivot to a project unless they asked.',
   'PROJECT TURNS: only when [WHAT_IM_ON] / [ACTIVE_PROJECT_SCOPE] is present, or they explicitly asked about a project. Never end with "Want me to add/update a project?" — wait for them to ask.',
-  'Always call the saved-content area "The Vault".',
+  'Always call the saved-files window "the Vault" (the Finder with the file icon). AI Drive is the folder inside it for things LYKN built.',
   '=== END HOW LYKN KNOWS YOU ===',
 ].join('\n');
 
@@ -5442,9 +5361,11 @@ const LYKN_GLASS_MEMORY_ADDENDUM = [
   '   from ambient screen/topic fit. Never offer to add things to a project',
   '   unless they asked in their message.',
   '3. [WHO_I_AM] — use one preference/belief only when it changes judgment or tone.',
-  '4. [WHAT_IVE_SAVED] — ONLY if they asked for something saved. On a normal',
-  '   screen/chat turn: do NOT search the Vault, do NOT call loadNeuron, do NOT',
-  '   mention random saved items. Answer from the screen + conversation.',
+  '4. [AI DRIVE] / Vault Finder — ONLY if they asked for something saved. On a normal',
+  '   screen/chat turn: do NOT search an old vault library, do NOT call loadNeuron',
+  '   for random saves, do NOT mention connected apps. Answer from the screen +',
+  '   conversation. If they want a file they made with you, use [AI DRIVE] and',
+  '   lykn_open_app. If they want a file on this Mac, use local_* (Local Mode).',
   'BUILD / CHARTS (strict — Build mode only):',
   '  • Charts, graphs, diagrams, and coded apps are Build-mode deliverables.',
   '  • Mentions of a graph/chart/ad/dashboard ON their screen are questions',
@@ -5453,15 +5374,12 @@ const LYKN_GLASS_MEMORY_ADDENDUM = [
   '    armed this turn: one short line telling them to open the overlay menu →',
   '    Build mode, then resend. Do NOT fake a chart URL or paste chart config.',
   'SURFACING IN GLASS (strict — opt-in only):',
-  '  • Call lykn_searchVault / lykn_loadNeuron ONLY when they explicitly ask to',
-  '    find / show / pull up / open something from their Vault or "what I saved".',
+  '  • For things they made with you: [AI DRIVE] + lykn_open_app. For files on',
+  '    this Mac: local_* tools. NEVER call lykn_searchVault or rummage a',
+  '    connected-apps / OAuth library — that architecture is gone.',
   '  • "My notes" / "this file" while Notes/Finder/Docs is on screen means the',
-  '    screen — not The Vault — unless they said vault/saved.',
-  '  • To SHOW it: lykn_loadNeuron({ node_id }) using ONLY a node_id from that',
-  '    search result or from [WHAT_IVE_SAVED] (shape vault_<uuid>). Never invent',
-  '    an id. Never load a different hit than the one you just named.',
-  '  • If they did not ask for Vault content: zero vault tools this turn.',
-  '  • If search is empty, say so — do not pull a random other vault item.',
+  '    screen — not the Vault window — unless they said vault/saved/AI Drive.',
+  '  • If they did not ask for saved files: zero vault/file tools this turn.',
   '  • NEVER offer to save their screen / a screenshot / what is on screen to the',
   '    Vault. No "do you want me to save this screen to your vault?" — ever.',
   '    Save something only when they explicitly ask you to save it.',
@@ -5625,11 +5543,6 @@ function resolveIntentChatToolNames(msg, opts = {}) {
         t,
       ));
   const wantsCalc = /\b(?:calculate|compute|solve|integrate|derivative|differentiate|exact\s+math)\b/i.test(t);
-  // Connected-app APIs (Notion/Gmail OAuth, custom keys) — NOT the same as
-  // "open Notion and create a page". Browse/UI asks must use the browser screen.
-  const wantsApps =
-    opts.forceConnectedApps === true ||
-    messageWantsConnectedAppApis(t);
   const wantsCursor =
     typeof AGENTS_APPS_CODE_INTENT_RE !== 'undefined' &&
     AGENTS_APPS_CODE_INTENT_RE.test(t);
@@ -5644,7 +5557,7 @@ function resolveIntentChatToolNames(msg, opts = {}) {
   }
   if (wantsVault) {
     add(
-      'lykn_searchVault', 'lykn_loadNeuron', 'lykn_loadNeurons', 'lykn_findConnections',
+      'lykn_open_app',
       'lykn_createVaultNote', 'lykn_saveFileToVault', 'lykn_saveLinkToVault',
     );
   }
@@ -5659,9 +5572,8 @@ function resolveIntentChatToolNames(msg, opts = {}) {
   if (wantsWeb) add('lykn_web_search', 'lykn_web_fetch');
   else if (wantsPageFetch) add('lykn_web_fetch');
   if (wantsCalc) add('lykn_calculate', 'lykn_symbolic_math', 'lykn_run_python');
-  if (wantsApps) add('lykn_list_apps', 'lykn_call_app', 'lykn_recommendTools');
   if (wantsCursor) {
-    add('lykn_build_with_cursor', 'lykn_check_cursor_build', 'lykn_recommendTools');
+    add('lykn_build_with_cursor', 'lykn_check_cursor_build');
   }
 
   // Ambiguous "make/build" without a forced artifact — don't guess the full
@@ -5735,7 +5647,6 @@ function messageWantsAgentTools(msg, opts = {}) {
   if (opts.inProject && /\b(?:save|update|add|push|note|remember|write)\b/i.test(t)) return true;
   if (messageWantsWebTools(t)) return true;
   if (opts.forcePageFetch || messageWantsPageFetch(t)) return true;
-  if (/\b(?:send|email|slack|notion|todoist|linear|gmail|outlook)\b/i.test(t)) return true;
   if (/\b(?:calculate|compute|solve|integrate|derivative|differentiate)\b/i.test(t)) return true;
   if (/\b(?:save|add|put)\b.{0,40}\b(?:vault|note|notes)\b/i.test(t)) return true;
   if (/\b(?:create|make|generate|build)\b.{0,40}\b(?:image|picture|photo|chart|graph|diagram|deck|slideshow|spreadsheet|app|dashboard|video|mp4)\b/i.test(t)) {
@@ -5759,18 +5670,19 @@ function messageWantsProjectContext(msg) {
   return false;
 }
 
-/** True when the user is asking for something from their Vault / saved stuff. */
+/** True when the user is asking for something from the Vault Finder / AI Drive / saved files. */
 function messageWantsSavedRecall(msg) {
   const t = String(msg || '').toLowerCase();
   if (!t) return false;
-  // Bare "vault" / explicit saved-recall. Do NOT match bare "my notes/files"
-  // — on Glass that usually means the Notes/Finder window on screen.
+  // Bare "vault" / AI Drive / Finder. Do NOT match connected-app brands
+  // (Notion, Gmail, Drive, …) — that library is gone.
   if (/\b(?:my\s+)?vault\b/.test(t)) return true;
+  if (/\b(?:ai\s*drive|image\s*gen|artifacts?\s+folder)\b/.test(t)) return true;
   if (/\b(?:what\s+(?:have|did)\s+i\s+save|i\s+saved|something\s+i\s+saved|what\s+i\s+saved)\b/.test(t)) return true;
   if (/\bsaved\s+(?:note|notes|file|files|image|images|pic|pics|photo|photos|doc|docs|link|links|article|articles|artifact|artifacts|stuff|item|items)\b/.test(t)) return true;
-  if (/\bfrom\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise|raindrop)\b/.test(t)) return true;
-  if (/\b(?:pull|bring|show|open|find|get|grab|look\s+up)\b.{0,48}\b(?:vault|saved|artifact|artifacts|my\s+(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|documents?|links?|articles?|bookmarks?))\b/.test(t)) return true;
-  if (/\b(?:do\s+i\s+have|have\s+i|anything|something)\b.{0,40}\b(?:saved|in\s+(?:my\s+)?vault|in\s+the\s+vault)\b/.test(t)) return true;
+  if (/\bfrom\s+(?:my\s+)?(?:vault|ai\s*drive)\b/.test(t)) return true;
+  if (/\b(?:pull|bring|show|open|find|get|grab|look\s+up)\b.{0,48}\b(?:vault|saved|artifact|artifacts|ai\s*drive|my\s+(?:notes?|files?|pics?|pictures?|photos?|images?|docs?|documents?))\b/.test(t)) return true;
+  if (/\b(?:do\s+i\s+have|have\s+i|anything|something)\b.{0,40}\b(?:saved|in\s+(?:my\s+)?vault|in\s+the\s+vault|in\s+(?:my\s+)?ai\s*drive)\b/.test(t)) return true;
   return false;
 }
 
@@ -5934,9 +5846,9 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "- YouTube videos: include a YouTube URL → embedded as a playable block IN THE CHAT MESSAGE. CRITICAL: when [YOUTUBE_SEARCH_RESULTS] is present, USE URLS FROM THAT LIST ONLY. Never invent URLs.",
   "- Multiple output types in one response (text + checklist + video + heading) — encouraged.",
   "- Images, video, audio, and builds: you CAN. Capability questions (\"can you generate images?\", \"can you build apps / dashboards / decks?\") get a YES — never claim you can't.",
-  "  • Images — opt-in via Generate-image mode. If that mode is not armed this turn, one short line: tap \"+\" → Generate image (web/app) or the overlay menu's \"Create an image\", then resend. Never fake an image or settle for writing a prompt as if that's all you can do.",
-  "  • Standalone charts / graphs / flowcharts / diagrams — opt-in via Build mode / Create → Chart or Diagram. If that mode is not armed this turn, one short line: tap \"+\" → Create → Chart/Diagram (web/app) or the overlay menu's \"Build mode\", then resend. Never invent QuickChart/Kroki URLs or paste raw chart config as text.",
-  "  • Builds (apps, dashboards, landing pages, decks, docs, worksheets, interactive tools) — opt-in via Build mode / Create. If they ask whether you can build (or want a live coded artifact) and Build/Create mode is not already driving this turn, tell them in one short line to tap \"+\" → Build mode (web/app) or the overlay menu's \"Build mode\" (or \"+\" → Create for a specific deliverable type), describe what they want, and send. Never claim you can't build, and never dump a long code/HTML sketch in chat as a substitute for a real artifact.",
+  "  • Images — opt-in via Imagine mode. If Imagine mode is not active this turn, reply in one short line telling them to click Imagine at the top of the page, then resend their request. Never fake an image or settle for writing a prompt as if that's all you can do.",
+  "  • Standalone charts / graphs / flowcharts / diagrams — opt-in via Build mode. If Build mode is not active this turn, reply in one short line telling them to click Build at the top of the page, then resend their request. Never invent QuickChart/Kroki URLs or paste raw chart config as text.",
+  "  • Builds (apps, dashboards, landing pages, decks, docs, worksheets, interactive tools) — opt-in via Build mode. If they ask whether you can build (or want a live coded artifact) and Build mode is not already driving this turn, reply in one short line telling them to click Build at the top of the page, describe what they want, and send. Never claim you can't build, and never dump a long code/HTML sketch in chat as a substitute for a real artifact.",
   "  • Real .mp4 video and speech/audio are also in scope when those tools are available.",
   "- You CANNOT create, edit, move, resize, delete, color, connect, or organize blocks/bricks/cards on any canvas, board, or grid. There is NO grid, NO board canvas, and NO block editor in this product. If the user mentions a grid / board / canvas / bricks / blocks / wires, treat it as a misunderstanding — gently clarify that the workspace is chat + Vault + Synthesis Layer, and continue in plain chat. Never claim you placed, organized, embedded, or wired anything onto a canvas; never describe what you would add as if a canvas existed.",
   "",
@@ -5951,9 +5863,7 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "",
   LYKN_MEMORY_MODEL,
   "",
-  "CONNECTED TOOLS: When [CONNECTED_TOOLS] is present, tailor suggestions to apps they actually OAuthed. Never invent a tool that isn't listed. At most one connect-nudge per reply when a missing app would clearly help.",
-  "CONNECTED SOURCES live in the Vault ([WHAT_IVE_SAVED] / [WORKSPACE_CONTEXT]): Notion, Gmail/Outlook, Slack, GitHub, Linear, Todoist, Trello, Drive/Calendar, Readwise/Raindrop, design/media syncs, browser extension captures, etc. If they ask whether you can read a connected app — YES, via Vault. Caveat: non-text attachments inside synced pages usually aren't transcribed.",
-  "You DO have access. NEVER say you can't see their Vault / files / connected apps. If a specific item isn't visible, say so concretely and offer Connections — don't deny capability wholesale.",
+  "THE VAULT is the Finder window (file icon): AI Drive — things LYKN has built — plus folders on this Mac. There is no connected-apps library, no OAuth sync into the Vault, and no media collage of Notion/Gmail/Drive. NEVER call lykn_searchVault or claim you can read a connected app via the Vault. If they ask for something they made with you, use [AI DRIVE] and lykn_open_app. If they ask for a file on this Mac, use local_* when Local Mode is on, or open the Vault Finder. If a specific item isn't visible, say so concretely — don't deny the Finder wholesale.",
   "",
   "PERSONALISATION: Use the first name from [USER_IDENTITY] SPARINGLY — default is never. Never open with their name. Only refer to a project when [WHAT_IM_ON] / [ACTIVE_PROJECT_SCOPE] is present or they asked about a project — never from ambient topic fit. Never invent biography. When they share something new about themselves, acknowledge briefly, carry it forward, and learn/update [WHO_I_AM].",
   "",
@@ -5966,7 +5876,7 @@ const LYKN_CHAT_PERSONA_STATIC = [
   "- Live / current / landscape questions (today's news, prices, weather, scores, freshly released products, \"compare current AI models\", \"latest frontier LLMs\", charts/tables of what's shipping now) are auto-searched. If those blocks are already in this prompt, answer from them. If they are NOT present and the question still needs post-cutoff facts, call lykn_web_search immediately — NEVER invent a stale 2023–2024 model landscape or outdated news from memory.",
   "- Borderline curiosity that isn't clearly live: you may OFFER to browse (\"Want me to search the web for that?\") and wait for a clear yes (\"search for…\", \"look it up\", \"google it\").",
   "- When the question does NOT need live data (concepts, definitions, frameworks, advice, Vault), just answer. Do NOT search or offer to browse.",
-  "- Never manufacture limitations on things you CAN do (browse, embed YouTube, Vault, generate images via Generate-image mode, build via Build mode / Create). If they ask whether you can generate an image or build something, answer yes — and if the matching mode isn't armed, tell them how to switch it on (\"+\" → Generate image / Build mode, or overlay Create an image / Build mode).",
+  "- Never manufacture limitations on things you CAN do (browse, embed YouTube, Vault, generate images via Imagine mode, build via Build mode). If they ask whether you can generate an image or build something, answer yes — and if the matching mode isn't active, tell them to click Imagine or Build at the top of the page.",
   "",
   "WRITING STYLE:",
   "- Match how the user thinks, not how a general audience reads. Direct. Match response length to complexity — short Q gets a short A.",
@@ -6022,9 +5932,9 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "- YouTube videos: include a YouTube URL → embedded as a playable block IN THE CHAT MESSAGE. CRITICAL: when [YOUTUBE_SEARCH_RESULTS] is present, USE URLS FROM THAT LIST ONLY. Never invent URLs.",
   "- Multiple output types in one response — encouraged.",
   "- Images, video, audio, and builds: you CAN. Capability questions (\"can you generate images?\", \"can you build apps / dashboards / decks?\") get a YES — never claim you can't.",
-  "  • Images — opt-in via Generate-image mode. If that mode is not armed this turn, one short line: tap \"+\" → Generate image (web/app) or the overlay menu's \"Create an image\", then resend. Never fake an image or settle for writing a prompt as if that's all you can do.",
-  "  • Standalone charts / graphs / flowcharts / diagrams — opt-in via Build mode / Create → Chart or Diagram. If that mode is not armed this turn, one short line: tap \"+\" → Create → Chart/Diagram (web/app) or the overlay menu's \"Build mode\", then resend. Never invent QuickChart/Kroki URLs or paste raw chart config as text.",
-  "  • Builds (apps, dashboards, landing pages, decks, docs, worksheets, interactive tools) — opt-in via Build mode / Create. If they ask whether you can build (or want a live coded artifact) and Build/Create mode is not already driving this turn, tell them in one short line to tap \"+\" → Build mode (web/app) or the overlay menu's \"Build mode\" (or \"+\" → Create for a specific deliverable type), describe what they want, and send. Never claim you can't build, and never dump a long code/HTML sketch in chat as a substitute for a real artifact.",
+  "  • Images — opt-in via Imagine mode. If Imagine mode is not active this turn, reply in one short line telling them to click Imagine at the top of the page, then resend their request. Never fake an image or settle for writing a prompt as if that's all you can do.",
+  "  • Standalone charts / graphs / flowcharts / diagrams — opt-in via Build mode. If Build mode is not active this turn, reply in one short line telling them to click Build at the top of the page, then resend their request. Never invent QuickChart/Kroki URLs or paste raw chart config as text.",
+  "  • Builds (apps, dashboards, landing pages, decks, docs, worksheets, interactive tools) — opt-in via Build mode. If they ask whether you can build (or want a live coded artifact) and Build mode is not already driving this turn, reply in one short line telling them to click Build at the top of the page, describe what they want, and send. Never claim you can't build, and never dump a long code/HTML sketch in chat as a substitute for a real artifact.",
   "  • Real .mp4 video and speech/audio are also in scope when those tools are available.",
   "- You CANNOT create, edit, move, resize, delete, color, connect, or organize blocks/bricks/cards on any canvas, board, or grid. There is NO grid, NO board canvas, and NO block editor in this product. If the user mentions a grid / board / canvas / bricks / blocks / wires, treat it as a misunderstanding — gently clarify that the workspace is chat + Vault + Synthesis Layer, and continue in plain chat. Never claim you placed, organized, embedded, or wired anything onto a canvas.",
   "",
@@ -6039,9 +5949,7 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "",
   LYKN_MEMORY_MODEL,
   "",
-  "CONNECTED TOOLS: When [CONNECTED_TOOLS] is present, tailor suggestions to apps they actually OAuthed. Never invent a tool that isn't listed. At most one connect-nudge per reply when a missing app would clearly help.",
-  "CONNECTED SOURCES live in the Vault ([WHAT_IVE_SAVED] / [WORKSPACE_CONTEXT]). If they ask whether you can read a connected app — YES, via Vault. Caveat: non-text attachments inside synced pages usually aren't transcribed.",
-  "You DO have access. NEVER say you can't see their Vault / files / connected apps. If a specific item isn't visible, say so concretely — don't deny capability wholesale.",
+  "THE VAULT is the Finder window (file icon): AI Drive — things LYKN has built — plus folders on this Mac. There is no connected-apps library and no OAuth sync into the Vault. NEVER call lykn_searchVault or claim you can read a connected app via the Vault. If they ask for something they made with you, use [AI DRIVE] and lykn_open_app. If they ask for a file on this Mac, use local_* when Local Mode is on, or open the Vault Finder.",
   "",
   "PERSONALISATION: Use the first name from [USER_IDENTITY] SPARINGLY — default is never. Never open with their name. Only refer to a project when [WHAT_IM_ON] / [ACTIVE_PROJECT_SCOPE] is present or they asked about a project — never from ambient topic fit. Never invent biography. When they share something new about themselves, acknowledge briefly, carry it forward, and learn/update [WHO_I_AM].",
   "",
@@ -6054,7 +5962,7 @@ const LYKN_STREAM_PERSONA_STATIC = [
   "- Live / current / landscape questions (today's news, prices, weather, scores, freshly released products, \"compare current AI models\", \"latest frontier LLMs\", charts/tables of what's shipping now) are auto-searched. If those blocks are already in this prompt, answer from them. If they are NOT present and the question still needs post-cutoff facts, call lykn_web_search immediately — NEVER invent a stale 2023–2024 model landscape or outdated news from memory.",
   "- Borderline curiosity that isn't clearly live: you may OFFER to browse (\"Want me to search the web for that?\") and wait for a clear yes (\"search for…\", \"look it up\", \"google it\").",
   "- When the question does NOT need live data (concepts, definitions, frameworks, advice, Vault), just answer. Do NOT search or offer to browse.",
-  "- Never manufacture limitations on things you CAN do (browse, embed YouTube, Vault, generate images via Generate-image mode, build via Build mode / Create). If they ask whether you can generate an image or build something, answer yes — and if the matching mode isn't armed, tell them how to switch it on (\"+\" → Generate image / Build mode, or overlay Create an image / Build mode).",
+  "- Never manufacture limitations on things you CAN do (browse, embed YouTube, Vault, generate images via Imagine mode, build via Build mode). If they ask whether you can generate an image or build something, answer yes — and if the matching mode isn't active, tell them to click Imagine or Build at the top of the page.",
   "",
   "WRITING STYLE:",
   "- Match how the user thinks. Direct. Match response length to complexity — short Q → short A.",
@@ -6110,7 +6018,7 @@ const GUEST_SYSTEM_PROMPT = [
   '=== WHAT LYKN IS ===',
   'LYKN is an AI-native ideation workspace built around two connected surfaces:',
   '',
-  '1) THE VAULT — the user\'s long-term memory. Anything worth keeping (files, notes, links, media) gets saved into the Vault, tagged, and made searchable. LYKN can surface anything from the Vault on demand ("find that sunset photo I saved"), and can add or edit tags to keep things organised.',
+  '1) THE VAULT — the Finder window (file icon). AI Drive holds everything LYKN has built (artifacts, generated images). Below that are real folders on this Mac. Open it, browse it, save into it. There is no connected-apps library.',
   '',
   '2) THE SYNTHESIS LAYER (Mind Map) — a live mind-map view that visualises every project and Vault item as connected nodes. It reveals how ideas, notes, and saved items relate so the user can see patterns across everything they\'ve ever thought about in LYKN.',
   '',
@@ -6159,9 +6067,8 @@ const GLASS_DEMO_ADDENDUM = [
   '- CALENDAR: LYKN manages your calendar. It knows what is coming up, can schedule and reschedule, flag conflicts, and tie events back to the relevant project so your time and your work stay in sync.',
   '- CHAT & MODELS: chat with LYKN in one fast everyday model, or (on Pro) switch to frontier models — GPT, Claude, Gemini, Grok — from the model menu, every one grounded in your context.',
   '- VOICE MODE: talk to LYKN hands-free and get answers out loud; dictation and YouTube transcript ingestion are built in.',
-  '- THE VAULT: your long-term memory — files, notes, links, and media saved, tagged, and searchable on demand.',
+  '- THE VAULT: the Finder window — AI Drive (things LYKN built) plus folders on this Mac.',
   '- THE SYNTHESIS LAYER (Mind Map): a live map of your beliefs, projects, and Vault items as connected nodes that reveals how everything you think about relates.',
-  '- CONNECTIONS: LYKN connects to the tools you already use and carries your context across them, so every assistant you talk to shares the same understanding of you.',
   '- PORTABLE INTELLIGENCE LAYER: your beliefs, preferences, facts, and voice travel with you across every app, model, and screen — that is what makes every answer personal to you.',
   '',
   'When the visitor asks what LYKN is or what it can do, draw from the features above — accurately, and never invent capabilities beyond these. Keep replies tight and conversational; do not dump the whole list unless they ask for everything.',
@@ -6463,7 +6370,7 @@ const LYKN_GLASS_STREAM_PERSONA_SLIM = [
   'Do NOT invent chart/image URLs, claim you highlighted the screen, or dump vault/project briefings.',
   'Vault: only if they asked for something saved. Projects: only if this chat is scoped or they asked — never "Want me to add this to a project?".',
   'NEVER offer to save their screen, a screenshot, or what is on screen to the Vault (no "want me to save this screen/this to your vault?"). No unprompted save offers of any kind — save only when they explicitly ask.',
-  'Charts / coded apps: Build mode only. Images: Generate-image mode only. If mode is not armed, one short line telling them how.',
+  'Charts / coded apps: Build mode only. Images: Imagine mode only. If the matching mode is not active, one short line telling them to click Build or Imagine at the top of the page.',
   'When tools are available and they need live facts, use web search — never invent a stale landscape.',
   'OPEN TAB / PAGE TEXT: answer only from PAGE CONTENT / FULL_PAGE text actually in the prompt. ' +
     'Never claim you opened or checked another page (Download, Pricing, etc.) unless that page\'s text is present. ' +
@@ -6528,8 +6435,7 @@ function resolveLocalToolResult(streamId, userId, toolCallId, result) {
 // ---------------------------------------------------------------------------
 // In-app tool-calling guidance — appended to the system prompt ONLY when
 // the chat turn is run through the agent loop (useTools === true and the
-// resolved model supports function calling). External-MCP guidance lives
-// in mcp-server.js / SERVER_INSTRUCTIONS; this is the in-LYKN equivalent.
+// resolved model supports function calling).
 // ---------------------------------------------------------------------------
 // Kept tight on purpose: every byte here is sent + paid for on every
 // tool-enabled turn, and the model only needs to know WHEN to call, not the
@@ -6591,7 +6497,7 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  • lykn_getProjectNeurons — what is INSIDE a project: the vault',
   '    files/notes, beliefs, facts, and concepts the user has uploaded or',
   '    grouped INTO it. Pass project_id to read ANY project (omit for the',
-  '    active focus). THIS — not lykn_searchVault — is the authoritative',
+  '    active focus). THIS — not a vault-wide search — is the authoritative',
   '    answer to "what\'s in <Project>?", "is there anything uploaded to',
   '    <Project>?", "what files/docs are attached to this project?".',
   '    Returns node_ids you can hand to lykn_loadNeuron.',
@@ -6615,37 +6521,38 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  3. If the user wants to SEE one, lykn_loadNeuron(node_id) on the hit.',
   '  • If getProjectNeurons returns nothing, the project is genuinely',
   '    empty — say "nothing is uploaded into <Project> yet" and offer to',
-  '    add something. NEVER fall back to lykn_searchVault and present',
+  '    add something. NEVER fall back to a retired vault-library search and present',
   '    unrelated vault items (other decks, other docs) as if they were in',
   '    the project — that is the exact failure this rule prevents.',
   '',
   'VAULT-FOCUSED TURN — overrides general project pressure below, but NOT',
   'a PROJECT-SCOPED CONTENTS turn (above): if the user named a project or',
   'said "in it/this project", use the project path, not this one. When the',
-  'user asks about their VAULT AS A WHOLE or what they SAVED ("what\'s in',
-  'my vault", "show me my vault", "what have I saved", "do I have anything',
-  'on X", "find that thing I saved about Y", "my saved notes/links/files/articles") and is NOT scoping to a project, this turn is about the Vault, not the active project.',
-  '  • Call lykn_searchVault({ query: <topic> }) on the user\'s topic. If',
-  '    the user asked something open-ended ("what\'s in my vault?"), use',
-  '    a topical query from their conversation context, or just answer',
-  '    from [WORKSPACE_CONTEXT] which already lists their vault items.',
-  '  • Then call lykn_loadNeurons (or lykn_loadNeuron) on the best hits',
-  '    so the saved items render as cards under your reply. The user',
-  '    wants to SEE what they saved — snippets in your prose are not',
-  '    enough; the cards are the point.',
-  '  • Prefer the actual media notes (images, files, bookmarks) over',
-  '    meta titles like "Saved items: X" or AI notes that only say you',
-  '    noted/pulled something. NEVER call lykn_createVaultNote on a',
-  '    vault-view turn — that creates junk notes about the pull instead',
-  '    of showing the real items.',
+  'user asks about the Vault / Finder / AI Drive or what they SAVED ("what\'s',
+  'in my vault", "show me my vault", "what have I saved", "open the dashboard',
+  'I made", "find that file on my Mac") and is NOT scoping to a project, this',
+  'turn is about the Vault Finder, not the active project.',
+  '  • The Vault is the Finder window (file icon). AI Drive is the first',
+  '    place in it — everything LYKN has built. Mac folders are below that.',
+  '    There is NO connected-apps library, NO OAuth sync (Notion/Gmail/Drive',
+  '    etc.), and NO lykn_searchVault. Never call that tool.',
+  '  • Things they made with you: answer from [AI DRIVE] (already in this',
+  '    prompt). Open one with lykn_open_app by name; "drive", "artifacts",',
+  '    and "image gen" open those folders. If the name is not listed, open',
+  '    AI Drive so they can see the rest — do not invent that it is missing.',
+  '  • Files on their Mac: when Local Mode is on, call local_synced_folders,',
+  '    local_list_dir, local_search_files, local_read_file, local_pull_file,',
+  '    or local_open_path. Never substitute an old vault search for a disk file.',
+  '  • To put the Finder on screen: lykn_open_app({ app: "vault" }) or "files".',
+  '  • NEVER call lykn_createVaultNote on a vault-view turn — that creates junk',
+  '    notes about the pull instead of showing the real items.',
   '  • Do NOT run the AUTO-CONNECT FLOW. Do NOT call lykn_setActiveProject',
   '    / lykn_getProjectState / lykn_getProjectNeurons on this turn.',
   '  • SKIP the END-OF-TURN PROJECT PROPOSAL. Do NOT end with "Want me to',
   '    update <Project>?" — the user did not ask about a project; do not',
   '    nag them about one.',
-  '  • If the vault has nothing matching the query, say so plainly ("I',
-  '    don\'t see anything saved on X yet — want me to add a note now?")',
-  '    — NEVER substitute project state as if it were vault content.',
+  '  • If AI Drive and the Mac folders have nothing matching, say so plainly',
+  '    — NEVER substitute project state or a connected-app as if it were a file.',
   '',
   'USER-RECALL TURN — "what do you know about me?" / "tell me about myself"',
   '/ "what have you learned about me?" / "go deeper" / "tell me more" etc.',
@@ -6714,10 +6621,10 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '',
   'CROSS-SOURCE SEARCH (read):',
   '  • lykn_findConnections — given a topic OR a starter node_id, return',
-  '    related neurons from EVERY store (beliefs + facts + concepts +',
-  '    vault) in one call. Use when the user asks "what do I think about',
-  '    X?" / "remind me what I have on Y?" / "pull together my thinking',
-  '    on Z" — anywhere the full picture matters.',
+  '    related neurons from beliefs + facts + concepts (NOT files, NOT a',
+  '    connected-apps vault). Use when the user asks "what do I think about',
+  '    X?" / "remind me what I believe about Y?". Files live in the Vault',
+  '    Finder: [AI DRIVE] + local_* — never this tool.',
   '  • SURFACING IS OPT-IN (read this before loadNeuron/loadNeurons):',
   '    loadNeuron and loadNeurons render a VISIBLE card in the chat — the',
   '    saved note body, image, bookmark, etc. They are NOT a default step',
@@ -6725,7 +6632,7 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    has EXPLICITLY asked, THIS turn, to see / open / pull up / pull in /',
   '    bring in / show / load a saved item (or is clearly confirming a',
   '    surfacing offer you just made, e.g. they say "yes" to "want me to',
-  '    pull those up?"). If you searched the Vault only to INFORM your',
+  '    pull those up?"). If you used [AI DRIVE] only to INFORM your',
   '    answer, use the snippet silently in your prose and do NOT load the',
   '    neuron. "It exists", "it\'s loosely related", or "it might be useful"',
   '    are NOT reasons to surface a card. Dropping saved items into the chat',
@@ -6733,34 +6640,28 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    LYKN — when unsure, DON\'T load; offer instead ("I\'ve got a couple of',
   '    saved notes on this — want me to pull them up?") and wait for a yes.',
   '  • lykn_loadNeuron — hydrate ONE neuron\'s FULL body into the chat,',
-  '    given a node_id from findConnections / searchVault. findConnections',
-  '    and searchVault return SNIPPETS; loadNeuron returns the complete',
+  '    given a node_id from findConnections / getProjectNeurons. findConnections',
+  '    returns SNIPPETS; loadNeuron returns the complete',
   '    content so you can quote, summarise, or build on it.',
   '    IMPORTANT — calling this also VISIBLY brings the neuron into the',
-  '    chat as a rich card the user sees directly (the saved image, the',
-  '    link card, the note body, the belief text, etc.). THIS IS THE',
-  '    ONLY WAY a saved item from the vault / beliefs / facts / concepts',
-  '    actually appears in the conversation — searchVault and',
-  '    findConnections alone do NOT render anything visible to the user.',
+  '    chat as a rich card the user sees directly. THIS IS THE',
+  '    ONLY WAY a belief / fact / concept / project neuron',
+  '    actually appears in the conversation — findConnections',
+  '    alone does NOT render anything visible to the user.',
   '    So whenever the user asks to "show me", "bring up", "bring in",',
   '    "pull up", "pull in", "open", "see", "render", "drop in",',
-  '    "include", "attach", or otherwise wants to LOOK at one of their',
-  '    saved items — a vault note, an image they saved, a bookmark, a',
-  '    belief, a fact, a concept — you MUST end with a lykn_loadNeuron',
+  '    "include", "attach", or otherwise wants to LOOK at a',
+  '    belief, a fact, a concept, or a project neuron — you MUST end with a lykn_loadNeuron',
   '    call (or lykn_loadNeurons for several). Searching and quoting the',
   '    snippet is not enough; the user wants the file itself in the',
   '    chat. Do NOT paste the body back as text in your reply — the',
   '    card already shows it; your prose should briefly frame WHY you',
   '    brought it in (e.g. "Here\'s the note you saved about X —") not',
   '    duplicate its content.',
-  '    FULL READER — for VAULT notes/documents the card is also a door:',
-  '    the user can tap "Pull up" to expand it into a full-screen reader',
-  '    that shows the ENTIRE document and every attachment. When the user',
-  '    says "pull that up", "bring it in", "open it", "show me the whole',
-  '    thing", or agrees to an offer of yours ("want me to pull that up?"),',
-  '    that full reader opens automatically once you loadNeuron the item —',
-  '    so phrase offers as "want me to pull it up so you can see the whole',
-  '    thing?" and just call lykn_loadNeuron when they say yes.',
+  '    FULL READER — for project neurons the card can also open a reader.',
+  '    For a specific file they made with you, lykn_open_app by its name — it',
+  '    opens in the preview pop, not the Finder. For files on their Mac, use',
+  '    local_open_path (preview pop) or local_pull_file (into the chat).',
   '  • lykn_loadNeurons — batch sibling. Use this INSTEAD of multiple',
   '    loadNeuron calls when the user wants to see SEVERAL of their',
   '    items at once ("pull up all my notes on robotics", "show me',
@@ -6770,33 +6671,10 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    faster than 10 single-tool hops, and avoids burning the per-hop',
   '    tool-call budget. Same "do not paste the bodies back as text"',
   '    rule applies — the cards show the content.',
-  '  • lykn_searchVault — vault hybrid search (BM25 + title + semantic + rerank).',
-  '    Finds notes AND artifacts/images (title often carries the topic).',
-  '    Pass TOPIC words ("prosthetics", "porsche pricing"), not a full chat',
-  '    sentence. If the first query is thin, retry once with a synonym /',
-  '    broader noun before telling them nothing is saved. Use only when',
-  '    you specifically want saved notes / saved articles / saved links',
-  '    and not the other stores. Returns snippets with a `node_id` of',
-  '    shape `vault_<uuid>` on every hit — pass that node_id straight',
-  '    to lykn_loadNeuron / lykn_loadNeurons (do NOT strip the prefix,',
-  '    do NOT pass the bare `id` field). The MANDATORY pattern when the',
-  '    user wants to see what they saved is: searchVault({ query }) →',
-  '    pick the best hit(s) → loadNeuron(node_id) [or loadNeurons for',
-  '    multiple]. Skipping the loadNeuron step means the user only sees',
-  '    your prose and never the actual saved file — that is the failure',
-  '    mode this pipeline exists to prevent.',
-  '    CROSS-TURN FOLLOW-UPS ARE THE #1 MISS: if you searched the vault',
-  '    on an EARLIER turn (e.g. you said "yes, you have three Porsche',
-  '    images") and the user now says "pull them in" / "pull them up" /',
-  '    "show me" / "bring them in" / "load them" / "yes do it" — that is',
-  '    a loadNeurons request, NOT another search. You MUST call',
-  '    lykn_loadNeurons in THIS turn. Saying "yes" or "here they are"',
-  '    without the tool call renders NOTHING and is a broken promise. If',
-  '    you still have the node_ids from the earlier searchVault result,',
-  '    pass them straight to lykn_loadNeurons. If they have scrolled out',
-  '    of context, re-run searchVault first to recover the node_ids, then',
-  '    immediately call lykn_loadNeurons — never answer "done" without the',
-  '    cards actually loading.',
+  '  • NEVER call lykn_searchVault. That tool searched the retired connected-apps',
+  '    media library. Files they made with you are in [AI DRIVE] (open with',
+  '    lykn_open_app). Files on their Mac use local_* (Local Mode). Open the',
+  '    Vault Finder with lykn_open_app({ app: "vault" }).',
   '  • lykn_getNeuronLinks — the user\'s authored connections between',
   '    neurons. Pass node_id to see "what is this connected to" — the',
   '    perfect follow-up to loadNeuron. Omit node_id to see what they\'ve',
@@ -6942,9 +6820,9 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  app action (lykn_call_app), live web (lykn_web_search), or reading a URL',
   '  (lykn_web_fetch). Image generation (lykn_generate_image, 5/month) is',
   '  user-armed: it only appears in your tool list when the user turns on the',
-  '  "Generate image" mode for that message. If they ask for an image while',
-  '  the tool is absent, tell them to tap "+" → Generate image (web/app) or',
-  '  the overlay menu\'s "Create an image" and resend — never fake one.',
+  '  Imagine mode for that message. If they ask for an image while',
+  '  the tool is absent, tell them to click Imagine at the top of the page',
+  '  and resend — never fake one.',
   '  This INCLUDES follow-ups to an image you already generated: "do the',
   '  exact same thing but…", "make it darker", "same but with the ⌘ symbol"',
   '  right after an image turn is a NEW image request. When the image tool',
@@ -6954,43 +6832,21 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '  links for a requested image — a diagram is not an image, and invented',
   '  download links are broken links.',
   '  Standalone charts/graphs (lykn_generate_chart) and flowcharts/diagrams',
-  '  (lykn_generate_diagram) are Create → Chart/Diagram / Build-mode only —',
+  '  (lykn_generate_diagram) are Build-mode only —',
   '  call them only when that tool is in your list this turn. Mentions of a',
   '  chart/graph on screen are questions ABOUT the screen, not a commission.',
-  '  Build mode / Create is for live coded artifacts (apps, dashboards,',
+  '  Build mode is for live coded artifacts (apps, dashboards,',
   '  landing pages, decks, docs, worksheets, interactive tools) AND charts:',
   '  if they ask "can you build X?" or want a real coded artifact and you are NOT',
   '  already on a forced build turn ([BUILD_ARTIFACT] absent / no builder',
-  '  tool firing), tell them to tap "+" → Build mode (web/app) or the',
-  '  overlay menu\'s "Build mode" (or "+" → Create for a specific type) and',
+  '  tool firing), tell them to click Build at the top of the page and',
   '  resend — never claim you can\'t build, and never dump a long code/HTML',
   '  sketch in chat as a substitute. When [BUILD_ARTIFACT] IS present, build',
-  '  immediately — do NOT tell them to arm Build mode. Use',
-  '  lykn_recommendTools ONLY for actions no native tool or connected app',
-  '  covers — e.g. the user asks to SEND an email but no email app is',
-  '  connected. In that case the honest answer to "send this", "make me a',
-  '  poster", "run this script"',
-  '  is two-part:',
-  '    (a) Produce the LYKN-shaped output you CAN produce, using the',
-  '        user\'s tone (beliefs / rules), the active project\'s state,',
-  '        relevant vault snippets, and any facts that bear on the ask.',
-  '        Draft the email body. Sketch the script. Outline the image',
-  '        prompt with the user\'s aesthetic baked in. Whatever the',
-  '        LYKN-side of the work is — do that first.',
-  '    (b) Call lykn_recommendTools({ category, task_description }) once',
-  '        to surface 1-3 outside tools the user can connect to actually',
-  '        execute the action. Pick the single closest category from the',
-  '        tool\'s enum. Frame the recommendation as a one-time setup, not',
-  '        a per-task chore: "connect <X> at /connections and next time',
-  '        you ask, it can pull this exact context automatically — you',
-  '        won\'t have to brief it." That is the pull model.',
-  '  Do NOT pretend the action happened. Do NOT promise to dispatch / send',
-  '  / generate / submit yourself. Do NOT recommend tools the user did',
-  '  not implicitly ask about (e.g. they\'re drafting language with you —',
-  '  that is a synthesis-layer task, not a routing one). Do NOT call',
-  '  lykn_recommendTools twice in the same turn.',
-  '  Recommending an external tool IS the closing beat on those turns.',
-  '  Do not also pitch a project update.',
+  '  immediately — do NOT tell them to arm Build mode.',
+  '  LYKN does not connect to outside apps (email, Notion, Gmail, Slack, …).',
+  '  If they ask you to send mail or act inside a third-party app, say so',
+  '  plainly and offer to draft the content here instead. Do not pretend the',
+  '  action happened, and do not point them at a Connections page.',
   '',
   'AFTER A TOOL RETURNS — summarise the result in plain language. Do NOT',
   'paste raw JSON, do NOT mention tool names, do NOT mention "node_id" or',
@@ -7017,19 +6873,67 @@ const LYKN_CHAT_TOOL_GUIDANCE = [
   '    spreadsheets, standalone charts/diagrams, images, speech/audio, real .mp4',
   '    videos (animated logos / image animations / motion graphics), and',
   '    live interactive apps, dashboards, and tools (coded in React and',
-  '    rendered in a popup over the chat when the build is done). Charts/diagrams use',
-  '    "+" → Create → Chart/Diagram or Build mode; images use "+" →',
-  '    Generate image; live coded builds use "+" → Build mode (or Create).',
+  '    rendered in a popup over the chat when the build is done). Charts, diagrams,',
+  '    and live coded builds use Build mode; generated images use Imagine mode.',
   '  • Compute & convert — exact math, symbolic algebra/calculus, run',
   '    Python or JavaScript, translate, parse documents, OCR/analyse/edit',
   '    images, transcribe audio.',
-  '  • Reach the web & apps — live web search, read a URL, call the user\'s',
-  '    connected apps with their stored keys, and raw HTTP requests.',
+  '  • Reach the web — live web search, read a URL, and raw HTTP requests.',
   '  • Build code — dispatch a Cursor cloud agent to change the user\'s',
   '    connected repo and open a PR.',
   '  • Tune yourself — change your own default tone / personality / reply style',
   '    when the user tells you to (e.g. "be more concise", "turn up the',
   '    sarcasm"). The change saves to their custom instructions and sticks.',
+  '  • Open their settings — put them on the right pane of LYKN Settings for a',
+  '    change you can\'t make for them (wallpaper, theme, plan).',
+  '  • Open things for them — a LYKN page (To-dos, Calendar, Projects, Vault,',
+  '    Files), an app they built in LYKN, or anything you have built for them',
+  '    in AI Drive, straight onto their screen.',
+  '',
+  'OPENING THINGS (put it on their screen instead of describing it):',
+  '  When they ask to open, pull up, show, or go to something, OPEN IT. Pick by',
+  '  what the thing IS:',
+  '  • A LYKN page (To-dos, Calendar, Projects, Vault, Files, Browser) or an app',
+  '    THEY built in LYKN → lykn_open_app. The apps they have built are listed',
+  '    in [LYKN APPS]; if that section is missing they have not built any.',
+  '  • Something YOU built for them — an artifact, a page, a chart, a generated',
+  '    image → also lykn_open_app, by its name. A single item opens in the',
+  '    preview pop on their screen (same overlay as clicking it). "drive",',
+  '    "artifacts" and "image gen" open the Finder. All of it is kept in AI Drive',
+  '    and listed in [AI DRIVE]. Check that section before saying you cannot find',
+  '    something.',
+  '  • A LYKN setting → lykn_open_settings.',
+  '  • A real Mac application (Spotify, Safari, Chrome, Xcode) → local_open_app.',
+  '  • A file on their Mac → local_open_path (preview pop). A folder → local_open_path',
+  '    (Finder).',
+  '  Never reply with a menu path ("click the dock, then…") for something you',
+  '  can open, and never say you are unable to open it. Afterwards say in one',
+  '  short line what you opened.',
+  '  • THEIR APP BEFORE THE WEB. The [MAC APPS] section lists what is actually',
+  '    installed on this user\'s Mac. If they name something on that list, open',
+  '    the REAL APP with local_open_app — never the website version, and never',
+  '    LYKN\'s browser. Those are different things and swapping one for the',
+  '    other is a mistake.',
+  '  • If they name something NOT on that list, they do not have it, so the web',
+  '    is right: open it in LYKN\'s browser. That is also what a bare "open the',
+  '    browser" / "open the web" or a plain URL means. When there is no',
+  '    [MAC APPS] section at all you are not on their desktop, so the web is',
+  '    the only option.',
+  '  • If a Mac app is what they want and the local_* tools are not available',
+  '    this turn, say so plainly — opening apps on their Mac needs Local Mode,',
+  '    which they turn on in the Vault. Never quietly substitute the web for it.',
+  '',
+  'SETTINGS (changes only the USER can make):',
+  '  When they want to change something about LYKN itself and it is not your',
+  '  behavior — "change my wallpaper", "I want dark mode", "how do I cancel my',
+  '  plan", "connect my Google account", "change my password", "open my',
+  '  settings" — call lykn_open_settings with the section that matches. It puts',
+  '  the pane on their screen; it does NOT make the change. Then say in one',
+  '  line what you opened and what to do there. Never describe a menu path',
+  '  instead of opening it, and never claim you cannot open their settings.',
+  '  • HOW YOU BEHAVE is the other tool: tone, personality, reply length and',
+  '    formatting go to lykn_update_assistant_instructions, which makes the',
+  '    change itself. Don\'t open a window for those.',
   '',
   'SELF-TUNING (change how YOU behave):',
   '  When the user gives feedback about HOW you should sound, reply, or behave',
@@ -7103,21 +7007,21 @@ const TOOL_GUIDANCE_VISUAL = [
   '    export_formats: ["html","pptx"].',
   '  • lykn_manage_file — plain downloadable files (markdown, csv, json).',
   '    Do not use it for HTML pages anymore — write React instead.',
-  '  • lykn_generate_chart / lykn_generate_diagram — ONLY when Create →',
-  '    Chart/Diagram or Build mode armed this turn (tool in your list). If',
-  '    they ask for a chart and the tool is missing, tell them to arm Create',
-  '    → Chart/Diagram or Build mode and resend. Mentions of a graph on',
+  '  • lykn_generate_chart / lykn_generate_diagram — ONLY when Build mode is',
+  '    active this turn (tool in your list). If they ask for a chart and the',
+  '    tool is missing, tell them to click Build at the top of the page and',
+  '    resend. Mentions of a graph on',
   '    screen are NOT a commission. For a chart INSIDE a dashboard, use',
   '    Recharts in the React artifact instead. Image generation',
   '    (lykn_generate_image, GPT Image 2) is only available when the user',
-  '    arms "Generate image"; if they ask for an image (or a tweak to one',
+  '    enters Imagine mode; if they ask for an image (or a tweak to one',
   '    you just generated) and the tool is missing from your list, tell',
-  '    them to switch on "+" → Generate image (or the overlay menu\'s',
-  '    "Create an image") and resend — do NOT pass off a diagram, mermaid',
+  '    them to click Imagine at the top of the page and resend — do NOT',
+  '    pass off a diagram, mermaid',
   '    block, or fabricated download links as the image.',
   '    Same for Build mode: if they ask whether you can build (or want a live',
   '    coded app/dashboard/page) and [BUILD_ARTIFACT] is absent, tell them to',
-  '    switch on "+" → Build mode (or overlay "Build mode" / "+" → Create)',
+  '    click Build at the top of the page',
   '    and resend — do NOT dump a code/HTML sketch in chat as the deliverable.',
   '  Do NOT put emojis in any built document, deck, worksheet, or PDF',
   '  (titles, headings, body, notes) — keep them clean and professional.',
@@ -7188,15 +7092,6 @@ const TOOL_GUIDANCE_SCHEDULING = [
 ].join('\n');
 
 const TOOL_GUIDANCE_AGENTS_APPS_CODE = [
-  'CONNECTED APPS (the user\'s bring-your-own-key integrations):',
-  '  • lykn_list_apps — the user\'s connected custom-API apps + OAuth action',
-  '    apps the agent can actually CALL (distinct from synced [CONNECTED_TOOLS]).',
-  '  • lykn_call_app — make a request to one of those apps by slug; the API',
-  '    key/token is injected server-side (NEVER ask the user for it). GET is',
-  '    always allowed; POST/PUT/PATCH/DELETE only on read+write connections,',
-  '    and confirm destructive actions first. Use when the user wants to DO',
-  '    something in a connected app, not just reference synced content.',
-  '',
   'CODING BUILDS (hand real engineering work to a Cursor cloud agent):',
   '  • lykn_build_with_cursor — when the user asks to fix a bug, build a',
   '    feature, or change code in their connected repo. It dispatches a',
@@ -7225,12 +7120,12 @@ const TOOL_GUIDANCE_EXTERIOR = [
   '  • lykn_calculate — exact math or unit conversion.',
   '  • lykn_symbolic_math — algebra/calculus done symbolically (solve, derive,',
   '    integrate, simplify) — use instead of guessing exact closed-form math.',
-  '  • lykn_generate_chart — bar/line/pie ONLY when Create → Chart / Build mode',
+  '  • lykn_generate_chart — bar/line/pie ONLY when Build mode is',
   '    armed this turn (tool present). Show chart_url as a markdown image;',
   '    never invent QuickChart URLs or dump raw chart JSON/config. Talking',
   '    about a graph on screen is NOT a commission — answer, do not build.',
-  '  • lykn_generate_diagram — Mermaid flowcharts/diagrams ONLY when Create →',
-  '    Diagram / Build mode armed this turn. Paste the returned markdown',
+  '  • lykn_generate_diagram — Mermaid flowcharts/diagrams ONLY when Build mode',
+  '    is active this turn. Paste the returned markdown',
   '    block (or let the client show the preview).',
   '  • lykn_get_current_time — current date/time; do not guess "today".',
   '  • lykn_run_python — short data snippets (no imports).',
@@ -7412,6 +7307,17 @@ function detectImageFollowUpIntent(message, conversation) {
   return IMAGE_FOLLOWUP_EDIT_RE.test(t);
 }
 
+const TOOL_GUIDANCE_APP_EDIT = [
+  'INSTALLED APP EDIT (the user opened an existing app in Build mode):',
+  '  Refine THIS app — same title, same source. Do not start a different one.',
+  '  Patch in place with `edits` ({find, replace}) and/or `file_ops`.',
+  '  Preserve every untouched line, component, behavior, and style.',
+  '  Full `files` or `code` is allowed ONLY when the user explicitly asks to',
+  '    redesign, rebuild, start over, or replace the app.',
+  '  Style and theme changes ARE allowed when they asked for them.',
+  '  ONE CALL PER TURN. After the tool succeeds, a short summary — do not rebuild again.',
+].join('\n');
+
 const TOOL_GUIDANCE_ARTIFACT_EDIT = [
   'ARTIFACT EDITING (an artifact is already open in the preview popup):',
   '  The user is refining an EXISTING build — not commissioning a new one.',
@@ -7545,7 +7451,9 @@ function buildChatToolGuidance(userMessage, opts = {}) {
   }
   // Edit turns must NOT get a fresh [DESIGN_SYSTEM] / visual "build big" brief —
   // that is the #1 cause of "add 10 hooks" turning into a whole new look.
-  if (opts.editingArtifact) {
+  if (opts.editingArtifact && opts.appEdit) {
+    parts.push(TOOL_GUIDANCE_APP_EDIT);
+  } else if (opts.editingArtifact) {
     parts.push(TOOL_GUIDANCE_ARTIFACT_EDIT);
   } else if (surgicalEdit && !opts.forceMaking) {
     // Glass / chat "just change X" — no design-system injection.
@@ -8223,6 +8131,94 @@ function buildAssistantIdentitySection(rawName) {
   const name = String(rawName || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 40);
   if (!name || name.toLowerCase() === 'lykn') return '';
   return `[ASSISTANT_IDENTITY]\nThe user has renamed you. Your name is now "${name}". Always refer to yourself as "${name}" instead of "LYKN" when you name yourself. This changes ONLY your name — everything about what you are stays exactly the same.`;
+}
+
+// Apps the user has BUILT in LYKN, sent by the desktop client each turn (they
+// live in the local store on their machine, so the server has no other way to
+// know). Names only — lykn_open_app does the matching and gets the ids from
+// ctx.installedApps. Without this section the model has nothing to recognise
+// when someone says "open my workout tracker".
+function buildInstalledAppsSection(rawApps) {
+  if (!Array.isArray(rawApps) || !rawApps.length) return '';
+  const names = rawApps
+    .map((app) => String(app?.name || app?.id || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 80))
+    .filter(Boolean)
+    .slice(0, 60);
+  if (!names.length) return '';
+  return (
+    '[LYKN APPS]\n' +
+    'Apps this user has built in LYKN, and can ask you to open by name with ' +
+    'lykn_open_app: ' + names.join(', ') + '. ' +
+    'These are LYKN apps, not Mac applications — do not use local_open_app for them.'
+  );
+}
+
+// The applications on the user's Mac, sent by the desktop client each turn.
+// Whether "pull up Spotify" means the app or the website depends entirely on
+// whether THIS person has it installed, so the model is told rather than left
+// to guess — and someone without it correctly gets the web instead.
+function buildMacAppsSection(rawApps) {
+  if (!Array.isArray(rawApps) || !rawApps.length) return '';
+  const names = [...new Set(
+    rawApps
+      .map((app) => String(typeof app === 'string' ? app : app?.name || '')
+        .replace(/[\r\n]+/g, ' ').trim().slice(0, 60))
+      .filter(Boolean),
+  )].slice(0, 200);
+  if (!names.length) return '';
+  return (
+    '[MAC APPS]\n' +
+    'Applications installed on this user\'s Mac: ' + names.join(', ') + '.\n' +
+    'If they ask to open or use one of these, open the REAL APP with ' +
+    'local_open_app — not the website, and not LYKN\'s browser. If they name ' +
+    'something that is NOT on this list, they do not have it, so the web is ' +
+    'the right answer.'
+  );
+}
+
+// AI Drive — everything LYKN has made for this user: artifacts in one folder,
+// generated images in the other. To them these are things they built, and they
+// ask for them by name ("open the dashboard I made"), so the names have to be
+// in front of the model the same way the installed apps are.
+function buildAiDriveSection(rawItems, rawTotals) {
+  if (!Array.isArray(rawItems) || !rawItems.length) return '';
+  const clean = (item) => String(item?.name || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 80);
+  const artifacts = [];
+  const images = [];
+  for (const item of rawItems.slice(0, 40)) {
+    const name = clean(item);
+    if (!name) continue;
+    (item?.folder === 'images' ? images : artifacts).push(name);
+  }
+  if (!artifacts.length && !images.length) return '';
+
+  // The names are the newest few; the totals are the whole drive. Told only
+  // the names, the model reports the list length as the count — which is how
+  // someone with dozens of generated images was told they had three.
+  const totalArtifacts = Math.max(Number(rawTotals?.artifacts) || 0, artifacts.length);
+  const totalImages = Math.max(Number(rawTotals?.images) || 0, images.length);
+  // A scan that stopped at its page budget can only ever be a floor.
+  const about = rawTotals?.complete === true ? '' : 'at least ';
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+  return [
+    '[AI DRIVE]',
+    'AI Drive is inside the Vault Finder window (the floating page with the file icon). ' +
+      'It is where everything LYKN has built for this user is kept — two folders: Artifacts and Image Gen. ' +
+      'Mac folders live in the same window, below AI Drive. There is no connected-apps library.',
+    `It holds ${about}${plural(totalArtifacts, 'artifact')} and ` +
+      `${about}${plural(totalImages, 'generated image')}.`,
+    artifacts.length ? `Most recent artifacts: ${artifacts.join(', ')}.` : '',
+    images.length ? `Most recent generated images: ${images.join(', ')}.` : '',
+    'THE NAMES ABOVE ARE THE MOST RECENT ONES, NOT THE WHOLE DRIVE. Never say ' +
+      'or imply that they are everything the user has made, and never count ' +
+      'them and give that as the total — use the counts above, and open the ' +
+      'drive if they want to see the rest.' +
+      (about ? ' Those counts are a floor, not a final number.' : ''),
+    'These are things the USER made with you, so treat them as theirs. To put ' +
+      'one on screen, call lykn_open_app with its name; "drive" opens AI Drive ' +
+      'itself, "artifacts" and "image gen" open those folders.',
+  ].filter(Boolean).join('\n');
 }
 
 // SECURITY (Agent 04): hard ceiling on combined user-controlled string input
@@ -10077,146 +10073,29 @@ app.post('/api/ai/feedback', requireAuth, async (req, res) => {
 });
 
 // ============================================================================
-// MCP / REST CONTEXT BACKPLANE  (the "Use LYKN with your AI" surface)
+// SYNTHESIS TOOL CONTEXT
 // ============================================================================
-// Two transports, one auth model, one tool surface:
+// The synthesis-layer tools in mcp-tools/* are invoked from two in-app
+// surfaces: the text chat (via buildChatToolCtx + runChatTool in
+// mcp-tools/chatTools.js) and the realtime voice session (via the runMcp
+// dispatcher on /api/ai/realtime/tool, which uses buildToolCtx below).
 //
-//   • /mcp                           — Streamable HTTP MCP server. Mounted
-//                                       below; per-tool dispatch lives in
-//                                       mcp-server.js / mcp-tools/*.
-//   • /api/v1/synthesis/*            — Plain JSON REST mirror so a Custom
-//                                       GPT Action / Zapier / curl can use
-//                                       the same data without speaking MCP.
-//
-// Both surfaces accept EITHER a Supabase JWT (web app calls) OR an
-// `lkn_live_…` MCP bearer token (external clients). The MCP token-issuance
-// surface (POST/GET/DELETE /api/v1/synthesis/tokens) is JWT-only — only a
-// signed-in user can mint a token for themselves.
-//
-// Token-managed write actions (recordRuleApplication, proposeFact) check
-// the token's `scopes`. By default every freshly-minted token gets
-// ['read', 'write'] regardless of plan — pushing context to LYKN
-// is a core capability we never want to gate. Callers can still mint an
-// explicitly read-only token by passing `scopes: ['read']`.
-//
-// Logging: every call writes one ai_usage_logs row with action_type =
-// 'mcp_tool' (MCP transport) or 'rest_synthesis' (REST mirror) so the
-// admin dashboard surfaces this traffic alongside regular AI usage.
-
-// --- Token issuance / list / revoke (JWT only — not self-issuable) ---------
-
-// POST /api/v1/synthesis/tokens — mint a fresh per-client token. Returns
-// the plaintext exactly once. Plan-agnostic: every plan (including free)
-// gets read+write by default. Pushing context to LYKN is core capability,
-// not a paywall lever. Callers can still opt in to a read-only token by
-// explicitly passing `scopes: ['read']`.
-app.post('/api/v1/synthesis/tokens', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-
-    const labelRaw = typeof req.body?.label === 'string' ? req.body.label : '';
-    const clientKindRaw = typeof req.body?.clientKind === 'string' ? req.body.clientKind : 'other';
-    const clientKind = MCP_CLIENT_KINDS.has(clientKindRaw) ? clientKindRaw : 'other';
-
-    // Honor whatever the caller asks for (filtered to known scopes inside
-    // createMcpToken). Default to read+write so the common case "I just
-    // installed LYKN in Cursor" works without any plan check.
-    const requestedRaw = Array.isArray(req.body?.scopes) ? req.body.scopes : null;
-    const scopes = requestedRaw && requestedRaw.length
-      ? requestedRaw.map((s) => String(s).toLowerCase())
-      : ['read', 'write'];
-
-    const plan = await resolveUserPlan(userId, req.user?.email);
-
-    const out = await createMcpToken(supabaseAdmin, userId, {
-      label: labelRaw,
-      clientKind,
-      scopes,
-    });
-    if (!out.ok) return res.status(500).json({ error: out.reason || 'token_create_failed' });
-
-    return res.json({
-      ok: true,
-      token: out.token,
-      mcpUrl: '/mcp',
-      restBase: '/api/v1/synthesis',
-      planId: plan.planId,
-      writeDowngradedToFree: false, // legacy field — always false now; kept for back-compat with older clients.
-    });
-  } catch (e) {
-    console.error('❌ POST /api/v1/synthesis/tokens:', e?.message || e);
-    return res.status(500).json({ error: 'token_create_failed' });
-  }
-});
-
-// GET /api/v1/synthesis/tokens — list this user's tokens (NEVER includes
-// the plaintext or the hash — just labels, prefixes, telemetry).
-app.get('/api/v1/synthesis/tokens', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-    const tokens = await listMcpTokens(supabaseAdmin, userId);
-    return res.json({ ok: true, tokens });
-  } catch (e) {
-    console.error('❌ GET /api/v1/synthesis/tokens:', e?.message || e);
-    return res.status(500).json({ error: 'token_list_failed' });
-  }
-});
-
-// DELETE /api/v1/synthesis/tokens/:id — revoke a token. Future MCP/REST
-// requests carrying that token return 401. The row is preserved (with
-// status='revoked' + revoked_at timestamp) for audit.
-app.delete('/api/v1/synthesis/tokens/:id', requireAuth, async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
-    const tokenId = String(req.params?.id || '').trim();
-    if (!tokenId) return res.status(400).json({ error: 'token_id_required' });
-    const out = await revokeMcpToken(supabaseAdmin, userId, tokenId);
-    if (!out.ok) {
-      if (out.reason === 'not_found') return res.status(404).json({ error: 'token_not_found' });
-      return res.status(500).json({ error: out.reason || 'revoke_failed' });
-    }
-    return res.json({ ok: true, token: out.token });
-  } catch (e) {
-    console.error('❌ DELETE /api/v1/synthesis/tokens/:id:', e?.message || e);
-    return res.status(500).json({ error: 'revoke_failed' });
-  }
-});
-
-// --- REST mirror for the MCP tools (JWT or MCP token) ---------------------
-//
-// One thin route per MCP tool. The handler builds the same `ctx` shape
-// the MCP server uses, calls tool.handler, and unwraps the MCP "content"
-// blocks into plain JSON for HTTP clients. Logging mirrors the MCP path
-// so the admin dashboard counts both transports.
+// Both are JWT-only — the user's own signed-in session. LYKN no longer
+// exposes these tools to outside AI clients, so there is no bearer-token
+// transport, no scope negotiation, and no per-client attribution: every
+// call is attributed to 'lykn-chat'.
 function buildToolCtx(req) {
-  const userId = req.user?.id || null;
-  const mcpAuth = req.mcpAuth || null;
-  const clientLabel = String(req.headers['user-agent'] || req.headers['mcp-client-info'] || '').slice(0, 240);
-  // surface convention parallels mcp-server.js — REST traffic from outside
-  // clients is 'rest:<client_kind>'; in-LYKN web app traffic stays 'lykn-chat'.
-  const attribSurface = mcpAuth
-    ? `rest:${mcpAuth.clientKind || 'other'}`
-    : 'lykn-chat';
   return {
     supabaseAdmin,
-    userId,
-    mcpAuth,
-    clientLabel,
-    attribSurface,
-    tokenId: mcpAuth?.tokenId || null,
+    userId: req.user?.id || null,
+    clientLabel: String(req.headers['user-agent'] || '').slice(0, 240),
+    attribSurface: 'lykn-chat',
   };
 }
 
-// MCP tools whose successful execution should invalidate the cached
-// in-LYKN [CURRENT_PROJECT] prompt block. Outside AI clients pushing
-// state via these tools should be visible to the in-LYKN chat on the
-// very next turn, not 90 seconds later when the TTL expires.
+// Tools whose successful execution should invalidate the cached in-LYKN
+// [CURRENT_PROJECT] prompt block, so a project mutation is visible to the
+// next chat turn instead of 90 seconds later when the TTL expires.
 const PROJECT_WRITE_TOOLS = new Set([
   'lykn_createProject',
   'lykn_setActiveProject',
@@ -10228,141 +10107,6 @@ const PROJECT_WRITE_TOOLS = new Set([
   'lykn_removeProjectNeurons',
   'lykn_uploadToProject',
 ]);
-
-async function runRestTool(toolName, req, res) {
-  const tool = MCP_TOOLS_BY_NAME[toolName];
-  if (!tool) return res.status(404).json({ error: 'tool_not_found' });
-  const ctx = buildToolCtx(req);
-  if (!ctx.userId) return res.status(401).json({ error: 'Unauthorized' });
-
-  const startedAt = Date.now();
-  let isError = false;
-  let errMessage = null;
-  let payload;
-  try {
-    const result = await tool.handler(req.body && Object.keys(req.body).length ? req.body : (req.query || {}), ctx);
-    isError = Boolean(result?.isError);
-    // Tools return MCP `content` blocks. Most are JSON-stringified so we
-    // try to re-parse for HTTP clients; if the text isn't JSON we pass
-    // it through as a `text` field. Either way the HTTP wrapper exposes
-    // the same surface as the MCP one.
-    const blocks = Array.isArray(result?.content) ? result.content : [];
-    const first = blocks[0];
-    if (first?.type === 'text') {
-      try {
-        payload = JSON.parse(first.text);
-      } catch {
-        payload = { ok: !isError, text: String(first.text) };
-      }
-    } else {
-      payload = { ok: !isError, content: blocks };
-    }
-  } catch (err) {
-    const msg = err?.message || String(err);
-    console.error(`[rest:${toolName}] handler threw:`, msg);
-    isError = true;
-    errMessage = msg;
-    // SECURITY (Agent 04): never echo the raw handler-exception message
-    // back to the (potentially external) MCP client. The full string is
-    // preserved in the console log above for diagnostics. The wire payload
-    // returns a stable error code instead of leaking schema names, RLS
-    // denial reasons, or PostgREST internals.
-    payload = { ok: false, error: 'tool_handler_failed' };
-    // Agent 06: ADDITIVE structured emit alongside the existing
-    // console.error. Tool name is safe to log (it's the public API name);
-    // err.message is forwarded into the log line ONLY, never into the
-    // wire payload (which still returns the stable 'tool_handler_failed'
-    // code above). This makes "handler errors clustered on tool X" a
-    // queryable signal without changing the client-facing response.
-    logSecurityEvent(SecurityEvent.TOOL_HANDLER_FAILED, {
-      toolName,
-      errName: err?.name || null,
-      errMessage: msg?.slice(0, 500),
-    }, { userId: ctx?.userId || null, req });
-  }
-  const latencyMs = Date.now() - startedAt;
-
-  if (!isError && PROJECT_WRITE_TOOLS.has(toolName)) {
-    invalidateProjectSectionCache(ctx.userId);
-  }
-
-  // Telemetry
-  Promise.resolve()
-    .then(() => logAiUsage({
-      userId: ctx.userId,
-      actionType: 'rest_synthesis',
-      model: toolName,
-      provider: 'rest',
-      inputTokens: 0,
-      outputTokens: 0,
-      metadata: {
-        tool: toolName,
-        client_kind: ctx.mcpAuth?.clientKind || 'lykn-chat',
-        client_label: ctx.clientLabel,
-        token_id: ctx.tokenId,
-        latency_ms: latencyMs,
-        ok: !isError,
-        error: errMessage,
-        transport: 'rest',
-      },
-    }))
-    .catch(() => {});
-
-  return res.status(isError ? 400 : 200).json(payload);
-}
-
-// Read endpoints — both transports (JWT + MCP token), per-token rate-limited.
-app.get('/api/v1/synthesis/beliefs', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getBeliefs', req, res));
-app.get('/api/v1/synthesis/rules', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getRules', req, res));
-app.get('/api/v1/synthesis/facts', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getFacts', req, res));
-app.get('/api/v1/synthesis/vault/search', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_searchVault', req, res));
-app.get('/api/v1/synthesis/connections', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_findConnections', req, res));
-app.get('/api/v1/synthesis/neuron', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_loadNeuron', req, res));
-// Batch loader — node_ids comes through the body as an array, so POST.
-// Same auth and rate limits as the single-load GET above.
-app.post('/api/v1/synthesis/neurons/load', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_loadNeurons', req, res));
-app.get('/api/v1/synthesis/projects/:project_id/neurons', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectNeurons', req, res));
-app.get('/api/v1/synthesis/project/neurons', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectNeurons', req, res));
-app.post('/api/v1/synthesis/vault', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_createVaultNote', req, res));
-app.get('/api/v1/synthesis/context-block', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getContextBlock', req, res));
-app.get('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getProjectState', req, res));
-app.get('/api/v1/synthesis/projects', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_listProjects', req, res));
-app.get('/api/v1/synthesis/projects/resolve', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_resolveProject', req, res));
-
-// Write endpoints — same auth. Tools internally enforce 'write' scope for
-// MCP-token requests, but mints default to read+write on every plan, so
-// 'write' is present unless the caller explicitly minted a read-only token.
-app.post('/api/v1/synthesis/attributions', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_recordRuleApplication', req, res));
-app.post('/api/v1/synthesis/facts/proposals', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_proposeFact', req, res));
-app.post('/api/v1/synthesis/projects/active', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_setActiveProject', req, res));
-app.post('/api/v1/synthesis/projects/state', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_pushProjectState', req, res));
-// Full project CRUD — mirrors lykn_updateProject / lykn_deleteProject /
-// lykn_addProjectNeurons / lykn_removeProjectNeurons. The synthesis page
-// already mutates these tables directly via supabase-js; these routes
-// give external AI clients (and any future server-side flow) a single
-// auth-gated surface for the same operations, with attribution +
-// rate-limiting + telemetry the direct-Supabase path doesn't get.
-app.post('/api/v1/synthesis/projects/update', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_updateProject', req, res));
-app.post('/api/v1/synthesis/projects/delete', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_deleteProject', req, res));
-app.post('/api/v1/synthesis/projects/merge', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_mergeProjects', req, res));
-app.post('/api/v1/synthesis/projects/neurons/add', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_addProjectNeurons', req, res));
-app.post('/api/v1/synthesis/projects/neurons/remove', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_removeProjectNeurons', req, res));
-// Synthesis-graph user-authored edges — mirrors lykn_createNeuronLink /
-// lykn_getNeuronLinks. POST creates (idempotent), GET reads. Same shape
-// the in-app link-mode UI persists, so MCP-authored links show up in the
-// graph immediately.
-app.post('/api/v1/synthesis/links', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_createNeuronLink', req, res));
-app.get('/api/v1/synthesis/links', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getNeuronLinks', req, res));
-// Concept recency bump — mirrors lykn_touchConcept. POST because it's a
-// state mutation even though it carries no body beyond the node_id.
-app.post('/api/v1/synthesis/concepts/touch', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_touchConcept', req, res));
-// User preferences — read + write the server-honoured prefs row that
-// governs memory_paused / training_opt_out / chat_retention_days / …
-app.get('/api/v1/synthesis/preferences', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getUserPreferences', req, res));
-app.post('/api/v1/synthesis/preferences', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_updateUserPreference', req, res));
-// Cross-store recent-activity feed — last-N-days deltas across every
-// neuron store. Read-only.
-app.get('/api/v1/synthesis/activity', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, (req, res) => runRestTool('lykn_getRecentActivity', req, res));
 
 // --- Custom connections (universal bring-your-own-API-key) ----------------
 // The user attaches ANY app (base URL + API key + how to send it); the LYKN
@@ -10744,116 +10488,6 @@ app.post('/api/v1/concepts/:id/link', requireAuth, async (req, res) => {
     console.error('POST /api/v1/concepts/:id/link:', e);
     return res.status(500).json({ error: 'Internal error' });
   }
-});
-
-// --- Streamable HTTP MCP server -------------------------------------------
-//
-// POST /mcp:  full JSON-RPC roundtrip per request (initialize, tools/list,
-//             tools/call, ping, notifications). Auth-bridged so MCP traffic
-//             and REST traffic share the same req.user.id + req.mcpAuth
-//             shape downstream.
-//
-// GET /mcp:   long-running SSE notification stream. The single notification
-//             we push today is `notifications/tools/list_changed`, fired on
-//             every new connection so post-deploy clients invalidate their
-//             cached tools/list immediately on reconnect (closes out the
-//             "MCP tool-list staleness" current_blocker). Daily-limiter is
-//             skipped because a single client opens at most one persistent
-//             stream per session and the stream itself doesn't consume
-//             daily quota — the client's downstream tools/call requests
-//             already do. We do gate it with the per-minute limiter so a
-//             rogue client can't spawn unbounded streams.
-const mcpHandler = buildMcpHandler({
-  logUsage: (info) => logAiUsage(info).catch(() => {}),
-  // Invalidate in-LYKN prompt-section caches when an outside AI client
-  // mutates project state via MCP — keeps the in-app chat in sync on
-  // the very next turn instead of waiting for the 90s TTL.
-  onToolComplete: ({ toolName, userId }) => {
-    if (PROJECT_WRITE_TOOLS.has(toolName)) {
-      invalidateProjectSectionCache(userId);
-    }
-  },
-});
-const mcpStreamHandler = buildMcpStreamHandler();
-app.post('/mcp', requireAuthOrMcpToken, mcpMinuteLimiter, mcpDailyLimiter, mcpHandler);
-app.get('/mcp', requireAuthOrMcpToken, mcpMinuteLimiter, mcpStreamHandler);
-app.delete('/mcp', mcpMethodNotAllowed);
-
-// Public discovery descriptor — handy for "is LYKN's MCP server alive?"
-// pings and for installer pages that want to confirm the endpoint shape
-// before showing copy-paste snippets. Unauthenticated and harmless.
-app.get('/.well-known/mcp.json', (req, res) => {
-  res.setHeader('Cache-Control', 'public, max-age=300');
-  res.json(MCP_DISCOVERY);
-});
-
-// ============================================
-// OAUTH 2.1 PROVIDER — "Connect LYKN" inside other apps
-// ============================================
-// Layer 2 of LYKN's four-layer integration strategy. PATs (Layer 1)
-// stay the power-user path; this is the consumer path that ChatGPT
-// Connectors / Cursor's MCP-OAuth / a future LYKN GPT in the GPT
-// Store all expect. The /.well-known docs ship today; the
-// /oauth/* endpoints (register, authorize, token, revoke,
-// introspect, userinfo) land in subsequent commits.
-//
-// Tokens minted via this flow are stored in the same lykn_mcp_tokens
-// table as PATs (extended in migration 050 with oauth_client_id +
-// oauth_consent_id + expires_at), so /mcp's existing middleware
-// validates them with no changes required.
-//
-// SECURITY (Agent 04):
-//   The application's globalLimiter is mounted on '/api/' only, so /oauth/*
-//   has no rate limiting unless we attach it explicitly here. Mount the
-//   OAuth-tier limiters BEFORE mountOauthServer so they run before the
-//   route handlers it registers. Agent 01's `app.set('trust proxy', 1)`
-//   makes req.ip truthful for the keyGenerators.
-//
-//   IMPORTANT — `app.use('/oauth/authorize', authLimiter)` deliberately
-//   covers BOTH `GET /oauth/authorize` AND `POST /oauth/authorize/decide`
-//   via Express's prefix-match semantics on `app.use`. The `decide`
-//   sub-route handles the SPA's approve/deny POST and is part of the
-//   same credential-flow surface, so it earns the same Tier-1 limit.
-//   Do NOT change to `app.post(...)` or restructure to a more specific
-//   path without re-asserting decide stays covered.
-app.use('/oauth/token', authLimiter);
-app.use('/oauth/register', authLimiter);
-app.use('/oauth/authorize', authLimiter); // also covers /oauth/authorize/decide via prefix match
-app.use('/oauth/userinfo', oauthReadLimiter);
-app.use('/oauth/revoke', oauthReadLimiter);
-app.use('/oauth/introspect', oauthReadLimiter);
-
-mountOauthServer(app, {
-  supabaseAdmin,
-  // /oauth/authorize/decide is JWT-authenticated (the SPA calls it with
-  // the user's Supabase session). Reuse the same requireAuth used by
-  // every other JWT-only route so the auth surface stays uniform.
-  requireAuth,
-  // The publicly-visible https origin of this API server. The OAuth
-  // metadata documents MUST advertise absolute URLs (RFC 8414 §3), so
-  // we resolve here at request time rather than at boot in case the
-  // server moves between hosts (Render preview vs. prod).
-  getPublicBaseUrl: () =>
-    process.env.PUBLIC_API_BASE_URL ||
-    process.env.RENDER_EXTERNAL_URL ||
-    `http://localhost:${PORT}`,
-  // The SPA origin /oauth/authorize redirects users to. In single-origin
-  // production the API + SPA share a host (e.g. https://lykn.io serves
-  // both); in dev the SPA runs on Vite at :5173 while the API is at
-  // :3001. FRONTEND_BASE_URL / FRONTEND_URL already exist as env vars
-  // for the inbound-OAuth flow, so reuse them.
-  getFrontendBaseUrl: () =>
-    process.env.FRONTEND_BASE_URL ||
-    process.env.FRONTEND_URL ||
-    'http://localhost:5173',
-  // Agent 06: wire the structured security logger into the OAuth provider
-  // so the RFC 6749 §10.4 refresh-token replay branch emits an audit row
-  // (in addition to revoking the token family). Dependency-injected via
-  // this options object rather than a direct import to avoid an
-  // oauth-server.js → server.js cycle. mountOauthServer treats a missing
-  // hook as a no-op (verified in oauth-server.js), so tests / standalone
-  // scripts don't need to wire anything.
-  logSecurityEvent,
 });
 
 // ============================================
@@ -13550,7 +13184,7 @@ ${t}
         focusedBricksNote,
         convo ? `[CONVERSATION — each line shows role, timestamp, and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
         conversationMemory ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(String(conversationMemory).slice(0, 6000))}` : "",
-        wsCtx ? `[WHAT_IVE_SAVED]\n[WORKSPACE_CONTEXT]\nVault listing (saved notes, files, links). Use when they need something from their stuff — do not dump unprompted.\n${wsCtx}` : "",
+        wsCtx ? `[WORKSPACE_CONTEXT]\n${wsCtx}` : "",
         rawPrompt ? `[REQUEST_CONTEXT]\n${rawPrompt}` : "",
         kb ? `[WHAT_IM_ON]\n[PROJECT_KNOWLEDGE]\nProject knowledge for the active focus — connect the screen / topic here when it fits.\n${kb}` : "",
         contextText ? `[CONTEXT]\n${contextText}` : "",
@@ -13885,13 +13519,15 @@ ${t}
     if (hasUrlInMessage && !explicitUrlIntent) console.log('🔗 Pasted URL detected — auto-scraping (no explicit intent verbs)');
     const skipScrape    = !explicitUrlIntent && !hasUrlInMessage;
     const skipSearch    = (forceWebSearch || deepResearch) ? false : (skipWebSearch || enrichTier !== 'full');
-    const skipSynthesis = enrichTier === 'none';
+    // Old vault hybrid recall (WHAT_IVE_SAVED / connected-app library) is
+    // retired. Files live in the Finder: [AI DRIVE] + local_* for Mac folders.
+    const skipSynthesis = true;
     // Synthesis v2: beliefs retired from hot path; User Facts always-on for chat.
     let skipBeliefs = true;
     skipBeliefs = shouldSkipSynthesisBeliefsForCustomModel(skipBeliefs, customModelCtx.overlay);
     const slimIdentity = isChatIntent && enrichTier === 'none';
     const skipUserFacts = !isChatIntent;
-    const skipRelated = enrichTier === 'none' || !isChatIntent || !req.user?.id;
+    const skipRelated = true;
     // Identity is tiny (just name + project list) and high-value for tone, so
     // we always pull it for chat-style intents — even "none" tier benefits.
     const skipIdentity  = !isChatIntent;
@@ -13903,26 +13539,7 @@ ${t}
     );
     const invokeWantsProject = messageWantsProjectContext(pureUserMessage || searchText);
     const skipProject = !invokeInProject && !invokeWantsProject;
-    // Connected-source URLs (Notion / Drive / GitHub / Linear / Figma / …)
-    // get looked up against the user's synced vault notes by exact URL match.
-    // Always on for chat intents — cheap (one indexed query per URL, max 3
-    // URLs) and the failure case (no match) still produces a useful prompt
-    // section that prevents the model from stalling with "I can't access
-    // external pages."
-    //
-    // IMPORTANT: scan the *attachment-aware* portion of the prompt, not just
-    // the user's typed message. When the user drags a vault item into the
-    // chat, the URL ends up in the [Attached content] block appended after
-    // "Latest user message:" — pureUserMessage strips that out.
-    const vaultUrlScanText = extractUserSuppliedContent(prompt, pureUserMessage || searchText);
-    const vaultUrlMatchesPromise = (isChatIntent && req.user?.id)
-      ? (() => {
-          const matches = detectConnectedSourceUrls(vaultUrlScanText);
-          if (!matches.length) return Promise.resolve('');
-          console.log(`🔗 Detected ${matches.length} connected-source URL(s):`, matches.map((m) => `${m.label}:${m.url.slice(0, 60)}`).join(', '));
-          return fetchVaultNotesByUrls(req.user.id, matches);
-        })()
-      : Promise.resolve('');
+    const vaultUrlMatchesPromise = Promise.resolve('');
     const customModelKnowledgePromise =
       customModelCtx.customModel && req.user?.id
         ? fetchCustomModelKnowledgeSection(req.user.id, customModelCtx.customModel)
@@ -13974,12 +13591,7 @@ ${t}
         : Promise.resolve(""),
       skipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(pureUserMessage || searchText),
       vaultUrlMatchesPromise,
-      // Connected-tools section piggybacks on identity skip — it's
-      // chat-intent-only, cheap (cached per user for 90s), and lets
-      // the model recommend specific tools the user actually uses.
-      !skipIdentity
-        ? fetchConnectedToolsSection(req.headers.authorization, req.user?.id)
-        : Promise.resolve(""),
+      Promise.resolve(""),
       // Active synthesis-layer project — slim on casual turns, full on light/full.
       !skipProject
         ? fetchProjectSection(
@@ -15003,7 +14615,25 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
   try {
     _ck('entered /api/ai/stream');
     const normalizedModel = normalizeRequestedModel(req.body?.model);
-    const incomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
+    const rawIncomingImageUrls = Array.isArray(req.body?.imageUrls) ? req.body.imageUrls : [];
+    // Providers fetch anything that isn't inline base64, and one they can't
+    // reach fails the whole turn instead of the one image — a desktop-only
+    // scheme (lykn-blob:// / lykn-mac://) used to cost the user their reply.
+    // The client inlines those bytes before sending; anything that slips
+    // through is dropped so the turn still answers. Mirrors /api/ai/invoke.
+    const incomingImageUrls = rawIncomingImageUrls
+      .map((u) => String(u || '').trim())
+      .filter((u) => u.startsWith('http') || u.startsWith('data:image/'));
+    const droppedImageUrls = rawIncomingImageUrls.length - incomingImageUrls.length;
+    if (droppedImageUrls > 0) {
+      console.warn(
+        `🖼 Stream: dropped ${droppedImageUrls} unfetchable image url(s): ` +
+          rawIncomingImageUrls
+            .filter((u) => !incomingImageUrls.includes(String(u || '').trim()))
+            .map((u) => String(u || '').slice(0, 60))
+            .join(', '),
+      );
+    }
     // `let`: coded-artifact turns may drop the overlay's auto-screenshot so
     // the build can stay on grok (which can't take images on forced tools).
     let imageUrls = incomingImageUrls.slice(0, 8);
@@ -15223,6 +14853,13 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         (activeArtifact.toolName === 'lykn_build_spreadsheet' &&
           (Array.isArray(activeArtifact.headers) || Array.isArray(activeArtifact.rows)))
       );
+    // Edit-in-Build on an installed app: the source is attached so each turn
+    // patches THAT app even though it is not an open preview. This identifies
+    // the target; it does not by itself authorize a full rewrite.
+    const appEditTurn =
+      activeArtifactHasSource &&
+      typeof activeArtifact?.installedAppId === 'string' &&
+      !!String(activeArtifact.installedAppId).trim();
     // Prefer surgical refine over Create/forceArtifact whenever an editable
     // artifact is open and the user did NOT explicitly ask to redesign.
     // Leaving "+" → Create armed used to nullify the edit path, inject a
@@ -15260,13 +14897,13 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // fonts without being a full redesign — builders allow that signature
     // churn only when this is set.
     const styleChangeArtifactAsk =
-      /\b(?:font|typeface|typography|colou?r|theme|accent|palette|recolou?r|background|neutral|gr[ae]yscale|monochrome)\b/i.test(
+      /\b(?:font|typeface|typography|colou?r|theme|accent|palette|recolou?r|background|neutral|gr[ae]yscale|monochrome|dark\s*mode|light\s*mode|darken|brighten|dim(?:mer)?|muted?|opacity|red|orange|yellow|green|blue|purple|pink|black|white|gray|grey|amber|mustard)\b/i.test(
         askText,
       ) || redesignArtifactAsk;
     // Edit/add asks against an open artifact — keep in sync with useChatEngine.
     const looksLikeSurgicalTweak =
       askText.trim().length < 400 &&
-      /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i.test(
+      /\b(?:fix|change|update|tweak|adjust|add|make|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|darken|brighten|dim|dimmer|mute|muted|darker|lighter|brighter|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i.test(
         askText,
       ) &&
       !redesignArtifactAsk &&
@@ -15799,10 +15436,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     ) {
       const beforeApps = streamChatToolNames.length;
       streamChatToolNames = streamChatToolNames.filter(
-        (n) =>
-          n !== 'lykn_list_apps' &&
-          n !== 'lykn_call_app' &&
-          n !== 'lykn_recommendTools',
+        (n) => n !== 'lykn_list_apps' && n !== 'lykn_call_app',
       );
       if (streamChatToolNames.length !== beforeApps) {
         console.log('🧭 Stream: stripped connected-app tools (agent browser uses the screen)');
@@ -15893,7 +15527,6 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     // Glass: vault read/surface tools only on explicit saved-recall asks.
     // Prompt-only "zero vault tools" was not enough — the model still searched.
     const GLASS_VAULT_TOOLS = new Set([
-      'lykn_searchVault',
       'lykn_loadNeuron',
       'lykn_loadNeurons',
       'lykn_findConnections',
@@ -16078,6 +15711,20 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
 
       const assistantIdentitySection = buildAssistantIdentitySection(input?.aiName);
 
+      // The apps the user built in LYKN. They live in the local store on the
+      // user's machine, so this list is the only way the model knows they
+      // exist — without it, "open my workout tracker" has nothing to match.
+      const installedAppsSection = buildInstalledAppsSection(input?.installedApps);
+
+      // What they have on their Mac — the difference between opening Spotify
+      // and opening spotify.com.
+      const macAppsSection = buildMacAppsSection(input?.macApps);
+
+      // What LYKN has already built for them, in AI Drive. Same problem the
+      // app list solves: they say "open the one you made me" and the model
+      // needs a name to match.
+      const aiDriveSection = buildAiDriveSection(input?.aiDrive, input?.aiDriveTotals);
+
       // Slim system blocks for ChatGPT-fast turns (no full persona / learned-tag
       // tax). Glass always slims; in-app slims on ordinary Q&A (input.fastLean).
       // Vault/project/recall/tool turns keep the full persona.
@@ -16098,13 +15745,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         assistantIdentitySection,
         userPromptSection,
         activeModeSection,
+        installedAppsSection,
+        macAppsSection,
+        aiDriveSection,
         focusedBricksNote,
         imageNote,
         convo ? `[CONVERSATION — each line shows role, timestamp, and (for assistant) which model wrote it. Prior assistant lines are from other models, not you.]\n${convo}` : "",
         conversationMemoryText
           ? `[CONVERSATION_MEMORY — past exchanges from other projects/vault]\n${sanitizeStaleSurfaceLanguage(conversationMemoryText)}`
           : '',
-        wsCtx ? `[WHAT_IVE_SAVED]\n[WORKSPACE_CONTEXT]\nVault listing (saved notes, files, links). Use when they need something from their stuff — do not dump unprompted.\n${wsCtx}` : "",
+        wsCtx ? `[WORKSPACE_CONTEXT]\n${wsCtx}` : "",
         fullPrompt && fullPrompt !== userMsg ? `[FULL_CONTEXT]\n${fullPrompt.slice(0, 16000)}` : "",
         kb ? `[WHAT_IM_ON]\n[PROJECT_KNOWLEDGE]\nProject knowledge for the active focus — connect the screen / topic here when it fits.\n${kb}` : "",
         ctx ? `[CONTEXT]\n${ctx}` : "",
@@ -16286,6 +15936,11 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         fastLean: streamFastLean,
         forceImage: Boolean(forceImage) && !forceArtifact,
         modeInstructions: String(req.body?.modeInstructions || '').trim().slice(0, 2000),
+        // Desktop-only, and the model's only way to know these apps exist.
+        installedApps: req.body?.installedApps,
+        macApps: req.body?.macApps,
+        aiDrive: req.body?.aiDrive,
+        aiDriveTotals: req.body?.aiDriveTotals,
       });
       _ck('after buildLyknStreamPrompt');
     }
@@ -16304,14 +15959,8 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     const streamSkipSearch    = (forceWebSearch || deepResearch)
       ? false
       : (skipWebSearch || streamEnrichTierEffective !== 'full');
-    // Synthesis / related = vault neighborhood. Only when they asked for saved
-    // stuff — ordinary Q&A and tool actions must not pay the embed+RPC tax.
-    const streamSkipSynthesis =
-      streamEnrichTierEffective === 'none' ||
-      Boolean(liveWatch) ||
-      streamFastLean ||
-      !streamOverlayWantsSaved ||
-      (Boolean(overlayAsk) && isCasualOverlayAck(streamOverlayMsg));
+    // Old vault hybrid recall is retired — AI Drive + Finder replace it.
+    const streamSkipSynthesis = true;
     // Skip identity/facts/connected-tools unless this turn needs memory
     // (user recall) or project personalization. Tool-only actions (todos,
     // calendar) and ordinary Q&A stay cold for TTFT.
@@ -16333,12 +15982,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
     const streamSlimIdentity = true; // always slim when we inject identity at all
     // [RELATED] only on explicit saved-recall — topical vault hits make the
     // model narrate random saves and cost a sequential DB hop after enrichment.
-    const streamSkipRelated =
-      !req.user?.id ||
-      Boolean(liveWatch) ||
-      streamFastLean ||
-      !streamOverlayWantsSaved ||
-      (Boolean(overlayAsk) && isCasualOverlayAck(streamOverlayMsg));
+    const streamSkipRelated = true;
     const streamSkipIdentity =
       (!isChatIntent && !overlayAsk) ||
       streamFastLean ||
@@ -16352,20 +15996,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       (streamEnrichTierEffective === 'none' && !streamInProject);
     const streamSkipYouTube   = streamEnrichTierEffective === 'none' || streamFastLean || !needsYouTubeSearch(streamPureUserMessage || streamSearchText);
     _ck(`before enrichment Promise.all (tier=${streamEnrichTierEffective}, skipScrape=${streamSkipScrape}, skipSearch=${streamSkipSearch}, skipSynth=${streamSkipSynthesis}, skipFacts=${streamSkipUserFacts}, skipBeliefs=${streamSkipBeliefs}, slimIdentity=${streamSlimIdentity}, skipRelated=${streamSkipRelated}, skipIdentity=${streamSkipIdentity}, skipYT=${streamSkipYouTube})`);
-    // Connected-source URL → vault lookup (see invoke path for rationale).
-    // Always on for chat intents; cheap; fixes the "I can't access external
-    // pages" stall when the user pastes OR drags a Notion/Drive/etc. URL.
-    // Scan the prompt (which includes "[Attached content]" from drag-into-
-    // chat) rather than the 500-char user-typed pureUserMessage slice.
-    const streamVaultUrlScanText = extractUserSuppliedContent(prompt, streamPureUserMessage || streamSearchText);
-    const streamVaultUrlMatchesPromise = (isChatIntent && req.user?.id)
-      ? (() => {
-          const matches = detectConnectedSourceUrls(streamVaultUrlScanText);
-          if (!matches.length) return Promise.resolve('');
-          console.log(`🔗 [stream] Detected ${matches.length} connected-source URL(s):`, matches.map((m) => `${m.label}:${m.url.slice(0, 60)}`).join(', '));
-          return fetchVaultNotesByUrls(req.user.id, matches);
-        })()
-      : Promise.resolve('');
+    const streamVaultUrlMatchesPromise = Promise.resolve('');
     const streamCustomModelKnowledgePromise =
       streamCustomModelCtx.customModel && req.user?.id
         ? fetchCustomModelKnowledgeSection(req.user.id, streamCustomModelCtx.customModel)
@@ -16445,9 +16076,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
         : Promise.resolve(""),
       streamSkipYouTube ? Promise.resolve("") : runYouTubeSearchIfNeeded(streamPureUserMessage || streamSearchText),
       streamVaultUrlMatchesPromise,
-      !streamSkipIdentity
-        ? fetchConnectedToolsSection(req.headers.authorization, req.user?.id)
-        : Promise.resolve(""),
+      Promise.resolve(""),
       !streamSkipProject
         ? fetchProjectSection(
             req.headers.authorization,
@@ -16653,11 +16282,10 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               : 'artifact';
       prompt +=
         `\n\n[ARTIFACT_VISIBLE — The user has "${String(activeArtifact.title || 'Untitled').slice(0, 200)}" ` +
-        `(${kindHint}) open in the preview popup, but they are in Chat mode — not Build/Create. ` +
+        `(${kindHint}) open in the preview popup, but builder tools are not armed for this turn. ` +
         `You may discuss, explain, critique, brainstorm about, or answer questions about this artifact using conversation context. ` +
         `Do NOT call lykn_build_react_artifact, lykn_build_template, lykn_build_spreadsheet, lykn_manage_file, or any other build/edit tool, ` +
-        `and do NOT modify the open artifact. If they ask you to change, add to, or rebuild it, tell them in one short line to switch to ` +
-        `**Build** using the pills at the top of the page and resend.]`;
+        `and do NOT modify the open artifact. Answer the user's question directly without claiming you changed anything.]`;
     } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_react_artifact') {
       const a = activeArtifact;
       const multiFiles = Array.isArray(a.files) ? a.files.filter((f) => f && typeof f.path === 'string') : [];
@@ -16701,23 +16329,33 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           runtimeErrs.map((e) => `  - ${String(e.message || e).slice(0, 400)}`).join('\n') + '\n'
         : '';
       prompt +=
-        `\n\n[ARTIFACT_OPEN — The user has this coded React artifact open in the preview popup and may ask you to refine it:\n` +
+        `\n\n[ARTIFACT_OPEN — ${appEditTurn
+          ? 'The user opened this installed app in Build mode to edit it (there is no preview popup):'
+          : 'The user has this coded React artifact open in the preview popup and may ask you to refine it:'}\n` +
         `• title: ${String(a.title || 'Untitled').slice(0, 200)}\n` +
         sourceBlock +
         todosBlock +
         runtimeBlock +
-        `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
-        `Build mode does NOT mean rebuild — with this popup open, add/edit/fix requests are ALWAYS in-place patches, never a new artifact from scratch. ` +
-        `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, colors, radii, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. Swapping a color palette or font "while you're at it" is a FAILURE. ` +
-        `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
-        (isMulti
-          ? `REQUIRED: call ONCE with \`edits\` ({path, find, replace}) and/or \`file_ops\` ({op:"write"|"delete", path, content?}) covering EVERY change in this message. The server REJECTS full \`files\`/\`code\` unless the user explicitly said redesign/rebuild/start over (then full_rewrite: true). `
-          : `REQUIRED: call ONCE with \`edits\` ONLY — an array of {find, replace} patches covering EVERY change in this message. Each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. The server REJECTS full \`code\` and ignores full_rewrite unless the user explicitly said redesign/rebuild/start over. `) +
-        `Do NOT call this tool multiple times in one turn — batch all patches into that single call, then summarize. ` +
-        `If the tool returns compile_error / edits_required / edit_target_not_found, fix and retry silently before telling the user you're done — never leave them with a broken preview. ` +
-        `Never change THEME, colors, fonts, or layout on a refine. Update \`todos\` statuses on longer builds. ` +
-        `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
-        `If the message is NOT about the artifact, ignore this and answer normally.]`;
+        (appEditTurn
+          ? `If the user's message asks to change, fix, add to, or otherwise edit THIS app, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
+            `This is an installed-app edit, not a fresh commission — keep the existing source as the base. ` +
+            `REQUIRED: patch in place with \`edits\` ({find, replace}${isMulti ? ', with path' : ''}) and/or \`file_ops\`; preserve every untouched line, component, behavior, and style. ` +
+            `Changing a color, font, selected state, spacing value, label, or adding a localized feature is still a patch — never a reason to rewrite the app. ` +
+            `Pass full \`files\` or \`code\` with full_rewrite: true ONLY when the user explicitly asks to redesign, rebuild, start over, or replace the app. Style and theme changes are allowed only to the exact extent requested. ` +
+            `ONE CALL PER TURN. After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
+            `If the message is NOT about this app, ignore this and answer normally.]`
+          : `If the user's message asks to change, fix, add to, shorten, expand, or otherwise refine THIS artifact, you MUST call lykn_build_react_artifact again with the same title (unless they ask to rename it). ` +
+            `Build mode does NOT mean rebuild — with this popup open, add/edit/fix requests are ALWAYS in-place patches, never a new artifact from scratch. ` +
+            `PRESERVE THE LOOK — keep THEME tokens, Tailwind classes, layout structure, fonts, colors, radii, and overall visual design exactly as they are. Expanding data arrays / hook banks / copy lists is a CONTENT edit, not a redesign. Swapping a color palette or font "while you're at it" is a FAILURE. ` +
+            `SCOPE DISCIPLINE — implement EXACTLY the requested change and NOTHING else. Every line the request doesn't touch must survive byte-for-byte — no reformatting, re-indenting, renaming, recoloring, copy rewrites, layout shuffles, comment stripping, or unrequested "improvements". If you notice something else worth fixing, mention it in your reply; do not change it. ` +
+            (isMulti
+              ? `REQUIRED: call ONCE with \`edits\` ({path, find, replace}) and/or \`file_ops\` ({op:"write"|"delete", path, content?}) covering EVERY change in this message. The server REJECTS full \`files\`/\`code\` unless the user explicitly said redesign/rebuild/start over (then full_rewrite: true). `
+              : `REQUIRED: call ONCE with \`edits\` ONLY — an array of {find, replace} patches covering EVERY change in this message. Each \`find\` is an exact, unique snippet copied verbatim from the source above (whitespace included; replace: "" deletes) and each \`replace\` is the MINIMAL rewrite of just those lines. The server REJECTS full \`code\` and ignores full_rewrite unless the user explicitly said redesign/rebuild/start over. `) +
+            `Do NOT call this tool multiple times in one turn — batch all patches into that single call, then summarize. ` +
+            `If the tool returns compile_error / edits_required / edit_target_not_found, fix and retry silently before telling the user you're done — never leave them with a broken preview. ` +
+            `Never change THEME, colors, fonts, or layout on a refine. Update \`todos\` statuses on longer builds. ` +
+            `After it returns, reply with a 1-2 sentence summary of what changed; do NOT paste the code. ` +
+            `If the message is NOT about the artifact, ignore this and answer normally.]`);
     } else if (activeArtifactEditable && activeArtifact.toolName === 'lykn_build_template') {
       const a = activeArtifact;
       const tType = String(a.templateType || 'document');
@@ -16962,6 +16600,7 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
               (forceImage || artifactToolName),
           ),
           editingArtifact: Boolean(activeArtifactEditable),
+          appEdit: Boolean(appEditTurn),
           lockOutArtifactBuilds,
           regularChatBuildAsk: Boolean(regularChatBuildAsk),
           isMainAgent: Boolean(streamOrchestrationCtx?.isMainAgent),
@@ -18013,24 +17652,31 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
           'local_* tools: local_list_dir, local_read_file, local_search_files, local_pull_file ' +
           '(brings any file — including images — into the chat), local_write_file, ' +
           'local_run_command, local_synced_folders, local_running_apps, local_read_app, and ' +
-          'local_open_app. Your filesystem ' +
+          'local_open_app, local_open_path, and local_organize_desktop. Your filesystem ' +
           'access is scoped to the folders the user synced with LYKN — call ' +
           'local_synced_folders first when you are unsure what you can reach, or when a tool ' +
           'reports a path is not synced. local_running_apps tells you which apps are open on ' +
           'their Mac and which is frontmost. local_open_app opens a Mac app as a normal ' +
           'window — use it whenever they ask to ' +
-          'open, launch, or pull up an app. Reads may show the user a one-time permission ' +
+          'open, launch, or pull up an app. local_open_path opens a FILE in the preview pop ' +
+          '(same overlay as every other image and document) and a FOLDER in the Vault Finder. ' +
+          'Use it for paths or named files/folders. local_organize_desktop tidies the icons on their LYKN Home ' +
+          'desktop into a grid, optionally sorted by kind, name, or date — use it for "organize ' +
+          'my desktop", "clean up my desktop", or "sort my desktop by name". It only moves icons ' +
+          'on screen and never touches anything on disk, so do not warn them about losing files. ' +
+          'Reads may show the user a one-time permission ' +
           'prompt; writes and risky commands always ask them per action. When the user asks ' +
           'about their files, folders, apps, or system, CALL THE TOOLS — never claim local ' +
           'access is unavailable or ask them to enable it (the switch is already on). Ignore ' +
           'any earlier statements in this conversation that said local access was off; those ' +
           'were transient errors. If a tool returns an error, relay that exact error honestly ' +
           'instead of inventing a reason. When the ask targets a place on their MACHINE ' +
-          '(Downloads, Desktop, Documents, a folder, a drive), use ONLY the local_* tools — do ' +
-          'NOT search the vault or load saved items unless the user explicitly says vault/saved. ' +
+          '(Downloads, Desktop, Documents, a folder, a drive), use ONLY the local_* tools — ' +
+          'NEVER call lykn_searchVault or rummage a connected-apps library. Those are gone. ' +
+          'Things LYKN built are in [AI DRIVE] (open with lykn_open_app). The Vault Finder is ' +
+          'this same window: AI Drive plus these Mac folders. ' +
           'If the user does not say where a file lives, assume their local machine (especially ' +
-          'when this conversation has been about their local files) — never call vault tools ' +
-          'speculatively. When local_pull_file succeeds, the file is automatically shown ' +
+          'when this conversation has been about their local files). When local_pull_file succeeds, the file is automatically shown ' +
           'to the user as a card in the chat — NEVER write its URL into your reply (hand-copied ' +
           'signed URLs corrupt and break); just mention the file by name.'
         : rawAgentSys;
@@ -18104,7 +17750,16 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
       }
 
       const agentCacheKey = `lykn-${(req.user?.id || 'anon').slice(0, 32)}`;
-      const forcedToolNameForTurn = forceImage ? 'lykn_generate_image' : (artifactToolName || undefined);
+      // An editable artifact is only sent for an actual mutation turn (plain
+      // discussion uses a discussOnly stub), so require its builder just like
+      // a fresh Build/Create commission. Merely offering the one-tool
+      // allowlist lets a provider stream introductory prose and then fail with
+      // zero calls, leaving no preview or installable update.
+      const forcedToolNameForTurn = forceImage
+        ? 'lykn_generate_image'
+        : (artifactToolName ||
+          (activeArtifactEditable ? String(activeArtifact.toolName || '') : '') ||
+          undefined);
 
       // Forced-tool turns (artifact builds, image gen) get a provider
       // fallback chain: grok-4.5 reproducibly truncates its stream mid-
@@ -18226,9 +17881,9 @@ app.post('/api/ai/stream', requireAuth, requireAppAccess, aiLimiter, checkAiUsag
                 activeArtifactEditable && typeof activeArtifact.font === 'string'
                   ? activeArtifact.font
                   : null,
-              // Honor full_rewrite on redesign / style-match / Build-mode fresh /
-              // insist-retry / reference rebuild. openTemplateRestyleAsk is
-              // covered by redesignArtifactAsk.
+              // Merely editing an installed app never authorizes replacing all
+              // of its source. Full rewrites require explicit redesign/fresh
+              // intent; ordinary follow-ups stay as targeted patches.
               allowFullRewrite: redesignArtifactAsk || buildModeFresh,
               allowStyleChange:
                 redesignArtifactAsk || buildModeFresh || styleChangeArtifactAsk,
@@ -18900,19 +18555,29 @@ app.post('/api/vault/backfill-descriptions', requireAuth, requireAppAccess, desc
 // Quota is enforced per image inside generateChatImage.
 app.post('/api/ai/imagine-image', requireAuth, requireAppAccess, imagineLimiter, async (req, res) => {
   try {
-    const { prompt, aspectRatio, imageSize, referenceImages } = req.body || {};
+    const { prompt, aspectRatio, imageSize, referenceImages, maskImage, deliverBytes } = req.body || {};
     const refs = Array.isArray(referenceImages)
       ? referenceImages
           .filter((u) => typeof u === 'string' && /^(https?:|data:image\/)/i.test(u.trim()))
           .slice(0, 4)
       : [];
+    const mask =
+      typeof maskImage === 'string' && /^data:image\//i.test(maskImage.trim())
+        ? maskImage.trim()
+        : undefined;
+    // A desktop client keeping its vault on disk asks for the bytes directly
+    // so the image never becomes a bucket object it would only duplicate
+    // locally and leave behind.
+    const wantsBytes = deliverBytes === true;
     const result = await generateChatImage({
       prompt,
       aspectRatio,
       imageSize,
       referenceImages: refs,
+      maskImage: mask,
       userId: req.user?.id,
       supabaseAdmin,
+      deliverBytes: wantsBytes,
       logUsage: (info) => logAiUsage({ ...info, metadata: { ...info?.metadata, surface: 'studio_imagine' } }),
     });
     if (!result.ok) {
@@ -18924,6 +18589,8 @@ app.post('/api/ai/imagine-image', requireAuth, requireAppAccess, imagineLimiter,
       ok: true,
       imageUrl: result.image_url,
       storagePath: result.storage_path,
+      imageBase64: result.image_base64 || null,
+      mimeType: result.mime_type || null,
       prompt: result.prompt,
       caption: result.caption || null,
       provider: result.provider,
@@ -21679,11 +21346,10 @@ const LYKN_VOICE_TOOL_DEFS = [
     name: 'search_vault',
     special: 'search_vault',
     description:
-      "Semantic search across the user's LYKN vault and synthesis layer (notes, saved articles, " +
-      'connected-source content like Notion/Gmail/Slack, and embedded knowledge). Call this WHENEVER ' +
-      'the user asks about something they saved, wrote, or might know — "what did I save about X", ' +
-      '"what do I know about Y", "did I take notes on Z", "remind me what we decided about…". ' +
-      'Returns matched snippets you should ground your spoken answer in.',
+      "Look up something they made with LYKN (AI Drive) or a file on their Mac — not a connected-apps library. " +
+      'Call this WHENEVER the user asks about something they saved or generated — "what did I save about X", ' +
+      '"the dashboard I made", "did I take notes on Z". Ground your spoken answer in the hits. Files on disk ' +
+      'need Local Mode; things LYKN built live in AI Drive inside the Vault Finder.',
     parameters: {
       type: 'object',
       properties: { query: { type: 'string', description: 'What to look for, phrased as a search query (a topic or question).' } },
@@ -22569,10 +22235,11 @@ app.post('/api/ai/realtime/tool', requireAuth, requireAppAccess, aiLimiter, asyn
     // privileges — no read-only token gate), unwrapping its content block
     // into plain JSON.
     const runMcp = async (mcpName, mcpArgs) => {
-      // Synthesis-layer tools live in MCP_TOOLS_BY_NAME; on-demand exterior
-      // capabilities (web search/fetch, etc.) live in EXTERIOR_TOOLS_BY_NAME.
-      // Voice tool defs can map to either, so fall through to exterior.
-      const tool = MCP_TOOLS_BY_NAME[mcpName] || EXTERIOR_TOOLS_BY_NAME[mcpName];
+      // Synthesis-layer tools live in SYNTHESIS_TOOLS_BY_NAME; on-demand
+      // exterior capabilities (web search/fetch, etc.) live in
+      // EXTERIOR_TOOLS_BY_NAME. Voice tool defs can map to either, so fall
+      // through to exterior.
+      const tool = SYNTHESIS_TOOLS_BY_NAME[mcpName] || EXTERIOR_TOOLS_BY_NAME[mcpName];
       if (!tool) return { ok: false, error: 'tool_unavailable' };
       const ctx = buildToolCtx(req);
       const result = await tool.handler(mcpArgs, ctx);
@@ -24596,25 +24263,13 @@ app.post('/api/vault/save-image', requireAuth, upload.single('image'), async (re
       ...buildAttachmentColumns(attachment),
     };
 
-    let { data: note, error: insErr } = await supabaseAdmin
-      .from('vault_items')
-      .insert(richInsert)
-      .select('id, title')
-      .single();
-
-    // Pre-migration DBs may lack the normalized attachment columns — retry with
-    // just the marker (same fallback the web upload pipeline uses).
-    const missingColumn =
-      insErr &&
-      (insErr.code === 'PGRST204' ||
-        /could not find|does not exist/i.test(String(insErr.message || '')));
-    if (missingColumn) {
-      ({ data: note, error: insErr } = await supabaseAdmin
-        .from('vault_items')
-        .insert({ user_id: userId, title, content })
-        .select('id, title')
-        .single());
-    }
+    // Pre-migration DBs may lack the normalized attachment columns — drop only
+    // what they name (same fallback the web upload pipeline uses).
+    const { data: note, error: insErr } = await insertWithSchemaFallback(
+      (row) => supabaseAdmin.from('vault_items').insert(row).select('id, title').single(),
+      richInsert,
+      ['user_id', 'title', 'content'],
+    );
 
     if (insErr) {
       // Clean up the orphaned object so we don't leak storage on a failed row.
@@ -24715,23 +24370,11 @@ app.post('/api/vault/save-file', requireAuth, upload.single('file'), async (req,
       ...buildAttachmentColumns(attachment),
     };
 
-    let { data: note, error: insErr } = await supabaseAdmin
-      .from('vault_items')
-      .insert(richInsert)
-      .select('id, title')
-      .single();
-
-    const missingColumn =
-      insErr &&
-      (insErr.code === 'PGRST204' ||
-        /could not find|does not exist/i.test(String(insErr.message || '')));
-    if (missingColumn) {
-      ({ data: note, error: insErr } = await supabaseAdmin
-        .from('vault_items')
-        .insert({ user_id: userId, title, content })
-        .select('id, title')
-        .single());
-    }
+    const { data: note, error: insErr } = await insertWithSchemaFallback(
+      (row) => supabaseAdmin.from('vault_items').insert(row).select('id, title').single(),
+      richInsert,
+      ['user_id', 'title', 'content'],
+    );
 
     if (insErr) {
       await supabaseAdmin.storage.from(bucket).remove([storagePath]).catch(() => {});
@@ -25515,172 +25158,6 @@ app.get('/api/admin/billing/overview', requireAuth, requireAdmin, async (_req, r
       error: error?.message || 'Failed to fetch billing overview',
       code: error?.code || 'unknown',
     });
-  }
-});
-
-// ============================================
-// ADMIN — MCP / context-backplane usage
-// ============================================
-// Pulls MCP and REST-mirror traffic out of `ai_usage_logs` (we tagged it
-// at ingest time with action_type IN ('mcp_tool', 'rest_synthesis')) and
-// attributions out of `lykn_result_attributions` grouped by `surface`.
-// Returns one consolidated payload that powers the "MCP" section of
-// /admin/usage on the client. SECURITY DEFINER RPCs would be cleaner but
-// also a migration we don't need yet — these reads are admin-only and
-// service-role'd.
-app.get('/api/admin/usage/mcp', requireAuth, requireAdmin, async (req, res) => {
-  try {
-    if (!supabaseAdmin) return res.status(503).json({ error: 'service_role_not_configured' });
-
-    const minutes = Math.max(15, Math.min(Number(req.query.minutes) || 60 * 24, 60 * 24 * 7));
-    const since = new Date(Date.now() - minutes * 60_000).toISOString();
-    const out = {
-      window: { minutes, since, now: new Date().toISOString() },
-      totals: { calls: 0, ok: 0, errors: 0, distinct_users: 0, distinct_tokens: 0 },
-      top_users: [],
-      top_tools: [],
-      top_clients: [],
-      attribution_by_surface: [],
-      recent: [],
-      tokens: { total: 0, active: 0, revoked: 0 },
-    };
-
-    // 1. Pull MCP/REST log rows for the window. Cap at 5k to keep this
-    //    cheap; we aggregate in-process which is fine for the foreseeable
-    //    future. If MCP traffic ever exceeds that we'll move this into an
-    //    SECURITY DEFINER RPC (mirroring admin_usage_overview).
-    const { data: logs, error: logErr } = await supabaseAdmin
-      .from('ai_usage_logs')
-      .select('id, user_id, action_type, model, metadata, created_at')
-      .in('action_type', ['mcp_tool', 'rest_synthesis'])
-      .gte('created_at', since)
-      .order('created_at', { ascending: false })
-      .limit(5000);
-    if (logErr) {
-      console.warn('[admin:mcp] log pull error:', logErr.message);
-    }
-    const rows = Array.isArray(logs) ? logs : [];
-
-    out.totals.calls = rows.length;
-    const tokenIds = new Set();
-    const userIds = new Set();
-    const toolCounts = new Map();
-    const clientCounts = new Map();
-    const userCounts = new Map();
-    let okCount = 0;
-    let errCount = 0;
-
-    for (const r of rows) {
-      const meta = r?.metadata || {};
-      const ok = meta.ok === true || meta.ok === 'true';
-      if (ok) okCount += 1; else errCount += 1;
-      const tool = String(meta.tool || r.model || 'unknown');
-      toolCounts.set(tool, (toolCounts.get(tool) || 0) + 1);
-      const client = String(meta.client_kind || 'unknown');
-      clientCounts.set(client, (clientCounts.get(client) || 0) + 1);
-      if (r.user_id) {
-        userIds.add(r.user_id);
-        userCounts.set(r.user_id, (userCounts.get(r.user_id) || 0) + 1);
-      }
-      if (meta.token_id) tokenIds.add(meta.token_id);
-    }
-    out.totals.ok = okCount;
-    out.totals.errors = errCount;
-    out.totals.distinct_users = userIds.size;
-    out.totals.distinct_tokens = tokenIds.size;
-
-    out.top_tools = Array.from(toolCounts.entries())
-      .map(([name, calls]) => ({ name, calls }))
-      .sort((a, b) => b.calls - a.calls)
-      .slice(0, 12);
-    out.top_clients = Array.from(clientCounts.entries())
-      .map(([client_kind, calls]) => ({ client_kind, calls }))
-      .sort((a, b) => b.calls - a.calls)
-      .slice(0, 8);
-
-    // Top users — resolve emails best-effort via the auth.admin API (the
-    // service-role'd Supabase client can listUsers but doesn't accept an
-    // `in (...)` filter, so we listUsers once and filter in-process). Fall
-    // back to user_id-only if the admin API isn't available. Cheaper than
-    // a SECURITY DEFINER RPC for a v1 admin panel.
-    const topUserPairs = Array.from(userCounts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10);
-    if (topUserPairs.length) {
-      let emailById = new Map();
-      try {
-        if (typeof supabaseAdmin.auth?.admin?.listUsers === 'function') {
-          // listUsers paginates; we only need page 1 (≤1000 users) — admin
-          // dashboards on a v1 product won't exceed that bracket.
-          const { data: list } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
-          for (const u of (list?.users || [])) {
-            if (u?.id && u?.email) emailById.set(u.id, u.email);
-          }
-        }
-      } catch {
-        emailById = new Map();
-      }
-      out.top_users = topUserPairs.map(([uid, calls]) => ({
-        user_id: uid,
-        email: emailById.get(uid) || null,
-        calls,
-      }));
-    }
-
-    out.recent = rows.slice(0, 50).map((r) => {
-      const meta = r?.metadata || {};
-      return {
-        id: r.id,
-        user_id: r.user_id,
-        tool: String(meta.tool || r.model || 'unknown'),
-        client_kind: String(meta.client_kind || 'unknown'),
-        client_label: String(meta.client_label || '').slice(0, 240),
-        token_id: meta.token_id || null,
-        latency_ms: Number(meta.latency_ms) || 0,
-        ok: meta.ok === true || meta.ok === 'true',
-        error: meta.error || null,
-        created_at: r.created_at,
-      };
-    });
-
-    // 2. Attribution-by-surface — every <applied> tag and every MCP
-    //    recordRuleApplication call writes one row to
-    //    lykn_result_attributions with a `surface` value. Aggregate.
-    try {
-      const { data: attribs } = await supabaseAdmin
-        .from('lykn_result_attributions')
-        .select('id, surface, created_at')
-        .gte('created_at', since)
-        .limit(5000);
-      const surfaceCounts = new Map();
-      for (const a of (attribs || [])) {
-        const s = String(a.surface || '(unknown)');
-        surfaceCounts.set(s, (surfaceCounts.get(s) || 0) + 1);
-      }
-      out.attribution_by_surface = Array.from(surfaceCounts.entries())
-        .map(([surface, count]) => ({ surface, count }))
-        .sort((a, b) => b.count - a.count);
-    } catch (e) {
-      console.warn('[admin:mcp] attribution pull error:', e?.message || e);
-    }
-
-    // 3. Token KPIs — separate from the call-log window.
-    try {
-      const { data: tokens } = await supabaseAdmin
-        .from('lykn_mcp_tokens')
-        .select('id, status');
-      const tokRows = tokens || [];
-      out.tokens.total = tokRows.length;
-      out.tokens.active = tokRows.filter((t) => t.status === 'active').length;
-      out.tokens.revoked = tokRows.filter((t) => t.status === 'revoked').length;
-    } catch (e) {
-      console.warn('[admin:mcp] tokens count error:', e?.message || e);
-    }
-
-    return res.json(out);
-  } catch (error) {
-    console.error('❌ Admin MCP error:', error?.message || error);
-    return res.status(500).json({ error: error?.message || 'mcp_admin_failed' });
   }
 });
 
@@ -27798,9 +27275,6 @@ app.delete('/api/connections/:id', requireAuth, async (req, res) => {
 //     Agent 06 added `app.get('/api/health', ...)` near the top + the
 //     `app.get('/api/admin/security/audit', ...)` endpoint earlier in
 //     the admin section — both registered BEFORE this handler).
-//   • mountOauthServer(app, ...) at the top of the file (it registers all
-//     /oauth/* routes synchronously when called).
-//   • The /mcp + /api/v1/synthesis/* mounts (also above).
 //   • Every app.use(...) middleware mount.
 //
 // And MUST stay ABOVE app.listen(...) — handlers added inside the

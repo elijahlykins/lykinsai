@@ -6,7 +6,9 @@ import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { supabase } from "@/lib/supabase";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
+import { isDeviceLocalUrl } from "@/lib/chat/deviceLocalImages";
 import { ChatCodeBlock } from "@/components/lyknChat/ChatCodeBlock";
+import { ChatPopImage } from "@/components/lyknChat/LyknMediaPop";
 import { buildTieredLyknChatContext, buildActionLyknChatContext } from "@/lib/ai/buildLyknChatContext";
 import { getVaultSidebarWidth } from "@/hooks/useViewportTier";
 import { getBlockDefinition } from "@/lyknChat/blockSystem/definitions";
@@ -29,6 +31,7 @@ import {
   isRedesignAsk,
   isTypedNewDeliverableAsk,
 } from "@/lib/ai/artifactBuildIntent";
+import { detectImageAsk } from "@/lib/ai/studioModeIntent";
 import { markdownToTiptap } from "@/lib/markdownToTiptap";
 import { isDemoLyknChatId } from "@/lib/demoLyknChats";
 import { toast } from "@/components/ui/use-toast";
@@ -36,6 +39,7 @@ import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
 import { parseAttachmentsFromContent } from "@/lib/vault/attachmentsMarker";
 import { AI_TEMPORARY_FAILURE_TEXT, AI_GUEST_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
 import { handOffAskToBrowserAgent } from "@/lib/ai/agentHandoff";
+import { forgetAppEdit } from "@/lib/apps/editApp";
 import {
   addOpenThread,
   bindThreadStateCallbacks,
@@ -180,6 +184,8 @@ export interface UseChatEngineReturn {
    * THIS artifact in place when the user sends an edit request. */
   activeArtifact: ChatArtifact | null;
   setActiveArtifact: (artifact: ChatArtifact | null) => void;
+  /** Mark a chat as editing an installed app, so its builds update that app. */
+  linkArtifactApp: (chatId: string, appId: string | null) => void;
 
   /* Refs (exposed for child component prop-passing) */
   chatMessagesRef: React.MutableRefObject<PromptMessage[]>;
@@ -327,16 +333,44 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
   // turn, then auto-clears once the message is sent.
   const [activeArtifact, setActiveArtifactState] = useState<ChatArtifact | null>(null);
   const activeArtifactRef = useRef<ChatArtifact | null>(null);
+  // Chats that are editing an installed app, so each new build for one is
+  // recognisable as that app's next version. Cleared the moment a turn asks
+  // for a different deliverable — see the send path.
+  const artifactAppRef = useRef<Map<string, string>>(new Map());
   const setActiveArtifact = useCallback((artifact: ChatArtifact | null) => {
     const bid = String(chatId || routeChatId || "").trim();
     // Never open/persist an unscoped panel — untagged artifacts used to leak
     // into the next chat and force surgical-edit / "Sky Tower" narration.
     if (artifact && !bid) return;
-    const next = artifact ? { ...artifact, sourceChatId: bid } : null;
+    let next = artifact ? { ...artifact, sourceChatId: bid } : null;
+    if (next) {
+      // A rebuild comes back as a fresh object with no memory of the app it
+      // came from. The chat carries that across for it, so the build that
+      // lands after "add a dark mode" still installs over the same app.
+      const app = next.installedAppId || artifactAppRef.current.get(bid) || "";
+      if (app) {
+        next = { ...next, installedAppId: app };
+        artifactAppRef.current.set(bid, app);
+      }
+    }
     activeArtifactRef.current = next;
     setActiveArtifactState(next);
     if (bid) patchThreadSnapshot(bid, { activeArtifact: next });
   }, [chatId, routeChatId]);
+
+  /**
+   * Tie a chat to an installed app without opening anything.
+   *
+   * Reopening a conversation restores its last build from the messages, and
+   * that copy has no idea it was an app — seeding here is what keeps the panel
+   * offering to update the app rather than install a second copy of it.
+   */
+  const linkArtifactApp = useCallback((forChatId: string, appId: string | null) => {
+    const bid = String(forChatId || "").trim();
+    if (!bid) return;
+    if (appId) artifactAppRef.current.set(bid, appId);
+    else artifactAppRef.current.delete(bid);
+  }, []);
 
   const [composerMode, setComposerModeState] = useState<ComposerMode>("none");
   const composerModeRef = useRef<ComposerMode>("none");
@@ -711,10 +745,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     // Inline markdown images — e.g. files the AI pulled in from the user's
     // Mac in Local Mode, or any other ![alt](url) in a reply.
     img: ({ src, alt }: any) =>
-      React.createElement("img", {
+      React.createElement(ChatPopImage, {
         src,
         alt: alt || "",
-        loading: "lazy",
         className:
           "my-3 max-h-[24rem] max-w-full rounded-xl border border-black/[0.08] dark:border-white/[0.08] shadow-none object-contain",
       }),
@@ -2265,7 +2298,12 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       // panel state must not force edits or strip Build on a fresh chat.
       const artifactBelongsHere =
         !!editArtifact && !!thisChatId && artifactChatId === thisChatId;
-      const isBuildMode = sendMode === "create:webapp";
+      const stickyModeInstructions = String(studioModeInstructionsRef?.current || "");
+      const stickyBuildMode =
+        stickyModeInstructions.includes("The user is in Build mode");
+      const stickyImagineMode =
+        sendMode === "image" && stickyModeInstructions.includes("The user is in Imagine mode");
+      let isBuildMode = sendMode === "create:webapp";
       const hasAttachedImage = sentAttachments.some(
         (a) => (a.type || "").toLowerCase() === "image" && !!a.url,
       );
@@ -2273,7 +2311,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       // Fresh rebuild only on clear new-commission / redesign / reference-image
       // signals. Regular chat never starts a new build from wording alone —
       // Create/Build must be armed (server also enforces this).
-      const createArmed =
+      let createArmed =
         typeof sendMode === "string" && sendMode.startsWith("create:");
       const typedNewDeliverableAsk =
         createArmed && isTypedNewDeliverableAsk(text);
@@ -2286,12 +2324,105 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
       // Length cap is soft: longer "add X and fix Y" messages still refine.
       const looksLikeSurgicalTweak =
         text.trim().length < 400 &&
-        /\b(?:fix|change|update|tweak|adjust|add|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i.test(
+        /\b(?:fix|change|update|tweak|adjust|add|make|rename|remove|delete|patch|bug|typo|font|colou?r|theme|move|replace|swap|hide|show|enable|disable|increase|decrease|darken|brighten|dim|mute|darker|lighter|brighter|edit|improve|polish|wire|connect|implement|insert|extend|expand|shorten|widen|narrow|resize|restyle|reword|rewrite|correct|repair)\b/i.test(
           text,
         ) &&
         !redesignAsk &&
         !typedNewDeliverableAsk &&
         !insistFreshBuildAsk;
+      // Sticky Build / Imagine pages are conversational modes, not automatic
+      // tool buttons. Questions and general discussion stay in chat; only a
+      // clear commission or mutation request arms the matching generator.
+      const normalizedModeAsk = text.trim();
+      const discussionQuestion =
+        /^(?:what|why|how|when|where|who|which|should|would|could|can|is|are|do|does|did|has|have|tell\s+me|explain|describe|discuss|help\s+me\s+understand|give\s+me\s+advice|make\s+sense)\b/i.test(
+          normalizedModeAsk,
+        );
+      const directCreateQuestion =
+        /^(?:can|could|would|will)\s+(?:you|we)\s+(?:please\s+)?(?:make|build|create|generate|design|draw|add|apply|give|put|change|update|edit|fix|format|style|organize|reorder|group|align|center|bold|italicize|underline|highlight|adjust|tweak|dim|darken|brighten|remove|replace|redesign|rebuild|restyle|turn|set)\b/i.test(
+          normalizedModeAsk,
+        );
+      const imperativeModeAction =
+        /^(?:(?:ok|okay|now|then|also|please|and|let['’]s)\s*[,—-]?\s*)*(?:make|build|create|generate|design|draw|add|apply|give|put|change|update|edit|fix|format|style|organize|reorder|group|align|center|bold|italicize|underline|highlight|adjust|tweak|dim|darken|brighten|remove|replace|redesign|rebuild|restyle|turn|set|redo|reimagine|render)\b/i.test(
+          normalizedModeAsk,
+        );
+      // Natural edit requests are often phrased as a desired end state rather
+      // than an imperative: "every note should have a heading", "the button
+      // needs to be smaller", "I want the sidebar darker".
+      const desiredStateModeAction =
+        artifactBelongsHere &&
+        (/\b(?:should|needs? to|must)\s+(?:be|have|show|use|include|display|look|feel|read|say|contain)\b/i.test(
+          normalizedModeAsk,
+        ) ||
+          /\b(?:i want|i need|i(?:'|’)d like|i would like)\b/i.test(normalizedModeAsk));
+      const bareBuildBrief =
+        /^(?:(?:an?|the|my|another|new)\s+)?(?:web ?app|web ?site|site|landing ?page|dashboard|app|game|tool|calculator|prototype|widget|quiz|tracker|form|simulator|pitch ?deck|slide ?deck|presentation|spread ?sheet|flow ?chart|diagram|chart|study ?guide|work ?sheet)\b/i.test(
+          normalizedModeAsk,
+        );
+      const hasPriorGeneratedImage = (sendSnap.aiThread || []).some(
+        (message) =>
+          message.role === "assistant" &&
+          /!\[[^\]]*\]\(https?:\/\/[^)]+\)/i.test(String(message.content || "")),
+      );
+      const directBuildAction =
+        directCreateQuestion &&
+        (typedNewDeliverableAsk ||
+          artifactBelongsHere ||
+          bareBuildBrief ||
+          /\b(?:make|build|create|generate|design|draw|code|render)\b/i.test(
+            normalizedModeAsk,
+          ));
+      const buildModeAction =
+        directBuildAction ||
+        desiredStateModeAction ||
+        (!discussionQuestion &&
+          (typedNewDeliverableAsk ||
+            insistFreshBuildAsk ||
+            (artifactBelongsHere &&
+              (redesignAsk || looksLikeSurgicalTweak || imperativeModeAction)) ||
+            (!artifactBelongsHere &&
+              imperativeModeAction &&
+              /\b(?:make|build|create|generate|design|draw|code|render)\b/i.test(
+                normalizedModeAsk,
+              )) ||
+            bareBuildBrief));
+      // The composer chip is cleared after every send and re-armed by the
+      // Studio view on the next render. A fast follow-up can therefore arrive
+      // with sendMode="none" even though the user is still in Build and is
+      // clearly asking to mutate the open artifact.
+      const buildSessionEditTurn =
+        stickyBuildMode && buildModeAction && artifactBelongsHere;
+      const imageRefinementAsk =
+        /^(?:(?:ok|okay|now|then|also|and)\s*[,—-]?\s*)*(?:same\b|another\b|again\b|darker\b|lighter\b|brighter\b|more\b|less\b|try\b|redo\b)/i.test(
+          normalizedModeAsk,
+        );
+      const imagineModeAction =
+        (directCreateQuestion &&
+          (detectImageAsk(normalizedModeAsk) ||
+            hasAttachedImage ||
+            hasPriorGeneratedImage ||
+            /\b(?:make|create|generate|design|draw|paint|illustrate|render|reimagine)\b/i.test(
+              normalizedModeAsk,
+            ))) ||
+        (!discussionQuestion &&
+          (detectImageAsk(normalizedModeAsk) ||
+            (imperativeModeAction &&
+              (hasAttachedImage ||
+                hasPriorGeneratedImage ||
+                /\b(?:make|create|generate|design|draw|paint|illustrate|render|reimagine)\b/i.test(
+                  normalizedModeAsk,
+                ))) ||
+            (imageRefinementAsk && hasPriorGeneratedImage) ||
+            (hasAttachedImage &&
+              /\b(?:like this|same style|use this|based on this|recreate|reimagine|transform)\b/i.test(
+                normalizedModeAsk,
+              ))));
+      const stickyBuildConversation = stickyBuildMode && !buildModeAction;
+      const stickyImagineConversation = stickyImagineMode && !imagineModeAction;
+      if (stickyBuildConversation) {
+        createArmed = false;
+        isBuildMode = false;
+      }
       const referenceRebuildAsk =
         /\b(?:exact(?:ly)?\s+clone|identical|1\s*:\s*1|recreate|clone\s+(?:this|that|it)|(?:look|make)\s+(?:it\s+)?(?:just\s+)?like\s+this|full\s+rewrite)\b/i.test(
           text,
@@ -2367,6 +2498,27 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         visualOverhaulAsk &&
         artifactBelongsHere &&
         String(editArtifact?.toolName || "") === "lykn_build_react_artifact";
+      // A visual overhaul of an installed app is still an edit of THAT app.
+      // Keep its source + installedAppId attached so the server can authorize
+      // a full rewrite and the returned artifact keeps the Update target.
+      // Clear new-commission signals below still win for explicit requests
+      // for another/different app.
+      const installedAppEditId =
+        String(editArtifact?.installedAppId || artifactAppRef.current.get(thisChatId) || "").trim();
+      // An installed app remains the edit target for this chat even if the UI
+      // is currently showing Chat instead of Build. Explicit mutation asks
+      // should update that app; questions still take the discuss-only path.
+      const installedAppEditTurn =
+        !!installedAppEditId &&
+        artifactBelongsHere &&
+        buildModeAction &&
+        !differentDeliverable &&
+        !insistFreshBuildAsk;
+      const inPlaceInstalledAppRebuild =
+        openReactRebuildAsk &&
+        !!installedAppEditId &&
+        !differentDeliverable &&
+        !insistFreshBuildAsk;
       // Style rematch of the OPEN deck — still send activeArtifact so the
       // server can authorize full_rewrite; do NOT treat as a brand-new build.
       const openTemplateRestyleAsk =
@@ -2400,37 +2552,51 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
           hasAttachedImage &&
           (referenceRebuildAsk || freshWebappAsk || referencePhrase));
       // Thread the open panel for context / edits / style rematches.
-      // Build / Create armed → refine open panel with edits.
-      // Chat mode (composer none) → discuss only; never auto-edit.
+      // Build / Create armed → refine open panel with edits. A clear mutation
+      // request in the sticky Build session or installed-app edit chat also
+      // stays armed across turns.
+      // Otherwise Chat mode (composer none) remains discuss-only.
+      const artifactEditArmed =
+        createArmed || buildSessionEditTurn || installedAppEditTurn;
       const refiningOpenArtifact =
-        createArmed &&
+        artifactEditArmed &&
         artifactBelongsHere &&
         isEditableArtifact(editArtifact) &&
-        !buildModeFresh &&
-        !openReactRebuildAsk &&
         !insistFreshBuildAsk &&
         !regularChatBuildAsk &&
         !differentDeliverable &&
-        (openTemplateRestyleAsk ||
-          (sameCreateBuilder &&
-            (looksLikeSurgicalTweak ||
-              isBuildMode ||
-              (!typedNewDeliverableAsk && !freshWebappAsk))));
-      // Back in Chat with the panel still open: let the model talk about the
-      // artifact without shipping edits / ARTIFACT_OPEN refine instructions.
+        (inPlaceInstalledAppRebuild ||
+          (!buildModeFresh &&
+            !openReactRebuildAsk &&
+            (openTemplateRestyleAsk ||
+              ((sameCreateBuilder || buildSessionEditTurn || installedAppEditTurn) &&
+                (looksLikeSurgicalTweak ||
+                  isBuildMode ||
+                  (!typedNewDeliverableAsk && !freshWebappAsk))))));
+      // With builders unarmed for this turn, let the model talk about the
+      // open artifact without shipping edits / ARTIFACT_OPEN instructions.
       const discussOpenArtifact =
-        !createArmed &&
+        !artifactEditArmed &&
         !refiningOpenArtifact &&
         artifactBelongsHere &&
         !!editArtifact;
       const effectiveComposerMode =
-        refiningOpenArtifact &&
-        typeof sendMode === "string" &&
-        sendMode.startsWith("create:") &&
-        sameCreateBuilder &&
-        (looksLikeSurgicalTweak || isBuildMode)
+        stickyBuildConversation || stickyImagineConversation
           ? "none"
-          : sendMode;
+          : refiningOpenArtifact &&
+              typeof sendMode === "string" &&
+              sendMode.startsWith("create:") &&
+              sameCreateBuilder &&
+              (looksLikeSurgicalTweak || isBuildMode)
+            ? "none"
+            : sendMode;
+      // Commissioning something new, rather than the open build's next
+      // version: whatever comes back is its own software, so it must not
+      // install over the app this chat had been editing.
+      if (createArmed && !refiningOpenArtifact && thisChatId) {
+        artifactAppRef.current.delete(thisChatId);
+        forgetAppEdit(thisChatId);
+      }
       if (
         (buildModeFresh ||
           typedNewDeliverableAsk ||
@@ -2451,9 +2617,9 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         // prompt injected server-side into [ACTIVE_MODE] on every turn.
         modeInstructions: studioModeInstructionsRef?.current || undefined,
         researchSourcePref: researchSourcePrefsRef?.current || undefined,
-        // Thread the open panel for surgical edits only while Create/Build is
-        // armed. Chat mode sends a discuss-only stub (title, no source) so the
-        // model can talk about it without patching.
+        // Thread the open panel for surgical edits while Create/Build is armed,
+        // including clear follow-up mutations in a sticky Build session. Chat
+        // mode sends a discuss-only stub so discussion cannot patch it.
         activeArtifact: refiningOpenArtifact
           ? toArtifactEditContext(editArtifact as ChatArtifact)
           : discussOpenArtifact
@@ -2705,6 +2871,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         if (att.videoId && ex.videoId && att.videoId === ex.videoId) return true;
         if (att.type === "vault" && ex.type === "vault" && att.vaultContent && ex.vaultContent && att.vaultContent === ex.vaultContent) return true;
         if (att.type === "note" && ex.type === "note" && att.vaultContent && ex.vaultContent && att.vaultContent === ex.vaultContent) return true;
+        if (att.type === "folder" && ex.type === "folder" && att.vaultContent && ex.vaultContent && att.vaultContent === ex.vaultContent) return true;
         return false;
       });
       return isDup ? prev : [...prev, att];
@@ -2790,7 +2957,10 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         if (!url && videoId) url = `https://www.youtube.com/watch?v=${videoId}`;
         const pathOnly = String(att?.storagePath || "").trim();
         const bucket = String(att?.storageBucket || "user-files").trim() || "user-files";
-        if (!url || (!url.startsWith("http") && !url.startsWith("data:") && attType !== "youtube")) {
+        // Bytes already on this device have no bucket to sign against — their
+        // `lykn-blob://` url is already loadable, and the send path swaps it
+        // for inline bytes so the model can see it too.
+        if (!isDeviceLocalUrl(url) && (!url || (!url.startsWith("http") && !url.startsWith("data:") && attType !== "youtube"))) {
           try { const path = pathOnly || url; if (path) { const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 7); if (data?.signedUrl) url = data.signedUrl; } } catch {}
         }
         // Carry the durable storagePath onto the chat attachment. The signed
@@ -2802,7 +2972,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
         const pdfText = String(att?.pdfText || att?.extractedText || "").trim();
         if (!url && pdfText) { addFocusedAttachment({ id: makeAttId(), type: "pdf", url: "", name: String(att?.name || att?.title || title2 || "PDF").trim(), mime: String(att?.mime || "application/pdf"), size: Number(att?.size || 0), vaultTitle: title2, pdfText, ...storageMeta }); continue; }
         if (!url) continue;
-        addFocusedAttachment({ id: makeAttId(), type: attType || inferUrlAttachmentType(url), url, name: String(att?.name || att?.title || title2 || url).trim(), mime: String(att?.mime || ""), size: Number(att?.size || 0), vaultTitle: title2, ...(videoId ? { videoId } : {}), ...(transcript ? { transcript } : {}), ...(pdfText ? { pdfText } : {}), ...storageMeta });
+        addFocusedAttachment({ id: makeAttId(), type: attType || inferUrlAttachmentType(url), url, name: String(att?.name || att?.title || title2 || url).trim(), mime: String(att?.mime || att?.mimeType || ""), size: Number(att?.size || 0), vaultTitle: title2, ...(videoId ? { videoId } : {}), ...(transcript ? { transcript } : {}), ...(pdfText ? { pdfText } : {}), ...storageMeta });
       }
     } else if (content) {
       addFocusedAttachment({ id: makeAttId(), type: "vault", url: "", name: title2 || "Vault item", mime: "", size: 0, vaultTitle: title2, vaultContent: content });
@@ -2842,7 +3012,7 @@ export function useChatEngine(deps: UseChatEngineDeps): UseChatEngineReturn {
     isDictating, isTranscribing,
     voiceModeOn,
     composerMode, setComposerMode,
-    activeArtifact, setActiveArtifact,
+    activeArtifact, setActiveArtifact, linkArtifactApp,
     chatMessagesRef, aiThreadRef,
     chatScrollRef, chatPanelInputRef, centerChatInputRef,
     chatUserScrolledUpRef, chatProgrammaticScrollRef,

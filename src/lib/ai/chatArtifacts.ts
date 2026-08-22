@@ -23,6 +23,14 @@ export type ChatArtifact = {
    * in chat A never leaks into a fresh Build turn on chat B.
    */
   sourceChatId?: string;
+  /**
+   * Installed app this build is a version of, when the chat opened one to edit.
+   * Installing then updates that app in place. It rides on the artifact rather
+   * than on the chat so that a brand-new build in the same chat — which is a
+   * different piece of software — can never be mistaken for the app's next
+   * version and overwrite it.
+   */
+  installedAppId?: string;
   /** Tool call this artifact came from (lineage key for the editor panel). */
   toolCallId?: string;
   /** Alternate downloadable formats for this same artifact (pptx, md, json…). */
@@ -65,6 +73,12 @@ export type ArtifactEditContext = {
    * Server must not force edits or inject ARTIFACT_OPEN refine instructions.
    */
   discussOnly?: boolean;
+  /**
+   * Installed app this source belongs to. Present when the chat opened that
+   * app in Build mode to edit it — the server then allows a full rewrite /
+   * theme change instead of trapping the turn in surgical patches.
+   */
+  installedAppId?: string;
   templateType?: string;
   sections?: any[];
   content?: string;
@@ -107,6 +121,10 @@ export function toArtifactEditContext(a: ChatArtifact): ArtifactEditContext {
     toolName: a.toolName,
     title: a.title,
     sourceChatId: typeof a.sourceChatId === "string" ? a.sourceChatId : undefined,
+    installedAppId:
+      typeof a.installedAppId === "string" && a.installedAppId.trim()
+        ? a.installedAppId.trim()
+        : undefined,
     templateType: a.templateType,
     sections: Array.isArray(a.sections) ? a.sections : undefined,
     content: typeof a.content === "string" ? a.content : undefined,

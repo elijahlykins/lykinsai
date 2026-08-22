@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Code2, Copy, Download, ExternalLink, Eye, FileDown, Loader2, Bookmark, Play, X as XIcon } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, Code2, Copy, Download, ExternalLink, Eye, FileDown, Loader2, Bookmark, Play, PackagePlus } from "lucide-react";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import { API_BASE_URL } from "@/lib/api-config";
 import { supabase } from "@/lib/supabase";
@@ -16,6 +16,17 @@ import {
   downloadArtifactToComputer,
   listArtifactDownloadOptions,
 } from "@/lib/lyknChat/downloadArtifact";
+import {
+  installArtifactAsApp,
+  isAppInstallAvailable,
+  listInstalledApps,
+  looksInstallable,
+  openInstalledApp,
+  setAppIcon,
+} from "@/lib/apps/installApp";
+import { appIconFor } from "@/lib/apps/appIcon";
+import AppIconPicker from "@/components/apps/AppIconPicker";
+import LyknMediaPop, { MEDIA_POP_PANEL } from "@/components/lyknChat/LyknMediaPop";
 
 export type LyknChatArtifactPanelProps = {
   artifact: ChatArtifact | null;
@@ -32,6 +43,12 @@ export type LyknChatArtifactPanelProps = {
    * user-edited source, not the stale pre-edit code.
    */
   onArtifactUpdate?: (artifact: ChatArtifact) => void;
+  /**
+   * The installed app this chat is editing, if any. Installing then updates it
+   * in place — same id, so the app keeps its origin and everything the user has
+   * saved in it — rather than leaving a second copy in the dock.
+   */
+  installTargetId?: string | null;
 };
 
 // Inline (srcDoc) HTML is same-origin with the app; dropping allow-same-origin
@@ -44,8 +61,6 @@ const IFRAME_SANDBOX_SRCDOC =
 /** Glass chrome buttons on the artifact title bar — same material as settings steppers. */
 const HDR_BTN =
   "lg-stepper inline-flex items-center gap-1 rounded-[8px] px-2 py-1.5 text-[11px] font-medium text-black/60 transition-colors hover:text-black/90 dark:text-white/65 dark:hover:text-white/95 disabled:opacity-50";
-const HDR_BTN_ICON =
-  "lg-stepper inline-flex items-center justify-center rounded-[8px] p-1.5 text-black/60 transition-colors hover:text-black/90 dark:text-white/65 dark:hover:text-white/95";
 
 /**
  * Accept runtime/console errors only from this artifact's iframe — not from
@@ -96,7 +111,7 @@ function badgeFor(artifact: ChatArtifact): string {
  * the artifact and updates this window in place. Not a modal: the composer
  * stays usable underneath.
  */
-export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth, onClose, onSaveToVault, onArtifactUpdate }: LyknChatArtifactPanelProps) {
+export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth, onClose, onSaveToVault, onArtifactUpdate, installTargetId }: LyknChatArtifactPanelProps) {
   const open = !!artifact;
   // Keep the last artifact rendered while the popup scales out — otherwise the
   // content unmounts instantly and the close animation scales an empty shell.
@@ -214,7 +229,17 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
     setApplyError(null);
     setApplyState("idle");
   }, [artifact?.id, artifact?.code, artifact?.files, artifact?.entry]);
-  useEffect(() => { setView("preview"); }, [artifact?.id]);
+  // Is there anything to put in the preview frame? An installed app reopened
+  // for editing only gets one if the rebuild service answered, so offering the
+  // tab regardless would hand out an empty frame — and hide the source behind
+  // it, which reads as the app having failed to open when in fact it is right
+  // there, ready to edit. Run rebuilds a preview and the tabs come back.
+  const canPreview = !!(shown?.srcDoc || shown?.previewUrl || livePreviewUrl);
+  const shownView = hasCode && !canPreview ? "code" : view;
+  useEffect(() => {
+    setView(artifact?.srcDoc || artifact?.previewUrl || !hasCode ? "preview" : "code");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- per artifact, not per render
+  }, [artifact?.id]);
 
   // Capture runtime / console errors from the sandboxed preview so the next
   // chat turn can include them in [ARTIFACT_OPEN] for the coding agent.
@@ -347,6 +372,11 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
     }
   }, [artifact, dirty, draft, applyState, onArtifactUpdate, activePath]);
 
+  /**
+   * File the build in the AI Drive. Downloading calls this too: what LYKN made
+   * belongs in the drive, and the copy on the user's computer is a copy — an
+   * artifact that was only ever downloaded would leave nothing behind in LYKN.
+   */
   const handleSaveToVault = useCallback(async () => {
     if (!artifact || !onSaveToVault || saveState !== "idle") return;
     setSaveState("saving");
@@ -357,6 +387,103 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
       setSaveState("idle");
     }
   }, [artifact, onSaveToVault, saveState]);
+
+  // Install: give this build a permanent home on the device — its own origin,
+  // its own database, an icon in the dock. Offered only for artifacts that look
+  // like real apps, because "Install" on a one-off landing page is noise.
+  const [installState, setInstallState] = useState<"idle" | "installing" | "done" | "error">("idle");
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [installedId, setInstalledId] = useState<string | null>(null);
+  const canInstall = isAppInstallAvailable() && looksInstallable(shown);
+
+  // The app this build would overwrite, looked up rather than assumed, so the
+  // button can name it. Undefined while resolving, null when there is none (or
+  // it has since been uninstalled) — which turns the button back into Install
+  // instead of updating something that is no longer there.
+  const [target, setTarget] = useState<{ id: string; name: string } | null | undefined>(null);
+  useEffect(() => {
+    if (!installTargetId) {
+      setTarget(null);
+      return;
+    }
+    let live = true;
+    setTarget(undefined);
+    void listInstalledApps().then((apps) => {
+      if (!live) return;
+      const found = apps.find((a) => a.id === installTargetId);
+      setTarget(found ? { id: found.id, name: found.name || "app" } : null);
+    });
+    return () => {
+      live = false;
+    };
+  }, [installTargetId]);
+  const updateTargetId = target === null ? null : installTargetId;
+  const updateLabel = target?.name ? `Update ${target.name}` : "Update app";
+
+  // The icon this app will land in the dock with. The model's suggestion from
+  // `app.json` is the starting point; picking here overrides it, before the
+  // install as well as after, since the dock is where the user has to live
+  // with the choice.
+  const [pickedIcon, setPickedIcon] = useState<string | null>(null);
+  const [iconMenuOpen, setIconMenuOpen] = useState(false);
+  const manifestIcon = useMemo(() => {
+    const raw = shown?.files?.find((f) => f.path === "app.json")?.content;
+    if (!raw) return null;
+    try {
+      const icon = JSON.parse(String(raw))?.icon;
+      return typeof icon === "string" && icon ? icon : null;
+    } catch {
+      return null;
+    }
+  }, [shown?.files]);
+  const iconName = pickedIcon ?? manifestIcon;
+  // Seeded by the app id once there is one, so the default here is the same
+  // default the dock derives rather than a second, different guess.
+  const AppIcon = appIconFor(iconName, installedId || updateTargetId || "");
+
+  useEffect(() => {
+    // A new build is a different app; drop the previous install result so the
+    // button does not read "Installed" for something the user has not installed.
+    setInstallState("idle");
+    setInstallError(null);
+    setInstalledId(null);
+    setPickedIcon(null);
+    setIconMenuOpen(false);
+  }, [artifact?.id]);
+
+  const handlePickIcon = useCallback(
+    (icon: string | null) => {
+      setPickedIcon(icon);
+      // Already in the dock: apply it now. Otherwise it rides along with the
+      // install below.
+      const id = installedId || updateTargetId;
+      if (id) void setAppIcon(id, icon);
+    },
+    [installedId, updateTargetId],
+  );
+
+  const handleInstall = useCallback(async () => {
+    if (!shown || installState === "installing") return;
+    if (installState === "done" && installedId) {
+      void openInstalledApp(installedId);
+      return;
+    }
+    setInstallState("installing");
+    setInstallError(null);
+    const result = await installArtifactAsApp(shown, {
+      existingId: updateTargetId || installedId || null,
+      icon: pickedIcon,
+    });
+    if (result.ok && result.app) {
+      setInstalledId(result.app.id);
+      setInstallState("done");
+      void openInstalledApp(result.app.id);
+    } else {
+      setInstallError(result.error || "Install failed.");
+      setInstallState("error");
+    }
+  }, [shown, installState, installedId, updateTargetId, pickedIcon]);
+
   const openUrl =
     safeAttachmentUrl(shown?.previewUrl || shown?.downloadUrl) ||
     safeExternalUrl(shown?.previewUrl || shown?.downloadUrl);
@@ -381,6 +508,7 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
       setDlBusy(true);
       setDlMenuOpen(false);
       try {
+        await handleSaveToVault();
         await downloadArtifactToComputer(shown, optionId);
       } catch (err) {
         console.warn("Artifact download failed:", err);
@@ -388,66 +516,34 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
         setDlBusy(false);
       }
     },
-    [shown, dlBusy],
+    [shown, dlBusy, handleSaveToVault],
   );
 
   const handleSavePdf = useCallback(async () => {
     if (!shown || dlBusy) return;
     setDlBusy(true);
     try {
+      await handleSaveToVault();
       await downloadArtifactAsPdf(shown);
     } catch (err) {
       console.warn("Artifact PDF export failed:", err);
     } finally {
       setDlBusy(false);
     }
-  }, [shown, dlBusy]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [shown, dlBusy, handleSaveToVault]);
 
   return (
-    <div
-      className="pointer-events-none fixed inset-0 z-[200] flex items-center justify-center p-2 sm:p-4"
-      style={{
-        // Leave the chat composer clear so a refine can be typed while the
-        // preview is up. Phones get a tight inset instead.
-        paddingTop: fullWidth ? 8 : "max(0.75rem, var(--header-height-sm, 4.2rem))",
-        paddingBottom: fullWidth ? 8 : "calc(var(--mobile-tabbar-clear, 0px) + 6.75rem)",
-      }}
-      aria-hidden={!open}
+    <LyknMediaPop
+      open={open}
+      onClose={onClose}
+      title={shown?.title || "Artifact"}
+      hint={shown ? (isUpdating ? "Updating…" : badgeFor(shown)) : undefined}
     >
-      <div
-        className={`lykn-artifact-panel lg-window flex h-full max-h-full w-full flex-col overflow-hidden transition-[transform,opacity] duration-200 ease-out ${
-          open ? "pointer-events-auto scale-100 opacity-100" : "scale-95 opacity-0"
-        }`}
-        style={{ maxWidth: fullWidth ? "100%" : 920 }}
-        role="dialog"
-        aria-modal="false"
-        aria-label={shown?.title || "Artifact"}
-      >
         {shown ? (
           <>
-            <header className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: "var(--lg-hairline)" }}>
-              <div className="flex min-w-0 items-center gap-2.5">
-                <div className="min-w-0">
-                  <p className="truncate text-[13.5px] font-semibold text-black/85 dark:text-white/90">{shown.title}</p>
-                  <p className="text-[11px] text-black/45 dark:text-white/45">
-                    {isUpdating ? "Updating…" : badgeFor(shown)}
-                  </p>
-                </div>
-              </div>
+            <header className={`mb-2 flex items-center gap-2 rounded-2xl px-3 py-2 ${MEDIA_POP_PANEL}`}>
               <div className="flex shrink-0 items-center gap-1.5">
-                {hasCode ? (
+                {hasCode && canPreview ? (
                   <div className="lg-stepper inline-flex overflow-hidden rounded-[8px]" role="tablist" aria-label="Artifact view">
                     <button
                       type="button"
@@ -497,6 +593,63 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     <ExternalLink className="h-3.5 w-3.5" />
                     Open
                   </a>
+                ) : null}
+                {canInstall ? (
+                  <AppIconPicker
+                    value={iconName ?? null}
+                    seed={installedId || updateTargetId || ""}
+                    open={iconMenuOpen}
+                    onOpenChange={setIconMenuOpen}
+                    onPick={handlePickIcon}
+                    align="end"
+                  >
+                    <button
+                      type="button"
+                      className={HDR_BTN}
+                      title="Choose the icon this app gets in your dock"
+                      aria-label="Choose app icon"
+                    >
+                      <AppIcon className="h-3.5 w-3.5" />
+                      <ChevronDown className="h-3 w-3 opacity-50" />
+                    </button>
+                  </AppIconPicker>
+                ) : null}
+                {canInstall ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleInstall()}
+                    disabled={installState === "installing"}
+                    className={
+                      installState === "done"
+                        ? "inline-flex items-center gap-1 rounded-[8px] border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
+                        : HDR_BTN
+                    }
+                    title={
+                      installState === "done"
+                        ? "Open the installed app"
+                        : installError ||
+                          (updateTargetId
+                            ? `Update ${target?.name || "the installed app"}, keeping everything saved in it`
+                            : "Install as an app with its own storage")
+                    }
+                  >
+                    {installState === "installing" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : installState === "done" ? (
+                      <Check className="h-3.5 w-3.5" />
+                    ) : (
+                      <PackagePlus className="h-3.5 w-3.5" />
+                    )}
+                    {installState === "done"
+                      ? updateTargetId
+                        ? "Updated"
+                        : "Installed"
+                      : installState === "error"
+                        ? "Retry"
+                        : updateTargetId
+                          ? updateLabel
+                          : "Install"}
+                  </button>
                 ) : null}
                 {onSaveToVault ? (
                   <button
@@ -574,26 +727,23 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
                     ) : null}
                   </div>
                 ) : null}
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className={HDR_BTN_ICON}
-                  title="Close"
-                  aria-label="Close artifact"
-                >
-                  <XIcon className="h-4 w-4" />
-                </button>
               </div>
             </header>
 
-            <div className="lykn-artifact-body relative flex-1 overflow-hidden">
+            {installError ? (
+              <div className="border-b border-red-500/20 bg-red-500/8 px-3 py-1.5 text-[11px] text-red-600 dark:text-red-400">
+                Couldn't install: {installError}
+              </div>
+            ) : null}
+
+            <div className={`relative h-[min(62vh,640px)] w-[min(92vw,920px)] overflow-hidden rounded-2xl ${MEDIA_POP_PANEL}`}>
               {isUpdating ? (
                 <div className="pointer-events-none absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Updating
                 </div>
               ) : null}
-              {hasCode && view === "code" ? (
+              {hasCode && shownView === "code" ? (
                 <div className="flex h-full flex-col">
                   <div className="flex items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: "var(--lg-hairline)" }}>
                     <p className="truncate text-[11px] text-muted-foreground">
@@ -746,7 +896,6 @@ export default function LyknChatArtifactPanel({ artifact, isUpdating, fullWidth,
             </footer>
           </>
         ) : null}
-      </div>
-    </div>
+    </LyknMediaPop>
   );
 }

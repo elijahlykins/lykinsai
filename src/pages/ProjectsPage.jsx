@@ -27,8 +27,12 @@ import {
 import { PROJECTS_CHANGED_EVENT } from "@/lib/synthesis/projectLiveSync";
 import { relativeTime, splitMembers } from "@/components/projects/projectShared";
 import { useIsDark } from "@/lib/projectChartTheme";
-import VaultPickerDialog from "@/components/vault/VaultPickerDialog";
 import { fetchVaultNotesByIds } from "@/lib/vault/fetchVaultNotesByIds";
+import {
+  VAULT_PICK_CLOSED_EVENT,
+  VAULT_PICK_PROJECT_EVENT,
+  openVaultPicker,
+} from "@/lib/vault/vaultPicker";
 import LoadingScreen from "@/components/LoadingScreen";
 
 const FEATURED_GRADIENT_LIGHT =
@@ -206,14 +210,13 @@ export default function ProjectsPage() {
     if (!open) resetCreateForm();
   };
 
+  // The Finder hands back what was chosen in that round, not the whole
+  // selection, so picking twice adds to the draft rather than replacing it.
   const handleVaultPicked = async (noteIds) => {
     const ids = (Array.isArray(noteIds) ? noteIds : [])
       .map((id) => String(id).trim())
       .filter(Boolean);
-    if (ids.length === 0) {
-      setVaultItems([]);
-      return;
-    }
+    if (ids.length === 0) return;
     let titleById = new Map();
     try {
       const notes = await fetchVaultNotesByIds(userId, ids);
@@ -221,13 +224,33 @@ export default function ProjectsPage() {
     } catch {
       /* fall back to a generic label if the title lookup fails */
     }
-    setVaultItems(
-      ids.map((id) => ({
-        id,
-        title: titleById.get(id) || "Vault item",
-      })),
-    );
+    setVaultItems((prev) => {
+      const seen = new Set(prev.map((item) => item.id));
+      const added = ids
+        .filter((id) => !seen.has(id))
+        .map((id) => ({ id, title: titleById.get(id) || "Vault item" }));
+      return added.length ? [...prev, ...added] : prev;
+    });
   };
+
+  // "Add from vault" opens the Finder window in pick mode, so the chosen rows
+  // arrive as an event. Held in a ref because the handler closes over the
+  // draft, which changes far more often than this subscription should.
+  const vaultPickedRef = useRef(handleVaultPicked);
+  vaultPickedRef.current = handleVaultPicked;
+  useEffect(() => {
+    const onPicked = (e) => {
+      const noteIds = e.detail?.noteIds;
+      if (Array.isArray(noteIds) && noteIds.length) void vaultPickedRef.current(noteIds);
+    };
+    const onClosed = () => setVaultPickerOpen(false);
+    window.addEventListener(VAULT_PICK_PROJECT_EVENT, onPicked);
+    window.addEventListener(VAULT_PICK_CLOSED_EVENT, onClosed);
+    return () => {
+      window.removeEventListener(VAULT_PICK_PROJECT_EVENT, onPicked);
+      window.removeEventListener(VAULT_PICK_CLOSED_EVENT, onClosed);
+    };
+  }, []);
 
   const removeVaultItem = (id) => {
     setVaultItems((prev) => prev.filter((item) => item.id !== id));
@@ -275,10 +298,13 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="lykn-projects-page h-full min-h-0 overflow-hidden bg-transparent text-black dark:bg-[#121214] dark:text-white flex flex-col">
+    <div className="lykn-projects-page h-full min-h-0 overflow-y-auto bg-transparent text-black dark:bg-[#121214] dark:text-white flex flex-col">
       {/* Full-bleed within .app-content so the card-row clip lines up with
-          the closed sidebar edge (`padding-left: 3.5rem` on .app-content). */}
-      <div className="w-full flex-1 min-h-0 flex flex-col justify-center py-10">
+          the closed sidebar edge (`padding-left: 3.5rem` on .app-content).
+          No `min-h-0` here on purpose: the cards and the rail's paging arrows
+          keep their full height and the page scrolls, rather than the row
+          collapsing and clipping them in a short window. */}
+      <div className="w-full flex-1 flex flex-col justify-center py-8">
         <div className="w-full px-6 sm:px-10 shrink-0">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
             <h1 className="lykn-projects-title font-display text-[clamp(1.75rem,3.5vw,2.5rem)] font-semibold tracking-tight text-black/90 dark:text-white/95">
@@ -309,7 +335,7 @@ export default function ProjectsPage() {
         </div>
 
         {projects.length > 0 ? (
-          <div className="relative min-h-0">
+          <div className="relative">
             <div
               ref={railRef}
               className="lykn-projects-rail overflow-x-auto overflow-y-hidden pt-6 pb-4 snap-x snap-mandatory"
@@ -331,7 +357,7 @@ export default function ProjectsPage() {
                     onClick={() => navigate(`/projects/${p.id}`)}
                     onMouseEnter={() => setHoveredId(p.id)}
                     onFocus={() => setHoveredId(p.id)}
-                    className={`group relative shrink-0 snap-center text-left flex flex-col overflow-hidden rounded-[1.75rem] w-[16.5rem] sm:w-[18rem] min-h-[26rem] sm:min-h-[27.5rem] p-7 sm:p-8 transition-[transform,box-shadow,opacity,background] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] outline-none focus-visible:ring-2 focus-visible:ring-black/20 dark:focus-visible:ring-white/25 ${
+                    className={`group relative shrink-0 snap-center text-left flex flex-col overflow-hidden rounded-[1.5rem] w-[14rem] sm:w-[15.25rem] min-h-[21rem] sm:min-h-[22.5rem] p-6 sm:p-7 transition-[transform,box-shadow,opacity,background] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] outline-none focus-visible:ring-2 focus-visible:ring-black/20 dark:focus-visible:ring-white/25 ${
                       isFeatured
                         ? "scale-[1.04] z-10 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.28)]"
                         : "scale-100 opacity-[0.92] shadow-[0_8px_24px_-16px_rgba(0,0,0,0.18)]"
@@ -351,7 +377,7 @@ export default function ProjectsPage() {
 
                     <div className="relative z-[1] flex flex-col h-full min-h-0">
                       <h2
-                        className={`font-display text-[1.55rem] sm:text-[1.7rem] font-semibold leading-[1.2] tracking-tight ${
+                        className={`font-display text-[1.3rem] sm:text-[1.4rem] font-semibold leading-[1.2] tracking-tight ${
                           isFeatured
                             ? "text-black/90 dark:text-white"
                             : "text-black/85 dark:text-white/90"
@@ -361,7 +387,7 @@ export default function ProjectsPage() {
                       </h2>
 
                       <p
-                        className={`mt-4 text-[0.875rem] leading-relaxed line-clamp-5 ${
+                        className={`mt-3 text-[0.8125rem] leading-relaxed line-clamp-4 ${
                           isFeatured
                             ? "text-black/60 dark:text-white/70"
                             : "text-black/45 dark:text-white/45"
@@ -370,9 +396,9 @@ export default function ProjectsPage() {
                         {subtitle}
                       </p>
 
-                      <div className="mt-auto pt-8 flex items-center gap-3">
+                      <div className="mt-auto pt-6 flex items-center gap-2.5">
                         <div
-                          className={`shrink-0 w-10 h-10 rounded-[0.7rem] flex items-center justify-center text-[0.75rem] font-semibold tracking-wide ${
+                          className={`shrink-0 w-9 h-9 rounded-[0.6rem] flex items-center justify-center text-[0.6875rem] font-semibold tracking-wide ${
                             isFeatured
                               ? "bg-black/85 text-white dark:bg-white/90 dark:text-black"
                               : "bg-black/10 text-black/70 dark:bg-white/15 dark:text-white/80"
@@ -382,7 +408,7 @@ export default function ProjectsPage() {
                         </div>
                         <div className="min-w-0">
                           <div
-                            className={`text-[0.8125rem] font-semibold truncate ${
+                            className={`text-[0.75rem] font-semibold truncate ${
                               isFeatured
                                 ? "text-black/85 dark:text-white"
                                 : "text-black/75 dark:text-white/85"
@@ -392,7 +418,7 @@ export default function ProjectsPage() {
                             {p.isShared ? " · Shared" : ""}
                           </div>
                           <div
-                            className={`text-[0.75rem] truncate ${
+                            className={`text-[0.6875rem] truncate ${
                               isFeatured
                                 ? "text-black/50 dark:text-white/55"
                                 : "text-black/40 dark:text-white/40"
@@ -410,30 +436,30 @@ export default function ProjectsPage() {
             </div>
 
             {(canPagePrev || canPageNext) ? (
-              <div className="relative flex items-center justify-between px-6 sm:px-10 pt-1 pb-6 min-h-[2.75rem]">
+              <div className="relative flex items-center justify-between px-6 sm:px-10 pt-1 pb-4 min-h-[2rem]">
                 {canPagePrev ? (
                   <button
                     type="button"
                     aria-label="Previous projects"
                     onClick={() => pageRail(-1)}
-                    className="flex h-11 w-11 items-center justify-center rounded-full border border-black/10 dark:border-white/15 bg-white/45 dark:bg-white/[0.08] text-black/70 dark:text-white/85 backdrop-blur-xl shadow-[0_8px_24px_-10px_rgba(0,0,0,0.35)] hover:bg-white/70 dark:hover:bg-white/[0.14] hover:scale-105 active:scale-95 transition-all duration-200"
+                    className="flex h-8 w-8 items-center justify-center rounded-full border border-black/10 dark:border-white/15 bg-white/45 dark:bg-white/[0.08] text-black/70 dark:text-white/85 backdrop-blur-xl shadow-[0_6px_18px_-10px_rgba(0,0,0,0.35)] hover:bg-white/70 dark:hover:bg-white/[0.14] hover:scale-105 active:scale-95 transition-all duration-200"
                   >
-                    <ChevronLeft className="w-5 h-5" strokeWidth={2} />
+                    <ChevronLeft className="w-4 h-4" strokeWidth={2} />
                   </button>
                 ) : (
-                  <span className="w-11" aria-hidden />
+                  <span className="w-8" aria-hidden />
                 )}
                 {canPageNext ? (
                   <button
                     type="button"
                     aria-label="Next projects"
                     onClick={() => pageRail(1)}
-                    className="flex h-11 w-11 items-center justify-center rounded-full border border-black/10 dark:border-white/15 bg-white/45 dark:bg-white/[0.08] text-black/70 dark:text-white/85 backdrop-blur-xl shadow-[0_8px_24px_-10px_rgba(0,0,0,0.35)] hover:bg-white/70 dark:hover:bg-white/[0.14] hover:scale-105 active:scale-95 transition-all duration-200"
+                    className="flex h-8 w-8 items-center justify-center rounded-full border border-black/10 dark:border-white/15 bg-white/45 dark:bg-white/[0.08] text-black/70 dark:text-white/85 backdrop-blur-xl shadow-[0_6px_18px_-10px_rgba(0,0,0,0.35)] hover:bg-white/70 dark:hover:bg-white/[0.14] hover:scale-105 active:scale-95 transition-all duration-200"
                   >
-                    <ChevronRight className="w-5 h-5" strokeWidth={2} />
+                    <ChevronRight className="w-4 h-4" strokeWidth={2} />
                   </button>
                 ) : (
-                  <span className="w-11" aria-hidden />
+                  <span className="w-8" aria-hidden />
                 )}
               </div>
             ) : null}
@@ -497,7 +523,10 @@ export default function ProjectsPage() {
                 </span>
                 <button
                   type="button"
-                  onClick={() => setVaultPickerOpen(true)}
+                  onClick={() => {
+                    setVaultPickerOpen(true);
+                    openVaultPicker("project");
+                  }}
                   className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-full border border-black/10 dark:border-white/15 bg-black/[0.03] dark:bg-white/[0.06] text-black/70 dark:text-white/70 hover:border-blue-500/40 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                 >
                   <Library className="w-3.5 h-3.5" />
@@ -555,14 +584,6 @@ export default function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
-      <VaultPickerDialog
-        open={vaultPickerOpen}
-        onClose={() => setVaultPickerOpen(false)}
-        committedNoteIds={vaultItems.map((item) => item.id)}
-        onAddFiles={handleVaultPicked}
-        title="Add from vault"
-        subtitle="Select files to include in this project"
-      />
     </div>
   );
 }

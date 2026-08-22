@@ -12,6 +12,7 @@ import {
   Palette,
   Keyboard,
   SlidersHorizontal,
+  HardDrive,
   CreditCard,
   ChevronRight,
   Sparkles,
@@ -31,6 +32,10 @@ import { TermsBody } from '@/pages/Terms';
 import ModelSelectOptions from '@/components/ModelSelectOptions';
 import VoicePicker from '@/components/notes/VoicePicker';
 import AppearanceSettings from '@/components/settings/AppearanceSettings';
+import LocalVaultSettings from '@/components/settings/LocalVaultSettings';
+import InstalledAppsSettings from '@/components/settings/InstalledAppsSettings';
+import { isLocalVaultAvailable } from '@/lib/vault/repository';
+import TrafficLights from '@/components/macdesktop/TrafficLights';
 import {
   LG_FIELD,
   LG_FIELD_INLINE,
@@ -48,12 +53,12 @@ import { isModelAllowedForPlan, canonicalizeModelId, defaultModelForTier } from 
 import { planLabel } from '@/lib/pricing-config';
 import { API_BASE_URL } from '@/lib/api-config';
 import { parseNightShiftTier } from '@/lib/stewardQueue';
-import { STARTUP_BRIEF_DEFAULT } from '@/lib/brief';
 import { applyTheme, normalizeTheme, readSavedTheme } from '@/lib/theme';
 import { folderLabel, shortenHome, useDesktopMirrorSettings } from '@/lib/macDesktopSync';
 import { useMacSync } from '@/lib/macSync';
 import { HOME_WIDGET_DEFAULTS } from '@/components/macdesktop/DesktopWidgets';
 import { WIDGET_TYPES } from '@/components/macdesktop/widgetCatalog';
+import { isAppInstallAvailable } from '@/lib/apps/installApp';
 import { hasMacApps } from '@/lib/macApps';
 import {
   addWidget,
@@ -68,8 +73,12 @@ const NAV_ITEMS = [
   { id: 'workspace', title: 'Workspace', icon: LayoutGrid, keywords: 'home desktop widgets todos projects sync mac folders layout local mode files access' },
   { id: 'assistant', title: 'Assistant', icon: Sparkles, keywords: 'ai model voice name instructions personality chat response length' },
   { id: 'notifications', title: 'Notifications', icon: Bell, keywords: 'night shift brief alerts overnight' },
+  // Desktop only — filtered out below when there is no local store to talk to.
+  { id: 'localVault', title: 'Local Vault', icon: HardDrive, keywords: 'local vault offline on device storage migrate migration import supabase cloud download copy privacy disk index search embeddings' },
+  // Desktop only, same as Local Vault — installed apps need a local store.
+  { id: 'installedApps', title: 'Apps', icon: LayoutGrid, keywords: 'apps installed built build mode generated permissions storage data uninstall remove notes app' },
   { id: 'privacy', title: 'Privacy', icon: Lock, keywords: 'policy cookies terms dpa legal sessions devices sign out' },
-  { id: 'appearance', title: 'Appearance', icon: Palette, keywords: 'theme dark light system swatch accent color hue custom wallpaper background photo desktop widgets glass blur dim density typeface font corner radius motion contrast dividers icons' },
+  { id: 'appearance', title: 'Appearance', icon: Palette, keywords: 'theme dark light system swatch accent color hue custom wallpaper background photo desktop widgets glass blur dim density typeface font corner radius motion contrast dividers icons chat bar size shape bubble message text bigger smaller pill rectangle rounded send button arrow icon glyph circle square' },
   { id: 'integrations', title: 'Integrations', icon: Plug, keywords: 'apps api mcp google slack notion connect connections' },
   { id: 'billing', title: 'Billing', icon: CreditCard, keywords: 'payment plan subscription stripe upgrade invoice cancel' },
   { id: 'keyboard', title: 'Keyboard', icon: Keyboard, keywords: 'shortcuts hotkey command overlay keys' },
@@ -90,6 +99,8 @@ const VIEW_TITLES = {
   workspace: 'Workspace',
   assistant: 'Assistant',
   notifications: 'Notifications',
+  localVault: 'Local Vault',
+  installedApps: 'Apps',
   privacy: 'Privacy',
   appearance: 'Appearance',
   integrations: 'Integrations',
@@ -126,59 +137,6 @@ const KEY_BINDINGS = [
   { keys: ['Esc'], label: 'Close the overlay, a dialog, or an open menu' },
 ];
 
-function TrafficLight({ color, label, glyph, onClick }) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-      onPointerDown={(e) => e.stopPropagation()}
-      className="flex h-3 w-3 items-center justify-center rounded-full transition-transform active:scale-90"
-      style={{ background: color }}
-    >
-      <svg
-        viewBox="0 0 10 10"
-        className="h-2 w-2 opacity-0 transition-opacity group-hover/traffic:opacity-60 group-hover/win:opacity-60"
-        stroke="rgba(0,0,0,0.75)"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        fill="none"
-      >
-        <path d={glyph} />
-      </svg>
-    </button>
-  );
-}
-
-function TrafficLights({ onClose, onMinimize, onZoom, drag }) {
-  return (
-    <div
-      className="group/traffic flex touch-none select-none items-center gap-[8px] px-[14px] pt-[14px] pb-[10px]"
-      {...(drag || {})}
-    >
-      <TrafficLight
-        color="#ff5f57"
-        label="Close settings"
-        onClick={onClose}
-        glyph="M2 2 L8 8 M8 2 L2 8"
-      />
-      <TrafficLight
-        color="#febc2e"
-        label="Minimize settings"
-        onClick={onMinimize}
-        glyph="M2 5 H8"
-      />
-      <TrafficLight
-        color="#28c840"
-        label="Zoom settings"
-        onClick={onZoom}
-        glyph="M2.5 7.5 L7.5 2.5 M3 3 H7 V7"
-      />
-    </div>
-  );
-}
-
 /** Drag the hosting DesktopAppWindow from a chromeless page's own chrome. */
 function useWindowDrag(controls) {
   const origin = useRef(null);
@@ -203,6 +161,27 @@ function useWindowDrag(controls) {
     controls?.current?.zoom();
   };
   return { onPointerDown, onPointerMove, onPointerUp, onDoubleClick };
+}
+
+/**
+ * The three shapes Settings takes, by the width of the shell itself.
+ *
+ * `compact` is a tiled quarter or a phone, where the 224px sidebar is most of
+ * the window. `wide` is full screen, where the content stops growing and
+ * settles into a centered column — a row whose label and control sit two feet
+ * apart is harder to read than one that stayed put, so past a point the extra
+ * width is better left empty. `min` is exclusive of the bucket below it.
+ */
+const SHELL_SIZES = [
+  { id: 'compact', min: 0 },
+  { id: 'regular', min: 700 },
+  { id: 'wide', min: 1100 },
+];
+
+function shellSizeFor(width) {
+  let match = SHELL_SIZES[0];
+  for (const size of SHELL_SIZES) if (width >= size.min) match = size;
+  return match.id;
 }
 
 function SettingsGroup({ children, caption, className }) {
@@ -347,6 +326,7 @@ export default function SettingsModal({
 
   // One of the keys in VIEW_TITLES; legacy ids arrive via VIEW_ALIASES.
   const [view, setView] = useState('account');
+  const localVaultAvailable = useMemo(() => isLocalVaultAvailable(), []);
   const [navQuery, setNavQuery] = useState('');
 
   // ---- Import: chat-history .zip upload ----
@@ -379,6 +359,9 @@ export default function SettingsModal({
   const closeWindow = () => runWindow('close', onClose);
   const minimizeWindow = () => runWindow('minimize', onClose);
   const zoomWindow = () => runWindow('zoom');
+  const tileLeft = () => runWindow('tileLeft');
+  const tileRight = () => runWindow('tileRight');
+  const tileQuad = () => runWindow('tileQuad');
   const titleDrag = useWindowDrag(windowControls);
   const closeWindowRef = useRef(closeWindow);
   closeWindowRef.current = closeWindow;
@@ -393,6 +376,25 @@ export default function SettingsModal({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [embedded, isOpen]);
+
+  // Settings is the same component at wildly different sizes — a dialog, a
+  // desktop window being dragged and resized, a tiled quarter, a page. The
+  // viewport says nothing useful about any of that, so the layout keys off
+  // the shell's own width instead of a media query.
+  const shellRef = useRef(null);
+  const [shellSize, setShellSize] = useState(SHELL_SIZES[1].id);
+  useEffect(() => {
+    const el = shellRef.current;
+    if (!isOpen || !el || typeof ResizeObserver === 'undefined') return undefined;
+    const measure = (width) => setShellSize(shellSizeFor(width));
+    measure(el.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect?.width;
+      if (width) measure(width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isOpen, embedded]);
 
   const loadNightShiftPref = useCallback(async () => {
     if (!user?.id) return;
@@ -554,7 +556,6 @@ export default function SettingsModal({
     voiceId: '',
     voiceName: '',
     responseLength: 'medium',
-    startupBrief: STARTUP_BRIEF_DEFAULT,
     homeWidgets: { ...HOME_WIDGET_DEFAULTS },
   });
 
@@ -596,10 +597,6 @@ export default function SettingsModal({
           parsed.theme = normalizeTheme(parsed.theme);
           parsed.aiModel = canonicalizeModelId(parsed.aiModel)
             || defaultModelForTier(modelTier);
-          parsed.startupBrief =
-            typeof parsed.startupBrief === 'boolean'
-              ? parsed.startupBrief
-              : STARTUP_BRIEF_DEFAULT;
           parsed.homeWidgets = {
             ...HOME_WIDGET_DEFAULTS,
             ...(parsed.homeWidgets && typeof parsed.homeWidgets === 'object'
@@ -831,12 +828,18 @@ export default function SettingsModal({
   };
 
   const filteredNav = useMemo(() => {
+    // The same bundle serves the browser, where there is no local store to
+    // point the vault at, so the section only appears in the desktop app.
+    const items = localVaultAvailable
+      ? NAV_ITEMS
+      : NAV_ITEMS.filter((item) => item.id !== 'localVault' && item.id !== 'installedApps');
+
     const q = navQuery.trim().toLowerCase();
-    if (!q) return NAV_ITEMS;
-    return NAV_ITEMS.filter((item) =>
+    if (!q) return items;
+    return items.filter((item) =>
       `${item.title} ${item.keywords}`.toLowerCase().includes(q),
     );
-  }, [navQuery]);
+  }, [navQuery, localVaultAvailable]);
 
   const avatarUrl = user?.user_metadata?.avatar_url || user?.user_metadata?.picture || '';
   const profileName = (displayName || '').trim() || user?.email?.split('@')[0] || 'Account';
@@ -851,7 +854,10 @@ export default function SettingsModal({
   const chevron = <ChevronRight className="h-3.5 w-3.5 text-black/25 dark:text-white/30" />;
   const windowClass = embedded
     ? 'lykn-settings-window lykn-settings-embedded flex h-full w-full flex-row overflow-hidden text-black dark:text-white p-0 gap-0'
-    : 'lykn-settings-window flex flex-row overflow-hidden text-black dark:text-white w-[min(940px,calc(100vw-24px))] h-[min(620px,92vh)] max-w-none p-0 gap-0 rounded-[26px] sm:rounded-[26px]';
+    // The dialog takes what a full-screen app gives it rather than staying a
+    // 940px card adrift in the middle of a large display. Growing it is safe
+    // because the content itself stops at a readable measure (see `wide`).
+    : 'lykn-settings-window flex flex-row overflow-hidden text-black dark:text-white w-[min(1180px,calc(100vw-48px))] h-[min(780px,90vh)] max-w-none p-0 gap-0 rounded-[26px] sm:rounded-[26px]';
 
   const renderAccount = () => (
     user ? (
@@ -1050,67 +1056,46 @@ export default function SettingsModal({
     />
   );
 
-  const toggleStartupBrief = (checked) => {
-    const updated = { ...settings, startupBrief: checked };
-    setSettings(updated);
-    persistSettings(updated);
-  };
-
   const renderNotifications = () => (
     <div className="space-y-5">
       {user ? (
-        <>
-          <SettingsGroup caption="A brief slides in on the right each time you open LYKN. Press it to read your day — what's scheduled, what's due, and anything Night Shift left overnight.">
-            <SettingsRow
-              label="Brief on startup"
-              trailing={
-                <Switch
-                  checked={!!settings.startupBrief}
-                  onCheckedChange={toggleStartupBrief}
-                  aria-label="Brief on startup"
-                  className={LG_SWITCH}
-                />
-              }
-            />
-          </SettingsGroup>
-          <SettingsGroup caption="Work on your projects overnight and leave a morning brief.">
-            <SettingsRow
-              label="Night Shift"
-              trailing={
-                <Switch
-                  checked={nightShiftEnabled}
-                  disabled={nightShiftLoading || nightShiftSaving}
-                  onCheckedChange={() => void toggleNightShift()}
-                  aria-label="Night Shift"
-                  className={LG_SWITCH}
-                />
-              }
-            />
-            {nightShiftEnabled ? (
-              <SettingsRow
-                label="Depth"
-                trailing={
-                  <Select
-                    value={nightShiftTier}
-                    onValueChange={(value) => void setNightShiftTierPref(value)}
-                    disabled={nightShiftSaving}
-                  >
-                    <SelectTrigger className={LG_SELECT_INLINE}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className={LG_SELECT_CONTENT}>
-                      <SelectItem value="brief">Brief</SelectItem>
-                      <SelectItem value="research">Research</SelectItem>
-                      <SelectItem value="delegate">Delegate</SelectItem>
-                    </SelectContent>
-                  </Select>
-                }
+        <SettingsGroup caption="Work on your projects overnight and leave a morning brief.">
+          <SettingsRow
+            label="Night Shift"
+            trailing={
+              <Switch
+                checked={nightShiftEnabled}
+                disabled={nightShiftLoading || nightShiftSaving}
+                onCheckedChange={() => void toggleNightShift()}
+                aria-label="Night Shift"
+                className={LG_SWITCH}
               />
-            ) : null}
-          </SettingsGroup>
-        </>
+            }
+          />
+          {nightShiftEnabled ? (
+            <SettingsRow
+              label="Depth"
+              trailing={
+                <Select
+                  value={nightShiftTier}
+                  onValueChange={(value) => void setNightShiftTierPref(value)}
+                  disabled={nightShiftSaving}
+                >
+                  <SelectTrigger className={LG_SELECT_INLINE}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className={LG_SELECT_CONTENT}>
+                    <SelectItem value="brief">Brief</SelectItem>
+                    <SelectItem value="research">Research</SelectItem>
+                    <SelectItem value="delegate">Delegate</SelectItem>
+                  </SelectContent>
+                </Select>
+              }
+            />
+          ) : null}
+        </SettingsGroup>
       ) : (
-        <SettingsGroup caption="Sign in from Account to set up a brief.">
+        <SettingsGroup caption="Sign in from Account to set up Night Shift.">
           <SettingsRow
             label="Go to Account"
             onClick={() => setView('account')}
@@ -1124,7 +1109,12 @@ export default function SettingsModal({
   const renderWorkspace = () => (
     <div className="space-y-5">
       <SettingsGroup caption="What's out on the Home desktop. Where each widget sits and how big it is belongs to the desktop — hold one there to move, resize, or add another. Wallpaper lives in Appearance.">
-        {WIDGET_TYPES.filter((spec) => !spec.desktopOnly || hasMacApps()).map((spec) => {
+        {WIDGET_TYPES.filter(
+          (spec) =>
+            !spec.desktopOnly ||
+            (spec.pickApp && hasMacApps()) ||
+            (spec.pickLyknApp && isAppInstallAvailable()),
+        ).map((spec) => {
           const count = widgetLayout.filter((i) => i.type === spec.type).length;
           return (
             <SettingsRow
@@ -1218,9 +1208,12 @@ export default function SettingsModal({
             <SettingsRow
               label="Share my whole home folder"
               description={
-                macSync.syncAll
+                (macSync.syncAll
                   ? 'LYKN can see everything in your home folder.'
-                  : `LYKN can only see the ${macSync.folders.length} folder${macSync.folders.length === 1 ? '' : 's'} below.`
+                  : `LYKN can only see the ${macSync.folders.length} folder${macSync.folders.length === 1 ? '' : 's'} below.`) +
+                (macSync.excluded.length
+                  ? ` Except ${macSync.excluded.length} you switched off in the Vault.`
+                  : '')
               }
               trailing={
                 <Switch
@@ -1641,7 +1634,7 @@ export default function SettingsModal({
 
   const renderAdvanced = () => (
     <div className="space-y-5">
-      <SettingsGroup caption="Restores the accent, typeface, density, corner radius, and accessibility toggles on this device.">
+      <SettingsGroup caption="Restores the accent, typeface, density, corner radius, chat sizes and shapes, and accessibility toggles on this device.">
         <SettingsRow
           label="Reset appearance to defaults"
           onClick={() => {
@@ -1685,6 +1678,8 @@ export default function SettingsModal({
       case 'workspace': return renderWorkspace();
       case 'assistant': return renderAiPersonalization();
       case 'notifications': return renderNotifications();
+      case 'localVault': return <LocalVaultSettings />;
+      case 'installedApps': return <InstalledAppsSettings />;
       case 'privacy': return renderPrivacy();
       case 'appearance': return renderAppearance();
       case 'integrations': return renderConnections();
@@ -1700,9 +1695,14 @@ export default function SettingsModal({
       <>
         <aside className="lykn-settings-sidebar flex w-[224px] shrink-0 flex-col">
           <TrafficLights
+            title="Settings"
+            padded
             onClose={closeWindow}
             onMinimize={minimizeWindow}
             onZoom={zoomWindow}
+            onTileLeft={embedded ? tileLeft : undefined}
+            onTileRight={embedded ? tileRight : undefined}
+            onTileQuad={embedded ? tileQuad : undefined}
             drag={embedded ? titleDrag : undefined}
           />
           <div className="relative mx-2.5 mb-2.5">
@@ -1781,7 +1781,13 @@ export default function SettingsModal({
 
     if (embedded) {
       return (
-        <div className={windowClass} role="document" aria-label="Settings">
+        <div
+          ref={shellRef}
+          data-settings-size={shellSize}
+          className={windowClass}
+          role="document"
+          aria-label="Settings"
+        >
           {body}
         </div>
       );
@@ -1789,7 +1795,7 @@ export default function SettingsModal({
 
     return (
       <Dialog open={isOpen} onOpenChange={onClose}>
-        <DialogContent hideClose className={windowClass}>
+        <DialogContent ref={shellRef} data-settings-size={shellSize} hideClose className={windowClass}>
           <DialogTitle className="sr-only">Settings</DialogTitle>
           {body}
         </DialogContent>
@@ -1808,19 +1814,25 @@ export default function SettingsModal({
   return renderShell(
     <>
       <div
-        className="flex h-[68px] shrink-0 touch-none select-none items-end px-7 pb-3.5"
+        className="lykn-settings-titlebar flex h-[68px] shrink-0 touch-none select-none items-end px-7 pb-3.5"
         {...(embedded ? titleDrag : {})}
       >
-        <h2 className="text-[24px] font-semibold leading-none tracking-[-0.01em] text-black dark:text-white">
-          {VIEW_TITLES[view] || 'Settings'}
-        </h2>
+        {/* The title rides the same column as the rows, so a centered measure
+            doesn't leave the heading stranded against the far edge. */}
+        <div className="lykn-settings-measure" data-view={view}>
+          <h2 className="text-[24px] font-semibold leading-none tracking-[-0.01em] text-black dark:text-white">
+            {VIEW_TITLES[view] || 'Settings'}
+          </h2>
+        </div>
       </div>
       <div className={cn(
         'lykn-settings-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-7 pb-7 pt-3',
         view === 'assistant' && 'scrollbar-hide',
         view === 'integrations' && 'px-5',
       )}>
-        {renderView()}
+        <div className="lykn-settings-measure" data-view={view}>
+          {renderView()}
+        </div>
       </div>
     </>,
   );

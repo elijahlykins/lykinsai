@@ -2,7 +2,7 @@
 // mcp-tools/updateStewardItem.js — approve / schedule / cancel queue items
 // ============================================================================
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 const ALLOWED = new Set(['backlog', 'ready', 'scheduled', 'cancelled']);
 
@@ -42,8 +42,6 @@ export const updateStewardItemTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

@@ -27,6 +27,14 @@ out
 # Electron desktop build output (DMG/zip/.app artifacts)
 release
 
+# On-device embedding model — 33MB of binary fetched at build time by
+# scripts/fetch-embedding-model.mjs and packaged as an app resource.
+models/
+models-cache/
+
+# Scratch store for migration rehearsals (scripts/import-from-supabase.mjs).
+.local-migration/
+
 # Cursor IDE artifacts
 .cursor/
 

@@ -23,6 +23,7 @@ import { notifyUploadRateLimitIfApplicable } from "@/lib/vault/uploadRateLimitEr
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { findAttachmentsMarker, withAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
 import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
+import { insertWithSchemaFallback } from "@/lib/vault/insertWithSchemaFallback";
 import { toast } from "@/components/ui/use-toast";
 import {
   commitVaultUpload,
@@ -31,6 +32,12 @@ import {
   unregisterVaultUploadCancellation,
 } from "@/lib/vault/uploadCancellation";
 import { beginUploadLedger, clearUploadLedger } from "@/lib/vault/uploadLedger";
+import {
+  LOCAL_BUCKET,
+  createVaultWrites,
+  isLocalVaultEnabled,
+} from "@/lib/vault/repository";
+import { writeLocalBlob, variantNames } from "@/lib/vault/repository/localBlobs";
 
 type PlanId = keyof typeof UPLOAD_RATE_LIMITS;
 
@@ -360,32 +367,8 @@ const PDF_TEXT_PAGE_CAP = 6;
 async function extractPdfText(
   file: File,
 ): Promise<{ text: string; pageCount: number | null }> {
-  try {
-    const arrayBuffer = await file.arrayBuffer();
-    const pdfjsLib: any = await import("pdfjs-dist");
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const totalPages: number = pdf.numPages;
-    const lastPage = Math.min(totalPages, PDF_TEXT_PAGE_CAP);
-    const pages: string[] = [];
-    for (let pageNum = 1; pageNum <= lastPage; pageNum += 1) {
-      const page = await pdf.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items
-        .map((item: any) => ("str" in item ? item.str : ""))
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (pageText) pages.push(pageText);
-    }
-    return { text: pages.join("\n\n"), pageCount: totalPages };
-  } catch (error: any) {
-    if (import.meta.env.DEV) {
-      // eslint-disable-next-line no-console
-      console.warn("PDF text extraction failed:", error?.message);
-    }
-    return { text: "", pageCount: null };
-  }
+  const { extractPdfText: extract } = await import("@/lib/extract-text");
+  return extract(file, PDF_TEXT_PAGE_CAP);
 }
 
 // Extracts text from a Word/OpenDocument/PowerPoint file via the server's
@@ -409,6 +392,11 @@ async function extractDocText(file: File): Promise<string> {
 
 type CreateNoteArgs = {
   userId: string;
+  /**
+   * Chosen up front on the local path, because the blob directory is keyed by
+   * the row id and the bytes have to be written before the row exists.
+   */
+  noteId?: string | null;
   filename: string;
   folderPath: string | null;
   fileType: string;
@@ -424,9 +412,10 @@ type CreateNoteArgs = {
 
 async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
   const {
-    userId, filename, folderPath, fileType, fileUrl, storagePath,
+    userId, noteId, filename, folderPath, fileType, fileUrl, storagePath,
     storageBucket, fileSize, mimeType, width, height, durationSeconds,
   } = args;
+  const writes = createVaultWrites(userId);
 
   const folderName = folderPath ? String(folderPath).trim() : "Uploaded Files";
   const noteTitle = filename.replace(/\.[^/.]+$/, "") || filename;
@@ -455,7 +444,7 @@ async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
   const noteContent = `[ATTACHMENTS_JSON:${JSON.stringify(attachmentPayload)}]`;
 
   const richInsert = {
-    user_id: userId,
+    ...(noteId ? { id: noteId } : {}),
     title: noteTitle,
     content: noteContent,
     folder: folderName,
@@ -466,27 +455,11 @@ async function createVaultNote(args: CreateNoteArgs): Promise<any | null> {
     ...buildAttachmentColumns(attachmentPayload[0]),
   } as Record<string, unknown>;
 
-  let { data: insertedNote, error: noteError } = await supabase
-    .from("vault_items")
-    .insert(richInsert)
-    .select("id, title, content, tags, created_at, updated_at")
-    .single();
-
-  const missingColumnError =
-    noteError &&
-    (
-      (noteError as any).code === "PGRST204" ||
-      (noteError as any).message?.includes("Could not find") ||
-      String((noteError as any).message || "").toLowerCase().includes("does not exist")
-    );
-
-  if (missingColumnError) {
-    ({ data: insertedNote, error: noteError } = await supabase
-      .from("vault_items")
-      .insert({ user_id: userId, title: noteTitle, content: noteContent })
-      .select("id, title, content, created_at, updated_at")
-      .single());
-  }
+  const { data: insertedNote, error: noteError } = await insertWithSchemaFallback(
+    (row) => writes.insert(row),
+    richInsert,
+    ["id", "title", "content"],
+  );
 
   if (noteError) {
     if (import.meta.env.DEV) {
@@ -545,36 +518,44 @@ async function generateAndStoreVariants(args: {
 
   const variants = await generateMediaVariants(file, fileType);
   const patch: Record<string, unknown> = {};
+  const local = isLocalVaultEnabled();
+
+  // Variants are generated in the browser either way; only where they land
+  // differs. Locally they sit beside the original in the item's directory,
+  // which is exactly the layout the cloud paths already imply.
+  const names = variantNames(0);
+
+  const putVariant = async (blob: Blob, variant: string, cloudName: string) => {
+    if (local) {
+      const written = await writeLocalBlob(noteId, blob, {
+        filename: `${cloudName}.jpg`,
+        mimeType: "image/jpeg",
+        variant,
+      });
+      return written.path;
+    }
+    const cloudPath = `${dir}${cloudName}.jpg`;
+    await uploadFileToStorage({
+      file: blob,
+      userId,
+      storagePath: cloudPath,
+      bucket: "user-files",
+      contentType: "image/jpeg",
+      cacheControl: "31536000",
+      upsert: true,
+    });
+    return cloudPath;
+  };
 
   if (variants.medium) {
-    const mediumPath = `${dir}medium.jpg`;
     try {
-      await uploadFileToStorage({
-        file: variants.medium,
-        userId,
-        storagePath: mediumPath,
-        bucket: "user-files",
-        contentType: "image/jpeg",
-        cacheControl: "31536000",
-        upsert: true,
-      });
-      patch.variant_medium_path = mediumPath;
+      patch.variant_medium_path = await putVariant(variants.medium, names.medium, "medium");
     } catch { /* best-effort */ }
   }
 
   if (variants.thumb) {
-    const thumbPath = `${dir}thumb.jpg`;
     try {
-      await uploadFileToStorage({
-        file: variants.thumb,
-        userId,
-        storagePath: thumbPath,
-        bucket: "user-files",
-        contentType: "image/jpeg",
-        cacheControl: "31536000",
-        upsert: true,
-      });
-      patch.variant_thumb_path = thumbPath;
+      patch.variant_thumb_path = await putVariant(variants.thumb, names.thumb, "thumb");
     } catch { /* best-effort */ }
   }
 
@@ -588,14 +569,10 @@ async function generateAndStoreVariants(args: {
   // Dual-write the variant paths into the marker too, so existing
   // marker-based renderers (VaultAttachment, the Vault grid) can prefer the
   // small rendition without a column-select refactor.
+  const writes = createVaultWrites(userId);
   try {
-    const { data: latest } = await supabase
-      .from("vault_items")
-      .select("content, updated_at")
-      .eq("id", noteId)
-      .eq("user_id", userId)
-      .single();
-    const content: string = (latest as any)?.content || "";
+    const { data: latest } = await writes.readForUpdate(noteId);
+    const content: string = latest?.content || "";
     const span = findAttachmentsMarker(content);
     if (span && span.attachments[0] && typeof span.attachments[0] === "object") {
       const next = span.attachments.slice() as Record<string, unknown>[];
@@ -604,27 +581,20 @@ async function generateAndStoreVariants(args: {
       if (patch.variant_thumb_path) head.variantThumbPath = patch.variant_thumb_path;
       next[0] = head;
       const newContent = withAttachmentsMarker(content, next);
-      const updatedAt = (latest as any)?.updated_at;
-      const q = supabase
-        .from("vault_items")
-        .update({ content: newContent, ...patch })
-        .eq("id", noteId)
-        .eq("user_id", userId);
-      if (updatedAt) q.eq("updated_at", updatedAt);
-      const { error } = await q;
+      const updatedAt = latest?.updated_at;
+
+      const { error } = await writes.updateIfUnchanged(
+        noteId,
+        { content: newContent, ...patch } as any,
+        updatedAt,
+      );
       if (
         error &&
         ((error as any).code === "PGRST204" ||
           /could not find|does not exist/i.test((error as any).message || ""))
       ) {
         // Columns missing — persist the marker (which now carries variants).
-        const q2 = supabase
-          .from("vault_items")
-          .update({ content: newContent })
-          .eq("id", noteId)
-          .eq("user_id", userId);
-        if (updatedAt) q2.eq("updated_at", updatedAt);
-        await q2;
+        await writes.updateIfUnchanged(noteId, { content: newContent } as any, updatedAt);
       }
       return result;
     }
@@ -1113,49 +1083,84 @@ async function processOne(args: {
 
     const fileId = crypto.randomUUID();
     const fileExt = filename.split(".").pop() || "bin";
-    const storagePath = `${userId}/${fileId}/original.${fileExt}`;
-    // Tell the cancellation registry which path we're writing to so
-    // dismissing the upload mid-flight can best-effort delete the
-    // partial object instead of leaking bytes.
-    setVaultUploadStoragePath(args.itemId, storagePath, "user-files");
 
-    // Record the in-flight upload BEFORE pushing bytes, so a crash/tab-close
-    // between here and the row insert leaves a reapable trail. Best-effort and
-    // fire-and-forget — it must not delay the upload or break it pre-migration.
-    ledgerStoragePath = storagePath;
-    void beginUploadLedger(userId, storagePath, "user-files");
+    // On the local path the row id is chosen here rather than by the database,
+    // because the blob directory is keyed by it and the bytes are written
+    // before the row exists.
+    const localMode = isLocalVaultEnabled();
+    const localNoteId = localMode ? crypto.randomUUID() : null;
+
+    let storagePath = localMode
+      ? `${localNoteId}/original.${fileExt}`
+      : `${userId}/${fileId}/original.${fileExt}`;
+    let storageBucket = localMode ? LOCAL_BUCKET : "user-files";
 
     let lastRenderedPct = 50;
-    let uploadResult;
-    try {
-      uploadResult = await uploadFileToStorage({
-        file,
-        userId,
-        storagePath,
-        bucket: "user-files",
-        contentType: file.type,
-        cacheControl: "3600",
-        upsert: false,
+    let uploadResult: { signedUrl?: string | null; publicUrl?: string | null };
+
+    if (localMode) {
+      // Straight to disk: no bucket, no signing, no ledger. The ledger exists
+      // to reap objects orphaned between upload and row insert, and a local
+      // write that never gets a row leaves one directory that the existing
+      // orphan sweep already knows how to find.
+      const written = await writeLocalBlob(localNoteId as string, file, {
+        filename,
+        mimeType: file.type,
+        variant: "original",
         signal: abortCtrl.signal,
-        onProgress: (pct: number) => {
-          // Map the 0-100 storage progress into our 50-95 sub-range
-          // so the bar advances smoothly past the compression handoff.
-          const scaled = Math.min(95, Math.max(50, 50 + Math.round(pct * 0.45)));
+        onProgress: (bytes, total) => {
+          const pct = total > 0 ? bytes / total : 1;
+          const scaled = Math.min(95, Math.max(50, 50 + Math.round(pct * 45)));
           if (scaled === lastRenderedPct) return;
           lastRenderedPct = scaled;
           store.update(args.itemId, { progress: scaled });
         },
       });
-    } catch (uploadError: any) {
-      const bucketMissing =
-        uploadError?.message?.toLowerCase?.().includes("bucket not found") ||
-        uploadError?.statusCode === 404;
-      if (bucketMissing) {
-        throw new Error(
-          "Storage bucket 'user-files' is missing. Create it in Supabase Storage to upload media.",
-        );
+      storagePath = written.path;
+      uploadResult = { signedUrl: written.url, publicUrl: written.url };
+    } else {
+      // Tell the cancellation registry which path we're writing to so
+      // dismissing the upload mid-flight can best-effort delete the
+      // partial object instead of leaking bytes.
+      setVaultUploadStoragePath(args.itemId, storagePath, "user-files");
+
+      // Record the in-flight upload BEFORE pushing bytes, so a crash/tab-close
+      // between here and the row insert leaves a reapable trail. Best-effort
+      // and fire-and-forget — it must not delay the upload or break it
+      // pre-migration.
+      ledgerStoragePath = storagePath;
+      void beginUploadLedger(userId, storagePath, "user-files");
+
+      try {
+        uploadResult = await uploadFileToStorage({
+          file,
+          userId,
+          storagePath,
+          bucket: "user-files",
+          contentType: file.type,
+          cacheControl: "3600",
+          upsert: false,
+          signal: abortCtrl.signal,
+          onProgress: (pct: number) => {
+            // Map the 0-100 storage progress into our 50-95 sub-range
+            // so the bar advances smoothly past the compression handoff.
+            const scaled = Math.min(95, Math.max(50, 50 + Math.round(pct * 0.45)));
+            if (scaled === lastRenderedPct) return;
+            lastRenderedPct = scaled;
+            store.update(args.itemId, { progress: scaled });
+          },
+        });
+      } catch (uploadError: any) {
+        const bucketMissing =
+          uploadError?.message?.toLowerCase?.().includes("bucket not found") ||
+          uploadError?.statusCode === 404;
+        if (bucketMissing) {
+          throw new Error(
+            "Storage bucket 'user-files' is missing. Create it in Supabase Storage to upload media.",
+          );
+        }
+        throw uploadError;
       }
-      throw uploadError;
     }
 
     const fileUrl = uploadResult.signedUrl || uploadResult.publicUrl || null;
@@ -1187,12 +1192,13 @@ async function processOne(args: {
     try {
       createdNote = await createVaultNote({
         userId,
+        noteId: localNoteId,
         filename,
         folderPath: args.folderPath,
         fileType,
         fileUrl,
         storagePath,
-        storageBucket: "user-files",
+        storageBucket,
         fileSize: file.size,
         mimeType: file.type,
         width: mediaDims?.width ?? null,

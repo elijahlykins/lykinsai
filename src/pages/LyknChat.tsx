@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import ChatSendIcon from "@/lib/chatSendIcon";
 import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
 import { useLyknChatStore } from "@/store/lyknChatStore";
 import type { Block } from "@/lyknChat/types";
-import { ChevronDown, ChevronUp, ChevronRight, Code, Link as LinkIcon, Image as ImageIcon, ImagePlus, MessageCircle, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, FolderKanban, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, Telescope, ThumbsUp, ThumbsDown, Square, Sparkles, Save, SquarePen, Globe, GripVertical, ArrowUp, Layers, GraduationCap, Newspaper, Users, TrendingUp, type LucideIcon } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronRight, Code, Link as LinkIcon, Image as ImageIcon, ImagePlus, MessageCircle, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, FolderKanban, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, Telescope, ThumbsUp, ThumbsDown, Square, Save, SquarePen, Globe, GripVertical, Layers, GraduationCap, Newspaper, Users, TrendingUp, type LucideIcon } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -30,6 +31,8 @@ import { useAssistantName } from "@/hooks/useAssistantName";
 import { notifyVaultCapIfApplicable } from "@/lib/vault/vaultCapError";
 import { openInStudioBrowser } from "@/lib/lyknChat/openInStudioBrowser";
 import { supabase } from "@/lib/supabase";
+import { localBlobUrl } from "@/lib/vault/repository/mediaUrl";
+import { LOCAL_BUCKET } from "@/lib/vault/repository/types";
 import { useAiStore } from "@/store/aiStore";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useUsageGate } from "@/lib/useUsageGate";
@@ -52,14 +55,37 @@ import { buildTieredLyknChatContext, buildActionLyknChatContext } from "@/lib/ai
 import { maybeAutoNameChat, buildAttachmentContext } from "@/lib/ai/chatSendOrchestrator";
 import { ocrImageAttachments } from "@/lib/ai/imageOcr";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
-import { takePendingHomeChatFiles } from "@/lib/homeChatFiles";
+import {
+  fileNameFromPath,
+  filesFromMacPaths,
+  setPendingHomeChatFiles,
+  setPendingHomeChatFolders,
+  snapshotMacFolders,
+  takePendingHomeChatFiles,
+  takePendingHomeChatFolders,
+} from "@/lib/homeChatFiles";
+import {
+  VAULT_PICK_ITEMS_EVENT,
+  VAULT_PICK_PATHS_EVENT,
+  openVaultPicker,
+} from "@/lib/vault/vaultPicker";
 import { persistMessageFeedback } from "@/lib/chat/messageFeedback";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 import { getVaultSidebarWidth, useIsTouchOnlyDevice, getIsTouchOnlyDevice } from "@/hooks/useViewportTier";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
-import { saveGeneratedImageToVault } from "@/lib/saveToVault";
+import { saveFileToVault, saveGeneratedImageToVault } from "@/lib/saveToVault";
+import { createVaultWrites } from "@/lib/vault/repository";
+import { insertWithSchemaFallback } from "@/lib/vault/insertWithSchemaFallback";
+import {
+  chatAttachmentFileType,
+  chatAttachmentFilename,
+  chatAttachmentKind,
+  chatAttachmentSaveKeys,
+  chatAttachmentText,
+  fetchChatAttachmentBlob,
+} from "@/lib/chat/chatAttachmentFile";
 import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
 import { stripAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
@@ -74,16 +100,33 @@ import LyknChatVaultOverlay from "@/components/lyknChat/LyknChatVaultOverlay";
 import FileDropModeDialog from "@/components/lyknChat/FileDropModeDialog";
 import LyknChatView from "@/components/lyknChat/LyknChatView";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
+import {
+  appEditArtifactById,
+  forgetAppEdit,
+  isAppEditSeed,
+  recallAppEdit,
+  rememberAppEdit,
+  takePendingAppEdit,
+} from "@/lib/apps/editApp";
+import AppSourceStrip, {
+  publishAppSourceStrip,
+  subscribeDismissAppEdit,
+} from "@/components/lyknChat/AppSourceStrip";
 import LyknChatVoiceMode from "@/components/lyknChat/LyknChatVoiceMode";
-import VaultDocumentViewer from "@/components/lyknChat/VaultDocumentViewer";
-import type { ChatNeuronVaultPayload } from "@/components/lyknChat/ChatNeuronCard";
+import { openLyknMediaPop } from "@/lib/lyknMediaPop";
 import SubAgentTasksStrip from "@/components/lyknChat/SubAgentTasksStrip";
 import MobileLyknChat from "@/components/lyknChat/MobileLyknChat";
 import { useLyknChatPersistence, makeDefaultNotesPages } from "@/hooks/useLyknChatPersistence";
 import { fetchMostRecentLyknChat } from "@/lib/lyknChat/fetchLyknChatsWithContext";
 import { useChatEngine, type ComposerMode, type ArtifactKind } from "@/hooks/useChatEngine";
 import { detectStudioModeRedirect } from "@/lib/ai/studioModeIntent";
-import StudioImagineMode, { IMAGINE_CLEAR_EVENT } from "@/components/lyknChat/StudioImagineMode";
+import StudioImagineMode, {
+  IMAGINE_CLEAR_EVENT,
+  imagineBatchesFromTurns,
+  type ImagineCommit,
+  type ImagineGenerateInput,
+  type StudioImagineHandle,
+} from "@/components/lyknChat/StudioImagineMode";
 import { fetchPublishedCustomModels } from "@/lib/modelBuilder/customModelsClient";
 import {
   loadActiveCustomModelId,
@@ -557,6 +600,28 @@ const inferUrlAttachmentType = (url = "") => {
   return "link";
 };
 
+function chatAttachmentsToImagineInput(
+  text: string,
+  atts: FocusedChatAttachment[],
+): ImagineGenerateInput {
+  const referenceUrls: string[] = [];
+  const documents: { name: string; text: string }[] = [];
+  for (const a of atts || []) {
+    const isImg = a.type === "image" || String(a.mime || "").startsWith("image/");
+    const src = String(a.url || "");
+    if (isImg && src) {
+      referenceUrls.push(src);
+      continue;
+    }
+    const body = [a.extractedText, a.pdfText, a.transcript, a.vaultContent]
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    if (body) documents.push({ name: a.name || a.vaultTitle || "attachment", text: body });
+  }
+  return { text, referenceUrls, documents };
+}
+
 const makeAttId = () =>
   (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
   `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -649,7 +714,8 @@ const STUDIO_VIEW_SUBTITLES: Record<Exclude<StudioView, "chat">, string> = {
 // to a different mode, do NOT produce this mode's deliverable — point the
 // user at the mode pills at the top of the page (never the "+" menu).
 const STUDIO_MODE_SWITCH_RULE =
-  " If the user asks for something this mode can't do (e.g. an image in Build/Research, a " +
+  " Ordinary questions are always in-lane: answer them directly without telling the user to " +
+  "switch to Chat. If the user explicitly asks for a deliverable this mode can't create (e.g. an image in Build/Research, a " +
   "research report in Build/Imagine, or an app/deck in Imagine/Research), do NOT produce this " +
   "mode's deliverable as a substitute. Instead reply briefly telling them to switch modes using " +
   "the pills at the top of the page (Chat / Build / Imagine / Research) and resend their " +
@@ -659,9 +725,9 @@ const STUDIO_VIEW_SYSTEM_PROMPTS: Record<Exclude<StudioView, "chat">, string> = 
   build:
     "The user is in Build mode — a dedicated session for designing and building artifacts " +
     "(interactive pages, apps, tools, games, decks, documents, charts, diagrams). Act as their " +
-    "build partner: help shape the idea, ask short clarifying questions when the request is " +
-    "ambiguous, propose concrete directions, and build or refine the artifact. Keep the " +
-    "conversation anchored on what they're building — don't drift into unrelated topics. When " +
+    "build partner: answer ordinary questions normally, help shape ideas, and propose concrete " +
+    "directions without building unless the user clearly asks you to create, change, fix, or " +
+    "refine an artifact. A question about an idea or an open artifact is not an edit request. When " +
     "an artifact is already open in the panel and they ask to add, change, fix, or extend it, " +
     "ALWAYS patch that artifact in place with targeted `edits` — never rebuild from scratch " +
     "unless they clearly ask to redesign, start over, or build something entirely new. If a " +
@@ -673,12 +739,12 @@ const STUDIO_VIEW_SYSTEM_PROMPTS: Record<Exclude<StudioView, "chat">, string> = 
     "screenshot, mood board) — then match that idea." +
     STUDIO_MODE_SWITCH_RULE,
   imagine:
-    "The user is in Imagine mode — a dedicated image-generation session. Every request is about " +
-    "creating or refining images. Turn their ideas into vivid, detailed image prompts and " +
-    "generate the image; iterate on style, composition, lighting, and details as they react. If " +
-    "a request is ambiguous, make your best creative interpretation and generate, then offer " +
-    "quick variations or adjustments. Keep the session about images — don't drift into " +
-    "unrelated chat." + STUDIO_MODE_SWITCH_RULE,
+    "The user is in Imagine mode — a session for image creation and visual exploration. Answer " +
+    "ordinary questions normally and discuss ideas, styles, composition, or an existing image " +
+    "without generating anything unless the user clearly asks you to create or modify an image. " +
+    "When they do ask to create or refine one, turn the request into a vivid, detailed image " +
+    "prompt, generate it, and iterate on style, composition, lighting, and details as they react." +
+    STUDIO_MODE_SWITCH_RULE,
   research:
     "The user is in Research mode — a dedicated session for producing deep research reports. " +
     "Treat each request as a research brief: investigate thoroughly using current sources and " +
@@ -830,19 +896,6 @@ function researchSuggestionTopic(raw: string, maxLen = 42): string {
   return t;
 }
 
-/** Short title phrase for post-build suggestion labels. */
-function buildSuggestionTopic(raw: string, maxLen = 42): string {
-  let t = String(raw || "").replace(/\s+/g, " ").trim();
-  t = t.replace(
-    /^(please\s+)?(?:can you\s+)?(?:make|build|create|design|generate|code|write|whip up|mock up|put together)\s+(?:me\s+)?(?:an?\s+)?(?:interactive\s+)?(?:presentation|pitch deck|slide deck|deck|app|game|dashboard|one-pager|investor deck|study guide|page|site|tool)?\s*(?:about|on|for|that|which|where)?\s*/i,
-    "",
-  );
-  t = t.replace(/[.?!]+$/, "").trim();
-  if (!t) return "this build";
-  if (t.length > maxLen) t = `${t.slice(0, Math.max(12, maxLen - 1)).replace(/\s+\S*$/, "")}…`;
-  return t;
-}
-
 type StudioSuggestionItem = {
   key: string;
   view: StudioView;
@@ -852,8 +905,9 @@ type StudioSuggestionItem = {
 };
 
 // Shared strip above the chat bar: three one-tap next steps after a
-// Research report or Build finishes. Each switches Studio mode (when
-// needed) and immediately starts the turn.
+// Research report finishes. Each switches Studio mode (when needed) and
+// immediately starts the turn. Build keeps the composer clean — no
+// follow-up chips sitting above the bar.
 const StudioFollowUpSuggestions = React.memo(function StudioFollowUpSuggestions({
   items,
   disabled,
@@ -914,35 +968,6 @@ function researchFollowUpItems(topic: string): StudioSuggestionItem[] {
   ];
 }
 
-function buildFollowUpItems(topic: string): StudioSuggestionItem[] {
-  const blank = buildSuggestionTopic(topic, 42);
-  const fullTopic = buildSuggestionTopic(topic, 160);
-  return [
-    {
-      key: "research",
-      view: "research",
-      label: `Research · Dig into ${blank}`,
-      prompt: `Research ${fullTopic}: key facts, current context, and anything I should know to strengthen this build`,
-      icon: Telescope,
-    },
-    {
-      key: "brainstorm",
-      view: "chat",
-      label: `Chat · Brainstorm improvements for ${blank}`,
-      prompt: `Brainstorm improvements, alternate directions, and next features for ${fullTopic}`,
-      icon: MessageCircle,
-    },
-    {
-      key: "polish",
-      view: "build",
-      label: "Polish this",
-      prompt:
-        "Polish and refine this build — tighten the design, improve clarity, and add polished interactions",
-      icon: Sparkles,
-    },
-  ];
-}
-
 // Studio Research page: right rail listing every link the deep-research
 // pipeline searched/read (streamed from the server before the report text),
 // plus a Save report action that writes the finished report into the vault.
@@ -971,10 +996,9 @@ const StudioResearchSidebar = React.memo(function StudioResearchSidebar({
     if (lykn?.openExternal) lykn.openExternal(url);
     else window.open(url, "_blank", "noopener");
   };
-  // Same background as the page — only a faint light-grey hairline
-  // separates the report from the links column.
+  // Shared blur glass so the report underneath is frosted, not readable.
   return (
-    <div className="flex h-full flex-col border-l border-black/10 pt-14 dark:border-white/15">
+    <div className="lg-desktop-surface flex h-full flex-col rounded-none pt-14">
       <div className="flex items-center justify-between px-4 pb-2.5">
         <p className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-black/55 dark:text-white/60">
           Research links
@@ -1242,7 +1266,7 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
         className={`${iconBtn} lykn-chat-neu-chat-send-btn flex items-center justify-center shrink-0 ${sendDisabled ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`}
         title="Send"
       >
-        <ArrowUp className={iconSm} strokeWidth={2.25} />
+        <ChatSendIcon className={iconSm} strokeWidth={2.25} />
       </button>
     </div>
   );
@@ -1266,6 +1290,12 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   // mode sessions: the chat stays in that mode (forced tool lane + mode
   // system prompt) until the user switches the pill back.
   const [studioView, setStudioView] = useState<StudioView>("chat");
+  const editAppChatRef = useRef<string | null>(null);
+  // Named while an app opened from the dock is still loading its source, so
+  // the surface says what it is doing instead of looking like a blank chat.
+  const [editingAppName, setEditingAppName] = useState<string | null>(null);
+  // Read by the re-attach below without making it depend on the panel.
+  const openArtifactRef = useRef<ChatArtifact | null>(null);
   // Build / Research empty-state demo chips — hide after a chip click or
   // the first send, then come back on a new chat or mode switch.
   const [studioChipsDismissed, setStudioChipsDismissed] = useState(false);
@@ -1287,6 +1317,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   // Hydration hook-up happens below once the chat engine provides
   // setComposerMode; the persistence hook calls through this ref.
   const studioModeHydratedCbRef = useRef<(mode: string | null) => void>(() => {});
+  const imagineRef = useRef<StudioImagineHandle | null>(null);
 
   useEffect(() => {
     // Only for true iframe embeds — the in-document Studio surface must not
@@ -1344,7 +1375,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   const gridSize = useLyknChatStore((s) => s.gridSize);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showAddLinkDialog, setShowAddLinkDialog] = useState(false);
-  const [showVaultSidebar, setShowVaultSidebar] = useState(false);
   const [vaultDragActive, setVaultDragActive] = useState(false);
   const [showQuickNote, setShowQuickNote] = useState(false);
   const [quickNoteContent, setQuickNoteContent] = useState("");
@@ -1796,21 +1826,48 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       const msgs = Array.isArray(messages) && messages.length ? messages : chatMessagesRef.current;
       const attachJobs: { msgId: string; attIdx: number; storagePath: string; bucket: string }[] = [];
       const imageJobs: { msgId: string; storagePath: string }[] = [];
+      // Imagine writes a batch of variations per turn, so its images are
+      // re-signed per slot rather than one to a message.
+      const batchJobs: { msgId: string; imgIdx: number; storagePath: string }[] = [];
+      // Local-first attachments need no round trip at all — the blob protocol
+      // serves them off disk — so they're resolved inline here rather than
+      // asked of a bucket that doesn't exist.
+      const localAttachments: { msgId: string; attIdx: number; url: string }[] = [];
 
       for (const m of msgs) {
         if (Array.isArray((m as any).attachments)) {
           (m as any).attachments.forEach((a: any, idx: number) => {
             if (a.storagePath && (!a.url || a.url === "" || a.url.startsWith("blob:"))) {
-              attachJobs.push({ msgId: m.id, attIdx: idx, storagePath: a.storagePath, bucket: a.storageBucket || "user-files" });
+              const bucket = a.storageBucket || "user-files";
+              if (bucket === LOCAL_BUCKET) {
+                const url = localBlobUrl(a.storagePath);
+                if (url) localAttachments.push({ msgId: m.id, attIdx: idx, url });
+                return;
+              }
+              attachJobs.push({ msgId: m.id, attIdx: idx, storagePath: a.storagePath, bucket });
             }
           });
         }
         if ((m as any).aiImageStoragePath) {
           imageJobs.push({ msgId: m.id, storagePath: (m as any).aiImageStoragePath });
         }
+        if (Array.isArray((m as any).aiImages)) {
+          (m as any).aiImages.forEach((img: any, idx: number) => {
+            if (img?.storagePath) {
+              batchJobs.push({ msgId: m.id, imgIdx: idx, storagePath: img.storagePath });
+            }
+          });
+        }
       }
 
-      if (attachJobs.length === 0 && imageJobs.length === 0) return;
+      if (
+        attachJobs.length === 0 &&
+        imageJobs.length === 0 &&
+        batchJobs.length === 0 &&
+        localAttachments.length === 0
+      ) {
+        return;
+      }
 
       const allResults = await Promise.allSettled([
         ...attachJobs.map((job) =>
@@ -1825,10 +1882,22 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
             .createSignedUrl(job.storagePath, 60 * 60 * 24 * 7)
             .then(({ data }) => ({ type: "img" as const, ...job, url: data?.signedUrl || "" }))
         ),
+        ...batchJobs.map((job) =>
+          supabase.storage
+            .from("user-files")
+            .createSignedUrl(job.storagePath, 60 * 60 * 24 * 7)
+            .then(({ data }) => ({ type: "batch" as const, ...job, url: data?.signedUrl || "" }))
+        ),
       ]);
 
       const attUrlMap = new Map<string, Map<number, string>>();
       const imgUrlMap = new Map<string, string>();
+      const batchUrlMap = new Map<string, Map<number, string>>();
+
+      for (const local of localAttachments) {
+        if (!attUrlMap.has(local.msgId)) attUrlMap.set(local.msgId, new Map());
+        attUrlMap.get(local.msgId)!.set(local.attIdx, local.url);
+      }
 
       for (const r of allResults) {
         if (r.status !== "fulfilled" || !r.value.url) continue;
@@ -1836,18 +1905,23 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           const v = r.value as { type: "att"; msgId: string; attIdx: number; url: string };
           if (!attUrlMap.has(v.msgId)) attUrlMap.set(v.msgId, new Map());
           attUrlMap.get(v.msgId)!.set(v.attIdx, v.url);
+        } else if (r.value.type === "batch") {
+          const v = r.value as { type: "batch"; msgId: string; imgIdx: number; url: string };
+          if (!batchUrlMap.has(v.msgId)) batchUrlMap.set(v.msgId, new Map());
+          batchUrlMap.get(v.msgId)!.set(v.imgIdx, v.url);
         } else {
           imgUrlMap.set(r.value.msgId, r.value.url);
         }
       }
 
-      if (attUrlMap.size === 0 && imgUrlMap.size === 0) return;
+      if (attUrlMap.size === 0 && imgUrlMap.size === 0 && batchUrlMap.size === 0) return;
 
       setChatMessages((prev) =>
         prev.map((m: any) => {
           const attMap = attUrlMap.get(m.id);
           const imgUrl = imgUrlMap.get(m.id);
-          if (!attMap && !imgUrl) return m;
+          const batchMap = batchUrlMap.get(m.id);
+          if (!attMap && !imgUrl && !batchMap) return m;
           const patched = { ...m };
           if (attMap && Array.isArray(patched.attachments)) {
             patched.attachments = patched.attachments.map((a: any, idx: number) => {
@@ -1856,6 +1930,12 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
             });
           }
           if (imgUrl) patched.aiImageUrl = imgUrl;
+          if (batchMap && Array.isArray(patched.aiImages)) {
+            patched.aiImages = patched.aiImages.map((img: any, idx: number) => {
+              const newUrl = batchMap.get(idx);
+              return newUrl ? { ...img, url: newUrl } : img;
+            });
+          }
           return patched;
         })
       );
@@ -2386,7 +2466,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     assistantTaskChecks, isDictating, isTranscribing,
     voiceModeOn, setVoiceMode, toggleVoiceMode,
     composerMode, setComposerMode,
-    activeArtifact, setActiveArtifact,
+    activeArtifact, setActiveArtifact, linkArtifactApp,
     chatScrollRef, chatPanelInputRef, centerChatInputRef,
     chatUserScrolledUpRef, chatProgrammaticScrollRef,
     pendingAiBrickActionRef, pendingBrickActionDataRef,
@@ -2850,12 +2930,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   }, [handleSaveQuickNote, isQuickNoteSaving, quickNoteContent]);
 
   useEffect(() => {
-    const openSidebar = () => setShowVaultSidebar(true);
-    window.addEventListener("lyknchat_open_vault_sidebar", openSidebar);
-    return () => window.removeEventListener("lyknchat_open_vault_sidebar", openSidebar);
-  }, []);
-
-  useEffect(() => {
     const handler = (e: MessageEvent) => {
       // The embedded vault sidebar is same-origin; reject cross-origin
       // messages so an external page (e.g. one that window.open()'d us) can't
@@ -2881,6 +2955,57 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [applyVaultDropToChat]);
+
+  // A pick from the vault window. That window is a real Finder now rather than
+  // an iframe inside this page, so the choice arrives as an event instead of a
+  // postMessage — as AI Drive items, or as paths when the pick came from a
+  // folder on the Mac. Imagine shares the chat composer, so picks land here
+  // in every mode.
+  useEffect(() => {
+    const onItems = (e: Event) => {
+      const detail = (e as CustomEvent).detail as Record<string, unknown> | null;
+      if (!detail || typeof detail !== "object") return;
+      void applyVaultDropToChat({ ...detail, timestamp: Date.now() });
+    };
+
+    const onPaths = (e: Event) => {
+      const picked = (e as CustomEvent).detail?.paths;
+      if (!Array.isArray(picked) || !picked.length) return;
+      void (async () => {
+        const files = await filesFromMacPaths(picked);
+        if (files.length) {
+          await ingestChatFiles(files, addFocusedAttachment, {
+            userId: user?.id,
+            updateAttachment: updateFocusedAttachment,
+          });
+        }
+        // Folders have no bytes to read, so they come in as a listing the
+        // model can answer "what's in this" from.
+        const folders = await snapshotMacFolders(
+          picked.filter((p: string) => !files.some((f) => f.name === fileNameFromPath(p))),
+        );
+        for (const folder of folders) {
+          addFocusedAttachment({
+            id: makeAttId(),
+            type: "vault",
+            url: "",
+            name: folder.name,
+            mime: "",
+            size: 0,
+            vaultTitle: folder.name,
+            vaultContent: folder.listing,
+          });
+        }
+      })();
+    };
+
+    window.addEventListener(VAULT_PICK_ITEMS_EVENT, onItems);
+    window.addEventListener(VAULT_PICK_PATHS_EVENT, onPaths);
+    return () => {
+      window.removeEventListener(VAULT_PICK_ITEMS_EVENT, onItems);
+      window.removeEventListener(VAULT_PICK_PATHS_EVENT, onPaths);
+    };
+  }, [applyVaultDropToChat, addFocusedAttachment, updateFocusedAttachment, user?.id]);
 
   // Vault page "Chat" on a pulled-up card: stash payload, navigate here, then
   // attach it with the same path as embedded click-to-add.
@@ -3119,10 +3244,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     setShowAddLinkDialog(false);
   }, [chatMode, addLinkToChat]);
 
-  // Open the same vault pullout the top-right "+" uses, so the user can browse
-  // the vault and drag items straight into the chat.
+  // The vault is the Finder window, so picking from it opens that rather than
+  // an embedded copy of the old Vault page. "thread" is what brings the choice
+  // back to this chat instead of pushing it at the desktop bar.
   const handlePullFromVault = useCallback(() => {
-    setShowVaultSidebar(true);
+    openVaultPicker("thread");
   }, []);
 
   // Open the project picker so the user can scope the chat to a LYKN project.
@@ -3154,13 +3280,12 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
   // Studio "New chat" (top-left icon): same flow as the app sidebar — create
   // the chat row immediately, then navigate this surface to it. The current
-  // mode session (Build / Imagine / Research) carries over. The Imagine page
-  // is special: it doesn't write chat turns, so a fresh chat row would change
-  // nothing visible — instead clear its canvas in place.
+  // mode session (Build / Imagine / Research) carries over. Imagine's canvas
+  // is cleared up front so it blanks immediately rather than lingering on the
+  // old generations until the navigation remounts it.
   const handleStudioNewChat = useCallback(async () => {
     if (studioView === "imagine") {
       window.dispatchEvent(new CustomEvent(IMAGINE_CLEAR_EVENT));
-      return;
     }
     if (!user?.id) return;
     try {
@@ -3196,28 +3321,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     }, 0);
   }, [setChatInput, chatPanelInputRef, centerChatInputRef]);
 
-  // "Ask AI" on a local file (Mac Files surface): the browser stashes a
-  // prompt and flips the Studio to this tab. Consume it on mount, and via
-  // the DOM event when this surface is already warm.
-  useEffect(() => {
-    const consume = (fallback = "") => {
-      let text = "";
-      try {
-        text = sessionStorage.getItem("lykn_pending_local_file_ask") || "";
-        if (text) sessionStorage.removeItem("lykn_pending_local_file_ask");
-      } catch {
-        /* storage blocked — fall back to the event payload */
-      }
-      if (!text) text = fallback;
-      if (text) handleComposerChipInsert(text);
-    };
-    consume();
-    const onAsk = (e: Event) =>
-      consume(String((e as CustomEvent).detail?.text || ""));
-    window.addEventListener("lykn-local-file-ask", onAsk);
-    return () => window.removeEventListener("lykn-local-file-ask", onAsk);
-  }, [handleComposerChipInsert]);
-
   // Post-report / post-build suggestion: flip to the target Studio mode,
   // arm its lane, and send immediately so the user lands mid-task.
   // Uses handleChatSend (not studioGuardedSend) because we intentionally left
@@ -3239,9 +3342,33 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     studioModeInstructionsRef.current =
       view === "chat" ? "" : STUDIO_VIEW_SYSTEM_PROMPTS[view];
     studioModeSaveRef.current = view === "chat" ? null : view;
+    if (view === "imagine") {
+      // Attachment-only: keep chips on the shared bar until there's a prompt.
+      if (!text) {
+        setChatInput("");
+        return;
+      }
+      const ok = imagineRef.current?.generate(
+        chatAttachmentsToImagineInput(text, focusedChatAttachments),
+      );
+      if (ok) {
+        setChatInput("");
+        setFocusedChatAttachments([]);
+      } else {
+        setChatInput(text);
+      }
+      return;
+    }
     setChatInput(text);
     void handleChatSend();
-  }, [isChatLoading, setComposerMode, setChatInput, handleChatSend]);
+  }, [
+    isChatLoading,
+    setComposerMode,
+    setChatInput,
+    handleChatSend,
+    focusedChatAttachments,
+    setFocusedChatAttachments,
+  ]);
 
   // A mode picked from the home desktop must survive chat hydration: the
   // settled chat's saved mode (usually plain "chat") hydrates asynchronously
@@ -3268,18 +3395,30 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   // renders. Hold the stash until this instance owns a chat route.
   useEffect(() => {
     if (!routeChatId) return;
-    const consume = (fallback: { view?: string; text?: string; researchSourcePref?: string } = {}) => {
+    const consume = (fallback: {
+      view?: string;
+      text?: string;
+      researchSourcePref?: string;
+      vaultPayloads?: Record<string, unknown>[];
+    } = {}) => {
       let view = String(fallback.view || "");
       let text = String(fallback.text || "");
       let sourcePref = String(fallback.researchSourcePref || "");
+      let vaultPayloads = Array.isArray(fallback.vaultPayloads) ? fallback.vaultPayloads : [];
       try {
         const raw = sessionStorage.getItem("lykn_pending_home_chat");
         if (raw) {
           sessionStorage.removeItem("lykn_pending_home_chat");
-          const p = JSON.parse(raw) as { view?: string; text?: string; researchSourcePref?: string };
+          const p = JSON.parse(raw) as {
+            view?: string;
+            text?: string;
+            researchSourcePref?: string;
+            vaultPayloads?: Record<string, unknown>[];
+          };
           view = String(p?.view || view);
           text = String(p?.text || text);
           sourcePref = String(p?.researchSourcePref || sourcePref);
+          if (Array.isArray(p?.vaultPayloads)) vaultPayloads = p.vaultPayloads;
         }
       } catch {
         /* storage blocked — fall back to the event payload */
@@ -3290,10 +3429,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         setResearchSourcePref(pref);
       }
       text = text.trim();
-      // Claimed before the empty-prompt bail so files can't linger and
-      // reappear on a later send. A file with no words is a valid turn.
+      // Claimed before the empty-prompt bail so files/folders can't linger
+      // and reappear on a later send. A file with no words is a valid turn.
       const homeFiles = takePendingHomeChatFiles();
-      if (!text && !homeFiles.length) return;
+      const homeFolders = takePendingHomeChatFolders();
+      if (!text && !homeFiles.length && !homeFolders.length && !vaultPayloads.length) return;
       // Empty view = follow-up from the home bar mid-conversation: keep
       // whatever mode this surface is currently in (its pill owns it).
       const resolved: StudioView =
@@ -3301,45 +3441,59 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           ? (view as StudioView)
           : ((studioModeSaveRef.current as StudioView) || "chat");
       homeModeOverrideRef.current = { view: resolved, at: Date.now() };
-      if (resolved === "imagine") {
-        // Imagine generates from the prompt alone — a bare file has nothing
-        // to render, so there's no turn to start.
-        if (!text) return;
-        try {
-          sessionStorage.setItem("lykn_pending_imagine_prompt", text);
-        } catch {
-          /* the seed event below still covers the warm page */
-        }
-        setStudioView("imagine");
-        setComposerMode(STUDIO_VIEW_MODES.imagine);
-        window.dispatchEvent(
-          new CustomEvent("lykn-imagine-seed", { detail: { text } }),
-        );
-        return;
-      }
-      if (homeFiles.length) {
+      if (homeFiles.length || homeFolders.length || vaultPayloads.length) {
         pendingHomeAttachSendRef.current = { view: resolved, text, ready: false };
-        void ingestChatFiles(homeFiles, addFocusedAttachment, {
-          userId: user?.id,
-          updateAttachment: updateFocusedAttachment,
-        }).finally(() => {
-          if (pendingHomeAttachSendRef.current) {
-            pendingHomeAttachSendRef.current.ready = true;
-          }
+        for (const snap of homeFolders) {
+          addFocusedAttachment({
+            id: makeAttId(),
+            type: "folder",
+            url: "",
+            name: snap.name,
+            mime: "",
+            size: 0,
+            vaultTitle: snap.name,
+            vaultContent: snap.listing,
+          });
+        }
+        const attachmentTasks: Promise<unknown>[] = [];
+        if (homeFiles.length) {
+          attachmentTasks.push(
+            ingestChatFiles(homeFiles, addFocusedAttachment, {
+              userId: user?.id,
+              updateAttachment: updateFocusedAttachment,
+            }),
+          );
+        }
+        for (const vaultPayload of vaultPayloads) {
+          attachmentTasks.push(applyVaultDropToChat(vaultPayload));
+        }
+        if (attachmentTasks.length) {
+          void Promise.all(attachmentTasks).finally(() => {
+            if (pendingHomeAttachSendRef.current) pendingHomeAttachSendRef.current.ready = true;
+            setHomeAttachSendTick((t) => t + 1);
+          });
+        } else {
+          pendingHomeAttachSendRef.current.ready = true;
           setHomeAttachSendTick((t) => t + 1);
-        });
+        }
         return;
       }
       handleStudioFollowUp(resolved, text);
     };
     consume();
     const onSend = (e: Event) =>
-      consume(((e as CustomEvent).detail || {}) as { view?: string; text?: string; researchSourcePref?: string });
+      consume(((e as CustomEvent).detail || {}) as {
+        view?: string;
+        text?: string;
+        researchSourcePref?: string;
+        vaultPayloads?: Record<string, unknown>[];
+      });
     window.addEventListener("lykn-home-chat-send", onSend);
     return () => window.removeEventListener("lykn-home-chat-send", onSend);
   }, [
     routeChatId, handleStudioFollowUp, setComposerMode,
     addFocusedAttachment, updateFocusedAttachment, user?.id,
+    applyVaultDropToChat,
   ]);
 
   // The armed home-bar send, fired on the render that commits the last
@@ -3380,6 +3534,169 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     window.addEventListener("lykn-home-view", onView);
     return () => window.removeEventListener("lykn-home-view", onView);
   }, [routeChatId, handleStudioModeSelect]);
+
+  useEffect(() => {
+    openArtifactRef.current = activeArtifact;
+  }, [activeArtifact]);
+
+  // Which app installing would update, read off the build on screen rather than
+  // held per chat: a chat that goes on to build something else produces an
+  // untagged artifact, and offering to update the old app there is how a new
+  // app once overwrote a different one.
+  const editingAppId = activeArtifact?.installedAppId || null;
+
+  const appSourceStrip = useMemo(() => {
+    if (voiceModeOn) return null;
+    if (editingAppName) {
+      return { appName: editingAppName, paths: [] as string[], loading: true };
+    }
+    if (editingAppId && activeArtifact) {
+      const paths = (Array.isArray(activeArtifact.files) ? activeArtifact.files : [])
+        .map((f) => String((f as { path?: string })?.path || ""))
+        .filter(Boolean);
+      return {
+        appName: String(activeArtifact.title || "this app"),
+        paths,
+        loading: false,
+      };
+    }
+    return null;
+  }, [voiceModeOn, editingAppName, editingAppId, activeArtifact]);
+
+  // Switching to Build re-renders `handleStudioModeSelect`, which would restart
+  // the effect below — the one that just asked for it. Through a ref so the
+  // effect depends on the chat and nothing else.
+  const studioModeSelectRef = useRef(handleStudioModeSelect);
+  studioModeSelectRef.current = handleStudioModeSelect;
+  useEffect(() => () => { editAppChatRef.current = null; }, []);
+
+  // Chat + app this surface has already read the source for, so the extra runs
+  // that come with hydration don't each fire their own rebuild.
+  const appEditLoadRef = useRef<string>("");
+
+  // "Edit in Build mode" on an installed app: attach its real source so the
+  // next message patches the app rather than starting a new one. The preview
+  // panel stays closed — Edit is Build mode, not pulling the live app up.
+  // The dock stashes the app id before opening chat; this is the surface
+  // that mounts afterwards and picks it up.
+  useEffect(() => {
+    if (!routeChatId) return;
+    editAppChatRef.current = routeChatId;
+    // Liveness is the chat this ran for, held in a ref: an effect-scoped flag
+    // would be tripped by the surface's own re-renders and strand a load that
+    // is still perfectly valid.
+    const stillOurs = () => editAppChatRef.current === routeChatId;
+
+    const enterBuild = (appId: string) => {
+      homeModeOverrideRef.current = { view: "build", at: Date.now() };
+      studioModeSelectRef.current("build");
+      // Claimed before the source arrives, so a build that lands in the
+      // meantime is recognised as this app's next version rather than a
+      // second copy of it.
+      linkArtifactApp(routeChatId, appId);
+    };
+    const attach = (appId: string, artifact: ChatArtifact) => {
+      enterBuild(appId);
+      setActiveArtifact(artifact);
+    };
+
+    /**
+     * Read an app's current source and attach it for Build mode to edit.
+     *
+     * Reading is a store round-trip, so Build mode and the "Opening …" strip
+     * go up first: until this, the click spent that whole time looking like
+     * it had done nothing at all. The live app is not opened.
+     */
+    const load = (appId: string, name: string, announce: boolean) => {
+      const key = `${routeChatId}:${appId}`;
+      if (appEditLoadRef.current === key) return;
+      appEditLoadRef.current = key;
+      if (announce) setEditingAppName(name || "this app");
+      void appEditArtifactById(appId)
+        .then((artifact) => {
+          if (!stillOurs()) return;
+          if (appEditLoadRef.current !== key) return;
+          setEditingAppName(null);
+          if (artifact) {
+            // A build already on screen is newer than what was installed —
+            // reopening must not throw away work not yet installed.
+            if (!announce && openArtifactRef.current) return;
+            attach(appId, artifact);
+            return;
+          }
+          // Uninstalled, or no source saved for it. Either way this is an
+          // ordinary Build chat now — installing must not aim at an app that
+          // is not there.
+          appEditLoadRef.current = "";
+          forgetAppEdit(routeChatId);
+          linkArtifactApp(routeChatId, null);
+          if (announce) {
+            toast({
+              title: "Couldn't open that app",
+              description: `${name || "That app"} has no source saved on this device.`,
+            });
+          }
+        })
+        .catch(() => {
+          // Left retryable: reopening the chat should have another go rather
+          // than treating one failed read as the app being unopenable.
+          if (appEditLoadRef.current !== key) return;
+          appEditLoadRef.current = "";
+          if (!stillOurs()) return;
+          setEditingAppName(null);
+          if (announce) {
+            toast({
+              title: "Couldn't open that app",
+              description: "Reading its source failed. Please try again.",
+            });
+          }
+        });
+    };
+
+    const pending = takePendingAppEdit();
+    if (pending) {
+      rememberAppEdit(routeChatId, pending.appId);
+      if (pending.artifact) {
+        attach(pending.appId, pending.artifact);
+      } else {
+        enterBuild(pending.appId);
+        load(pending.appId, pending.name || "", true);
+      }
+      return;
+    }
+
+    // Reopening the chat later: the handoff is long gone, so read the app's
+    // current source back off disk. Whatever it says now is the truth to edit,
+    // including changes made from another chat.
+    const linked = recallAppEdit(routeChatId);
+    if (linked) {
+      linkArtifactApp(routeChatId, linked);
+      load(linked, "", false);
+    }
+  }, [routeChatId, setActiveArtifact, linkArtifactApp]);
+
+  const handleDismissAppEdit = useCallback(() => {
+    const chatId = String(routeChatId || "").trim();
+    appEditLoadRef.current = "";
+    setEditingAppName(null);
+    if (chatId) {
+      forgetAppEdit(chatId);
+      linkArtifactApp(chatId, null);
+    }
+    const current = openArtifactRef.current;
+    if (!current) return;
+    if (isAppEditSeed(current) || current.installedAppId) {
+      if (isAppEditSeed(current)) {
+        setActiveArtifact(null);
+      } else {
+        const next = { ...current };
+        delete next.installedAppId;
+        setActiveArtifact(next);
+      }
+    }
+  }, [routeChatId, linkArtifactApp, setActiveArtifact]);
+
+  useEffect(() => subscribeDismissAppEdit(handleDismissAppEdit), [handleDismissAppEdit]);
 
   // Home-bar voice button: turn Voice Mode on. Storage covers a cold mount,
   // the event covers the warm surface (turning voice OFF happens inside the
@@ -3449,17 +3766,26 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     );
   }, [studioView, isGlassChat]);
 
+  // Home pill lives outside this page, so the editing chips have to be
+  // published for it — the in-page composer is hidden while hosted.
+  useEffect(() => {
+    publishAppSourceStrip(appSourceStrip);
+  }, [appSourceStrip]);
+  useEffect(() => () => publishAppSourceStrip(null), []);
+
   // Tell the Studio shell whether a conversation is actually under way —
   // the home desktop's rounded bar stays centered on fresh pages and only
-  // docks to the bottom once turns exist. The Imagine page broadcasts its
-  // own signal (batches, not chat turns), so skip it here.
+  // docks to the bottom once turns exist. Imagine shares this thread, so
+  // the same signal covers every mode. Editing an installed app is still
+  // a fresh Build page until the first message.
   const hasChatTurns = chatMessages.length > 0;
   useEffect(() => {
-    if (isGlassChat && studioView === "imagine") return;
     window.dispatchEvent(
-      new CustomEvent("lykn-chat-activity-changed", { detail: { active: hasChatTurns } }),
+      new CustomEvent("lykn-chat-activity-changed", {
+        detail: { active: hasChatTurns },
+      }),
     );
-  }, [hasChatTurns, studioView, isGlassChat]);
+  }, [hasChatTurns]);
 
   useEffect(() => {
     setStudioChipsDismissed(false);
@@ -3536,21 +3862,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     return null;
   }, [chatMessages, studioView]);
 
-  // Topic for post-build suggestions: prefer the open artifact title, else
-  // the latest user prompt that produced it.
-  const latestBuildTopic = useMemo(() => {
-    const titled = String(activeArtifact?.title || "").trim();
-    if (titled) return titled;
-    for (let i = chatMessages.length - 1; i >= 0; i--) {
-      const m = chatMessages[i] as any;
-      if (m?.role === "user") {
-        const content = String(m.content || "").trim();
-        if (content) return content;
-      }
-    }
-    return "this build";
-  }, [activeArtifact?.title, chatMessages]);
-
   const [researchReportSaving, setResearchReportSaving] = useState(false);
   const handleSaveResearchReport = useCallback(async () => {
     if (researchReportSaving) return;
@@ -3603,73 +3914,95 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     }
   }, [researchReportSaving, latestResearch, user?.id, requireSignIn, checkVaultLimit, routeChatId, chatId]);
 
-  const saveAttachmentToMedia = useCallback(async (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => {
-    if (!url) return;
-    if (!user?.id) { requireSignIn("save to the vault"); return; }
-    if (!(await checkVaultLimit())) return;
-    const fileId = crypto.randomUUID();
-    let fileUrl = url;
-    let storagePath = "";
-    let fileSize = 0;
-    let uploaded = false;
-    const ext = mediaType === "image" ? "jpg" : mediaType === "video" ? "mp4" : mediaType === "audio" ? "mp3" : "bin";
-    const mimeMap: Record<string, string> = { image: "image/jpeg", video: "video/mp4", audio: "audio/mpeg", file: "application/octet-stream" };
-    let mimeType = mimeMap[mediaType] || "application/octet-stream";
+  /**
+   * Save a file the user attached to a chat turn into the vault as its own
+   * downloaded copy: pull the bytes from wherever they currently live (data
+   * URL, signed URL, device blob, or the original File still in memory), write
+   * them to a fresh `{userId}/{fileId}/original.{ext}` object, and hand the
+   * result to the shared upload path so the card looks and behaves like any
+   * other file in the vault — right type, tags, extracted text, embedding.
+   *
+   * The chat attachment keeps pointing at its own copy, so deleting the vault
+   * card can never blank an image out of the transcript.
+   */
+  const saveAttachmentToMedia = useCallback(async (
+    att: FocusedChatAttachment,
+    opts?: { source?: string; quiet?: boolean },
+  ) => {
+    if (!att) return false;
+    if (!user?.id) { requireSignIn("save to the vault"); return false; }
+    if (!(await checkVaultLimit())) return false;
+    // Background saves (voice paste) report nothing — the user didn't ask for
+    // this one and a toast per pasted file would bury the conversation.
+    const say = opts?.quiet
+      ? () => {}
+      : (title: string, description?: string) => toast({ title, description });
 
-    try {
-      const res = await fetch(url);
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob.type) mimeType = blob.type;
-        const blobExt = blob.type?.split("/")?.[1]?.replace("jpeg", "jpg") || ext;
-        storagePath = `${user.id}/${fileId}/original.${blobExt}`;
-        const { error: uploadError } = await supabase.storage
-          .from("user-files")
-          .upload(storagePath, blob, { cacheControl: "3600", upsert: false, contentType: mimeType });
-        if (!uploadError) {
-          fileSize = blob.size;
-          const { data: signedData } = await supabase.storage
-            .from("user-files")
-            .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-          fileUrl = signedData?.signedUrl || url;
-          uploaded = true;
-        }
-      }
-    } catch { /* save with direct URL */ }
+    const kind = chatAttachmentKind(att);
+    if (kind === "link") {
+      const linkUrl = String(att.url || "").trim();
+      if (!linkUrl) return false;
+      await saveLinkToMedia(linkUrl);
+      return true;
+    }
 
-    try {
-      const filename = name || `Saved ${mediaType} ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.${ext}`;
-      const attachment = [{
-        type: mediaType,
-        url: fileUrl,
-        name: filename,
-        fileId,
-        ...(uploaded ? { storagePath, storageBucket: "user-files", size: fileSize } : {}),
-        mimeType,
-      }];
-      const noteContent = `${filename}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
-      const { data: ins, error } = await supabase
-        .from("vault_items")
-        .insert({
-          user_id: user.id,
-          title: filename,
-          content: noteContent,
-          // Tag voice-shared attachments so the voice "add_to_project" tool can
-          // resolve "add this to my <project>" to the file the user just shared
-          // without the model having to echo back a vault node id.
-          source: "lykn-voice-attachment",
-        })
-        .select("id")
-        .single();
-      if (error) {
-        notifyVaultCapIfApplicable(error);
-      } else if (ins?.id) {
-        afterVaultNoteSaved(user.id, ins.id, { title: filename, content: noteContent }, {
-          excludeChatId: routeChatId || chatId || undefined,
-        });
+    const filename = chatAttachmentFilename(att);
+    const blob = await fetchChatAttachmentBlob(att);
+    if (!blob) {
+      say("Couldn't save to vault", "This file's contents are no longer available.");
+      return false;
+    }
+
+    const mimeType = blob.type || String(att.mime || "") || "application/octet-stream";
+    const ext =
+      filename.match(/\.([a-z0-9]{1,8})$/i)?.[1]?.toLowerCase() ||
+      mimeType.split("/")[1]?.replace("jpeg", "jpg") ||
+      "bin";
+    const storagePath = `${user.id}/${crypto.randomUUID()}/original.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("user-files")
+      .upload(storagePath, blob, { cacheControl: "3600", upsert: false, contentType: mimeType });
+    if (uploadError) {
+      notifyVaultCapIfApplicable(uploadError);
+      say("Couldn't save to vault", "The upload didn't finish. Please try again.");
+      return false;
+    }
+    const { data: signedData } = await supabase.storage
+      .from("user-files")
+      .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+
+    const fileType = chatAttachmentFileType(att);
+    const result = await saveFileToVault({
+      userId: user.id,
+      filename,
+      fileType,
+      fileUrl: signedData?.signedUrl || "",
+      storagePath,
+      storageBucket: "user-files",
+      fileSize: blob.size,
+      mimeType,
+      extractedText: chatAttachmentText(att),
+      source: opts?.source || "chat_attachment",
+      tags: [fileType, "uploaded"],
+    });
+
+    if (!result.ok) {
+      if (result.reason === "duplicate") return true;
+      if (result.reason !== "cap" && result.reason !== "rate") {
+        say("Couldn't save to vault", result.message || "Please try again.");
       }
-    } catch { /* ignore */ }
-  }, [user?.id, routeChatId, chatId, requireSignIn]);
+      return false;
+    }
+
+    incrementVaultCount();
+    say("Saved to vault", filename);
+    try {
+      const { queryClientInstance } = await import("@/lib/query-client");
+      void queryClientInstance.invalidateQueries({ queryKey: ["vault-notes", user.id] });
+    } catch { /* vault will refresh on next visit */ }
+    return true;
+  }, [user?.id, requireSignIn, checkVaultLimit, incrementVaultCount, saveLinkToMedia]);
 
   // Save an AI-built artifact (deck / document / chart / file) from the side
   // panel into the vault. Documents & decks save the human-friendly PDF when
@@ -3927,29 +4260,38 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       }];
       const noteContent = `${title}\n\n[ATTACHMENTS_JSON:${JSON.stringify(attachment)}]`;
 
+      // Through the repository rather than straight at Supabase: an artifact
+      // written past it lands somewhere AI Drive never reads once the user has
+      // moved their vault onto this device.
+      const writes = createVaultWrites(user.id);
+      // `folder` and `source` are re-stamped on update as well as insert, so
+      // an artifact saved over a row that predates them gets filed properly
+      // the first time it changes.
+      const filing = {
+        source: "ai_artifact",
+        folder: "Generated",
+        tags: [fileType, "generated"],
+      };
+
       let noteId = existing?.noteId || "";
       if (existing?.noteId) {
-        const { error } = await supabase
-          .from("vault_items")
-          .update({
-            title,
-            content: noteContent,
-            tags: [fileType, "generated"],
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", existing.noteId)
-          .eq("user_id", user.id);
+        const { error } = await writes.update(existing.noteId, {
+          title,
+          content: noteContent,
+          ...filing,
+          updated_at: new Date().toISOString(),
+        });
         if (error) {
           if (notifyVaultCapIfApplicable(error)) return false;
           if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
           return false;
         }
       } else {
-        const { data: ins, error } = await supabase
-          .from("vault_items")
-          .insert({ user_id: user.id, title, content: noteContent, source: "ai_artifact", tags: [fileType, "generated"] })
-          .select("id")
-          .single();
+        const { data: ins, error } = await insertWithSchemaFallback(
+          (row) => writes.insert(row),
+          { title, content: noteContent, ...filing },
+          ["title", "content"],
+        );
         if (error) {
           if (notifyVaultCapIfApplicable(error)) return false;
           if (!opts?.auto) toast({ title: "Couldn't save", description: "Please try again." });
@@ -3984,10 +4326,10 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   }, [user?.id, routeChatId, chatId, requireSignIn, checkVaultLimit, incrementVaultCount]);
 
 
-  // Sticky-mode lane guard: on the Build / Imagine / Research pages every
-  // send is force-routed down that page's pipeline, so a clearly out-of-lane
-  // ask (e.g. "generate an image of a dog" on the Research page) would run
-  // the wrong pipeline to completion before the model could object. Catch
+  // Sticky-mode lane guard: explicit deliverable requests on the Build /
+  // Imagine / Research pages route down that page's pipeline, so a clearly
+  // out-of-lane commission (e.g. "generate an image of a dog" on Research)
+  // could run the wrong pipeline before the model could object. Catch
   // it before dispatch and answer instantly with a pointer to the mode
   // pills at the top of the page instead of wasting a full pipeline run.
   const studioGuardedSend = useCallback(async () => {
@@ -4028,9 +4370,30 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         setChatInput("");
         return;
       }
+      if (studioView === "imagine") {
+        if (!text) return;
+        const ok = imagineRef.current?.generate(
+          chatAttachmentsToImagineInput(text, focusedChatAttachments),
+        );
+        if (ok) {
+          setChatInput("");
+          setFocusedChatAttachments([]);
+        }
+        return;
+      }
     }
     await handleChatSend();
-  }, [isGlassChat, studioView, chatInputRef, setChatMessages, aiThreadRef, setChatInput, handleChatSend]);
+  }, [
+    isGlassChat,
+    studioView,
+    chatInputRef,
+    setChatMessages,
+    aiThreadRef,
+    setChatInput,
+    handleChatSend,
+    focusedChatAttachments,
+    setFocusedChatAttachments,
+  ]);
 
   const handleCenterAskSend = useCallback(async () => {
     if ((!chatInputRef.current.trim() && focusedChatAttachments.length === 0) || isChatLoading) return;
@@ -4422,6 +4785,15 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         </div>
       );
     }
+    if (t === "folder") {
+      return (
+        <div className="relative inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/30 px-3 py-2 group">
+          <FolderIcon className="w-4 h-4 flex-shrink-0 opacity-60" />
+          <span className="max-w-[11.25rem] truncate text-xs">{att.vaultTitle || att.name || "Folder"}</span>
+          <button type="button" onClick={() => removeFocusedAttachment(att.id)} className="h-4 w-4 rounded-full hover:bg-black/10 flex items-center justify-center"><X className="w-3 h-3" /></button>
+        </div>
+      );
+    }
     if ((t === "link" || t === "bookmark") && att.url) {
       return (
         <div className="relative w-44 group">
@@ -4518,51 +4890,16 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         addFocusedAttachment({ id: makeAttId(), type: "vault", url: "", name: "Dropped text", mime: "", size: 0, vaultTitle: "Dropped text", vaultContent: text });
       }
     }
+    // Materialized synchronously: the FileList dies with the event.
     const files = Array.from(e.dataTransfer.files);
-    for (const f of files) {
-      const file = f;
-      const mime = file.type || "";
-      const ext = (file.name || "").split(".").pop()?.toLowerCase() || "";
-      const isDoc = DOCUMENT_EXTS.has(ext);
-      if (isDoc) {
-        (async () => {
-          try {
-            const { extractTextFromFile } = await import("@/lib/extract-text");
-            const { API_BASE_URL } = await import("@/lib/api-config");
-            const result = await extractTextFromFile(file, API_BASE_URL);
-            addFocusedAttachment({
-              id: makeAttId(), type: "document", url: "", name: file.name, mime, size: file.size,
-              extractedText: result?.text || "",
-            });
-          } catch {
-            addFocusedAttachment({ id: makeAttId(), type: "document", url: "", name: file.name, mime, size: file.size });
-          }
-        })();
-        continue;
-      }
-      const AUDIO_EXTS = new Set(["mp3", "wav", "m4a", "ogg", "aac", "flac", "wma"]);
-      const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "webm", "mkv", "wmv"]);
-      const isAudio = mime.startsWith("audio/") || AUDIO_EXTS.has(ext);
-      const isVideo = mime.startsWith("video/") || VIDEO_EXTS.has(ext);
-      if (isAudio || isVideo) {
-        addFocusedAttachment({
-          id: makeAttId(), type: isAudio ? "audio" : "video",
-          url: "", name: file.name, mime, size: file.size, rawFile: file,
-        });
-        continue;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        let type = "file";
-        if (mime.startsWith("image/")) type = "image";
-        else if (mime === "application/pdf" || ext === "pdf") type = "pdf";
-        addFocusedAttachment({ id: makeAttId(), type, url: dataUrl, name: file.name, mime, size: file.size });
-      };
-      reader.readAsDataURL(f);
+    if (files.length) {
+      void ingestChatFiles(files, addFocusedAttachment, {
+        userId: user?.id,
+        updateAttachment: updateFocusedAttachment,
+      });
     }
     window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
-  }, [addFocusedAttachment, applyVaultDropToChat]);
+  }, [addFocusedAttachment, applyVaultDropToChat, updateFocusedAttachment, user?.id]);
 
 
   // Voice Mode is only offered on "main model agents": the default LYKN
@@ -4665,10 +5002,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
   // A vault document the voice agent pulled up on screen (display_document).
   // Rendered in the embedded reader above the voice overlay; null when closed.
-  const [voiceDocPayload, setVoiceDocPayload] = useState<ChatNeuronVaultPayload | null>(null);
   const handleVoiceDisplayDocument = useCallback((payload: unknown) => {
-    const p = payload as ChatNeuronVaultPayload | null;
-    if (p && p.ok && p.kind === "vault") setVoiceDocPayload(p);
+    const p = payload as { ok?: boolean; kind?: string } | null;
+    if (p && p.ok && p.kind === "vault") {
+      openLyknMediaPop({ type: "vault-payload", payload: p });
+    }
   }, []);
 
   const handleVoiceUserTranscript = useCallback((text: string) => {
@@ -4854,20 +5192,17 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
             } else if (t === "link" || t === "bookmark") {
               if (att.url) await saveLinkToMedia(att.url);
             } else {
-              const mediaType: "image" | "video" | "audio" | "file" =
-                t === "image" ? "image" : t === "video" ? "video" : t === "audio" ? "audio" : "file";
               // Images already carry a downscaled data URL; documents/audio/
               // video have no URL, so fall back to the original File bytes.
-              let url = att.url || "";
-              let createdObjectUrl = false;
-              if (!url) {
-                const f = att.rawFile || (input?.files || []).find((file) => file.name === att.name);
-                if (f) { url = URL.createObjectURL(f); createdObjectUrl = true; }
-              }
-              if (url) {
-                await saveAttachmentToMedia(url, att.name, mediaType);
-                if (createdObjectUrl) URL.revokeObjectURL(url);
-              }
+              const rawFile =
+                att.rawFile || (input?.files || []).find((file) => file.name === att.name);
+              // Keep the voice source tag: the voice `add_to_project` tool
+              // resolves "add this to my <project>" by looking up the most
+              // recent vault row saved with it.
+              await saveAttachmentToMedia(rawFile ? { ...att, rawFile } : att, {
+                source: "lykn-voice-attachment",
+                quiet: true,
+              });
             }
           } catch { /* per-item best-effort */ }
         }
@@ -4926,9 +5261,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     setSavedYouTubeIds((p) => new Set(p).add(videoId));
   }, [saveYouTubeToMedia]);
 
-  const handleSideRailSaveAttachment = useCallback((url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => {
-    void saveAttachmentToMedia(url, name, mediaType);
-    setSavedMediaUrls((p) => new Set(p).add(url));
+  const handleSideRailSaveAttachment = useCallback((att: FocusedChatAttachment) => {
+    void saveAttachmentToMedia(att);
+    setSavedMediaUrls((p) => new Set([...p, ...chatAttachmentSaveKeys(att)]));
   }, [saveAttachmentToMedia]);
 
   const handleSideRailSaveAiImage = useCallback(async (
@@ -4956,14 +5291,121 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     setTimeout(() => setCopiedMsgId((cur) => cur === msgId ? null : cur), 2000);
   }, []);
 
+  // Imagine finished a batch. It becomes an ordinary turn in this chat, which
+  // is what lets its images survive a reload and lets the conversation read as
+  // one thread no matter which mode produced each turn.
+  const handleImagineBatchCommit = useCallback((commit: ImagineCommit) => {
+    if (!commit.images.length) return;
+    const current = chatMessagesRef.current || [];
+    // Switching Imagine ↔ Chat remounts the canvas; skip a batch already
+    // written into this thread so the turn is not appended again.
+    const already = current.some((m) => {
+      const batchId = (m as { imagine?: { batchId?: string } }).imagine?.batchId;
+      if (batchId && batchId === commit.id) return true;
+      const imgs = Array.isArray((m as { aiImages?: { url?: string }[] }).aiImages)
+        ? (m as { aiImages: { url?: string }[] }).aiImages
+        : [];
+      if (!imgs.length) return false;
+      const samePrompt = String(m.content || "").trim() === String(commit.prompt || "").trim();
+      const sameImages =
+        imgs.length === commit.images.length &&
+        imgs.every((img, i) => img?.url && img.url === commit.images[i]?.url);
+      return samePrompt && sameImages;
+    });
+    if (already) return;
+    const count = commit.images.length;
+    const verb =
+      commit.kind === "refine" ? "Refined" : commit.kind === "variations" ? "Varied" : "Generated";
+    const note = `${verb} ${count} image${count === 1 ? "" : "s"}.`;
+    const stamp = new Date().toISOString();
+    const turn = {
+      id: newMsgId(),
+      role: "user",
+      content: commit.prompt,
+      kind: "prompt",
+      createdAt: stamp,
+      aiResponse: note,
+      aiCompletedAt: stamp,
+      aiImages: commit.images,
+      imagine: {
+        aspect: commit.aspectRatio,
+        kind: commit.kind,
+        batchId: commit.id,
+        ...(commit.concept && commit.concept !== commit.prompt
+          ? { concept: commit.concept }
+          : {}),
+      },
+    } as unknown as PromptMessage;
+
+    const next = [...(chatMessagesRef.current || []), turn];
+    chatMessagesRef.current = next;
+    setChatMessages(next);
+    // Model-facing history, so a later chat turn can refer back to what was
+    // drawn here rather than treating the images as if they never happened.
+    const rebuilt = [
+      ...(aiThreadRef.current || []),
+      { role: "user" as const, content: commit.prompt },
+      { role: "assistant" as const, content: note },
+    ];
+    aiThreadRef.current = rebuilt.length > 40 ? rebuilt.slice(rebuilt.length - 40) : rebuilt;
+    // The send path reads history from the per-chat runtime snapshot rather
+    // than React state, so it has to be told separately.
+    const bid = String(routeChatId || chatId || "");
+    if (bid) {
+      patchThreadSnapshot(bid, { chatMessages: next, aiThread: [...aiThreadRef.current] });
+    }
+    try {
+      window.dispatchEvent(new Event("lyknchat_flush_save"));
+    } catch { /* the debounced autosave still covers this */ }
+  }, [newMsgId, setChatMessages, chatMessagesRef, aiThreadRef, routeChatId, chatId]);
+
+  /** Past Imagine turns in this chat, replayed onto the canvas after a reload. */
+  const imagineSeedBatches = useMemo(
+    () => imagineBatchesFromTurns(chatMessages as unknown as Parameters<typeof imagineBatchesFromTurns>[0]),
+    [chatMessages],
+  );
+
+  // Earlier Imagine remounts wrote the same batch into the thread again.
+  // Drop those copies the next time the conversation is shown as chat.
+  useEffect(() => {
+    if (studioView === "imagine") return;
+    const msgs = chatMessagesRef.current || [];
+    const seen = new Set<string>();
+    const next = msgs.filter((m) => {
+      const imgs = Array.isArray((m as { aiImages?: { url?: string }[] }).aiImages)
+        ? (m as { aiImages: { url?: string }[] }).aiImages.filter((i) => i?.url)
+        : [];
+      if (!imgs.length) return true;
+      const sig = `${String(m.content || "").trim()}\n${imgs.map((i) => i.url).join("\n")}`;
+      if (seen.has(sig)) return false;
+      seen.add(sig);
+      return true;
+    });
+    if (next.length === msgs.length) return;
+    chatMessagesRef.current = next;
+    setChatMessages(next);
+    const bid = String(routeChatId || chatId || "");
+    if (bid) {
+      patchThreadSnapshot(bid, { chatMessages: next, aiThread: [...(aiThreadRef.current || [])] });
+    }
+    try {
+      window.dispatchEvent(new Event("lyknchat_flush_save"));
+    } catch { /* autosave still covers this */ }
+  }, [studioView, chatMessages, setChatMessages, chatMessagesRef, aiThreadRef, routeChatId, chatId]);
+
   const handleFocusedChatSaveYouTube = useCallback((videoId: string, url: string) => {
     void saveYouTubeToMedia(videoId, url);
     setSavedYouTubeIds((p) => new Set(p).add(videoId));
   }, [saveYouTubeToMedia]);
 
-  const handleFocusedChatSaveAttachment = useCallback((url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => {
-    void saveAttachmentToMedia(url, name, mediaType);
-    setSavedMediaUrls((p) => new Set(p).add(url));
+  const handleFocusedChatSaveAttachment = useCallback((att: FocusedChatAttachment) => {
+    void (async () => {
+      const ok = await saveAttachmentToMedia(att);
+      if (!ok) return;
+      // Keyed by storage path first: signed URLs are re-minted on every reload,
+      // so a url-only key would forget the save and offer it again.
+      setSavedMediaUrls((p) => new Set([...p, ...chatAttachmentSaveKeys(att)]));
+    })();
   }, [saveAttachmentToMedia]);
 
   const handleFocusedChatSaveAiImage = useCallback(async (
@@ -5482,17 +5924,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         onAttach={handleVoiceAttach}
       />
 
-      {/* Document the voice agent pulled up on screen. The viewer portals to a
-          z-index above the voice overlay, so the user can read the full item
-          while the conversation keeps going. */}
-      {voiceDocPayload ? (
-        <VaultDocumentViewer
-          payload={voiceDocPayload}
-          open={!!voiceDocPayload}
-          onClose={() => setVoiceDocPayload(null)}
-        />
-      ) : null}
-
       {vaultDragActive && (
         <LyknChatVaultOverlay
           onDrop={handleVaultOverlayDrop}
@@ -5500,64 +5931,40 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         />
       )}
 
-      {showVaultSidebar && (
-        <div
-          className={`fixed inset-0 flex items-center justify-center p-4 sm:p-6 ${
-            notesOpen ? "z-[231]" : chatMode ? "z-[100]" : "z-[80]"
-          }`}
-        >
-          <div
-            className="absolute inset-0 bg-black/40 backdrop-blur-[3px] animate-in fade-in-0 duration-200"
-            onClick={() => setShowVaultSidebar(false)}
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="The Vault"
-            className="relative w-full max-w-[1100px] h-[85vh] max-h-[85vh] rounded-2xl border border-white/12 dark:border-white/8 bg-white/85 dark:bg-[rgba(20,20,24,0.92)] shadow-2xl backdrop-blur-[16px] backdrop-saturate-[1.15] overflow-hidden flex flex-col animate-in fade-in-0 zoom-in-95 duration-200"
-          >
-            <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-semibold text-black dark:text-white">The Vault</h2>
-                <p className="text-xs opacity-70">Files, images &amp; media</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowVaultSidebar(false)}
-                className="h-8 w-8 rounded-full hover:bg-black/10 dark:hover:bg-white/15 transition-colors flex items-center justify-center"
-                title="Close vault"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="flex-1 min-h-0 relative">
-              <iframe
-                src="/vault?embedded=1"
-                title="The Vault"
-                className="absolute inset-0 w-full h-full border-0 bg-transparent"
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Phone-only grids drawer for focused chat. Lets users browse and
           create grids without leaving chat-only mobile mode. */}
       {chatMode && isMobilePhone && <MobileLyknChat />}
 
-      {/* Studio Imagine page — the full Midjourney-style image session
-          replaces the chat surface: centered batches of four variations,
-          click-to-edit lightbox, its own prompt bar. */}
-      {chatMode && isGlassChat && studioView === "imagine" && !voiceModeOn && (
+      {/* Studio Imagine overlay — mask editor, empty-page showcase, and
+          in-flight 4-ups. The conversation and composer stay on LyknChatView
+          so switching modes keeps both. */}
+      {chatMode && isGlassChat && !voiceModeOn && (
         <StudioImagineMode
+          ref={imagineRef}
           chatKey={String(routeChatId || chatId || "")}
+          seedBatches={imagineSeedBatches}
+          onCommitBatch={handleImagineBatchCommit}
+          onPullVault={handlePullFromVault}
           onSaveImage={handleFocusedChatSaveAiImage}
           savedUrls={savedMediaUrls}
+          sharedThread
+          hasThread={hasChatTurns}
+          visible={studioView === "imagine"}
+          onAttachReference={(dataUrl, name) => {
+            addFocusedAttachment({
+              id: makeAttId(),
+              type: "image",
+              url: dataUrl,
+              name,
+              mime: "image/png",
+              size: 0,
+            });
+          }}
         />
       )}
 
       {/* Focused chat mode — centered, below top panel, no overlay */}
-      {chatMode && !(isGlassChat && studioView === "imagine" && !voiceModeOn) && (
+      {chatMode && (
         <LyknChatView
           chatMessages={chatMessages}
           isChatLoading={isChatLoading}
@@ -5592,6 +5999,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           onSaveYouTube={handleFocusedChatSaveYouTube}
           onSaveAttachment={handleFocusedChatSaveAttachment}
           onSaveAiImage={handleFocusedChatSaveAiImage}
+          onOpenGeneratedImage={
+            studioView === "imagine"
+              ? (img) => imagineRef.current?.openEdit(img)
+              : undefined
+          }
           onSaveLink={handleFocusedChatSaveLink}
           expandedAiMsgIds={expandedAiMsgIds}
           toggleAiExpanded={toggleAiExpanded}
@@ -5638,6 +6050,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           activeArtifact={activeArtifact}
           onActiveArtifactChange={setActiveArtifact}
           onSaveArtifact={saveArtifactToVault}
+          editingAppId={editingAppId}
           chatKey={chatId || routeChatId || ""}
           onFactNeuronChange={(msgId, next) => {
             setChatMessages((prev) =>
@@ -5648,10 +6061,25 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
               ),
             );
           }}
+          composerInside={
+            appSourceStrip ? (
+              <AppSourceStrip
+                compact
+                appName={appSourceStrip.appName}
+                paths={appSourceStrip.paths}
+                loading={appSourceStrip.loading}
+                onDismiss={handleDismissAppEdit}
+              />
+            ) : null
+          }
           composerAbove={
+            (isGlassChat && studioView === "research" && !voiceModeOn) ||
             (isGlassChat &&
-              (studioView === "research" || studioView === "build") &&
-              !voiceModeOn) ||
+              studioView === "build" &&
+              !voiceModeOn &&
+              !hasChatTurns &&
+              !studioChipsDismissed &&
+              !appSourceStrip) ||
             (chatMode && isMainAgentChat && CUSTOM_MODELS_ENABLED) ? (
               <>
                 {isGlassChat &&
@@ -5665,20 +6093,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
                     onSelect={handleStudioFollowUp}
                   />
                 ) : isGlassChat &&
-                  studioView === "build" &&
-                  !voiceModeOn &&
-                  !isChatLoading &&
-                  !!activeArtifact ? (
-                  <StudioFollowUpSuggestions
-                    items={buildFollowUpItems(latestBuildTopic)}
-                    disabled={isChatLoading}
-                    onSelect={handleStudioFollowUp}
-                  />
-                ) : isGlassChat &&
                   (studioView === "research" || studioView === "build") &&
                   !voiceModeOn &&
                   !hasChatTurns &&
-                  !studioChipsDismissed ? (
+                  !studioChipsDismissed &&
+                  !appSourceStrip ? (
                   <StudioComposerStrip
                     view={studioView}
                     onInsert={handleComposerChipInsert}

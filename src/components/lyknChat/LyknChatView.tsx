@@ -4,7 +4,7 @@ import {
   ArrowRight,
   Check, ChevronRight, Copy, Download, FileText,
   GripVertical, Link2, MoreHorizontal, Music, Pencil, Play, Plus, RefreshCw,
-  Save, Share2, StickyNote, ThumbsDown, ThumbsUp, Trash2, X as XIcon,
+  Save, Share2, ThumbsDown, ThumbsUp, Trash2, X as XIcon,
 } from "lucide-react";
 import { GridIcon } from "@/components/ui/GridIcon";
 import lyknIconNeutral from "@/assets/FINAL/LYKN-ICON-B-Open/PNGs/LYKN-Icon-B-Open-NEUTRAL-master.png";
@@ -15,18 +15,23 @@ import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
 import LocalToolApprovalCard from "@/components/lyknChat/LocalToolApprovalCard";
 import ChatArtifactCard, { ArtifactBuildingPlaceholder } from "@/components/lyknChat/ChatArtifactCard";
 import LyknChatArtifactPanel from "@/components/lyknChat/LyknChatArtifactPanel";
+import GeneratedImage from "@/components/lyknChat/GeneratedImage";
+import { openFileWindow } from "@/lib/files/fileWindows";
 import { isLiveBuildStatus } from "@/hooks/useThinkingStatus";
 
 // Studio Research rail width — floats over the right edge; chat stays put.
 const RESEARCH_SIDEBAR_WIDTH = "min(340px, 30vw)";
 import { extractChatArtifacts, sortArtifactsForDisplay, extractLeakedHtmlDocument, buildLeakedHtmlArtifact, type ChatArtifact } from "@/lib/ai/chatArtifacts";
+import { isAppEditSeed } from "@/lib/apps/editApp";
 import ChatNeuronCard from "@/components/lyknChat/ChatNeuronCard";
 import FactConfirmChip from "@/components/lyknChat/FactConfirmChip";
-import LinkPreview from "@/components/LinkPreview";
+import SentChatAttachment, { type SentChatAttachmentData } from "@/components/lyknChat/SentChatAttachment";
+import { chatAttachmentSaveKeys } from "@/lib/chat/chatAttachmentFile";
 import { SiteFavicon } from "@/components/SiteFavicon";
 import type {
   ToolCallEvent,
   ChatNeuronAttachment,
+  FocusedChatAttachment,
 } from "@/lib/ai/chatSendOrchestrator";
 import type { FactNeuron } from "@/lib/ai/learnedTag";
 import { labelForModelId } from "@/lib/ai/conversationFormat";
@@ -35,6 +40,9 @@ import { supabase } from "@/lib/supabase";
 import { safeExternalUrl, safeNavHref } from "@/lib/safeExternalUrl";
 import { handleLyknBrowserClick } from "@/lib/lyknChat/openInStudioBrowser";
 import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
+import { chatBarMinHeight } from "@/lib/appearance";
+import { useAppearance } from "@/lib/useAppearance";
+import { isPullUpAsk, openLyknMediaPop } from "@/lib/lyknMediaPop";
 
 // Resolve a user-facing model name for the AI Response pill. The server
 // reports the REAL resolved backend in `served_model` — but LYKN is a
@@ -122,23 +130,6 @@ const splitResponseIntoChunks = (text: string): string[] => {
   return chunks;
 };
 
-type FocusedChatAttachment = {
-  id: string;
-  type: string;
-  url: string;
-  name: string;
-  mime: string;
-  size: number;
-  videoId?: string;
-  vaultTitle?: string;
-  vaultContent?: string;
-  transcript?: string;
-  pdfText?: string;
-  extractedText?: string;
-  canvasBlockId?: string;
-  rawFile?: File;
-};
-
 type PromptMessage = {
   id: string;
   role: "user";
@@ -149,7 +140,7 @@ type PromptMessage = {
   aiWebLinks?: string[];
   sources?: { title: string; url: string }[];
   kind?: "prompt" | "load-in-greeting";
-  attachments?: FocusedChatAttachment[];
+  attachments?: SentChatAttachmentData[];
   /**
    * Set when the AI's reply ended with a hidden <fact_confirm>,
    * <learned>/<reason>, or <updated> tag — or when /api/learned/auto
@@ -329,12 +320,19 @@ export interface LyknChatViewProps {
   savedMediaUrls: Set<string>;
   savedYouTubeIds: Set<string>;
   onSaveYouTube: (videoId: string, url: string) => void;
-  onSaveAttachment: (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => void;
+  onSaveAttachment: (att: SentChatAttachmentData) => void;
   onSaveAiImage: (
     imageUrl: string,
     promptText?: string,
     meta?: { storagePath?: string; mimeType?: string },
   ) => void | Promise<boolean | void>;
+  /** In Imagine, open the mask editor instead of a file window. */
+  onOpenGeneratedImage?: (img: {
+    url: string;
+    prompt?: string;
+    aspect?: string;
+    storagePath?: string;
+  }) => void;
   onSaveLink: (link: string) => void;
 
   expandedAiMsgIds: Set<string>;
@@ -395,6 +393,8 @@ export interface LyknChatViewProps {
   threadFooter?: React.ReactNode;
   /** Sub-agent task status strip above the composer (main agent orchestration). */
   composerAbove?: React.ReactNode;
+  /** Context chips that belong inside the composer (e.g. Editing {app} + files). */
+  composerInside?: React.ReactNode;
   /** Optional content under the composer (active thread). */
   composerBelow?: React.ReactNode;
   /** Composer placeholder — Studio mode pages set a per-mode prompt. */
@@ -423,6 +423,11 @@ export interface LyknChatViewProps {
   ) => Promise<boolean> | boolean | void;
   /** Identifier for the currently-shown chat — switching it closes the panel. */
   chatKey?: string;
+  /**
+   * Set when this chat is editing an installed app: installing the artifact
+   * updates that app rather than creating a second one.
+   */
+  editingAppId?: string | null;
 
   /** Patch / clear `factNeuron` after in-chat Yes / Edit / No. */
   onFactNeuronChange?: (msgId: string, next: FactNeuron | null) => void;
@@ -495,12 +500,18 @@ type MessageItemProps = {
   onEditResend: (id: string, newText: string) => void;
   onRegenerateNonUser: (id: string, idx: number) => void;
   onSaveYouTube: (videoId: string, url: string) => void;
-  onSaveAttachment: (url: string, name: string, mediaType: "image" | "video" | "audio" | "file") => void;
+  onSaveAttachment: (att: SentChatAttachmentData) => void;
   onSaveAiImage: (
     imageUrl: string,
     promptText?: string,
     meta?: { storagePath?: string; mimeType?: string },
   ) => void | Promise<boolean | void>;
+  onOpenGeneratedImage?: (img: {
+    url: string;
+    prompt?: string;
+    aspect?: string;
+    storagePath?: string;
+  }) => void;
   onSaveLink: (link: string) => void;
   addChatResponseToGrid: (text: string) => void;
   handleChunkClick: (e: React.MouseEvent, chunkKey: string, chunkText: string) => void;
@@ -997,6 +1008,202 @@ const LoadInUserSectionEditor: React.FC<{
   );
 };
 
+const ResponseActionsMenu: React.FC<{
+  canAddToGrid?: boolean;
+  isCopied: boolean;
+  reaction?: "like" | "dislike" | null;
+  onAddToGrid?: () => void;
+  onShare: () => void;
+  onDownload: () => void;
+  onCopy: () => void;
+  onRegenerate: () => void;
+  onReaction: (reaction: "like" | "dislike") => void;
+}> = ({
+  canAddToGrid = false,
+  isCopied,
+  reaction,
+  onAddToGrid,
+  onShare,
+  onDownload,
+  onCopy,
+  onRegenerate,
+  onReaction,
+}) => {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeIfOutside = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeIfOutside);
+    return () => document.removeEventListener("pointerdown", closeIfOutside);
+  }, [open]);
+
+  const action = (callback: () => void) => () => {
+    callback();
+    setOpen(false);
+  };
+  const itemClass =
+    "shrink-0 rounded-md p-1.5 text-black/40 transition-colors hover:bg-black/5 hover:text-black/70 dark:text-white/40 dark:hover:bg-white/10 dark:hover:text-white/70";
+
+  return (
+    <div ref={menuRef} className="flex items-center">
+      <button
+        type="button"
+        title="More actions"
+        aria-label="More actions"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className={`rounded-md p-1.5 transition-colors ${
+          open
+            ? "bg-black/5 text-black/75 dark:bg-white/10 dark:text-white/80"
+            : "text-black/40 hover:bg-black/5 hover:text-black/70 dark:text-white/40 dark:hover:bg-white/10 dark:hover:text-white/70"
+        }`}
+      >
+        <MoreHorizontal className="h-4 w-4" />
+      </button>
+      <div
+        aria-hidden={!open}
+        className={`overflow-hidden transition-[max-width,opacity,margin] duration-200 ease-out ${
+          open ? "ml-1 max-w-[15rem] opacity-100" : "ml-0 max-w-0 opacity-0 pointer-events-none"
+        }`}
+      >
+        <div className="flex items-center gap-0.5 whitespace-nowrap">
+          {canAddToGrid && onAddToGrid && (
+            <button type="button" title="Add to grid" aria-label="Add to grid" tabIndex={open ? 0 : -1} className={itemClass} onClick={action(onAddToGrid)}>
+              <GridIcon className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <button type="button" title="Share" aria-label="Share" tabIndex={open ? 0 : -1} className={itemClass} onClick={action(onShare)}>
+            <Share2 className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" title="Download" aria-label="Download" tabIndex={open ? 0 : -1} className={itemClass} onClick={action(onDownload)}>
+            <Download className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" title={isCopied ? "Copied" : "Copy"} aria-label={isCopied ? "Copied" : "Copy"} tabIndex={open ? 0 : -1} className={itemClass} onClick={action(onCopy)}>
+            {isCopied ? <Check className="h-3.5 w-3.5 text-blue-500" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+          <button type="button" title="Regenerate" aria-label="Regenerate" tabIndex={open ? 0 : -1} className={itemClass} onClick={action(onRegenerate)}>
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+          <div className="mx-1 h-3.5 w-px shrink-0 bg-black/10 dark:bg-white/10" />
+          <button type="button" title="Like" aria-label="Like" tabIndex={open ? 0 : -1} className={itemClass} onClick={action(() => onReaction("like"))}>
+            <ThumbsUp className={`h-3.5 w-3.5 ${reaction === "like" ? "text-green-600" : ""}`} />
+          </button>
+          <button type="button" title="Dislike" aria-label="Dislike" tabIndex={open ? 0 : -1} className={itemClass} onClick={action(() => onReaction("dislike"))}>
+            <ThumbsDown className={`h-3.5 w-3.5 ${reaction === "dislike" ? "text-red-500" : ""}`} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * An Imagine batch inside the transcript. That mode answers a prompt with a
+ * set of variations rather than one image, so the turn carries them all and
+ * each is saved to the Vault on its own.
+ */
+function AiImageBatch({
+  images,
+  aspect,
+  prompt,
+  savedMediaUrls,
+  onSaveAiImage,
+  onOpenGeneratedImage,
+}: {
+  images: { url: string; storagePath?: string }[];
+  aspect?: string;
+  prompt: string;
+  savedMediaUrls: Set<string>;
+  onSaveAiImage: (
+    imageUrl: string,
+    promptText?: string,
+    meta?: { storagePath?: string; mimeType?: string },
+  ) => void | Promise<boolean | void>;
+  onOpenGeneratedImage?: (img: {
+    url: string;
+    prompt?: string;
+    aspect?: string;
+    storagePath?: string;
+  }) => void;
+}) {
+  const ratio = /^(\d+):(\d+)$/.exec(String(aspect || ""));
+  return (
+    <div className="px-4 py-3">
+      <div className={`grid gap-2 ${images.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
+        {images.map((img, i) => {
+          const saved = savedMediaUrls.has(img.url);
+          return (
+            <div key={img.url || i} className="group/img relative overflow-hidden rounded-xl">
+              <button
+                type="button"
+                className="block w-full cursor-zoom-in"
+                onClick={() => {
+                  if (onOpenGeneratedImage) {
+                    onOpenGeneratedImage({
+                      url: img.url,
+                      prompt,
+                      aspect,
+                      storagePath: img.storagePath,
+                    });
+                    return;
+                  }
+                  openFileWindow({
+                    url: img.url,
+                    name: `${prompt || "Generated image"}.png`,
+                    media: "image",
+                    onSaveToVault: saved
+                      ? null
+                      : async () => {
+                          await onSaveAiImage(img.url, prompt, {
+                            storagePath: img.storagePath,
+                          });
+                        },
+                  });
+                }}
+                title="Open"
+              >
+                <GeneratedImage
+                  src={img.url}
+                  alt={`Variation ${i + 1}`}
+                  className="w-full object-cover"
+                  style={{ aspectRatio: ratio ? `${ratio[1]} / ${ratio[2]}` : "1 / 1" }}
+                />
+              </button>
+              <button
+                type="button"
+                disabled={saved}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSaveAiImage(img.url, prompt, { storagePath: img.storagePath });
+                }}
+                className={`absolute right-1.5 top-1.5 inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] backdrop-blur-sm transition-all ${
+                  saved
+                    ? "border-blue-400/40 bg-blue-500/15 text-blue-600"
+                    : "border-white/25 bg-black/40 text-white opacity-0 group-hover/img:opacity-100"
+                }`}
+              >
+                {saved ? (
+                  <>
+                    <Check className="h-3 w-3" /> Saved
+                  </>
+                ) : (
+                  <>
+                    <Save className="h-3 w-3" /> Save
+                  </>
+                )}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const MessageItem = React.memo(function MessageItem({
   msg, idx,
   hideMessageSources = false,
@@ -1007,7 +1214,7 @@ const MessageItem = React.memo(function MessageItem({
   buildChatMarkdownComponents,
   toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
   onCopyMessage, onReaction, onRegenerate, onEditResend, onRegenerateNonUser,
-  onSaveYouTube, onSaveAttachment, onSaveAiImage, onSaveLink: _onSaveLink,
+  onSaveYouTube, onSaveAttachment, onSaveAiImage, onOpenGeneratedImage, onSaveLink: _onSaveLink,
   addChatResponseToGrid,
   handleChunkClick, getSelectedText, registerChunks,
   onLoadInGreetingRefresh,
@@ -1055,87 +1262,19 @@ const MessageItem = React.memo(function MessageItem({
         <div className="flex flex-col items-end gap-2">
           {msg.attachments && msg.attachments.length > 0 && (
             <div className="max-w-[80%] flex flex-wrap gap-2 justify-end">
-              {msg.attachments.map((att) => {
-                const at = (att.type || "").toLowerCase();
-                const attUrl = att.url || "";
-                const attKey = att.videoId || attUrl;
-                const isSaved = att.videoId ? savedYouTubeIds.has(att.videoId) : savedMediaUrls.has(attUrl);
-                const saveBtn = attKey ? (
-                  <button type="button" className={`mt-1.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${isSaved ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/25 bg-white/35 backdrop-blur-sm text-black/60 hover:text-black/80 hover:border-black/30 hover:shadow-sm"}`} disabled={isSaved} onClick={() => { if (att.videoId) { onSaveYouTube(att.videoId, attUrl); } else { onSaveAttachment(attUrl, att.name || "File", at === "image" ? "image" : at === "video" ? "video" : at === "audio" ? "audio" : "file"); } }}>
-                    {isSaved ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
-                  </button>
-                ) : null;
-                if (at === "youtube" && att.videoId) {
-                  return (
-                    <div key={att.id}>
-                      <div className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-none">
-                        <iframe src={`https://www.youtube.com/embed/${att.videoId}`} className="w-full aspect-video" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen title={att.name || "YouTube"} />
-                      </div>
-                      {saveBtn}
-                    </div>
-                  );
-                }
-                if (at === "image" && att.url) {
-                  return <div key={att.id}><img src={att.url} alt={att.name || "Image"} className="max-w-[16.25rem] max-h-[200px] rounded-xl border border-white/30 object-cover shadow-none" />{saveBtn}</div>;
-                }
-                if (at === "video" && att.url) {
-                  return (
-                    <div key={att.id}>
-                      <div className="w-full max-w-[20rem] rounded-xl overflow-hidden border border-white/30 shadow-none"><video src={att.url} controls className="w-full" preload="metadata" /></div>
-                      {saveBtn}
-                    </div>
-                  );
-                }
-                if (at === "audio" && att.url) {
-                  return (
-                    <div key={att.id}>
-                      <div className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2"><Music className="w-4 h-4 opacity-60" /><audio src={att.url} controls className="h-8" preload="metadata" /><span className="text-[0.625rem] truncate max-w-[7.5rem]">{att.name || "Audio"}</span></div>
-                      {saveBtn}
-                    </div>
-                  );
-                }
-                if (at === "pdf") {
-                  return (
-                    <div key={att.id}>
-                      <div className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2"><FileText className="w-4 h-4 opacity-60" /><span className="text-xs truncate max-w-[12.5rem]">{att.name || "PDF"}</span></div>
-                      {saveBtn}
-                    </div>
-                  );
-                }
-                if (at === "note" || at === "vault") {
-                  return (
-                    <div key={att.id} className="rounded-xl border border-white/30 bg-white/20 px-3 py-2 max-w-[16.25rem]">
-                      <div className="flex items-center gap-1 mb-1"><StickyNote className="w-3.5 h-3.5 opacity-60" /><span className="text-[0.625rem] font-medium truncate">{att.name || "Note"}</span></div>
-                      {att.vaultContent && <p className="text-[0.6875rem] text-black/70 line-clamp-3 whitespace-pre-wrap">{att.vaultContent.slice(0, 200)}</p>}
-                    </div>
-                  );
-                }
-                if ((at === "link" || at === "bookmark") && attUrl) {
-                  return (
-                    <div key={att.id} className="w-full max-w-[20rem]">
-                      <LinkPreview
-                        url={attUrl}
-                        title={att.linkTitle || att.name || ""}
-                        description={att.linkDescription || ""}
-                        image={att.linkImage || ""}
-                        siteName={att.linkSiteName || ""}
-                        favicon={att.linkFavicon || ""}
-                        authorName={att.authorName || ""}
-                        authorHandle={att.authorHandle || ""}
-                        oembedType={att.oembedType || ""}
-                        variant="vault"
-                      />
-                      {saveBtn}
-                    </div>
-                  );
-                }
-                return (
-                  <div key={att.id}>
-                    <div className="flex items-center gap-2 rounded-xl border border-white/30 bg-white/20 px-3 py-2"><FileText className="w-4 h-4 opacity-60" /><span className="text-xs truncate max-w-[12.5rem]">{att.name || att.url || "File"}</span></div>
-                    {saveBtn}
-                  </div>
-                );
-              })}
+              {msg.attachments.map((att) => (
+                <SentChatAttachment
+                  key={att.id}
+                  att={att}
+                  isSaved={
+                    att.videoId
+                      ? savedYouTubeIds.has(att.videoId)
+                      : chatAttachmentSaveKeys(att).some((k) => savedMediaUrls.has(k))
+                  }
+                  onSaveToVault={onSaveAttachment}
+                  onSaveYouTube={onSaveYouTube}
+                />
+              ))}
             </div>
           )}
           {(() => {
@@ -1188,7 +1327,7 @@ const MessageItem = React.memo(function MessageItem({
             return (
               <div className="group max-w-[80%] flex flex-col items-end">
                 <div
-                  className="lykn-user-prompt-bubble rounded-2xl rounded-br-md px-4 py-3 text-sm leading-relaxed text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background shadow-[0_4px_14px_rgba(0,0,0,0.06)] [&_table]:my-2 [&_td]:px-2 [&_th]:px-2"
+                  className="lykn-user-prompt-bubble rounded-[15px] rounded-br-[4px] px-3 py-1 text-[14px] leading-[1.25] text-black/90 dark:text-white/90 border border-black/8 dark:border-white/10 bg-background shadow-[0_2px_8px_rgba(0,0,0,0.045)] [&_table]:my-1 [&_td]:px-2 [&_th]:px-2"
                   style={collapsedClampStyle}
                 >
                   <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>{normalizeChecklistSyntax(promptText)}</ReactMarkdown>
@@ -1255,13 +1394,23 @@ const MessageItem = React.memo(function MessageItem({
                 : `grid transition-[grid-template-rows,opacity] duration-200 ease-in-out ${isAiExpanded ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"}`
             }>
               <div className="overflow-hidden min-h-0 group/aifocused">
-                {(msg as any).aiImageUrl ? (
-                  <div className="px-4 py-3">
-                    <img src={(msg as any).aiImageUrl} alt="Generated image" className="max-w-full rounded-xl shadow-none" style={{ maxHeight: "320px" }} />
-                    <button type="button" className={`mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-all ${savedMediaUrls.has((msg as any).aiImageUrl) ? "border-blue-400/40 bg-blue-500/10 text-blue-600" : "border-white/25 bg-white/35 backdrop-blur-sm text-black/60 hover:text-black/80 hover:border-black/30 hover:shadow-sm"}`} disabled={savedMediaUrls.has((msg as any).aiImageUrl)} onClick={() => { onSaveAiImage((msg as any).aiImageUrl, msg.content, { storagePath: (msg as any).aiImageStoragePath }); }}>
-                      {savedMediaUrls.has((msg as any).aiImageUrl) ? <><Check className="w-3 h-3" /> Saved</> : <><Save className="w-3 h-3" /> Save to Vault</>}
-                    </button>
-                  </div>
+                {(msg as any).aiImages?.length ? (
+                  <AiImageBatch
+                    images={(msg as any).aiImages}
+                    aspect={(msg as any).imagine?.aspect}
+                    prompt={msg.content}
+                    savedMediaUrls={savedMediaUrls}
+                    onSaveAiImage={onSaveAiImage}
+                    onOpenGeneratedImage={onOpenGeneratedImage}
+                  />
+                ) : (msg as any).aiImageUrl ? (
+                  <AiImageBatch
+                    images={[{ url: (msg as any).aiImageUrl, storagePath: (msg as any).aiImageStoragePath }]}
+                    prompt={msg.content}
+                    savedMediaUrls={savedMediaUrls}
+                    onSaveAiImage={onSaveAiImage}
+                    onOpenGeneratedImage={onOpenGeneratedImage}
+                  />
                 ) : (() => {
                   // Render the AI response as a single continuous
                   // markdown block. The drag-into-grid feature has
@@ -1306,7 +1455,7 @@ const MessageItem = React.memo(function MessageItem({
                         </h1>
                       ) : null}
                       {bodyRest ? (
-                        <div className="text-sm leading-relaxed break-words text-black/85 dark:text-white/85">
+                        <div className="lykn-chat-ai-text text-[14px] leading-[1.25] break-words text-black/85 dark:text-white/85">
                           <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
                             {normalizeChecklistSyntax(bodyRest)}
                           </ReactMarkdown>
@@ -1775,32 +1924,32 @@ const MessageItem = React.memo(function MessageItem({
                   </div>
                 )}
                 {!inlineThinkingStatus && (
-                <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
-                  {!isMobilePhone && !gridDisabled && (
-                    <button type="button" title="Add to grid" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-blue-500 hover:bg-blue-500/10 transition-colors" onClick={() => addChatResponseToGrid(msg.aiResponse || "")}>
-                      <GridIcon className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                  <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = msg.aiResponse || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void copyMarkdownAsRich(text); } }}>
-                    <Share2 className="w-3.5 h-3.5" />
-                  </button>
-                  <button type="button" title="Download" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = msg.aiResponse || ""; const blob = new Blob([text], { type: "text/plain" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "response.txt"; a.click(); URL.revokeObjectURL(url); }}>
-                    <Download className="w-3.5 h-3.5" />
-                  </button>
-                  <button type="button" title="Copy" className={`p-1.5 rounded-md transition-colors ${isCopied ? "text-blue-500 bg-blue-500/10" : "text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10"}`} onClick={() => { onCopyMessage(msg.id, msg.aiResponse || ""); }}>
-                    {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  </button>
-                  <button type="button" title="Regenerate" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { onRegenerate(msg.id, msg.content); }}>
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  </button>
-                  <div className="w-px h-3.5 bg-black/10 dark:bg-white/10 mx-1" />
-                  <button type="button" title="Like" className={`p-1.5 rounded-md transition-colors ${reaction === "like" ? "text-green-600 bg-green-500/10" : "text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10"}`} onClick={() => onReaction(msg.id, "like")}>
-                    <ThumbsUp className="w-3.5 h-3.5" />
-                  </button>
-                  <button type="button" title="Dislike" className={`p-1.5 rounded-md transition-colors ${reaction === "dislike" ? "text-red-500 bg-red-500/10" : "text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10"}`} onClick={() => onReaction(msg.id, "dislike")}>
-                    <ThumbsDown className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                  <div className="px-3 pb-2 pt-0.5">
+                    <ResponseActionsMenu
+                      canAddToGrid={!isMobilePhone && !gridDisabled}
+                      isCopied={isCopied}
+                      reaction={reaction}
+                      onAddToGrid={() => addChatResponseToGrid(msg.aiResponse || "")}
+                      onShare={() => {
+                        const text = msg.aiResponse || "";
+                        if (navigator.share) navigator.share({ text }).catch(() => {});
+                        else void copyMarkdownAsRich(text);
+                      }}
+                      onDownload={() => {
+                        const text = msg.aiResponse || "";
+                        const blob = new Blob([text], { type: "text/plain" });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = "response.txt";
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      }}
+                      onCopy={() => onCopyMessage(msg.id, msg.aiResponse || "")}
+                      onRegenerate={() => onRegenerate(msg.id, msg.content)}
+                      onReaction={(nextReaction) => onReaction(msg.id, nextReaction)}
+                    />
+                  </div>
                 )}
               </div>
             </div>
@@ -1912,7 +2061,7 @@ const MessageItem = React.memo(function MessageItem({
                   return (
                     <>
                       {rest ? (
-                        <div className="px-4 py-3 text-sm leading-relaxed break-words text-black/85 dark:text-white/85">
+                        <div className="lykn-chat-ai-text px-4 py-3 text-sm leading-relaxed break-words text-black/85 dark:text-white/85">
                           <ReactMarkdown remarkPlugins={CHAT_REMARK_PLUGINS} rehypePlugins={CHAT_REHYPE_PLUGINS} components={mdComponents}>
                             {normalizeChecklistSyntax(rest)}
                           </ReactMarkdown>
@@ -1972,26 +2121,29 @@ const MessageItem = React.memo(function MessageItem({
                     })}
                   </div>
                 )}
-                <div className="flex items-center gap-0.5 px-3 pb-2 pt-0.5">
-                  <button type="button" title="Share" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = (msg as any).content || ""; if (navigator.share) { navigator.share({ text }).catch(() => {}); } else { void copyMarkdownAsRich(text); } }}>
-                    <Share2 className="w-3.5 h-3.5" />
-                  </button>
-                  <button type="button" title="Download" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { const text = (msg as any).content || ""; const blob = new Blob([text], { type: "text/plain" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "response.txt"; a.click(); URL.revokeObjectURL(url); }}>
-                    <Download className="w-3.5 h-3.5" />
-                  </button>
-                  <button type="button" title="Copy" className={`p-1.5 rounded-md transition-colors ${isCopied ? "text-blue-500 bg-blue-500/10" : "text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10"}`} onClick={() => { onCopyMessage(msg.id, (msg as any).content || ""); }}>
-                    {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  </button>
-                  <button type="button" title="Regenerate" className="p-1.5 rounded-md text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10 transition-colors" onClick={() => { onRegenerateNonUser(msg.id, idx); }}>
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  </button>
-                  <div className="w-px h-3.5 bg-black/10 dark:bg-white/10 mx-1" />
-                  <button type="button" title="Like" className={`p-1.5 rounded-md transition-colors ${reaction === "like" ? "text-green-600 bg-green-500/10" : "text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10"}`} onClick={() => onReaction(msg.id, "like")}>
-                    <ThumbsUp className="w-3.5 h-3.5" />
-                  </button>
-                  <button type="button" title="Dislike" className={`p-1.5 rounded-md transition-colors ${reaction === "dislike" ? "text-red-500 bg-red-500/10" : "text-black/40 dark:text-white/40 hover:text-black/70 dark:hover:text-white/70 hover:bg-black/5 dark:hover:bg-white/10"}`} onClick={() => onReaction(msg.id, "dislike")}>
-                    <ThumbsDown className="w-3.5 h-3.5" />
-                  </button>
+                <div className="px-3 pb-2 pt-0.5">
+                  <ResponseActionsMenu
+                    isCopied={isCopied}
+                    reaction={reaction}
+                    onShare={() => {
+                      const text = (msg as any).content || "";
+                      if (navigator.share) navigator.share({ text }).catch(() => {});
+                      else void copyMarkdownAsRich(text);
+                    }}
+                    onDownload={() => {
+                      const text = (msg as any).content || "";
+                      const blob = new Blob([text], { type: "text/plain" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = "response.txt";
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    onCopy={() => onCopyMessage(msg.id, (msg as any).content || "")}
+                    onRegenerate={() => onRegenerateNonUser(msg.id, idx)}
+                    onReaction={(nextReaction) => onReaction(msg.id, nextReaction)}
+                  />
                 </div>
               </div>
             </div>
@@ -2028,6 +2180,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   onSaveYouTube,
   onSaveAttachment,
   onSaveAiImage,
+  onOpenGeneratedImage,
   onSaveLink,
   expandedAiMsgIds,
   toggleAiExpanded,
@@ -2052,6 +2205,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   compactPreview = false,
   threadFooter = null,
   composerAbove = null,
+  composerInside = null,
   composerBelow = null,
   composerPlaceholder = "Ask me anything...",
   pinComposerToBottom = false,
@@ -2060,10 +2214,17 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
   activeArtifact = null,
   onActiveArtifactChange,
   onSaveArtifact,
+  editingAppId,
   chatKey,
   onFactNeuronChange,
   keepThinkingWhileLoading = false,
 }) {
+  // The composer's height floor is also what the auto-grow measures against,
+  // so the chat bar size and shape have to reach it in JS — the rest of the
+  // bar's geometry is CSS tokens.
+  const appearance = useAppearance();
+  const barMinH = chatBarMinHeight(appearance, composerMinH);
+
   const [selectedChunks, setSelectedChunks] = useState<Set<string>>(new Set());
   const chunkMapRef = useRef<Map<string, string>>(new Map());
   const lastSeenArtifactRef = useRef<string | null>(null);
@@ -2082,6 +2243,76 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
     },
     [onActiveArtifactChange],
   );
+
+  const pullUpHandledRef = useRef<string | null>(null);
+  useEffect(() => {
+    pullUpHandledRef.current = null;
+  }, [chatKey]);
+  useEffect(() => {
+    const lastUser = chatMessages[chatMessages.length - 1];
+    if (!lastUser || lastUser.role !== "user" || (lastUser as any).kind === "load-in-greeting") return;
+    if (pullUpHandledRef.current === lastUser.id) return;
+    if (!isPullUpAsk(String(lastUser.content || ""))) return;
+    pullUpHandledRef.current = lastUser.id;
+
+    const prior = chatMessages.slice(0, -1);
+    const ask = String(lastUser.content || "").toLowerCase();
+    const wantImage = /\b(image|images|picture|pictures|photo|photos|pic|pics)\b/.test(ask);
+    const wantArtifact = /\b(artifact|app|build|page|game|dashboard|chart|doc|document)\b/.test(ask);
+
+    let lastArt: ChatArtifact | null = null;
+    let lastImage: { url: string; title?: string } | null = null;
+    let lastVault: ChatNeuronAttachment | null = null;
+    let lastArtAt = -1;
+    let lastImageAt = -1;
+    let lastVaultAt = -1;
+    prior.forEach((msg, i) => {
+      const arts = sortArtifactsForDisplay(extractChatArtifacts((msg as any)?.toolCalls));
+      if (arts.length) {
+        lastArt = arts[0];
+        lastArtAt = i;
+      }
+      const leaked = extractLeakedHtmlDocument(
+        String((msg as any)?.aiResponse || ((msg as any)?.role !== "user" ? (msg as any)?.content : "") || ""),
+      );
+      if (leaked.html) {
+        lastArt = buildLeakedHtmlArtifact(msg.id, leaked.html);
+        lastArtAt = i;
+      }
+      const batch = (msg as any).aiImages as { url: string }[] | undefined;
+      if (batch?.length) {
+        lastImage = { url: batch[batch.length - 1].url, title: "Generated image" };
+        lastImageAt = i;
+      } else if ((msg as any).aiImageUrl) {
+        lastImage = { url: (msg as any).aiImageUrl, title: "Generated image" };
+        lastImageAt = i;
+      }
+      const neurons = Array.isArray((msg as any).aiNeurons) ? (msg as any).aiNeurons : [];
+      const vault = neurons.find((n: ChatNeuronAttachment) => n?.payload?.kind === "vault");
+      if (vault) {
+        lastVault = vault;
+        lastVaultAt = i;
+      }
+    });
+
+    if (wantImage && lastImage) {
+      openLyknMediaPop({ type: "url", url: lastImage.url, title: lastImage.title, kind: "image" });
+      return;
+    }
+    if (wantArtifact && lastArt && onActiveArtifactChange) {
+      onOpenArtifact(lastArt);
+      return;
+    }
+    const newest = Math.max(lastArtAt, lastImageAt, lastVaultAt);
+    if (newest < 0) return;
+    if (newest === lastArtAt && lastArt && onActiveArtifactChange) onOpenArtifact(lastArt);
+    else if (newest === lastImageAt && lastImage) {
+      openLyknMediaPop({ type: "url", url: lastImage.url, title: lastImage.title, kind: "image" });
+    } else if (lastVault?.payload) {
+      openLyknMediaPop({ type: "vault-payload", payload: lastVault.payload });
+    }
+  }, [chatMessages, onActiveArtifactChange, onOpenArtifact]);
+
   // Research rail (Studio Research page): fixed right column with the
   // deep-research links + Save report. The rail floats OVER the page — the
   // chat column keeps its width. The artifact is a popup, so both can show.
@@ -2302,6 +2533,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
             <div className="mx-auto w-full flex flex-col gap-1">
               {composerAbove}
               <div className="lykn-chat-neu-chat-shell lykn-chat-chat-border-run-once p-2.5 sm:p-3 w-full transition-all duration-300 flex flex-col gap-1.5">
+              {composerInside}
               {focusedChatAttachments.length > 0 && (
                 <div className="mb-0 flex flex-wrap gap-2 items-end">
                   {focusedChatAttachments.map((att) => (
@@ -2317,8 +2549,8 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                 <textarea
                   ref={chatPanelInputRef}
                   autoFocus={isMobilePhone}
-                  data-min-h={String(composerMinH)}
-                  style={{ minHeight: composerMinH }}
+                  data-min-h={String(barMinH)}
+                  style={{ minHeight: barMinH }}
                   {...(isControlledInput
                     ? { value: chatInputValue }
                     : { defaultValue: chatInputRef.current })}
@@ -2327,7 +2559,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
                   placeholder={composerPlaceholder}
                   rows={1}
-                  className="w-full max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
+                  className="w-full max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-5 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
                 />
               )}
               {chatBarToolbar}
@@ -2403,6 +2635,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                     onSaveYouTube={onSaveYouTube}
                     onSaveAttachment={onSaveAttachment}
                     onSaveAiImage={onSaveAiImage}
+                    onOpenGeneratedImage={onOpenGeneratedImage}
                     onSaveLink={onSaveLink}
                     addChatResponseToGrid={addChatResponseToGrid}
                     handleChunkClick={handleChunkClick}
@@ -2436,6 +2669,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
           <div className="w-full max-w-2xl px-4 pb-6 pt-2">
             {composerAbove ? <div className="mb-1">{composerAbove}</div> : null}
             <div className="lykn-chat-neu-chat-shell lykn-chat-chat-border-run-once p-2.5 sm:p-3 w-full flex flex-col gap-1.5">
+              {composerInside}
               {focusedChatAttachments.length > 0 && (
                 <div className="mb-0 flex flex-wrap gap-2 items-end">
                   {focusedChatAttachments.map((att) => (
@@ -2451,8 +2685,8 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                 <textarea
                   ref={chatPanelInputRef}
                   autoFocus={isMobilePhone}
-                  data-min-h={String(composerMinH)}
-                  style={{ minHeight: composerMinH }}
+                  data-min-h={String(barMinH)}
+                  style={{ minHeight: barMinH }}
                   {...(isControlledInput
                     ? { value: chatInputValue }
                     : { defaultValue: chatInputRef.current })}
@@ -2461,7 +2695,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(); } }}
                   placeholder={composerPlaceholder}
                   rows={1}
-                  className="w-full max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-4 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
+                  className="w-full max-h-[180px] lykn-chat-neu-chat-field px-3 py-2 text-xs leading-5 text-black dark:text-white placeholder:text-black/50 dark:placeholder:text-white/45 outline-none resize-none"
                 />
               )}
               {chatBarToolbar}
@@ -2480,7 +2714,9 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
       ) : null}
       {onActiveArtifactChange ? (
         <LyknChatArtifactPanel
-          artifact={activeArtifact}
+          // Seed from "Edit in Build mode" carries the source for the next
+          // send, but must not open the preview — that's pulling the app up.
+          artifact={isAppEditSeed(activeArtifact) ? null : activeArtifact}
           isUpdating={isChatLoading}
           fullWidth={isMobilePhone}
           onClose={() => {
@@ -2489,6 +2725,7 @@ const LyknChatView: React.FC<LyknChatViewProps> = React.memo(function LyknChatVi
             onActiveArtifactChange(null);
           }}
           onSaveToVault={onSaveArtifact}
+          installTargetId={editingAppId}
           onArtifactUpdate={onActiveArtifactChange}
         />
       ) : null}

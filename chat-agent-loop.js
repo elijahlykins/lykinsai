@@ -1685,7 +1685,7 @@ const AUTO_LOAD_MAX = 3;
 const VIEW_INTENT_RE =
   /\b(show|see|view|open|display|render|pull\s*(?:up|in)|bring\s*(?:up|in)|drop\s+in|load)\b/i;
 const SAVED_CONTEXT_RE =
-  /\b(?:vault|saved|artifact|artifacts|from\s+(?:my\s+)?(?:vault|notion|drive|gmail|readwise)|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved|what\s+i\s+saved)\b/i;
+  /\b(?:vault|saved|artifact|artifacts|ai\s*drive|what\s+(?:have|did)\s+i\s+save|something\s+i\s+saved|what\s+i\s+saved)\b/i;
 const VAULT_AFFIRMATION_RE =
   /^(?:\s*(?:yes|yep|yeah|yup|ya|sure|ok|okay|k|please|do\s*it|go(?:\s*ahead)?|go\s*for\s*it|sounds?\s*good|that\s*one|those|them|all\s*(?:of\s*)?(?:them|those))\b[\s.,!]*)+$/i;
 const VAULT_SURFACE_OFFER_RE =

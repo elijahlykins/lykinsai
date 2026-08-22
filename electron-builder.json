@@ -32,12 +32,65 @@
     "node_modules/pdfjs-dist/package.json",
     "node_modules/pdfjs-dist/legacy/build/pdf.mjs",
     "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
-    "node_modules/pdfjs-dist/standard_fonts/**"
+    "node_modules/pdfjs-dist/standard_fonts/**",
+
+    "node_modules/@huggingface/**",
+    "node_modules/onnxruntime-node/**",
+    "node_modules/onnxruntime-common/**",
+    "node_modules/sharp/**",
+    "node_modules/@img/**",
+    "node_modules/detect-libc/**",
+    "node_modules/adm-zip/**",
+    "node_modules/global-agent/**",
+    "node_modules/boolean/**",
+    "node_modules/es6-error/**",
+    "node_modules/matcher/**",
+    "node_modules/escape-string-regexp/**",
+    "node_modules/roarr/**",
+    "node_modules/semver-compare/**",
+    "node_modules/serialize-error/**",
+    "node_modules/json-stringify-safe/**",
+    "node_modules/sprintf-js/**",
+    "node_modules/globalthis/**",
+    "node_modules/define-properties/**",
+    "node_modules/object-keys/**",
+    "node_modules/has-property-descriptors/**",
+    "node_modules/define-data-property/**",
+    "node_modules/es-define-property/**",
+    "node_modules/es-errors/**",
+    "node_modules/gopd/**",
+    "node_modules/detect-node/**",
+    "node_modules/type-fest/**",
+    "node_modules/flatbuffers/**",
+    "node_modules/guid-typescript/**",
+    "node_modules/long/**",
+    "node_modules/platform/**",
+    "node_modules/protobufjs/**",
+    "node_modules/@protobufjs/**",
+
+    "node_modules/esbuild/**",
+    "node_modules/@esbuild/**",
+
+    "!node_modules/onnxruntime-web/**",
+    "!node_modules/onnxruntime-node/bin/napi-v6/linux/**",
+    "!node_modules/@huggingface/transformers/types/**",
+    "!electron/**/*.test.{cjs,mjs,js}"
+  ],
+  "asarUnpack": [
+    "**/node_modules/onnxruntime-node/bin/**",
+    "**/node_modules/sharp/**",
+    "**/node_modules/@img/**",
+    "**/node_modules/@esbuild/**"
   ],
   "extraResources": [
     {
       "from": "extensions/save-to-lykn",
       "to": "extensions/save-to-lykn",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "models",
+      "to": "models",
       "filter": ["**/*"]
     }
   ],
@@ -57,9 +110,10 @@
   "mac": {
     "category": "public.app-category.productivity",
     "icon": "electron/resources/icon-rounded.png",
+    "files": ["!node_modules/onnxruntime-node/bin/napi-v6/win32/**"],
     "target": [
-      { "target": "dmg", "arch": ["universal"] },
-      { "target": "zip", "arch": ["universal"] }
+      { "target": "dmg", "arch": ["arm64", "x64"] },
+      { "target": "zip", "arch": ["arm64", "x64"] }
     ],
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
@@ -88,6 +142,7 @@
   },
   "win": {
     "icon": "electron/resources/icon.ico",
+    "files": ["!node_modules/onnxruntime-node/bin/napi-v6/darwin/**"],
     "target": [
       { "target": "nsis", "arch": ["x64"] }
     ],

@@ -18,7 +18,7 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   lykn_getProjectState: "Checking what you're on…",
   lykn_loadNeuron: "Recalling the details…",
   lykn_loadNeurons: "Recalling the details…",
-  lykn_searchVault: "Checking what's in your stuff…",
+  lykn_searchVault: "Checking AI Drive…",
   lykn_getBeliefs: "Remembering who you are…",
   lykn_getRules: "Checking how you work…",
   lykn_getFacts: "Recalling your preferences…",
@@ -40,6 +40,8 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   lykn_createNeuronLink: "Linking things together…",
   lykn_touchConcept: "Refreshing the idea…",
   lykn_updateUserPreference: "Updating your settings…",
+  lykn_open_settings: "Opening your settings…",
+  lykn_open_app: "Opening it…",
 
   // ── Exterior capabilities (the "building the thing out" cases) ──
   lykn_web_search: "Searching the web…",
@@ -75,6 +77,8 @@ const TOOL_RUNNING_STATUS: Record<string, string> = {
   local_running_apps: "Checking your open apps…",
   local_read_app: "Reading the app…",
   local_open_app: "Opening the app…",
+  local_open_path: "Opening it…",
+  local_organize_desktop: "Tidying your desktop…",
 };
 
 /**
@@ -88,6 +92,24 @@ function humaniseToolName(name: string): string {
   if (!cleaned) return "Working on it…";
   return `Working on ${cleaned}…`;
 }
+
+/** Section id → what the pane is called, so the status line says "Opening
+ *  Appearance settings…" rather than the raw id. Mirrors the enum in
+ *  mcp-tools/openSettings.js. */
+const SETTINGS_SECTION_LABELS: Record<string, string> = {
+  account: "Account",
+  workspace: "Workspace",
+  assistant: "Assistant",
+  notifications: "Notification",
+  localVault: "Local Vault",
+  installedApps: "Apps",
+  privacy: "Privacy",
+  appearance: "Appearance",
+  integrations: "Integrations",
+  billing: "Billing",
+  keyboard: "Keyboard",
+  advanced: "Advanced",
+};
 
 function truncateForStatus(text: string, max: number): string {
   const t = text.replace(/\s+/g, " ").trim();
@@ -136,7 +158,8 @@ function toolDetailStatus(name: string, args?: Record<string, unknown>): string 
     name === "local_read_file" ||
     name === "local_write_file" ||
     name === "local_list_dir" ||
-    name === "local_pull_file"
+    name === "local_pull_file" ||
+    name === "local_open_path"
   ) {
     const path = typeof args.path === "string" ? args.path.trim() : "";
     if (!path) return "";
@@ -145,6 +168,22 @@ function toolDetailStatus(name: string, args?: Record<string, unknown>): string 
     if (name === "local_read_file") return `Reading ${truncateForStatus(leaf, 40)}…`;
     if (name === "local_pull_file") return `Pulling in ${truncateForStatus(leaf, 40)}…`;
     return `Opening ${truncateForStatus(leaf, 40)}…`;
+  }
+  if (name === "lykn_open_app") {
+    const app = typeof args.app === "string" ? args.app.trim() : "";
+    return app ? `Opening ${truncateForStatus(app, 40)}…` : "";
+  }
+  if (name === "lykn_open_settings") {
+    const section = typeof args.section === "string" ? args.section.trim() : "";
+    const label = SETTINGS_SECTION_LABELS[section];
+    return label ? `Opening ${label} settings…` : "";
+  }
+  if (name === "local_organize_desktop") {
+    const by = typeof args.by === "string" ? args.by.trim() : "";
+    if (by === "kind") return "Grouping your desktop by kind…";
+    if (by === "name") return "Sorting your desktop by name…";
+    if (by === "date") return "Sorting your desktop by date…";
+    return "";
   }
   if (name === "local_open_app" || name === "local_read_app") {
     const app = typeof args.app === "string" ? args.app.trim() : "";

@@ -7,6 +7,7 @@ import {
   FolderKanban,
   Gauge,
   Globe2,
+  LayoutDashboard,
   ListTodo,
   Lock,
   MessageCircle,
@@ -23,6 +24,7 @@ import {
 } from '@/components/macdesktop/DesktopWidgets';
 import AppLauncherWidget from '@/components/macdesktop/widgets/AppLauncherWidget';
 import GlanceWidget from '@/components/macdesktop/widgets/GlanceWidget';
+import LyknAppLauncherWidget from '@/components/macdesktop/widgets/LyknAppLauncherWidget';
 import QuickNoteWidget from '@/components/macdesktop/widgets/QuickNoteWidget';
 import RecentChatsWidget from '@/components/macdesktop/widgets/RecentChatsWidget';
 import WeatherWidget from '@/components/macdesktop/widgets/WeatherWidget';
@@ -109,7 +111,7 @@ export const WIDGET_TYPES = [
   {
     type: 'vault',
     label: 'Vault',
-    description: "A strip of everything you've saved.",
+    description: 'Generated images from AI Drive.',
     icon: Lock,
     tone: 'text-emerald-500',
     sizes: ['small', 'medium', 'large'],
@@ -173,6 +175,20 @@ export const WIDGET_TYPES = [
     desktopOnly: true,
     subtitle: (item) => item.props?.appName || '',
     render: (ctx) => <AppLauncherWidget size={ctx.size} props={ctx.props} />,
+  },
+  {
+    type: 'lyknApp',
+    label: 'Built App',
+    description: 'An app you built in LYKN, one click from the desktop.',
+    icon: LayoutDashboard,
+    tone: 'text-violet-500',
+    sizes: ['small', 'medium'],
+    defaultSize: 'small',
+    pickLyknApp: true,
+    repeatable: true,
+    desktopOnly: true,
+    subtitle: (item) => item.props?.appName || '',
+    render: (ctx) => <LyknAppLauncherWidget size={ctx.size} props={ctx.props} />,
   },
 ];
 

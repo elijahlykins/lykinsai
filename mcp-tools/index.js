@@ -1,39 +1,41 @@
 // ============================================================================
-// mcp-tools/index.js — registry of MCP tools that expose the synthesis layer
+// mcp-tools/index.js — registry of the synthesis-layer tools
 // ============================================================================
-// One source of truth for "what can outside AI clients (Claude Desktop,
-// Cursor, Claude Code, ChatGPT custom GPT, etc.) do with LYKN."
+// One source of truth for "what can LYKN's own AI do with the user's
+// synthesis layer." These are consumed by two in-app surfaces:
+//   • the text chat  — via the whitelist in chatTools.js
+//   • the voice agent — via the runMcp dispatcher in server.js
 //
-// Each tool follows the same shape so:
-//   • mcp-server.js can register them all in a loop
-//   • the REST mirror in server.js can wrap them in plain HTTP routes
-//   • the admin panel can show per-tool usage without hardcoding names
+// LYKN does NOT expose these tools to outside AI models. There is no MCP
+// server, no REST mirror, and no bearer-token transport; every call runs
+// under the signed-in user's own session.
 //
 // Tool shape:
 //   {
-//     name        : 'lykn_getBeliefs'              // namespaced (underscore — Claude Desktop rejects dots in tool names per `^[a-zA-Z0-9_-]{1,64}$`)
+//     name        : 'lykn_getBeliefs'
 //     title       : 'Get the user\'s active beliefs'
 //     description : Long, LLM-facing prose describing WHEN to call it.
-//                  This shows up in Claude / Cursor / etc. and is the
-//                  single biggest determinant of whether the model uses
-//                  the tool well. Spend tokens here, not in handler logs.
+//                  This is the single biggest determinant of whether the
+//                  model uses the tool well. Spend tokens here, not in
+//                  handler logs. chatTools.js clips it to DESCRIPTION_CAP
+//                  before it ships in a turn's tool schemas.
 //     scope       : 'read' | 'write'
 //     inputSchema : JSON Schema describing args
 //     async handler(args, ctx) → { content: [{ type: 'text', text: '...' }] }
-//                  Returns MCP "content" blocks. The REST mirror unwraps
-//                  these into plain JSON.
+//                  Returns "content" blocks; callers unwrap block[0].text
+//                  and JSON.parse it.
 //   }
 //
-// ctx fields (set by mcp-server.js / the REST mirror before calling):
+// ctx fields (set by buildChatToolCtx in chatTools.js / buildToolCtx in
+// server.js before calling):
 //   ctx.supabaseAdmin   — service-role client
-//   ctx.userId          — resolved by requireAuthOrMcpToken
-//   ctx.attribSurface   — e.g. 'mcp:claude-desktop' for recordRuleApplication
-//   ctx.tokenId         — id of the lykn_mcp_tokens row (null on JWT)
-//   ctx.clientLabel     — UA / mcp-client-info string for telemetry
-//   ctx.log             — opaque logger; see mcp-server.js
+//   ctx.userId          — the signed-in user
+//   ctx.attribSurface   — 'lykn-chat' for recordRuleApplication
+//   ctx.clientLabel     — UA string for telemetry
 //
 // All tool files live in this directory and only re-export the tool object.
-// Adding a new tool = drop a file in here and re-export it below.
+// Adding a new tool = drop a file in here, re-export it below, and add it
+// to CHAT_TOOL_NAMES in chatTools.js.
 
 import { getBeliefsTool } from './getBeliefs.js';
 import { getRulesTool } from './getRules.js';
@@ -63,7 +65,6 @@ import { touchConceptTool } from './touchConcept.js';
 import { getUserPreferencesTool } from './getUserPreferences.js';
 import { updateUserPreferenceTool } from './updateUserPreference.js';
 import { getRecentActivityTool } from './getRecentActivity.js';
-import { recommendToolsTool } from './recommendTools.js';
 import { saveLinkToVaultTool } from './saveLinkToVault.js';
 import { createReminderTool } from './createReminder.js';
 import { listRemindersTool } from './listReminders.js';
@@ -85,7 +86,7 @@ import { checkCursorBuildTool } from './checkCursorBuild.js';
 import { listAppsTool } from './listApps.js';
 import { callAppTool } from './callApp.js';
 
-export const MCP_TOOLS = [
+export const SYNTHESIS_TOOLS = [
   // Tier 1 — Core beliefs (governance, ratified)
   getBeliefsTool,
   getRulesTool,
@@ -156,14 +157,10 @@ export const MCP_TOOLS = [
   getUserPreferencesTool,
   updateUserPreferenceTool,
   getRecentActivityTool,
-  // Capability-aware routing — suggests OUTBOUND_TARGETS the user can
-  // connect when LYKN cannot perform the requested action itself. Pure
-  // catalog read; no auth, no side effects, no dispatch.
-  recommendToolsTool,
 ];
 
-export const MCP_TOOLS_BY_NAME = Object.freeze(
-  Object.fromEntries(MCP_TOOLS.map((t) => [t.name, t])),
+export const SYNTHESIS_TOOLS_BY_NAME = Object.freeze(
+  Object.fromEntries(SYNTHESIS_TOOLS.map((t) => [t.name, t])),
 );
 
 // ---------------------------------------------------------------------------
@@ -174,5 +171,4 @@ export {
   jsonContent,
   textContent,
   errorContent,
-  requireWrite,
 } from './content.js';

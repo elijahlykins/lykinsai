@@ -317,7 +317,7 @@ export default function WallpaperSettings({ appearance, onChange }) {
         <p className="text-[11px] leading-snug text-red-500 dark:text-red-400">{error}</p>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="lykn-settings-grid gap-4" style={{ '--lykn-settings-grid-min': '196px' }}>
         <div>
           <div className="mb-2 flex items-baseline justify-between gap-3">
             <span className="text-[13px] font-medium text-black/80 dark:text-white/80">Dim</span>

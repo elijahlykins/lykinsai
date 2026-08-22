@@ -10,7 +10,8 @@ import { canUseWebApp } from '@/lib/webAppAccess';
 import { BrowserRouter as Router, Route, Routes, useLocation, Navigate } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import FreeCreditsNudge from '@/components/billing/FreeCreditsNudge';
-import BriefSurface from '@/components/brief/BriefSurface';
+import LyknMediaPopHost from '@/components/lyknChat/LyknMediaPopHost';
+import FileWindowHost from '@/components/files/FileWindowHost';
 import { SupabaseAuthProvider, useAuth } from '@/lib/SupabaseAuth';
 import { supabase } from '@/lib/supabase';
 import { IntakeProvider } from '@/context/IntakeContext';
@@ -54,7 +55,6 @@ import {
   SYNTHESIS_LAYER_FALLBACK_PATH,
 } from "@/lib/synthesisLayerUi";
 import ShareReceiver from "./pages/ShareReceiver";
-import Onboarding from "./pages/Onboarding";
 import Pricing from "./pages/Pricing";
 import DownloadLykn from "./pages/DownloadLykn";
 import CapabilityPage from "./pages/CapabilityPage";
@@ -62,9 +62,6 @@ import News, { NewsArticle } from "./pages/News";
 import Templates from "./pages/Templates";
 import AdminUsage from "./pages/AdminUsage";
 import AdminBilling from "./pages/AdminBilling";
-import OAuthConsent from "./pages/OAuthConsent";
-import AppsChatGPT from "./pages/AppsChatGPT";
-import AppsClaude from "./pages/AppsClaude";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
 import CookiePolicy from "./pages/CookiePolicy";
@@ -429,13 +426,6 @@ function AppShell() {
                 </DesktopProductOnly>
               }
             />
-            {/* OAuth consent screen — reached via 302 from API's /oauth/authorize.
-                Intentionally NOT wrapped in ProtectedRoute: the page handles its
-                own auth-gate inline so OAuth params survive the sign-in round-trip
-                (react-router's `from` doesn't preserve query strings). */}
-            <Route path="/oauth/consent" element={<OAuthConsent />} />
-            <Route path="/apps/chatgpt" element={<AppsChatGPT />} />
-            <Route path="/apps/claude" element={<AppsClaude />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/cookies" element={<CookiePolicy />} />
@@ -517,14 +507,9 @@ function AppShell() {
             <Route path="/connections" element={<Navigate to="/studio" replace />} />
             <Route path="/connections/*" element={<Navigate to="/studio" replace />} />
             <Route path="/share" element={<ShareReceiver />} />
-            <Route
-              path="/onboarding/connect"
-              element={
-                <ProtectedRoute>
-                  <Onboarding />
-                </ProtectedRoute>
-              }
-            />
+            {/* The post-signup "connect your AI tools" flow existed only to
+                install LYKN into other AI clients. Old links bounce home. */}
+            <Route path="/onboarding/connect" element={<Navigate to="/studio" replace />} />
             <Route
               path="/synthesis-layer"
               element={
@@ -628,12 +613,9 @@ function AppShell() {
       {/* Free-plan upgrade nudge (90% of signup credits used). Skipped on
           embedded/glass surfaces where a floating card would cover the UI. */}
       {!isEmbeddedRoute && !isGlassSurface && <FreeCreditsNudge />}
-      {/* The day's brief: one card per launch when Settings → Notifications →
-          "Brief on startup" is on, plus the popup Studio's top bar opens on
-          demand. Skipped only on the embedded surfaces (Studio's iframes),
-          never on `glass` alone — the desktop's main window
-          IS /studio?glass=1, which is exactly where the brief belongs. */}
-      {!isEmbeddedRoute && <BriefSurface />}
+      {!isEmbeddedRoute && <LyknMediaPopHost />}
+      {/* Only renders the file windows the Studio desktop didn't claim. */}
+      {!isEmbeddedRoute && <FileWindowHost />}
     </>
   );
 }

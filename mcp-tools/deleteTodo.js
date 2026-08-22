@@ -8,7 +8,7 @@
 // comes from lykn_listTodos. Scoped to the caller's own rows (handler filters
 // on user_id; RLS enforces it under JWT).
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 export const deleteTodoTool = {
   name: 'lykn_deleteTodo',
@@ -34,8 +34,6 @@ export const deleteTodoTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

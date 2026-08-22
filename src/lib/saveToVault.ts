@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import { detectSocialPlatform, getSocialEmbedLabel } from "@/lib/media/socialEmbed";
 import { buildAttachmentColumns } from "@/lib/vault/attachmentType";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
+import { insertWithSchemaFallback } from "@/lib/vault/insertWithSchemaFallback";
 import { describeVaultItemInBackground } from "@/lib/vault/describeVaultItem";
 import {
   isVaultCapError,
@@ -11,12 +12,25 @@ import {
   isUploadRateLimitError,
   notifyUploadRateLimitIfApplicable,
 } from "@/lib/vault/uploadRateLimitError";
+import {
+  LOCAL_BUCKET,
+  createVaultWrites,
+  isLocalVaultEnabled,
+} from "@/lib/vault/repository";
+import { writeLocalBlob } from "@/lib/vault/repository/localBlobs";
+import { parseLocalBlobUrl } from "@/lib/vault/repository/mediaUrl";
+import { readLocalGeneration } from "@/lib/vault/repository/localGenerations";
 
 interface SaveFileToVaultOptions {
   userId: string;
   filename: string;
   fileType: string;
   fileUrl: string;
+  /**
+   * Chosen up front when the bytes went to the on-device store, whose blob
+   * directory is keyed by the row id and is written before the row exists.
+   */
+  noteId?: string;
   storagePath?: string;
   storageBucket?: string;
   fileSize: number;
@@ -131,6 +145,7 @@ export async function saveFileToVault(
     filename,
     fileType,
     fileUrl,
+    noteId,
     storagePath,
     storageBucket = "user-files",
     fileSize,
@@ -145,6 +160,7 @@ export async function saveFileToVault(
   } = opts;
 
   const dedupKey = fileDedupKey(userId, storagePath, filename);
+  const local = isLocalVaultEnabled();
 
   try {
     // ── In-memory dedup ──
@@ -153,18 +169,25 @@ export async function saveFileToVault(
     }
 
     // ── DB dedup: check if a vault note for this file already exists ──
-    const searchTerm = storagePath || filename;
-    const { data: existing } = await supabase
-      .from("vault_items")
-      .select("id")
-      .eq("user_id", userId)
-      .ilike("content", buildLikePattern(searchTerm))
-      .limit(1);
-    if (existing && existing.length > 0) {
-      // The DB already has a row matching this file — record it locally
-      // so we don't issue another query for the same key in this session.
-      fileDedup.add(dedupKey);
-      return { ok: false, reason: "duplicate" };
+    // Substring matching on `content` is a Postgres query with no local
+    // equivalent, so on-device saves lean on the in-memory key above. A second
+    // row cannot appear behind its back: local saves either write a freshly
+    // minted blob directory, or reuse an existing one under a `noteId` that
+    // upserts the same row rather than adding another.
+    if (!local) {
+      const searchTerm = storagePath || filename;
+      const { data: existing } = await supabase
+        .from("vault_items")
+        .select("id")
+        .eq("user_id", userId)
+        .ilike("content", buildLikePattern(searchTerm))
+        .limit(1);
+      if (existing && existing.length > 0) {
+        // The DB already has a row matching this file — record it locally
+        // so we don't issue another query for the same key in this session.
+        fileDedup.add(dedupKey);
+        return { ok: false, reason: "duplicate" };
+      }
     }
 
     const noteTitle = filename.replace(/\.[^/.]+$/, "") || filename;
@@ -210,8 +233,13 @@ export async function saveFileToVault(
       : [fileType, "uploaded"];
     if (projectName && !tags.includes(projectName)) tags.push(projectName);
 
+    // Whichever backend the vault is on. Writing straight to Supabase here
+    // would put a saved image somewhere the drive never reads from when the
+    // user has moved their vault onto this device.
+    const writes = createVaultWrites(userId);
+
     const richInsert: Record<string, unknown> = {
-      user_id: userId,
+      ...(noteId ? { id: noteId } : {}),
       title: noteTitle,
       content: noteContent,
       source: source || "project_upload",
@@ -220,27 +248,11 @@ export async function saveFileToVault(
       ...buildAttachmentColumns(attachmentPayload[0]),
     };
 
-    let noteError: any = null;
-    let insertedNote: any = null;
-    ({ data: insertedNote, error: noteError } = await supabase
-      .from("vault_items")
-      .insert(richInsert)
-      .select("id, title, content, created_at, updated_at")
-      .single());
-
-    const missingColumnError =
-      noteError &&
-      (noteError.code === "PGRST204" ||
-        noteError.message?.includes("Could not find") ||
-        noteError.message?.toLowerCase().includes("does not exist"));
-
-    if (missingColumnError) {
-      ({ data: insertedNote, error: noteError } = await supabase
-        .from("vault_items")
-        .insert({ user_id: userId, title: noteTitle, content: noteContent })
-        .select("id, title, content, created_at, updated_at")
-        .single());
-    }
+    const { data: insertedNote, error: noteError } = await insertWithSchemaFallback(
+      (row) => writes.insert(row),
+      richInsert,
+      ["id", "title", "content"],
+    );
 
     if (noteError) {
       const classified = classifyError(noteError);
@@ -524,14 +536,48 @@ interface SaveGeneratedImageToVaultOptions {
   folder?: string;
 }
 
+/** Vault card title for a generated image. */
+function generatedImageFilename(id: string, ext: string): string {
+  const stamp = new Date().toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  return `AI Generated ${stamp}-${id.slice(0, 8)}.${ext}`;
+}
+
+/**
+ * Keep the caption short — the full Imagine batch prompt is shared by all four
+ * slots and must not make this card look like a batch dump.
+ */
+function generatedImageCaption(promptText?: string): string {
+  const caption = String(promptText || "").trim().slice(0, 120);
+  return caption ? `AI-generated image: "${caption}"` : "AI-generated image";
+}
+
+function extFromMime(mimeType: string, fallback = "jpg"): string {
+  const mime = String(mimeType || "").toLowerCase();
+  if (mime.includes("png")) return "png";
+  if (mime.includes("webp")) return "webp";
+  if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+  return fallback;
+}
+
 /**
  * Persist an AI-generated Studio/chat image as a durable vault card.
  *
- * Always copies into a unique `{userId}/{fileId}/original.*` vault layout —
- * even when a `generated/` storagePath already exists. Imagine batches share
- * the flat `…/generated/` folder; keeping that path would make every saved
- * sibling overwrite the same medium.jpg/thumb.jpg and look like the whole
- * batch landed in the vault.
+ * Always copies into a directory of its own — even when a `generated/`
+ * storagePath already exists. Imagine batches share the flat `…/generated/`
+ * folder; keeping that path would make every saved sibling overwrite the same
+ * medium.jpg/thumb.jpg and look like the whole batch landed in the vault.
+ *
+ * The exception is an image that was generated straight onto this device: its
+ * bytes already sit in a directory named for the row this save is about to
+ * write, so saving is a promotion of the existing `generation` row rather than
+ * a copy of anything.
+ *
+ * Filed under `Generated` so it shows up in AI Drive's Image Gen folder, which
+ * is where everything LYKN drew is expected to be found.
  */
 export async function saveGeneratedImageToVault(
   opts: SaveGeneratedImageToVaultOptions,
@@ -559,6 +605,35 @@ export async function saveGeneratedImageToVault(
       : "jpg";
 
   try {
+    // Already on disk under its own row id: reuse it rather than reading the
+    // bytes back out of our own store only to write them somewhere else. If
+    // the row is gone the sweep collected it, so fall through and let the
+    // normal path report an image that can no longer be fetched.
+    const localSource = parseLocalBlobUrl(imageUrl);
+    if (localSource) {
+      const generation = await readLocalGeneration(localSource.itemId);
+      if (generation) {
+        return await saveFileToVault({
+          userId,
+          filename: generatedImageFilename(
+            generation.id,
+            extFromMime(generation.mimeType, "png"),
+          ),
+          fileType: "image",
+          fileUrl: generation.url,
+          noteId: generation.id,
+          storagePath: generation.path,
+          storageBucket: LOCAL_BUCKET,
+          fileSize: generation.bytes,
+          mimeType: generation.mimeType,
+          source,
+          folder,
+          tags: ["image", "ai-generated", "generated"],
+          contentPrefix: generatedImageCaption(promptText),
+        });
+      }
+    }
+
     // Prefer downloading the already-persisted object when we have a path;
     // otherwise fetch the preview URL.
     let blob: Blob | null = null;
@@ -599,61 +674,64 @@ export async function saveGeneratedImageToVault(
       return { ok: false, reason: "error", message: "Image was empty." };
     }
     if (blob.type) mimeType = blob.type;
-    ext = mimeType.includes("png")
-      ? "png"
-      : mimeType.includes("webp")
-        ? "webp"
-        : mimeType.includes("jpeg") || mimeType.includes("jpg")
-          ? "jpg"
-          : ext;
+    ext = extFromMime(mimeType, ext);
 
     // One vault card → one private directory (same as normal uploads).
     const fileId = crypto.randomUUID();
-    const storagePath = `${userId}/${fileId}/original.${ext}`;
-    const { error: uploadError } = await supabase.storage
-      .from("user-files")
-      .upload(storagePath, blob, {
-        cacheControl: "3600",
-        upsert: false,
-        contentType: mimeType,
-      });
-    if (uploadError) {
-      const classified = classifyError(uploadError);
-      return { ok: false, reason: classified.reason, message: classified.message };
-    }
     fileSize = blob.size;
-    const { data: signedData } = await supabase.storage
-      .from("user-files")
-      .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-    fileUrl = signedData?.signedUrl || imageUrl;
+    const filename = generatedImageFilename(fileId, ext);
 
-    const shortId = fileId.slice(0, 8);
-    const filename = `AI Generated ${new Date().toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    })}-${shortId}.${ext}`;
+    // The image itself is generated in the cloud, but where the saved copy
+    // belongs depends on which vault the user is keeping: a local vault gets
+    // the bytes on disk under the row's own id, exactly like a dropped file.
+    let noteId: string | undefined;
+    let storagePath: string;
+    let storageBucket: string;
 
-    // Keep the caption short — the full Imagine batch prompt is shared by all
-    // four slots and must not make this card look like a batch dump.
-    const caption = String(promptText || "").trim().slice(0, 120);
-    const promptLine = caption
-      ? `AI-generated image: "${caption}"`
-      : "AI-generated image";
+    if (isLocalVaultEnabled()) {
+      noteId = crypto.randomUUID();
+      const written = await writeLocalBlob(noteId, blob, {
+        filename,
+        mimeType,
+        variant: "original",
+      });
+      storagePath = written.path;
+      storageBucket = LOCAL_BUCKET;
+      fileUrl = written.url;
+    } else {
+      storagePath = `${userId}/${fileId}/original.${ext}`;
+      storageBucket = "user-files";
+      const { error: uploadError } = await supabase.storage
+        .from("user-files")
+        .upload(storagePath, blob, {
+          cacheControl: "3600",
+          upsert: false,
+          contentType: mimeType,
+        });
+      if (uploadError) {
+        const classified = classifyError(uploadError);
+        return { ok: false, reason: classified.reason, message: classified.message };
+      }
+      const { data: signedData } = await supabase.storage
+        .from("user-files")
+        .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+      fileUrl = signedData?.signedUrl || imageUrl;
+    }
 
     return await saveFileToVault({
       userId,
       filename,
       fileType: "image",
       fileUrl,
+      noteId,
       storagePath,
-      storageBucket: "user-files",
+      storageBucket,
       fileSize,
       mimeType,
       source,
       folder,
       tags: ["image", "ai-generated", "generated"],
-      contentPrefix: promptLine,
+      contentPrefix: generatedImageCaption(promptText),
     });
   } catch (err) {
     if (import.meta.env.DEV) {

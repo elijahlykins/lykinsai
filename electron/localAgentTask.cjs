@@ -30,6 +30,7 @@ const DECISION_SCHEMA = {
         "local_running_apps",
         "local_read_app",
         "local_open_app",
+        "local_open_path",
       ],
     },
     args: {
@@ -61,18 +62,20 @@ const SYSTEM_PROMPT = [
   "Tools:",
   "- local_list_dir { path } — list a folder (read-only).",
   "- local_read_file { path } — read a text file (read-only).",
-  "- local_search_files { path, namePattern, query } — find files by name/text (read-only).",
+  "- local_search_files { path, namePattern, query } — find files or folders by name, or files by text (read-only).",
   "- local_write_file { path, content } — create/overwrite a file (asks the user first).",
   "- local_run_command { command, cwd } — run a shell command (safe ones run immediately; risky ones ask first).",
   "- local_synced_folders {} — list the folders the user synced with LYKN (your filesystem scope).",
   "- local_running_apps {} — see which apps are open and which is frontmost.",
   "- local_read_app { app } — read what's showing inside an app (Spotify: current track; browsers: active tab; others: on-screen text via Accessibility). Omit app for the frontmost one.",
   "- local_open_app { app } — open a Mac app and bring it into view on the user's desktop, like clicking it in the dock (runs immediately).",
+  "- local_open_path { path } — open a file in LYKN's preview pop, or a folder in the Vault Finder.",
   "",
   "Rules:",
   "- Explore with reads before writing or running mutating commands.",
   "- Paths may be absolute, start with ~, or be relative to the home folder.",
   "- File access is limited to the user's synced folders — check local_synced_folders if a path is refused.",
+  "- Use local_open_path for files and folders. Never open Finder as a substitute for opening a path.",
   "- When the goal is done, return kind=finish with a concise summary of what you did.",
   "- If you truly cannot proceed without the user, return kind=ask_user with a specific question.",
 ].join("\n");
@@ -325,6 +328,13 @@ function looksLikeLocalSystemAsk(text) {
   if (/\b(terminal|shell|command line|run\s+(the\s+)?command|zsh|bash|(npm|yarn|pnpm|pip3?|brew)\s+(run|install|uninstall|update|upgrade|list)|git\s+(status|commit|clone|pull|push)|chmod|mkdir|open\s+the\s+terminal)\b/.test(t)) {
     return true;
   }
+  // Tidying the Home desktop ("organise my desktop", "clean up the desktop
+  // into a grid") — answered by local_organize_desktop. "desktop" on its own
+  // is too common to key on, so it has to be paired with a tidying verb.
+  if (/\b(organi[sz]e|tidy|clean\s*up|arrange|straighten|line\s*up|sort)\b[^.?!]*\bdesktop\b/.test(t)) {
+    return true;
+  }
+  if (/\bdesktop\b[^.?!]*\b(into|in|on)\s+(a\s+)?grid\b/.test(t)) return true;
   // Local file operations with a path-ish reference.
   if (
     /\b(read|open|edit|create|write|delete|rename|move|search|find|list)\b/.test(t) &&

@@ -1,16 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
-  ArrowUp,
   AudioLines,
   ChevronDown,
   Code,
+  File as FileIcon,
+  FileText,
+  Film,
+  Folder,
+  FolderOpen,
   Globe,
   GraduationCap,
   ImagePlus,
   Layers,
+  Library,
   Loader2,
   MessageCircle,
   Mic,
+  Music,
   Newspaper,
   Plus,
   Telescope,
@@ -27,8 +33,27 @@ import {
   transcribeVaultAudio,
 } from "@/lib/vault/saveVoiceNote";
 import { micErrorMessage, requestMicStream } from "@/lib/voice/micAccess";
-import { setPendingHomeChatFiles } from "@/lib/homeChatFiles";
+import {
+  fileNameFromPath,
+  filesFromMacPaths,
+  onHomeChatFilesQueued,
+  onHomeChatPathsQueued,
+  setPendingHomeChatFiles,
+  setPendingHomeChatFolders,
+  snapshotMacFolders,
+  takeQueuedHomeChatFiles,
+  takeQueuedHomeChatPaths,
+} from "@/lib/homeChatFiles";
+import ChatSendIcon from "@/lib/chatSendIcon";
+import { useDropZone } from "@/lib/drag/dragEngine";
+import { useAppearance } from "@/lib/useAppearance";
+import { barMenuOffset } from "@/lib/chat/barMenuOffset";
+import { isLyknFolder, useLyknFolders } from "@/lib/lyknFolders";
 import { toast } from "@/components/ui/use-toast";
+import AppSourceStrip, {
+  requestDismissAppEdit,
+  useHomeAppSourceStrip,
+} from "@/components/lyknChat/AppSourceStrip";
 
 /**
  * Home-desktop chat entry — the same chat bar + Chat / Build / Imagine /
@@ -45,6 +70,9 @@ const ICON_BTN =
 
 // Shared with the desktop's right-click menus — see `.lg-desktop-surface`.
 const BAR_SURFACE = "lg-desktop-surface";
+
+/** How tall the prompt field grows before it scrolls instead. */
+const PROMPT_MAX_H = 128;
 
 /* Above the hosted chat surface (z-20) but under the Calendar / To-dos app
  * windows (z-25), so dragging a window over the pill, the welcome headline or
@@ -79,6 +107,42 @@ const SOURCE_ICONS = {
   finance: TrendingUp,
 };
 
+const IMAGE_EXT = /^(png|jpe?g|gif|webp|heic|heif|bmp|avif|svg)$/i;
+const VIDEO_EXT = /^(mp4|mov|webm|m4v|avi|mkv)$/i;
+const AUDIO_EXT = /^(mp3|wav|m4a|ogg|flac|aac)$/i;
+
+function extOf(name) {
+  return String(name || "").split(".").pop() || "";
+}
+
+function kindFromFile(file) {
+  const mime = file.type || "";
+  const ext = extOf(file.name);
+  if (mime.startsWith("image/") || IMAGE_EXT.test(ext)) return "image";
+  if (mime.startsWith("video/") || VIDEO_EXT.test(ext)) return "video";
+  if (mime.startsWith("audio/") || AUDIO_EXT.test(ext)) return "audio";
+  if (mime === "application/pdf" || ext.toLowerCase() === "pdf") return "pdf";
+  return "file";
+}
+
+function makeAttachment(partial) {
+  return {
+    id:
+      (typeof crypto !== "undefined" && crypto.randomUUID?.()) ||
+      `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    kind: "file",
+    name: "file",
+    file: null,
+    path: "",
+    previewUrl: "",
+    ...partial,
+  };
+}
+
+function revokePreview(att) {
+  if (att?.previewUrl) URL.revokeObjectURL(att.previewUrl);
+}
+
 function broadcastSourcePref(pref) {
   try {
     sessionStorage.setItem("lykn_pending_research_sources", pref);
@@ -90,28 +154,63 @@ function broadcastSourcePref(pref) {
   );
 }
 
+function fileFromPickedRow(row) {
+  if (!row?.name || row.data == null) return null;
+  let body = row.data;
+  if (body?.type === "Buffer" && Array.isArray(body.data)) {
+    body = new Uint8Array(body.data);
+  }
+  return new File([body], row.name, {
+    type: row.type || "",
+    lastModified: Number(row.lastModified) || Date.now(),
+  });
+}
+
 export default function HomeChatBar({
   onOpen,
   active = false,
   live = false,
   name = "",
   surfaceView = "",
+  contained = false,
 }) {
+  const finderInputId = useId();
   const [view, setView] = useState("chat");
   const [text, setText] = useState("");
   const [typedWelcome, setTypedWelcome] = useState("");
   const [sourcePref, setSourcePref] = useState("all");
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [dictating, setDictating] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [files, setFiles] = useState([]);
+  const [attachments, setAttachments] = useState([]);
+  /** Prompt wrapped past one line — the pill squares off as it fills up. */
+  const [promptTall, setPromptTall] = useState(false);
+  const [dropHot, setDropHot] = useState(false);
+  const dropHotRef = useRef(false);
+  const [dropping, setDropping] = useState(false);
   const inputRef = useRef(null);
+  const barRef = useRef(null);
   const fileInputRef = useRef(null);
+  const addRef = useRef(null);
+  const addPanelRef = useRef(null);
   const sourcesRef = useRef(null);
   const sourcesPanelRef = useRef(null);
+  const menuWrapRef = useRef(null);
+  const [addPos, setAddPos] = useState({});
+  const [sourcesPos, setSourcesPos] = useState({});
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  const appEdit = useHomeAppSourceStrip();
+  const showAppEdit = Boolean(appEdit && (appEdit.loading || appEdit.paths.length));
+  const tall = showAppEdit || attachments.length > 0 || promptTall;
+  // Appearance › Chat bar shape. Slate is the only shape that changes this
+  // bar's layout rather than just its corners: the field takes a row of its
+  // own and the controls sit along the bottom, like the page composer.
+  const slate = useAppearance().chatBarShape === "slate";
   // Dock to the bottom only once the conversation has real content — the
   // bar stays centered while flipping through fresh mode pages.
   const docked = active && live;
@@ -124,14 +223,56 @@ export default function HomeChatBar({
     active && (surfaceView === "chat" || surfaceView === "build" || surfaceView === "imagine" || surfaceView === "research")
       ? surfaceView
       : view;
-  const busy = dictating || transcribing;
-  // A file on its own is a valid turn — except in Imagine, which renders from
-  // the prompt alone and has nothing to make of a bare attachment.
-  const canSend = Boolean(text.trim()) || (files.length > 0 && barMode !== "imagine");
+  const busy = dictating || transcribing || dropping;
+  // A file on its own is a valid turn. In Imagine it lands on that bar as a
+  // reference and waits there for the prompt it belongs to.
+  const canSend = Boolean(text.trim()) || attachments.length > 0;
   const sourceOpt =
     RESEARCH_SOURCE_OPTIONS.find((o) => o.value === sourcePref) ||
     RESEARCH_SOURCE_OPTIONS[0];
   const SourceIcon = SOURCE_ICONS[sourcePref] || Layers;
+
+  // Grow with what's typed, up to a cap, then scroll. The one-line height is
+  // measured on the first pass rather than guessed at, since the line box
+  // moves with the chat bar size setting and the shape's own padding.
+  const promptBaseHRef = useRef(0);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const full = el.scrollHeight;
+    if (full > 0 && !promptBaseHRef.current) promptBaseHRef.current = full;
+    el.style.height = `${Math.min(full, PROMPT_MAX_H)}px`;
+    setPromptTall(Boolean(promptBaseHRef.current) && full > promptBaseHRef.current + 4);
+    // Slate is in the deps because it changes the field's padding and type, so
+    // the height has to be taken again rather than carried across the switch.
+  }, [text, slate]);
+
+  // AI Drive's Chat action lands on this externally-hosted composer. Mirror
+  // the selected Vault item here so the attachment is visible before sending;
+  // the payload itself is handed to the real chat surface in `send`.
+  useEffect(() => {
+    const onVaultAdd = (event) => {
+      const payload = event?.detail;
+      if (!payload || typeof payload !== "object") return;
+      const source = Array.isArray(payload.attachments) ? payload.attachments[0] : null;
+      const kind = String(source?.type || "file").toLowerCase();
+      const previewUrl = ["image", "video"].includes(kind) ? String(source?.url || "") : "";
+      const next = makeAttachment({
+        id: `vault-${payload.id || payload.noteId || Date.now()}`,
+        kind,
+        name: String(source?.name || source?.title || payload.title || "Vault item"),
+        previewUrl,
+        vaultPayload: payload,
+      });
+      setAttachments((prev) => (
+        prev.some((att) => att.id === next.id) ? prev : [...prev, next]
+      ));
+      setView("chat");
+    };
+    window.addEventListener("lykn-chat-vault-add", onVaultAdd);
+    return () => window.removeEventListener("lykn-chat-vault-add", onVaultAdd);
+  }, []);
 
   // Same typewriter as the empty chat page. Only while the desktop is idle —
   // once a conversation is surfaced, that page owns the headline.
@@ -177,16 +318,27 @@ export default function HomeChatBar({
   }, []);
 
   useEffect(() => {
-    if (!sourcesOpen) return;
+    if (!sourcesOpen && !addOpen) return;
     const onDown = (e) => {
-      // The panel is a sibling of the bar, not a child of the trigger, so both
-      // have to be cleared before an outside click counts.
-      if (sourcesRef.current?.contains(e.target)) return;
-      if (sourcesPanelRef.current?.contains(e.target)) return;
-      setSourcesOpen(false);
+      // Panels hang as siblings of the bar (not children of the trigger) so
+      // the glass can blur the wallpaper. Outside-click has to clear both the
+      // trigger and the panel.
+      if (sourcesOpen) {
+        if (sourcesRef.current?.contains(e.target)) return;
+        if (sourcesPanelRef.current?.contains(e.target)) return;
+        setSourcesOpen(false);
+      }
+      if (addOpen) {
+        if (addRef.current?.contains(e.target)) return;
+        if (addPanelRef.current?.contains(e.target)) return;
+        setAddOpen(false);
+      }
     };
     const onKey = (e) => {
-      if (e.key === "Escape") setSourcesOpen(false);
+      if (e.key === "Escape") {
+        setSourcesOpen(false);
+        setAddOpen(false);
+      }
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
@@ -194,7 +346,24 @@ export default function HomeChatBar({
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [sourcesOpen]);
+  }, [sourcesOpen, addOpen]);
+
+  useLayoutEffect(() => {
+    if (!addOpen && !sourcesOpen) return;
+    const place = () => {
+      if (addOpen) {
+        setAddPos(barMenuOffset(menuWrapRef.current, addRef.current, addPanelRef.current));
+      }
+      if (sourcesOpen) {
+        setSourcesPos(
+          barMenuOffset(menuWrapRef.current, sourcesRef.current, sourcesPanelRef.current),
+        );
+      }
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [addOpen, sourcesOpen, slate, tall]);
 
   useEffect(() => {
     if (barMode !== "research") setSourcesOpen(false);
@@ -214,6 +383,7 @@ export default function HomeChatBar({
       } catch {
         /* already released */
       }
+      attachmentsRef.current.forEach(revokePreview);
     };
   }, []);
 
@@ -224,35 +394,228 @@ export default function HomeChatBar({
     broadcastSourcePref(pref);
   };
 
+  const openAddVault = () => {
+    setAddOpen(false);
+    try {
+      sessionStorage.setItem("lykn_vault_pick_for_chat", "1");
+    } catch {
+      /* URL pick=chat is the durable signal */
+    }
+    onOpen?.("vault", "/vault?pane=drive&pick=chat");
+  };
+
+  const openAddFinder = () => {
+    const pick = typeof window !== "undefined" ? window.lykn?.pickOpenFiles : null;
+    if (typeof pick !== "function") return;
+    setAddOpen(false);
+    setDropping(true);
+    pick()
+      .then((rows) => {
+        const files = (Array.isArray(rows) ? rows : [])
+          .map(fileFromPickedRow)
+          .filter(Boolean);
+        if (files.length) pickFiles(files);
+      })
+      .catch(() => {
+        /* cancelled or bridge unavailable */
+      })
+      .finally(() => setDropping(false));
+  };
+
   const pickFiles = (picked) => {
     const list = Array.from(picked || []);
     if (!list.length) return;
-    setFiles((prev) => {
-      const seen = new Set(prev.map((f) => `${f.name}:${f.size}:${f.lastModified}`));
-      return [
-        ...prev,
-        ...list.filter((f) => !seen.has(`${f.name}:${f.size}:${f.lastModified}`)),
-      ];
+    setAttachments((prev) => {
+      const seen = new Set(
+        prev.filter((a) => a.file).map((a) => `${a.file.name}:${a.file.size}:${a.file.lastModified}`),
+      );
+      const next = [...prev];
+      for (const file of list) {
+        const key = `${file.name}:${file.size}:${file.lastModified}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const kind = kindFromFile(file);
+        const previewUrl =
+          kind === "image" || kind === "video" ? URL.createObjectURL(file) : "";
+        next.push(makeAttachment({ kind, name: file.name, file, previewUrl }));
+      }
+      return next;
     });
     inputRef.current?.focus();
   };
 
-  const removeFile = (index) => {
-    setFiles((prev) => prev.filter((_, i) => i !== index));
+  const addFolderPaths = (paths) => {
+    if (!paths?.length) return;
+    setAttachments((prev) => {
+      const seen = new Set(prev.map((a) => a.path).filter(Boolean));
+      const next = [...prev];
+      for (const path of paths) {
+        if (!path || seen.has(path)) continue;
+        seen.add(path);
+        next.push(
+          makeAttachment({
+            kind: "folder",
+            name: fileNameFromPath(path),
+            path,
+          }),
+        );
+      }
+      return next;
+    });
+    inputRef.current?.focus();
   };
 
-  const send = () => {
-    const t = text.trim();
+  const pickFilesRef = useRef(pickFiles);
+  pickFilesRef.current = pickFiles;
+
+  /** Files carried in from the desktop or the Files window, by path. */
+  const ingestPathsRef = useRef(async (_paths) => {});
+  ingestPathsRef.current = async (paths) => {
+    if (!paths.length) return;
+    setDropping(true);
+    try {
+      const loaded = await filesFromMacPaths(paths);
+      if (loaded.length) pickFiles(loaded);
+      const attached = new Set(loaded.map((f) => f.name));
+      addFolderPaths(paths.filter((p) => !attached.has(fileNameFromPath(p))));
+    } finally {
+      setDropping(false);
+    }
+  };
+
+  // "Ask LYKN about this", from the Files window or a desktop icon. Claimed on
+  // mount too, since the surface that asked may have been covering the bar.
+  useEffect(() => {
+    const claim = () => {
+      const paths = takeQueuedHomeChatPaths();
+      if (paths.length) void ingestPathsRef.current(paths);
+    };
+    claim();
+    return onHomeChatPathsQueued(claim);
+  }, []);
+
+  // The same ask for a file with no path on disk — a generated image, a vault
+  // attachment — which arrives with its bytes already in hand.
+  useEffect(() => {
+    const claim = () => {
+      const files = takeQueuedHomeChatFiles();
+      if (files.length) pickFilesRef.current(files);
+    };
+    claim();
+    return onHomeChatFilesQueued(claim);
+  }, []);
+
+  const barDrop = useDropZone({
+    // Attaching leaves the original where it is, so the drag wears the green
+    // "+" over the bar — the same badge macOS shows for a copy.
+    copies: true,
+    accept: (payload) => payload.paths.length > 0,
+    onDrop: (payload) => void ingestPathsRef.current(payload.paths),
+  });
+  const setBar = useCallback(
+    (el) => {
+      barRef.current = el;
+      barDrop.ref(el);
+    },
+    [barDrop.ref],
+  );
+
+  // Files dragged in from Finder. The pill sits in a pointer-events-none
+  // overlay so wallpaper clicks pass through, and Chromium still hit-tests
+  // that overlay for HTML5 drags, so dragover never reaches the bar itself —
+  // we watch the document and test the pill's rect instead.
+  useEffect(() => {
+    const overBar = (event) => {
+      const el = barRef.current;
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return (
+        event.clientX >= r.left &&
+        event.clientX <= r.right &&
+        event.clientY >= r.top &&
+        event.clientY <= r.bottom
+      );
+    };
+    const accepts = (event) =>
+      Array.from(event.dataTransfer?.types || []).includes("Files");
+    const onOver = (event) => {
+      const hot = accepts(event) && overBar(event);
+      if (!hot) {
+        if (dropHotRef.current) {
+          dropHotRef.current = false;
+          setDropHot(false);
+        }
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+      if (!dropHotRef.current) {
+        dropHotRef.current = true;
+        setDropHot(true);
+      }
+    };
+    const onDrop = (event) => {
+      if (!accepts(event) || !overBar(event)) {
+        if (dropHotRef.current) {
+          dropHotRef.current = false;
+          setDropHot(false);
+        }
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      dropHotRef.current = false;
+      setDropHot(false);
+      const native = Array.from(event.dataTransfer?.files || []);
+      if (native.length) pickFilesRef.current(native);
+    };
+    const onEnd = () => {
+      if (!dropHotRef.current) return;
+      dropHotRef.current = false;
+      setDropHot(false);
+    };
+    document.addEventListener("dragover", onOver, true);
+    document.addEventListener("drop", onDrop, true);
+    document.addEventListener("dragend", onEnd);
+    return () => {
+      document.removeEventListener("dragover", onOver, true);
+      document.removeEventListener("drop", onDrop, true);
+      document.removeEventListener("dragend", onEnd);
+    };
+  }, []);
+
+  const removeAttachment = (id) => {
+    setAttachments((prev) => {
+      const hit = prev.find((a) => a.id === id);
+      revokePreview(hit);
+      return prev.filter((a) => a.id !== id);
+    });
+  };
+
+  const send = async () => {
     if (!canSend || busy) return;
-    // Park the File objects for the chat surface — it ingests them as chat
-    // attachments and holds the send until they've landed.
-    if (files.length) setPendingHomeChatFiles(files);
+    const fileList = attachments.map((a) => a.file).filter(Boolean);
+    if (fileList.length) setPendingHomeChatFiles(fileList);
+    const folders = attachments.filter((a) => a.kind === "folder" && a.path);
+    let t = text.trim();
+    if (folders.length) {
+      setDropping(true);
+      try {
+        const snaps = await snapshotMacFolders(folders.map((a) => a.path));
+        setPendingHomeChatFolders(snaps);
+        if (!t) t = snaps.length > 1 ? "What's in these folders?" : "What's in this folder?";
+      } finally {
+        setDropping(false);
+      }
+    }
     // While a conversation is live (active), an empty view means "keep the
     // chat surface's current mode" — its own pill controls mode from there.
     const payload = {
       view: active ? "" : barMode,
       text: t,
       researchSourcePref: sourcePref,
+      vaultPayloads: attachments.map((a) => a.vaultPayload).filter(Boolean),
     };
     try {
       sessionStorage.setItem("lykn_pending_home_chat", JSON.stringify(payload));
@@ -261,7 +624,8 @@ export default function HomeChatBar({
     }
     window.dispatchEvent(new CustomEvent("lykn-home-chat-send", { detail: payload }));
     setText("");
-    setFiles([]);
+    attachments.forEach(revokePreview);
+    setAttachments([]);
     onOpen?.("chat");
   };
 
@@ -374,6 +738,143 @@ export default function HomeChatBar({
     else startDictation();
   };
 
+  const addButton = (
+    <div ref={addRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => {
+          setSourcesOpen(false);
+          setAddOpen((o) => !o);
+        }}
+        title="Add from Vault or Finder"
+        aria-label="Add from Vault or Finder"
+        aria-expanded={addOpen}
+        className={`${ICON_BTN} ${addOpen ? "bg-black/10 text-black/85 dark:bg-white/15 dark:text-white/90" : ""}`}
+      >
+        {dropping ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Plus className="h-4 w-4" />
+        )}
+      </button>
+    </div>
+  );
+
+  const finderInput = (
+    <input
+      id={finderInputId}
+      ref={fileInputRef}
+      type="file"
+      accept={FILE_ACCEPT}
+      multiple
+      className="pointer-events-none absolute h-px w-px opacity-0"
+      onChange={(e) => {
+        pickFiles(e.target.files);
+        e.target.value = "";
+        setAddOpen(false);
+      }}
+    />
+  );
+
+  const field = (
+    <textarea
+      ref={inputRef}
+      value={text}
+      rows={1}
+      onChange={(e) => setText(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          send();
+        }
+      }}
+      placeholder={
+        dropping
+          ? "Adding files..."
+          : dictating
+            ? "Listening..."
+            : transcribing
+              ? "Transcribing..."
+              : PLACEHOLDERS[barMode]
+      }
+      autoComplete="off"
+      // flex-auto rather than flex-1 under Slate: the field's own grown height
+      // is its flex basis, so it fills the tall shell while empty and pushes
+      // the shell taller once it outgrows it. flex-1 would zero that basis and
+      // pin the bar at its minimum forever.
+      className={`lykn-home-chat-bar-input min-w-0 resize-none bg-transparent py-1 text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40 ${
+        slate ? "w-full flex-auto px-2 text-[0.92rem]" : "flex-1 self-center text-[0.85rem]"
+      }`}
+    />
+  );
+
+  const sourcesButton = barMode === "research" && (
+    <div ref={sourcesRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => {
+          setAddOpen(false);
+          setSourcesOpen((o) => !o);
+        }}
+        title="Sources to pull from"
+        aria-label="Sources"
+        aria-expanded={sourcesOpen}
+        className={`flex h-8 max-w-[8.25rem] items-center gap-1 rounded-full px-2 text-[0.68rem] font-medium transition-colors ${
+          sourcesOpen
+            ? "bg-black/10 text-black/85 dark:bg-white/15 dark:text-white/90"
+            : "text-black/60 hover:bg-black/10 hover:text-black/85 dark:text-white/65 dark:hover:bg-white/15 dark:hover:text-white/90"
+        }`}
+      >
+        <SourceIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+        <span className="truncate">{sourceOpt.shortLabel}</span>
+        <ChevronDown className="h-3 w-3 shrink-0 opacity-40" />
+      </button>
+    </div>
+  );
+
+  const dictateButton = (
+    <button
+      type="button"
+      onClick={toggleDictate}
+      disabled={transcribing}
+      title={dictating ? "Stop recording" : "Dictate"}
+      aria-label={dictating ? "Stop recording" : "Dictate"}
+      aria-pressed={dictating}
+      className={`${ICON_BTN} ${dictating ? "bg-blue-500/15 text-blue-600 ring-1 ring-blue-400/40 dark:text-blue-400" : ""} ${transcribing ? "opacity-50" : ""}`}
+    >
+      {transcribing ? (
+        <Loader2 className="h-4 w-4 animate-spin" />
+      ) : (
+        <Mic className="h-4 w-4" />
+      )}
+    </button>
+  );
+
+  const voiceButton = (
+    <button
+      type="button"
+      onClick={voice}
+      title="Voice Mode: talk hands-free"
+      aria-label="Voice Mode"
+      className={ICON_BTN}
+    >
+      <AudioLines className="h-4 w-4" />
+    </button>
+  );
+
+  const sendButton = (
+    <button
+      type="button"
+      onClick={send}
+      disabled={!canSend || busy}
+      title="Send"
+      aria-label="Send"
+      className="lykn-chat-send-btn flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-black/85 text-white shadow transition-all enabled:hover:scale-105 disabled:opacity-35 dark:bg-white dark:text-black"
+    >
+      <ChatSendIcon className="h-4 w-4" />
+    </button>
+  );
+
   return (
     <>
       {/* Mode pill — same look/position as the chat page's floating pill.
@@ -413,7 +914,10 @@ export default function HomeChatBar({
           conversation. Hidden once the chat surface is up (it has its own). */}
       {!active && (
         <div
-          className={`pointer-events-none absolute inset-x-0 top-[calc(50%-4.25rem)] flex -translate-y-full justify-center px-8 ${LAYER_Z}`}
+          className={`pointer-events-none absolute inset-x-0 flex -translate-y-full justify-center px-8 ${LAYER_Z}`}
+          // 2.875rem of air above the bar's top edge, wherever that edge is —
+          // a taller shape pushes the headline up rather than crowding it.
+          style={{ top: 'calc(50% - 1.375rem - 2.875rem - var(--lykn-home-bar-grow))' }}
         >
           <p className="text-center text-xl font-semibold tracking-tight text-black dark:text-white sm:text-3xl">
             {typedWelcome}
@@ -426,7 +930,11 @@ export default function HomeChatBar({
           Same rounded pill either way. */}
       <div
         className={`pointer-events-none absolute inset-x-0 flex justify-center px-8 transition-all duration-300 ${LAYER_Z} ${
-          docked ? "bottom-[5.5rem]" : "top-1/2 -translate-y-1/2"
+          docked
+            ? contained
+              ? "bottom-4"
+              : "bottom-[5.5rem]"
+            : "top-1/2 -translate-y-1/2"
         }`}
       >
         {/* The bar blurs its own backdrop, which makes it a backdrop root:
@@ -434,139 +942,99 @@ export default function HomeChatBar({
             so a popover hanging above the bar would blur nothing and show the
             wallpaper straight through. The Sources panel is therefore a
             sibling of the bar, not a child of its trigger. */}
-        <div className="pointer-events-none relative flex w-full max-w-xl justify-center">
+        <div ref={menuWrapRef} className="pointer-events-none relative flex w-full max-w-xl justify-center">
           <div
+            ref={setBar}
             style={NO_DRAG}
-            className={`pointer-events-auto relative flex w-full items-center gap-1.5 rounded-full py-1.5 pl-1.5 pr-1.5 ${BAR_SURFACE}`}
+            className={`lykn-home-chat-bar pointer-events-auto relative flex w-full flex-col ${
+              slate
+                ? "min-h-[6.5rem] gap-1.5 rounded-[28px] p-2.5"
+                : tall
+                  ? "gap-1 rounded-[1.6rem] py-2 pl-1.5 pr-1.5"
+                  : "rounded-full py-1.5 pl-1.5 pr-1.5"
+            } ${BAR_SURFACE} ${
+              dropHot || barDrop.hot ? "ring-2 ring-blue-400/80 bg-blue-500/[0.08]" : ""
+            }`}
           >
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              title="Add photos & files"
-              aria-label="Add photos and files"
-              className={ICON_BTN}
-            >
-              <Plus className="h-4 w-4" />
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={FILE_ACCEPT}
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                pickFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <input
-              ref={inputRef}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              placeholder={
-                dictating
-                  ? "Listening..."
-                  : transcribing
-                    ? "Transcribing..."
-                    : PLACEHOLDERS[barMode]
-              }
-              autoComplete="off"
-              className="min-w-0 flex-1 bg-transparent text-[0.85rem] text-black/85 outline-none ring-0 placeholder:text-black/40 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 dark:text-white/90 dark:placeholder:text-white/40"
-            />
-            {barMode === "research" && (
-              <div ref={sourcesRef} className="relative shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setSourcesOpen((o) => !o)}
-                  title="Sources to pull from"
-                  aria-label="Sources"
-                  aria-expanded={sourcesOpen}
-                  className={`flex h-8 max-w-[8.25rem] items-center gap-1 rounded-full px-2 text-[0.68rem] font-medium transition-colors ${
-                    sourcesOpen
-                      ? "bg-black/10 text-black/85 dark:bg-white/15 dark:text-white/90"
-                      : "text-black/60 hover:bg-black/10 hover:text-black/85 dark:text-white/65 dark:hover:bg-white/15 dark:hover:text-white/90"
-                  }`}
-                >
-                  <SourceIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                  <span className="truncate">{sourceOpt.shortLabel}</span>
-                  <ChevronDown className="h-3 w-3 shrink-0 opacity-40" />
-                </button>
+            {showAppEdit ? (
+              <AppSourceStrip
+                compact
+                appName={appEdit.appName}
+                paths={appEdit.paths}
+                loading={appEdit.loading}
+                onDismiss={requestDismissAppEdit}
+              />
+            ) : null}
+            {attachments.length > 0 ? (
+              <div className="flex max-h-32 flex-wrap items-end gap-1.5 overflow-y-auto px-1.5 pt-0.5">
+                {attachments.map((att) => (
+                  <BarAttachment key={att.id} att={att} onRemove={() => removeAttachment(att.id)} />
+                ))}
+              </div>
+            ) : null}
+            {slate ? (
+              <>
+                {finderInput}
+                {field}
+                {/* Controls along the bottom: the two that shape the prompt on
+                    the left, the ones that send it on the right. */}
+                <div className="flex w-full items-center gap-1.5 px-0.5">
+                  {addButton}
+                  {sourcesButton}
+                  <span className="flex-1" />
+                  {dictateButton}
+                  {voiceButton}
+                  {sendButton}
+                </div>
+              </>
+            ) : (
+              <div className="flex w-full items-center gap-1.5">
+                {addButton}
+                {finderInput}
+                {field}
+                {sourcesButton}
+                {dictateButton}
+                {voiceButton}
+                {sendButton}
               </div>
             )}
-            <button
-              type="button"
-              onClick={toggleDictate}
-              disabled={transcribing}
-              title={dictating ? "Stop recording" : "Dictate"}
-              aria-label={dictating ? "Stop recording" : "Dictate"}
-              aria-pressed={dictating}
-              className={`${ICON_BTN} ${dictating ? "bg-blue-500/15 text-blue-600 ring-1 ring-blue-400/40 dark:text-blue-400" : ""} ${transcribing ? "opacity-50" : ""}`}
-            >
-              {transcribing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Mic className="h-4 w-4" />
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={voice}
-              title="Voice Mode: talk hands-free"
-              aria-label="Voice Mode"
-              className={ICON_BTN}
-            >
-              <AudioLines className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={send}
-              disabled={!canSend || busy}
-              title="Send"
-              aria-label="Send"
-              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-black/85 text-white shadow transition-all enabled:hover:scale-105 disabled:opacity-35 dark:bg-white dark:text-black"
-            >
-              <ArrowUp className="h-4 w-4" />
-            </button>
           </div>
 
-          {/* Attachment chips ride above the bar — the bar is its own backdrop
-              root, so anything nested inside it can't blur the wallpaper. */}
-          {files.length > 0 && (
+          {addOpen && (
             <div
-              style={NO_DRAG}
-              className="pointer-events-auto absolute bottom-[calc(100%+8px)] left-0 z-30 flex max-w-full flex-wrap gap-1.5"
+              ref={addPanelRef}
+              style={{ ...NO_DRAG, ...addPos }}
+              className={`pointer-events-auto absolute z-40 w-48 rounded-[14px] p-1.5 ${BAR_SURFACE}`}
             >
-              {files.map((file, i) => (
-                <span
-                  key={`${file.name}-${file.size}-${file.lastModified}-${i}`}
-                  className={`flex max-w-[13rem] items-center gap-1.5 rounded-full py-1 pl-3 pr-1 text-[0.7rem] text-black/75 dark:text-white/80 ${BAR_SURFACE}`}
-                >
-                  <span className="truncate">{file.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeFile(i)}
-                    title="Remove"
-                    aria-label={`Remove ${file.name}`}
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-black/45 transition-colors hover:bg-black/10 hover:text-black/80 dark:text-white/50 dark:hover:bg-white/15 dark:hover:text-white/90"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              ))}
+              <button
+                type="button"
+                onClick={openAddVault}
+                className="lg-menu-row flex w-full items-center gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] text-black/70 dark:text-white/75"
+              >
+                <Library className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                Vault
+              </button>
+              <label
+                htmlFor={finderInputId}
+                className="lg-menu-row relative flex w-full cursor-pointer items-center gap-2 rounded-[0.5rem] px-2.5 py-1.5 text-left text-[0.75rem] text-black/70 dark:text-white/75"
+                onClick={(e) => {
+                  if (typeof window.lykn?.pickOpenFiles === "function") {
+                    e.preventDefault();
+                    openAddFinder();
+                  }
+                }}
+              >
+                <FolderOpen className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                Finder
+              </label>
             </div>
           )}
 
           {barMode === "research" && sourcesOpen && (
             <div
               ref={sourcesPanelRef}
-              style={NO_DRAG}
-              className={`pointer-events-auto absolute bottom-[calc(100%+8px)] right-0 z-40 w-52 rounded-[14px] p-1.5 ${BAR_SURFACE}`}
+              style={{ ...NO_DRAG, ...sourcesPos }}
+              className={`pointer-events-auto absolute z-40 w-52 rounded-[14px] p-1.5 ${BAR_SURFACE}`}
             >
               {RESEARCH_SOURCE_OPTIONS.map((opt) => {
                 const Icon = SOURCE_ICONS[opt.value];
@@ -593,5 +1061,79 @@ export default function HomeChatBar({
         </div>
       </div>
     </>
+  );
+}
+
+function ChipIcon({ kind, path }) {
+  const lyknMade = useLyknFolders();
+  if (kind === "folder") {
+    return (
+      <Folder
+        className={`h-3.5 w-3.5 shrink-0 ${
+          isLyknFolder(lyknMade, path)
+            ? "text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.28)]"
+            : "text-sky-500"
+        }`}
+        strokeWidth={1.6}
+        fill="currentColor"
+      />
+    );
+  }
+  if (kind === "pdf") return <FileText className="h-3.5 w-3.5 shrink-0 opacity-60" />;
+  if (kind === "audio") return <Music className="h-3.5 w-3.5 shrink-0 opacity-60" />;
+  if (kind === "video") return <Film className="h-3.5 w-3.5 shrink-0 opacity-60" />;
+  return <FileIcon className="h-3.5 w-3.5 shrink-0 opacity-60" />;
+}
+
+function BarAttachment({ att, onRemove }) {
+  const removeBtn = (
+    <button
+      type="button"
+      onClick={onRemove}
+      title="Remove"
+      aria-label={`Remove ${att.name}`}
+      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-black/55 text-white opacity-0 transition-opacity hover:bg-black/75 group-hover:opacity-100"
+    >
+      <X className="h-3 w-3" />
+    </button>
+  );
+
+  if (att.kind === "image" && att.previewUrl) {
+    return (
+      <span className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-black/10">
+        <img src={att.previewUrl} alt={att.name} draggable={false} className="h-full w-full object-cover" />
+        <span className="absolute right-0.5 top-0.5">{removeBtn}</span>
+      </span>
+    );
+  }
+
+  if (att.kind === "video" && att.previewUrl) {
+    return (
+      <span className="group relative h-14 w-[4.75rem] shrink-0 overflow-hidden rounded-xl bg-black">
+        <video src={att.previewUrl} muted preload="metadata" draggable={false} className="h-full w-full object-cover" />
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-black/50 text-white">
+            <Film className="h-3 w-3" />
+          </span>
+        </span>
+        <span className="absolute right-0.5 top-0.5">{removeBtn}</span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="group inline-flex max-w-[11rem] items-center gap-1.5 rounded-full bg-black/[0.06] py-1 pl-2 pr-1 text-[0.7rem] text-black/75 dark:bg-white/10 dark:text-white/80">
+      <ChipIcon kind={att.kind} path={att.path} />
+      <span className="min-w-0 truncate">{att.name}</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Remove"
+        aria-label={`Remove ${att.name}`}
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-black/40 transition-colors hover:bg-black/10 hover:text-black/80 dark:text-white/45 dark:hover:bg-white/15 dark:hover:text-white/90"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </span>
   );
 }

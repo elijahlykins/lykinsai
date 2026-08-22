@@ -304,9 +304,27 @@ export async function findRelatedConnectionHits(ctx, opts = {}) {
     return { ok: false, reason: 'missing_query' };
   }
 
-  const requestedKinds = Array.isArray(opts?.kinds) && opts.kinds.length > 0
+  let requestedKinds = Array.isArray(opts?.kinds) && opts.kinds.length > 0
     ? opts.kinds.map((k) => String(k).toLowerCase()).filter((k) => KIND_SET.has(k))
-    : ALL_KINDS;
+    : [...ALL_KINDS];
+  if (ctx?.skipVaultSearch) {
+    requestedKinds = requestedKinds.filter((k) => k !== 'vault');
+    if (!requestedKinds.length) {
+      return {
+        ok: true,
+        query: rawQuery,
+        seed_kind: null,
+        kinds_searched: [],
+        per_kind_limit: DEFAULT_PER_KIND_LIMIT,
+        count: 0,
+        counts: Object.fromEntries(ALL_KINDS.map((k) => [k, 0])),
+        matches: [],
+        skipped_vault: true,
+        message:
+          'Vault notes are not searched here. Things LYKN built are in [AI DRIVE]; files on their Mac use local_* tools.',
+      };
+    }
+  }
 
   const perKindLimit = Number.isFinite(opts?.per_kind_limit)
     ? Math.max(1, Math.min(MAX_PER_KIND_LIMIT, opts.per_kind_limit))
@@ -375,18 +393,19 @@ export const findConnectionsTool = {
     '  • beliefs    — durable principles the user has ratified or proposed',
     '  • facts      — atomic observation-shaped truths about the user',
     '  • concepts   — named themes / topics / entities recurring in their work',
-    '  • vault      — saved notes, articles, links, files',
+    '',
+    'Do NOT use this to search saved files, AI Drive, or a connected-apps',
+    'library. Files live in the Vault Finder: [AI DRIVE] + local_* for Mac',
+    'folders. This tool is beliefs / facts / concepts only when called from',
+    'in-app chat.',
     '',
     'CALL THIS when the user mentions a topic and you want the FULL picture',
-    'of what they already think / know about it — e.g. "what do I have on',
-    'X?", "remind me what I believe about Y", "pull together my thinking',
-    'on Z". One call replaces three separate lookups (getBeliefs +',
-    'getFacts + searchVault) and includes concepts which no other tool',
-    'surfaces.',
+    'of what they already think / know about it — e.g. "what do I believe',
+    'about X?", "remind me what I think about Y", "pull together my thinking',
+    'on Z". One call replaces separate lookups (getBeliefs + getFacts).',
     '',
     'TWO INPUT MODES:',
-    '  • query: "...free text..."  — lexical on beliefs/facts/concepts;',
-    '    hybrid BM25+semantic on vault (same engine as lykn_searchVault).',
+    '  • query: "...free text..."  — lexical on beliefs/facts/concepts.',
     '  • node_id: "belief_<uuid>"  — find OTHER neurons related to this',
     '    starter neuron. node_id formats: belief_<uuid>, fact_<uuid>,',
     '    concept_<slug>, vault_<uuid>. The tool resolves the starter to',
@@ -408,7 +427,7 @@ export const findConnectionsTool = {
     '    existing [BELIEFS_AND_RULES] / [USER_MODEL] / [WORKSPACE_CONTEXT]',
     '    blocks — those are already loaded.',
     '  • You need ONLY beliefs / ONLY facts / ONLY vault — use the',
-    '    scoped tools (lykn_getBeliefs / lykn_getFacts / lykn_searchVault)',
+    '    scoped tools (lykn_getBeliefs / lykn_getFacts)',
     '    instead so the response stays tight.',
   ].join('\n'),
   inputSchema: {

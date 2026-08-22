@@ -26,7 +26,7 @@
 // touch_count is huge (BIGINT), so runaway calls are bounded by
 // per-turn tool-call limits, not the column.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 const NODE_PREFIX = 'concept_';
 
@@ -80,8 +80,6 @@ export const touchConceptTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

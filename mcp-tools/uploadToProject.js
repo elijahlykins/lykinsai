@@ -21,7 +21,7 @@
 // MCP clients (Claude Desktop, Cursor, …) never have a dragged-in chat
 // attachment to act on.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 import { resolveVaultAttachment } from '../lib/vaultAttachment.js';
 import { resolveProjectByNameOrId } from '../lib/projectWriteTarget.js';
 import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
@@ -132,8 +132,6 @@ export const uploadToProjectTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx = {}) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

@@ -46,6 +46,18 @@
         --stamp-lo-soft: rgba(0, 0, 0, 0.42);
       }
       * { box-sizing: border-box; }
+      /* No scrollbar is ever drawn in LYKN: panes still scroll by wheel,
+         trackpad, keyboard and drag, only the gutter is gone. This window has
+         its own document, so it can't inherit the app-wide rule in index.css. */
+      * {
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      *::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+        display: none !important;
+      }
       html, body {
         margin: 0;
         height: 100%;
@@ -113,6 +125,41 @@
       }
       #winbtns:hover .winbtn svg { opacity: 0.6; }
       .winbtn:active { transform: scale(0.92); }
+      #win-zoom-wrap { position: relative; }
+      .zoom-tile-menu {
+        position: fixed;
+        z-index: 40;
+        width: 15.5rem;
+        padding: 4px 0;
+        border-radius: 12px;
+        background: rgba(28, 28, 30, 0.86);
+        backdrop-filter: blur(24px) saturate(1.4);
+        -webkit-backdrop-filter: blur(24px) saturate(1.4);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+        color: rgba(255, 255, 255, 0.9);
+      }
+      html[data-theme="light"] .zoom-tile-menu {
+        background: rgba(255, 255, 255, 0.92);
+        border-color: rgba(0, 0, 0, 0.08);
+        color: rgba(0, 0, 0, 0.88);
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+      }
+      .zoom-tile-item {
+        display: block;
+        width: 100%;
+        padding: 0.45rem 0.75rem;
+        border: none;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 500;
+        text-align: left;
+        cursor: default;
+      }
+      .zoom-tile-item:hover { background: rgba(255, 255, 255, 0.08); }
+      html[data-theme="light"] .zoom-tile-item:hover { background: rgba(0, 0, 0, 0.05); }
       /* Dragging is ours to run when docked — an app-region would haul the
          whole Studio window around instead of this one. */
       html.docked #tabs,
@@ -397,24 +444,6 @@
           0 8px 24px rgba(0, 0, 0, 0.12);
         z-index: 60;
         padding: 6px 0;
-        scrollbar-width: thin;
-        scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
-      }
-      html[data-theme="incognito"] #url-suggest {
-        scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
-      }
-      #url-suggest::-webkit-scrollbar {
-        width: 8px;
-      }
-      #url-suggest::-webkit-scrollbar-thumb {
-        background: rgba(0, 0, 0, 0.22);
-        border-radius: 999px;
-        border: 2px solid transparent;
-        background-clip: padding-box;
-      }
-      html[data-theme="incognito"] #url-suggest::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.22);
-        background-clip: padding-box;
       }
       #url-suggest[hidden] { display: none; }
       #url-suggest .suggest-item {
@@ -717,9 +746,17 @@
           <button type="button" class="winbtn" id="win-min" title="Minimize" aria-label="Minimize" style="background:#febc2e">
             <svg viewBox="0 0 10 10" fill="none" stroke="rgba(0,0,0,0.75)" stroke-width="1.4" stroke-linecap="round"><path d="M2 5 H8"/></svg>
           </button>
-          <button type="button" class="winbtn" id="win-zoom" title="Zoom" aria-label="Zoom" style="background:#28c840">
-            <svg viewBox="0 0 10 10" fill="none" stroke="rgba(0,0,0,0.75)" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 7.5 L7.5 2.5 M3 3 H7 V7"/></svg>
-          </button>
+          <div id="win-zoom-wrap">
+            <button type="button" class="winbtn" id="win-zoom" title="Zoom" aria-label="Zoom" style="background:#28c840">
+              <svg viewBox="0 0 10 10" fill="none" stroke="rgba(0,0,0,0.75)" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 7.5 L7.5 2.5 M3 3 H7 V7"/></svg>
+            </button>
+            <div id="win-zoom-menu" class="zoom-tile-menu" role="menu" hidden>
+              <button type="button" class="zoom-tile-item" data-action="zoom">Fill Desktop</button>
+              <button type="button" class="zoom-tile-item" data-action="tile-left">Tile Window to Left of Screen</button>
+              <button type="button" class="zoom-tile-item" data-action="tile-right">Tile Window to Right of Screen</button>
+              <button type="button" class="zoom-tile-item" data-action="tile-quad">Tile Windows in Quadrants</button>
+            </div>
+          </div>
         </div>
         <div id="tabs" aria-label="Agent tabs"></div>
       </div>

@@ -1,5 +1,7 @@
 import React, { useCallback } from "react";
-import { ArrowUp, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
+
+import ChatSendIcon from "@/lib/chatSendIcon";
 
 /** Auto-grow textarea — same behavior as useChatEngine's resizeChatInputEl. */
 export function resizeLyknChatInput(el: HTMLTextAreaElement | null) {
@@ -78,7 +80,7 @@ const LyknChatComposer = React.memo(function LyknChatComposer({
         {loading ? (
           <Loader2 className={`${iconSm} animate-spin`} />
         ) : (
-          <ArrowUp className={iconSm} strokeWidth={2.25} />
+          <ChatSendIcon className={iconSm} strokeWidth={2.25} />
         )}
       </button>
     </div>

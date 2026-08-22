@@ -1,7 +1,6 @@
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import { getAiPrefs } from "@/lib/ai-prefs";
 import { persistInstructionPrompt } from "@/lib/voice/tuneInstructions";
-import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
 import {
   parseLearnedTag,
   stripLearnedTagFromStream,
@@ -25,6 +24,7 @@ import {
 } from "@/lib/ai/toolSyntaxStrip";
 import { finalizeResearchReport } from "@/lib/ai/researchReportFinalize";
 import { ocrImageAttachments } from "@/lib/ai/imageOcr";
+import { inlineDeviceLocalImages } from "@/lib/chat/deviceLocalImages";
 import { toolRunningStatus } from "@/lib/ai/toolStatusVerbs";
 import { isLocalModeAvailable, refreshLocalMode, getLocalModeCached } from "@/lib/localMode";
 import { executeAwaitingLocalTool } from "@/lib/ai/localToolExecutor";
@@ -32,7 +32,7 @@ import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/c
 import { loadActiveCustomModelId } from "@/lib/modelBuilder/activeCustomModelStorage";
 import { CUSTOM_MODELS_ENABLED } from "@/lib/customModelsEnabled";
 import { AI_TEMPORARY_FAILURE_TEXT } from "@/lib/ai/userFacingErrors";
-import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
+import { listAiDrive } from "@/lib/vault/aiDriveContents";
 import {
   emitProjectsChanged,
   projectIdFromToolResult,
@@ -41,6 +41,10 @@ import {
 } from "@/lib/synthesis/projectLiveSync";
 import { toast } from "@/components/ui/use-toast";
 import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
+import { openStudioTab } from "@/lib/studioTabs";
+import { openLyknMediaPop } from "@/lib/lyknMediaPop";
+import { listInstalledApps, openInstalledApp } from "@/lib/apps/installApp";
+import { macAppNames } from "@/lib/macApps";
 
 // The browser's IANA timezone (e.g. "America/Denver"). Sent with each chat
 // request so the server can hand the model the user's LOCAL current time +
@@ -366,10 +370,33 @@ export type PromptMessage = {
   aiResponse?: string;
   aiImageUrl?: string;
   aiImageStoragePath?: string;
+  /**
+   * Imagine mode renders a batch of variations per prompt, so one turn can
+   * carry several images where `aiImageUrl` carries one. The storage path is
+   * the durable half — signed urls expire, and reSignChatAttachments mints a
+   * fresh one from the path when the chat is loaded again.
+   */
+  aiImages?: { url: string; storagePath?: string }[];
+  /**
+   * What Imagine needs to rebuild its canvas from this turn: the ratio the
+   * grid draws at, whether this was a fresh generation or an edit of an
+   * earlier one, and the creative brief that edit rounds stay anchored to.
+   */
+  imagine?: {
+    aspect: string;
+    kind: "generate" | "refine" | "variations";
+    concept?: string;
+  };
   aiYouTubeUrls?: { url: string; videoId: string }[];
   aiWebLinks?: string[];
   sources?: { title: string; url: string }[];
-  kind?: "prompt";
+  /**
+   * "load-in-greeting" is the briefing the chat opens with rather than a turn
+   * the user typed. The orchestrator never reads this, but the chat page's own
+   * message type has always allowed it, and the two have to line up for the
+   * thread to pass between them.
+   */
+  kind?: "prompt" | "load-in-greeting";
   attachments?: FocusedChatAttachment[];
   /**
    * Tool calls fired by the in-app agent loop during this turn. Each entry
@@ -717,12 +744,33 @@ export function buildAttachmentContext(sentAttachments: FocusedChatAttachment[])
     if (a.pdfText) parts.push(String(a.pdfText).slice(0, 1500));
     if (a.extractedText) parts.push(String(a.extractedText).slice(0, 1500));
     if (a.transcript) parts.push(String(a.transcript).slice(0, 8000));
+    // A data URL is bytes, not a location: nothing can fetch it and spelling
+    // one out costs thousands of tokens of base64.
+    const safeUrl = a.url && !a.url.startsWith("data:") ? a.url : "";
+    if (t === "folder") {
+      const listing = String(a.vaultContent || a.extractedText || "").slice(0, 8000);
+      return (
+        `Desktop folder "${label}" — the user attached THIS folder from their Mac. ` +
+        `Answer from this listing only. If you need more detail, call local_list_dir or local_read_file ` +
+        `on this exact path — not other folders, the rest of the disk, or the vault. ` +
+        `You may offer to read a specific file inside this folder.\n` +
+        (listing || "(empty listing)")
+      );
+    }
     if (t === "vault" || t === "note") {
       return `${t === "note" ? "Note" : "Vault"} "${label}": ${parts.join("\n") || "(empty)"}`;
     }
-    if (t === "pdf") return `PDF "${label}": ${parts.join("\n") || `(PDF at ${a.url})`}`;
+    if (t === "pdf") {
+      // No text means no text layer — a scan or an export of images. Say so,
+      // because the alternative is the model inventing contents.
+      const body =
+        parts.join("\n") ||
+        (safeUrl
+          ? `(PDF at ${safeUrl})`
+          : "(no text could be extracted — this PDF has no text layer, likely a scan. Say so rather than guessing at its contents.)");
+      return `PDF "${label}": ${body}`;
+    }
     if (t === "document") return `Document "${label}": ${parts.join("\n") || "(could not extract text)"}`;
-    const safeUrl = a.url && !a.url.startsWith("data:") ? a.url : "";
     if (t === "youtube") {
       const ctx = parts.length ? parts.join("\n") : "";
       return `YouTube video "${label}"${a.videoId ? ` (${a.videoId})` : ""}${safeUrl ? ` — ${safeUrl}` : ""}${ctx ? `\nTranscript: ${ctx}` : ""}`;
@@ -1470,6 +1518,46 @@ async function handleStreamingResponse(
                 const text = typeof r.instructions === "string" ? r.instructions.trim() : "";
                 if (text) {
                   persistInstructionPrompt(r.scope === "voice" ? "voice" : "chat", text);
+                }
+              }
+              // Settings is a window in the shell, so the server tool only
+              // settles which pane was meant — opening it happens here, the
+              // same split local_open_path uses to land the user in Files.
+              if (
+                tc.status === "done"
+                && tc.name === "lykn_open_settings"
+                && tc.result
+                && typeof tc.result === "object"
+                && (tc.result as { ok?: boolean }).ok === true
+              ) {
+                const section = (tc.result as { section?: string }).section;
+                openStudioTab("settings", typeof section === "string" ? section : undefined);
+              }
+              // Same split for the pages and the apps the user built: the
+              // server worked out WHICH one was meant, opening it happens here.
+              if (
+                tc.status === "done"
+                && tc.name === "lykn_open_app"
+                && tc.result
+                && typeof tc.result === "object"
+                && (tc.result as { ok?: boolean }).ok === true
+              ) {
+                const r = tc.result as { kind?: string; id?: string; src?: string | null; label?: string };
+                if (typeof r.id === "string" && r.id) {
+                  if (r.kind === "installed") void openInstalledApp(r.id);
+                  else if (r.kind === "drive") {
+                    // A specific file/image/artifact: the universal preview pop.
+                    // Opening the Finder window is for the drive or a folder.
+                    if (r.id !== "drive") {
+                      openLyknMediaPop({
+                        type: "vault-note",
+                        noteId: r.id,
+                        title: typeof r.label === "string" ? r.label : undefined,
+                      });
+                    } else {
+                      openStudioTab("vault", r.src || "/vault?pane=drive");
+                    }
+                  } else openStudioTab(r.id, r.src || undefined);
                 }
               }
               continue;
@@ -2578,7 +2666,14 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   const isBrickAction = Boolean(brickActionData);
   const cappedText = text.length > 3000 ? text.slice(0, 3000) : text;
 
-  // Phase 0: OCR fallback. Recover text from image attachments BEFORE the
+  // Phase 0a: read device-local image bytes into the turn. A `lykn-blob://`
+  // (local vault) or `lykn-mac://` (Finder) url is readable only by this app,
+  // and a provider handed one fails the entire request rather than answering
+  // without the image. Runs before OCR so the recovered data URL is something
+  // Tesseract can decode too.
+  await inlineDeviceLocalImages(sentAttachments);
+
+  // Phase 0b: OCR fallback. Recover text from image attachments BEFORE the
   // attachment context is assembled so the extracted text rides into the
   // prompt. Best-effort + degrade-safe — never blocks on failure.
   await ocrImageAttachments(sentAttachments, signal, state.setChatStatusText);
@@ -2822,101 +2917,22 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
       }, ...recentConvo]
     : recentConvo;
 
-  const wsContext = context.getCachedWorkspaceSummary();
-  const wantsMediaPull = /\b(pull|pull\s*in|bring|bring\s*in|fetch|grab|get|show\s*me|add|put|drop|insert|place)\b.*\b(from\s*(my\s*|the\s*)?(media|saved|library|files|vault)|that\s*(image|photo|video|pdf|file|doc|link|note)\s*(i|I)\s*saved|saved\s*(content|files|media|stuff)|from\s*media|vault\s*(item|items|content|file|files|note|notes)?)\b/i.test(text)
-    || /\b(my\s*saved|my\s*media|my\s*vault|the\s*vault|from\s*(my\s*|the\s*)?vault|from\s*media\s*page|media\s*page)\b/i.test(text);
-  let mediaContext = "";
-  if (wantsMediaPull) {
-    mediaContext = wsContext?.media || "";
-  }
-
-  // Detailed vault dossier injection used to fire on EVERY authenticated
-  // chat turn whenever the user had any vault notes — every Omnia chat
-  // shipped a per-item dump (titles, excerpts, URLs, extracted text,
-  // tag directory) regardless of whether the question was about the
-  // vault. That's a token-cost multiplier, a latency tax, and an
-  // unnecessary data egress surface on unrelated turns.
-  //
-  // We now gate the detailed block behind a vault-mention intent that's
-  // broader than `wantsMediaPull` (we want to catch "what's in my
-  // vault?" even though no embed verb is present) but still narrower
-  // than "any authenticated turn." For all other turns we fall back to
-  // the compact `wsContext.full` summary, which already has
-  // lightweight per-source rollups.
-  // Vault-detail mode also fires on direct mentions of OAuth-connected
-  // sources — Notion / Gmail / Slack / Readwise / etc. all sync into the
-  // `notes` table as regular rows, so a question like "what's in my Notion
-  // docs?" or "find the Slack message I saved about X" should get the
-  // detailed dump even though the user never said the word "vault." Without
-  // this, those queries fall back to the 100-char compact excerpts and the
-  // AI loses access to nearly all of the synced body content.
-  const wantsVaultDetail =
-    wantsMediaPull ||
-    /\b(vault|saved\s*(item|items|note|notes|file|files|link|links|content|stuff|things)|my\s*(notes?|saved)|knowledge\s*base)\b/i.test(
-      text,
-    ) ||
-    // Distinctive connected-source brand names — safe to match bare; these
-    // are very unlikely to appear in ordinary prose without meaning the
-    // synced source ("what's in my notion?", "the slack message I saved").
-    /\b(notion|gmail|outlook|slack|github|linear|todoist|trello|readwise|raindrop|instapaper|dribbble|behance|bluesky|mastodon|pinterest|soundcloud|vimeo|figma|canva|spotify|reddit|apple\s*music)\b/i.test(
-      text,
-    ) ||
-    // Ambiguous common English words (drive, calendar, matter, pocket,
-    // memory, memories, library) only count as a vault-source mention when
-    // explicitly qualified as the user's connected/saved source — otherwise
-    // "I need to drive home" or "from memory" would wrongly dump the vault.
-    /\b(?:(?:my|the|saved|connected|synced)\s+(?:google\s+)?(?:drive|calendar|matter|pocket|memory|memories|library)|google\s+(?:drive|calendar))\b/i.test(
-      text,
-    );
-
-  // Skip cross-chat memory fetch on short/phatic turns — it was a common
-  // pre-stream await even when the server would ignore conversationMemory.
   const skipMemoryPrefetch =
     !identity.userId ||
     cappedText.trim().length < 12 ||
     /^(?:hi|hello|hey|yo|sup|thanks|thank you|ok|okay|sure|yes|no|yep|nope|got it|cool|nice|great|bye)[\s!.?…]*$/i.test(
       cappedText.trim(),
     );
-  const [memoryText, vaultNotesForAi] = await Promise.all([
-    skipMemoryPrefetch
-      ? Promise.resolve("")
-      : getMemoryForPrompt(
-          identity.userId,
-          identity.routeChatId || identity.chatId || null,
-          cappedText,
-        ),
-    identity.userId && wantsVaultDetail
-      ? fetchNotesForVaultAi(identity.userId)
-      : Promise.resolve([] as VaultAiNoteRow[]),
-  ]);
-  // Only ship vault contents into the prompt when this turn actually concerns
-  // saved/vault content (wantsVaultDetail). Previously the compact
-  // `wsContext.full` summary (the 25 most-recent vault items) was injected on
-  // EVERY authenticated turn, so the model saw — and routinely "pulled in" —
-  // unrelated saved items (e.g. a random saved article) on questions that had
-  // nothing to do with the vault. That is the "vault search pulls in random
-  // things even when I'm not asking" report. On non-vault turns the model can
-  // still reach saved content on demand via the lykn_searchVault tool, so
-  // gating here costs no real recall.
-  let workspaceContextStr = "";
-  if (wantsVaultDetail) {
-    try {
-      if (vaultNotesForAi.length > 0) {
-        const { block: vaultBlock } = buildVaultDetailForGridAi(vaultNotesForAi);
-        const boardsOnly = wsContext?.boards || "";
-        workspaceContextStr = [vaultBlock, boardsOnly]
-          .filter(Boolean)
-          .join("\n\n")
-          .slice(0, CONTEXT_BUDGETS.workspaceContext);
-      }
-      // Fall back to the compact summary if the detailed build produced nothing.
-      if (!workspaceContextStr) {
-        workspaceContextStr = (wsContext?.full || "").slice(0, CONTEXT_BUDGETS.workspaceContext);
-      }
-    } catch {
-      workspaceContextStr = (wsContext?.full || "").slice(0, CONTEXT_BUDGETS.workspaceContext);
-    }
-  }
+  const memoryText = skipMemoryPrefetch
+    ? ""
+    : await getMemoryForPrompt(
+        identity.userId,
+        identity.routeChatId || identity.chatId || null,
+        cappedText,
+      );
+  // Files live in the Vault Finder: [AI DRIVE] is sent below, Mac folders
+  // via local_* when Local Mode is on. The old vault_items / connected-apps
+  // dump is not injected.
 
   // Trim the request body to only what the server needs. With the canvas
   // surface unplugged we never ship a `[CONTEXT]` block (canvasContext is
@@ -2931,6 +2947,22 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
   // cache starts false and primes asynchronously, so the first send after a
   // window load would silently drop the flag if we trusted the cache alone.
   const localModeOn = isLocalModeAvailable() ? await refreshLocalMode() : false;
+  // Apps the user built in LYKN live in the local store on their machine, so
+  // the server only knows they exist because we say so. Names and ids only —
+  // enough for lykn_open_app to match "open my workout tracker" to a real app.
+  const installedApps = (await listInstalledApps())
+    .slice(0, 60)
+    .map((app) => ({ id: app.id, name: app.name }));
+  // The applications on this Mac. Whether "pull up Spotify" should open the app
+  // or the website depends on whether this person has it, which only their
+  // machine knows — so the answer comes from here rather than a guess.
+  const macApps = (await macAppNames()).slice(0, 200);
+  // AI Drive — the artifacts and images LYKN has made for them. Those are
+  // things they built too, and "open the dashboard I made" only resolves if
+  // the model has been told the dashboard is in there. The totals ride along
+  // separately: only the newest are named, and a model that sees a short list
+  // and no count will report the list as the count.
+  const aiDrive = await listAiDrive(identity.userId);
   const requestBody = {
     model: identity.selectedModel,
     ...(customModelId ? { customModelId } : {}),
@@ -2940,7 +2972,7 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     knowledgeBase: (kbText || "").slice(0, identity.projectId ? 4000 : 2000),
     conversation: truncatedConversation,
     conversationMemory: memoryText || undefined,
-    workspaceContext: workspaceContextStr,
+    workspaceContext: "",
     projectId: identity.projectId,
     ...(identity.scopedProjectId ? { scopedProjectId: identity.scopedProjectId } : {}),
     ...(identity.scopedProjectName ? { scopedProjectName: identity.scopedProjectName } : {}),
@@ -2993,9 +3025,20 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
     timezone: resolveLocalTimezone(),
     ...(trimmedCanvasContext ? { context: trimmedCanvasContext } : {}),
     ...(hasFocusedBricks ? { hasFocusedBricks: true } : {}),
-    ...(mediaContext ? { mediaContext: mediaContext.slice(0, 8000) } : {}),
     ...(attachedImageUrls.length ? { imageUrls: attachedImageUrls } : {}),
     ...(turnAttachments.length ? { attachments: turnAttachments } : {}),
+    ...(installedApps.length ? { installedApps } : {}),
+    ...(macApps.length ? { macApps } : {}),
+    ...(aiDrive.items.length
+      ? {
+          aiDrive: aiDrive.items,
+          aiDriveTotals: {
+            artifacts: aiDrive.artifacts,
+            images: aiDrive.images,
+            complete: aiDrive.complete,
+          },
+        }
+      : {}),
     ...getAiPrefs(),
   };
 

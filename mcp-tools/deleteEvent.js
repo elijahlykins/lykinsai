@@ -7,7 +7,7 @@
 // status:'cancelled'. The id comes from lykn_listEvents. Scoped to the
 // caller's own rows (handler filters on user_id; RLS enforces it under JWT).
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 export const deleteEventTool = {
   name: 'lykn_deleteEvent',
@@ -32,8 +32,6 @@ export const deleteEventTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

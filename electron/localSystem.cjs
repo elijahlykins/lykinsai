@@ -54,9 +54,16 @@ function readLocalMode(userDataPath) {
       // keep their original whole-home behavior.
       syncAll: data?.syncAll !== false,
       syncedFolders: normalizeSyncedFolders(data?.syncedFolders),
+      excludedFolders: normalizeSyncedFolders(data?.excludedFolders),
     };
   } catch {
-    return { enabled: false, updatedAt: 0, syncAll: true, syncedFolders: [] };
+    return {
+      enabled: false,
+      updatedAt: 0,
+      syncAll: true,
+      syncedFolders: [],
+      excludedFolders: [],
+    };
   }
 }
 
@@ -79,14 +86,52 @@ function writeLocalMode(userDataPath, enabled) {
 }
 
 /** Update the synced-folders allowlist (and/or the sync-all switch). */
-function writeMacSync(userDataPath, { syncAll, syncedFolders } = {}) {
+function writeMacSync(userDataPath, { syncAll, syncedFolders, excludedFolders } = {}) {
   const prev = readLocalMode(userDataPath);
   return persistLocalMode(userDataPath, {
     ...prev,
     syncAll: typeof syncAll === "boolean" ? syncAll : prev.syncAll,
     syncedFolders:
       syncedFolders !== undefined ? normalizeSyncedFolders(syncedFolders) : prev.syncedFolders,
+    excludedFolders:
+      excludedFolders !== undefined
+        ? normalizeSyncedFolders(excludedFolders)
+        : prev.excludedFolders,
     updatedAt: Date.now(),
+  });
+}
+
+/**
+ * Turn one folder's sync on or off — the per-folder switch on each Mac folder
+ * page in the Vault.
+ *
+ * Off is recorded as an exclusion rather than by editing the allowlist, because
+ * a folder can be readable for two different reasons (the whole home folder is
+ * shared, or this folder was picked) and only an explicit "not this one"
+ * survives both. Keeping the folder in syncedFolders while it's excluded is
+ * what lets the switch go back on to exactly where it was.
+ */
+function writeFolderSync(userDataPath, { folder, synced } = {}) {
+  const abs = resolveUserPath(folder);
+  const prev = readLocalMode(userDataPath);
+  if (!abs) return prev;
+
+  const others = prev.excludedFolders.filter((f) => path.resolve(f) !== abs);
+  if (synced !== true) {
+    return writeMacSync(userDataPath, { excludedFolders: [...others, abs] });
+  }
+
+  // Dropping the exclusion is enough when the folder was readable before it
+  // was switched off. It isn't when a parent is excluded, or when the user
+  // shares a hand-picked list this folder was never on — then turning it on
+  // has to add it.
+  const next = { ...prev, excludedFolders: others };
+  if (isAllowedPath(abs, next)) {
+    return writeMacSync(userDataPath, { excludedFolders: others });
+  }
+  return writeMacSync(userDataPath, {
+    excludedFolders: others,
+    syncedFolders: [...prev.syncedFolders, abs],
   });
 }
 
@@ -105,6 +150,8 @@ const LOCAL_TOOL_NAMES = [
   "local_running_apps",
   "local_read_app",
   "local_open_app",
+  "local_open_path",
+  "local_organize_desktop",
 ];
 
 // local_pull_file ships the raw bytes to the renderer for upload, so the cap
@@ -216,14 +263,37 @@ function isInsideFolder(absPath, folder) {
 }
 
 /**
+ * How deeply a path is covered by a list of folders — the nesting depth of the
+ * closest one that contains it, or -1 if none does. Depth is what lets two
+ * lists disagree about the same path and still settle it.
+ */
+function coverDepth(absPath, folders) {
+  let deepest = -1;
+  for (const folder of Array.isArray(folders) ? folders : []) {
+    const resolved = path.resolve(String(folder || ""));
+    if (!resolved || !isInsideFolder(absPath, resolved)) continue;
+    const depth = resolved.split(path.sep).length;
+    if (depth > deepest) deepest = depth;
+  }
+  return deepest;
+}
+
+/**
  * Allowlist gate for the synced-folders model. With syncAll (default, matches
  * pre-allowlist installs) every path is allowed exactly as before; otherwise
  * the path must live inside one of the user's synced folders.
+ *
+ * A folder whose sync the user switched off is excluded either way. The more
+ * specific rule wins when the two lists overlap, so switching off Home and then
+ * switching Desktop back on reads the way it looks: everything but Desktop.
  */
 function isAllowedPath(absPath, config) {
   if (!absPath) return false;
-  if (!config || config.syncAll !== false) return true;
-  return (config.syncedFolders || []).some((f) => isInsideFolder(absPath, f));
+  if (!config) return true;
+  const excluded = coverDepth(absPath, config.excludedFolders);
+  if (excluded >= 0 && coverDepth(absPath, config.syncedFolders) <= excluded) return false;
+  if (config.syncAll !== false) return true;
+  return coverDepth(absPath, config.syncedFolders) >= 0;
 }
 
 /**
@@ -231,7 +301,12 @@ function isAllowedPath(absPath, config) {
  * cover. Returns { allowed: boolean, blockedPath?: string }.
  */
 function checkToolAccess(name, args = {}, config) {
-  if (!config || config.syncAll !== false) return { allowed: true };
+  if (!config) return { allowed: true };
+  // Nothing to enforce when the whole home folder is shared and no folder has
+  // been switched off.
+  if (config.syncAll !== false && !(config.excludedFolders || []).length) {
+    return { allowed: true };
+  }
   const paths = [];
   switch (name) {
     case "local_list_dir":
@@ -241,6 +316,7 @@ function checkToolAccess(name, args = {}, config) {
     case "local_read_file":
     case "local_pull_file":
     case "local_write_file":
+    case "local_open_path":
       paths.push(resolveUserPath(args.path));
       break;
     case "local_run_command":
@@ -270,6 +346,11 @@ function classifyRisk(name, args = {}) {
     case "local_read_app":
     // Opening an app is what a dock click does — visible, non-destructive.
     case "local_open_app":
+    // Opening a path mirrors a direct Files-window click.
+    case "local_open_path":
+    // Only moves icons around on LYKN's own desktop. Nothing on disk changes,
+    // and the user can drag them back.
+    case "local_organize_desktop":
       return { risky: false, summary: "" };
     case "local_write_file": {
       const target = resolveUserPath(args.path);
@@ -396,6 +477,10 @@ async function searchFiles(args = {}) {
       scanned += 1;
       const full = path.join(dir, ent.name);
       if (ent.isDirectory()) {
+        if (nameRe && !query && nameRe.test(ent.name)) {
+          results.push({ path: full, type: "dir" });
+          if (results.length >= MAX_SEARCH_RESULTS) break;
+        }
         if (depth < 8 && !skipDirs.has(ent.name) && !ent.name.startsWith(".")) {
           stack.push({ dir: full, depth: depth + 1 });
         }
@@ -404,7 +489,7 @@ async function searchFiles(args = {}) {
       if (!ent.isFile()) continue;
       if (nameRe && !nameRe.test(ent.name)) continue;
       if (!query) {
-        results.push({ path: full });
+        results.push({ path: full, type: "file" });
         continue;
       }
       try {
@@ -526,6 +611,7 @@ function runCommand(args = {}) {
 }
 
 function syncedFoldersTool(config) {
+  const excluded = config.excludedFolders || [];
   return {
     ok: true,
     syncAll: config.syncAll !== false,
@@ -533,10 +619,14 @@ function syncedFoldersTool(config) {
       config.syncAll !== false
         ? [homeDir()]
         : (config.syncedFolders || []),
+    excludedFolders: excluded,
     note:
-      config.syncAll !== false
+      (config.syncAll !== false
         ? "Everything under the home folder is synced."
-        : "Only these folders are synced — reads and writes outside them are blocked.",
+        : "Only these folders are synced — reads and writes outside them are blocked.") +
+      (excluded.length
+        ? ` The user switched sync off for these, so they are blocked too: ${excluded.join(", ")}.`
+        : ""),
   };
 }
 
@@ -585,6 +675,52 @@ async function openAppTool(args = {}) {
     };
   }
   return launched || { ok: false, error: `Could not open ${target.name}.` };
+}
+
+// ---------------------------------------------------------------------------
+// local_open_path — validate a file/folder before the renderer opens it
+// ---------------------------------------------------------------------------
+
+async function openPathTool(args = {}) {
+  const target = resolveUserPath(args.path);
+  if (!target) {
+    return { ok: false, error: 'path is required, e.g. { path: "~/Desktop" }' };
+  }
+  const stat = await fsp.stat(target);
+  const type = stat.isDirectory() ? "dir" : "file";
+  return {
+    ok: true,
+    path: target,
+    type,
+    parent: type === "file" ? path.dirname(target) : target,
+    note:
+      type === "dir"
+        ? `${target} is now open in LYKN Files.`
+        : `${target} is now open on the user's screen.`,
+  };
+}
+
+const ARRANGE_KEYS = ["kind", "name", "date"];
+
+/**
+ * local_organize_desktop — tidy the icons on LYKN's own Home desktop.
+ *
+ * Nothing to do down here: the desktop is a React surface in the renderer, so
+ * this only settles what was asked for and the client does the arranging when
+ * the result comes back (the same split local_open_path uses). It still goes
+ * through the tool path rather than straight to the renderer so the model's
+ * call is gated, logged, and answered like every other local tool.
+ */
+function organizeDesktopTool(args = {}) {
+  const raw = String(args.by || "").trim().toLowerCase();
+  const by = ARRANGE_KEYS.includes(raw) ? raw : null;
+  return {
+    ok: true,
+    by,
+    note: by
+      ? `The user's desktop icons are now arranged by ${by}.`
+      : "The user's desktop icons are now lined up on a grid.",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -892,6 +1028,17 @@ async function run(name, args = {}, { approved = false, userDataPath = "" } = {}
   }
   const access = checkToolAccess(name, args, config);
   if (!access.allowed) {
+    const switchedOff = (config.excludedFolders || []).find((f) =>
+      isInsideFolder(access.blockedPath, f)
+    );
+    if (switchedOff) {
+      return {
+        ok: false,
+        error:
+          `Path not synced: ${access.blockedPath}. The user switched sync off for ${switchedOff}, ` +
+          "so nothing inside it can be read. They can switch it back on from that folder in the Vault.",
+      };
+    }
     const folders = (config.syncedFolders || []).join(", ") || "(none)";
     return {
       ok: false,
@@ -926,6 +1073,10 @@ async function run(name, args = {}, { approved = false, userDataPath = "" } = {}
         return await readAppTool(args);
       case "local_open_app":
         return await openAppTool(args);
+      case "local_open_path":
+        return await openPathTool(args);
+      case "local_organize_desktop":
+        return organizeDesktopTool(args);
       default:
         return { ok: false, error: `Unknown local tool: ${name}` };
     }
@@ -942,6 +1093,7 @@ module.exports = {
   readLocalMode,
   writeLocalMode,
   writeMacSync,
+  writeFolderSync,
   isAllowedPath,
   resolveUserPath,
   run,

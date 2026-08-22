@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pin, PinOff, Search } from "lucide-react";
+import StudioPop from "@/components/macdesktop/StudioPop";
+import { DockContextMenu, openLyknChat } from "@/components/macdock/DockContextMenu";
+import { quitMacApp } from "@/lib/macApps";
 
 /**
  * Mac app strip for the Studio bottom dock: the user's installed applications,
@@ -8,7 +11,8 @@ import { Pin, PinOff, Search } from "lucide-react";
  *
  * Strip = pinned apps + running apps (deduped), capped; "⋯" opens a popover
  * with every installed app, search, and pin toggles. Clicking an icon
- * launches the app as a normal macOS window.
+ * launches the app as a normal macOS window. Right-click opens, quits,
+ * pins/unpins, or hands the app to LYKN chat.
  */
 
 const STRIP_CAP = 8;
@@ -18,11 +22,12 @@ function bridge() {
   return b && typeof b.macAppsList === "function" ? b : null;
 }
 
-function AppIcon({ app: a, running, frontmost, onClick, size = "h-7 w-7" }) {
+function AppIcon({ app: a, running, frontmost, onClick, onContextMenu, size = "h-7 w-7" }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      onContextMenu={onContextMenu}
       title={a.name}
       aria-label={`Open ${a.name}`}
       className="relative flex flex-col items-center justify-center rounded-lg p-0.5 transition-transform hover:scale-110 active:scale-95"
@@ -53,6 +58,7 @@ export default function MacAppDock() {
   const [frontmost, setFrontmost] = useState("");
   const [moreOpen, setMoreOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [menuFor, setMenuFor] = useState(null);
   const popRef = useRef(null);
 
   useEffect(() => {
@@ -95,6 +101,8 @@ export default function MacAppDock() {
     return () => document.removeEventListener("pointerdown", onDown);
   }, [moreOpen]);
 
+  const closeMenu = useCallback(() => setMenuFor(null), []);
+
   if (!api) return null;
 
   const runningSet = new Set(running.map((n) => n.toLowerCase()));
@@ -114,6 +122,23 @@ export default function MacAppDock() {
     setPins(next);
     void api.macDockPinsSet(next).catch(() => {});
   };
+  const menuItems = (a) => {
+    const pinnedHere = pins.includes(a.path);
+    const rows = [{ label: "Open", onClick: () => launch(a) }];
+    if (isRunning(a)) {
+      rows.push({ label: "Quit", onClick: () => quitMacApp(a) });
+    }
+    rows.push(
+      { separator: true },
+      {
+        label: pinnedHere ? "Remove from Dock" : "Keep in Dock",
+        onClick: () => togglePin(a),
+      },
+      { separator: true },
+      { label: "Chat with LYKN", onClick: () => openLyknChat() },
+    );
+    return rows;
+  };
 
   const q = query.trim().toLowerCase();
   const filtered = q ? apps.filter((a) => a.name.toLowerCase().includes(q)) : apps;
@@ -124,17 +149,35 @@ export default function MacAppDock() {
     <div className="relative flex items-center gap-0.5 pl-1">
       <span className="mx-1 h-5 w-px bg-black/15 dark:bg-white/15" aria-hidden />
       {strip.map((a) => (
-        <AppIcon
-          key={a.path}
-          app={a}
-          running={isRunning(a)}
-          frontmost={isFrontmost(a)}
-          onClick={() => launch(a)}
-        />
+        <div key={a.path} className="relative">
+          <AppIcon
+            app={a}
+            running={isRunning(a)}
+            frontmost={isFrontmost(a)}
+            onClick={() => {
+              setMenuFor(null);
+              launch(a);
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMoreOpen(false);
+              setMenuFor((id) => (id === a.path ? null : a.path));
+            }}
+          />
+          <DockContextMenu
+            open={menuFor === a.path}
+            onClose={closeMenu}
+            align="center"
+            items={menuItems(a)}
+          />
+        </div>
       ))}
       <button
         type="button"
-        onClick={() => setMoreOpen((v) => !v)}
+        onClick={() => {
+          setMenuFor(null);
+          setMoreOpen((v) => !v);
+        }}
         title="All applications"
         aria-label="All applications"
         className={`ml-0.5 flex h-7 w-7 items-center justify-center rounded-full text-[0.85rem] font-semibold transition-colors ${
@@ -146,11 +189,12 @@ export default function MacAppDock() {
         &#8943;
       </button>
 
-      {moreOpen && (
-        <div
-          ref={popRef}
-          className="lg-menu absolute bottom-full right-0 z-50 mb-3 w-72 p-2"
-        >
+      <StudioPop
+        ref={popRef}
+        open={moreOpen}
+        origin="100% 100%"
+        className="lg-menu absolute bottom-full right-0 z-50 mb-3 w-72 p-2"
+      >
           <div className="mb-1.5 flex items-center gap-2 rounded-xl bg-black/[0.05] px-2.5 py-1.5 dark:bg-white/[0.08]">
             <Search className="h-3.5 w-3.5 shrink-0 text-black/45 dark:text-white/45" />
             <input
@@ -210,8 +254,7 @@ export default function MacAppDock() {
               </p>
             )}
           </div>
-        </div>
-      )}
+      </StudioPop>
     </div>
   );
 }

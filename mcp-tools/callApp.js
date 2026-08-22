@@ -14,7 +14,7 @@
 //     has writes enabled (otherwise the call is rejected — tell the user)
 //   • response size + timeout capped; per-user/host rate limited
 
-import { jsonContent, errorContent, requireWrite } from './content.js';
+import { jsonContent, errorContent } from './content.js';
 
 export const callAppTool = {
   name: 'lykn_call_app',
@@ -74,8 +74,6 @@ export const callAppTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx = {}) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

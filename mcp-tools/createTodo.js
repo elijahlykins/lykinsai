@@ -18,7 +18,7 @@
 //   relative `in_minutes` offset. Keep their phrasing in `due_at_text`. Most
 //   to-dos have no due date at all — leave both off in that case.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 import { resolveInstant } from './_time.js';
 import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
@@ -101,8 +101,6 @@ export const createTodoTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

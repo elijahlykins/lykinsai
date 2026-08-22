@@ -5,13 +5,12 @@
 // plus a new `lykn_project_neurons` join table (063).
 //
 // Why we reuse `lykn_projects` instead of inventing a new container:
-//   The same row in `lykn_projects` is the one the MCP server hands
-//   to outside AI clients (Claude Desktop / Cursor / Claude Code /
-//   ChatGPT) via `lykn_listProjects` and `lykn_getContextBlock`.
-//   By writing into the same table, a project the user clusters in
-//   the synthesis layer becomes immediately visible to those models
-//   for free — that's the whole point of the feature ("the user can
-//   see the project, the AI can see that project").
+//   The same row in `lykn_projects` is the one LYKN's own chat and
+//   voice agent read through `lykn_listProjects` /
+//   `lykn_getContextBlock`. By writing into the same table, a project
+//   the user clusters in the synthesis layer is immediately visible to
+//   the model for free — that's the whole point of the feature ("the
+//   user can see the project, the AI can see that project").
 //
 // Persistence tiers — same shape as userLinks.ts:
 //   1. Signed-in user, both tables present → Supabase, synced everywhere.
@@ -40,8 +39,8 @@ export interface UserProject {
   // Total number of `lykn_pushProjectState` calls ever made against
   // this project — counts EVERY row in `lykn_project_state` for the
   // project, including superseded ones. Each row represents one push
-  // event from an outside AI client, so this is the user-facing
-  // answer to "how much working memory has been written here?" The
+  // event from the agent, so this is the user-facing answer to
+  // "how much working memory has been written here?" The
   // "By Project" dropdown surfaces this next to the member count so
   // the user can tell at a glance which projects the AI is actively
   // pushing into vs. which ones are dormant. Defaults to 0 on the
@@ -674,14 +673,18 @@ export async function removeNeuronFromProject(
 // Project state ("updates") — the AI-pushed working memory.
 // ---------------------------------------------------------------------------
 //
-// `lykn_project_state` is the kv-store that outside AI clients
-// (Claude Desktop / Cursor / Claude Code / ChatGPT) push into via
-// the MCP `lykn_pushProjectState` tool. The latest non-superseded
-// row at each (user_id, project_id, state_key) is the current
-// value; older rows stay around for audit. The project side panel
-// renders these as the "Updates" section so the user can see what
-// each AI client has been telling LYKN about the project — that's
-// the user-facing meaning of the project working state.
+// `lykn_project_state` is the kv-store the agent pushes into via the
+// `lykn_pushProjectState` tool. The latest non-superseded row at each
+// (user_id, project_id, state_key) is the current value; older rows
+// stay around for audit. The project side panel renders these as the
+// "Updates" section so the user can see what the agent has been
+// telling LYKN about the project — that's the user-facing meaning of
+// the project working state.
+//
+// `set_by_client` is historical: rows written before LYKN stopped
+// exposing an MCP server can still carry an outside client's slug
+// ('claude-desktop', 'cursor', …), so the UI keeps its label map for
+// those. New rows are always 'LYKN'.
 
 export interface ProjectStateUpdate {
   /** Row id in `lykn_project_state` — needed to supersede on user edit. */
@@ -794,8 +797,8 @@ export async function editProjectStateUpdate(
 // "Active vs archived" is the `lykn_projects.status` column: archived
 // projects stop shipping in getContextBlock but keep their history.
 // Separately, `lykn_user_synthesis_profile.active_project_id` is the ONE
-// project outside AI clients treat as the current focus. The Projects
-// page exposes both.
+// project the agent treats as the current focus. The Projects page
+// exposes both.
 
 export async function setUserProjectStatus(
   userId: string | null | undefined,

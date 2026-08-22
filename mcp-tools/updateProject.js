@@ -24,7 +24,7 @@
 // rather than a fuzzy fallback. The model should always have called
 // lykn_listProjects first to pick the right id.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 
 const NAME_MAX = 120;
 const DESC_MAX = 320;
@@ -93,8 +93,6 @@ export const updateProjectTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

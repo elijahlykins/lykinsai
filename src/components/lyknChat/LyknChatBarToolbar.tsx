@@ -1,5 +1,6 @@
 import React from "react";
-import { ArrowUp, Loader2, Mic, Plus, Square } from "lucide-react";
+import { Loader2, Mic, Plus, Square } from "lucide-react";
+import ChatSendIcon from "@/lib/chatSendIcon";
 import {
   Select,
   SelectContent,
@@ -131,7 +132,7 @@ const LyknChatBarToolbar = React.memo(function LyknChatBarToolbar({
         className={`${iconBtn} lykn-chat-neu-chat-send-btn flex items-center justify-center shrink-0 ${sendDisabled ? "opacity-40 cursor-not-allowed" : "text-blue-600 dark:text-blue-400"}`}
         title="Send"
       >
-        <ArrowUp className={iconSm} strokeWidth={2.25} />
+        <ChatSendIcon className={iconSm} strokeWidth={2.25} />
       </button>
     </div>
   );

@@ -1878,8 +1878,8 @@ const FAQS: { q: string; a: string }[] = [
     a: "LYKN is a personal intelligence layer for your AI. It remembers who you are, holds the context of your projects, and brings that personalized AI onto any screen you work on.",
   },
   {
-    q: "Does it work with the AI tools I already use?",
-    a: "Yes. LYKN connects to the apps and assistants you already use and carries your context across them, so every model you talk to is grounded in the same understanding of you.",
+    q: "Does it work with the apps and models I already use?",
+    a: "Yes. LYKN connects to the apps you already work in and reads from them, and you can switch between GPT, Claude, Gemini and Grok from the model menu. Whichever model you pick is grounded in the same understanding of you.",
   },
   {
     q: "How does LYKN remember me across different apps?",

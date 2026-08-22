@@ -6,6 +6,12 @@ import { Switch } from '@/components/ui/switch';
 import {
   ACCENTS,
   ACCENT_CUSTOM_ID,
+  CHAT_BAR_SHAPES,
+  CHAT_BAR_SIZES,
+  CHAT_BUBBLE_SHAPES,
+  CHAT_SEND_ICONS,
+  CHAT_SEND_SHAPES,
+  CHAT_TEXT_SIZES,
   GLASS_BLUR_MAX,
   GLASS_BLUR_MIN,
   INKS,
@@ -14,12 +20,18 @@ import {
   accentById,
   accentSwatchBackground,
   applyAppearance,
+  chatBarShapeById,
+  chatBarSizeById,
+  chatBubbleShapeById,
+  chatSendShapeById,
+  chatTextSizeById,
   inkById,
   inkColor,
   readAppearance,
   resetAppearance,
   saveAppearance,
 } from '@/lib/appearance';
+import { sendGlyph } from '@/lib/chatSendIcon';
 import { isDarkTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 
@@ -32,6 +44,11 @@ const THEMES = [
   { id: 'light', label: 'Light' },
   { id: 'dark', label: 'Dark' },
 ];
+
+/** The size presets, in the shape SegmentedControl reads. */
+const asSteps = (presets) => presets.map((p) => ({ id: p.id, label: p.name }));
+const TEXT_SIZE_STEPS = asSteps(CHAT_TEXT_SIZES);
+const BAR_SIZE_STEPS = asSteps(CHAT_BAR_SIZES);
 
 const TOGGLES = [
   {
@@ -208,20 +225,156 @@ function InkField({ label, hint, value, hue, hueLabel, appearance, dark, onChang
   );
 }
 
-/** Two lines of transcript wearing the real chat classes, so the three inks
- *  below are shown by the same tokens that will paint the actual chat. */
-function ChatInkPreview() {
+/** One labelled row of size steps. */
+function SizeField({ label, steps, value, onChange }) {
   return (
-    <div className="lykn-chat-ink mb-4 space-y-2 rounded-[12px] border border-black/[0.07] bg-black/[0.02] p-3 dark:border-white/[0.09] dark:bg-white/[0.03]">
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <SegmentedControl ariaLabel={label} options={steps} value={value} onChange={onChange} />
+    </div>
+  );
+}
+
+/** Corner chips. Each is drawn as the shape it stands for, so the control
+ *  shows the choice rather than naming it — a shape that also makes the bar
+ *  taller gets a taller chip, and one whose radius would swallow a chip whole
+ *  draws the `chipRadius` that reads the same at this scale.
+ *
+ *  `glyph` fills each chip, for the send button, whose shape means little as
+ *  an empty box; `square` sizes the chips for it, since a round send button
+ *  drawn on the wide bar chip would come out an ellipse. */
+function ShapePicker({ shapes, value, glyph: Glyph, square, onChange }) {
+  return (
+    <div className="flex flex-wrap items-start gap-2.5 pb-6">
+      {shapes.map((shape) => {
+        const selected = shape.id === value;
+        return (
+          <span key={shape.id} className="relative flex flex-col items-center">
+            <button
+              type="button"
+              onClick={() => onChange(shape.id)}
+              data-selected={selected}
+              data-tall={shape.minH ? 'true' : undefined}
+              data-square={square ? 'true' : undefined}
+              aria-label={shape.name}
+              aria-pressed={selected}
+              title={shape.name}
+              className={cn('lg-shape', Glyph && 'flex items-center justify-center')}
+              style={{ borderRadius: shape.chipRadius || shape.radius }}
+            >
+              {Glyph ? (
+                <Glyph
+                  className="h-4 w-4 text-black/70 dark:text-white/75"
+                  strokeWidth={2.25}
+                />
+              ) : null}
+            </button>
+            {selected ? (
+              <span
+                className="absolute top-full mt-1.5 whitespace-nowrap text-[11.5px] font-medium"
+                style={{ color: 'hsl(var(--lykn-accent))' }}
+              >
+                {shape.name}
+              </span>
+            ) : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The glyphs, each in the button shape that's already chosen — so the row
+ *  reads as the real send button wearing six different arrows. */
+function SendIconPicker({ icons, value, shape, onChange }) {
+  return (
+    <div className="flex flex-wrap items-start gap-2.5 pb-6">
+      {icons.map((icon) => {
+        const Glyph = sendGlyph(icon.id);
+        const selected = icon.id === value;
+        return (
+          <span key={icon.id} className="relative flex flex-col items-center">
+            <button
+              type="button"
+              onClick={() => onChange(icon.id)}
+              data-selected={selected}
+              data-square="true"
+              aria-label={icon.name}
+              aria-pressed={selected}
+              title={icon.name}
+              className="lg-shape flex items-center justify-center"
+              style={{ borderRadius: shape.chipRadius || shape.radius }}
+            >
+              <Glyph className="h-4 w-4 text-black/70 dark:text-white/75" strokeWidth={2.25} />
+            </button>
+            {selected ? (
+              <span
+                className="absolute top-full mt-1.5 whitespace-nowrap text-[11.5px] font-medium"
+                style={{ color: 'hsl(var(--lykn-accent))' }}
+              >
+                {icon.name}
+              </span>
+            ) : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A transcript and a composer wearing the real chat classes, at the exact
+ *  sizes and radii the choices below resolve to. The classes bring the ink and
+ *  bubble tokens along; the geometry is set inline, which is what lets the
+ *  preview show a size or shape that is still the default everywhere else. */
+function ChatPreview({ appearance }) {
+  const userSize = chatTextSizeById(appearance.chatUserTextSize);
+  const aiSize = chatTextSizeById(appearance.chatAiTextSize);
+  const barSize = chatBarSizeById(appearance.chatBarSize);
+  const bubbleShape = chatBubbleShapeById(appearance.chatBubbleShape);
+  const barShape = chatBarShapeById(appearance.chatBarShape);
+  const sendShape = chatSendShapeById(appearance.chatSendShape);
+  const SendGlyph = sendGlyph(appearance.chatSendIcon);
+  return (
+    <div className="lykn-chat-ink mb-4 space-y-2.5 rounded-[12px] border border-black/[0.07] bg-black/[0.02] p-3 dark:border-white/[0.09] dark:bg-white/[0.03]">
       <div className="flex justify-end">
-        <div className="lykn-user-prompt-bubble max-w-[80%] rounded-2xl rounded-br-md border border-black/8 bg-background px-3 py-1.5 text-[12px] leading-relaxed text-black/90 shadow-[0_4px_14px_rgba(0,0,0,0.06)] dark:border-white/10 dark:text-white/90">
+        <div
+          className="lykn-user-prompt-bubble max-w-[80%] border border-black/8 bg-background px-3 py-1 leading-[1.25] text-black/90 shadow-[0_2px_8px_rgba(0,0,0,0.045)] dark:border-white/10 dark:text-white/90"
+          style={{ borderRadius: bubbleShape.radius, fontSize: userSize.px }}
+        >
           What's on my calendar today?
         </div>
       </div>
-      <p className="text-[12px] leading-relaxed text-black/85 dark:text-white/85">
+      <p
+        className="leading-[1.35] text-black/85 dark:text-white/85"
+        style={{ fontSize: aiSize.px }}
+      >
         Three things — a design review at 10, lunch with Ana at 12:30, and the
         investor call you moved to 4.
       </p>
+      <div
+        className="lykn-chat-neu-chat-shell flex items-start gap-2"
+        style={{ borderRadius: barShape.radius, padding: barSize.pad }}
+      >
+        <span
+          className="min-w-0 flex-1 px-1 text-black/45 dark:text-white/40"
+          style={{ fontSize: barSize.font, minHeight: barSize.minH, lineHeight: 1.45 }}
+        >
+          Ask me anything...
+        </span>
+        <span
+          aria-hidden
+          className="flex h-6 w-6 shrink-0 items-center justify-center"
+          style={{
+            background: 'hsl(var(--lykn-accent))',
+            color: 'hsl(var(--lykn-accent-fg))',
+            // Default has no radius of its own; the composer's own 10px block
+            // is what it resolves to on the bar this preview is drawing.
+            borderRadius: sendShape.radius || '10px',
+          }}
+        >
+          <SendGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
+        </span>
+      </div>
     </div>
   );
 }
@@ -442,7 +595,72 @@ export default function AppearanceSettings({
 
         <section>
           <SectionHeading>AI chat</SectionHeading>
-          <ChatInkPreview />
+          <ChatPreview appearance={appearance} />
+
+          <div className="space-y-4">
+            <SizeField
+              label="Your text"
+              steps={TEXT_SIZE_STEPS}
+              value={appearance.chatUserTextSize}
+              onChange={(id) => update({ chatUserTextSize: id })}
+            />
+            <SizeField
+              label="LYKN's replies"
+              steps={TEXT_SIZE_STEPS}
+              value={appearance.chatAiTextSize}
+              onChange={(id) => update({ chatAiTextSize: id })}
+            />
+            <SizeField
+              label="Chat bar"
+              steps={BAR_SIZE_STEPS}
+              value={appearance.chatBarSize}
+              onChange={(id) => update({ chatBarSize: id })}
+            />
+            <div>
+              <FieldLabel>Message bubble shape</FieldLabel>
+              <ShapePicker
+                shapes={CHAT_BUBBLE_SHAPES}
+                value={appearance.chatBubbleShape}
+                onChange={(id) => update({ chatBubbleShape: id })}
+              />
+            </div>
+            <div>
+              <FieldLabel>Chat bar shape</FieldLabel>
+              <ShapePicker
+                shapes={CHAT_BAR_SHAPES}
+                value={appearance.chatBarShape}
+                onChange={(id) => update({ chatBarShape: id })}
+              />
+              <p className="text-[11px] leading-snug text-black/40 dark:text-white/35">
+                Worn by both chat bars — the composer on the chat page and the
+                rounded bar on the Home desktop.
+              </p>
+            </div>
+            <div>
+              <FieldLabel>Send button</FieldLabel>
+              <SendIconPicker
+                icons={CHAT_SEND_ICONS}
+                value={appearance.chatSendIcon}
+                shape={chatSendShapeById(appearance.chatSendShape)}
+                onChange={(id) => update({ chatSendIcon: id })}
+              />
+              <ShapePicker
+                shapes={CHAT_SEND_SHAPES}
+                value={appearance.chatSendShape}
+                glyph={sendGlyph(appearance.chatSendIcon)}
+                square
+                onChange={(id) => update({ chatSendShape: id })}
+              />
+              <p className="text-[11px] leading-snug text-black/40 dark:text-white/35">
+                Default leaves each bar with the button it ships with — a block
+                on the chat page, a circle on the Home desktop. Any other shape
+                makes the two match.
+              </p>
+            </div>
+          </div>
+
+          <div className="my-5 h-px w-full bg-black/[0.06] dark:bg-white/[0.08]" />
+
           <div className="space-y-4">
             <InkField
               label="Your text"
@@ -518,7 +736,7 @@ export default function AppearanceSettings({
         </section>
       </div>
 
-      <div className="hidden w-[244px] shrink-0 lg:block">
+      <div className="lykn-appearance-preview w-[244px] shrink-0">
         <SectionHeading>Preview</SectionHeading>
         <LivePreview
           accent={accent}

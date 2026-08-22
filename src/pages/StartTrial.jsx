@@ -9,7 +9,6 @@ import {
 import { useAuth } from "@/lib/SupabaseAuth";
 import { API_BASE_URL } from "@/lib/api-config";
 import { hasAppAccess } from "@/lib/billingAccess";
-import { isConnectOnboardingDone } from "@/lib/landingHandoff";
 import { supabase } from "@/lib/supabase";
 import {
   PLANS,
@@ -81,24 +80,6 @@ async function startTrialCheckout(mode, plan, period) {
   return json;
 }
 
-const NEW_USER_WINDOW_MS = 10 * 60 * 1000;
-
-function isFreshlyCreatedUser(user) {
-  if (!user?.created_at) return false;
-  const createdMs = Date.parse(user.created_at);
-  if (!Number.isFinite(createdMs)) return false;
-  return Date.now() - createdMs < NEW_USER_WINDOW_MS;
-}
-
-// New signups still get the connect-your-AI-tools onboarding after the
-// paywall; everyone else drops straight into the app.
-function postTrialDestination(user) {
-  if (isFreshlyCreatedUser(user) && !isConnectOnboardingDone()) {
-    return "/onboarding/connect";
-  }
-  return "/studio";
-}
-
 function checkoutErrorMessage(err) {
   const code = err?.code || "";
   if (code === "checkout_email_required") {
@@ -163,7 +144,7 @@ export default function StartTrial() {
         // Don't double-subscribe a user who already converted in another tab.
         const billing = await fetchBillingMe();
         if (hasAppAccess(billing)) {
-          navigate(postTrialDestination(user), { replace: true });
+          navigate("/studio", { replace: true });
           return;
         }
 
@@ -179,7 +160,7 @@ export default function StartTrial() {
           return;
         } catch (embeddedErr) {
           if (embeddedErr?.code === "already_subscribed") {
-            navigate(postTrialDestination(user), { replace: true });
+            navigate("/studio", { replace: true });
             return;
           }
           // Embedded unavailable — fall back to the hosted redirect.
@@ -189,7 +170,7 @@ export default function StartTrial() {
         }
       } catch (err) {
         if (err?.code === "already_subscribed") {
-          navigate(postTrialDestination(user), { replace: true });
+          navigate("/studio", { replace: true });
           return;
         }
         setError(checkoutErrorMessage(err));
@@ -218,7 +199,7 @@ export default function StartTrial() {
           // Prime the shared billing cache so the app-shell gate doesn't
           // bounce us back here off a stale "no access" payload.
           queryClient.setQueryData(["billing-me", user.id], billing);
-          navigate(postTrialDestination(user), { replace: true });
+          navigate("/studio", { replace: true });
         } catch (err) {
           setError(checkoutErrorMessage(err));
           setPhase("error");
@@ -250,7 +231,7 @@ export default function StartTrial() {
         ]);
         if (cancelled) return;
         if (hasAppAccess(billing)) {
-          navigate(postTrialDestination(user), { replace: true });
+          navigate("/studio", { replace: true });
           return;
         }
         if (Number(billing?.trial_days) > 0) setTrialDays(Number(billing.trial_days));

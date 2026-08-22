@@ -17,7 +17,7 @@
 // LYKN IS the calendar — this writes to the user's own LYKN calendar, which
 // they see in the calendar pop-up. It does NOT push to Google/Apple/Outlook.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 import { resolveInstant } from './_time.js';
 import { resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
@@ -113,8 +113,6 @@ export const createEventTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

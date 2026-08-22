@@ -5,6 +5,26 @@
 @tailwind utilities;
 
 /* =========================================================
+   SCROLLBARS — never drawn, anywhere in LYKN
+   Every pane still scrolls (wheel, trackpad, keyboard, drag, programmatic);
+   only the gutter is gone. A native scrollbar is the one control we can't
+   restyle into the glass, so it's suppressed app-wide here instead of being
+   opted out pane by pane. !important because these lose to any class-level
+   rule otherwise, and this is meant to be unconditional — a pane that needs
+   a visible affordance should show its own (a fade, an arrow, a taller cap),
+   not a system scrollbar.
+   ========================================================= */
+* {
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* legacy Edge/IE */
+}
+*::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+/* =========================================================
    RESPONSIVE SCALING — Fluid root font-size for cross-monitor consistency
    Scales all rem-based values (spacing, font sizes, widths) proportionally.
    At 1280px → ~15.9px, at 1440px → ~16.2px, at 1920px → ~16.9px, at 2560px → ~17.8px
@@ -489,6 +509,153 @@ html[data-chat-bubble='on'] .lykn-user-prompt-bubble {
   border-color: hsl(var(--lykn-chat-bubble) / 0.65) !important;
 }
 
+/* =========================================================
+   CHAT SIZE & SHAPE — Settings › Appearance › AI chat.
+
+   The chat writes its type and its radii as Tailwind utilities (text-[14px],
+   rounded-[15px], p-2.5), so every rule below is written as html[…] .class to
+   outrank them on specificity rather than with !important — which leaves the
+   settings preview free to paint itself with a plain inline style.
+
+   applyAppearance() holds each data-* flag at 'default' until the choice
+   differs from the shipped one, so nothing here applies to an install that
+   never opened the pane. No rule may drop its guard for that reason.
+   ========================================================= */
+
+/* Message type. The bubble carries its own class; LYKN's replies get
+   `lykn-chat-ai-text` on the markdown wrapper. Both are sized in px, and the
+   line-heights around them are unitless, so they follow along. Headings inside
+   a reply keep their own scale — a reply's title is relative to the reply, not
+   to the person reading it. */
+html[data-chat-user-size='custom'] .lykn-user-prompt-bubble {
+  font-size: var(--lykn-chat-user-size);
+}
+
+html[data-chat-ai-size='custom'] .lykn-chat-ai-text {
+  font-size: var(--lykn-chat-ai-size);
+}
+
+/* Markdown headings inside a message are written as fixed px (text-xl/lg/base
+   = 20/18/16), which is a hierarchy only while the body sits at 14. Restate
+   them as the same ratios in em so a heading stays larger than the words under
+   it at Largest, and stays proportional at Small. */
+html[data-chat-user-size='custom'] .lykn-user-prompt-bubble h1,
+html[data-chat-ai-size='custom'] .lykn-chat-ai-text h1 {
+  font-size: 1.43em;
+}
+
+html[data-chat-user-size='custom'] .lykn-user-prompt-bubble h2,
+html[data-chat-ai-size='custom'] .lykn-chat-ai-text h2 {
+  font-size: 1.29em;
+}
+
+html[data-chat-user-size='custom'] .lykn-user-prompt-bubble h3,
+html[data-chat-ai-size='custom'] .lykn-chat-ai-text h3 {
+  font-size: 1.14em;
+}
+
+/* Bubble shape. A shorthand `border-radius` beats the utility longhand
+   (rounded-br-[4px]) it has to replace, which is what lets the shipped
+   bottom-right notch flatten out for the corner-less shapes. */
+html[data-chat-bubble-shape]:not([data-chat-bubble-shape='tail']) .lykn-user-prompt-bubble {
+  border-radius: var(--lykn-chat-bubble-radius);
+}
+
+/* How much further the Home desktop's bar reaches past where the shipped pill
+   ended — half the extra height, since the bar is centered and so grows by
+   that much at the top AND at the bottom.
+   Everything around that bar is pinned by hand off the window center (the
+   welcome headline, the mode pages' column and chips, the thread's bottom
+   clearance) because centering them with padding drifted. Each of those adds
+   this so it keeps the gap it was drawn with rather than letting a taller bar
+   eat it. Slate is 6.5rem against the pill's 2.75rem: 1.875rem a side. */
+html {
+  --lykn-home-bar-grow: 0rem;
+}
+html[data-chat-bar-shape='slate'] {
+  --lykn-home-bar-grow: 1.875rem;
+}
+
+/* Bar shape — the page composer and the Home desktop pill wear the same
+   radius, so the two chat bars stay recognizably one control. */
+html[data-chat-bar-shape]:not([data-chat-bar-shape='soft']) .lykn-chat-neu-chat-shell,
+html[data-chat-bar-shape]:not([data-chat-bar-shape='soft']) .lykn-home-chat-bar {
+  border-radius: var(--lykn-chat-bar-radius);
+}
+
+/* The Glass composer sets its own 16px radius at a higher specificity than the
+   shell rule above; re-state it here so a chosen shape reaches Glass too. */
+html.lykn-glass-embed.dark[data-chat-bar-shape]:not([data-chat-bar-shape='soft'])
+  .lykn-chat-neu-chat-shell {
+  border-radius: var(--lykn-chat-bar-radius);
+}
+
+/* The border light traces the shell's outline, so it has to bend the same way.
+   It rides 2px outside the shell and can't add that to a multi-corner radius,
+   so it settles for matching — a 2px difference, for 2.6s, once. */
+html[data-chat-bar-shape]:not([data-chat-bar-shape='soft'])
+  .lykn-chat-neu-chat-shell.lykn-chat-chat-border-run-once::before {
+  border-radius: var(--lykn-chat-bar-radius);
+}
+
+/* ── Rectangle: a flat outlined box ──
+   The other shapes only bend the corners of the neumorphic shell. Rectangle
+   drops the shell entirely: no raised gradient, no drop shadow, no inset
+   highlight — just the app's own glass behind one clean hairline, so the bar
+   reads as a box drawn around the field rather than a slab lifted off the
+   page. The field inside stays borderless and flush, which is what keeps the
+   single outline doing all the work.
+
+   Built from the --lg-* tokens rather than literal colors, so it is the same
+   material as every other glass surface: it follows the theme, Appearance ›
+   Glass depth, and the high-contrast toggle without restating any of them.
+   The second selector is Studio's Glass shell, which sets its own background
+   at a specificity this has to clear. */
+html[data-chat-bar-shape='rectangle'] .lykn-chat-neu-chat-shell,
+html.lykn-glass-embed.dark[data-chat-bar-shape='rectangle'] .lykn-chat-neu-chat-shell {
+  background: var(--lg-tint);
+  backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate));
+  -webkit-backdrop-filter: blur(var(--lg-blur-window)) saturate(var(--lg-saturate));
+  border: 1px solid var(--lg-hairline);
+  box-shadow: none;
+  color: var(--lg-text);
+}
+
+/* ── Send button shape ──
+   The two chat bars disagree at rest: the page composer's send is a 10px
+   block, the Home pill's is a circle. Default leaves both alone, which is why
+   this is gated rather than always on; picking anything else is what makes the
+   two agree. `.lykn-chat-send-btn` is the Home pill's, which reaches for the
+   radius over a Tailwind `rounded-full` — unlayered, so it wins the cascade
+   against both that utility and the neumorphic block in @layer components. */
+html[data-chat-send-shape]:not([data-chat-send-shape='default']) .lykn-chat-neu-chat-send-btn,
+html[data-chat-send-shape]:not([data-chat-send-shape='default']) .lykn-chat-send-btn {
+  border-radius: var(--lykn-chat-send-radius);
+}
+
+/* Bar size. The composer's own min-height is set from JS (it's also the floor
+   the auto-grow measures against), so only padding and type are set here.
+   A roomy shape wants the padding too, at any size — the token already holds
+   whichever of the two asked for more. */
+html[data-chat-bar-size='custom'] .lykn-chat-neu-chat-shell,
+html[data-chat-bar-shape='slate'] .lykn-chat-neu-chat-shell {
+  padding: var(--lykn-chat-bar-pad);
+}
+
+html[data-chat-bar-size='custom'] textarea.lykn-chat-neu-chat-field {
+  font-size: var(--lykn-chat-bar-font);
+  line-height: 1.45;
+}
+
+html[data-chat-bar-size='custom'] .lykn-home-chat-bar {
+  padding-top: var(--lykn-chat-bar-pad-home);
+  padding-bottom: var(--lykn-chat-bar-pad-home);
+}
+
+html[data-chat-bar-size='custom'] .lykn-home-chat-bar-input {
+  font-size: var(--lykn-chat-bar-font);
+}
+
 /* ─────────────────────────────────────────────────────────────
    THE ONE GLASS. Every surface that floats above content — menus,
    context menus, popovers, dropdowns, dialogs, side panels, tooltips, and
@@ -652,6 +819,84 @@ html.lykn-studio-mode.dark [role="dialog"].lykn-settings-window {
   background: transparent;
 }
 
+/* =========================================================
+   SETTINGS AT ANY SIZE — keyed to `data-settings-size` on the shell.
+
+   Settings is one component worn as a dialog, a desktop window that can be
+   dragged, tiled and zoomed, and a full page, so a viewport media query would
+   be measuring the wrong box entirely: a tiled quarter on a 6K display is a
+   narrow pane, not a wide one. SettingsModal watches its own root with a
+   ResizeObserver and writes the bucket here.
+   ========================================================= */
+
+/* The column the rows and the heading share. Unbounded until the shell is
+   wide enough that growing further would only push a row's label and its
+   control further apart — past that the width goes to the margins instead. */
+.lykn-settings-measure {
+  width: 100%;
+}
+
+[data-settings-size='wide'] .lykn-settings-measure {
+  max-width: 780px;
+  margin-inline: auto;
+}
+
+/* Tiles, not rows: a grid would rather have another column than a wider
+   margin, so the two grid views take a larger measure of their own. */
+[data-settings-size='wide'] .lykn-settings-measure[data-view='integrations'],
+[data-settings-size='wide'] .lykn-settings-measure[data-view='installedApps'] {
+  max-width: 1140px;
+}
+
+/* The sidebar gives ground when the window is a tiled quarter — at that size
+   the fixed 224px is most of the shell — and takes a little back at full
+   screen, where the nav can afford to breathe. */
+[data-settings-size='compact'] .lykn-settings-sidebar {
+  width: 178px;
+}
+
+[data-settings-size='wide'] .lykn-settings-sidebar {
+  width: 248px;
+}
+
+/* Compact spends its gutters before it spends its content. Scoped through
+   .lykn-settings-pane because the sidebar's nav list shares the scroll class. */
+[data-settings-size='compact'] .lykn-settings-pane .lykn-settings-scroll,
+[data-settings-size='compact'] .lykn-settings-titlebar {
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+[data-settings-size='compact'] .lykn-settings-titlebar {
+  height: 54px;
+}
+
+[data-settings-size='compact'] .lykn-settings-titlebar h2 {
+  font-size: 19px;
+}
+
+/* Grids of tiles inside Settings count their own columns instead of asking the
+   viewport how many to draw. A `sm:grid-cols-2` is always true on a desktop,
+   including when the pane it's in is a tiled quarter — auto-fill just measures
+   the track it was handed, so it needs no bucket at all. Callers set
+   --lykn-settings-grid-min to the narrowest a tile may get. */
+.lykn-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--lykn-settings-grid-min, 220px), 1fr));
+}
+
+/* The Appearance preview is a fixed 244px column beside the controls — it can
+   only appear once the pane can seat both, which is a fact about the pane and
+   not about the display it happens to be on. */
+.lykn-appearance-preview {
+  display: none;
+}
+
+[data-settings-size='regular'] .lykn-appearance-preview,
+[data-settings-size='wide'] .lykn-appearance-preview {
+  display: block;
+}
+
 /* Grouped inset list — a floating glass card. */
 .lykn-settings-group,
 .lg-card {
@@ -662,33 +907,6 @@ html.lykn-studio-mode.dark [role="dialog"].lykn-settings-window {
   box-shadow:
     0 8px 22px -12px rgba(0, 0, 0, 0.28),
     inset 0 1px 0 var(--lg-sheen);
-}
-
-/* Overlay scrollbars — a chunky grey gutter breaks the glass edge. */
-.lykn-settings-scroll::-webkit-scrollbar {
-  width: 9px;
-  height: 9px;
-}
-.lykn-settings-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.lykn-settings-scroll::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.18);
-  border: 2px solid transparent;
-  background-clip: content-box;
-  border-radius: 999px;
-}
-.lykn-settings-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.3);
-  background-clip: content-box;
-}
-html.dark .lykn-settings-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
-  background-clip: content-box;
-}
-html.dark .lykn-settings-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.34);
-  background-clip: content-box;
 }
 
 /* ── Sidebar nav rows ── */
@@ -801,6 +1019,43 @@ html.dark .lg-segment-thumb {
     0 0 0 2.5px var(--lg-tint-strong),
     0 0 0 4.5px hsl(var(--lykn-accent) / 0.9),
     0 0 16px 2px hsl(var(--lykn-accent) / 0.6);
+}
+
+/* ── Shape chips (chat bar / message bubble geometry) ──
+   A swatch says everything with one color; a shape has to be drawn, so these
+   are wider and take their corners from the preset they stand for. The chip
+   IS the preview — the radius on it is the radius the chat will wear. */
+.lg-shape {
+  position: relative;
+  width: 46px;
+  height: 30px;
+  border: 1px solid var(--lg-hairline);
+  background: var(--lg-inset);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.5),
+    0 2px 6px -3px rgba(0, 0, 0, 0.28);
+  transition: transform 160ms cubic-bezier(0.32, 0.72, 0, 1), box-shadow 160ms ease;
+}
+/* A shape that gives the composer a taller field says so at chip scale too. */
+.lg-shape[data-tall='true'] {
+  height: 42px;
+}
+/* Send-button chips stand for a square button, so they are square: a 9999px
+   radius has to read as a circle here, not as the pill it would be at 46×30. */
+.lg-shape[data-square='true'] {
+  width: 34px;
+  height: 34px;
+}
+.lg-shape:hover {
+  transform: scale(1.06);
+}
+.lg-shape[data-selected='true'] {
+  transform: scale(1.03);
+  border-color: hsl(var(--lykn-accent) / 0.9);
+  background: hsl(var(--lykn-accent) / 0.18);
+  box-shadow:
+    0 0 0 2px hsl(var(--lykn-accent) / 0.55),
+    0 0 14px 1px hsl(var(--lykn-accent) / 0.45);
 }
 
 /* ── Slider (hue, wallpaper dim/blur, glass depth) ── */
@@ -961,6 +1216,210 @@ html.lykn-glass-embed:not(.dark) body.embedded-vault-mode .lykn-chat-grid-bg {
    composer (and Imagine's prompt bar) while hosted there; the desktop
    widgets stay visible behind the transparent chat page. */
 
+/* Studio app motion — light pop from the dock when a surface opens, shrink
+   away when it closes. Used by stage apps (Projects / Vault / Files), Home
+   chat, dock popovers, and (via JS) floating windows. */
+.lykn-app-pop {
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateZ(0) translateY(16px) scale(0.9);
+  transition:
+    transform 180ms cubic-bezier(0.4, 0, 1, 1),
+    opacity 150ms cubic-bezier(0.4, 0, 1, 1),
+    visibility 0s linear 180ms;
+}
+.lykn-app-pop.is-open {
+  visibility: visible;
+  opacity: 1;
+  transform: translateZ(0) translateY(0) scale(1);
+  transition:
+    transform 300ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 0s;
+}
+/* A pop is click-through while it animates, so a surface on its way out can't
+   swallow input aimed at whatever is behind it. `hit` — the default in
+   StudioPop — hands interaction back once it has settled open. Without this
+   the dock popovers render perfectly and ignore every click and scroll. */
+.lykn-app-pop.lykn-app-pop-hit.is-open {
+  pointer-events: auto;
+}
+.lykn-zoom-tile-menu {
+  background: var(--lg-menu-tint, rgba(28, 28, 30, 0.86));
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--lg-hairline, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  color: var(--lg-text, rgba(255, 255, 255, 0.9));
+}
+.lykn-zoom-tile-item {
+  display: block;
+  width: 100%;
+  padding: 0.45rem 0.75rem;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: inherit;
+  cursor: default;
+}
+.lykn-zoom-tile-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+html:not(.dark) .lykn-zoom-tile-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.lykn-studio-split {
+  box-sizing: border-box;
+}
+.lykn-studio-split > div {
+  height: 100%;
+  min-height: 0;
+}
+.lykn-split-divider::after {
+  content: "";
+  position: absolute;
+  top: 18%;
+  bottom: 18%;
+  left: 50%;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.28);
+  opacity: 0.35;
+  transition: opacity 160ms ease, background 160ms ease;
+}
+.lykn-split-divider:hover::after,
+.lykn-split-divider-active::after {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.7);
+}
+html:not(.dark) .lykn-split-divider::after {
+  background: rgba(0, 0, 0, 0.2);
+}
+html:not(.dark) .lykn-split-divider:hover::after,
+html:not(.dark) .lykn-split-divider-active::after {
+  background: rgba(0, 0, 0, 0.45);
+}
+.lykn-split-divider-h::after {
+  top: 50%;
+  bottom: auto;
+  left: 18%;
+  right: 18%;
+  width: auto;
+  height: 3px;
+  margin-left: 0;
+  margin-top: -1.5px;
+}
+.lykn-split-quad-btn {
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.lykn-split-quad-btn:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.5);
+}
+html:not(.dark) .lykn-split-quad-btn {
+  color: rgba(0, 0, 0, 0.45);
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+html:not(.dark) .lykn-split-quad-btn:hover {
+  color: rgba(0, 0, 0, 0.8);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.lykn-split-snap {
+  pointer-events: none;
+  position: absolute;
+  z-index: 24;
+  top: 8px;
+  bottom: 8px;
+  border-radius: 1.25rem;
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.lykn-split-snap-left {
+  left: 8px;
+  width: calc(50% - 12px);
+}
+.lykn-split-snap-right {
+  right: 8px;
+  width: calc(50% - 12px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-split-divider::after {
+    transition: none;
+  }
+}
+
+/* Full-bleed Home chat: a smaller pop so the whole desktop doesn't shrink. */
+.lykn-app-pop.lykn-home-chat-host {
+  transform: translateZ(0) translateY(12px) scale(0.97);
+}
+.lykn-app-pop.lykn-home-chat-host.is-open {
+  transform: translateZ(0) translateY(0) scale(1);
+}
+
+/* Inner pages inside a popped stage card — fade only, the card already pops. */
+.lykn-studio-page {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 180ms ease,
+    visibility 0s linear 180ms;
+}
+.lykn-studio-page.is-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 200ms ease,
+    visibility 0s linear 0s;
+}
+
+/* Desktop icon sizing. Home overwrites these from the desktop's measured size
+   (see desktopGrid) so icons stay proportionate to whichever display the
+   window is on; the 1x values here are what everything else in the app —
+   and Home before it has measured — draws at. */
+:root {
+  --desk-tile: 96px;
+  --desk-art: 64px;
+  --desk-label: 0.72rem;
+}
+
+/* Desktop widgets stay mounted under stage apps so closing reveals them. */
+.lykn-studio-desktop {
+  transition: opacity 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+.lykn-studio-desktop.is-dimmed {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lykn-app-pop,
+  .lykn-app-pop.is-open,
+  .lykn-app-pop.lykn-home-chat-host,
+  .lykn-app-pop.lykn-home-chat-host.is-open {
+    transform: none;
+    transition: opacity 80ms ease, visibility 0s;
+  }
+  .lykn-studio-page,
+  .lykn-studio-page.is-active,
+  .lykn-studio-desktop {
+    transition: none;
+  }
+}
+
 /* Click-through: the chat layer covers the whole desktop, but only its
    CONTENT should take clicks — everywhere else (wallpaper, widgets, folder
    icons, right-click menu) must stay live underneath. The host + page root
@@ -979,12 +1438,27 @@ html.lykn-glass-embed:not(.dark) body.embedded-vault-mode .lykn-chat-grid-bg {
    big empty gutters. Keep the gutters click-through and re-enable only
    their content (the centered max-w-2xl column, side rails, panels). */
 .lykn-home-chat-host .lykn-chat-grid-bg > .lykn-chat-empty-state,
-.lykn-home-chat-host .lykn-chat-grid-bg > .lykn-chat-thread-stage {
+.lykn-home-chat-host .lykn-chat-grid-bg > .lykn-chat-thread-stage,
+.lykn-home-chat-host .lykn-chat-grid-bg > .lykn-imagine-root {
   pointer-events: none;
 }
 .lykn-home-chat-host .lykn-chat-empty-state > *,
 .lykn-home-chat-host .lykn-chat-thread-stage > * {
   pointer-events: auto;
+}
+
+/* On Home the bar floats OVER the conversation instead of sitting in its
+   flow, so the thread has to stop above it. Docked, the bar hangs off a fixed
+   bottom edge and a taller shape grows entirely upward, so the whole extra
+   height comes out of the thread — hence the doubled half-height.
+   This lifts only the thread: --mobile-tabbar-clear is also the bottom of the
+   empty state, and moving THAT would drag the welcome column and the
+   quick-start chips pinned inside it up along with the bar. `bottom` is an
+   inline style on the stage, so this has to shout to be heard. */
+.lykn-home-chat-host .lykn-chat-thread-stage {
+  bottom: calc(
+    var(--mobile-tabbar-clear, 0px) + 2 * var(--lykn-home-bar-grow)
+  ) !important;
 }
 
 .lykn-home-chat-host .lykn-chat-neu-chat-shell,
@@ -993,34 +1467,34 @@ html.lykn-glass-embed:not(.dark) body.embedded-vault-mode .lykn-chat-grid-bg {
 .lykn-home-chat-host .lykn-voice-toolbar {
   display: none !important;
 }
-/* Imagine keeps its OWN prompt bar on Home (aspect ratios, reference
-   images) — the desktop's rounded bar steps aside there instead. Once
-   batches exist the page docks its bar to the bottom edge; lift it above
-   the Studio dock to the rounded bar's usual spot. */
+/* Imagine shares the desktop rounded bar. Its leftover docked prompt
+   (standalone Imagine only) still clears the Studio dock. */
 .lykn-home-chat-host .lykn-imagine-dock {
   bottom: 4.25rem !important;
 }
 /* Fresh mode pages: every mode reads the same on the desktop — headline
    comfortably above the center-screen bar, extras (chips / showcase tiles)
    right below it. Centering-with-padding drifted with column height, so pin
-   the welcome column outright: its bottom lands just above the bar, exactly
-   like the Imagine hero. (The container ends 8.75rem above the window
-   bottom, so 50% − 2rem of it ≈ the column bottom at window-center − 2rem.) */
+   the welcome column outright: its bottom lands just above the bar.
+   (The container ends 8.75rem above the window bottom, so 50% − 2rem of
+   it ≈ the column bottom at window-center − 2rem.) */
 .lykn-home-chat-host .lykn-chat-empty-state > div {
   position: absolute;
   left: 50%;
-  bottom: calc(50% - 3rem);
+  bottom: calc(50% - 3rem + var(--lykn-home-bar-grow));
   transform: translateX(-50%);
   margin: 0;
 }
 /* Build / Research quick-start chips: pulled out of the welcome column and
    pinned just below the bar — the same spot Imagine's showcase tiles sit.
    Anchored off the pinned column above: its bottom edge sits ~2rem above
-   window center, so +5.25rem below it ≈ 3.25rem under the bar. */
+   window center, so +5.25rem below it ≈ 3.25rem under the bar.
+   The grow term is doubled here: the column these hang from has already moved
+   up by one of them, so clearing a taller bar's bottom edge costs two. */
 .lykn-home-chat-host .lykn-chat-empty-state .lykn-studio-chips {
   position: absolute;
   left: 50%;
-  top: calc(100% + 4rem);
+  top: calc(100% + 4rem + 2 * var(--lykn-home-bar-grow));
   transform: translateX(-50%);
   margin: 0;
   width: max-content;
@@ -1029,21 +1503,52 @@ html.lykn-glass-embed:not(.dark) body.embedded-vault-mode .lykn-chat-grid-bg {
   flex-wrap: wrap;
   overflow-x: visible;
 }
-/* Imagine's empty-page showcase collage: its own layout pins the tiles to
-   the page's bottom edge, which reads far too low under the desktop's
-   center-screen bar. Anchor them right below the bar instead. */
+/* Imagine's empty page on Home: the desktop rounded bar steps aside, so this
+   prompt bar has to occupy that exact center slot (top 50% / translateY -50%)
+   rather than riding in a headline+bar column. Splitting the stack lets the
+   headline and showcase pin around the bar the same way Chat / Build do. */
+.lykn-home-chat-host .lykn-imagine-stack {
+  position: absolute;
+  inset: 0;
+  display: block;
+  margin: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  pointer-events: none;
+}
+.lykn-home-chat-host .lykn-imagine-hero {
+  position: absolute;
+  left: 50%;
+  top: calc(50% - 1.375rem - 2.875rem - var(--lykn-home-bar-grow));
+  transform: translate(-50%, -100%);
+  width: 100%;
+  max-width: 42rem;
+  margin: 0;
+  padding: 0 2rem;
+}
+.lykn-home-chat-host .lykn-imagine-empty-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  padding: 0 2rem;
+  pointer-events: none;
+}
+/* Imagine's empty-page showcase collage: sit right below the center-screen
+   bar, matching Build / Research chips. */
 .lykn-home-chat-host .lykn-imagine-showcase {
   position: absolute;
   left: 50%;
-  top: calc(50% + 3.25rem);
+  top: calc(50% + 3.25rem + var(--lykn-home-bar-grow));
+  bottom: auto;
   transform: translateX(-50%);
   margin-bottom: 0 !important;
-}
-/* …and with the collage out of flow, hold the Imagine hero (headline +
-   its own prompt bar) so the headline keeps its approved height and the
-   bar lands at the window center — the rounded bar's usual spot. */
-.lykn-home-chat-host .lykn-imagine-hero {
-  transform: translateY(-5.5rem);
 }
 /* No page frame on Home — the chat sits straight on the wallpaper. The
    selectors repeat the themed grid-bg rules above with the host class so
@@ -1132,44 +1637,14 @@ html.lykn-glass-embed.dark .lykn-todos-page {
   background: transparent;
 }
 
-/* Header spreads with Studio focused mode — title eases to the card rail's
-   left edge (first card), new-project eases right. */
-.lykn-projects-title,
-.lykn-projects-new {
-  transition: transform 500ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
-}
-html.lykn-studio-focused .lykn-projects-title {
-  /* Sit the "Y" on the first card's left edge (same as rail padding). */
+/* Projects header sits over the card rail below it: the title's "Y" lands on
+   the first card's left edge (same inset as the rail's padding), and
+   new-project clears the right edge. */
+.lykn-projects-title {
   transform: translateX(0.35rem);
 }
-html.lykn-studio-focused .lykn-projects-new {
+.lykn-projects-new {
   transform: translateX(0.75rem);
-}
-
-/* Studio top-bar search suggestions — thin visible scrollbar (list is capped
-   short so it never clips under the frost panel / dock). */
-.lykn-studio-search-menu {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
-}
-html.dark .lykn-studio-search-menu,
-html.lykn-studio-mode.dark .lykn-studio-search-menu {
-  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
-}
-.lykn-studio-search-menu::-webkit-scrollbar {
-  width: 8px;
-}
-.lykn-studio-search-menu::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.22);
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-html.dark .lykn-studio-search-menu::-webkit-scrollbar-thumb,
-html.lykn-studio-mode.dark .lykn-studio-search-menu::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
-  background-clip: padding-box;
 }
 
 /* Voice Mode overlay: bg-background is a 35%-alpha wash in the glass skin,
@@ -2164,11 +2639,13 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
   /* Tailwind utilities like `text-xs` win against the bare `textarea`
      selector above, so iOS still auto-zooms when the chat composer is
      focused on phones. Boost specificity for the chat textarea(s) to
-     guarantee the 16px floor and stop the focus zoom. */
+     guarantee the 16px floor and stop the focus zoom. A chat bar size
+     chosen in Appearance rides on top of that floor — it can grow the
+     field on a phone, never shrink it back into the zoom. */
   textarea.lykn-chat-neu-chat-field,
   textarea.lykn-chat-neu-chat-field.text-xs,
   .lykn-chat-neu-chat-shell textarea {
-    font-size: 16px !important;
+    font-size: max(16px, var(--lykn-chat-bar-font, 16px)) !important;
     line-height: 1.35 !important;
   }
 
@@ -7916,6 +8393,105 @@ mark {
 .lykn-wake-preview-fit .lykn-wake-chat-preview-prompt {
   font-size: 1.15rem;
   line-height: 1.3;
+}
+
+/* Dragging a file over the wallpaper. Deliberately quiet — an inset ring
+   rather than a filled overlay, so the icons and widgets underneath stay
+   readable while you aim at a spot to drop on. */
+.lykn-studio-desktop.lykn-desktop-drop::after {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border-radius: 18px;
+  border: 2px dashed rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.05);
+  pointer-events: none;
+}
+
+/* Finder-style rubber-band on the Home wallpaper. */
+.lykn-desktop-marquee {
+  border: 1px solid rgba(59, 130, 246, 0.85);
+  background: rgba(59, 130, 246, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+}
+
+/* Dragging a file or an icon (see src/lib/drag/dragEngine.js). Nothing here
+   knows what's being dragged — the engine only marks what was picked up and
+   parents the thing following the cursor. */
+body.lykn-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* What was picked up stays visible where it was, faded, the way Finder leaves
+   the original behind. It also stops taking hits, so the drop target under the
+   cursor is never the thing in your hand. */
+[data-drag-source] {
+  opacity: 0.32 !important;
+  pointer-events: none !important;
+}
+
+.lykn-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+  opacity: 0.92;
+  transform-origin: top left;
+  filter: drop-shadow(0 12px 26px rgba(0, 0, 0, 0.4));
+}
+
+.lykn-drag-ghost * {
+  pointer-events: none !important;
+  animation: none !important;
+  transition: none !important;
+}
+
+/* How many are coming, when it's more than the three the stack shows. */
+.lykn-drag-ghost-count,
+.lykn-drag-ghost-copy {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.3rem;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.lykn-drag-ghost-count {
+  top: -0.35rem;
+  right: -0.35rem;
+  background: #ef4444;
+}
+
+/* Option-drag copies instead of moving, and says so the way macOS does. */
+.lykn-drag-ghost-copy {
+  display: none;
+  bottom: -0.35rem;
+  left: -0.35rem;
+  background: #22c55e;
+}
+
+.lykn-drag-ghost.is-copy .lykn-drag-ghost-copy {
+  display: flex;
+}
+
+/* Boxed hosts. The marketing preview and the Studio window both hand the
+   vault a fixed frame rather than a scrolling document, so the page stops
+   growing and something inside has to own the scrolling. Layout only — the
+   preview layers its own dark palette on top, which is why that lives in the
+   rule below instead of here. A real window follows the user's theme. */
+.lykn-vault-boxed {
+  position: relative;
+  overflow: hidden;
 }
 
 .lykn-wake-vault-live-preview {

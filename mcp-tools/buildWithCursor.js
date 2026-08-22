@@ -17,7 +17,7 @@
 //     something in code. Never on a vague wish.
 //   • The agent opens a PR; it never merges or deploys.
 
-import { jsonContent, errorContent, requireWrite } from './content.js';
+import { jsonContent, errorContent } from './content.js';
 
 export const buildWithCursorTool = {
   name: 'lykn_build_with_cursor',
@@ -71,8 +71,6 @@ export const buildWithCursorTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx = {}) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

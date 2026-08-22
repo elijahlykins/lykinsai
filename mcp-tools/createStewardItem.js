@@ -2,7 +2,7 @@
 // mcp-tools/createStewardItem.js — add work to the Night Shift queue
 // ============================================================================
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 import { resolveProjectPushClient, resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const TITLE_MAX = 280;
@@ -40,8 +40,6 @@ export const createStewardItemTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

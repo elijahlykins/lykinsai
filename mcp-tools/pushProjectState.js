@@ -23,7 +23,7 @@
 //      NOT auto-create an "Untitled project" because that's the kind
 //      of orphan-row footgun that pollutes the synthesis profile UI.
 
-import { jsonContent, errorContent, requireWrite } from './content.js';
+import { jsonContent, errorContent } from './content.js';
 import { resolveProjectPushClient, resolveWriteProjectTarget } from '../lib/projectWriteTarget.js';
 
 const STATE_KEY_MAX = 80;
@@ -104,8 +104,6 @@ export const pushProjectStateTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }

@@ -28,7 +28,7 @@
 //   the user can filter / audit AI-created notes separately from manual
 //   ones. The activity feed already groups notes by source.
 
-import { jsonContent, errorContent, requireWrite } from './index.js';
+import { jsonContent, errorContent } from './index.js';
 import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
 
 const TITLE_MAX = 200;
@@ -55,11 +55,9 @@ export const createVaultNoteTool = {
     '  • A piece of research / quote the user reacted positively to',
     '  • A first draft of writing they wanted captured',
     '',
-    'After saving, the note shows up in their /vault, is searchable via',
-    'lykn_searchVault / lykn_findConnections, and counts as a `vault_<id>`',
-    'neuron in lykn_addProjectNeurons — so a common pattern is:',
-    '  createVaultNote(...) → findConnections({ node_id: vault_<id> }) →',
-    '  addProjectNeurons.',
+    'After saving, the note lands in AI Drive inside the Vault Finder',
+    'window. Open it later with lykn_open_app by title. It also counts as',
+    'a `vault_<id>` neuron in lykn_addProjectNeurons.',
     '',
     'BEFORE calling, ASK the user once: "Want me to drop this into your',
     'vault?" — the user\'s vault is their personal space and silently',
@@ -73,11 +71,10 @@ export const createVaultNoteTool = {
     '    Synthesis Layer (+ → Core Belief neuron). Do not propose beliefs.',
     '  • Atomic identity disclosures → use lykn_proposeFact (observation,',
     '    not memory).',
-    '  • The user asked to SEE / pull up / show existing vault items',
-    '    (images, notes, saved files). That is lykn_searchVault +',
-    '    lykn_loadNeurons — NEVER create a note that merely says you',
-    '    pulled or saved something. Meta titles like "Saved items: X"',
-    '    are forbidden.',
+    '  • The user asked to SEE / pull up / show existing files. That is',
+    '    [AI DRIVE] + lykn_open_app, or local_* for Mac folders — NEVER',
+    '    create a note that merely says you pulled or saved something.',
+    '    Meta titles like "Saved items: X" are forbidden.',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -110,8 +107,6 @@ export const createVaultNoteTool = {
     additionalProperties: false,
   },
   async handler(args = {}, ctx) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }
@@ -143,7 +138,8 @@ export const createVaultNoteTool = {
     if (looksMetaAck) {
       return errorContent(
         'Refused: do not create a vault note that only acknowledges saving or pulling items. ' +
-          'To show existing vault content, call lykn_searchVault then lykn_loadNeurons.',
+          'To show files they made with you, use [AI DRIVE] and lykn_open_app. ' +
+          'For files on their Mac, use local_* tools.',
       );
     }
 

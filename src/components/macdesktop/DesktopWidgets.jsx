@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -7,6 +7,8 @@ import {
   Check,
   ChevronRight,
   Circle,
+  Eye,
+  EyeOff,
   File,
   FileText,
   Folder,
@@ -29,11 +31,50 @@ import {
   Wallpaper,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { getVaultRepository, activeVaultBackend, resolveVaultMediaUrl } from "@/lib/vault/repository";
+import { isAiGeneratedVaultRow } from "@/lib/vault/aiDriveContents";
+import { parseAttachmentsFromNote } from "@/lib/vault/attachmentsMarker";
+import { resolveRenderType } from "@/lib/vault/attachmentType";
 import { desktopHotkeyLabel } from "@/lib/desktopHotkey";
 import { getActiveProjectId, listUserProjects } from "@/lib/userProjects";
 import { relativeTime } from "@/components/projects/projectShared";
 import { WIDGET_SURFACE, rowsForSize } from "@/components/macdesktop/widgets/shared";
 import { readWidgetLayout, seedLayoutFromToggles } from "@/lib/desktopWidgets";
+import { resolveDesktopPath } from "@/lib/macDesktopSync";
+import {
+  forgetLyknFolders,
+  relocateLyknFolders,
+  rememberLyknFolders,
+} from "@/lib/lyknFolders";
+import { queueVaultMacPaths } from "@/lib/homeChatFiles";
+import { useDropZone } from "@/lib/drag/dragEngine";
+import {
+  useDesktopFilesMoved,
+  useDesktopPlace,
+  useFolderDropZone,
+} from "@/components/macdesktop/fileDrop";
+import { useDesktopIconDrag } from "@/components/macdesktop/desktopIconDrag";
+import { arrangeDesktop } from "@/components/macdesktop/desktopArrange";
+import {
+  DESKTOP_ICON_ART_CLASS,
+  desktopIconClass,
+  desktopIconLabelClass,
+  desktopRootOf,
+  hitDesktopIcons,
+  normalizeBox,
+  useDesktopGroupMove,
+  useDesktopSelect,
+} from "@/components/macdesktop/desktopSelect";
+import {
+  desktopMetrics,
+  isPlacement,
+  pixelsOf,
+  placementOf,
+  savedPlacement,
+  useDesktopLayer,
+  useDesktopMetrics,
+} from "@/components/macdesktop/desktopGrid";
+import { useDesktopVisibility } from "@/components/macdesktop/desktopVisibility";
 
 /**
  * macOS-style desktop pieces for the Studio Home tab, sitting on the blank
@@ -96,6 +137,12 @@ export const HOME_WIDGETS = [
     id: "files",
     label: "Files",
     description: "A desktop icon for your Mac files.",
+    defaultOn: true,
+  },
+  {
+    id: "vaultFolder",
+    label: "Vault folder",
+    description: "A desktop folder that opens your vault.",
     defaultOn: true,
   },
 ];
@@ -540,73 +587,46 @@ export function TodosWidget({ userId, size = "small", onOpen }) {
 /* ── Desktop folders + right-click menu ────────────────────────────────── */
 
 const DESKTOP_FOLDERS_KEY = "lykn_desktop_folders";
+const DESKTOP_FOLDERS_EVENT = "lykn_desktop_folders_changed";
 const DESKTOP_SORT_KEY = "lykn_desktop_sort";
 const FILES_ICON_POS_KEY = "lykn_desktop_icon_files";
+const VAULT_ICON_POS_KEY = "lykn_desktop_icon_vault";
 
-/* The desktop icon grid. macOS fills columns from the top-right corner, so
- * Clean Up / Sort By snap icons into these slots. */
-export const ICON_CELL_W = 104;
-export const ICON_CELL_H = 112;
-export const ICON_GRID_PAD = 16;
-
-export function gridSlot(index, layer) {
-  const width = layer.w || 1200;
-  const height = layer.h || 720;
-  const rows = Math.max(1, Math.floor((height - ICON_GRID_PAD * 2) / ICON_CELL_H));
-  const col = Math.floor(index / rows);
-  const row = index % rows;
-  return {
-    x: Math.max(ICON_GRID_PAD, width - ICON_GRID_PAD - ICON_CELL_W * (col + 1)),
-    y: ICON_GRID_PAD + row * ICON_CELL_H,
+/** Files and Vault park in the top slots until they're dragged somewhere, so
+ *  arranged folders start below them and never land underneath one. */
+export function firstFreeSlot() {
+  const parked = (key) => {
+    try {
+      return !savedIconPos(key);
+    } catch {
+      return true;
+    }
   };
+  // A dragged icon vacates its slot, but only the trailing ones can be
+  // reclaimed without shuffling everything else up.
+  if (parked(VAULT_ICON_POS_KEY)) return 2;
+  if (parked(FILES_ICON_POS_KEY)) return 1;
+  return 0;
 }
 
-/** The Files icon parks in the first slot until it's dragged somewhere, so
- *  arranged folders start below it and never land underneath it. */
-function firstFreeSlot() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(FILES_ICON_POS_KEY) || "null");
-    return saved && Number.isFinite(saved.x) ? 0 : 1;
-  } catch {
-    return 1;
-  }
+function savedIconPos(key) {
+  const saved = JSON.parse(localStorage.getItem(key) || "null");
+  if (isPlacement(saved)) return saved;
+  // Written before positions were resolution-independent.
+  return saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) ? saved : null;
 }
 
 const SORT_KEYS = [
+  { id: "kind", label: "Kind" },
   { id: "name", label: "Name" },
-  { id: "dateAdded", label: "Date Added" },
+  { id: "date", label: "Date Modified" },
 ];
 
-function loadDesktopSort() {
-  try {
-    const saved = localStorage.getItem(DESKTOP_SORT_KEY) || "none";
-    if (SORT_KEYS.some((s) => s.id === saved)) return saved;
-  } catch {
-    /* unsorted */
-  }
-  return "none";
-}
-
-function sortedFolders(list, key) {
-  const items = [...list];
-  if (key === "name") {
-    items.sort((a, b) =>
-      String(a.name).localeCompare(String(b.name), undefined, {
-        numeric: true,
-        sensitivity: "base",
-      }),
-    );
-  } else if (key === "dateAdded") {
-    items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  }
-  return items;
-}
-
-/** Grid reading order (down the rightmost column first) so a plain Clean Up
- *  keeps icons roughly where the user already put them. */
-function cleanUpOrder(list) {
-  const col = (f) => Math.round(f.x / ICON_CELL_W);
-  return [...list].sort((a, b) => col(b) - col(a) || a.y - b.y);
+/** A folder moved to `placement`, with any pixel coordinates it still carries
+ *  from an older build dropped rather than left to go stale. */
+function placed(folder, placement) {
+  const { x: _x, y: _y, ...rest } = folder;
+  return { ...rest, col: placement.col, row: placement.row };
 }
 
 function loadDesktopFolders() {
@@ -614,13 +634,64 @@ function loadDesktopFolders() {
     const saved = JSON.parse(localStorage.getItem(DESKTOP_FOLDERS_KEY) || "[]");
     if (Array.isArray(saved)) {
       return saved.filter(
-        (f) => f && f.id && Number.isFinite(f.x) && Number.isFinite(f.y),
+        (f) =>
+          f &&
+          f.id &&
+          (isPlacement(f) || (Number.isFinite(f.x) && Number.isFinite(f.y))),
       );
     }
   } catch {
     /* start empty */
   }
   return [];
+}
+
+function lyknFiles() {
+  const b = typeof window !== "undefined" ? window.lykn : null;
+  return b && typeof b.files?.mkdir === "function" ? b : null;
+}
+
+/** Reuse a folder already on the Desktop, otherwise make one. */
+async function attachOrCreateFolder(api, parent, name) {
+  try {
+    const listing = await api.files.list({ path: parent });
+    if (listing?.ok) {
+      const hit = (listing.entries || []).find(
+        (e) => e.type === "dir" && !e.package && e.name === name,
+      );
+      if (hit?.path) return { path: hit.path, name: hit.name };
+    }
+  } catch {
+    /* mkdir below */
+  }
+  try {
+    const created = await api.files.mkdir({ path: parent, name });
+    if (created?.ok && created.path) return { path: created.path, name: created.name };
+  } catch {
+    /* folder stays a Home icon until disk is reachable */
+  }
+  return null;
+}
+
+/** Paths of folders the user made on Home, so the desktop mirror doesn't draw them twice. */
+export function readDesktopFolderPaths() {
+  return loadDesktopFolders()
+    .map((f) => f.path)
+    .filter((p) => typeof p === "string" && p);
+}
+
+export function useDesktopFolderPaths() {
+  const [paths, setPaths] = useState(readDesktopFolderPaths);
+  useEffect(() => {
+    const sync = () => setPaths(readDesktopFolderPaths());
+    window.addEventListener(DESKTOP_FOLDERS_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(DESKTOP_FOLDERS_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  return paths;
 }
 
 function nextUntitledName(folders) {
@@ -701,9 +772,11 @@ function MenuRow({
  *  The submenu is drawn into the desktop layer rather than inside the menu:
  *  the menu blurs its own backdrop, which makes it a backdrop root, and a
  *  child hanging off its side would have nothing left to blur. Near the
- *  desktop's right edge it flips, since the Studio panel clips past that. */
+ *  desktop's right edge it flips, since the Studio panel clips past that, and
+ *  near the bottom it rises to stay fully inside the desktop. */
 function MenuSubmenu({ icon, label, open, onHover, children }) {
   const rowRef = useRef(null);
+  const panelRef = useRef(null);
   const [panel, setPanel] = useState(null); // { layer, left, top }
 
   useLayoutEffect(() => {
@@ -725,6 +798,22 @@ function MenuSubmenu({ icon, label, open, onHover, children }) {
     });
   }, [open]);
 
+  // The height isn't known until the panel is in the DOM, so measure it and
+  // slide it back up rather than letting a submenu opened near the bottom of
+  // the desktop run off the edge. Runs before paint, so nothing jumps.
+  useLayoutEffect(() => {
+    const el = panelRef.current;
+    if (!panel || !el) return;
+    const layer = panel.layer.getBoundingClientRect();
+    const top = Math.max(
+      8,
+      Math.min(panel.top, layer.height - el.offsetHeight - 8),
+    );
+    if (Math.abs(top - panel.top) > 0.5) {
+      setPanel((prev) => (prev ? { ...prev, top } : prev));
+    }
+  }, [panel]);
+
   return (
     <div ref={rowRef} className="relative" onMouseEnter={onHover}>
       <MenuRow icon={icon} label={label} submenu active={open} />
@@ -733,9 +822,10 @@ function MenuSubmenu({ icon, label, open, onHover, children }) {
             // Carries data-desktop-menu so clicking a submenu row doesn't read
             // as an outside click and tear the menu down mid-press.
             <div
+              ref={panelRef}
               data-desktop-menu
               style={{ left: panel.left, top: panel.top }}
-              className={`absolute z-[60] max-h-64 w-44 overflow-y-auto ${MENU_PANEL}`}
+              className={`absolute z-[60] w-44 ${MENU_PANEL}`}
             >
               {children}
             </div>,
@@ -776,17 +866,25 @@ function DesktopMenu({ x, y, width = "13.5rem", children }) {
 
 function DesktopFolderIcon({
   folder,
+  pos,
   renaming,
-  locked,
-  onMove,
-  onCommitMove,
   onMenu,
   onRename,
+  onOpen,
+  onMoveStart,
 }) {
+  const iconId = `folder:${folder.id}`;
+  const select = useDesktopSelect();
+  const selected = select.isSelected(iconId);
   const [draft, setDraft] = useState(folder.name);
-  const drag = useDesktopIconDrag({
-    setPos: (p) => onMove(folder.id, p),
-    onDragEnd: (p) => onCommitMove(folder.id, p),
+  const drop = useFolderDropZone(folder.path, {
+    disabled: renaming,
+    onHoverOpen: folder.path ? () => onOpen?.(folder) : undefined,
+  });
+  const beginDrag = useDesktopIconDrag({
+    id: iconId,
+    path: folder.path,
+    onMoveStart,
   });
 
   useEffect(() => {
@@ -795,20 +893,40 @@ function DesktopFolderIcon({
 
   return (
     <div
-      ref={drag.ref}
-      onPointerDown={renaming || locked ? undefined : drag.onPointerDown}
-      onPointerMove={drag.onPointerMove}
-      onPointerUp={drag.onPointerUp}
+      ref={drop.ref}
+      data-desktop-icon={iconId}
+      data-desktop-path={folder.path || undefined}
+      // What the desktop arranger sorts by — it reads the icons on screen
+      // rather than the stores behind them.
+      data-desktop-name={folder.name}
+      data-desktop-kind="Folder"
+      data-desktop-date={folder.createdAt || undefined}
+      onPointerDown={renaming ? undefined : beginDrag}
+      onClick={
+        renaming
+          ? undefined
+          : (e) => {
+              if (e.metaKey || e.ctrlKey) return;
+              if (select.selected.size > 1 && selected) {
+                select.selectOnly(iconId);
+                return;
+              }
+              onOpen?.(folder);
+            }
+      }
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (!selected) select.selectOnly(iconId);
         onMenu(folder.id, e.clientX, e.clientY);
       }}
-      style={{ ...NO_DRAG, left: folder.x, top: folder.y }}
-      className="group absolute flex w-24 touch-none flex-col items-center gap-1 rounded-2xl p-2 transition-colors hover:bg-white/10"
+      style={{ ...NO_DRAG, left: pos.x, top: pos.y }}
+      className={`${desktopIconClass(selected, { hot: drop.hot })} cursor-pointer`}
     >
+      {/* White, like AI Drive's folders: this one was made in LYKN. The blue
+          ones on this desktop are the Mac's, mirrored in from the Finder. */}
       <Folder
-        className="h-16 w-16 text-sky-500 drop-shadow-[0_4px_10px_rgba(0,0,0,0.25)]"
+        className={`${DESKTOP_ICON_ART_CLASS} text-white drop-shadow-[0_4px_10px_rgba(0,0,0,0.25)]`}
         strokeWidth={1}
         fill="currentColor"
       />
@@ -824,12 +942,10 @@ function DesktopFolderIcon({
             if (e.key === "Escape") onRename(folder.id, folder.name);
           }}
           onPointerDown={(e) => e.stopPropagation()}
-          className="w-full rounded-md bg-white/90 px-1 py-0.5 text-center text-[0.72rem] text-black outline-none ring-2 ring-sky-500 dark:bg-black/70 dark:text-white"
+          className="w-full rounded-md bg-white/90 px-1 py-0.5 text-center text-[length:var(--desk-label)] text-black outline-none ring-2 ring-sky-500 dark:bg-black/70 dark:text-white"
         />
       ) : (
-        <span className="max-w-full truncate text-[0.72rem] font-medium text-white/90 [text-shadow:0_1px_3px_rgba(0,0,0,0.45)]">
-          {folder.name}
-        </span>
+        <span className={desktopIconLabelClass(selected)}>{folder.name}</span>
       )}
     </div>
   );
@@ -837,18 +953,35 @@ function DesktopFolderIcon({
 
 /** The Home desktop layer: user-created folders (drag to arrange, right-click
  *  a folder to open/rename/delete) plus the macOS desktop context menu — New
- *  Folder, Get Info, Change Wallpaper, Edit Widgets, Sort By / Clean Up, the
- *  LYKN extras (Glass, Open Folder / Open Page) and Show View Options.
+ *  Folder, Get Info, Change Wallpaper, Edit Widgets, Hide All Folders /
+ *  Hide All Files / Hide All Widgets, Sort By / Clean Up, the LYKN extras
+ *  (Glass, Open Folder / Open Page) and Show View Options.
  *  Covers the whole desktop behind the widgets to catch right-clicks. */
 export function DesktopFolders({ onOpen, onEmptyClick, onEditWidgets }) {
   const layerRef = useRef(null);
+  const select = useDesktopSelect();
   const [folders, setFolders] = useState(loadDesktopFolders);
-  const [sortKey, setSortKey] = useState(loadDesktopSort);
+  const [visibility, setVisibility] = useDesktopVisibility();
+  const [sortKey, setSortKey] = useState("none");
   const [menu, setMenu] = useState(null); // { x, y, folderId | null }
   const [info, setInfo] = useState(null); // { x, y, wallpaper }
   const [submenu, setSubmenu] = useState(null); // "sort" | "cleanup" | "folder" | "page"
   const [renamingId, setRenamingId] = useState(null);
-  const [layer, setLayer] = useState({ w: 0, h: 0 });
+  const layer = useDesktopLayer();
+  const [marquee, setMarquee] = useState(null); // { x, y, w, h }
+  const marqueeRef = useRef(null);
+
+  const unlockManualPlacement = useCallback(() => {
+    setSortKey((current) => {
+      if (current === "none") return current;
+      try {
+        localStorage.setItem(DESKTOP_SORT_KEY, "none");
+      } catch {
+        /* sorting still unlocks for this session */
+      }
+      return "none";
+    });
+  }, []);
 
   const persist = (next) => {
     setFolders(next);
@@ -857,22 +990,108 @@ export function DesktopFolders({ onOpen, onEmptyClick, onEditWidgets }) {
     } catch {
       /* folders just won't survive a reload */
     }
+    window.dispatchEvent(new Event(DESKTOP_FOLDERS_EVENT));
   };
+
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+  const foldersRef = useRef(folders);
+  foldersRef.current = folders;
+
+  // A folder on Home is LYKN's, so the Files browser draws it white too. Kept
+  // in step with the list rather than recorded at the moment one is made, which
+  // also picks up the folders that were here before any of this was written.
+  useEffect(() => {
+    rememberLyknFolders(folders.map((f) => f.path).filter(Boolean));
+  }, [folders]);
+  // Drops and drags arrive in pixels and have to be turned into placements
+  // against the desktop they landed on, from callbacks that outlive a render.
+  const layerSizeRef = useRef(layer);
+  layerSizeRef.current = layer;
+
+  useDesktopGroupMove(({ positions, commit }) => {
+    const patch = {};
+    for (const [id, pos] of Object.entries(positions || {})) {
+      if (!id.startsWith("folder:")) continue;
+      if (!Number.isFinite(pos?.x) || !Number.isFinite(pos?.y)) continue;
+      patch[id.slice(7)] = placementOf(pos, layerSizeRef.current);
+    }
+    if (!Object.keys(patch).length) return;
+    const next = foldersRef.current.map((f) =>
+      patch[f.id] ? placed(f, patch[f.id]) : f,
+    );
+    foldersRef.current = next;
+    if (commit) persistRef.current(next);
+    else setFolders(next);
+  });
+
+  const onPlace = useCallback(({ paths, x, y }) => {
+    if (!paths?.length) return;
+    persistRef.current(
+      loadDesktopFolders().map((f) => {
+        const i = paths.indexOf(f.path);
+        if (i < 0) return f;
+        // Cascade a multi-item drop the way Finder does.
+        return placed(f, placementOf({ x: x + i * 16, y: y + i * 16 }, layerSizeRef.current));
+      }),
+    );
+  }, []);
+  useDesktopPlace(onPlace);
+
+  const onMoved = useCallback((paths) => {
+    if (!paths?.length) return;
+    const gone = new Set(paths);
+    persistRef.current(loadDesktopFolders().filter((f) => !gone.has(f.path)));
+  }, []);
+  useDesktopFilesMoved(onMoved);
 
   // Fresh menus always open with their submenus collapsed.
   useEffect(() => setSubmenu(null), [menu]);
 
-  // The grid depends on how tall the desktop is, so keep it measured.
+  // Folders made before they lived on disk get a real directory the next time
+  // Home loads, so clicking one can open Files into it.
   useEffect(() => {
-    const el = layerRef.current;
-    if (!el) return undefined;
-    const measure = () => setLayer({ w: el.clientWidth, h: el.clientHeight });
-    measure();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
+    let cancelled = false;
+    (async () => {
+      const api = lyknFiles();
+      if (!api) return;
+      const current = loadDesktopFolders();
+      const missing = current.filter((f) => !f.path);
+      if (!missing.length) return;
+      const parent = await resolveDesktopPath(api);
+      const next = [...current];
+      let changed = false;
+      for (const folder of missing) {
+        const attached = await attachOrCreateFolder(api, parent, folder.name);
+        if (cancelled || !attached) continue;
+        const i = next.findIndex((f) => f.id === folder.id);
+        if (i < 0) continue;
+        next[i] = { ...next[i], path: attached.path, name: attached.name };
+        changed = true;
+      }
+      if (!cancelled && changed) persist(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Mount only — existing icons, not every rename.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* Folders parked by an older build hold raw pixels, which only mean anything
+   * on the display they were parked on. Read them against this desktop once it
+   * has a size and rewrite them as placements — after that they follow the
+   * screen like everything else. */
+  useLayoutEffect(() => {
+    if (!layer.w || !layer.h) return;
+    const current = foldersRef.current;
+    if (current.every(isPlacement)) return;
+    persistRef.current(
+      current.map((f) =>
+        isPlacement(f) ? f : placed(f, placementOf({ x: f.x, y: f.y }, layer)),
+      ),
+    );
+  }, [layer]);
 
   // Any click outside / Escape dismisses the menu, like a real context menu.
   useEffect(() => {
@@ -895,69 +1114,122 @@ export function DesktopFolders({ onOpen, onEmptyClick, onEditWidgets }) {
     };
   }, [menu, info]);
 
-  // While a sort is on, positions come from the grid and icons stay put —
-  // exactly how macOS treats a sorted desktop.
-  const arranged = useMemo(() => {
-    if (sortKey === "none") return folders;
-    const base = firstFreeSlot();
-    return sortedFolders(folders, sortKey).map((f, i) => ({
-      ...f,
-      ...gridSlot(i + base, layer),
-    }));
-  }, [folders, sortKey, layer]);
+  // Sort and Clean Up arrange once. They no longer own the live coordinates,
+  // so a regular desktop folder always follows the next manual drag.
+  const arranged = folders;
 
   const layerPoint = (clientX, clientY) => {
     const r = layerRef.current?.getBoundingClientRect();
     return r ? { x: clientX - r.left, y: clientY - r.top } : { x: 0, y: 0 };
   };
 
-  const createFolder = () => {
+  const createFolder = async () => {
     const at = menu ? { x: menu.x, y: menu.y } : { x: 24, y: 24 };
-    const folder = {
-      id: (crypto.randomUUID?.() || String(Date.now())),
-      name: nextUntitledName(folders),
-      createdAt: Date.now(),
-      x: at.x - 48, // center the icon on the click
-      y: at.y - 40,
-    };
+    setMenu(null);
+    if (visibility.hideFolders) setVisibility({ hideFolders: false });
+    const name = nextUntitledName(folders);
+    const api = lyknFiles();
+    let path = null;
+    let realName = name;
+    if (api) {
+      const parent = await resolveDesktopPath(api);
+      const attached = await attachOrCreateFolder(api, parent, name);
+      if (attached) {
+        path = attached.path;
+        realName = attached.name;
+      }
+    }
+    const metrics = desktopMetrics(layer);
+    const folder = placed(
+      {
+        id: crypto.randomUUID?.() || String(Date.now()),
+        name: realName,
+        path,
+        createdAt: Date.now(),
+      },
+      // Centre the icon on the click.
+      placementOf(
+        { x: at.x - metrics.tile / 2, y: at.y - metrics.art / 2 },
+        layer,
+      ),
+    );
     persist([...folders, folder]);
     setRenamingId(folder.id);
-    setMenu(null);
   };
 
-  const moveFolder = (id, p) =>
-    setFolders((cur) => cur.map((f) => (f.id === id ? { ...f, ...p } : f)));
-  const commitMove = (id, p) =>
-    persist(folders.map((f) => (f.id === id ? { ...f, ...p } : f)));
-  const renameFolder = (id, rawName) => {
+  const openFolder = async (folder) => {
+    setMenu(null);
+    let path = folder.path;
+    if (!path) {
+      const api = lyknFiles();
+      if (api) {
+        const parent = await resolveDesktopPath(api);
+        const attached = await attachOrCreateFolder(api, parent, folder.name);
+        if (attached) {
+          path = attached.path;
+          persist(
+            folders.map((f) =>
+              f.id === folder.id ? { ...f, path: attached.path, name: attached.name } : f,
+            ),
+          );
+        }
+      }
+    }
+    if (path) onOpen?.("files", `/files?path=${encodeURIComponent(path)}`);
+    else onOpen?.("files");
+  };
+
+  const renameFolder = async (id, rawName) => {
     const name = rawName.trim() || "untitled folder";
-    persist(folders.map((f) => (f.id === id ? { ...f, name } : f)));
+    const folder = folders.find((f) => f.id === id);
+    let path = folder?.path || null;
+    let finalName = name;
+    const api = lyknFiles();
+    if (folder?.path && api) {
+      try {
+        const result = await api.files.rename({ path: folder.path, name });
+        if (result?.ok) {
+          path = result.path;
+          finalName = result.name;
+          relocateLyknFolders([[folder.path, result.path]]);
+        }
+      } catch {
+        /* keep the Home name even if disk refused */
+      }
+    }
+    persist(folders.map((f) => (f.id === id ? { ...f, name: finalName, path } : f)));
     setRenamingId(null);
   };
   const deleteFolder = (id) => {
+    const folder = folders.find((f) => f.id === id);
+    const api = lyknFiles();
+    if (folder?.path && api?.files?.trash) {
+      void api.files.trash({ paths: [folder.path] });
+      forgetLyknFolders([folder.path]);
+    }
     persist(folders.filter((f) => f.id !== id));
     setMenu(null);
   };
 
-  const chooseSort = (key) => {
-    setSortKey(key);
+  /* Sort By and Clean Up both hand the whole desktop to the arranger, not just
+   * the folders this component owns — mirrored files and the pinned shortcuts
+   * are desktop icons too, and tidying around them isn't tidying. */
+  const arrange = (key) => {
+    arrangeDesktop({ by: key });
+    setSortKey("none");
     try {
-      localStorage.setItem(DESKTOP_SORT_KEY, key);
+      localStorage.setItem(DESKTOP_SORT_KEY, "none");
     } catch {
       /* sorting just won't survive a reload */
     }
     setMenu(null);
   };
 
+  const chooseSort = (key) => arrange(key === "none" ? null : key);
+
   // One-shot arrange: `key` sorts first (Clean Up By), otherwise icons keep
   // their current order and only snap onto the grid (Clean Up).
-  const cleanUp = (key) => {
-    const order = key ? sortedFolders(folders, key) : cleanUpOrder(folders);
-    const base = firstFreeSlot();
-    const slots = new Map(order.map((f, i) => [f.id, gridSlot(i + base, layer)]));
-    persist(folders.map((f) => ({ ...f, ...(slots.get(f.id) || {}) })));
-    setMenu(null);
-  };
+  const cleanUp = (key) => arrange(key || null);
 
   const openPage = (id, src) => {
     onOpen?.(id, src);
@@ -998,40 +1270,110 @@ export function DesktopFolders({ onOpen, onEmptyClick, onEditWidgets }) {
 
   const collapseSubmenus = () => setSubmenu(null);
 
+  const onMarqueeDown = (e) => {
+    if (e.button !== 0) return;
+    if (e.target !== layerRef.current) return;
+    if (menu || info) return;
+    const at = layerPoint(e.clientX, e.clientY);
+    const additive = e.metaKey || e.ctrlKey;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture just keeps the marquee alive over icons */
+    }
+    marqueeRef.current = {
+      x0: at.x,
+      y0: at.y,
+      additive,
+      origin: additive ? new Set(select.selectedRef.current) : new Set(),
+      had: select.selectedRef.current.size > 0,
+      moved: false,
+    };
+    if (!additive) select.clear();
+  };
+
+  const onMarqueeMove = (e) => {
+    const m = marqueeRef.current;
+    if (!m) return;
+    const at = layerPoint(e.clientX, e.clientY);
+    if (!m.moved && Math.hypot(at.x - m.x0, at.y - m.y0) < 4) return;
+    m.moved = true;
+    const box = normalizeBox(m.x0, m.y0, at.x, at.y);
+    setMarquee(box);
+    const root = desktopRootOf(layerRef.current);
+    const hits = hitDesktopIcons(root, box);
+    if (m.additive) {
+      select.selectIds([...m.origin, ...hits]);
+    } else {
+      select.selectIds(hits);
+    }
+  };
+
+  const onMarqueeUp = (e) => {
+    const m = marqueeRef.current;
+    marqueeRef.current = null;
+    if (!m) return;
+    setMarquee(null);
+    if (m.moved) return;
+    // A click on the wallpaper, not a drag. Cmd-click leaves the selection.
+    if (m.additive) return;
+    if (!m.had && !menu && !info && e.target === layerRef.current) {
+      onEmptyClick?.();
+    }
+  };
+
   return (
     <div
       ref={layerRef}
       data-desktop-layer
       style={NO_DRAG}
+      onPointerDown={onMarqueeDown}
+      onPointerMove={onMarqueeMove}
+      onPointerUp={onMarqueeUp}
+      onPointerCancel={() => {
+        marqueeRef.current = null;
+        setMarquee(null);
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
+        if (e.target === layerRef.current) select.clear();
         setInfo(null);
         setMenu({ ...layerPoint(e.clientX, e.clientY), folderId: null });
       }}
-      onClick={(e) => {
-        // Only the bare wallpaper counts — a click that landed on a folder
-        // icon, or one that was just dismissing a menu, isn't "empty space".
-        if (e.target !== layerRef.current) return;
-        if (menu || info) return;
-        onEmptyClick?.();
-      }}
       className="absolute inset-0"
     >
-      {arranged.map((folder) => (
-        <DesktopFolderIcon
-          key={folder.id}
-          folder={folder}
-          renaming={renamingId === folder.id}
-          locked={sortKey !== "none"}
-          onMove={moveFolder}
-          onCommitMove={commitMove}
-          onRename={renameFolder}
-          onMenu={(id, cx, cy) => {
-            setInfo(null);
-            setMenu({ ...layerPoint(cx, cy), folderId: id });
-          }}
-        />
-      ))}
+      {!visibility.hideFolders &&
+        arranged.map((folder) => (
+          <DesktopFolderIcon
+            key={folder.id}
+            folder={folder}
+            pos={pixelsOf(savedPlacement(folder, layer) || { col: 0, row: 0 }, layer)}
+            renaming={renamingId === folder.id}
+            onMoveStart={unlockManualPlacement}
+            onRename={renameFolder}
+            onOpen={(target) => void openFolder(target)}
+            onMenu={(id, cx, cy) => {
+              setInfo(null);
+              setMenu({ ...layerPoint(cx, cy), folderId: id });
+            }}
+          />
+        ))}
+
+      {marquee && marquee.w + marquee.h > 0 &&
+        layerRef.current &&
+        createPortal(
+          <div
+            aria-hidden
+            className="lykn-desktop-marquee pointer-events-none absolute z-[45]"
+            style={{
+              left: marquee.x,
+              top: marquee.y,
+              width: marquee.w,
+              height: marquee.h,
+            }}
+          />,
+          desktopRootOf(layerRef.current) || layerRef.current,
+        )}
 
       {menu && (
         <DesktopMenu x={menu.x} y={menu.y}>
@@ -1040,7 +1382,11 @@ export function DesktopFolders({ onOpen, onEmptyClick, onEditWidgets }) {
               <MenuRow
                 icon={FolderOpen}
                 label="Open"
-                onClick={() => openPage("files")}
+                onClick={() => {
+                  const folder = folders.find((f) => f.id === menu.folderId);
+                  if (folder) void openFolder(folder);
+                  else setMenu(null);
+                }}
               />
               {MENU_SEPARATOR}
               <MenuRow
@@ -1063,7 +1409,7 @@ export function DesktopFolders({ onOpen, onEmptyClick, onEditWidgets }) {
                 icon={FolderPlus}
                 label="New Folder"
                 onMouseEnter={collapseSubmenus}
-                onClick={createFolder}
+                onClick={() => void createFolder()}
               />
               {MENU_SEPARATOR}
               <MenuRow
@@ -1089,8 +1435,36 @@ export function DesktopFolders({ onOpen, onEmptyClick, onEditWidgets }) {
                 onMouseEnter={collapseSubmenus}
                 onClick={() => {
                   setMenu(null);
+                  if (visibility.hideWidgets) setVisibility({ hideWidgets: false });
                   if (onEditWidgets) onEditWidgets();
                   else openPage("settings", "display");
+                }}
+              />
+              <MenuRow
+                icon={visibility.hideFolders ? Eye : EyeOff}
+                label={visibility.hideFolders ? "Show All Folders" : "Hide All Folders"}
+                onMouseEnter={collapseSubmenus}
+                onClick={() => {
+                  setVisibility({ hideFolders: !visibility.hideFolders });
+                  setMenu(null);
+                }}
+              />
+              <MenuRow
+                icon={visibility.hideFiles ? Eye : EyeOff}
+                label={visibility.hideFiles ? "Show All Files" : "Hide All Files"}
+                onMouseEnter={collapseSubmenus}
+                onClick={() => {
+                  setVisibility({ hideFiles: !visibility.hideFiles });
+                  setMenu(null);
+                }}
+              />
+              <MenuRow
+                icon={visibility.hideWidgets ? Eye : EyeOff}
+                label={visibility.hideWidgets ? "Show All Widgets" : "Hide All Widgets"}
+                onMouseEnter={collapseSubmenus}
+                onClick={() => {
+                  setVisibility({ hideWidgets: !visibility.hideWidgets });
+                  setMenu(null);
                 }}
               />
               {MENU_SEPARATOR}
@@ -1154,7 +1528,7 @@ export function DesktopFolders({ onOpen, onEmptyClick, onEditWidgets }) {
               >
                 <MenuRow label="Files" onClick={() => openPage("files")} />
                 {folders.map((f) => (
-                  <MenuRow key={f.id} label={f.name} onClick={() => openPage("files")} />
+                  <MenuRow key={f.id} label={f.name} onClick={() => void openFolder(f)} />
                 ))}
               </MenuSubmenu>
               <MenuSubmenu
@@ -1224,65 +1598,116 @@ const VAULT_TYPE_ICONS = {
   file: File,
 };
 
-function youtubeThumb(url) {
-  const m = String(url || "").match(
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{6,})/i,
-  );
-  return m ? `https://img.youtube.com/vi/${m[1]}/hqdefault.jpg` : "";
+/** Pick a display path for an Image Gen tile — thumb if we have one, else the original. */
+function imageGenThumbTarget(row, att = {}) {
+  const bucket =
+    String(att.storageBucket || att.storage_bucket || row.storage_bucket || "user-files").trim() ||
+    "user-files";
+  const path = String(
+    att.variantThumbPath ||
+      att.variant_thumb_path ||
+      row.variant_thumb_path ||
+      att.variantMediumPath ||
+      att.variant_medium_path ||
+      row.variant_medium_path ||
+      att.storagePath ||
+      att.storage_path ||
+      row.storage_path ||
+      "",
+  ).trim();
+  return path ? { bucket, path } : null;
 }
 
-/** Recent vault items with a display thumbnail resolved where possible
- *  (signed storage variant, preview image, or YouTube poster). */
+async function signCloudThumb(target) {
+  try {
+    const { data } = await supabase.storage
+      .from(target.bucket || "user-files")
+      .createSignedUrl(target.path, 60 * 60);
+    return data?.signedUrl || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Recent Image Gen tiles from AI Drive (local store when that's on). */
 function useVaultPreviewItems(userId, limit = 18) {
   return useQuery({
-    queryKey: ["studio-vault-widget", userId || "guest"],
+    queryKey: ["studio-vault-widget", userId || "guest", activeVaultBackend()],
     enabled: !!userId,
     staleTime: 5 * 60_000,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("vault_items")
-        .select(
-          "id, title, att_type, url, storage_path, storage_bucket, mime_type, variant_thumb_path, attachment_preview, created_at",
-        )
-        .eq("user_id", userId)
-        .order("created_at", { ascending: false })
-        .limit(limit);
-      if (error) throw error;
+      const repository = getVaultRepository(userId);
+      const items = [];
+      let cursor = null;
 
-      return Promise.all(
-        (data || []).map(async (item) => {
-          let thumb = "";
-          const preview = item.attachment_preview || {};
-          const storageThumb =
-            item.variant_thumb_path ||
-            (item.att_type === "image" ? item.storage_path : "");
-          if (storageThumb) {
-            try {
-              const { data: signed } = await supabase.storage
-                .from(item.storage_bucket || "user-files")
-                .createSignedUrl(storageThumb, 60 * 60);
-              thumb = signed?.signedUrl || "";
-            } catch {
-              /* falls through to the icon tile */
+      // Image Gen sits among artifacts, so we scan a few newest pages rather
+      // than taking the first N vault rows (those used to be connector syncs).
+      for (let page = 0; page < 8 && items.length < limit; page += 1) {
+        const next = await repository.listPage({ cursor, limit: 50 });
+        for (const row of next.rows || []) {
+          if (!row || row.trashed) continue;
+          if (!isAiGeneratedVaultRow(row, row.source, row.tags)) continue;
+
+          const attachments = parseAttachmentsFromNote(row);
+          const imageAtts = attachments.filter((att) => resolveRenderType(att) === "image");
+          if (!imageAtts.length && String(row.att_type || "") === "image") {
+            imageAtts.push(null);
+          }
+
+          for (const att of imageAtts) {
+            if (items.length >= limit) break;
+            const target = imageGenThumbTarget(row, att || {});
+            let thumb = "";
+            if (target) {
+              thumb = (await resolveVaultMediaUrl(target, signCloudThumb)) || "";
             }
+            if (!thumb) {
+              const preview = (att && (att.image || att.thumbnail_url)) || row.attachment_preview || {};
+              thumb = String(
+                (typeof preview === "string" ? preview : preview.image || preview.thumbnail_url) ||
+                  (att && att.url) ||
+                  "",
+              );
+            }
+            items.push({
+              id: row.id,
+              title: String((att && (att.name || att.title)) || row.title || "Untitled"),
+              att_type: "image",
+              thumb,
+            });
           }
-          if (!thumb) {
-            thumb =
-              String(preview.image || preview.thumbnail_url || "") ||
-              youtubeThumb(item.url);
-          }
-          return { ...item, thumb };
-        }),
-      );
+          if (items.length >= limit) break;
+        }
+        cursor = next.nextCursor;
+        if (!cursor) break;
+      }
+
+      return items;
     },
   });
 }
 
-/** Vault widget — Apple-Photos style: a long strip that rotates through the
- *  vault's contents, three tiles at a time. */
+/**
+ * The vault takes a copy rather than moving anything: dropping a file here
+ * uploads it and leaves the original on disk, which is why this doesn't go
+ * through the folder drop path.
+ */
+function useVaultDesktopDrop(onOpen) {
+  return useDropZone({
+    accept: (payload) => payload.paths.length > 0,
+    onDrop: (payload) => {
+      queueVaultMacPaths(payload.paths);
+      onOpen?.("vault", "/vault?pane=drive&folder=images");
+    },
+  });
+}
+
+/** Vault widget — Apple-Photos style: a strip that rotates through Image Gen
+ *  in AI Drive, three tiles at a time. */
 export function VaultWidget({ userId, size = "medium", onOpen }) {
   const { data: items = [] } = useVaultPreviewItems(userId);
   const [page, setPage] = useState(0);
+  const vaultDrop = useVaultDesktopDrop(onOpen);
   // Tiles per turn: one on a small tile, a row of three on a wide one, two
   // rows of three on the big one.
   const perPage = size === "small" ? 1 : size === "large" ? 6 : 3;
@@ -1303,16 +1728,20 @@ export function VaultWidget({ userId, size = "medium", onOpen }) {
         );
 
   return (
-    <div style={NO_DRAG} className={`${WIDGET} p-2`}>
+    <div
+      ref={vaultDrop.ref}
+      style={NO_DRAG}
+      className={`${WIDGET} p-2 ${vaultDrop.hot ? "ring-2 ring-blue-400/80" : ""}`}
+    >
       {items.length === 0 ? (
         <button
           type="button"
-          onClick={() => onOpen?.("vault")}
-          title="Open Vault"
+          onClick={() => onOpen?.("vault", "/vault?pane=drive&folder=images")}
+          title="Open Image Gen"
           className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[1rem] text-black/40 dark:text-white/40"
         >
           <Lock className="h-5 w-5" />
-          <span className="text-[0.68rem]">Your vault is empty</span>
+          <span className="text-[0.68rem]">No generated images yet</span>
         </button>
       ) : (
         <div
@@ -1327,7 +1756,12 @@ export function VaultWidget({ userId, size = "medium", onOpen }) {
               <button
                 key={`${item.id}:${i}`}
                 type="button"
-                onClick={() => onOpen?.("vault")}
+                onClick={() =>
+                  onOpen?.(
+                    "vault",
+                    `/vault?pane=drive&folder=images${item.id ? `&note=${encodeURIComponent(item.id)}` : ""}`,
+                  )
+                }
                 title={item.title || "Open Vault"}
                 className="relative overflow-hidden rounded-[1rem] bg-black/[0.05] text-left transition-transform hover:scale-[1.02] active:scale-[0.98] dark:bg-white/[0.07]"
               >
@@ -1473,106 +1907,122 @@ export function ProjectsWidget({ userId, size = "large", onOpen }) {
 
 /* ── Files ─────────────────────────────────────────────────────────────── */
 
-/** Pointer-drag for a desktop icon: absolute-positioned against its
- *  offsetParent, clamped inside it. A plain click (barely any movement)
- *  falls through to `onClick`; a real drag commits via `onDragEnd`. */
-export function useDesktopIconDrag({ onClick, onDragEnd, setPos }) {
-  const ref = useRef(null);
-  const dragRef = useRef(null);
-
-  const onPointerDown = (e) => {
-    if (e.button !== 0) return; // right-click belongs to the context menu
-    const el = ref.current;
-    const parent = el?.offsetParent;
-    if (!el || !parent) return;
-    el.setPointerCapture(e.pointerId);
-    const rect = el.getBoundingClientRect();
-    const parentRect = parent.getBoundingClientRect();
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      baseX: rect.left - parentRect.left,
-      baseY: rect.top - parentRect.top,
-      maxX: parent.clientWidth - rect.width,
-      maxY: parent.clientHeight - rect.height,
-      moved: false,
-      last: null,
-    };
-  };
-
-  const onPointerMove = (e) => {
-    const d = dragRef.current;
-    if (!d) return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
-    // A few px of slack keeps ordinary clicks from becoming micro-drags.
-    if (!d.moved && Math.hypot(dx, dy) < 4) return;
-    d.moved = true;
-    d.last = {
-      x: Math.min(Math.max(d.baseX + dx, 4), Math.max(d.maxX - 4, 4)),
-      y: Math.min(Math.max(d.baseY + dy, 4), Math.max(d.maxY - 4, 4)),
-    };
-    setPos(d.last);
-  };
-
-  const onPointerUp = () => {
-    const d = dragRef.current;
-    dragRef.current = null;
-    if (!d) return; // e.g. a right-click release — the menu owns that
-    if (d.moved && d.last) onDragEnd?.(d.last);
-    else onClick?.();
-  };
-
-  return { ref, onPointerDown, onPointerMove, onPointerUp };
-}
-
-/** A big desktop icon, macOS style: blue folder + label. Opens Files on
- *  click and can be dragged anywhere on the desktop (position persists). */
-export function FilesWidget({ onOpen }) {
-  // null = the default anchored spot (top-right); {x,y} once dragged.
-  const [pos, setPos] = useState(() => {
+/**
+ * One of the folders LYKN puts on the desktop itself (Files, Vault) rather
+ * than one the user made. Same macOS look: a folder with a label under it,
+ * click to open, drag to move, and where you drop it is remembered.
+ *
+ * Until it has been dragged it sits in its default slot, anchored from the
+ * top-right the way the Finder fills a desktop. `slot` is that resting place
+ * as a row index, so two parked icons can't land on top of each other.
+ */
+function PinnedFolderIcon({
+  iconId,
+  storageKey,
+  slot = 0,
+  label,
+  title,
+  tint = "text-sky-500",
+  onOpen,
+  dropTarget,
+}) {
+  const select = useDesktopSelect();
+  const selected = select.isSelected(iconId);
+  const layer = useDesktopLayer();
+  const metrics = useDesktopMetrics();
+  // null = the default anchored spot; a placement once dragged.
+  const [saved, setSaved] = useState(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(FILES_ICON_POS_KEY) || "null");
-      if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return saved;
+      return savedIconPos(storageKey);
     } catch {
-      /* default spot */
+      return null; // default spot
     }
-    return null;
   });
 
-  const drag = useDesktopIconDrag({
-    setPos,
-    onClick: () => onOpen?.("files"),
-    onDragEnd: (last) => {
-      try {
-        localStorage.setItem(FILES_ICON_POS_KEY, JSON.stringify(last));
-      } catch {
-        /* position just won't persist */
-      }
-    },
+  useDesktopGroupMove(({ positions, commit }) => {
+    const next = positions?.[iconId];
+    if (!next || !Number.isFinite(next.x) || !Number.isFinite(next.y)) return;
+    const placement = placementOf(next, layer);
+    setSaved(placement);
+    if (!commit) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(placement));
+    } catch {
+      /* position just won't persist */
+    }
   });
+
+  const beginDrag = useDesktopIconDrag({ id: iconId });
+
+  const placement = savedPlacement(saved, layer);
+  const parked = placement ? pixelsOf(placement, layer) : null;
+  const resting = parked
+    ? { left: parked.x, top: parked.y }
+    : { right: metrics.pad + 8, top: metrics.pad + 8 + slot * metrics.cellH };
 
   return (
     <button
-      ref={drag.ref}
+      ref={dropTarget?.ref}
       type="button"
-      onPointerDown={drag.onPointerDown}
-      onPointerMove={drag.onPointerMove}
-      onPointerUp={drag.onPointerUp}
-      title="Open Files"
-      style={{ ...NO_DRAG, ...(pos ? { left: pos.x, top: pos.y } : undefined) }}
-      className={`group absolute flex w-24 touch-none flex-col items-center gap-1 rounded-2xl p-2 transition-colors hover:bg-white/10 ${
-        pos ? "" : "right-6 top-6"
+      data-desktop-icon={iconId}
+      data-desktop-name={label}
+      data-desktop-kind="Folder"
+      onPointerDown={beginDrag}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey) return;
+        if (select.selected.size > 1 && selected) {
+          select.selectOnly(iconId);
+          return;
+        }
+        onOpen?.();
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!selected) select.selectOnly(iconId);
+      }}
+      title={title}
+      style={{ ...NO_DRAG, ...resting }}
+      className={`${desktopIconClass(selected)} ${
+        dropTarget?.hot ? "rounded-xl ring-2 ring-blue-400/90" : ""
       }`}
     >
       <Folder
-        className="h-16 w-16 text-sky-500 drop-shadow-[0_4px_10px_rgba(0,0,0,0.25)] transition-transform group-hover:scale-105 group-active:scale-95"
+        className={`${DESKTOP_ICON_ART_CLASS} ${tint} drop-shadow-[0_4px_10px_rgba(0,0,0,0.25)] transition-transform group-hover:scale-105 group-active:scale-95`}
         strokeWidth={1}
         fill="currentColor"
       />
-      <span className="text-[0.72rem] font-medium text-white/90 [text-shadow:0_1px_3px_rgba(0,0,0,0.45)]">
-        Files
-      </span>
+      <span className={desktopIconLabelClass(selected)}>{label}</span>
     </button>
+  );
+}
+
+export function FilesWidget({ onOpen }) {
+  return (
+    <PinnedFolderIcon
+      iconId="pinned:files"
+      storageKey={FILES_ICON_POS_KEY}
+      slot={0}
+      label="Files"
+      title="Open Files"
+      onOpen={() => onOpen?.("files")}
+    />
+  );
+}
+
+/** The vault as a folder you open, sitting on the desktop under Files. */
+export function VaultFolderWidget({ onOpen }) {
+  const vaultDrop = useVaultDesktopDrop(onOpen);
+  return (
+    <PinnedFolderIcon
+      iconId="pinned:vault"
+      storageKey={VAULT_ICON_POS_KEY}
+      slot={1}
+      label="Vault"
+      title="Open Vault"
+      tint="text-white"
+      onOpen={() => onOpen?.("vault")}
+      dropTarget={vaultDrop}
+    />
   );
 }

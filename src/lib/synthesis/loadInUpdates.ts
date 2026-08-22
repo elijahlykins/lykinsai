@@ -1,7 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { CONNECTORS } from "@/lib/connectors/catalog";
-import { OUTBOUND_TARGETS } from "@/lib/connectors/outboundTargets";
 import {
   SYNTHESIS_LAYER_UI_ENABLED,
   synthesisLayerHref,
@@ -1789,11 +1788,12 @@ function buildTodaySection(
   };
 }
 
-// Per-client jump-back URL. Each AI tool gets its main web entry
-// point, not the connectors page — the goal is to deliver the user
-// straight into a fresh conversation in that app so they can pick up
-// where they left off. Slugs unknown here fall back to a LYKN-internal
-// link (the project page is the closest "where the work lives").
+// Per-client jump-back URL, for the same historical rows CLIENT_DOMAIN
+// covers: activity written by an outside AI client back when LYKN
+// exposed an MCP server. Each gets that app's main web entry point so
+// the user lands in a fresh conversation there rather than on a
+// connectors page. Slugs unknown here fall back to a LYKN-internal link
+// (the project page is the closest "where the work lives").
 const CLIENT_OPEN_URL: Record<string, string> = {
   claude: "https://claude.ai/new",
   "claude-desktop": "https://claude.ai/new",
@@ -1815,14 +1815,11 @@ const CLIENT_OPEN_URL: Record<string, string> = {
   elevenlabs: "https://elevenlabs.io/",
 };
 
-// Branded glyph for the per-project "jump back in" CTA. We prefer the
-// outbound-target's catalog domain (already used for the connectors
-// page tiles) so the icon matches what the user sees in /connections.
-// Fallback domain map covers AI clients that aren't in the outbound
-// catalog yet (the events table can carry any slug the MCP write
-// pipeline assigns, even ones we haven't shipped an OUTBOUND_TARGETS
-// row for).
-const CLIENT_FALLBACK_DOMAIN: Record<string, string> = {
+// Branded glyph for the per-project "jump back in" CTA. Historical
+// project-activity rows can carry any client slug, including the AI
+// clients that used to write into LYKN over MCP, so we keep a domain map
+// to render their favicon on old events.
+const CLIENT_DOMAIN: Record<string, string> = {
   chatgpt: "chatgpt.com",
   claude: "claude.ai",
   "claude-code": "claude.ai",
@@ -1850,18 +1847,14 @@ function clientIconUrl(slug: string | null | undefined): string | undefined {
   if (slug === "manual" || slug === "lykn-chat" || slug === "lykn-promotion") {
     return lyknIconUrl;
   }
-  const target = OUTBOUND_TARGETS.find(
-    (t: { clientKind?: string; id?: string; domain?: string }) =>
-      t.clientKind === slug || t.id === slug,
-  );
-  const domain = target?.domain || CLIENT_FALLBACK_DOMAIN[slug];
+  const domain = CLIENT_DOMAIN[slug];
   if (!domain) return undefined;
   return `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(domain)}`;
 }
 
 // Tiny helper to pick the verb that best describes the most recent
-// activity on a project. The MCP pipeline doesn't expose a structured
-// "what kind of work" type yet, so we read it out of the event's
+// activity on a project. Activity rows don't carry a structured
+// "what kind of work" type, so we read it out of the event's
 // `summary` / `detail` payload and fall back to a generic "Working on"
 // — never silent.
 function inferProjectVerb(e: ActivityEvent | undefined): string {
@@ -1881,11 +1874,11 @@ function buildProjectUpdatesSection(
 ): LoadInUpdatesSection | null {
   // Each project becomes one notification-style bubble (just like the
   // productivity lane's Gmail / Notion / Slack bubbles). Collapsed it
-  // shows the AI app's logo on the left, the project name + a "Last
-  // touch with <AI> · 2h ago" preview, and an updates count on the
-  // right. Expanded it reveals every recent update event — each one
-  // a clickable row that jumps the user back into whichever AI tool
-  // made that specific update so they can continue the thread.
+  // shows the authoring app's logo on the left, the project name + a
+  // "Last touch with <AI> · 2h ago" preview, and an updates count on
+  // the right. Expanded it reveals every recent update event as a
+  // clickable row; for the historical rows written by an outside AI
+  // client, the row jumps back into that app to continue the thread.
   const byProject = new Map<
     string,
     { name: string; updates: ActivityEvent[]; created?: ActivityEvent }

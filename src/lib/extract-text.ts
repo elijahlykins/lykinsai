@@ -88,6 +88,55 @@ export async function extractTextInBrowser(
   }
 }
 
+/**
+ * Pull text out of a PDF with pdf.js, in the renderer.
+ *
+ * `pageCap` exists because a 400-page report costs real time to walk and the
+ * callers only ever use the opening pages: the vault indexes them for search,
+ * chat quotes them back. Page count is reported separately so a caller can
+ * tell "6 of 400 pages" from "the whole document".
+ *
+ * Returns empty text rather than throwing — a scanned/image-only PDF has no
+ * text layer at all, which is indistinguishable here from a parse failure.
+ */
+export async function extractPdfText(
+  file: File | Blob,
+  pageCap = 6,
+): Promise<{ text: string; pageCount: number | null }> {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdfjsLib: any = await import("pdfjs-dist");
+    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+      // The worker ships with the bundle rather than coming off a CDN: the
+      // desktop app runs offline, and every failure here reads downstream as
+      // "this PDF has no text" instead of as an error.
+      const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
+    }
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const totalPages: number = pdf.numPages;
+    const lastPage = Math.min(totalPages, Math.max(1, pageCap));
+    const pages: string[] = [];
+    for (let pageNum = 1; pageNum <= lastPage; pageNum += 1) {
+      const page = await pdf.getPage(pageNum);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item: any) => ("str" in item ? item.str : ""))
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (pageText) pages.push(pageText);
+    }
+    return { text: pages.join("\n\n"), pageCount: totalPages };
+  } catch (error: any) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn("PDF text extraction failed:", error?.message);
+    }
+    return { text: "", pageCount: null };
+  }
+}
+
 export async function extractTextViaServer(
   file: File,
   apiBaseUrl: string

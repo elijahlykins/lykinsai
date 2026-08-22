@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
 import { CONNECTORS } from "@/lib/connectors/catalog";
-import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 import { toast } from "@/components/ui/use-toast";
 import { toUserFacingError } from "@/lib/ai/userFacingErrors";
 import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Squircle-BLUE-master.png";
@@ -12,12 +11,10 @@ import lyknIconUrl from "@/assets/FINAL/LYKN-ICON-A-Squircle/PNGs/LYKN-Icon-A-Sq
 // Floating macOS-style dock for the Vault page and a vertical variant
 // rendered along the left edge of the focused-chat surface.
 //
-// LAUNCHER, not a management surface. Each icon is a connected app —
-// both input tools (Gmail, Slack, Notion…) and AI tools (Claude,
-// ChatGPT, Cursor…). Clicking an icon opens that app's web surface
-// in a new tab so the user can just start working; LYKN context is
-// already plumbed into AI tools via MCP, and input tools are already
-// feeding the synthesis layer in the background.
+// LAUNCHER, not a management surface. Each icon is a connected input
+// tool (Gmail, Slack, Notion…). Clicking an icon opens that app's web
+// surface in a new tab so the user can just start working; the adapter
+// is already feeding the synthesis layer in the background.
 //
 // Management (sync now / pause / disconnect / reconnect) lives on
 // the Connections page. The trailing plug button in the dock + the
@@ -49,7 +46,6 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [connections, setConnections] = useState([]);
-  const [tokens, setTokens] = useState([]);
   // Provider whose OAuth popup we just launched from a reauth tile. While
   // non-null we listen for the /oauth/callback postMessage so we can toast +
   // refresh in-place instead of routing the user to /connections. Scoped to
@@ -82,21 +78,13 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
   const refresh = useCallback(async () => {
     if (!user) {
       setConnections([]);
-      setTokens([]);
       return;
     }
     try {
-      const [connRes, tokRes] = await Promise.all([
-        authedFetch("/api/connections"),
-        authedFetch("/api/v1/synthesis/tokens"),
-      ]);
+      const connRes = await authedFetch("/api/connections");
       if (connRes.ok) {
         const data = await connRes.json();
         setConnections(data.connections || []);
-      }
-      if (tokRes.ok) {
-        const data = await tokRes.json();
-        setTokens(Array.isArray(data?.tokens) ? data.tokens : []);
       }
     } catch {
       // Silent — the dock keeps the LYKN anchor + whatever previous
@@ -129,33 +117,9 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
     }
   }, [pathname, refresh]);
 
-  // Build the list of connected app tiles. AI tools come first, then
-  // input tools (matches the Connections grid order).
+  // Build the list of connected app tiles, in the same order as the
+  // Connections grid.
   const tiles = useMemo(() => {
-    const aiTiles = [];
-    const seenKinds = new Set();
-    for (const tok of tokens) {
-      if (tok.status !== "active") continue;
-      // Granular DCR-emitted kinds (claude-web, claude-desktop) get
-      // aliased to the merged catalog kind (claude) so a Claude OAuth
-      // token from claude.ai still resolves to the consolidated Claude
-      // tile. See aliasClientKindForCatalog for the merge contract.
-      const kind = aliasClientKindForCatalog(tok.client_kind);
-      if (!kind || seenKinds.has(kind)) continue;
-      seenKinds.add(kind);
-      const target = OUTBOUND_TARGETS.find((t) => t.clientKind === kind);
-      if (!target) continue;
-      aiTiles.push({
-        key: `ai:${kind}`,
-        kind: "ai",
-        name: target.name,
-        domain: target.domain,
-        launchUrl: resolveLaunchUrl(target.domain),
-        meta: tok.last_used_at ? `Last used ${relativeTime(tok.last_used_at)}` : "Token active",
-        needsAttention: false,
-      });
-    }
-
     const inputTiles = [];
     const seenProviders = new Set();
     for (const conn of connections) {
@@ -192,12 +156,12 @@ export default function VaultAppDock({ user, orientation = "horizontal" }) {
       });
     }
 
-    return [...aiTiles, ...inputTiles];
-  }, [tokens, connections]);
+    return inputTiles;
+  }, [connections]);
 
   // Skip waiting on the fetch before painting — the LYKN tile is the
   // permanent anchor of the dock and is available to click while the
-  // connections + tokens lists are still loading. Showing the dock
+  // connections list is still loading. Showing the dock
   // immediately also avoids a layout flash where it pops in late.
 
   // Kick off an OAuth re-handshake directly from the dock. Same shape as

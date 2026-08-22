@@ -243,8 +243,8 @@ export function CookiePolicyBody() {
               life="Until cleared"
             />
             <StorageRow
-              k="lykn_home_widget_layout, lykn_desktop_folders, lykn_desktop_sort, lykn_desktop_icon_files, lykn_desktop_mirror_pos"
-              purpose="Your home desktop: widget layout, folders, sort order, and where you dragged each icon"
+              k="lykn_home_widget_layout, lykn_desktop_folders, lykn_desktop_sort, lykn_desktop_icon_files, lykn_desktop_mirror_pos, lykn_desktop_visibility"
+              purpose="Your home desktop: widget layout, folders, sort order, hide/show, and where you dragged each icon"
               life="Until cleared"
             />
             <StorageRow
@@ -303,7 +303,7 @@ export function CookiePolicyBody() {
               life="Cleared when the tab closes"
             />
             <StorageRow
-              k="lykn:startup-brief-shown, lykn:free-credits-nudge-dismissed, lykn_intake_skipped_<user>"
+              k="lykn:free-credits-nudge-dismissed, lykn_intake_skipped_<user>"
               purpose="One-per-session prompts, so you see them once and not on every screen"
               life="Cleared when the tab closes"
             />

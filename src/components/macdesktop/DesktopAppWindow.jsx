@@ -1,4 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  APP_CLOSE_MS,
+  APP_EASE_IN,
+  APP_EASE_OUT,
+  APP_OPEN_MS,
+  prefersReducedMotion,
+} from "@/components/macdesktop/StudioPop";
+import TrafficLights from "@/components/macdesktop/TrafficLights";
 
 // ────────────────────────────────────────────────────────────────────────
 // DesktopAppWindow — a macOS-style floating window for a LYKN page that
@@ -16,6 +24,18 @@ const EDGE = 8; // breathing room a zoomed window leaves at the desktop edges
 // The bottom dock owns this strip, and a zoomed window stays clear of it —
 // except a window that can actually paint over it (see `zoomCoversDock`).
 const DOCK_CLEAR = 104;
+
+function zoomedGeom(box, coversDock) {
+  // Covering windows go edge-to-edge so they can swallow the dock. Everyone
+  // else keeps the usual inset and clears the strip.
+  const inset = coversDock ? 0 : EDGE;
+  return {
+    x: inset,
+    y: inset,
+    w: box.w - inset * 2,
+    h: box.h - inset - (coversDock ? 0 : DOCK_CLEAR),
+  };
+}
 const MIN_W = 380;
 const MIN_H = 320;
 // Dragging runs to the edges and past them, macOS style — the only rule is
@@ -24,29 +44,22 @@ const MIN_H = 320;
 // the windows and would swallow the clicks needed to drag it back out.
 const KEEP_VISIBLE = 96;
 
-// ── Motion. Windows scale up into place as they open, shrink away as they
-// close, and drop toward the dock when minimized — quick and small, the way
-// macOS does it. MOVE_MS also times the wallpaper-peek slide, since both ride
-// the frame's one transform transition.
-const MOVE_MS = 260;
-const CLOSE_MS = 150;
-const MIN_MS = 200;
+// ── Motion. Windows pop in from slightly small, shrink away as they close,
+// and drop toward the dock when minimized. MOVE_MS also times the wallpaper-
+// peek slide, since both ride the frame's one transform transition.
+const MOVE_MS = APP_OPEN_MS;
+const CLOSE_MS = APP_CLOSE_MS;
+const MIN_MS = 220;
 const PEEK_MS = MOVE_MS;
-const EASE_OUT = "cubic-bezier(0.16, 1, 0.3, 1)";
-const EASE_IN = "cubic-bezier(0.4, 0, 1, 1)";
 
 // scale/lift are the transform the frame rests at in each stage; `open` is the
 // window at its true geometry, so everything animates toward and away from it.
 const STAGES = {
-  entering: { scale: 0.92, lift: 10, opacity: 0, ms: MOVE_MS, ease: EASE_OUT },
-  open: { scale: 1, lift: 0, opacity: 1, ms: MOVE_MS, ease: EASE_OUT },
-  closing: { scale: 0.94, lift: 4, opacity: 0, ms: CLOSE_MS, ease: EASE_IN },
-  minimized: { scale: 0.88, lift: 34, opacity: 0, ms: MIN_MS, ease: EASE_IN },
+  entering: { scale: 0.86, lift: 18, opacity: 0, ms: MOVE_MS, ease: APP_EASE_OUT },
+  open: { scale: 1, lift: 0, opacity: 1, ms: MOVE_MS, ease: APP_EASE_OUT },
+  closing: { scale: 0.92, lift: 10, opacity: 0, ms: CLOSE_MS, ease: APP_EASE_IN },
+  minimized: { scale: 0.84, lift: 36, opacity: 0, ms: MIN_MS, ease: APP_EASE_IN },
 };
-
-const prefersReducedMotion = () =>
-  typeof window !== "undefined" &&
-  !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 function readGeom(key) {
   try {
@@ -121,16 +134,23 @@ export default function DesktopAppWindow({
   // Ref handed the window's title-bar actions, for a chromeless page that
   // can't reach them any other way (native views paint above the renderer).
   controls,
-  // Zoom runs to the desktop's bottom edge, dock strip included. Only the
-  // Browser does this: its page is a native view painting above the whole
-  // renderer, so the strip genuinely disappears under it, the way a zoomed mac
-  // window swallows the Dock. A React window would instead have its last inch
-  // hidden *behind* the dock (z-25 against z-30), which just looks broken.
+  // Zoom runs to the desktop's bottom edge, dock strip included. Used by the
+  // Browser (native views already paint above the dock) and by installed apps
+  // (the host raises this window above the dock while it's zoomed).
   zoomCoversDock = false,
+  // True while this window is zoomed and actually covering the dock — so the
+  // desktop can lift the window layer over the strip and hide the dock.
+  onZoomChange,
+  // Exit Split View by filling this window — zoom it to the desktop as soon
+  // as it's shown again.
+  fill = false,
+  onFillEnd,
   z = 1,
   onFocus,
   onClose,
   onMinimize,
+  onTile,
+  onSnapHint,
   // Fired after every geometry change (drag, resize, zoom, reclamp). The
   // Browser window uses it to move its native Electron views with the frame.
   onGeometry,
@@ -142,6 +162,7 @@ export default function DesktopAppWindow({
 }) {
   const winRef = useRef(null);
   const gestureRef = useRef(null);
+  const snapHintRef = useRef(null);
   const [geom, setGeom] = useState(null);
   const [zoomed, setZoomed] = useState(false);
   // Desktop width, for working out which side is nearer to slide off toward.
@@ -206,16 +227,24 @@ export default function DesktopAppWindow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [peeked]);
 
+  const zoomedRef = useRef(zoomed);
+  zoomedRef.current = zoomed;
+  const coversRef = useRef(zoomCoversDock);
+  coversRef.current = zoomCoversDock;
+
   // Keep the window inside the desktop when the studio window resizes or
   // goes full screen.
   useEffect(() => {
     const p = winRef.current?.offsetParent;
     if (!p || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
+      const box = { w: p.clientWidth, h: p.clientHeight };
       setParentW(p.clientWidth);
-      setGeom((g) =>
-        g ? clampGeom(g, { w: p.clientWidth, h: p.clientHeight }) : g,
-      );
+      setGeom((g) => {
+        if (!g) return g;
+        if (zoomedRef.current) return zoomedGeom(box, coversRef.current);
+        return clampGeom(g, box);
+      });
     });
     ro.observe(p);
     return () => ro.disconnect();
@@ -236,10 +265,11 @@ export default function DesktopAppWindow({
   const motion = STAGES[stage];
   const ms = skipMotion || gone ? 0 : motion.ms;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (skipMotion) return undefined;
-    // Two frames: one for the browser to paint the entry stage, one for the
-    // style change that transitions out of it.
+    // Paint the entry pose, force a layout so the transition has a from-state,
+    // then flip to `open` on the next frames.
+    void winRef.current?.offsetWidth;
     let inner = 0;
     const outer = requestAnimationFrame(() => {
       inner = requestAnimationFrame(() => setEntered(true));
@@ -251,6 +281,27 @@ export default function DesktopAppWindow({
   }, [skipMotion]);
 
   useEffect(() => () => clearTimeout(closeTimer.current), []);
+
+  useEffect(() => {
+    if (!hidden) return undefined;
+    clearTimeout(closeTimer.current);
+    setClosing(false);
+    return undefined;
+  }, [hidden]);
+
+  useLayoutEffect(() => {
+    if (!fill || hidden || !geom) return;
+    const box = parentBox();
+    if (!box) return;
+    if (!zoomed) {
+      restoreRef.current = geom;
+      setZoomed(true);
+    }
+    const next = zoomedGeom(box, zoomCoversDock);
+    setGeom((g) =>
+      g && g.x === next.x && g.y === next.y && g.w === next.w && g.h === next.h ? g : next,
+    );
+  }, [fill, hidden, zoomCoversDock, geom, zoomed]);
 
   // The close click plays the exit first and only then tells the desktop to
   // drop the window — unmounting on the click would cut the animation off.
@@ -291,6 +342,15 @@ export default function DesktopAppWindow({
   }, [busy]);
   useEffect(() => () => animatingRef.current?.(false), []);
 
+  const zoomCbRef = useRef(onZoomChange);
+  zoomCbRef.current = onZoomChange;
+  const covering =
+    zoomCoversDock && zoomed && !hidden && !minimized && !closing && !peeked;
+  useEffect(() => {
+    zoomCbRef.current?.(covering);
+  }, [covering]);
+  useEffect(() => () => zoomCbRef.current?.(false), []);
+
   const startGesture = (mode) => (e) => {
     if (e.button !== 0 || zoomed || !geom) return;
     const box = parentBox();
@@ -320,12 +380,39 @@ export default function DesktopAppWindow({
         ? clampGeom({ ...b, x: b.x + dx, y: b.y + dy }, g.box)
         : resizeGeom(b, g.mode, dx, dy, g.box);
     setGeom(g.last);
+    if (g.mode === "move" && onSnapHint) {
+      const edge = 28;
+      const hint =
+        g.last.x <= edge
+          ? "left"
+          : g.last.x + g.last.w >= g.box.w - edge
+            ? "right"
+            : null;
+      if (hint !== snapHintRef.current) {
+        snapHintRef.current = hint;
+        onSnapHint(hint);
+      }
+    }
   };
 
   const endGesture = () => {
     const g = gestureRef.current;
     gestureRef.current = null;
-    if (g?.last) persist(g.last);
+    onSnapHint?.(null);
+    snapHintRef.current = null;
+    if (!g?.last) return;
+    if (g.mode === "move" && onTile) {
+      const edge = 28;
+      if (g.last.x <= edge) {
+        onTile("left");
+        return;
+      }
+      if (g.last.x + g.last.w >= g.box.w - edge) {
+        onTile("right");
+        return;
+      }
+    }
+    persist(g.last);
   };
 
   const toggleZoom = () => {
@@ -336,19 +423,13 @@ export default function DesktopAppWindow({
     if (zoomed) {
       const back = restoreRef.current;
       setZoomed(false);
+      onFillEnd?.();
       if (back) setGeom(clampGeom(back, box));
       return;
     }
     restoreRef.current = geom;
     setZoomed(true);
-    setGeom({
-      x: EDGE,
-      y: EDGE,
-      w: box.w - EDGE * 2,
-      // Flush to the bottom when this window covers the dock — a gap there
-      // would show a sliver of the strip and read as a mistake, not a margin.
-      h: box.h - EDGE - (zoomCoversDock ? 0 : DOCK_CLEAR),
-    });
+    setGeom(zoomedGeom(box, zoomCoversDock));
   };
 
   // A chromeless page draws its own title bar out in a native view, where the
@@ -361,6 +442,9 @@ export default function DesktopAppWindow({
       close: requestClose,
       minimize: () => onMinimize?.(),
       zoom: toggleZoom,
+      tileLeft: () => onTile?.("left"),
+      tileRight: () => onTile?.("right"),
+      tileQuad: () => onTile?.("quad"),
       dragStart: () => {
         const box = parentBox();
         if (zoomed || !geom || !box) return;
@@ -406,7 +490,7 @@ export default function DesktopAppWindow({
         transform: `translateZ(0) translateX(${peekShift}px) translateY(${
           motion.lift
         }px) scale(${motion.scale})`,
-        transformOrigin: "50% 50%",
+        transformOrigin: "50% 82%",
         opacity: motion.opacity,
         // A window on another tab is hidden outright rather than faded, so it
         // comes back the instant the desktop does. Minimized ones fall away
@@ -420,10 +504,16 @@ export default function DesktopAppWindow({
             }ms`
           : "none",
       }}
-      className={`group/win absolute flex flex-col overflow-hidden rounded-[1.25rem] border border-black/10 bg-white/85 backdrop-blur-2xl dark:border-white/10 dark:bg-black/55 ${
-        active
-          ? "shadow-[0_30px_90px_rgba(0,0,0,0.42)]"
-          : "shadow-[0_14px_44px_rgba(0,0,0,0.28)]"
+      className={`group/win absolute flex flex-col overflow-hidden bg-white/85 backdrop-blur-2xl dark:bg-black/55 ${
+        zoomed && zoomCoversDock
+          ? "rounded-none border-0"
+          : "rounded-[1.25rem] border border-black/10 dark:border-white/10"
+      } ${
+        zoomed && zoomCoversDock
+          ? ""
+          : active
+            ? "shadow-[0_30px_90px_rgba(0,0,0,0.42)]"
+            : "shadow-[0_14px_44px_rgba(0,0,0,0.28)]"
       } ${
         gone || peeked || closing || minimized
           ? "pointer-events-none"
@@ -442,26 +532,16 @@ export default function DesktopAppWindow({
           onDoubleClick={toggleZoom}
           className="relative flex h-7 flex-shrink-0 touch-none select-none items-center gap-2 px-2.5"
         >
-          <div className="flex items-center gap-[0.3rem]">
-            <TrafficLight
-              color="#ff5f57"
-              label={`Close ${title}`}
-              onClick={requestClose}
-              glyph="M2 2 L8 8 M8 2 L2 8"
-            />
-            <TrafficLight
-              color="#febc2e"
-              label={`Minimize ${title}`}
-              onClick={onMinimize}
-              glyph="M2 5 H8"
-            />
-            <TrafficLight
-              color="#28c840"
-              label={zoomed ? `Restore ${title}` : `Zoom ${title}`}
-              onClick={toggleZoom}
-              glyph="M2.5 7.5 L7.5 2.5 M3 3 H7 V7"
-            />
-          </div>
+          <TrafficLights
+            title={title}
+            zoomed={zoomed}
+            onClose={requestClose}
+            onMinimize={onMinimize}
+            onZoom={toggleZoom}
+            onTileLeft={onTile ? () => onTile("left") : undefined}
+            onTileRight={onTile ? () => onTile("right") : undefined}
+            onTileQuad={onTile ? () => onTile("quad") : undefined}
+          />
           <div className="pointer-events-none absolute inset-x-0 flex items-center justify-center gap-1.5">
             {Icon && <Icon className="h-3 w-3 text-black/40 dark:text-white/40" />}
             <span className="text-[0.68rem] font-medium text-black/55 dark:text-white/55">
@@ -487,31 +567,6 @@ export default function DesktopAppWindow({
           />
         ))}
     </div>
-  );
-}
-
-function TrafficLight({ color, label, glyph, onClick }) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-      onPointerDown={(e) => e.stopPropagation()}
-      className="flex h-3 w-3 items-center justify-center rounded-full transition-transform active:scale-90"
-      style={{ background: color }}
-    >
-      <svg
-        viewBox="0 0 10 10"
-        className="h-2 w-2 opacity-0 transition-opacity group-hover/win:opacity-60"
-        stroke="rgba(0,0,0,0.75)"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        fill="none"
-      >
-        <path d={glyph} />
-      </svg>
-    </button>
   );
 }
 

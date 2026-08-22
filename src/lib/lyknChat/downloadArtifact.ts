@@ -2,15 +2,16 @@
  * Save chat artifacts to the user's computer.
  *
  * Remote `download` attributes often fail (cross-origin + Content-Disposition:
- * inline on the file proxy), so we always materialize a Blob and trigger a
- * same-origin object-URL download. HTML is saved as octet-stream so Chromium
- * / Electron actually writes a file instead of opening (or printing) the page.
+ * inline on the file proxy), so we always materialize a Blob and hand the bytes
+ * to `downloadToComputer`. HTML is saved as octet-stream so Chromium / Electron
+ * actually writes a file instead of opening (or printing) the page.
  */
 
 import JSZip from "jszip";
 import { jsPDF } from "jspdf";
 import type { ChatArtifact } from "@/lib/ai/chatArtifacts";
 import { safeAttachmentUrl } from "@/lib/safeExternalUrl";
+import { downloadToComputer } from "@/lib/files/downloadToComputer";
 
 export type ArtifactDownloadOption = {
   id: string;
@@ -29,23 +30,18 @@ function basenameFromArtifact(artifact: ChatArtifact): string {
   return raw || "artifact";
 }
 
-/** Trigger a Save dialog / Downloads folder write from a Blob or text. */
+/**
+ * Write a Blob or a string to the user's Downloads folder.
+ *
+ * Kept synchronous because every caller treats a download as fire-and-forget;
+ * anything that needs the path on disk should await `downloadToComputer`.
+ */
 export function triggerBlobDownload(
   data: Blob | string,
   filename: string,
   mime = "application/octet-stream",
 ): void {
-  const blob =
-    typeof data === "string" ? new Blob([data], { type: mime }) : data;
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename || "download";
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 8_000);
+  void downloadToComputer(data, filename, mime);
 }
 
 async function fetchAsBlob(url: string): Promise<Blob> {

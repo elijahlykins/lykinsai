@@ -28,7 +28,7 @@
 // Self-contained: inserts straight into `notes` via ctx.supabaseAdmin +
 // ctx.userId, so it behaves identically wherever the chat agent loop runs it.
 
-import { jsonContent, errorContent, requireWrite } from './content.js';
+import { jsonContent, errorContent } from './content.js';
 import { resolveVaultAttachment } from '../lib/vaultAttachment.js';
 import { buildAttachmentColumns } from '../lib/vault/attachmentType.js';
 import { embedAndStoreChunks } from '../synthesis-service.js';
@@ -64,8 +64,8 @@ export const saveFileToVaultTool = {
   description: [
     'Save something YOU just generated — a document, marketing plan, deck,',
     'spreadsheet, summary, or a sub-agent\'s report — into the user\'s LYKN',
-    'vault so it survives past this chat and is searchable in /vault and via',
-    'lykn_searchVault.',
+    'vault so it survives past this chat and shows up in AI Drive inside',
+    'the Vault Finder window (open later with lykn_open_app by name).',
     '',
     'This is the "keep this" step AFTER a capability tool',
     '(lykn_generate_chart / lykn_generate_image / lykn_process_image /',
@@ -140,15 +140,13 @@ export const saveFileToVaultTool = {
       },
       folder: {
         type: 'string',
-        description: 'Optional folder / collection name (<=80 chars).',
+        description: 'Optional folder / collection name (<=80 chars). Leave it out unless the user names a collection — saves then land in "Generated", which is what AI Drive shows (images in Image Gen, everything else in Artifacts).',
       },
     },
     required: ['content'],
     additionalProperties: false,
   },
   async handler(args = {}, ctx = {}) {
-    const writeBlock = requireWrite(ctx);
-    if (writeBlock) return writeBlock;
     if (!ctx?.supabaseAdmin || !ctx?.userId) {
       return errorContent('Unauthorized — no LYKN user resolved.');
     }
@@ -163,9 +161,22 @@ export const saveFileToVaultTool = {
     }
 
     const title = typeof args?.title === 'string' ? args.title.trim().slice(0, TITLE_MAX) || null : null;
-    const folder = typeof args?.folder === 'string' ? args.folder.trim().slice(0, FOLDER_MAX) || null : null;
+    const askedFolder = typeof args?.folder === 'string' ? args.folder.trim().slice(0, FOLDER_MAX) || null : null;
     const why = typeof args?.why === 'string' ? args.why.trim().slice(0, WHY_MAX) : '';
     const tags = cleanTags(args?.tags);
+
+    // Everything this tool saves is something the model just made, and AI Drive
+    // is where the user goes to find it — a generated image belongs in Image Gen
+    // and a generated document in Artifacts. The drive decides membership from
+    // the folder, the source, or a "generated" tag (isAiGeneratedVaultRow in
+    // src/lib/vault/aiDriveContents.ts), and this tool's own source string is
+    // none of those, so the tag is what puts the row in the drive. A folder the
+    // model chose deliberately is kept — the tag carries the drive either way.
+    if (!tags.some((t) => t.toLowerCase() === 'generated' || t.toLowerCase() === 'ai-generated')) {
+      if (tags.length >= TAG_MAX_COUNT) tags.pop();
+      tags.push('generated');
+    }
+    const folder = askedFolder || 'Generated';
 
     const fileUrl = typeof args?.file_url === 'string' ? args.file_url.trim() : '';
     const storagePath = typeof args?.storage_path === 'string' ? args.storage_path.trim() : '';

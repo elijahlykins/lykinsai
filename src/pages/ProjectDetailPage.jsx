@@ -7,7 +7,7 @@
 // AI working-memory pushes from connected clients, and charts that summarize
 // the lot. Tasks/events can be added here with deadlines and they're instantly
 // visible to every connected AI client (and vice-versa, live, via realtime).
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -98,12 +98,12 @@ import {
   relativeTime,
   splitMembers,
 } from "@/components/projects/projectShared";
-import VaultPickerDialog from "@/components/vault/VaultPickerDialog";
 import VaultDocumentViewer from "@/components/lyknChat/VaultDocumentViewer";
 import DatePickerPopover from "@/components/ui/DatePickerPopover";
 import MenuSelectPopover from "@/components/ui/MenuSelectPopover";
 import TimePickerPopover, { formatTimeLabel } from "@/components/ui/TimePickerPopover";
 import { fetchVaultNotesByIds } from "@/lib/vault/fetchVaultNotesByIds";
+import { VAULT_PICK_PROJECT_EVENT, openVaultPicker } from "@/lib/vault/vaultPicker";
 import { fetchVaultFileTypeCounts, VAULT_TYPE_META } from "@/lib/vault/fetchVaultFileTypeCounts";
 import { useIsDark, chartSeries, chartSlice } from "@/lib/projectChartTheme";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/synthesis/projectLiveSync";
@@ -1457,13 +1457,17 @@ function MembersCard({ userId, projectId, isOwner }) {
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
-export default function ProjectDetailPage() {
+// In a floating app window the frame is the viewport, so the page fills its
+// host and scrolls itself instead of running to 100vh.
+export default function ProjectDetailPage({ windowed = false }) {
+  const shellClass = windowed
+    ? "h-full min-h-0 overflow-y-auto scrollbar-hide"
+    : "min-h-screen";
   const { projectId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const userId = user?.id;
-  const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [selectedDay, setSelectedDay] = useState(null);
@@ -1685,6 +1689,21 @@ export default function ProjectDetailPage() {
     }
   };
 
+  // "Add from vault" opens the Finder window in pick mode, so the chosen rows
+  // come back as an event rather than through an embedded copy of the old
+  // Vault page. Held in a ref because the handler closes over the project,
+  // which changes far more often than this subscription should.
+  const addVaultFilesRef = useRef(handleAddVaultFiles);
+  addVaultFilesRef.current = handleAddVaultFiles;
+  useEffect(() => {
+    const onPicked = (e) => {
+      const noteIds = e.detail?.noteIds;
+      if (Array.isArray(noteIds) && noteIds.length) void addVaultFilesRef.current(noteIds);
+    };
+    window.addEventListener(VAULT_PICK_PROJECT_EVENT, onPicked);
+    return () => window.removeEventListener(VAULT_PICK_PROJECT_EVENT, onPicked);
+  }, []);
+
   const handleEditUpdate = async (update, newValue) => {
     const ok = await editProjectStateUpdate(userId, projectId, update, newValue);
     refetchProjects();
@@ -1693,7 +1712,7 @@ export default function ProjectDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-sm text-black/40 dark:text-white/40">
+      <div className={`${shellClass} flex items-center justify-center text-sm text-black/40 dark:text-white/40`}>
         Loading project…
       </div>
     );
@@ -1701,7 +1720,7 @@ export default function ProjectDetailPage() {
 
   if (!project) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-3 text-center px-6">
+      <div className={`${shellClass} flex flex-col items-center justify-center gap-3 text-center px-6`}>
         <FolderKanban className="w-8 h-8 text-black/30 dark:text-white/30" />
         <p className="text-sm text-black/60 dark:text-white/60">This project doesn't exist or was deleted.</p>
         <button
@@ -1724,12 +1743,6 @@ export default function ProjectDetailPage() {
   const isOwner = role === "owner";
   const canEdit = role === "owner" || role === "editor";
   const groups = splitMembers(project.members);
-  // Vault note ids already in the project (members are stored `vault_<id>`),
-  // so the vault picker opens with them pre-selected.
-  const committedVaultNoteIds = project.members
-    .map((m) => m.nodeId)
-    .filter((id) => id.startsWith("vault_"))
-    .map((id) => id.slice("vault_".length));
 
   const handleToggleStatus = async () => {
     if (busy) return;
@@ -1769,7 +1782,7 @@ export default function ProjectDetailPage() {
     }`;
 
   return (
-    <div className="min-h-screen bg-transparent text-black dark:text-white">
+    <div className={`${shellClass} bg-transparent text-black dark:text-white`}>
       <div className="max-w-6xl mx-auto px-6 py-8">
         {/* Top bar */}
         <button
@@ -1830,8 +1843,8 @@ export default function ProjectDetailPage() {
           {!project.isShared && (
             <button
               type="button"
-              onClick={() => setVaultPanelOpen(true)}
-              className={actionBtn(vaultPanelOpen)}
+              onClick={() => openVaultPicker("project")}
+              className={actionBtn(false)}
             >
               <Library className="w-3 h-3" />
               Add from vault
@@ -2060,16 +2073,6 @@ export default function ProjectDetailPage() {
           </div>
         )}
       </div>
-
-      {/* Vault picker pop-up — a centered modal (like the chat page's vault)
-          that embeds the real /vault page so the user browses and multi-selects
-          their files, then adds the new ones to the project. */}
-      <VaultPickerDialog
-        open={vaultPanelOpen}
-        onClose={() => setVaultPanelOpen(false)}
-        committedNoteIds={committedVaultNoteIds}
-        onAddFiles={handleAddVaultFiles}
-      />
 
       {vaultViewer ? (
         <VaultDocumentViewer

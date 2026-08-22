@@ -36,6 +36,18 @@
       * {
         box-sizing: border-box;
       }
+      /* No scrollbar is ever drawn in LYKN: panes still scroll by wheel,
+         trackpad, keyboard and drag, only the gutter is gone. This window has
+         its own document, so it can't inherit the app-wide rule in index.css. */
+      * {
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      *::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+        display: none !important;
+      }
       html,
       body {
         margin: 0;
@@ -86,7 +98,6 @@
         flex: 1;
         overflow-y: auto;
         padding: 20px 16px 24px;
-        scrollbar-width: thin;
       }
       .chat-message {
         max-width: min(680px, 100%);
@@ -658,21 +669,6 @@
         box-shadow: var(--card-shadow);
         padding: 6px 0;
         z-index: 5;
-        scrollbar-width: thin;
-        scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
-      }
-      html[data-theme="dark"] .search-suggest,
-      html[data-theme="incognito"] .search-suggest {
-        scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
-      }
-      .search-suggest::-webkit-scrollbar {
-        width: 8px;
-      }
-      .search-suggest::-webkit-scrollbar-thumb {
-        background: rgba(0, 0, 0, 0.22);
-        border-radius: 999px;
-        border: 2px solid transparent;
-        background-clip: padding-box;
       }
       .search-suggest[hidden] { display: none; }
       .search-suggest .item {

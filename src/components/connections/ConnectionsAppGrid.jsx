@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { CheckCircle2, ChevronLeft, Code2, KeyRound, Plug, ShieldAlert, Loader2, Search, X } from "lucide-react";
+import { CheckCircle2, ChevronLeft, KeyRound, ShieldAlert, Loader2, Search, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { API_BASE_URL } from "@/lib/api-config";
@@ -11,28 +11,23 @@ import {
   CONNECTOR_NOTES_SOURCES,
   getConnectorSourceSlugs,
 } from "@/lib/connectors/catalog";
-import { OUTBOUND_TARGETS, aliasClientKindForCatalog } from "@/lib/connectors/outboundTargets";
 import { CUSTOM_API_PRESETS } from "@/lib/connectors/customApiPresets";
 import OAuthConnectDialog from "@/components/connections/OAuthConnectDialog";
 import TokenConnectDialog from "@/components/connections/TokenConnectDialog";
 import CustomApiDialog from "@/components/connections/CustomApiDialog";
-import UseLyknWithDialog from "@/components/connections/UseLyknWithDialog";
 import VaultConnectionsToggle from "@/components/connections/VaultConnectionsToggle";
 import { SYNTHESIS_LAYER_UI_ENABLED } from "@/lib/synthesisLayerUi";
 
 // Unified "app store" view for the Connections page. Everything LYKN
-// can plug into - AI tools (Claude, Cursor, ChatGPT, …) and input
-// tools (Gmail, Notion, Slack, …) - renders as the same tile shape so
-// the answer to "what can I connect?" is one glance.
+// can plug into renders as the same tile shape so the answer to "what
+// can I connect?" is one glance.
 //
-// Two data sources behind the scenes:
-//   • AI tools  → OUTBOUND_TARGETS (filtered to tier 1 launch lineup),
-//                 click opens UseLyknWithDialog (mints an MCP token /
-//                 install command).
-//   • Input tools → CONNECTORS (filtered to PHASE_1_INPUT_IDS), click
-//                   opens OAuthConnectDialog (runs OAuth handshake).
+// Tiles come from CONNECTORS (native adapters) plus CUSTOM_API_PRESETS
+// (bring-your-own-key apps); clicking one opens the matching connect
+// flow — OAuth popup, token paste, or the Custom API manager.
 //
-// Filter pill at the top swaps between All / AI tools / Input tools.
+// This page is INBOUND only: apps LYKN reads from and acts on. LYKN is
+// not exposed to outside AI models.
 
 // The Connections page only renders input connectors whose adapter is
 // actually wired in code - even if the upstream gate is still pending.
@@ -54,8 +49,6 @@ import { SYNTHESIS_LAYER_UI_ENABLED } from "@/lib/synthesisLayerUi";
 //                product decision, leave these out until we have a
 //                clean ingest story for each.
 // The catalog itself stays exhaustive; this is just the view filter.
-// AI tools (OUTBOUND_TARGETS) are unaffected - their tier 1 curation
-// lives upstream.
 const CONNECTABLE_INPUT_STATUSES = new Set([
   "available",
   "beta",
@@ -63,73 +56,10 @@ const CONNECTABLE_INPUT_STATUSES = new Set([
   "paid",
 ]);
 
-// AI Tools subgrouping. The flat list of 13 tier-1 outbound targets
-// (Claude / ChatGPT / Cursor / Windsurf / JetBrains / Copilot / …)
-// reads as a wall when the user lands on the Connections page,
-// especially inside a chat where this grid takes ~half the surface
-// area. Split into three intent-driven buckets so each one stays
-// scannable, and collapse all but the first few per bucket behind a
-// "Show all" pill so the section keeps a fixed initial height. Search
-// auto-expands every bucket (see `visibleTiles`).
-//
-// `clientKinds` references the `clientKind` field on each target in
-// `outboundTargets.js`. A target whose clientKind isn't listed in any
-// bucket lands in `coding` as a fallback (current tier-1 lineup has
-// no such target - every entry is mapped explicitly - but the
-// fallback keeps the page resilient to future catalog additions).
-const AI_SUBGROUPS = [
-  {
-    id: "chat",
-    label: "Chat",
-    description: "Conversational assistants - your synthesis layer follows you in.",
-    clientKinds: new Set(["claude", "chatgpt", "gemini", "grok"]),
-    // Always show every chat client (no "Show 1 more" pill) - the list is
-    // short and Grok shouldn't hide behind a collapse.
-    noCollapse: true,
-  },
-  {
-    id: "coding",
-    label: "Coding",
-    description: "IDEs, agents, and app-builders that should know your code context.",
-    clientKinds: new Set([
-      "claude-code",
-      "cursor",
-      "codex-cli",
-      "windsurf",
-      "jetbrains",
-      "replit",
-      "lovable",
-      "github-copilot",
-    ]),
-  },
-  {
-    id: "docs",
-    label: "Docs & Knowledge",
-    description: "Writing surfaces that benefit from your beliefs and recent work.",
-    clientKinds: new Set(["notion-ai"]),
-  },
-];
-function aiSubgroupIdFor(target) {
-  for (const g of AI_SUBGROUPS) {
-    if (g.clientKinds.has(target.clientKind)) return g.id;
-  }
-  return "coding";
-}
-
-// Paid-plan warnings. The two data sources encode this differently, so
-// normalize to { title, message } here. Returns null when the upstream
-// app is free to use with LYKN.
-//
-//   • AI tools → explicit `requiresPaidPlan` descriptor on the outbound
-//     target (e.g. Lovable Pro $25/mo, Notion Business). Already shaped
-//     as { title, message }; pass it through.
-//
-//   • Input tools → `status: "paid"` flag in the catalog (e.g. X needs
-//     API Basic at $200/mo to read bookmarks). Synthesize a warning from
-//     `statusLabel` so users see the price before initiating OAuth.
-function getAiPaidWarning(target) {
-  return target?.requiresPaidPlan || null;
-}
+// Paid-plan warning for an input tool. `status: "paid"` in the catalog
+// (e.g. X needs API Basic at $200/mo to read bookmarks) becomes a
+// { title, message } confirm shown before OAuth starts, so users see the
+// price before initiating the handshake.
 function getInputPaidWarning(connector) {
   if (!connector || connector.status !== "paid") return null;
   return {
@@ -137,64 +67,6 @@ function getInputPaidWarning(connector) {
     message: `${connector.statusLabel || "This connection needs a paid tier on the upstream app."} OAuth will still work, but data won't sync until you have an eligible plan. Continue?`,
   };
 }
-
-// Two "universal" tiles that lead the "Use LYKN elsewhere" section. Same
-// AppTile shape as every other card; pinned to the top so the honest
-// framing - "you don't need a per-tool integration to use any
-// modern AI client" - is the first thing the user sees, ahead of the
-// curated shortcuts.
-//
-// `buildTarget(base)` synthesises the OUTBOUND_TARGETS row passed to
-// UseLyknWithDialog. We START from a real catalog entry (so the dialog
-// inherits color / domain / helpUrl) but OVERRIDE the framing so the
-// universal flow doesn't bleed dev-facing labels ("Anything else (raw)",
-// "Custom Agent") into the user surface. The MCP tile in particular
-// pivots from the catalog entry's `installType: "raw"` (paste a bearer
-// into your config) to `oauth-mcp` + `connectMode: "copy-only"` - the
-// same OAuth/DCR flow Claude/Cursor/etc. use, because virtually every
-// actively-maintained MCP client now supports it. The API tile keeps
-// the `custom-agent` install path (token mint + code snippets) since
-// developer-written agents legitimately want an embedded bearer.
-const UNIVERSAL_AI_TILES = [
-  {
-    key: "ai-universal:mcp",
-    targetId: "other-mcp",
-    name: "Any AI tool via MCP",
-    description:
-      "Use LYKN inside any MCP-aware client - Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, or whatever ships next. Paste our MCP URL into the client's server config; it handles the OAuth handshake itself. No token to copy, nothing per-app to wire.",
-    iconNode: Plug,
-    accentClass: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 ring-indigo-500/20",
-    buildTarget: (base) => ({
-      ...base,
-      name: "any MCP client",
-      summary:
-        "Paste LYKN's MCP URL into any MCP-aware client (Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, …). The client handles OAuth itself - you'll approve a LYKN consent screen, no bearer token to copy.",
-      installType: "oauth-mcp",
-      connectMode: "copy-only",
-      installSteps: [
-        "Open your MCP client (Claude Desktop, Cursor, Zed, Cline, Goose, Warp, Jan, Continue, …).",
-        "Find its MCP server config - usually Settings → MCP, or a JSON file like ~/.cursor/mcp.json or ~/.config/cline/mcp_settings.json.",
-        "Add a new server using the URL above as the endpoint. Save / reload.",
-        "Approve the LYKN consent screen when your client pops it.",
-      ],
-    }),
-  },
-  {
-    key: "ai-universal:api",
-    targetId: "custom-agent",
-    name: "Build with the LYKN API",
-    description:
-      "Wire LYKN into something you built yourself - LangChain, n8n, Vapi, a FastAPI service, a robot. Mint one bearer here, then call our REST endpoints (or MCP) from any language that speaks HTTP. Read your context block, search your vault, push project state back.",
-    iconNode: Code2,
-    accentClass: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 ring-emerald-500/20",
-    buildTarget: (base) => ({
-      ...base,
-      name: "the LYKN API",
-      summary:
-        "Mint a bearer token and embed it in your own code - LangChain, n8n, Vapi, FastAPI, or any HTTP client. Both the REST mirror and the raw MCP endpoint accept the same token.",
-    }),
-  },
-];
 
 export default function ConnectionsAppGrid({
   user,
@@ -210,15 +82,15 @@ export default function ConnectionsAppGrid({
   // cards view (i.e. leave Connections). The picker has its own back that
   // returns to the cards, so Settings shows just one back button.
   onBack,
-  // Open straight into a picker lane ("api" | "mcp") on mount instead of the
-  // three launcher rows — used by the wake preview so "Connect apps" lands
-  // directly on the connection-card grid.
+  // Open straight into the app picker on mount instead of the launcher
+  // row — used by the wake preview so "Connect apps" lands directly on
+  // the connection-card grid.
   initialPicker = null,
 }) {
   const embeddedPreviewMode = compactPreview;
   const showPageHeader = !embeddedPreviewMode && !wakePreview && !embedded;
   const compactGrid = embeddedPreviewMode && !wakePreview;
-  // Render the API/MCP picker inline (contained in the surface) rather than as
+  // Render the picker inline (contained in the surface) rather than as
   // a viewport-fixed modal whenever we're inside a transformed/clipped host:
   // the Settings dialog (`embedded`) and the wake walkthrough preview
   // (`wakePreview`). A `position: fixed` element nested under the walkthrough's
@@ -228,9 +100,7 @@ export default function ConnectionsAppGrid({
   const navigate = useNavigate();
   const [connections, setConnections] = useState([]);
   const [providerConfig, setProviderConfig] = useState({});
-  const [tokens, setTokens] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [activeAiTarget, setActiveAiTarget] = useState(null);
   const [activeInputConnector, setActiveInputConnector] = useState(null);
   // Token-paste providers (Cursor, Trello, Readwise, …) use a credential-paste
   // dialog rather than the OAuth popup.
@@ -240,9 +110,9 @@ export default function ConnectionsAppGrid({
   // When a preset card is clicked, the dialog opens straight into that app's
   // form (base URL + auth prefilled, key field ready).
   const [customApiPresetId, setCustomApiPresetId] = useState(null);
-  // The page is three launcher cards. "Connect via API" and "Connect via MCP"
-  // open a picker modal listing every app reachable that way. `picker` holds
-  // which lane is open ("api" | "mcp" | null); `pickerQuery` is its search box.
+  // The page is a launcher row that opens a picker modal listing every app
+  // LYKN can connect to. `picker` is truthy while it's open; `pickerQuery`
+  // is its search box.
   const [picker, setPicker] = useState(initialPicker);
   const [pickerQuery, setPickerQuery] = useState("");
 
@@ -272,14 +142,12 @@ export default function ConnectionsAppGrid({
     if (!user) {
       setConnections([]);
       setProviderConfig({});
-      setTokens([]);
       return;
     }
     setLoading(true);
     try {
-      const [connRes, tokRes, countsRes] = await Promise.all([
+      const [connRes, countsRes] = await Promise.all([
         authedFetch("/api/connections"),
-        authedFetch("/api/v1/synthesis/tokens"),
         // Direct supabase RPC - auth.uid() scopes results to this user.
         // Network failure or RLS denial falls through to a zero-counts
         // map so tiles silently omit the footer rather than blocking
@@ -290,10 +158,6 @@ export default function ConnectionsAppGrid({
         const data = await connRes.json();
         setConnections(data.connections || []);
         setProviderConfig(data.providerConfig || {});
-      }
-      if (tokRes.ok) {
-        const data = await tokRes.json();
-        setTokens(Array.isArray(data?.tokens) ? data.tokens : []);
       }
       if (countsRes && !countsRes.error && Array.isArray(countsRes.data)) {
         const m = new Map();
@@ -358,38 +222,11 @@ export default function ConnectionsAppGrid({
     return m;
   }, [synthesisCounts]);
 
-  const tokensByKind = useMemo(() => {
-    const m = new Map();
-    for (const t of tokens) {
-      if (t.status !== "active") continue;
-      // Alias granular DCR-emitted kinds (claude-web, claude-desktop) to
-      // the merged catalog kind (claude) so a token minted via the
-      // claude.ai OAuth flow still flips the consolidated Claude tile to
-      // "Connected". Without this aliasing, only the granular kinds match
-      // and a real Claude OAuth handshake looks unconnected here.
-      const kind = aliasClientKindForCatalog(t.client_kind);
-      const arr = m.get(kind) || [];
-      arr.push(t);
-      m.set(kind, arr);
-    }
-    return m;
-  }, [tokens]);
-
-  // Build the unified tile list. AI tools (the marquee) lead, then one
-  // section per connector category in CONNECTOR_CATEGORIES order, with
-  // every visible connector for that category grouped under it. We
-  // iterate categories first (instead of walking the catalog in source
-  // order) so a single out-of-order entry - e.g. YouTube sitting in
-  // `social` between Notion and the rest of the Google productivity
-  // tiles - can't cause the same heading to render twice. Section
-  // tiles render as a full-width band inside the grid (col-span-full)
-  // and are filtered out when their bucket is empty under the current
-  // filter (see `visibleTiles`).
-  // Apps reachable via their REST API / OAuth — the "Connect via API" lane.
-  // Native connectors first (category order), then BYO-key presets with no
-  // native equivalent, then the Custom API catch-all ("connect anything
-  // else") last. Module-level data sources → empty dep list.
-  const apiLaneTiles = useMemo(() => {
+  // Apps reachable via their REST API / OAuth. Native connectors first
+  // (category order), then BYO-key presets with no native equivalent, then
+  // the Custom API catch-all ("connect anything else") last. Module-level
+  // data sources → empty dep list.
+  const appTiles = useMemo(() => {
     const tiles = [];
     const nativeIds = new Set();
     for (const cat of CONNECTOR_CATEGORIES) {
@@ -414,76 +251,12 @@ export default function ConnectionsAppGrid({
     return tiles;
   }, []);
 
-  // Tools you use LYKN inside via MCP — the "Connect via MCP" lane. The
-  // generic "any MCP client" tile leads, then curated AI clients grouped
-  // Chat / Coding / Docs (all shown — the modal has its own search).
-  const mcpLaneTiles = useMemo(() => {
-    const tiles = [];
-    const mcpUniversal = UNIVERSAL_AI_TILES.find((u) => u.key === "ai-universal:mcp");
-    if (mcpUniversal) {
-      const base = OUTBOUND_TARGETS.find((t) => t.id === mcpUniversal.targetId);
-      if (base) {
-        const target = typeof mcpUniversal.buildTarget === "function" ? mcpUniversal.buildTarget(base) : base;
-        tiles.push({
-          key: mcpUniversal.key,
-          kind: "ai-universal",
-          target,
-          name: mcpUniversal.name,
-          description: mcpUniversal.description,
-          iconNode: mcpUniversal.iconNode,
-          accentClass: mcpUniversal.accentClass,
-        });
-      }
-    }
-    const aiTargets = OUTBOUND_TARGETS.filter((t) => t.tier === 1);
-    const bySubgroup = new Map(AI_SUBGROUPS.map((g) => [g.id, []]));
-    for (const target of aiTargets) {
-      bySubgroup.get(aiSubgroupIdFor(target)).push(target);
-    }
-    for (const g of AI_SUBGROUPS) {
-      const items = bySubgroup.get(g.id) || [];
-      if (items.length === 0) continue;
-      tiles.push({ key: `aiSubgroup:${g.id}`, kind: "section", label: g.label, description: g.description });
-      for (const target of items) {
-        tiles.push({ key: `ai:${target.id}`, kind: "ai", target, subgroupId: g.id });
-      }
-    }
-    return tiles;
-  }, []);
-
-  // The "Build with the LYKN API" card opens this target directly (mint a
-  // bearer + show code snippets) — it's a single thing, no picker list.
-  const buildTarget = useMemo(() => {
-    const u = UNIVERSAL_AI_TILES.find((x) => x.key === "ai-universal:api");
-    if (!u) return null;
-    const base = OUTBOUND_TARGETS.find((t) => t.id === u.targetId);
-    if (!base) return null;
-    return typeof u.buildTarget === "function" ? u.buildTarget(base) : base;
-  }, []);
-
   // Free-text filter for the picker modal. Section labels always pass; the
   // empty ones get dropped afterward in `pickerTiles`.
   const matchesPickerQuery = useCallback((tile, q) => {
     const s = q.trim().toLowerCase();
     if (!s) return true;
     if (tile.kind === "section") return true;
-    if (tile.kind === "ai-universal") {
-      return (
-        (tile.name || "").toLowerCase().includes(s) ||
-        (tile.description || "").toLowerCase().includes(s) ||
-        "mcp".includes(s) ||
-        "api".includes(s)
-      );
-    }
-    if (tile.kind === "ai") {
-      const t = tile.target;
-      return (
-        (t.name || "").toLowerCase().includes(s) ||
-        (t.summary || "").toLowerCase().includes(s) ||
-        (t.clientKind || "").toLowerCase().includes(s) ||
-        (t.id || "").toLowerCase().includes(s)
-      );
-    }
     if (tile.kind === "preset") {
       const p = tile.preset;
       return (
@@ -505,12 +278,11 @@ export default function ConnectionsAppGrid({
     return false;
   }, []);
 
-  // The open lane's tiles, filtered by the modal search, with empty section
+  // The picker's tiles, filtered by the modal search, with empty section
   // labels dropped.
   const pickerTiles = useMemo(() => {
     if (!picker) return [];
-    const lane = picker === "api" ? apiLaneTiles : mcpLaneTiles;
-    const filtered = lane.filter((t) => matchesPickerQuery(t, pickerQuery));
+    const filtered = appTiles.filter((t) => matchesPickerQuery(t, pickerQuery));
     const out = [];
     for (let i = 0; i < filtered.length; i++) {
       const t = filtered[i];
@@ -521,7 +293,7 @@ export default function ConnectionsAppGrid({
       out.push(t);
     }
     return out;
-  }, [picker, apiLaneTiles, mcpLaneTiles, pickerQuery, matchesPickerQuery]);
+  }, [picker, appTiles, pickerQuery, matchesPickerQuery]);
 
   const hasPickerResults = pickerTiles.some((t) => t.kind !== "section");
 
@@ -531,9 +303,15 @@ export default function ConnectionsAppGrid({
   const pickerBody = (
     <>
       <div
-        className={`grid gap-2 ${
-          inlinePicker ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        className={`gap-2 ${
+          // Inline in Settings the pane's width is the only thing that matters
+          // and it can be anything, so the tiles count their own columns. The
+          // standalone modal is sized by the viewport, so it may ask it.
+          inlinePicker
+            ? "lykn-settings-grid"
+            : "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
         }`}
+        style={inlinePicker ? { '--lykn-settings-grid-min': '208px' } : undefined}
       >
         {pickerTiles.map((tile) => {
           if (tile.kind === "section") {
@@ -578,90 +356,6 @@ export default function ConnectionsAppGrid({
               />
             );
           }
-          if (tile.kind === "ai-universal") {
-            // Universal tile: same AppTile shell as every other card,
-            // but driven by a lucide icon (no favicon lookup) and a
-            // friendlier label. The dialog target was pre-synthesized
-            // in `allTiles` (see `buildTarget`) - for the MCP tile
-            // that flips the underlying catalog row from a manual-
-            // bearer flow to OAuth-MCP, matching how the curated
-            // Claude/Cursor/etc. tiles work.
-            const target = tile.target;
-            const isOauthFlow = target?.installType === "oauth-mcp";
-            return (
-              <AppTile
-                key={tile.key}
-                plain={embedded}
-                anchorId={tile.key.replace(":", "-")}
-                iconNode={tile.iconNode}
-                iconAccentClass={tile.accentClass}
-                name={tile.name}
-                typeLabel="Universal"
-                description={tile.description}
-                badge={null}
-                chips={null}
-                ctaLabel={isOauthFlow ? "Connect" : "Set up"}
-                ctaVariant="primary"
-                onClick={() => {
-                  if (!user) {
-                    toast({ title: "Sign in to set up", description: "Tokens are tied to your LYKN account." });
-                    return;
-                  }
-                  setActiveAiTarget(target);
-                }}
-              />
-            );
-          }
-          if (tile.kind === "ai") {
-            const target = tile.target;
-            const isConnected = (tokensByKind.get(target.clientKind) || []).length > 0;
-            const paidWarning = getAiPaidWarning(target);
-            // Connection-status badge takes priority over the paid-plan
-            // hint (once connected, the user clearly already had the plan).
-            const badge = isConnected
-              ? { tone: "emerald", label: "Connected", icon: CheckCircle2 }
-              : target.comingSoon
-                ? { tone: "amber", label: "Coming soon" }
-                : paidWarning && !wakePreview
-                  ? { tone: "amber", label: paidWarning.shortLabel || `Requires ${target.name} plan` }
-                  : null;
-            return (
-              <AppTile
-                key={tile.key}
-                plain={embedded}
-                anchorId={target.clientKind || target.id}
-                logoDomain={target.domain}
-                logoUrl={undefined}
-                name={target.name}
-                typeLabel="AI tool"
-                description={target.summary}
-                badge={badge}
-                chips={null}
-                ctaLabel={isConnected ? "Manage" : target.comingSoon ? "Notify me" : "Connect"}
-                ctaVariant={isConnected ? "ghost" : "primary"}
-                onClick={() => {
-                  if (!user) {
-                    toast({ title: "Sign in to connect", description: "Tokens are tied to your LYKN account." });
-                    return;
-                  }
-                  if (target.comingSoon) {
-                    toast({ title: `${target.name} is on the way`, description: target.summary });
-                    return;
-                  }
-                  // Paid-plan gate fires BEFORE opening the dialog so the
-                  // user gets one clear "this costs money on the upstream
-                  // side" prompt - no surprise wall mid-flow. UseLyknWithDialog
-                  // also has its own confirm as a safety net.
-                  if (!isConnected && paidWarning) {
-                    // eslint-disable-next-line no-alert
-                    if (!window.confirm(`${paidWarning.title}\n\n${paidWarning.message}`)) return;
-                  }
-                  setActiveAiTarget(target);
-                }}
-              />
-            );
-          }
-
           if (tile.kind === "input") {
             const connector = tile.connector;
             // Alias tiles (e.g. Google Docs → Google Drive) share their
@@ -830,13 +524,8 @@ export default function ConnectionsAppGrid({
           <>
             <h1 className="text-3xl font-semibold">Apps</h1>
             <p className="text-black/60 dark:text-white/60 mt-1">
-              Three ways to connect.{" "}
-              <strong className="font-semibold text-black/80 dark:text-white/85">Connect via API</strong> to let LYKN
-              read from and act on the apps you use.{" "}
-              <strong className="font-semibold text-black/80 dark:text-white/85">Connect via MCP</strong> to use LYKN
-              inside other AI tools. Or{" "}
-              <strong className="font-semibold text-black/80 dark:text-white/85">build with the LYKN API</strong>.
-              All revocable any time.
+              Connect the apps you use — sign in with OAuth or paste an API key — and LYKN can read
+              from them and act on them. All revocable any time.
             </p>
             {!user && (
               <p className="mt-2 text-[11px] text-black/45 dark:text-white/45" data-preview-hide-signin="true">
@@ -855,9 +544,9 @@ export default function ConnectionsAppGrid({
         )}
       </section>
 
-      {/* ── Three launcher cards ───────────────────────────────────── */}
+      {/* ── Launcher card ──────────────────────────────────────────── */}
       {/* When the picker is inline (Settings or wake preview) it replaces the
-          cards, so hide them while a lane is open. */}
+          card, so hide it while the picker is open. */}
       {!(inlinePicker && picker) && (
       <>
       {embedded && onBack && (
@@ -878,7 +567,7 @@ export default function ConnectionsAppGrid({
       }`}>
         <LauncherRow
           plain={embedded}
-          title="Connect via API"
+          title="Connect an app"
           description="Connect Google, Slack, Notion, Stripe and more with a sign-in or API key."
           ctaLabel="Browse apps"
           onClick={() => {
@@ -886,34 +575,11 @@ export default function ConnectionsAppGrid({
             setPicker("api");
           }}
         />
-        <LauncherRow
-          plain={embedded}
-          title="Connect via MCP"
-          description="Use LYKN inside Claude, Cursor, ChatGPT and any other MCP-aware client."
-          ctaLabel="Browse tools"
-          onClick={() => {
-            setPickerQuery("");
-            setPicker("mcp");
-          }}
-        />
-        <LauncherRow
-          plain={embedded}
-          title="Build with the LYKN API"
-          description="Mint a token and wire LYKN into your own code, agents or automations."
-          ctaLabel="Get a token"
-          onClick={() => {
-            if (!user) {
-              toast({ title: "Sign in to build", description: "API tokens are tied to your LYKN account." });
-              return;
-            }
-            if (buildTarget) setActiveAiTarget(buildTarget);
-          }}
-        />
       </div>
       </>
       )}
 
-      {/* ── Picker (Connect via API / MCP) ─────────────────────────── */}
+      {/* ── App picker ─────────────────────────────────────────────── */}
       {/* Inline inside Settings (`embedded`) and the wake preview
           (`wakePreview`); a centered modal otherwise. */}
       {picker && (
@@ -928,14 +594,10 @@ export default function ConnectionsAppGrid({
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
-              <h3 className="text-sm font-semibold text-black/85 dark:text-white/90">
-                {picker === "api" ? "Connect via API" : "Connect via MCP"}
-              </h3>
+              <h3 className="text-sm font-semibold text-black/85 dark:text-white/90">Connect an app</h3>
             </div>
             <p className="ml-1 mb-3 text-[12px] text-black/55 dark:text-white/55">
-              {picker === "api"
-                ? "Pick an app. We'll walk you through connecting it."
-                : "Pick a tool to use LYKN inside. We'll walk you through the setup."}
+              Pick an app. We'll walk you through connecting it.
             </p>
             <div className="relative mb-3">
               {embedded ? null : (
@@ -945,7 +607,7 @@ export default function ConnectionsAppGrid({
                 type="search"
                 value={pickerQuery}
                 onChange={(e) => setPickerQuery(e.target.value)}
-                placeholder={picker === "api" ? "Search apps…" : "Search tools…"}
+                placeholder="Search apps…"
                 aria-label="Search"
                 autoFocus
                 className={
@@ -962,7 +624,7 @@ export default function ConnectionsAppGrid({
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
           role="dialog"
           aria-modal="true"
-          aria-label={picker === "api" ? "Connect via API" : "Connect via MCP"}
+          aria-label="Connect an app"
         >
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setPicker(null)} />
           <motion.div
@@ -974,12 +636,10 @@ export default function ConnectionsAppGrid({
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h2 className="text-[16px] font-semibold text-black/85 dark:text-white/90">
-                    {picker === "api" ? "Connect via API" : "Connect via MCP"}
+                    Connect an app
                   </h2>
                   <p className="mt-0.5 text-[12px] text-black/55 dark:text-white/55">
-                    {picker === "api"
-                      ? "Pick an app. We'll walk you through connecting it."
-                      : "Pick a tool to use LYKN inside. We'll walk you through the setup."}
+                    Pick an app. We'll walk you through connecting it.
                   </p>
                 </div>
                 <button
@@ -997,7 +657,7 @@ export default function ConnectionsAppGrid({
                   type="search"
                   value={pickerQuery}
                   onChange={(e) => setPickerQuery(e.target.value)}
-                  placeholder={picker === "api" ? "Search apps…" : "Search tools…"}
+                  placeholder="Search apps…"
                   aria-label="Search"
                   autoFocus
                   className="w-full h-10 rounded-xl glass-control pl-10 pr-3 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/35"
@@ -1019,17 +679,6 @@ export default function ConnectionsAppGrid({
         </p>
       )}
 
-      <UseLyknWithDialog
-        open={Boolean(activeAiTarget)}
-        onOpenChange={(o) => {
-          if (!o) {
-            setActiveAiTarget(null);
-            refresh();
-          }
-        }}
-        target={activeAiTarget}
-        onMinted={() => refresh()}
-      />
       <OAuthConnectDialog
         open={Boolean(activeInputConnector)}
         onOpenChange={(o) => {
@@ -1066,9 +715,9 @@ export default function ConnectionsAppGrid({
 }
 
 // ─── LauncherRow ─────────────────────────────────────────────────────────────
-// One of the three top-level connection options. A simple title + one-liner on
-// the left and a button on the right — no icon, no card chrome. Clicking the
-// button opens the picker (API / MCP) or the build dialog.
+// The top-level connection entry point. A simple title + one-liner on the left
+// and a button on the right — no icon, no card chrome. Clicking the button
+// opens the app picker.
 
 function LauncherRow({ title, description, ctaLabel, onClick, plain = false }) {
   return (

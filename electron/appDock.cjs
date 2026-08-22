@@ -1,7 +1,7 @@
 /**
- * Mac app dock backend — installed applications, launch, and running-state.
+ * Mac app dock backend — installed applications, launch, quit, and running-state.
  *
- * Powers the Studio dock strip (list/launch/running indicators) and the
+ * Powers the Studio dock strip (list/launch/quit/running indicators) and the
  * `local_running_apps` AI tool. Runs only in the Electron main process.
  * Running-state uses System Events (same Automation permission the browser
  * scrape already requests); listing and launching need no TCC permission.
@@ -308,11 +308,28 @@ function subscribeRunningApps(fn, intervalMs = 5000) {
   };
 }
 
+/**
+ * Quit an app the user launched from the dock. Same allowlist as launch —
+ * only bundles we discovered ourselves, never an arbitrary path.
+ */
+async function quitApp(bundlePath) {
+  const apps = await listInstalledApps();
+  const target = apps.find((a) => a.path === String(bundlePath || ""));
+  if (!target) return { ok: false, error: "Unknown application" };
+  const quoted = String(target.name).replace(/"/g, '""');
+  const res = await runOsascript(`tell application "${quoted}" to quit`);
+  lastSnapshotKey = "";
+  pollOnce();
+  if (res.error) return { ok: false, error: res.error };
+  return { ok: true, name: target.name };
+}
+
 module.exports = {
   listInstalledApps,
   listAppsWithIcons,
   getAppIcon,
   launchApp,
+  quitApp,
   getRunningApps,
   getRunningAppsResult,
   subscribeRunningApps,

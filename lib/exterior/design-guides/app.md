@@ -13,7 +13,16 @@ quizzes, games, prototypes. Colors and component recipes come from the
 
 ## State & interaction rules
 
-- All state in React (`useState`/`useReducer`). NO localStorage/sessionStorage — the sandboxed iframe drops them; the app must work fully in-memory.
+- Ephemeral UI state (open menus, form drafts, the current tab) lives in React (`useState`/`useReducer`).
+- Anything the user creates and expects back later — notes, tasks, entries, settings, saved games — goes in `lykn.db`, never `localStorage`/`sessionStorage` (the preview iframe drops those, so they silently lose data). Load on mount in a `useEffect`, write on change:
+  ```js
+  const save = async (note) => {
+    setNotes((prev) => [note, ...prev]);           // optimistic
+    if (window.lykn) await lykn.db.set("notes", note.id, note);
+  };
+  ```
+- Guard every call with `if (window.lykn)` so the app still previews in chat (no bridge there) and gains real persistence once installed.
+- Decide the data shape BEFORE the UI: which collections exist, what a row holds, when it is read and written.
 - Every interactive element responds visibly: hover, active/pressed, focus ring (accent), and disabled states.
 - Inputs validate inline (small red text under the field) — never `alert()`.
 - Provide a reset/start-over affordance whenever the user builds up state.

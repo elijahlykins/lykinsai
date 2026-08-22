@@ -1,10 +1,8 @@
 import {
   AbsoluteFill,
   Easing,
-  Img,
   interpolate,
   spring,
-  staticFile,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -17,13 +15,13 @@ import { ICON_PATH, ICON_VIEWBOX, WORDMARK_PATH, WORDMARK_VIEWBOX } from "./bran
 // collapses and the LYKN icon springs out of the center.
 // ---------------------------------------------------------------------------
 
-export const PLUS_MACOS_DURATION = 72; // 2.4s @ 30fps
+export const PLUS_MACOS_DURATION = 150; // 5s @ 30fps
 
 const EASE = Easing.inOut(Easing.cubic);
 const EASE_OUT = Easing.out(Easing.cubic);
 const EASE_IN = Easing.in(Easing.cubic);
 
-const BG = "#161616";
+const BG = "#000000";
 const TXT = "#f2f2f2";
 const ACCENT = "#4f7cff";
 
@@ -51,17 +49,40 @@ const PLUS_CX = WM_W + WM_GAP + PLUS_W / 2;
 const MAC_CX = WM_W + WM_GAP + PLUS_W + GAP + MAC_W / 2;
 
 // ── timeline ──
+// The parts land at a relaxed pace with a real beat between each, but the
+// braces keep the fast 4-frame snap from the "Say hello" comp.
 const T = {
-  wmIn: [0, 7] as const, // caret slides across, revealing the wordmark
-  plusShift: [8, 13] as const, // row pushes left to make room
-  plusIn: [9, 14] as const,
-  macShift: [14, 19] as const,
-  macIn: [15, 20] as const,
-  braceL: [23, 29] as const, // left brace flies in first…
-  braceR: [27, 33] as const, // …then the right one
-  collapse: [40, 49] as const,
-  icon: 45, // icon spring starts here
+  wmIn: [0, 18] as const, // caret slides across, revealing the wordmark
+  plusShift: [22, 34] as const, // row pushes left to make room
+  plusIn: [24, 36] as const,
+  macShift: [38, 50] as const,
+  macIn: [40, 52] as const,
+  braceL: [66, 70] as const, // left brace flies in first…
+  braceR: [78, 82] as const, // …then, after a beat, the right one
+  collapse: [112, 121] as const, // second-long hold on the raised lockup first
+  icon: 117, // icon spring starts here
 };
+
+// Light dust specks that fly off each brace on impact — same treatment as the
+// "Say hello" comp. Deterministic layout so renders are stable.
+const makeSpecks = (seed: number, count: number) =>
+  Array.from({ length: count }, (_, i) => {
+    const r = (n: number) => {
+      const x = Math.sin(seed * 91.7 + i * 127.1 + n * 311.7) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    return {
+      dy: (r(1) - 0.5) * 150, // vertical spread along the brace
+      delay: Math.floor(r(2) * 4),
+      life: 28 + Math.floor(r(3) * 18),
+      throw: 90 + r(4) * 170, // horizontal distance flung outward
+      drift: (r(5) - 0.5) * 60, // slight vertical drift in flight
+      size: 2 + r(6) * 3,
+      blue: r(7) > 0.55,
+    };
+  });
+const SPECKS_L = makeSpecks(1, 16);
+const SPECKS_R = makeSpecks(2, 16);
 
 export const LyknPlusMacos: React.FC = () => {
   const frame = useCurrentFrame();
@@ -88,7 +109,7 @@ export const LyknPlusMacos: React.FC = () => {
     extrapolateRight: "clamp",
     easing: EASE,
   });
-  const caretOpacity = interpolate(frame, [0, 2, 6, 9], [0, 1, 1, 0], {
+  const caretOpacity = interpolate(frame, [0, 5, 16, 23], [0, 1, 1, 0], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
@@ -105,7 +126,9 @@ export const LyknPlusMacos: React.FC = () => {
   });
 
   // ── braces (staggered: left first, then right) ──
-  const braceEase = Easing.out(Easing.back(1.7)); // snap past and settle
+  // Snap entrance: accelerate the whole way in and stop dead on impact —
+  // no overshoot, no bounce.
+  const braceEase = Easing.in(Easing.cubic);
   const braceLProg = interpolate(frame, T.braceL, [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
@@ -122,17 +145,25 @@ export const LyknPlusMacos: React.FC = () => {
   // against the wordmark.
   const braceRestL = TOTAL_W / 2 + 40;
   const braceRestR = TOTAL_W / 2 + 72;
-  // Click impact: a small scale punch as each brace lands (right punch is
-  // slightly bigger — it completes the pair).
-  const punchAt = (at: number, amp: number) =>
-    frame >= at
-      ? interpolate(frame, [at, at + 3, at + 9], [1, amp, 1], {
+  // Left impact: tiny quick pulse. Right impact: the whole lockup jumps up in
+  // size the instant it lands and stays raised until the collapse.
+  const punchL =
+    frame >= T.braceL[1]
+      ? interpolate(frame, [T.braceL[1], T.braceL[1] + 2, T.braceL[1] + 7], [1, 1.02, 1], {
           extrapolateLeft: "clamp",
           extrapolateRight: "clamp",
           easing: EASE_OUT,
         })
       : 1;
-  const punch = punchAt(T.braceL[1], 1.02) * punchAt(T.braceR[1], 1.035);
+  const raise =
+    frame >= T.braceR[1]
+      ? interpolate(frame, [T.braceR[1], T.braceR[1] + 2, T.braceR[1] + 8], [1, 1.13, 1.09], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+          easing: EASE_OUT,
+        })
+      : 1;
+  const punch = punchL * raise;
 
   // ── collapse → icon ──
   const collapse = interpolate(frame, T.collapse, [1, 0], {
@@ -151,6 +182,36 @@ export const LyknPlusMacos: React.FC = () => {
   });
   const iconRotate = interpolate(iconSpring, [0, 1], [-24, 0]);
 
+  // ── dust bursts off each brace on impact, flung sideways (dir: -1 = left,
+  // +1 = right) ──
+  const speckBurst = (at: number, cx: number, dir: number, specks: typeof SPECKS_L) => {
+    if (frame < at) return null;
+    return specks.map((p, i) => {
+      const t = frame - (at + p.delay);
+      if (t < 0 || t > p.life) return null;
+      const prog = t / p.life;
+      const eased = 1 - Math.pow(1 - prog, 2);
+      const opacity = interpolate(prog, [0, 0.12, 0.55, 1], [0, 0.85, 0.5, 0]);
+      const color = p.blue ? "rgba(150,195,255," : "rgba(255,255,255,";
+      return (
+        <div
+          key={`speck-${cx}-${i}`}
+          style={{
+            position: "absolute",
+            left: cx + dir * (18 + p.throw * eased),
+            top: 540 + p.dy + p.drift * eased,
+            width: p.size,
+            height: p.size,
+            borderRadius: 99,
+            background: `${color}${opacity.toFixed(3)})`,
+            boxShadow: `0 0 ${p.size * 2.5}px ${color}${(opacity * 0.7).toFixed(3)})`,
+            pointerEvents: "none",
+          }}
+        />
+      );
+    });
+  };
+
   return (
     <AbsoluteFill
       style={{
@@ -159,17 +220,6 @@ export const LyknPlusMacos: React.FC = () => {
         overflow: "hidden",
       }}
     >
-      {/* deep blue studio-gradient backdrop */}
-      <Img
-        src={staticFile("bg-deep-blue.png")}
-        style={{
-          position: "absolute",
-          inset: 0,
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-        }}
-      />
       {/* sentence group (scales away on collapse) */}
       <div
         style={{
@@ -298,6 +348,10 @@ export const LyknPlusMacos: React.FC = () => {
             {"}"}
           </div>
         ) : null}
+
+        {/* dust flung outward off each brace on impact */}
+        {speckBurst(T.braceL[1], 960 - braceRestL, -1, SPECKS_L)}
+        {speckBurst(T.braceR[1], 960 + braceRestR, 1, SPECKS_R)}
       </div>
 
       {/* icon reveal */}

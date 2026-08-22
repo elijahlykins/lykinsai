@@ -5,6 +5,7 @@ import { invalidateWorkspaceSummaryCache } from "@/lib/workspaceContext";
 import { scheduleUserProfileRefresh } from "@/lib/synthesis/profileRefresh";
 import { scheduleSynthesisReindex } from "@/lib/synthesis/queueReindex";
 import { vaultNoteTextForSynthesis } from "@/lib/synthesis/sourceText";
+import { clearAiDriveCache } from "@/lib/vault/aiDriveContents";
 
 const enrichTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const ENRICH_DEBOUNCE_MS = 4000;
@@ -27,6 +28,11 @@ export function afterVaultNoteSaved(
 ): void {
   if (!userId || !noteId) return;
   const bulkImport = !!opts.bulkImport;
+
+  // The AI Drive listing the model is sent is cached for a minute. Saving an
+  // artifact and immediately asking to open it is the obvious next move, so the
+  // list has to know about it before that minute is up.
+  clearAiDriveCache();
 
   if (!bulkImport) {
     invalidateWorkspaceSummaryCache(userId);

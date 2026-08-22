@@ -126,9 +126,8 @@ export default function StewardKanban({
             <p className="text-[0.58rem] uppercase tracking-[0.14em] font-semibold text-black/45 dark:text-white/45 mb-2">
               {STEWARD_COLUMN_LABELS[col] || col} ({byColumn[col]?.length || 0})
             </p>
-            {/* Visible scrollbar + taller cap so overflowed cards are
-                discoverable (scrollbar-hide at max-h-56 hid everything past
-                ~3 cards with zero affordance). */}
+            {/* Taller cap so overflowed cards stay discoverable — max-h-56 hid
+                everything past ~3 cards, and scrollbars are never drawn. */}
             <div className="space-y-2 max-h-80 overflow-y-auto pr-0.5">
               {(byColumn[col] || []).map((item) => (
                 <div
