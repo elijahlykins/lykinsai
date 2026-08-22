@@ -79,6 +79,12 @@ contextBridge.exposeInMainWorld("lykn", {
   // Studio panel rect (window-relative CSS px) where the browser should sit.
   setStudioBrowser: (payload) =>
     ipcRenderer.send("lykn:studio-browser-set", payload || { open: false }),
+  // Called as the Browser window starts opening, so the first tab can load
+  // while the frame animates instead of after it has settled.
+  warmStudioBrowser: () => ipcRenderer.send("lykn:studio-browser-warm"),
+  // Red traffic light on the Browser window: retire every tab and agent.
+  // Yellow minimize only parks the views via setStudioBrowser({ open: false }).
+  closeStudioBrowser: () => ipcRenderer.invoke("lykn:studio-browser-close"),
   // A still picture of the docked browser (tab strip + page, captured
   // separately). The Browser window's open/close motion plays over this,
   // because CSS can move a native view but cannot scale or fade one.

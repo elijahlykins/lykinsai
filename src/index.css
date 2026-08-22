@@ -1865,30 +1865,6 @@ body.embedded-vault-mode .fixed.top-0.bottom-0.right-0.z-\[85\] .space-y-10 {
       inset 0 0 6px rgba(110, 200, 255, 0.05);
   }
 
-  /* Hover should match selection glow (Omnia grid only) */
-  [data-lykn-chat-canvas] .group:hover .glass-text-card,
-  [data-lykn-chat-canvas] .group:hover .glass-block {
-    box-shadow:
-      0 2px 10px rgba(0,0,0,0.06),
-      inset 0 0 16px rgba(110, 200, 255, 0.12),
-      inset 0 0 6px rgba(110, 200, 255, 0.06);
-    transition: box-shadow 140ms ease, border-color 140ms ease;
-  }
-
-  .dark [data-lykn-chat-canvas] .group:hover .glass-text-card,
-  .dark [data-lykn-chat-canvas] .group:hover .glass-block {
-    box-shadow:
-      0 2px 10px rgba(0,0,0,0.16),
-      inset 0 0 16px rgba(110, 200, 255, 0.08),
-      inset 0 0 6px rgba(110, 200, 255, 0.05);
-    transition: box-shadow 140ms ease, border-color 140ms ease;
-  }
-
-  /* Kill ALL transitions on blocks while dragging to prevent glitchy competing animations */
-  [data-lykn-chat-canvas][data-dragging] [data-canvas-block],
-  [data-lykn-chat-canvas][data-dragging] [data-canvas-block] > * {
-    transition: none !important;
-  }
 }
 
 /* =========================================================

@@ -150,6 +150,74 @@ test("a named product picks the site without discarding where to land in it", ()
   );
 });
 
+/**
+ * A second Mailchimp run, the opposite failure. The user was already signed in.
+ * The homepage threw a modal over itself, nothing closed it, and its copy ("log
+ * in to continue") outranked the landing-page test — so a popup was promoted to
+ * a hard wall and an authenticated user was told to sign in, on a marketing page,
+ * with a link to the tab they were already looking at.
+ */
+const POPUP_OVER_MARKETING = `${MARKETING_TEXT} Log in to continue Email Password Continue with Google`;
+const CAMPAIGN_GOAL =
+  "Navigate to Mailchimp, create a new email campaign, and set up its content to focus on promoting LYKN OS.";
+
+test("a modal over a landing page is not a wall — it is a popup to close", () => {
+  for (const modal of [
+    "Log in to continue Email Password",
+    "you need to sign in to view this",
+    "create a free account to get started",
+  ]) {
+    assert.equal(
+      o.looksLikeSignInWall({
+        url: "https://mailchimp.com/",
+        text: `${MARKETING_TEXT} ${modal}`,
+        title: "Mailchimp",
+      }),
+      false,
+      modal,
+    );
+  }
+});
+
+test("a landing page never produces a demand to sign in", () => {
+  const gaps = o.unmetBrowseAskRequirements(CAMPAIGN_GOAL, {
+    url: "https://mailchimp.com/",
+    pageText: POPUP_OVER_MARKETING,
+    title: "Mailchimp",
+    history: [],
+  });
+  // The honest gap is "you are on the front page", not "you are logged out".
+  assert.deepEqual(gaps, ["get past the home/marketing page into the real workspace"]);
+  const ask = o.describeStuckUserAction({
+    goal: CAMPAIGN_GOAL,
+    gaps,
+    url: "https://mailchimp.com/",
+    pageText: POPUP_OVER_MARKETING,
+  });
+  assert.doesNotMatch(ask, /^Sign in to/i);
+  assert.match(ask, /mailchimp\.com/);
+});
+
+test("a real login form still asks for a password", () => {
+  // The fix above must not buy itself silence on an actual wall.
+  const gaps = o.unmetBrowseAskRequirements(CAMPAIGN_GOAL, {
+    url: "https://login.mailchimp.com/",
+    pageText: SIGN_IN_TEXT,
+    title: "Login | Mailchimp",
+    history: [],
+  });
+  assert.deepEqual(gaps, ["sign in so the page is usable"]);
+  assert.match(
+    o.describeStuckUserAction({
+      goal: CAMPAIGN_GOAL,
+      gaps,
+      url: "https://login.mailchimp.com/",
+      pageText: SIGN_IN_TEXT,
+    }),
+    /^Sign in to/i,
+  );
+});
+
 test("a paywall is still told apart from a login", () => {
   assert.equal(
     o.looksLikeSignInWall({

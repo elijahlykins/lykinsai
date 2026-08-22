@@ -46,6 +46,9 @@ const BATCHABLE_ACTIONS = new Set([
   "go_forward",
   "open_tab",
   "switch_tab",
+  // Sweeping what a page put over itself names no element and commits nothing,
+  // and the step it most often belongs after is `navigate`.
+  "dismiss_overlay",
 ]);
 
 /**

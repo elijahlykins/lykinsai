@@ -39,6 +39,7 @@ const path = require("node:path");
 
 const LOG_DIR_NAME = "browser-agent-logs";
 const FALLBACK_FILE = "runtime-fallbacks.jsonl";
+const ROUTE_FILE = "route-decisions.jsonl";
 
 /** Traces to summarise. Recent enough to cover the session being reported on. */
 const MAX_TASKS_IN_REPORT = 20;
@@ -70,6 +71,34 @@ function logDir(userDataPath) {
  * @param {string}  opts.reason     the error's message
  * @param {string} [opts.appVersion]
  */
+/**
+ * Where an ambiguous ask was routed, and why.
+ *
+ * The keyword heuristics send anything they cannot place to the chat model,
+ * which has no browser — so a misroute looks like the assistant saying it is
+ * looking into something and then nothing happening. Recording the model's
+ * routing calls is what makes that answerable after the fact rather than
+ * reproducible only by accident.
+ */
+function recordRouteDecision({ userDataPath, ask, route, reason } = {}) {
+  if (!userDataPath) return;
+  try {
+    const dir = logDir(userDataPath);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(
+      path.join(dir, ROUTE_FILE),
+      `${JSON.stringify({
+        at: new Date().toISOString(),
+        ask: String(ask || "").slice(0, 160),
+        route: String(route || "").slice(0, 12),
+        reason: String(reason || "").slice(0, 160),
+      })}\n`,
+    );
+  } catch {
+    /* diagnostics must never break a run */
+  }
+}
+
 function recordRuntimeFallback({ userDataPath, surface, reason, appVersion = "" } = {}) {
   fallbacksThisSession += 1;
   // Visible in `npm run dev:overlay`, where the console is actually read.
@@ -293,6 +322,7 @@ function buildDiagnosticsReport({ userDataPath, env = {} } = {}) {
 
 module.exports = {
   recordRuntimeFallback,
+  recordRouteDecision,
   fallbackCountThisSession,
   buildDiagnosticsReport,
   summariseTrace,

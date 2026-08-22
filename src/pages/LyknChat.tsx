@@ -1,10 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { readEmbeddedPreviewParams } from "@/lib/embeddedPreview";
-import { useLyknChatStore } from "@/store/lyknChatStore";
-import type { Block } from "@/lyknChat/types";
 import { ChevronDown, ChevronUp, ChevronRight, Code, Link as LinkIcon, Image as ImageIcon, ImagePlus, MessageCircle, Mic, BookOpen, X, Clock, Edit2, Folder as FolderIcon, FolderKanban, Link2, MoreHorizontal, PanelRightClose, PanelRight, StickyNote, Play, FileText, Music, Video, Share2, Download, Copy, Check, RefreshCw, Telescope, ThumbsUp, ThumbsDown, Square, Sparkles, Save, SquarePen, Globe, GripVertical, ArrowUp, Layers, GraduationCap, Newspaper, Users, TrendingUp, type LucideIcon } from "lucide-react";
-import { GridIcon } from "@/components/ui/GridIcon";
 import DraggableQuickNote from "@/components/notes/DraggableQuickNote";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -34,21 +31,15 @@ import { useAiStore } from "@/store/aiStore";
 import { useAuth } from "@/lib/SupabaseAuth";
 import { useUsageGate } from "@/lib/useUsageGate";
 import UpgradeModal from "@/components/UpgradeModal";
-import { getBlockDefinition } from "@/lyknChat/blockSystem/definitions";
-import type { UniversalBlockType } from "@/lyknChat/blockSystem/types";
-import { createDatabaseBlockData } from "@/lyknChat/blockSystem/notionModel";
 import { extractYouTubeVideoId } from "@/lib/media/youtube";
 import LinkPreview from "@/components/LinkPreview";
 import { SiteFavicon } from "@/components/SiteFavicon";
-import { detectSocialPlatform, isSocialEmbedType } from "@/lib/media/socialEmbed";
-import { promptFileDropMode } from "@/lib/fileDropModePrompt";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThinkingStatus } from "@/hooks/useThinkingStatus";
 import { getStructuredPasteFromEvent } from "@/lib/pasteFromClipboard";
 import { copyMarkdownAsRich } from "@/lib/copyRichClipboard";
 import { getAiPrefs } from "@/lib/ai-prefs";
-import { buildTieredLyknChatContext, buildActionLyknChatContext } from "@/lib/ai/buildLyknChatContext";
 import { maybeAutoNameChat, buildAttachmentContext } from "@/lib/ai/chatSendOrchestrator";
 import { ocrImageAttachments } from "@/lib/ai/imageOcr";
 import { ingestChatFiles } from "@/lib/chat/ingestChatFiles";
@@ -57,10 +48,9 @@ import { persistMessageFeedback } from "@/lib/chat/messageFeedback";
 import { createNewChat } from "@/lib/chat/chatThreadsClient";
 import { addOpenThread } from "@/lib/chat/chatThreadRuntime";
 import { notifyLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
-import { getVaultSidebarWidth, useIsTouchOnlyDevice, getIsTouchOnlyDevice } from "@/hooks/useViewportTier";
+import { getVaultSidebarWidth, useIsTouchOnlyDevice } from "@/hooks/useViewportTier";
 import { afterVaultNoteSaved } from "@/lib/vault/afterVaultSave";
 import { saveGeneratedImageToVault } from "@/lib/saveToVault";
-import { fetchNotesForVaultAi, buildVaultDetailForGridAi, type VaultAiNoteRow } from "@/lib/vault/vaultContentsForAi";
 import { stripAttachmentsMarker } from "@/lib/vault/attachmentsMarker";
 import { CONTEXT_BUDGETS } from "@/lib/ai/promptBuilder";
 import { saveExchange, getMemoryForPrompt, invalidateMemoryCache } from "@/lib/conversationMemory";
@@ -99,13 +89,6 @@ import { patchThreadSnapshot } from "@/lib/chat/chatThreadRuntime";
 import LyknChatPlusMenu from "@/components/lyknChat/LyknChatPlusMenu";
 import LyknChatProjectPicker, { type LyknChatScopedProject } from "@/components/lyknChat/LyknChatProjectPicker";
 import AddLinkDialog, { type AddLinkPreview } from "@/components/AddLinkDialog";
-// Feature flag — the LYKN Grid canvas surface is temporarily unplugged.
-// Keep this `true` to make the focused chat the main interface across `/app`,
-// `/chat/:chatId`, and `/omnia`. Flip back to `false` to re-enable the
-// canvas + mode-toggle UX without any other code changes. All grid logic,
-// state, and components remain wired up — they just never become visible
-// while this flag is on.
-const GRID_DISABLED = true;
 
 const TASK_LINE_RE = /^\s*(?:[-*]\s+)?\[([ xX])\]\s+(.+)$/;
 
@@ -288,7 +271,7 @@ type CreateAction =
   | { type: "create_list"; listType?: "todo" | "bulleted" | "numbered"; items?: string[] }
   | { type: "create_design_board"; board?: any; title?: string; seedText?: string }
   | { type: "create_code_block"; language?: string; content?: string }
-  | { type: "create_universal_block"; universalType?: UniversalBlockType; name?: string; data?: Record<string, unknown> }
+  | { type: "create_universal_block"; universalType?: string; name?: string; data?: Record<string, unknown> }
   | { type: "create_youtube_block"; url?: string; title?: string }
   | { type: "create_database_relation"; fromDatabaseName?: string; toDatabaseName?: string; relationType?: "one-to-one" | "one-to-many" | "many-to-many"; rollup?: { property?: string; aggregation?: "sum" | "count" | "average" } }
   | { type: "delete_block"; blockId?: string; blockIds?: string[] }
@@ -303,172 +286,6 @@ type OrchestratorResult = {
   requiresClarification: boolean;
   groundingSummary?: string;
 };
-
-/**
- * Layout-aware placement: finds a non-overlapping position by analysing existing
- * blocks, detecting gap spacing, spiralling outward from the viewport centre, and
- * falling back to extending detected row/column patterns.
- */
-function findSmartPlacement(opts: {
-  blockW: number;
-  blockH: number;
-  gridSize: number;
-  camera: { x: number; y: number; zoom: number };
-  viewportW: number;
-  viewportH: number;
-  railWidth: number;
-  existingBlocks: Array<{ x: number; y: number; width: number; height: number }>;
-}): { x: number; y: number } {
-  const { blockW, blockH, gridSize: g, camera, viewportW, viewportH, railWidth, existingBlocks } = opts;
-  const z = Math.max(0.1, camera.zoom || 1);
-  const boardVW = Math.max(g * 8, (viewportW - railWidth) / z);
-  const boardVH = Math.max(g * 8, viewportH / z);
-  const camX = camera.x;
-  const camY = camera.y;
-
-  const rects = existingBlocks.map((b) => ({
-    x: Number(b.x || 0),
-    y: Number(b.y || 0),
-    w: Number(b.width || g),
-    h: Number(b.height || g),
-  }));
-
-  const defaultGap = g * 2;
-  let gapX = defaultGap;
-  let gapY = defaultGap;
-
-  if (rects.length >= 2) {
-    const hGaps: number[] = [];
-    const vGaps: number[] = [];
-    const sorted = rects.slice().sort((a, b) => a.x - b.x || a.y - b.y);
-    for (let i = 0; i < sorted.length; i++) {
-      const a = sorted[i];
-      let bestRight = Infinity;
-      let bestBelow = Infinity;
-      for (let j = 0; j < sorted.length; j++) {
-        if (i === j) continue;
-        const b = sorted[j];
-        const hDist = b.x - (a.x + a.w);
-        if (hDist > 0 && hDist < g * 20 && Math.abs(b.y - a.y) < Math.max(a.h, b.h)) {
-          if (hDist < bestRight) bestRight = hDist;
-        }
-        const vDist = b.y - (a.y + a.h);
-        if (vDist > 0 && vDist < g * 20 && Math.abs(b.x - a.x) < Math.max(a.w, b.w)) {
-          if (vDist < bestBelow) bestBelow = vDist;
-        }
-      }
-      if (bestRight < Infinity) hGaps.push(bestRight);
-      if (bestBelow < Infinity) vGaps.push(bestBelow);
-    }
-    const median = (arr: number[]) => {
-      if (!arr.length) return defaultGap;
-      const s = arr.slice().sort((a, b) => a - b);
-      const mid = Math.floor(s.length / 2);
-      return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
-    };
-    if (hGaps.length) gapX = Math.max(g, Math.round(median(hGaps) / g) * g);
-    if (vGaps.length) gapY = Math.max(g, Math.round(median(vGaps) / g) * g);
-  }
-
-  const padX = Math.max(g, Math.floor(gapX / 2));
-  const padY = Math.max(g, Math.floor(gapY / 2));
-
-  const overlaps = (px: number, py: number, pw: number, ph: number) =>
-    rects.some(
-      (r) =>
-        px < r.x + r.w + padX &&
-        px + pw > r.x - padX &&
-        py < r.y + r.h + padY &&
-        py + ph > r.y - padY
-    );
-
-  const viewLeft = camX + g;
-  const viewTop = camY + g;
-  const viewRight = camX + boardVW - blockW - g;
-  const viewBottom = camY + boardVH - blockH - g * 4;
-  const cx = Math.round(((viewLeft + viewRight) / 2) / g) * g;
-  const cy = Math.round(((viewTop + viewBottom) / 2) / g) * g;
-
-  let placed = false;
-  let worldX = cx;
-  let worldY = cy;
-
-  const maxRadius = Math.max(boardVW, boardVH);
-  for (let radius = 0; radius <= maxRadius && !placed; radius += g) {
-    if (radius === 0) {
-      if (cx >= viewLeft && cx <= viewRight && cy >= viewTop && cy <= viewBottom && !overlaps(cx, cy, blockW, blockH)) {
-        worldX = cx; worldY = cy; placed = true;
-      }
-      continue;
-    }
-    for (let dx = -radius; dx <= radius && !placed; dx += g) {
-      for (const dy of [-radius, radius]) {
-        const px = Math.round((cx + dx) / g) * g;
-        const py = Math.round((cy + dy) / g) * g;
-        if (px >= viewLeft && px <= viewRight && py >= viewTop && py <= viewBottom && !overlaps(px, py, blockW, blockH)) {
-          worldX = px; worldY = py; placed = true; break;
-        }
-      }
-    }
-    if (placed) break;
-    for (let dy = -radius + g; dy <= radius - g && !placed; dy += g) {
-      for (const dx of [-radius, radius]) {
-        const px = Math.round((cx + dx) / g) * g;
-        const py = Math.round((cy + dy) / g) * g;
-        if (px >= viewLeft && px <= viewRight && py >= viewTop && py <= viewBottom && !overlaps(px, py, blockW, blockH)) {
-          worldX = px; worldY = py; placed = true; break;
-        }
-      }
-    }
-  }
-
-  if (!placed) {
-    const rowMap = new Map<number, typeof rects>();
-    const colMap = new Map<number, typeof rects>();
-    for (const r of rects) {
-      const ry = Math.round(r.y / g) * g;
-      const rx = Math.round(r.x / g) * g;
-      if (!rowMap.has(ry)) rowMap.set(ry, []);
-      rowMap.get(ry)!.push(r);
-      if (!colMap.has(rx)) colMap.set(rx, []);
-      colMap.get(rx)!.push(r);
-    }
-
-    let bestRowCount = 0;
-    for (const members of rowMap.values()) if (members.length > bestRowCount) bestRowCount = members.length;
-    let bestColCount = 0;
-    for (const members of colMap.values()) if (members.length > bestColCount) bestColCount = members.length;
-
-    if (bestRowCount >= 2 && bestRowCount >= bestColCount) {
-      let bestRow: typeof rects = [];
-      for (const members of rowMap.values()) if (members.length === bestRowCount) { bestRow = members; break; }
-      const rightmost = bestRow.reduce((m, r) => r.x + r.w > m.x + m.w ? r : m, bestRow[0]);
-      const cand = { x: Math.round((rightmost.x + rightmost.w + gapX) / g) * g, y: Math.round(rightmost.y / g) * g };
-      if (!overlaps(cand.x, cand.y, blockW, blockH)) {
-        worldX = cand.x; worldY = cand.y; placed = true;
-      }
-    }
-
-    if (!placed && bestColCount >= 2) {
-      let bestCol: typeof rects = [];
-      for (const members of colMap.values()) if (members.length === bestColCount) { bestCol = members; break; }
-      const bottommost = bestCol.reduce((m, r) => r.y + r.h > m.y + m.h ? r : m, bestCol[0]);
-      const cand = { x: Math.round(bottommost.x / g) * g, y: Math.round((bottommost.y + bottommost.h + gapY) / g) * g };
-      if (!overlaps(cand.x, cand.y, blockW, blockH)) {
-        worldX = cand.x; worldY = cand.y; placed = true;
-      }
-    }
-
-    if (!placed) {
-      let maxBottom = camY;
-      for (const r of rects) { const b = r.y + r.h; if (b > maxBottom) maxBottom = b; }
-      worldX = Math.max(g, Math.round((camX + boardVW * 0.5 - blockW / 2) / g) * g);
-      worldY = Math.max(g, Math.round((maxBottom + gapY) / g) * g);
-    }
-  }
-
-  return { x: Math.max(g, worldX), y: Math.max(g, worldY) };
-}
 
 const CHAT_TO_BOARD_IMPORT_KEY = "lyknchat_chat_import_v1";
 
@@ -1314,34 +1131,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       });
     } catch { /* toast unavailable — non-critical */ }
   }, [nav]);
-  const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal, limits: planLimits } = useUsageGate();
-  const setBlockLimit = useLyknChatStore((s) => s.setBlockLimit);
-  // Push the plan's blocks-per-grid cap into the store so every addBlock
-  // call path (drag-drop, paste, AI actions, toolbars, etc.) gets gated for
-  // free.
-  useEffect(() => {
-    const raw = planLimits?.blocksPerGrid;
-    const cap = raw == null || !isFinite(raw) ? null : raw;
-    setBlockLimit(cap);
-    // Don't clear on unmount — the store is module-scoped and the next mount
-    // will set it again from the latest plan.
-  }, [planLimits?.blocksPerGrid, setBlockLimit]);
-  const blockCount = useLyknChatStore((s) => s.blockOrder.length);
-  const blockUrlSignature = useLyknChatStore((s) =>
-    s.blockOrder.map((id) => {
-      const b = s.blocks[id] as any;
-      if (!b) return "";
-      return (b.src || "") + (b.url || "") + (b.data?.src || "") + (b.data?.url || "");
-    }).join("\n")
-  );
-  const addTextBlockAt = useLyknChatStore((s) => s.addTextBlockAt);
-  const addListBlockAt = useLyknChatStore((s) => s.addListBlockAt);
-  const setListItems = useLyknChatStore((s) => s.setListItems);
-  const deleteBlock = useLyknChatStore((s) => s.deleteBlock);
-  const setCamera = useLyknChatStore((s) => s.setCamera);
-  const loadBlocks = useLyknChatStore((s) => s.loadBlocks);
-  const reset = useLyknChatStore((s) => s.reset);
-  const gridSize = useLyknChatStore((s) => s.gridSize);
+  const { checkVaultLimit, incrementVaultCount, upgradeModal, dismissUpgradeModal } = useUsageGate();
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [showAddLinkDialog, setShowAddLinkDialog] = useState(false);
   const [showVaultSidebar, setShowVaultSidebar] = useState(false);
@@ -1357,8 +1147,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   // otherwise users were getting bumped into the phone-only chat shell just
   // by snapping a window to half the screen.
   const isTouchOnlyDevice = useIsTouchOnlyDevice();
-  const isMobileGrid = viewportWidth < 640 && isTouchOnlyDevice;
-  // Phone-class viewport: hide the grid canvas entirely and run chat-only.
   const isMobilePhone = viewportWidth < 768 && isTouchOnlyDevice;
   const vaultSidebarWidthPx = useMemo(() => getVaultSidebarWidth(viewportWidth), [viewportWidth]);
   const DialogAny = Dialog as any;
@@ -1370,7 +1158,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   const getCachedKbText = useAiStore((s) => s.getCachedKbText);
   const refreshWorkspaceSummary = useAiStore((s) => s.refreshWorkspaceSummary);
   const getCachedWorkspaceSummary = useAiStore((s) => s.getCachedWorkspaceSummary);
-  const markProjectDirty = useAiStore((s) => s.markProjectDirty);
   const getAISuggestions = useAiStore((s) => s.getAISuggestions);
   const organizeIdeas = useAiStore((s) => s.organizeIdeas);
   const generateProjectSummary = useAiStore((s) => s.generateProjectSummary);
@@ -1566,51 +1353,11 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     } catch { /* ignore */ }
   }, [modelTier, planLoading, selectedModel, activeCustomModelId]);
 
-  // Allow callers (e.g. the Skills page) to deep-link directly into the
-  // grid in chat-focused mode by appending `?chat=1` to the URL. We read
-  // the flag once on mount, then strip it from the URL so it doesn't
-  // linger across reloads or shares.
-  // Phones default to chat-only (no canvas) regardless of the URL flag.
-  // Note: we require an actual touch-only device here so that a laptop in
-  // split-screen mode (narrow viewport, but still mouse + hover) doesn't
-  // start up in the phone shell.
-  const [chatMode, setChatMode] = useState(() => {
-    // Grid is unplugged — focused chat is the only experience.
-    if (GRID_DISABLED) return true;
-    if (typeof window === "undefined") return false;
-    if ((window.innerWidth || 1280) < 768 && getIsTouchOnlyDevice()) return true;
-    const params = new URLSearchParams(window.location.search);
-    return params.get("chat") === "1";
-  });
-
-  // Force chat mode on whenever the viewport drops to phone size (e.g. user
-  // rotates a tablet, or resizes the browser). This is the safety net so the
-  // canvas can never be exposed on a phone.
-  useEffect(() => {
-    if (isMobilePhone && !chatMode) setChatMode(true);
-  }, [isMobilePhone, chatMode]);
-  useEffect(() => {
-    if (!location.search) return;
-    const params = new URLSearchParams(location.search);
-    if (params.has("chat")) {
-      params.delete("chat");
-      const cleaned = params.toString();
-      nav(
-        { pathname: location.pathname, search: cleaned ? `?${cleaned}` : "" },
-        { replace: true }
-      );
-    }
-    // Only run on initial mount; later URL changes are handled elsewhere.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const chatMode = true;
+  const setChatMode = useCallback((_value?: unknown) => {}, []);
   const [notesOpen, setNotesOpenRaw] = useState(false);
-  const [notesGridFilesHidden, setNotesGridFilesHidden] = useState(false);
   const setNotesOpen = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
-    setNotesOpenRaw((prev) => {
-      const next = typeof v === "function" ? v(prev) : v;
-      if (next && !prev) setNotesGridFilesHidden(false);
-      return next;
-    });
+    setNotesOpenRaw((prev) => (typeof v === "function" ? v(prev) : v));
   }, []);
   const defaultPages = useRef(makeDefaultNotesPages()).current;
   const notesPagesRef = useRef(defaultPages);
@@ -1625,7 +1372,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   const [centerChatLeaving, setCenterChatLeaving] = useState(false);
   const [savedYouTubeIds, setSavedYouTubeIds] = useState<Set<string>>(new Set());
   const [savedMediaUrls, setSavedMediaUrls] = useState<Set<string>>(new Set());
-  const updateBlock = useLyknChatStore((s) => s.updateBlock);
   const chatImportAppliedRef = useRef<string | null>(null);
 
   /* Shared chat state (lifted here so both useLyknChatPersistence and useChatEngine can use them) */
@@ -1878,12 +1624,8 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   }, []);
 
   /* ------------------------------------------------------------------ */
-  /*  Board persistence hook                                             */
+  /*  Chat persistence hook                                              */
   /* ------------------------------------------------------------------ */
-  const projectIdRef = useRef<string | null>(null);
-  const onCanvasChange = useCallback(() => {
-    if (projectIdRef.current) markProjectDirty(projectIdRef.current);
-  }, [markProjectDirty]);
   const draftCleanupRef = useRef<(() => void) | null>(null);
   const onDraftEffectCleanup = useCallback(() => { draftCleanupRef.current?.(); }, []);
 
@@ -1898,9 +1640,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   } = useLyknChatPersistence({
     routeChatId,
     userId: user?.id,
-    gridSize,
-    loadBlocks,
-    reset,
     chatMessages,
     chatMessagesRef,
     aiThreadRef,
@@ -1910,10 +1649,8 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     setChatMessages,
     setChatRailOpen,
     setChatRailVisible,
-    setChatMode,
     reSignChatAttachments,
     restoreSavedToVaultState,
-    onCanvasChange,
     onDraftEffectCleanup,
     savedMediaUrls,
     savedYouTubeIds,
@@ -1930,7 +1667,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     projectFiles,
     resolveProjectFileToFile,
   } = useProjectFiles(chatId, user?.id);
-  projectIdRef.current = projectId ?? null;
 
   // Load-in greeting (consume half — paired with the trigger effect
   // further up). Once useLyknChatPersistence has hydrated the brand-new
@@ -2363,11 +2099,10 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   const chatEngine = useChatEngine({
     chatId, routeChatId, user, title, titleRef, selectedModel,
     customModelId: activeCustomModelId,
-    notesPagesRef, projectId: effectiveChatProjectId, scopedProjectId: chatScopedProject?.id ?? null, scopedProjectName: chatScopedProject?.name ?? null, gridSize, viewportWidth,
+    notesPagesRef, projectId: effectiveChatProjectId, scopedProjectId: chatScopedProject?.id ?? null, scopedProjectName: chatScopedProject?.name ?? null,
     chatMode, chatRailVisible,
     chatMessages, setChatMessages, chatMessagesRef, aiThreadRef,
     convoSummaryRef, convoTurnsSinceSummaryRef,
-    updateBlock, deleteBlock, addTextBlockAt, addListBlockAt, setListItems,
     getCachedKbText, getCachedWorkspaceSummary,
     setChatRailOpen, setChatRailVisible, setChatMode,
     setConnectionCards, setShowConnectionCard,
@@ -2397,7 +2132,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     applyVaultDropToChat, resizeChatInput,
     toggleAiExpanded, toggleUserPromptExpanded, getCollapsedPreview,
     updateTaskCheck, buildChatMarkdownComponents,
-    typeResponseIntoChat, addChatResponseToGrid,
+    typeResponseIntoChat,
     replaySavedPromptResponse, applyProjectActions,
   } = chatEngine;
   const keepBuildThinking =
@@ -2473,64 +2208,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     [chatRailWidthPx, clampChatRailWidth, viewportWidth]
   );
 
-  const buildLyknChatContext = useCallback(() => {
-    // GRID_DISABLED short-circuit. With the canvas surface unplugged the
-    // store contains no blocks for the user, so iterating it just to
-    // serialise an empty tiered context is pure overhead — and it used to
-    // ship a 14k-char "[CANVAS_CONTEXT]" payload to every chat request
-    // describing a grid the user can't see. Returning "" here makes the
-    // shared chat orchestrator skip the canvas branch entirely.
-    if (GRID_DISABLED) return "";
-    const st = useLyknChatStore.getState();
-    const cam = (st as any).camera || { x: 0, y: 0 };
-    const vw = window.innerWidth || 1280;
-    const vh = window.innerHeight || 800;
-    return buildTieredLyknChatContext({
-      blocks: st.blocks as Record<string, any>,
-      blockOrder: Array.isArray(st.blockOrder) ? st.blockOrder : [],
-      focusedBrickIds: Array.isArray(st.focusedBrickIds) ? st.focusedBrickIds : [],
-      viewportCenter: {
-        x: (cam.x || 0) + vw / 2,
-        y: (cam.y || 0) + vh / 2,
-      },
-      wireConnections: Array.isArray(st.wireConnections) ? st.wireConnections : [],
-      recentlyDeleted: Array.isArray((st as any).recentlyDeleted) ? (st as any).recentlyDeleted : [],
-    });
-  }, []);
-
-  const normalizeAiTextForBlock = useCallback((text: string) => {
-    return String(text || "").replace(/\r\n?/g, "\n");
-  }, []);
-
-  const calcAiBubbleSize = useCallback((text: string) => {
-    const st = useLyknChatStore.getState() as any;
-    const g = Math.max(1, Math.floor(st.gridSize || 24));
-    const screenW = window.innerWidth || 1280;
-    const maxWidthPx = Math.max(g * 10, Math.floor(screenW * 0.9));
-    const horizontalPad = 16;
-    const charWidthPx = 7.8;
-    const lineHeightPx = g;
-    const verticalPad = 8;
-
-    const lines = String(text || "").split("\n");
-    const longest = lines.reduce((m, l) => Math.max(m, String(l || "").length), 0);
-    const naturalWidth = Math.ceil(longest * charWidthPx + horizontalPad);
-    const singleColWidth = Math.max(g * 8, Math.min(maxWidthPx, naturalWidth));
-
-    const usableWidth = Math.max(1, singleColWidth - horizontalPad);
-    const charsPerLine = Math.max(1, Math.floor(usableWidth / charWidthPx));
-    let wrappedLines = 0;
-    for (const line of lines) {
-      wrappedLines += Math.max(1, Math.ceil((line.length || 1) / charsPerLine));
-    }
-
-    const contentHeight = wrappedLines * lineHeightPx + verticalPad;
-    const heightPx = Math.max(g * 2, Math.ceil(contentHeight / g) * g);
-
-    return { width: singleColWidth, height: heightPx };
-  }, []);
-
-
   useEffect(() => {
     if (!chatId || !user?.id) return;
     if (chatImportAppliedRef.current === chatId) return;
@@ -2582,27 +2259,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       })
       .filter(Boolean) as PromptMessage[];
 
-    const importedTodoLists = (Array.isArray(payload.todoLists) ? payload.todoLists : [])
-      .map((list, listIdx) => {
-        const items = (Array.isArray(list?.items) ? list.items : [])
-          .map((item, itemIdx) => {
-            const text = String(item?.text || "").trim();
-            if (!text) return null;
-            return {
-              id: `li-import-${listIdx + 1}-${itemIdx + 1}-${Date.now().toString(36)}`,
-              text,
-              checked: Boolean(item?.checked),
-            };
-          })
-          .filter(Boolean);
-        return {
-          id: String(list?.id || `import-todo-${listIdx + 1}`),
-          title: String(list?.title || `To-do ${listIdx + 1}`),
-          items,
-        };
-      })
-      .filter((list) => list.items.length > 0);
-
     try {
       localStorage.removeItem(CHAT_TO_BOARD_IMPORT_KEY);
     } catch {
@@ -2622,128 +2278,41 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
             ]
           : [{ role: "user" as const, content: p.content }]
       );
-
-      const latestAi = [...importedPrompts]
-        .reverse()
-        .map((p) => String(p.aiResponse || "").trim())
-        .find(Boolean);
-
-      // AI responses are shown in the chat rail; no grid blocks to retire.
-    }
-
-    if (importedTodoLists.length) {
-      const st = useLyknChatStore.getState() as any;
-      const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const iVw = window.innerWidth || 1280;
-      const iVh = window.innerHeight || 800;
-
-      importedTodoLists.forEach((todoList) => {
-        const itemCount = Array.isArray(todoList.items) ? todoList.items.length : 0;
-        const estH = g * Math.max(3, itemCount + 2);
-        const cur = useLyknChatStore.getState() as any;
-        const pos = findSmartPlacement({
-          blockW: g * 12,
-          blockH: estH,
-          gridSize: g,
-          camera: cur.camera || { x: 0, y: 0, zoom: 1 },
-          viewportW: iVw,
-          viewportH: iVh,
-          railWidth: 0,
-          existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[],
-        });
-        const listId = addListBlockAt({ x: pos.x, y: pos.y }, { listType: "todo", width: g * 12 });
-        setListItems(listId as any, todoList.items as any, "todo");
-      });
     }
 
     const importedAttachments = Array.isArray(payload.attachments) ? payload.attachments : [];
-    if (importedAttachments.length) {
-      const st = useLyknChatStore.getState() as any;
-      const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const aVw = window.innerWidth || 1280;
-      const aVh = window.innerHeight || 800;
-
-      const attPos = (bw: number, bh: number) => {
-        const cur = useLyknChatStore.getState() as any;
-        return findSmartPlacement({
-          blockW: bw,
-          blockH: bh,
-          gridSize: g,
-          camera: cur.camera || { x: 0, y: 0, zoom: 1 },
-          viewportW: aVw,
-          viewportH: aVh,
-          railWidth: 0,
-          existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[],
+    for (const att of importedAttachments) {
+      const url = String(att.url || "").trim();
+      const attType = String(att.type || "").toLowerCase();
+      const videoId = att.videoId || (attType === "youtube" ? (extractYouTubeVideoId(url) || "") : "");
+      if (attType === "vault" && att.vaultContent) {
+        addFocusedAttachment({
+          id: makeAttId(),
+          type: "vault",
+          url: "",
+          name: String(att.vaultTitle || att.name || "Vault item"),
+          mime: "",
+          size: 0,
+          vaultTitle: String(att.vaultTitle || ""),
+          vaultContent: String(att.vaultContent),
         });
-      };
-
-      for (const att of importedAttachments) {
-        const url = String(att.url || "").trim();
-        const attType = String(att.type || "").toLowerCase();
-        const videoId = att.videoId || (attType === "youtube" ? (extractYouTubeVideoId(url) || "") : "");
-
-        if (attType === "youtube" && (videoId || url)) {
-          const ytUrl = url || `https://www.youtube.com/watch?v=${videoId}`;
-          const p = attPos(g * 12, g * 8);
-          st.addYouTubeBlockAt({ x: p.x, y: p.y }, { url: ytUrl, videoId });
-        } else if (attType === "image" && url) {
-          const p = attPos(g * 12, g * 12);
-          if (url.startsWith("data:image/")) {
-            const parts = url.split(",");
-            const mm = parts[0]?.match(/:(.*?);/);
-            if (mm && parts[1]) {
-              try {
-                const bstr = atob(parts[1]);
-                const u8 = new Uint8Array(bstr.length);
-                for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
-                const file = new File([u8], att.name || "image.png", { type: mm[1] });
-                window.dispatchEvent(new CustomEvent("lyknchat_attach_files", { detail: { files: [file], clientX: p.x, clientY: p.y } }));
-              } catch { /* ignore */ }
-            }
-          } else {
-            window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url, clientX: p.x, clientY: p.y } }));
-          }
-        } else if (attType === "video" && url) {
-          const p = attPos(g * 16, g * 10);
-          window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url, clientX: p.x, clientY: p.y } }));
-        } else if (attType === "pdf") {
-          const pdfText = String(att.pdfText || att.extractedText || "").trim();
-          if (pdfText) {
-            const title = String(att.name || att.vaultTitle || "PDF").trim();
-            const combined = `# ${title}\n\n${pdfText}`;
-            const charsPerLine = Math.max(1, Math.floor((g * 16 * 0.85) / 8));
-            const wrappedLines = combined.split("\n").reduce((sum: number, line: string) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
-            const height = Math.max(g * 6, Math.min(g * 30, wrappedLines * 22 + 32));
-            const p = attPos(g * 16, height);
-            st.addTextBlockAt({ x: p.x, y: p.y }, { width: g * 16, height, content: combined, format: "plain" });
-          } else if (url) {
-            const pdfName = String(att.name || att.vaultTitle || "document.pdf").trim();
-            const pdfUrl = url;
-            const p = attPos(g * 16, g * 10);
-            (async () => {
-              try {
-                const resp = await fetch(pdfUrl);
-                if (resp.ok) {
-                  const blob = await resp.blob();
-                  const file = new File([blob], pdfName.endsWith(".pdf") ? pdfName : `${pdfName}.pdf`, { type: "application/pdf" });
-                  window.dispatchEvent(new CustomEvent("lyknchat_attach_files", { detail: { files: [file], clientX: p.x, clientY: p.y } }));
-                  return;
-                }
-              } catch { /* fetch failed, fall through */ }
-              window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: pdfUrl, clientX: p.x, clientY: p.y } }));
-            })();
-          }
-        } else if (attType === "vault" && att.vaultContent) {
-          const content = att.vaultTitle ? `# ${att.vaultTitle}\n\n${att.vaultContent}` : att.vaultContent;
-          const p = attPos(g * 12, g * 6);
-          st.addTextBlockAt({ x: p.x, y: p.y }, { width: g * 12, height: g * 6, content, format: "rich" });
-        } else if (url) {
-          const p = attPos(g * 10, g * 6);
-          window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url, clientX: p.x, clientY: p.y } }));
-        }
+        continue;
       }
+      if (!url && !att.pdfText && !att.extractedText) continue;
+      addFocusedAttachment({
+        id: makeAttId(),
+        type: attType || inferUrlAttachmentType(url),
+        url,
+        name: String(att.name || att.vaultTitle || url || "Attachment"),
+        mime: String(att.mime || ""),
+        size: 0,
+        ...(videoId ? { videoId } : {}),
+        ...(att.pdfText ? { pdfText: String(att.pdfText) } : {}),
+        ...(att.extractedText ? { extractedText: String(att.extractedText) } : {}),
+        ...(att.transcript ? { transcript: String(att.transcript) } : {}),
+      });
     }
-  }, [addListBlockAt, chatId, setListItems, user?.id]);
+  }, [addFocusedAttachment, chatId, user?.id]);
 
   const handleOrganizeIdeas = useCallback(
     async (intentText: string) => {
@@ -3111,13 +2680,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
   const handleConfirmAddLink = useCallback((preview: AddLinkPreview) => {
     const url = String(preview?.url || "").trim();
     if (!url) return;
-    if (chatMode) {
-      addLinkToChat(url, preview);
-    } else {
-      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url, preview } }));
-    }
+    addLinkToChat(url, preview);
     setShowAddLinkDialog(false);
-  }, [chatMode, addLinkToChat]);
+  }, [addLinkToChat]);
 
   // Open the same vault pullout the top-right "+" uses, so the user can browse
   // the vault and drag items straight into the chat.
@@ -4195,10 +3760,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       const userPrompt = msg.content;
       if (!userPrompt) return;
 
-      const st = useLyknChatStore.getState();
-      const blk = st.blocks[blockId];
-      if (!blk) return;
-
       setChatStatusText("Re-generating without disabled sources...");
       setIsChatLoading(true);
 
@@ -4231,26 +3792,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         }
 
         const { cleanText } = extractSourceLinksLocal(aiText);
-        const normalized = normalizeAiTextForBlock(cleanText);
-
-        const existingData = (blk as any).data && typeof (blk as any).data === "object" ? { ...(blk as any).data } : {};
-        const sourceRowHeight = Math.ceil(sources.length / 2) * 32 + 24;
-        const g = Math.max(1, Math.floor(st.gridSize || 24));
-        const extraHeight = Math.ceil(sourceRowHeight / g) * g;
-        if (existingData.userResized) {
-          updateBlock(blockId as any, {
-            content: normalized,
-            data: { ...existingData, sources },
-          } as any);
-        } else {
-          const size = calcAiBubbleSize(normalized);
-          updateBlock(blockId as any, {
-            content: normalized,
-            width: size.width,
-            height: size.height + extraHeight,
-            data: { ...existingData, sources },
-          } as any);
-        }
 
         setChatMessages((prev) => prev.map((m) =>
           m.id === msg.id ? { ...m, aiResponse: cleanText, sources } : m
@@ -4268,79 +3809,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
     window.addEventListener("lyknchat_source_toggled", handleSourceToggled);
     return () => window.removeEventListener("lyknchat_source_toggled", handleSourceToggled);
-  }, [chatMessages, selectedModel, calcAiBubbleSize, extractSourceLinksLocal, normalizeAiTextForBlock, updateBlock]);
-
-
-  const canvasFileBlocks = useMemo(() => {
-    if (!chatMode && !notesOpen) return [];
-    const st = useLyknChatStore.getState();
-    const ids = Array.isArray(st.blockOrder) ? st.blockOrder : [];
-    const items: { id: string; type: string; name: string; url: string; thumbUrl: string; videoId?: string; content?: string; isAi?: boolean }[] = [];
-    for (const id of ids) {
-      const b = (st.blocks as any)?.[id];
-      if (!b) continue;
-      const bType = String(b.type || "");
-      const mode = String(b.mode || b.data?.mode || "").toLowerCase();
-
-      if (bType === "youtube" || (bType === "create" && mode === "video")) {
-        const videoId = String(b.videoId || b.data?.videoId || "");
-        const url = String(b.url || b.data?.url || "");
-        const vid = videoId || extractYouTubeVideoId(url) || "";
-        if (vid || url) {
-          items.push({ id, type: "youtube", name: b.data?.title || `YouTube ${vid}`, url: url || `https://www.youtube.com/watch?v=${vid}`, thumbUrl: vid ? `https://img.youtube.com/vi/${vid}/mqdefault.jpg` : "", videoId: vid });
-        }
-        continue;
-      }
-      if (bType === "image" || (bType === "create" && ["image", "generated"].includes(mode))) {
-        const src = String(b.src || b.data?.src || b.url || b.data?.url || b.dataUrl || b.data?.dataUrl || "");
-        if (src) items.push({ id, type: "image", name: b.name || b.data?.name || "Image", url: src, thumbUrl: src });
-        continue;
-      }
-      if (bType === "file" || (bType === "create" && mode === "embed")) {
-        const url = String(b.url || b.data?.url || b.dataUrl || b.data?.dataUrl || "");
-        const name = String(b.name || b.data?.name || "File");
-        const mime = String(b.mime || b.data?.mime || "").toLowerCase();
-        if (mime.startsWith("image/")) { items.push({ id, type: "image", name, url, thumbUrl: url }); continue; }
-        if (mime.startsWith("video/")) { items.push({ id, type: "video", name, url, thumbUrl: "" }); continue; }
-        if (mime.startsWith("audio/")) { items.push({ id, type: "audio", name, url, thumbUrl: "" }); continue; }
-        if (mime === "application/pdf" || name.toLowerCase().endsWith(".pdf")) { items.push({ id, type: "pdf", name, url, thumbUrl: "", content: String(b.data?.pdfText || b.data?.extractedText || "") }); continue; }
-        if (url) items.push({ id, type: "file", name, url, thumbUrl: "" });
-        continue;
-      }
-      if (bType === "link") {
-        const url = String(b.url || b.data?.url || "");
-        if (url) {
-          const yt = extractYouTubeVideoId(url);
-          if (yt) { items.push({ id, type: "youtube", name: b.data?.title || "YouTube", url, thumbUrl: `https://img.youtube.com/vi/${yt}/mqdefault.jpg`, videoId: yt }); }
-          else { items.push({ id, type: "link", name: b.data?.title || url, url, thumbUrl: "" }); }
-        }
-        continue;
-      }
-      if (bType === "text") {
-        const content = String(b.content || "").trim();
-        if (b.data?.extractedText && b.data?.sourceFileName) {
-          items.push({ id, type: "document", name: String(b.data.sourceFileName), url: "", thumbUrl: "", content: String(b.data.extractedText) });
-          continue;
-        }
-        if (content) {
-          const isAi = Boolean(b.data?.aiResponseBubble);
-          const label = isAi ? "AI Response" : (content.split("\n")[0].slice(0, 40) || "Note");
-          items.push({ id, type: "note", name: label, url: "", thumbUrl: "", content, isAi });
-        }
-        continue;
-      }
-      // Catch-all for any remaining create blocks with content
-      if (bType === "create") {
-        const content = String(b.content || b.data?.content || b.data?.seedText || "").trim();
-        const name = String(b.data?.title || mode || "Block").trim();
-        if (content || mode) {
-          items.push({ id, type: "note", name, url: "", thumbUrl: "", content: content || `(${mode} block)` });
-        }
-      }
-    }
-    const attachedBlockIds = new Set(focusedChatAttachments.map((a) => a.canvasBlockId).filter(Boolean));
-    return attachedBlockIds.size > 0 ? items.filter((item) => !attachedBlockIds.has(item.id)) : items;
-  }, [chatMode, notesOpen, blockCount, blockUrlSignature, focusedChatAttachments]);
+  }, [chatMessages, selectedModel, extractSourceLinksLocal]);
 
 
 
@@ -4466,32 +3935,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         const payload = JSON.parse(vaultRaw) as Record<string, unknown>;
         (window as any).__lyknchat_pending_vault = null;
         void applyVaultDropToChat(payload);
-        return;
-      } catch { /* fall through */ }
-    }
-
-    // Grid file collage item
-    const canvasFileRaw = e.dataTransfer.getData("application/x-grid-file");
-    if (canvasFileRaw) {
-      try {
-        const item = JSON.parse(canvasFileRaw);
-        const itemType = String(item.type || "link").toLowerCase();
-        const hasContent = Boolean(item.content);
-        addFocusedAttachment({
-          id: makeAttId(),
-          type: itemType,
-          url: item.url || "",
-          name: item.name || "Grid file",
-          mime: "",
-          size: 0,
-          ...(item.videoId ? { videoId: item.videoId } : {}),
-          ...(hasContent && (itemType === "note" || itemType === "vault") ? { vaultContent: item.content } : {}),
-          ...(hasContent && itemType === "pdf" ? { pdfText: item.content } : {}),
-          ...(hasContent && itemType === "document" ? { extractedText: item.content } : {}),
-          ...(hasContent && !["note", "vault", "pdf", "document"].includes(itemType) ? { vaultContent: item.content } : {}),
-          ...(item.id ? { canvasBlockId: item.id } : {}),
-        });
-        window.setTimeout(() => chatPanelInputRef.current?.focus(), 0);
         return;
       } catch { /* fall through */ }
     }
@@ -5065,21 +4508,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
     if (!pending || typeof pending !== "object") { if (import.meta.env.DEV) console.log("[VAULT-DROP] no pending data"); return; }
     (window as any).__lyknchat_pending_vault = null;
 
-    const rawAttachments = Array.isArray(pending.attachments) ? pending.attachments : [];
-    // Honor an explicit per-tile attachment selector so multi-attachment
-    // notes drop the file the user dragged, not "the first attachment
-    // whose mime matches" — same behavior as Canvas.tsx processVaultDrop.
-    let attachments: any[] = rawAttachments;
-    if ((pending as any).attachment && typeof (pending as any).attachment === "object") {
-      attachments = [(pending as any).attachment];
-    } else if (
-      Number.isInteger((pending as any).attachmentIndex)
-      && (pending as any).attachmentIndex >= 0
-      && (pending as any).attachmentIndex < rawAttachments.length
-    ) {
-      attachments = [rawAttachments[(pending as any).attachmentIndex]];
-    }
-
     let dropOverNotes = false;
     if (notesOpen) {
       const overlayEl = e.currentTarget as HTMLElement;
@@ -5098,232 +4526,16 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       return;
     }
 
-    if (chatMode) {
-      void applyVaultDropToChat(pending);
-      return;
-    }
-
-    if (import.meta.env.DEV) console.log("[VAULT-DROP] attachments count:", attachments.length);
-    const youtubeAttach = attachments.find((a: any) =>
-      a.type === "youtube" || a.videoId || (a.url && (a.url.includes("youtube.com") || a.url.includes("youtu.be")))
-    );
-    if (import.meta.env.DEV) console.log("[VAULT-DROP] youtubeAttach:", !!youtubeAttach);
-    const imageAttach = attachments.find((a: any) =>
-      a.type === "image" || (a.url && /\.(jpg|jpeg|png|gif|webp|svg|heic|heif)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:image/"))
-    );
-    const videoAttach = attachments.find((a: any) =>
-      a.type === "video" || (a.url && /\.(mp4|mov|webm|avi)(\?|$)/i.test(a.url)) || (a.url && a.url.startsWith("data:video/"))
-    );
-    const linkAttach = attachments.find((a: any) => a.url && a.type !== "file");
-    const cx = e.clientX;
-    const cy = e.clientY;
-
-    // Convert client (screen) coords to snapped world coords. This MUST
-    // match Canvas.tsx `clientToWorld` so that drag-from-vault drops land
-    // exactly where the cursor pointed. The previous selector
-    // ".overflow-auto.overscroll-contain" matched nothing, so rect was
-    // undefined and drops landed at world coords offset by the canvas'
-    // viewport position. Now we look up the canonical `[data-lykn-chat-canvas]`
-    // node and use the scroll-based formula directly (no dependence on
-    // possibly-stale camera.x/y).
-    const SURFACE_ORIGIN_PAD = 10000; // mirrors Canvas.tsx SURFACE_ORIGIN_PAD_WORLD
-    const worldFromClient = (clientX: number, clientY: number) => {
-      const st = useLyknChatStore.getState() as any;
-      const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const z = Number(st.camera?.zoom) || 1;
-      const canvasEl = document.querySelector<HTMLElement>("[data-lykn-chat-canvas]");
-      const rect = canvasEl?.getBoundingClientRect();
-      const localX = rect ? clientX - rect.left : clientX;
-      const localY = rect ? clientY - rect.top : clientY;
-      const scrollLeft = canvasEl?.scrollLeft || 0;
-      const scrollTop = canvasEl?.scrollTop || 0;
-      const worldX = (scrollLeft + localX) / z - SURFACE_ORIGIN_PAD;
-      const worldY = (scrollTop + localY) / z - SURFACE_ORIGIN_PAD;
-      return {
-        wx: Math.round(worldX / g) * g,
-        wy: Math.round(worldY / g) * g,
-        g,
-      };
-    };
-
-    const toFile = (dataUrl: string, name: string): File | null => {
-      try {
-        const parts = dataUrl.split(",");
-        const mm = parts[0].match(/:(.*?);/);
-        if (!mm || !parts[1]) return null;
-        const bstr = atob(parts[1]);
-        const u8 = new Uint8Array(bstr.length);
-        for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
-        return new File([u8], name, { type: mm[1] });
-      } catch { return null; }
-    };
-
-    if (youtubeAttach) {
-      let ytUrl = String(youtubeAttach.url || "").trim();
-      const vid = String(youtubeAttach.videoId || "").trim();
-      if (!extractYouTubeVideoId(ytUrl) && vid) {
-        ytUrl = `https://www.youtube.com/watch?v=${vid}`;
-      }
-      if (!ytUrl && vid) {
-        ytUrl = `https://www.youtube.com/watch?v=${vid}`;
-      }
-      const extractedVid = extractYouTubeVideoId(ytUrl) || vid;
-      if (import.meta.env.DEV) console.log("[VAULT-DROP] YouTube processing");
-      if (ytUrl && extractedVid) {
-        const st = useLyknChatStore.getState();
-        const existingIds = Array.isArray(st.blockOrder) ? st.blockOrder : [];
-        const alreadyOnCanvas = existingIds.some((bid: string) => {
-          const blk = (st.blocks as any)?.[bid];
-          return blk && (blk.videoId === extractedVid || blk.data?.videoId === extractedVid || blk.url === ytUrl || blk.data?.url === ytUrl);
-        });
-        if (alreadyOnCanvas) { if (import.meta.env.DEV) console.log("[VAULT-DROP] YouTube duplicate, skipping"); return; }
-        const { wx, wy } = worldFromClient(cx, cy);
-        if (import.meta.env.DEV) console.log("[VAULT-DROP] Creating YouTube block");
-        st.addYouTubeBlockAt({ x: wx, y: wy }, { url: ytUrl, videoId: extractedVid });
-      } else {
-        if (import.meta.env.DEV) console.log("[VAULT-DROP] YouTube: no valid URL or videoId");
-      }
-      return;
-    }
-
-    const socialAttach = attachments.find((a: any) =>
-      isSocialEmbedType(a.oembedType) || isSocialEmbedType(a.type) || detectSocialPlatform(String(a.url || ""))
-    );
-    if (socialAttach?.url) {
-      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: socialAttach.url, clientX: cx, clientY: cy } }));
-      return;
-    }
-
-    if (imageAttach?.url) {
-      if (imageAttach.url.startsWith("data:image/")) {
-        const f = toFile(imageAttach.url, imageAttach.name || "image.png");
-        if (f) { window.dispatchEvent(new CustomEvent("lyknchat_attach_files", { detail: { files: [f], clientX: cx, clientY: cy } })); return; }
-      }
-      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: imageAttach.url, clientX: cx, clientY: cy } }));
-      return;
-    }
-
-    if (videoAttach?.url) {
-      if (videoAttach.url.startsWith("data:video/")) {
-        const f = toFile(videoAttach.url, videoAttach.name || "video.mp4");
-        if (f) { window.dispatchEvent(new CustomEvent("lyknchat_attach_files", { detail: { files: [f], clientX: cx, clientY: cy } })); return; }
-      }
-      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: videoAttach.url, clientX: cx, clientY: cy } }));
-      return;
-    }
-
-    const pdfAttach = attachments.find((a: any) =>
-      a.type === "pdf" || (a.url && /\.pdf(\?|$)/i.test(a.url)) || (a.mime && a.mime === "application/pdf")
-    );
-    if (pdfAttach) {
-      const pdfText = String(pdfAttach.pdfText || pdfAttach.extractedText || "").trim();
-      const pdfTitle = String(pdfAttach.name || pdfAttach.title || "PDF").trim();
-      const pdfUrl = String(pdfAttach.url || "").trim();
-      if (pdfUrl) {
-        (async () => {
-          const dropMode = await promptFileDropMode(pdfTitle, "pdf");
-          const st = useLyknChatStore.getState();
-          const { wx, wy, g } = worldFromClient(cx, cy);
-
-          // Every block needs a stable id — addBlock uses it as the key in
-          // state.blocks and blockOrder, so passing undefined here used to
-          // overwrite the "undefined" slot and wreak havoc on re-renders.
-          const newId = `create-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-          const nowIso = new Date().toISOString();
-
-          if (dropMode === "link") {
-            // Regular link brick — same shape as a pasted URL. Omit mime so
-            // the render path routes through LinkBlock; displayMode="link"
-            // prevents the PDF-extension check from swapping back to an
-            // iframe viewer.
-            st.addBlock({
-              id: newId,
-              type: "create", mode: "embed", x: wx, y: wy, width: g * 12, height: g * 8, content: "",
-              data: { url: pdfUrl, name: pdfTitle, displayMode: "link", extractedText: pdfText || undefined },
-              createdAt: nowIso,
-              updatedAt: nowIso,
-            } as any);
-          } else {
-            // Full view — embedded PDF viewer on the grid.
-            st.addBlock({
-              id: newId,
-              type: "create", mode: "embed", x: wx, y: wy, width: g * 12, height: g * 16, content: "",
-              data: { url: pdfUrl, mime: "application/pdf", name: pdfTitle, extractedText: pdfText || undefined },
-              createdAt: nowIso,
-              updatedAt: nowIso,
-            } as any);
-          }
-        })();
-        return;
-      }
-    }
-
-    if (linkAttach?.url) {
-      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: linkAttach.url, clientX: cx, clientY: cy } }));
-      return;
-    }
-
-    const content = String(pending.content || "");
-    const urlMatch = content.match(/https?:\/\/[^\s<>"')]+/i);
-    if (urlMatch) {
-      window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: urlMatch[0], clientX: cx, clientY: cy } }));
-      return;
-    }
-
-    window.dispatchEvent(
-      new CustomEvent("lyknchat_attach_vault_text", { detail: { title: pending.title, content: pending.content, clientX: cx, clientY: cy } })
-    );
-  }, [notesOpen, chatMode, applyVaultDropToChat]);
+    void applyVaultDropToChat(pending);
+  }, [notesOpen, applyVaultDropToChat]);
 
   const handleConnectionCardClick = useCallback(async (conn: { title: string; sourceType: "board" | "media"; reason: string }) => {
-    if (conn.sourceType === "board") {
-      const cached = getCachedWorkspaceSummary()?.full || "";
-      const boardMatch = cached.match(new RegExp(`"${conn.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\s*\\(id=([^)]+)\\)`));
-      const connChatId = boardMatch?.[1];
-      if (connChatId) {
-        try {
-          const { data } = await supabase
-            .from("lykn_chat_states")
-            .select("state")
-            .eq("chat_id", connChatId)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          const snapshot = data?.state as any;
-          if (snapshot?.blocks && snapshot?.blockOrder) {
-            const st = useLyknChatStore.getState();
-            const g = Math.max(1, Math.floor(st.gridSize || 24));
-            const existingIds = st.blockOrder || [];
-            let maxY = 0;
-            for (const eid of existingIds) {
-              const eb = (st.blocks || {})[eid] as any;
-              if (eb) maxY = Math.max(maxY, (eb.y || 0) + (eb.height || g));
-            }
-            const startY = maxY + g * 2;
-            const sourceBlocks = snapshot.blocks;
-            const sourceOrder: string[] = snapshot.blockOrder;
-            let minSourceY = Infinity;
-            for (const sid of sourceOrder) {
-              const sb = sourceBlocks[sid] as any;
-              if (sb) minSourceY = Math.min(minSourceY, sb.y || 0);
-            }
-            if (!isFinite(minSourceY)) minSourceY = 0;
-            for (const sid of sourceOrder) {
-              const sb = sourceBlocks[sid] as any;
-              if (!sb) continue;
-              const newId = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-              const imported = { ...sb, id: newId, y: startY + ((sb.y || 0) - minSourceY) };
-              st.addBlock(imported as any);
-            }
-          }
-        } catch { /* ignore */ }
-      }
-    } else {
+    if (conn.sourceType !== "board") {
       savingRef.current = false;
       saveSnapshot().then(() => nav("/vault"));
     }
     setShowConnectionCard(false);
-  }, [getCachedWorkspaceSummary, nav, saveSnapshot]);
+  }, [nav, saveSnapshot]);
 
   const handleImportMedia = useCallback(async () => {
     if (selectedMediaIds.size === 0) return;
@@ -5365,36 +4577,31 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         return url ? "link" : "text";
       };
 
-      const st = useLyknChatStore.getState() as any;
-      const g = Math.max(1, Math.floor(st.gridSize || 24));
-      const niVw = window.innerWidth || 1280;
-      const niVh = window.innerHeight || 800;
-
-      const niPos = (bw: number, bh: number) => {
-        const cur = useLyknChatStore.getState() as any;
-        return findSmartPlacement({
-          blockW: bw,
-          blockH: bh,
-          gridSize: g,
-          camera: cur.camera || { x: 0, y: 0, zoom: 1 },
-          viewportW: niVw,
-          viewportH: niVh,
-          railWidth: 0,
-          existingBlocks: Object.values(cur.blocks || {}).filter(Boolean) as any[],
-        });
-      };
-
       for (const note of notes) {
         const atts = parseNoteAtts(note.content || "");
         if (atts.length === 0) {
           const ytMatch = (note.content || "").match(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
           if (ytMatch) {
-            const p = niPos(g * 12, g * 8);
-            st.addYouTubeBlockAt({ x: p.x, y: p.y }, { url: ytMatch[0], videoId: ytMatch[1] });
+            addFocusedAttachment({
+              id: makeAttId(),
+              type: "youtube",
+              url: ytMatch[0],
+              name: note.title || "YouTube",
+              mime: "",
+              size: 0,
+              videoId: ytMatch[1],
+            });
           } else {
-            const p = niPos(g * 10, g * 4);
-            const blockId = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-            st.addBlock({ id: blockId, type: "text" as const, x: p.x, y: p.y, width: g * 10, height: g * 4, content: stripAttachmentsMarker(note.content || ""), format: "rich", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
+            addFocusedAttachment({
+              id: makeAttId(),
+              type: "vault",
+              url: "",
+              name: note.title || "Vault item",
+              mime: "",
+              size: 0,
+              vaultTitle: note.title || "",
+              vaultContent: stripAttachmentsMarker(note.content || ""),
+            });
           }
           continue;
         }
@@ -5402,27 +4609,18 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           const url = String(att.url || "").trim();
           if (!url) continue;
           const type = resolveType(att);
-          const blockId = `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-          if (type === "youtube") {
-            const vid = att.videoId || (url.match(/(?:v=|youtu\.be\/)([\w-]{11})/) || [])[1] || "";
-            const p = niPos(g * 12, g * 8);
-            st.addYouTubeBlockAt({ x: p.x, y: p.y }, { url, videoId: vid });
-          } else if (type === "image") {
-            const p = niPos(g * 12, g * 12);
-            st.addBlock({ id: blockId, type: "create" as const, mode: "image", x: p.x, y: p.y, width: g * 12, height: g * 12, data: { src: url, name: att.name || "Image" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-          } else if (type === "video") {
-            const p = niPos(g * 16, g * 10);
-            st.addBlock({ id: blockId, type: "create" as const, mode: "video", x: p.x, y: p.y, width: g * 16, height: g * 10, data: { url, mime: att.mime || "video/mp4", name: att.name || "Video" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-          } else if (type === "audio") {
-            const p = niPos(g * 14, g * 4);
-            st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 4, data: { url, mime: att.mime || "audio/mpeg", name: att.name || "Audio", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-          } else if (type === "pdf") {
-            const p = niPos(g * 16, g * 14);
-            st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 16, height: g * 14, data: { url, mime: "application/pdf", name: att.name || "PDF", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-          } else {
-            const p = niPos(g * 14, g * 6);
-            st.addBlock({ id: blockId, type: "create" as const, mode: "embed", x: p.x, y: p.y, width: g * 14, height: g * 6, data: { url, name: att.name || note.title || "File", dataUrl: url }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as any);
-          }
+          const vid = type === "youtube"
+            ? (att.videoId || (url.match(/(?:v=|youtu\.be\/)([\w-]{11})/) || [])[1] || "")
+            : "";
+          addFocusedAttachment({
+            id: makeAttId(),
+            type,
+            url,
+            name: att.name || note.title || "File",
+            mime: String(att.mime || ""),
+            size: Number(att.size || 0),
+            ...(vid ? { videoId: vid } : {}),
+          });
         }
       }
     } catch { /* ignore */ }
@@ -5431,7 +4629,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
       setShowMediaSuggestion(false);
       setMediaSuggestions([]);
     }
-  }, [selectedMediaIds]);
+  }, [addFocusedAttachment, selectedMediaIds]);
 
   const handleToggleMedia = useCallback((noteId: string) => {
     setSelectedMediaIds((prev) => {
@@ -5449,7 +4647,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
 
   return (
     <div className={`w-full relative overflow-hidden lykn-chat-grid-bg ${isEmbeddedMode || studioSurface ? "h-full min-h-0" : "h-[100svh]"}`}>
-      {/* Match BrickEditor layout: minimal chrome + floating controls. */}
       {!isEmbeddedMode && (
       <LyknChatToolbar
         isMobilePhone={isMobilePhone}
@@ -5541,9 +4738,7 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         </div>
       )}
 
-      {/* Phone-only grids drawer for focused chat. Lets users browse and
-          create grids without leaving chat-only mobile mode. */}
-      {chatMode && isMobilePhone && <MobileLyknChat />}
+      {isMobilePhone && <MobileLyknChat />}
 
       {/* Studio Imagine page — the full Midjourney-style image session
           replaces the chat surface: centered batches of four variations,
@@ -5576,11 +4771,9 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
               ? STUDIO_VIEW_SUBTITLES[studioView]
               : undefined
           }
-          isMobileGrid={isMobileGrid}
           isMobilePhone={isMobilePhone}
           isDictating={isDictating}
           isTranscribing={isTranscribing}
-          canvasFileBlocks={canvasFileBlocks}
           focusedChatAttachments={focusedChatAttachments}
           onPaste={handleChatPaste}
           onResizeInput={resizeChatInput}
@@ -5600,8 +4793,6 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
           getCollapsedPreview={getCollapsedPreview}
           copiedMsgId={copiedMsgId}
           onCopyMessage={handleFocusedChatCopyMessage}
-          addChatResponseToGrid={addChatResponseToGrid}
-          gridDisabled={GRID_DISABLED}
           renderFocusedAttachmentPreview={renderFocusedAttachmentPreview}
           onDragOver={handleFocusedChatDragOver}
           onDrop={handleFocusedChatDrop}
@@ -5758,22 +4949,17 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
                             type="button"
                             onClick={async () => {
                               if ((file.kind === "link" || file.kind === "youtube") && file.url) {
-                                if (chatMode) {
-                                  addLinkToChat(file.url);
-                                } else {
-                                  window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: file.url } }));
-                                }
+                                addLinkToChat(file.url);
                                 setShowAttachMenu(false);
                                 return;
                               }
                               try {
                                 const f = await resolveProjectFileToFile(file as any);
                                 if (!f) return;
-                                window.dispatchEvent(
-                                  new CustomEvent("lyknchat_attach_files", {
-                                    detail: { files: [f], clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 },
-                                  })
-                                );
+                                void ingestChatFiles([f], addFocusedAttachment, {
+                                  userId: user?.id,
+                                  updateAttachment: updateFocusedAttachment,
+                                });
                                 setShowAttachMenu(false);
                               } catch {
                                 // ignore
@@ -5802,22 +4988,17 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
                             type="button"
                             onClick={async () => {
                               if ((file.kind === "link" || file.kind === "youtube") && file.url) {
-                                if (chatMode) {
-                                  addLinkToChat(file.url);
-                                } else {
-                                  window.dispatchEvent(new CustomEvent("lyknchat_attach_link", { detail: { url: file.url } }));
-                                }
+                                addLinkToChat(file.url);
                                 setShowAttachMenu(false);
                                 return;
                               }
                               try {
                                 const f = await resolveProjectFileToFile(file as any);
                                 if (!f) return;
-                                window.dispatchEvent(
-                                  new CustomEvent("lyknchat_attach_files", {
-                                    detail: { files: [f], clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 },
-                                  })
-                                );
+                                void ingestChatFiles([f], addFocusedAttachment, {
+                                  userId: user?.id,
+                                  updateAttachment: updateFocusedAttachment,
+                                });
                                 setShowAttachMenu(false);
                               } catch {
                                 // ignore
@@ -5848,14 +5029,10 @@ export default function LyknChat({ studioSurface = false }: { studioSurface?: bo
         onChange={(e) => {
           const files = Array.from(e.target.files || []);
           if (!files.length) { e.target.value = ""; return; }
-          if (chatMode) {
-            void ingestChatFiles(files, addFocusedAttachment, {
-              userId: user?.id,
-              updateAttachment: updateFocusedAttachment,
-            });
-          } else {
-            window.dispatchEvent(new CustomEvent("lyknchat_attach_files", { detail: { files } }));
-          }
+          void ingestChatFiles(files, addFocusedAttachment, {
+            userId: user?.id,
+            updateAttachment: updateFocusedAttachment,
+          });
           e.target.value = "";
           setShowAttachMenu(false);
         }}

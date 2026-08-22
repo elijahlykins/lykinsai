@@ -1,12 +1,9 @@
 // Shared detector + event bus for the server-side blocks-per-grid trigger
 // defined in `supabase-migrations/031_blocks_per_grid_trigger.sql`.
 //
-// The canvas store (`src/store/lyknChatStore.ts`) already refuses to add blocks
-// past the per-plan cap and dispatches `BLOCK_LIMIT_EVENT` so the upgrade
-// modal renders. This module handles the secondary case: a board state save
-// that slipped past the in-memory check (e.g. multi-tab race, tampered
-// client) gets rejected by the DB trigger. When that happens we want the
-// same upgrade modal to pop instead of a silent save-failure.
+// Chat snapshots used to carry a blocks array. The DB trigger still rejects
+// oversized snapshots; if a stale client hits that, show the same upgrade
+// modal instead of a silent save-failure.
 
 import { BLOCK_LIMIT_EVENT } from "@/lib/useUsageGate";
 

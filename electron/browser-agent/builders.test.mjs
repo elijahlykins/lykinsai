@@ -272,6 +272,34 @@ test("visual inspection can be used again later in the same task", () => {
   );
 });
 
+test("progress earns recovery budget back; pure failure still exhausts it", () => {
+  const fail = (recovery, ref) =>
+    recovery.nextRecoveryStep({
+      decision: { action: { type: "click", target: ref } },
+      verification: { reason: "no observable page change" },
+    }).mode;
+
+  // A long run with scattered snags it keeps getting PAST: two failures, then
+  // verified progress, over and over. This exact shape used to die at the
+  // finish line — seven lifetime recoveries spent, the ladder's next rung
+  // never reached — while the task was demonstrably working.
+  const working = createRecoveryTracker();
+  let lastMode = "";
+  for (let step = 0; step < 5; step += 1) {
+    lastMode = fail(working, `e${step}`);
+    lastMode = fail(working, `e${step}`);
+    working.noteProgress();
+    working.noteProgress();
+  }
+  assert.notEqual(lastMode, "fail", "a run that keeps advancing must keep its ladder");
+
+  // A run that only ever fails still runs out — the cap exists for it.
+  const stuck = createRecoveryTracker();
+  const modes = [];
+  for (let i = 0; i < 8; i += 1) modes.push(fail(stuck, `e${i}`));
+  assert.ok(modes.includes("fail"), "failure with no progress must still end the run");
+});
+
 test("builder rules are present whatever the page turns out to be", () => {
   // These rules used to be routed in from the URL and the goal, which meant a
   // design tool on an unrecognised domain, or a campaign editor reached from a
@@ -470,12 +498,26 @@ test("a product playbook reaches every one of its regional hosts", async () => {
 
 test("a playbook is not truncated mid-sentence by the prompt budget", () => {
   const websiteMemory = "# Known about mailchimp.com\n" + "- a useful note about the editor\n".repeat(90);
-  const system = contextRouter.buildDecisionSystem({
-    task: { goal: "write a campaign", plan: [], constraints: [], workingMemory: { facts: [] } },
-    websiteMemory,
-  });
-  const kept = system.split("Known about mailchimp.com")[1] || "";
+  // Memory rides in the user message now (the system prompt stays byte-stable
+  // for prompt caching), so the budget lives in buildMemoryContext.
+  const block = contextRouter.buildMemoryContext({ websiteMemory });
+  const kept = block.split("Known about mailchimp.com")[1] || "";
   assert.ok(kept.length > 2500, `site knowledge was cut to ${kept.length} characters`);
+});
+
+test("the decision system prompt is byte-stable whatever the task remembers", () => {
+  const task = { goal: "write a campaign", plan: [], constraints: [], workingMemory: { facts: [] } };
+  const bare = contextRouter.buildDecisionSystem({ task, skills: [] });
+  const decorated = contextRouter.buildDecisionSystem({
+    task,
+    skills: [],
+    // Legacy keys that used to be spliced into the system prompt — a caller
+    // still passing them must not break the cacheable prefix.
+    userMemory: "likes short emails",
+    websiteMemory: "# Known about x.com\n- a note",
+  });
+  assert.equal(decorated, bare, "memory must never vary the system prompt");
+  assert.doesNotMatch(bare, /Known about x\.com/);
 });
 
 test("learning writes durable notes once and refuses to duplicate them", async () => {

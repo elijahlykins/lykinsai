@@ -16,6 +16,7 @@
  */
 
 const { createBrowserController } = require("./browser/controller.cjs");
+const { hasObservableChange } = require("./browser/snapshot.cjs");
 const { createOwnership } = require("./browser/ownership.cjs");
 const { createAgentModel, AgentModelUnavailableError } = require("./runtime/model.cjs");
 const { createMemoryStore } = require("./runtime/memory.cjs");
@@ -30,6 +31,7 @@ const verifier = require("./runtime/verifier.cjs");
 const visionPolicy = require("./runtime/visionPolicy.cjs");
 const contextRouter = require("./runtime/contextRouter.cjs");
 const batchPolicy = require("./runtime/batch.cjs");
+const deadEnd = require("./runtime/deadEnd.cjs");
 
 const DEFAULT_MAX_ROUNDS = 24;
 
@@ -37,12 +39,50 @@ const DEFAULT_MAX_ROUNDS = 24;
 const RESUME_ROUND_BONUS = 6;
 
 /**
+ * Actions whose whole point is to make the page do something, so a page that
+ * did nothing means the action needs looking at again.
+ */
+const SHOULD_CHANGE_SOMETHING = new Set([
+  "click",
+  "click_coord",
+  "press_key",
+  "select",
+  "drag",
+  "submit",
+  "type",
+  // Grounded typing is still typing — a page that ignored it deserves the
+  // same second look before the verifier calls it a dead action.
+  "type_coord",
+]);
+
+/**
+ * How long to give a page that appears to have ignored an action, before
+ * agreeing that it did.
+ *
+ * A debounced search, an animation that has to finish before the result mounts,
+ * a render queued behind a timer — none of these are visible as work in
+ * progress, so the settle step has nothing to wait for and returns to a page
+ * that genuinely has not changed yet. One extra look is far cheaper than the
+ * alternative: a false failure costs a recovery step, several thousand tokens
+ * of re-deciding, and a retry that clicks the control a second time — which on
+ * anything that toggles undoes the action that had in fact worked.
+ */
+const SECOND_LOOK_MS = 700;
+
+/**
  * Actions that succeed mechanically and prove nothing about the task. They are
  * real work — you have to scroll to read a list — but "it scrolled" is not
  * evidence that the user's goal was met, and treating it as such is how a run
  * ends `completed` with an invented answer.
  */
-const EVIDENCE_FREE_ACTIONS = new Set(["scroll", "wait", "screenshot", "go_back", "go_forward"]);
+const EVIDENCE_FREE_ACTIONS = new Set([
+  "scroll",
+  "wait",
+  "screenshot",
+  "go_back",
+  "go_forward",
+  "dismiss_overlay",
+]);
 
 /**
  * Things only the user can supply. Any other `ask_user` question is the agent
@@ -53,17 +93,66 @@ const HUMAN_ONLY_QUESTION_RE =
   /\b(password|passcode|passphrase|2fa|two[- ]factor|mfa|otp|one[- ]time (?:code|password)|verification code|security code|auth(?:entication)? code|sign[- ]?in|log[- ]?in|credential|captcha|card number|cvv|billing address|payment method|social security|ssn|date of birth|which account)\b/i;
 
 /**
+ * Asking what a message should SAY is not punting — it is the one question the
+ * page can never answer.
+ *
+ * The agent writes things that go to other people, and when the request names
+ * a recipient but no content ("write an email to sam@example.com"), the
+ * substance exists only in the user's head. Without this the ask was pushed
+ * back as a question the agent could settle itself, and it settled it by
+ * inventing a message — once, memorably, out of whatever page happened to be
+ * open.
+ */
+const CONTENT_QUESTION_RE =
+  /\b(?:what|which|how)\b[^?]{0,80}\b(?:say|said|write|written|include|includes?|contain|cover|mention|word(?:ing)?|message|body|content|subject|tone|topic|point across)\b|\bwhat (?:should|shall|do you want|would you like|are we|is this)\b/i;
+
+/**
+ * A question the user answers by DOING something in the browser — signing in,
+ * entering a code, clearing a wall — as opposed to one they answer by typing
+ * back. The first kind is worth watching the tab for; the second has to come
+ * back as a question in the chat, because no amount of watching the page will
+ * ever produce it.
+ */
+const ANSWERED_IN_BROWSER_RE =
+  /\b(password|passcode|passphrase|2fa|two[- ]factor|mfa|otp|one[- ]time (?:code|password)|verification code|security code|auth(?:entication)? code|sign[- ]?in|log[- ]?in|logged[- ]?in|credential|captcha|paywall|subscribe|unlock|which account)\b/i;
+
+function requiresHumanInput(question) {
+  const text = String(question || "");
+  if (looksLikePermissionQuestion(text)) return false;
+  return HUMAN_ONLY_QUESTION_RE.test(text) || CONTENT_QUESTION_RE.test(text);
+}
+
+/** Would watching the tab ever answer this? */
+function answeredInBrowser(question) {
+  const text = String(question || "");
+  if (CONTENT_QUESTION_RE.test(text) && !ANSWERED_IN_BROWSER_RE.test(text)) return false;
+  return ANSWERED_IN_BROWSER_RE.test(text);
+}
+
+/**
  * Asking permission is a punt however it is phrased. "Do you want me to sign
  * in?" contains "sign in", so the keyword test alone let the agent end the run
  * by asking to do something it should simply have done.
  */
 const ASKING_PERMISSION_RE =
-  /^\W*(?:do you want|would you like|should i|shall i|may i|can i|is it (?:ok|okay|alright)|are you (?:ok|happy)|let me know if|would you prefer|which (?:would|do) you)\b/i;
+  /^\W*(?:do you want|would you like|should i|shall i|may i|can i|is it (?:ok|okay|alright)|are you (?:ok|happy|ready|sure)|ready for me|let me know if|would you prefer|which (?:would|do) you|confirm (?:that|if|whether)|please confirm)\b/i;
 
-function requiresHumanInput(question) {
+/**
+ * A question that is really a request for permission to go ahead — however it
+ * is phrased, and wherever in the sentence the giveaway sits.
+ *
+ * These must never reach the free-text question card. Permission is a yes or a
+ * no, so it belongs on the approval buttons; asked as an open question the
+ * user gets a text box, types "yes", and that answer then has to be
+ * interpreted as an instruction — which is how one "yes" re-ran an entire
+ * task from the beginning instead of clicking Send.
+ */
+const PERMISSION_QUESTION_RE =
+  /\b(?:want me to|ready (?:for me )?to|shall i|should i|may i|ok(?:ay)? (?:for me )?to|permission to|go ahead and|would you like me to|do you want me to)\b|\b(?:ready|ok(?:ay)?|good) to (?:send|share|post|publish|submit|delete)\b/i;
+
+function looksLikePermissionQuestion(question) {
   const text = String(question || "");
-  if (ASKING_PERMISSION_RE.test(text)) return false;
-  return HUMAN_ONLY_QUESTION_RE.test(text);
+  return ASKING_PERMISSION_RE.test(text) || PERMISSION_QUESTION_RE.test(text);
 }
 
 /**
@@ -94,13 +183,17 @@ function requiresHumanInput(question) {
  * A model outage rethrows AgentModelUnavailableError straight out of the loop
  * for the caller to fall back on, which skipped `finish()` — and with it the
  * only `debug.close()`. Every such run leaked a write stream.
+ *
+ * When `finish()` did run, it owns the close: learning continues in the
+ * background after the result is returned (see `result.learning`), and closing
+ * the stream here would cut its trace lines off mid-write.
  */
 async function runBrowserAgentTask(opts) {
   const held = {};
   try {
     return await runTask({ ...opts, __holdDebug: held });
   } finally {
-    held.debug?.close?.();
+    if (!held.finished) held.debug?.close?.();
   }
 }
 
@@ -120,10 +213,17 @@ async function runTask({
   onProgress = () => {},
   onApprovalNeeded = null,
   onNeedsUser = null,
-  // "auto": the user's explicit ask can pre-approve the final send/share.
-  // "ask": ALWAYS pause before any consequential action so the user can
-  // review the prepared work and request edits — used for first-run composes;
-  // the user's approval reply then runs with "auto".
+  // Who may authorize a consequential action (a send, a share, a publish).
+  //   "auto" / "ask" — nobody yet: prepare everything, then confirm with the
+  //     user before the committing click. This is the default and it is what
+  //     every first-run task gets, however plainly its wording asked for a
+  //     send. Wording is not consent: the words reaching this loop include the
+  //     caller's own instruction lines and anything left over from an earlier
+  //     turn, and neither is the user speaking now.
+  //   "approved" — the user has just approved THIS send in words ("send it",
+  //     "go ahead"), so the committing click may proceed without asking twice.
+  // Money and data destruction are never authorized by any of these; they
+  // always take an interactive yes.
   sendPolicy = "auto",
   // "refs": aim with element references from the snapshot only.
   // "holo": the model describes its target and a grounding model turns that
@@ -141,9 +241,20 @@ async function runTask({
   // that screenshots there races the click; this is the place to capture the
   // frame the action is about to change.
   onBeforeAct = null,
+  // A serialized task snapshot (taskState.serializeTask) to continue instead
+  // of starting fresh: planning is skipped, and the plan position, facts and
+  // history all carry over. The browser is re-read on round one, so a page
+  // that moved while the app was down is handled like any other surprise.
+  resumeTask = null,
+  // Called with a fresh serialized snapshot after planning, after every
+  // recorded action, and at finish (where `status` is terminal) — everything a
+  // host needs to offer resume across a restart. Failures are swallowed;
+  // persistence must never cost a run.
+  onTaskState = null,
   __holdDebug = null,
 }) {
-  const task = taskState.createTask({ goal, conversationHistory });
+  const restored = resumeTask ? taskState.restoreTask(resumeTask, { conversationHistory }) : null;
+  const task = restored || taskState.createTask({ goal, conversationHistory });
   const debug = createDebugLog({ userDataPath, taskId: task.id });
   if (__holdDebug) __holdDebug.debug = debug;
   const recovery = createRecoveryTracker();
@@ -166,25 +277,39 @@ async function runTask({
    *
    * Learning used to hang off the one clean-finish path, so a run that fought a
    * site for twenty rounds and lost — the run with the most to teach the next
-   * one — recorded nothing at all. `finish` is async now; the call sites are
-   * all `return finish(...)` inside an async function, so they adopt the
-   * promise unchanged.
+   * one — recorded nothing at all.
+   *
+   * Learning no longer delays the answer. It is one more model round-trip, and
+   * awaiting it here meant the user stared at a finished task for the seconds
+   * it took to write notes about the site. The result returns immediately;
+   * learning continues in the background and `result.learning` settles when it
+   * (and the debug stream it writes to) is done — that is what tests and any
+   * caller that genuinely needs the notes on disk should await.
    */
-  const finish = async (status, answer, extra = {}) => {
+  const finish = (status, answer, extra = {}) => {
     task.status = status;
     task.completionReason = extra.completionReason || answer.slice(0, 200);
+    let learning = Promise.resolve();
     if (!learned) {
       learned = true;
-      await recordWhatWeLearned(currentUrlSafe()).catch(() => {});
+      learning = recordWhatWeLearned(currentUrlSafe()).catch(() => {});
     }
-    debug.log("task_finished", { status, completionReason: task.completionReason, rounds: task.round });
-    debug.close();
+    // finish owns the debug stream from here on; the wrapper's safety-net
+    // close must not race the learning trace.
+    if (__holdDebug) __holdDebug.finished = true;
+    // The terminal snapshot — its status tells the host to clear stored state.
+    persistState();
+    const done = learning.then(() => {
+      debug.log("task_finished", { status, completionReason: task.completionReason, rounds: task.round });
+      debug.close();
+    });
     return {
       ok: status !== "failed",
       status,
       answer,
       task,
       history: task.recentActions,
+      learning: done,
       ...extra,
     };
   };
@@ -194,6 +319,16 @@ async function runTask({
       return controller.getCurrentSnapshot()?.url || controller.currentUrl() || "";
     } catch {
       return "";
+    }
+  };
+
+  /** Hand the host a restart-safe snapshot. Never allowed to hurt the run. */
+  const persistState = () => {
+    if (typeof onTaskState !== "function") return;
+    try {
+      onTaskState(taskState.serializeTask(task));
+    } catch {
+      /* persistence is the host's problem, not the task's */
     }
   };
 
@@ -280,44 +415,107 @@ async function runTask({
     return note;
   };
 
-  debug.log("task_started", { goal: task.goal });
-  onProgress({ phase: "planning", goal: task.goal });
-
-  // --- Plan -----------------------------------------------------------------
+  debug.log("task_started", { goal: task.goal, resumed: !!restored });
   let snapshot = null;
-  try {
-    snapshot = await timer.time("snapshot", () => controller.getPageState());
-  } catch {
-    snapshot = null;
-  }
-  const initialWebsiteMemory = memory && snapshot?.url
-    ? await memory.getWebsiteMemory(snapshot.url).catch(() => "")
-    : "";
-  try {
-    const { clarification } = await timer.time("plan", () =>
-      planner.planTask({ model, task, snapshot, userMemory, websiteMemory: initialWebsiteMemory, signal }));
-    if (clarification) {
-      return finish("waiting_for_user", clarification, { needsUser: true });
+  if (restored) {
+    // --- Resume -------------------------------------------------------------
+    // The plan, facts and history all survived the restart; what did not is
+    // the page, which round one re-reads like any other round.
+    debug.log("task_resumed", {
+      planSteps: task.plan.length,
+      priorActions: task.recentActions.length + task.archivedActionCount,
+      facts: task.workingMemory.facts.length,
+    });
+    onProgress({
+      phase: "working",
+      plan: task.plan.map((p) => p.step),
+      skills: task.skills,
+      approach: "Picking this task back up from where it left off.",
+    });
+  } else {
+    onProgress({ phase: "planning", goal: task.goal });
+
+    // --- Plan ---------------------------------------------------------------
+    try {
+      snapshot = await timer.time("snapshot", () => controller.getPageState());
+    } catch {
+      snapshot = null;
     }
-  } catch (e) {
-    if (e instanceof AgentModelUnavailableError) throw e;
-    debug.log("plan_failed", { error: e?.message });
-    // Planning is guidance — a failed planning call should not kill the task.
-    taskState.setPlan(task, { plan: [`Work toward: ${task.goal}`] });
+    const initialWebsiteMemory = memory && snapshot?.url
+      ? await memory.getWebsiteMemory(snapshot.url).catch(() => "")
+      : "";
+    let approach = "";
+    try {
+      const planned = await timer.time("plan", () =>
+        planner.planTask({ model, task, snapshot, userMemory, websiteMemory: initialWebsiteMemory, signal }));
+      if (planned.clarification) {
+        return finish("waiting_for_user", planned.clarification, {
+          needsUser: true,
+          // Tappable answers, when the planner proposed any — the host turns
+          // these into one-tap chips beside the answer box.
+          answerOptions: planned.clarificationOptions || [],
+        });
+      }
+      approach = String(planned.approach || "");
+    } catch (e) {
+      if (e instanceof AgentModelUnavailableError) throw e;
+      debug.log("plan_failed", { error: e?.message });
+      // Planning is guidance — a failed planning call should not kill the task.
+      taskState.setPlan(task, { plan: [`Work toward: ${task.goal}`] });
+    }
+    debug.log("plan_created", { plan: task.plan.map((p) => p.step), skills: task.skills, constraints: task.constraints });
+    persistState();
+    onProgress({
+      phase: "working",
+      plan: task.plan.map((p) => p.step),
+      skills: task.skills,
+      // What the user reads while the first page is still loading.
+      approach,
+    });
   }
-  debug.log("plan_created", { plan: task.plan.map((p) => p.step), skills: task.skills, constraints: task.constraints });
-  onProgress({ phase: "working", plan: task.plan.map((p) => p.step), skills: task.skills });
 
   // --- Loop -----------------------------------------------------------------
   let recovering = false;
   let recoveryHint = "";
+  if (restored) {
+    // The first resumed decision must re-read reality rather than trust the
+    // last history line — the page may have moved (or been moved) while the
+    // app was down.
+    recovering = true;
+    recoveryHint =
+      "This task was interrupted and is now resuming after a restart. The page in front of you may not " +
+      "match the last history entry — re-read it, keep what the history shows as already done, and " +
+      "continue the remaining work from where the page actually stands.";
+  }
   let lastVerification = null;
+  // Back-to-back verifications the loop has taken on faith (see the verifier's
+  // deferInconclusive). Two in a row is the ceiling: a toggle clicked open and
+  // closed changes the page both times, and without the cap that loop would
+  // never meet a real verdict.
+  let deferredVerifications = 0;
   let pendingScreenshot = "";
   let lastScreenshotRound = -Infinity;
   let visionHint = "";
   let invalidDecisions = 0;
   let askUserDeferrals = 0;
-  let finishPushbacks = 0;
+  // Two separate counters on purpose. These guard different failures — an
+  // answer with no evidence behind it, and a finish with plan steps still
+  // open — and when they shared one counter, a run that had already been
+  // pushed back once for missing evidence could quit half-done without the
+  // open-steps question ever being asked.
+  let evidencePushbacks = 0;
+  let openStepsPushbacks = 0;
+  // Times the agent has asked permission instead of acting. Bounded, because
+  // refusing without a limit is its own loop: it asks, we say go ahead, it
+  // looks at the page, it asks again — for the whole round budget.
+  let permissionRefusals = 0;
+  const deadUrls = [];
+  // Backout targets already offered. Tracked separately from the pages observed
+  // to be dead, because a backout can land somewhere other than where it aimed
+  // (a redirect, or another 404) — and without this the same candidate is
+  // offered again next round and the run ping-pongs between two dead URLs.
+  const triedBackouts = [];
+  let deadEndRecoveries = 0;
 
   for (task.round = 1; ; task.round += 1) {
     if (aborted()) return finish("failed", "Task aborted.", { error: "aborted" });
@@ -361,7 +559,87 @@ async function runTask({
       url: snapshot.url,
       title: snapshot.title,
       elements: snapshot.elements.length,
+      // What the open dialog actually offers. A run that loops at the end is
+      // usually one that cannot find a dialog's commit button, and a trace of
+      // element COUNTS can never show whether the button was there to find.
+      dialog: snapshot.elements
+        .filter((el) => el.inDialog && el.label)
+        .slice(0, 14)
+        .map((el) => `${el.ref}:${el.role}:${String(el.label).slice(0, 40)}`),
     });
+    // A wall cleared between rounds is a change to the page the agent did not
+    // make. It reads it in the snapshot either way; recording it keeps the
+    // history honest about why the page moved.
+    for (const overlay of snapshot.overlaysDismissed || []) {
+      const note = `cleared the ${overlay.what || overlay.kind} that was covering ${snapshot.url}`;
+      debug.log("overlay_dismissed", { round: task.round, kind: overlay.kind, label: overlay.label });
+      taskState.addFact(task, note);
+      onProgress({ phase: "clearing_overlay", round: task.round, what: overlay.what || overlay.kind });
+    }
+
+    // 1.5 Dead end. A 404 loads successfully, so the URL change reads as
+    //     progress and nothing in the retry ladder objects. Route around it
+    //     here — backing out to an address that exists and finding the way from
+    //     there is the agent's job, not the user's.
+    const dead = deadEnd.looksLikeDeadEnd(snapshot);
+    if (dead.deadEnd) {
+      if (!deadUrls.includes(snapshot.url)) deadUrls.push(snapshot.url);
+      taskState.addFact(task, `${snapshot.url} is a dead end — ${dead.reason}`);
+      debug.log("dead_end", {
+        round: task.round,
+        url: snapshot.url,
+        reason: dead.reason,
+        recoveries: deadEndRecoveries,
+      });
+      const back =
+        deadEndRecoveries < deadEnd.MAX_DEAD_END_RECOVERIES
+          ? deadEnd.backoutTarget(snapshot.url, { avoid: [...deadUrls, ...triedBackouts] })
+          : null;
+      if (back) {
+        deadEndRecoveries += 1;
+        triedBackouts.push(back.url);
+        onProgress({
+          phase: "acting",
+          round: task.round,
+          action: { type: "navigate", url: back.url },
+          reason: `${dead.reason} — backing out to ${back.what}`,
+          narration:
+            `That link is dead — ${dead.reason}. I'm backing out to ${back.what} ` +
+            `and finding the route from there.`,
+          expectedOutcome: "a page that exists, with navigation I can use",
+          planStep: task.plan.find((p) => !p.done)?.step || "",
+          url: snapshot.url,
+        });
+        const nav = await controller.navigate(back.url).catch((e) => ({
+          ok: false,
+          error: e?.message || String(e),
+        }));
+        taskState.recordAction(task, {
+          action: { type: "navigate", url: back.url },
+          expectedOutcome: "a page that exists, with navigation I can use",
+          result: nav?.ok ? "success" : "failure",
+          observedOutcome: nav?.ok
+            ? `backed out of the dead end at ${snapshot.url}`
+            : `could not reach ${back.url}: ${nav?.error || "navigation failed"}`,
+        });
+        recovering = true;
+        recoveryHint = nav?.ok
+          ? `${snapshot.url} is a dead end (${dead.reason}). Do not go back to it, and do not guess ` +
+            `at another address on this site. You are now on ${back.url} — use this page's own ` +
+            `navigation, search, or links to reach what the task needs.`
+          : `${snapshot.url} is a dead end (${dead.reason}) and ${back.url} could not be reached ` +
+            `either (${nav?.error || "navigation failed"}). Reach the target another way — a search ` +
+            `engine, or a different entry point to this product.`;
+        continue;
+      }
+      // Everything up the tree is dead too. That is a planning problem: say so
+      // and let the next decision pick a different route entirely.
+      recovering = true;
+      recoveryHint =
+        `Every address tried on this route is a dead end (${deadUrls.slice(-3).join(", ")}). ` +
+        `Stop editing the URL. Find the target from a page that works — a search engine, or the ` +
+        `product's own search — or replan the remaining steps.`;
+    }
 
     const websiteMemory = memory
       ? await memory.getWebsiteMemory(snapshot.url).catch(() => "")
@@ -387,7 +665,16 @@ async function runTask({
       }
     }
 
-    // 2. Decide.
+    // 2. Decide. Announce the wait before the call, not after it: the decide
+    //    round is the longest pause in the loop, and a UI with nothing to show
+    //    for it reads as a stall. The open plan step is the only honest thing
+    //    we know about what it is weighing up until the answer lands.
+    onProgress({
+      phase: "thinking",
+      round: task.round,
+      planStep: task.plan.find((p) => !p.done)?.step || "",
+      url: snapshot.url,
+    });
     let decision;
     try {
       decision = await timer.time("decide", () => executor.decideNext({
@@ -495,7 +782,12 @@ async function runTask({
       // was whatever the model felt like writing. Evidence has to be something
       // that changed the world or told us something about it.
       const substantive = task.recentActions.filter(
-        (a) => a.result === "success" && !EVIDENCE_FREE_ACTIONS.has(String(a.action?.type || "")),
+        (a) =>
+          a.result === "success" &&
+          // Deferred verdicts were taken on faith — they keep the loop moving
+          // but cannot underwrite a "completed" claim on their own.
+          a.deferred !== true &&
+          !EVIDENCE_FREE_ACTIONS.has(String(a.action?.type || "")),
       );
       const hasEvidence =
         task.workingMemory.facts.length > 0 ||
@@ -504,8 +796,8 @@ async function runTask({
       // No round cap on this. The old `round <= 2` meant the requirement simply
       // switched itself off after round 2, which is when an ungrounded finish is
       // most likely, not least.
-      if (!hasEvidence && finishPushbacks < 2) {
-        finishPushbacks += 1;
+      if (!hasEvidence && evidencePushbacks < 2) {
+        evidencePushbacks += 1;
         recovering = true;
         recoveryHint =
           "You tried to finish without any evidence of progress: nothing has been learned, nothing has been changed, " +
@@ -527,8 +819,8 @@ async function runTask({
       // Quitting with plan steps still open is the most common way a task ends
       // half-done. Make the agent account for them once before accepting it.
       const openSteps = task.plan.filter((p) => !p.done).map((p) => p.step);
-      if (openSteps.length && finishPushbacks < 1) {
-        finishPushbacks += 1;
+      if (openSteps.length && openStepsPushbacks < 1) {
+        openStepsPushbacks += 1;
         recovering = true;
         recoveryHint =
           `These planned steps are not marked done yet: ${openSteps.join("; ")}. ` +
@@ -540,6 +832,43 @@ async function runTask({
       return finish("completed", decision.answer, { completionReason: decision.reason || "goal achieved" });
     }
     if (decision.kind === "ask_user") {
+      // Asking permission is not a question, whatever the model called it. It
+      // is a yes/no about an action, and it has a surface of its own — the
+      // approval buttons the safety gate raises when the committing click
+      // actually arrives. Ending the run here instead hands the user a text
+      // box asking "ready to send?", and their "yes" then has to be read as an
+      // instruction: once, it re-ran the entire task from the top rather than
+      // clicking Send. So this never terminates the run; the agent is told to
+      // go and do the thing, and the gate will ask properly.
+      if (looksLikePermissionQuestion(decision.question)) {
+        permissionRefusals += 1;
+        debug.log("permission_question_refused", {
+          question: String(decision.question || "").slice(0, 200),
+          refusals: permissionRefusals,
+        });
+        // Twice is a preference; a third time is a standoff. An agent that
+        // keeps asking instead of clicking usually cannot work out how to
+        // press the control — and refusing again just spends the round budget
+        // on a conversation the user never sees. Hand them the yes/no they
+        // were being asked for, with buttons, and let their answer release it.
+        if (permissionRefusals > 2) {
+          debug.log("permission_question_escalated", { round: task.round });
+          return finish("waiting_for_user", decision.question, {
+            needsUser: true,
+            needsApproval: true,
+          });
+        }
+        recovering = true;
+        recoveryHint =
+          `You asked the user for permission: "${String(decision.question || "").slice(0, 200)}". Do not ask that way — ` +
+          "you cannot act on the answer, and it stops the task. Perform the action instead. If it genuinely commits " +
+          "something (sends, shares, publishes, deletes, spends), you will be asked to confirm at the moment it " +
+          "happens, with the details in front of the user — that check is automatic and is not your job.\n" +
+          "If you are asking because you cannot work out how to press the control: it is in the element list — click " +
+          "it by its reference rather than by eye. A dialog's main button is usually the last one in it, and pressing " +
+          "Enter in the dialog's own field commits many of them. Take a screenshot only if you have not already looked.";
+        continue;
+      }
       // Only stop for something the user alone can supply. Asking permission
       // to proceed, or which obvious option to pick, abandons the task.
       if (!requiresHumanInput(decision.question) && askUserDeferrals < 1) {
@@ -553,6 +882,17 @@ async function runTask({
           "payment details, or a fact that exists nowhere except in the user's head.";
         continue;
       }
+      // A question the user answers by typing — what the message should say,
+      // which of several things they meant — comes straight back to the chat.
+      // Watching the tab for it would park the run for half an hour on an
+      // answer the page was never going to produce.
+      if (!answeredInBrowser(decision.question)) {
+        debug.log("asked_user", { question: String(decision.question || "").slice(0, 200) });
+        return finish("waiting_for_user", decision.question, {
+          needsUser: true,
+          answerOptions: decision.questionOptions || [],
+        });
+      }
       // Something only they can do (sign in, supply a code). Hand over the tab
       // and watch — don't end the task and make them start again.
       const resumed = await waitForUser("input", decision.question, decision);
@@ -563,11 +903,18 @@ async function runTask({
           `(${resumed}). Re-read the page and continue the task from where it actually stands — do not ask again.`;
         continue;
       }
-      return finish("waiting_for_user", decision.question, { needsUser: true });
+      return finish("waiting_for_user", decision.question, {
+        needsUser: true,
+        answerOptions: decision.questionOptions || [],
+      });
     }
     if (decision.kind === "replan") {
       debug.log("replanning", { reason: decision.replanReason });
-      onProgress({ phase: "replanning", reason: decision.replanReason });
+      onProgress({
+        phase: "replanning",
+        reason: decision.replanReason,
+        narration: String(decision.narration || "").slice(0, 600),
+      });
       try {
         await planner.replanTask({
           model,
@@ -592,10 +939,26 @@ async function runTask({
     }
 
     // 4. Safety gate for consequential actions.
+    //
+    // Delivering something to other people is now ALWAYS confirmed with the
+    // user, whatever the request said and whatever app it happens in. The
+    // request's own wording used to count as the yes, which failed in exactly
+    // the way that matters: a stale instruction left over from an earlier turn
+    // ("Send a Gmail email to …") was folded into a bare "write an email to
+    // elijah@lykn.io", and its word "Send" pre-approved a message the user had
+    // never seen. Only a real approval authorizes now — the inline Yes/No, or
+    // a reply that plainly approves the send the agent just prepared, which
+    // the caller signals as sendPolicy "approved".
+    //
+    // `userAsk` and nothing else: task.goal is enriched by the caller with
+    // instruction lines, and reading those as the user's words is how an
+    // instruction talks the gate into standing down.
     const risk = executor.classifyActionRisk(decision, snapshot);
-    const approvalText = String(userAsk || "").trim() || task.goal;
+    const approvalText = String(userAsk || "").trim();
     const authorized =
-      sendPolicy !== "ask" && executor.goalAuthorizesAction(approvalText, decision, snapshot);
+      sendPolicy === "approved" &&
+      !!approvalText &&
+      executor.goalAuthorizesAction(approvalText, decision, snapshot);
     if (risk === "consequential" && !authorized) {
       const el = snapshot.byRef.get(String(decision.action?.target || ""));
       // One short question, because the user answers it with a Yes/No button.
@@ -644,7 +1007,14 @@ async function runTask({
       phase: "acting",
       round: task.round,
       action: decision.action,
-      reason: String(decision.reason || "").slice(0, 160),
+      // Not truncated to a label's width any more. The reason is the agent's
+      // account of why this action is the right one, and the UI keeps it as the
+      // step's expandable detail rather than squeezing it into the title.
+      reason: String(decision.reason || "").slice(0, 400),
+      // The commentary the user actually reads between steps.
+      narration: String(decision.narration || "").slice(0, 600),
+      expectedOutcome: String(decision.expectedOutcome || "").slice(0, 200),
+      planStep: task.plan.find((p) => !p.done)?.step || "",
       targetLabel: targetEl?.label ? String(targetEl.label).slice(0, 60) : "",
       url: snapshot.url,
       batch: batched ? batchPolicy.describeBatch(decision.steps) : "",
@@ -715,6 +1085,13 @@ async function runTask({
       clickedLabel: actionResult?.clickedLabel || "",
       x: actionResult?.x,
       y: actionResult?.y,
+      // WHICH route actually ran, and whether the page confirmed it. Without
+      // these a trace shows "typed, ok:true" for four different mechanisms and
+      // gives no way to tell which one was used — or that the text never
+      // landed anywhere at all.
+      via: actionResult?.via || "",
+      verified: actionResult?.verified === true,
+      unverified: actionResult?.unverified === true,
     });
     // A screenshot the model asked for has to come back to it. The image was
     // captured, handed to the verifier as "screenshot completed", and dropped —
@@ -747,7 +1124,29 @@ async function runTask({
     } catch {
       after = before;
     }
-    const diff = controller.diffSnapshots(before, after);
+    let diff = controller.diffSnapshots(before, after);
+
+    // A page that answered slowly has not refused. Look once more before the
+    // verifier gets a chance to call this a dead click and start recovering
+    // from an action that actually worked.
+    if (
+      actionResult?.ok !== false &&
+      SHOULD_CHANGE_SOMETHING.has(String(decision.action?.type || "")) &&
+      !hasObservableChange(diff)
+    ) {
+      const later = await timer.time("second_look", async () => {
+        await new Promise((r) => setTimeout(r, SECOND_LOOK_MS));
+        controller.invalidate();
+        await controller.settle(2000);
+        return controller.getPageState().catch(() => null);
+      });
+      const laterDiff = later ? controller.diffSnapshots(before, later) : null;
+      if (laterDiff && hasObservableChange(laterDiff)) {
+        debug.log("second_look_caught_change", { round: task.round, diff: laterDiff.summary });
+        after = later;
+        diff = laterDiff;
+      }
+    }
 
     // For typed input, read the actual field value as evidence.
     let extracted = null;
@@ -767,7 +1166,14 @@ async function runTask({
       if (fresh) extracted = await controller.extract(fresh.ref).catch(() => null);
     }
 
-    // 7. Verify.
+    // 7. Verify. Ordinary actions may take an inconclusive-but-responsive page
+    // on faith (the next decide re-reads it anyway); anything consequential,
+    // anything claiming to complete a plan step, and the round after two
+    // straight deferrals all get a real verdict.
+    const deferInconclusive =
+      deferredVerifications < 2 &&
+      risk !== "consequential" &&
+      decision.planStepCompleted !== true;
     let verification;
     try {
       verification = await timer.time("verify", () => verifier.verifyOutcome({
@@ -779,12 +1185,24 @@ async function runTask({
         after,
         diff,
         extracted,
+        deferInconclusive,
       }));
     } catch (e) {
       if (e instanceof AgentModelUnavailableError) throw e;
       verification = { success: false, evidence: "", reason: e?.message || String(e), next: "recover", method: "error" };
     }
     lastVerification = verification;
+    deferredVerifications = verification.deferred === true ? deferredVerifications + 1 : 0;
+    // What the page actually did is the other half of the step's story: the
+    // reason says why it acted, this says whether the page agreed.
+    onProgress({
+      phase: "verified",
+      round: task.round,
+      success: verification.success === true,
+      evidence: String(verification.evidence || "").slice(0, 200),
+      reason: String(verification.reason || "").slice(0, 200),
+      url: after?.url || snapshot.url,
+    });
     debug.log("verified", {
       round: task.round,
       success: verification.success,
@@ -800,9 +1218,13 @@ async function runTask({
       action: decision.action,
       expectedOutcome: decision.expectedOutcome,
       result: verification.success ? "success" : "failure",
+      // A deferred verdict was taken on faith, not shown — it must not later
+      // stand in as proof the work happened (see the finish evidence check).
+      ...(verification.deferred === true ? { deferred: true } : {}),
       observedOutcome: verification.evidence || verification.reason || diff.summary,
       retries: recovery.retriesFor(decision),
     });
+    persistState();
 
     const rollup = timer.roundRollup(task.round);
     if (rollup) debug.log("round_timing", rollup);
@@ -811,6 +1233,10 @@ async function runTask({
       recovering = false;
       recoveryHint = "";
       task.retryCount = 0;
+      // Progress buys back recovery budget: a long run that got PAST its
+      // earlier snags must not die at the finish line on a cap those snags
+      // spent (see recovery.noteProgress).
+      recovery.noteProgress();
       if (decision.planStepCompleted) taskState.markStepDone(task);
       // The action ran but the page could not confirm it. Show the agent the
       // screen next round so it verifies by looking instead of by assuming.
@@ -830,7 +1256,13 @@ async function runTask({
     const step = recovery.nextRecoveryStep({ decision, verification });
     task.retryCount = recovery.retriesFor(decision);
     debug.log("recovery", { mode: step.mode, hint: step.hint, retries: task.retryCount, total: recovery.totalCount() });
-    onProgress({ phase: "recovering", mode: step.mode, round: task.round });
+    onProgress({
+      phase: "recovering",
+      mode: step.mode,
+      round: task.round,
+      reason: String(verification.reason || "").slice(0, 200),
+      hint: String(step.hint || "").slice(0, 200),
+    });
 
     if (step.mode === "fail") {
       const blocker = verification.reason || "no progress on the page";
@@ -920,6 +1352,10 @@ async function executeAction(controller, action) {
       });
     case "replace_text":
       return controller.replaceText(action.target, action.find, action.text ?? action.value ?? "");
+    case "paste_text":
+      return controller.pasteText(action.text ?? action.value ?? "", {
+        replaceAll: action.mode === "replace",
+      });
     case "select":
       return controller.select(action.target, action.value ?? action.text ?? "");
     case "scroll":
@@ -942,6 +1378,10 @@ async function executeAction(controller, action) {
       return controller.wait(action.ms);
     case "screenshot":
       return controller.screenshot();
+    case "dismiss_overlay":
+      return typeof controller.dismissOverlays === "function"
+        ? controller.dismissOverlays({ allowGeneric: true })
+        : { ok: true, dismissed: [], remaining: [] };
     default:
       return { ok: false, error: `unknown_action_type:${type}` };
   }
@@ -983,10 +1423,15 @@ async function executeBatch(controller, steps) {
         lastType,
       };
     }
-    // Let the page catch up before the next step reads or scrolls it.
+    // Let the page catch up before the next step reads or scrolls it. How long
+    // that takes depends on what just ran: a navigation loads a document and
+    // deserves the full budget, while a scroll only needs a paint — giving
+    // every scroll 2.5s made a six-scroll batch spend most of its saved round
+    // waiting on pages that had already settled.
     if (i < list.length - 1) {
+      const loadsADocument = ["navigate", "go_back", "go_forward", "open_tab", "switch_tab"].includes(lastType);
       try {
-        await controller.settle(2500);
+        await controller.settle(loadsADocument ? 2500 : 400);
       } catch {
         /* settling is best-effort */
       }

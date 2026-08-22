@@ -32,9 +32,17 @@ function routeSkills(goal, { maxSkills = 2 } = {}) {
 
 /**
  * Assemble the system prompt for a decision cycle: operating rules + relevant
- * skills + memory + the output contract.
+ * skills + the output contract.
+ *
+ * Deliberately byte-stable for the life of a task. Providers cache prompt
+ * prefixes, and the decide call is made every round with the same ~24KB of
+ * rules in front — but only if nothing volatile is spliced into them. Memory
+ * used to live here, and website memory changes whenever the task crosses to
+ * another site, which invalidated the cached prefix exactly mid-task. Memory
+ * now travels in the user message (buildMemoryContext), which is rebuilt every
+ * round anyway.
  */
-function buildDecisionSystem({ task, skills = [], userMemory = "", websiteMemory = "" }) {
+function buildDecisionSystem({ task, skills = [] }) {
   const parts = [
     instructions.loadAgentsMd(),
     instructions.loadCoreInstructions(),
@@ -45,13 +53,44 @@ function buildDecisionSystem({ task, skills = [], userMemory = "", websiteMemory
     if (text) parts.push(text);
   }
   parts.push(instructions.loadSafetyRules());
-  if (userMemory) parts.push(`# Remembered About the User\n\n${userMemory.slice(0, 1500)}`);
-  // Site knowledge is the highest-value context the agent gets — it is the
-  // difference between knowing where a feature lives and hunting for it. A
-  // 1200-character cap cut real playbooks off mid-sentence.
-  if (websiteMemory) parts.push(websiteMemory.slice(0, 3500));
+  // Constant per machine, so it never breaks the cached prefix. Without it
+  // the model guessed at modifier keys — control+Enter to send in Gmail on
+  // a Mac, where the send shortcut is meta(⌘)+Enter — and the miss was
+  // invisible because shortcut effects rarely show in a page scrape.
+  parts.push(platformNote());
   parts.push(decisionOutputContract());
   return parts.filter(Boolean).join("\n\n---\n\n");
+}
+
+/** Which OS this browser runs on — it decides every keyboard shortcut. */
+function platformNote() {
+  const mac = process.platform === "darwin";
+  return [
+    "# Platform",
+    "",
+    mac
+      ? 'This browser runs on macOS. Keyboard shortcuts use the "meta" (⌘) modifier — send with '
+        + 'press_key key "Enter" modifiers ["meta"], bold with key "b" modifiers ["meta"]. '
+        + 'The "control" modifier is almost never what a mac app wants.'
+      : 'This browser runs on ' + (process.platform === "win32" ? "Windows" : "Linux") + ". "
+        + 'Keyboard shortcuts use the "control" modifier — send with press_key key "Enter" '
+        + 'modifiers ["control"], bold with key "b" modifiers ["control"].',
+  ].join("\n");
+}
+
+/**
+ * What the agent remembers, formatted for the user message.
+ *
+ * Site knowledge is the highest-value context the agent gets — it is the
+ * difference between knowing where a feature lives and hunting for it. A
+ * 1200-character cap once cut real playbooks off mid-sentence; the caps here
+ * are the budget, not a trim to the nearest sentence.
+ */
+function buildMemoryContext({ userMemory = "", websiteMemory = "" } = {}) {
+  const parts = [];
+  if (userMemory) parts.push(`# Remembered About the User\n\n${userMemory.slice(0, 1500)}`);
+  if (websiteMemory) parts.push(websiteMemory.slice(0, 3500));
+  return parts.join("\n\n");
 }
 
 function decisionOutputContract() {
@@ -66,14 +105,24 @@ function decisionOutputContract() {
     '  - `click_coord`: click a point you can see in an attached screenshot but cannot find in the element list (x and y in 0-1000 of the image). For drawn interfaces and unlabeled icons. Always prefer an element ref when one exists. Set `label` to what you are clicking ("Send", "Delete") — it is the only description of the target anything downstream gets.',
     '  - `scroll` with a `target`: scroll INSIDE that element. Editor palettes, block lists and side panels scroll internally and do not respond to page scrolling.',
     '  - `press_key` with `modifiers`: keyboard shortcuts, e.g. key "b" modifiers ["meta"]. Design and text tools are built around these and they are often faster and more reliable than hunting for a toolbar button.',
+    '  - `paste_text`: put a WHOLE document body into the editor on this page, in one go — how you write a long piece into Notion, Docs or Slides. It finds and focuses the editor itself, so DO NOT hunt for the writing area first: paste, then read the page back to confirm. Typing a long document instead is slow and lets autocomplete and autosave interfere. Set `mode` to "replace" to overwrite what is there.',
     '  - `screenshot`: look at the page when the element list plainly does not describe what you are working on. The image comes back attached to your next decision.',
+    '  - `dismiss_overlay`: clear whatever a page has put in front of itself — a cookie or consent wall, a newsletter modal, an "open in app" interstitial, a notification prompt. This already runs for you before most snapshots, so reach for it when a wall arrived mid-task, or when clicks are landing on nothing and something is covering the page. It only ever clicks controls that dismiss, so it cannot agree to anything that matters; if it reports nothing to dismiss, close the thing yourself from the element list.',
     '- kind "finish": every part of the goal is done with evidence, or it is genuinely impossible; `answer` is the final user-facing report. Do NOT finish with plan steps still outstanding unless you say in `answer` why each one no longer applies.',
-    '- kind "ask_user": the task cannot continue without something only the user has — a credential, a verification code, payment details, or a fact that exists nowhere on screen. `question` names ONE concrete thing for them to do in the browser ("sign in to Meta with your password"), because they act in the live tab and you resume automatically once they have. This is a handover, not the end of the task.',
-    "  Never use ask_user to request permission to continue, to confirm a step you can take yourself, or to ask the user to click something. Clicking Confirm / Save / Continue / Allow / Connect / Link is your job.",
+    '- kind "ask_user": the task cannot continue without something only the user has. Two shapes: (a) something they do in the browser — a credential, a verification code, clearing a wall — where `question` names ONE concrete action ("sign in to Meta with your password") and you resume automatically once they have; (b) something they tell you — above all WHAT A MESSAGE SHOULD SAY when the request named a recipient but no content. Never invent the substance of anything you are going to send; ask, propose answers in `questionOptions`, and write it once they reply.',
+    "  Never use ask_user to request permission — not to continue, not to confirm a step you can take yourself, not to ask the user to click something, and above all not before a send, share or delete. Clicking Confirm / Save / Continue / Allow / Connect / Link is your job, and so is clicking Send: the system pauses you at any committing click and asks the user with a yes/no button, automatically. Asking in words instead ends the task and gives them a text box where a button belongs.",
+    '  When the answer is a choice you could sensibly propose — a subject line, a name, a date, which of several items on screen — put 2-4 concrete answers in `questionOptions`. Each must be a COMPLETE answer written the way the user would give it ("Quick favor — 2 mins?"), not a label, a restatement of the question, or Yes/No. They are offered as one-tap chips beside a text box, so the user can always write their own. Omit them for a credential, a verification code, or anything you would only be guessing at.',
     '- kind "replan": the current plan no longer fits reality; `replanReason` explains why. If a recorded constraint is what no longer fits, list the ones that still apply in `constraints` — an empty `constraints` array means "none of them still apply", and is how you drop a constraint the page has overtaken.',
-    'Set `risk`: "consequential" ONLY when the action spends money, destroys data, or delivers to an audience the request did not name. Confirmations, saves, account links and settings changes inside the requested task are "low".',
+    'Set `risk`: "consequential" when the action spends money, destroys data, or delivers anything to another person (send, share, post, publish, invite) — including a delivery the request asked for, since the user has not seen what you wrote. Confirmations, saves, account links and settings changes inside the requested task are "low".',
     "Record new discoveries in `factsLearned` / `candidateResults` so they persist in working memory.",
     "Set `planStepCompleted` true when the current plan step is finished — including when you have established it does not need doing.",
+    "",
+    "## Narration",
+    "",
+    "Always write `narration`: 1-3 sentences addressed to the user, which they read as this step happens. Someone watching over your shoulder should be able to follow the whole task from the narration alone, without knowing anything about how you work.",
+    "Say what you found on the page, what you are doing about it, and what you expect next. When the page was not what you expected, when you had to pick between options, when you are backtracking, or when something looks like it might go wrong, say so and say why — those are the moments the user most needs explained.",
+    "Write it as plain running commentary, in the first person and the present tense. Never mention element references, coordinates, snapshots, rounds, plans, schemas, or field names. Do not repeat the task back at them, and do not narrate the obvious twice in a row — if this round is more of the same, say what is different about it.",
+    "`reason` stays as your own short internal justification. `narration` is the part the user reads.",
   ].join("\n");
 }
 
@@ -95,7 +144,10 @@ function buildPlanningSystem() {
       "",
       "Record facts already known from the request in knownFacts.",
       "Pick relevant skills from the provided list only.",
-      "Ask a clarification question ONLY if the task cannot even be started without it. A vague reference you could resolve by looking (\"the usual format\", \"our template\") is not a blocker — plan to go find it.",
+      "",
+      "Write `approach`: 2-4 sentences addressed to the user, which they read before anything happens. Tell them where you are going to start, how you mean to get to the finished outcome, and anything about their request worth raising up front — an assumption you are making, a detail you will have to go and find, a point where you will likely need them. Plain language, first person, no step numbering, no restating their request back at them.",
+      "Ask a clarification question ONLY if the task cannot even be started without it. A vague reference you could resolve by looking (\"the usual format\", \"our template\") is not a blocker — plan to go find it. Neither is a detail you could reasonably choose yourself: write the subject line, pick the sensible default, and say what you chose.",
+      "If you do ask, put 2-4 concrete answers in `clarificationOptions` whenever you can propose good ones — each a COMPLETE answer in the user's voice, never Yes/No and never a restatement of the question. They become one-tap chips beside a text box, so the user can still write their own.",
     ].join("\n"),
   ].join("\n\n---\n\n");
 }
@@ -110,6 +162,11 @@ function buildLearningSystem() {
     "You are distilling what was just learned about ONE website into notes for the next visit.",
     "",
     "Write only durable, reusable knowledge about how the site works:",
+    "- when the task SUCCEEDED: one note that captures the whole route from entry to outcome as",
+    "  a single line the next run can follow (\"To send a campaign: Create > Email > pick a",
+    "  template > edit the blocks > Send\"), written from the steps that actually worked —",
+    "  this is the most valuable note a run can leave, because the next run on the same kind of",
+    "  task skips its discovery rounds entirely",
     "- where a feature lives, and how to reach it (\"campaign templates are under Create > Email\")",
     "- what a control is actually labeled, when the label is not what you would guess",
     "- which route through the product works, especially when an obvious one did not",
@@ -149,6 +206,7 @@ function buildVerificationSystem() {
 module.exports = {
   routeSkills,
   buildDecisionSystem,
+  buildMemoryContext,
   buildPlanningSystem,
   buildVerificationSystem,
   buildLearningSystem,

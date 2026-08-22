@@ -6,7 +6,7 @@
  */
 
 const contextRouter = require("./contextRouter.cjs");
-const { formatSnapshotForModel } = require("../browser/snapshot.cjs");
+const { formatSnapshotForModel, hasObservableChange } = require("../browser/snapshot.cjs");
 const visionPolicy = require("./visionPolicy.cjs");
 
 /**
@@ -64,9 +64,18 @@ function actedOnDrawnSurface(before, after, action) {
 }
 
 /**
+ * @param {boolean} [deferInconclusive] The loop's permission to skip the model
+ *   verdict when determinism is inconclusive but the page plainly responded
+ *   and reports no problem. The next decide round re-reads the page with this
+ *   diff in hand anyway, so a full model verify here is usually a paid
+ *   round-trip to learn what the next call learns for free. The LOOP grants
+ *   this — never the verifier itself — because only the loop can cap
+ *   consecutive deferrals (a toggle being clicked open/closed changes the page
+ *   every time and would otherwise defer forever) and knows when an action is
+ *   too consequential to take on faith.
  * @returns {Promise<{success:boolean, evidence:string, reason:string, next:'continue'|'recover'|'replan', method:string}>}
  */
-async function verifyOutcome({ model, decision, actionResult, before, after, diff, extracted = null, signal = null }) {
+async function verifyOutcome({ model, decision, actionResult, before, after, diff, extracted = null, signal = null, deferInconclusive = false }) {
   const action = decision.action || {};
   const type = String(action.type || "");
 
@@ -102,6 +111,63 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
     }
     return { success: true, evidence, reason: "", next: "continue", method: "deterministic" };
   }
+  // Sweeping is judged by what it cleared, not by whether the page moved.
+  // "Nothing was in the way" is the outcome the agent wanted, and routing it
+  // through the recovery ladder as a failed action would have it fighting a
+  // page that is already unobstructed.
+  if (type === "dismiss_overlay") {
+    const cleared = Array.isArray(actionResult?.dismissed) ? actionResult.dismissed : [];
+    const stuck = Array.isArray(actionResult?.remaining) ? actionResult.remaining : [];
+    if (cleared.length) {
+      return {
+        success: true,
+        evidence: `cleared ${cleared.map((o) => o.what || o.kind).join("; ")}`,
+        reason: "",
+        next: "continue",
+        method: "deterministic",
+      };
+    }
+    return {
+      success: true,
+      evidence: stuck.length
+        ? `nothing could be dismissed automatically — ${stuck
+            .map((o) => o.what || o.kind)
+            .join("; ")} is still up and has to be closed from its own controls`
+        : "nothing is covering the page — there was no overlay to dismiss",
+      reason: "",
+      next: "continue",
+      method: "deterministic",
+    };
+  }
+  // A pasted document is confirmed by the page holding a recognisable piece of
+  // it. Editors reflow, re-wrap and re-style what they receive, so a whole-text
+  // comparison would fail on success — an opening fragment is the honest check.
+  if (type === "paste_text") {
+    if (actionResult?.ok === false) {
+      return {
+        success: false, evidence: "",
+        reason: `paste failed: ${actionResult.error || "unknown error"}`,
+        next: "recover", method: "deterministic",
+      };
+    }
+    const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const wanted = norm(action.text).slice(0, 60);
+    const onPage = norm(after?.visibleText);
+    if (wanted && onPage.includes(wanted)) {
+      return {
+        success: true,
+        evidence: `the document now holds the pasted text ("${String(action.text).slice(0, 60)}…")`,
+        reason: "", next: "continue", method: "deterministic",
+      };
+    }
+    // Some editors (canvas-drawn docs, code mirrors) never expose their body to
+    // a scrape. The actuator reports whether the paste itself went through.
+    return unconfirmed(
+      `pasted ${String(action.text || "").length} characters — this editor does not report its ` +
+        "contents back, so confirm it visually before relying on it",
+    );
+  }
+
   if (type === "replace_text") {
     // The controller's in-page script only reports ok when the replacement
     // actually landed in the DOM — that is the evidence.
@@ -125,10 +191,14 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
   if (type === "navigate") {
     const wantedHost = hostOf(action.url);
     const landedHost = hostOf(after?.url);
-    // Host equality, not substring: "consent.example.com" contains
-    // "example.com", and reading that as arrival waved every same-family
-    // redirect through as a success.
-    if (!landedHost || (wantedHost && landedHost !== wantedHost)) {
+    // Same SITE, not same host. Products shard across subdomains — the
+    // navigate aims at mailchimp.com and lands on us21.admin.mailchimp.com —
+    // and exact host equality read every one of those as a failed navigation,
+    // spending a recovery round on an arrival. Cross-site is still a miss.
+    // The old worry ("consent.example.com contains example.com") is not
+    // reopened by this: a same-site consent or sign-in subdomain is caught by
+    // the wall checks below, which read the host as well as the path.
+    if (!landedHost || (wantedHost && siteOf(landedHost) !== siteOf(wantedHost))) {
       return {
         success: false,
         evidence: "",
@@ -137,11 +207,11 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
         method: "deterministic",
       };
     }
-    // Right host, wrong page. Sign-in, consent and CAPTCHA walls live on the
-    // host you asked for, and calling them arrival is how the agent walks into
+    // Right site, wrong page. Sign-in, consent and CAPTCHA walls live on the
+    // site you asked for, and calling them arrival is how the agent walks into
     // one and carries on as though it were logged in.
-    const wall = wallPath(after?.url);
-    if (wall && !wallPath(action.url)) {
+    const wall = wallPath(after?.url) || wallHost(after?.url);
+    if (wall && !wallPath(action.url) && !wallHost(action.url)) {
       return {
         success: false,
         evidence: "",
@@ -272,8 +342,7 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
   // thing it was refusing to do. A page that reports a problem is never
   // deterministic evidence of success; it goes to the model to judge.
   const expectation = String(decision.expectedOutcome || "").trim();
-  const somethingChanged =
-    diff && (diff.urlChanged || diff.newLabels.length || diff.textChanged || diff.removedLabels.length);
+  const somethingChanged = hasObservableChange(diff);
   if (expectation && somethingChanged) {
     const fresh = newlyVisibleText(before, after);
     const arrived = diff.summary.replace(/\bGone:.*$/, "");
@@ -281,7 +350,11 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
     // evidence — otherwise dismissing a banner or deleting a row can never be
     // confirmed from the diff that plainly shows it happening.
     const departed = EXPECTS_DISAPPEARANCE_RE.test(expectation) ? diff.removedLabels.join(" ") : "";
-    const hay = `${arrived} ${departed} ${after?.title || ""} ${fresh}`.toLowerCase();
+    // "the Filters panel expands", "the box becomes checked", "the tab is
+    // selected" — expectations written about state, which no amount of page
+    // text will ever confirm.
+    const states = (diff.stateChanges || []).map((c) => c.text).join(" ");
+    const hay = `${arrived} ${departed} ${states} ${after?.title || ""} ${fresh}`.toLowerCase();
     const keywords = significantKeywords(expectation);
     if (keywords.length && !PAGE_REPORTS_A_PROBLEM_RE.test(fresh)) {
       const hits = keywords.filter((k) => hay.includes(k));
@@ -297,25 +370,60 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
     }
   }
 
+  // 3b. The thing that was clicked changed state. A control reporting that it
+  // is now open, ticked, selected or on is the page confirming the click in the
+  // most direct terms available, and it needs no expectation to be written and
+  // no model call to read.
+  //
+  // Only a change on the element that was acted upon counts as proof. A state
+  // change elsewhere on the page is evidence that something happened, but not
+  // that this action is what did it — a background toggle flipping would
+  // otherwise verify any click at all. Those still count as a change further
+  // down, which keeps them out of the "nothing happened" branch, and go to the
+  // model to judge.
+  if (["click", "click_coord", "press_key"].includes(type) && diff?.stateChanges?.length) {
+    const target = String(action.target || "");
+    const onTarget = target ? diff.stateChanges.find((c) => c.ref === target) : null;
+    if (onTarget) {
+      return {
+        success: true,
+        evidence: `the control responded: ${onTarget.text}`,
+        reason: "",
+        next: "continue",
+        method: "deterministic",
+      };
+    }
+  }
+
   // 4. Nothing observable changed after an action that should change things.
   // Elements disappearing IS a change — dismissing a dialog, closing a banner
   // and deleting a row all leave nothing new behind, and scoring those as
   // "nothing happened" sent the agent to redo work it had already done.
-  const nothingChanged =
-    diff &&
-    !diff.urlChanged &&
-    !diff.titleChanged &&
-    !diff.textChanged &&
-    !diff.newLabels.length &&
-    !diff.removedLabels.length;
+  const nothingChanged = diff && !hasObservableChange(diff);
   if (["click", "click_coord", "drag", "press_key"].includes(type) && nothingChanged) {
     // Clicking a text field to focus it legitimately changes nothing visible —
-    // that is not a failure.
+    // that is not a failure. Recognised by what the thing IS, not only by its
+    // ARIA role: the share and recipient boxes these dialogs are built from
+    // are custom widgets that report no role at all, so every click to focus
+    // one scored as a dead click and spent a rung of the recovery ladder.
     const clicked = before?.byRef?.get?.(String(action.target || ""));
-    if (type === "click" && clicked && /^(textbox|searchbox|combobox)$/.test(String(clicked.role || ""))) {
+    const label = `${clicked?.label || action.label || ""}`;
+    // A coordinate click carries no element, only the description the model
+    // aimed with — so the description has to be enough. Without this, every
+    // click into a field the agent could only reach by pixel scored as a dead
+    // click and spent a rung of the recovery ladder, which is most of what a
+    // stuck run on a share dialog is made of.
+    const looksLikeTextEntry =
+      /^(textbox|searchbox|combobox)$/.test(String(clicked?.role || "")) ||
+      clicked?.raw?.editable === true ||
+      (!!label &&
+        /\b(fields?|inputs?|textbox(?:es)?|text box|search ?box|combobox|search|e-?mails?|address(?:es)?|recipients?|people|messages?|comments?|notes?)\b/i.test(
+          label,
+        ));
+    if ((type === "click" || type === "click_coord") && looksLikeTextEntry) {
       return {
         success: true,
-        evidence: `focused the "${clicked.label}" field`,
+        evidence: `focused the "${label || "text"}" field — type into it next`,
         reason: "",
         next: "continue",
         method: "deterministic",
@@ -343,6 +451,26 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
       next: "recover",
       method: "deterministic",
     };
+  }
+
+  // 4.5 Inconclusive, but the page plainly responded and nothing on it reports
+  // a problem. When the loop permits it, hand judgment to the next decide
+  // round instead of paying a model round-trip here: that call re-reads the
+  // whole page anyway, sees this verdict as LAST VERIFICATION, and is made by
+  // the strongest model in the loop. `deferred` is the loop's cue to cap how
+  // many of these run back to back.
+  if (deferInconclusive && somethingChanged) {
+    const freshText = newlyVisibleText(before, after);
+    if (!PAGE_REPORTS_A_PROBLEM_RE.test(freshText)) {
+      return {
+        success: true,
+        deferred: true,
+        evidence: `the page responded (${diff.summary}) — not yet verified against the expectation; confirm from the current page before building on it`,
+        reason: "",
+        next: "continue",
+        method: "deferred",
+      };
+    }
   }
 
   // 5. Inconclusive — ask the model to judge from the evidence.
@@ -376,6 +504,40 @@ async function verifyOutcome({ model, decision, actionResult, before, after, dif
 function hostOf(url) {
   try {
     return new URL(String(url || "")).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The registrable domain (eTLD+1), which is what "the same site" means.
+ * A full public-suffix list would be overkill here; the two-label country
+ * suffixes (co.uk, com.au, …) are the ones that actually appear in tasks.
+ */
+const TWO_PART_TLD_RE = /(?:^|\.)(?:co|com|net|org|gov|ac|edu|or|ne|go)\.[a-z]{2}$/i;
+
+function siteOf(host) {
+  const h = String(host || "").toLowerCase();
+  if (!h) return "";
+  const parts = h.split(".").filter(Boolean);
+  if (parts.length <= 2) return h;
+  const keep = TWO_PART_TLD_RE.test(h) ? 3 : 2;
+  return parts.slice(-keep).join(".");
+}
+
+/**
+ * A subdomain that announces an interstitial. Walls do not only live on paths:
+ * login.example.com and consent.example.com are the same site as example.com
+ * under eTLD+1 comparison, and the host label is the only thing that says what
+ * they are.
+ */
+const WALL_HOST_RE =
+  /^(?:login|log-in|signin|sign-in|auth|sso|id|identity|accounts?|consent|captcha|challenge|verify|verification)\./i;
+
+function wallHost(url) {
+  try {
+    const host = new URL(String(url || "")).hostname.replace(/^www\./i, "");
+    return WALL_HOST_RE.test(host) ? "sign-in or consent" : "";
   } catch {
     return "";
   }

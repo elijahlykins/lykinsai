@@ -2632,15 +2632,10 @@ export async function orchestrateChatSend(p: ChatSendParams): Promise<void> {
 
   /* Phase 2: canvas context + YouTube enrichment
    *
-   * The canvas / grid surface is unplugged in the current product, so
-   * `buildLyknChatContext()` short-circuits to "" and the canvas store
-   * carries no blocks. We detect that once here and skip every
-   * grid-iterating code path below — focused-block YouTube transcript
-   * pickup, notes-panel injection, hasFocusedVideo / hasFocusedBricks
-   * checks, vision-image scanning across the board, and the dead
-   * action-path. Keeps the request payload small and the client-side
-   * pre-flight near-zero so chat feels instant. If/when the grid is
-   * re-enabled, the early-return below flips off automatically.
+   * The canvas / grid surface is gone. `buildLyknChatContext()` returns
+   * "" and `getCanvasState()` is an empty stub, so the grid-iterating
+   * paths below (focused-block YouTube, notes-panel injection,
+   * vision-image scanning, action-path) stay skipped.
    */
   let canvasContext = context.buildLyknChatContext();
   const canvasState = canvas.getCanvasState();

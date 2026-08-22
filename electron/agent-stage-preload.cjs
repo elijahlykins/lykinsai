@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld("lyknAgentStage", {
     ipcRenderer.on("lykn:agent-stage-toast", fn);
     return () => ipcRenderer.removeListener("lykn:agent-stage-toast", fn);
   },
+  onFocusOmnibox: (cb) => {
+    const fn = () => cb();
+    ipcRenderer.on("lykn:agent-stage-focus-omnibox", fn);
+    return () => ipcRenderer.removeListener("lykn:agent-stage-focus-omnibox", fn);
+  },
   navigate: (url) => ipcRenderer.invoke("lykn:agent-stage-navigate", { url }),
   back: () => ipcRenderer.invoke("lykn:agent-stage-back"),
   forward: () => ipcRenderer.invoke("lykn:agent-stage-forward"),

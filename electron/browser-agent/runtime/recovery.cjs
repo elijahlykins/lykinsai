@@ -21,6 +21,20 @@ function createRecoveryTracker() {
   let visualUses = 0;
 
   /**
+   * Verified progress earns recovery budget back.
+   *
+   * The total used to be a lifetime cap, which punished exactly the runs that
+   * were working: a long task that hit — and got past — a few scattered snags
+   * arrived at its last step with nothing left, and died on the first
+   * two-failure wobble there while its ladder still had rungs to try. Each
+   * verified success decays the total by one, so the cap only ever ends runs
+   * whose failures are outpacing their progress.
+   */
+  function noteProgress() {
+    totalRecoveries = Math.max(0, totalRecoveries - 1);
+  }
+
+  /**
    * What counts as "the same action again".
    *
    * Coordinates, key names and select values all used to be missing, so every
@@ -76,19 +90,35 @@ function createRecoveryTracker() {
       /stale_reference|unknown_reference|element not found|element_not_found/i.test(
         String(verification?.reason || ""),
       );
+    // The view was resized or changed between reading the page and acting on
+    // it — the aim was refused before anything ran, so this is not a failed
+    // approach.
+    const staleLayout = /layout_changed|stale_screenshot|stale_view/i.test(
+      String(verification?.reason || ""),
+    );
 
     if (count === 1) {
       return {
         mode: "retry_fresh",
-        hint: staleRef
-          ? "The element reference went stale. Re-observe the page and act on the equivalent element in the fresh snapshot."
-          : `The action did not produce the expected result (${verification?.reason || "no progress"}). Re-observe and retry — the target may have moved, or the page may have changed unexpectedly.`,
+        hint: staleLayout
+          ? "The view you aimed with was out of date — the page was resized, scrolled or changed after it was read — so nothing actually ran. Re-observe, take a fresh screenshot if you were aiming at a point, and do the same step again."
+          : staleRef
+            ? "The element reference went stale. Re-observe the page and act on the equivalent element in the fresh snapshot."
+            : `The action did not produce the expected result (${verification?.reason || "no progress"}). Re-observe and retry — the target may have moved, or the page may have changed unexpectedly.`,
       };
     }
     if (count === 2) {
       return {
         mode: "find_equivalent",
-        hint: "The same action failed twice. Do NOT repeat it. Look for a different element or route that accomplishes the same step (same role/purpose, different target).",
+        // Named this bluntly because the model's favorite move here was to
+        // click the exact same reference a third time. Big apps also routinely
+        // render the same control twice (a header "Create" and an in-content
+        // "Create"), and when one is dead to clicks the twin usually is not.
+        hint:
+          "The same action failed twice. Do NOT act on that same element reference again — not once more. " +
+          "Pick a DIFFERENT control: an identically-labeled one elsewhere on the page counts, and is often " +
+          "the fix when a header button ignores clicks. If no alternative exists, take a `screenshot` and " +
+          "act on what you can see with click_coord.",
       };
     }
     if (visualUses < MAX_VISUAL_RECOVERIES) {
@@ -129,7 +159,7 @@ function createRecoveryTracker() {
     visualUses = 0;
   }
 
-  return { nextRecoveryStep, retriesFor, totalCount, signatureOf, reset };
+  return { nextRecoveryStep, retriesFor, totalCount, signatureOf, reset, noteProgress };
 }
 
 module.exports = {

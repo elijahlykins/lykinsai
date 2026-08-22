@@ -5,6 +5,10 @@
 
 const fsSync = require("node:fs");
 const pathMod = require("node:path");
+const browserOverlays = require("./browserOverlays.cjs");
+// One detector for both agent paths. A 404 is the same page whichever loop is
+// driving, and duplicating the copy-matching is how one of them ends up stale.
+const deadEndPage = require("./browser-agent/runtime/deadEnd.cjs");
 
 // Collection order matters: open dialogs/popovers first (their controls are
 // what the user is interacting with — e.g. Gmail's compose window sits at the
@@ -40,7 +44,19 @@ const COLLECT_INTERACTABLES_JS =
   "a.unshift(t+(x>1?':nth-of-type('+x+')':''));n=n.parentElement;}return a.join(' > ');}" +
   "var items=[],seen=new Set(),q='input,textarea,select,button,a[href],img[alt],img[title],picture,canvas,[contenteditable=true],[role=button],[role=link],[role=searchbox],[role=combobox],[role=radio],[role=option],[role=tab],[role=img],[role=row],[role=listitem],[role=gridcell],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=treeitem],[role=checkbox],[role=switch],[role=textbox],tr,li,figure,label,input[type=radio],input[type=checkbox],[tabindex],[onclick]';" +
   "var vw=window.innerWidth||1200,vh=window.innerHeight||800;" +
-  "function add(el,dlg){if(items.length>=170||seen.has(el))return false;var r=el.getBoundingClientRect();" +
+  // Dialogs come in three kinds and the catalog must not confuse them.
+  // Closed-but-mounted modals and visually hidden widgets (opacity 0,
+  // aria-hidden, inert, offscreen) still match [role=dialog] — cataloging
+  // their controls invents a "dialog is open" the user cannot see, and the
+  // agent burns rounds fighting the phantom. Small non-modal dialogs (chat
+  // bubbles, feedback tabs) are real but do NOT block the page, so their
+  // elements are listed as ordinary controls; only a genuinely modal surface
+  // (aria-modal, alertdialog, or covering a big share of the viewport) earns
+  // the [dialog] marker that tells the model everything else is behind it.
+  "var hiddenDlgs=[];" +
+  "function add(el,dlg){if(items.length>=170||seen.has(el))return false;" +
+  "for(var hd=0;hd<hiddenDlgs.length;hd++){if(hiddenDlgs[hd].contains(el))return false;}" +
+  "var r=el.getBoundingClientRect();" +
   "if(r.width<2||r.height<2)return false;var st=getComputedStyle(el);" +
   "if(st.visibility==='hidden'||st.display==='none'||st.pointerEvents==='none')return false;" +
   "var ti=el.getAttribute('tabindex');if(ti!==null&&parseInt(ti,10)<0)return false;" +
@@ -50,8 +66,12 @@ const COLLECT_INTERACTABLES_JS =
   "if(el.parentElement&&el.parentElement.closest&&el.parentElement.closest('[contenteditable=true]'))return false;" +
   "var tag=el.tagName.toLowerCase()," +
   "type=el.getAttribute('type')||'',role=el.getAttribute('role')||''," +
-  "lab=(el.getAttribute('aria-label')||el.getAttribute('alt')||el.getAttribute('title')||el.innerText||el.placeholder||el.name||el.id||'').trim().slice(0,120);" +
+  "lab=(el.getAttribute('aria-label')||el.getAttribute('alt')||el.getAttribute('title')||el.innerText||el.placeholder||el.getAttribute('data-placeholder')||el.getAttribute('aria-placeholder')||el.name||el.id||'').trim().slice(0,120);" +
   "if(!lab&&tag==='img')lab='image';" +
+  // An empty rich editor has no text, no placeholder and no label — it lands in
+  // the list as an anonymous div, so the agent hunts for the writing surface by
+  // pixel instead of clicking it. Name it.
+  "if(!lab&&(el.isContentEditable===true||el.getAttribute('contenteditable')==='true'))lab='writing area';" +
   "if(!lab&&tag!=='input'&&tag!=='textarea'&&role!=='searchbox'&&role!=='textbox'&&tag!=='img'&&tag!=='canvas'&&el.getAttribute('contenteditable')!=='true')return false;" +
   "var inView=r.bottom>0&&r.top<vh&&r.right>0&&r.left<vw;" +
   // Rich-text editors (contenteditable) have no .value — surface their text so
@@ -63,17 +83,40 @@ const COLLECT_INTERACTABLES_JS =
 // Panels, palettes and lists that scroll internally — window.scrollBy does
 // nothing for these, so the agent has to scroll the container itself.
 "var sc=false;try{sc=(el.scrollHeight-el.clientHeight>24||el.scrollWidth-el.clientWidth>24)&&/auto|scroll/.test(st.overflowY+' '+st.overflowX);}catch(e){}" +
-"seen.add(el);items.push({uid:__lyknUid(el),id:'el'+items.length,tag:tag,type:type,role:role,selector:p(el),label:lab,value:(''+val).slice(0,80),checked:el.checked===true,disabled:dis,scrollable:sc,href:(el.href||'').slice(0,200),clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+r.height/2),inView:inView,inDialog:!!dlg});return true;}" +
+// The state a widget carries in ARIA rather than in a DOM property. Without
+// these, a menu opening, a tab being chosen, a toggle flipping and a custom
+// checkbox ticking are all completely invisible: same label, same text, so
+// the action that caused one reads back as "nothing happened".
+// null means the attribute is absent — distinct from present-and-false.
+"function tri(a){var v=el.getAttribute(a);return v===null?null:v==='true';}" +
+"var ariaChecked=el.getAttribute('aria-checked');" +
+"var cur=el.getAttribute('aria-current');" +
+"seen.add(el);items.push({uid:__lyknUid(el),id:'el'+items.length,tag:tag,type:type,role:role,selector:p(el),label:lab,value:(''+val).slice(0,80),checked:el.checked===true||ariaChecked==='true',editable:(el.isContentEditable===true||el.getAttribute('contenteditable')==='true'||tag==='input'||tag==='textarea'),expanded:tri('aria-expanded'),selected:tri('aria-selected'),pressed:tri('aria-pressed'),current:cur&&cur!=='false'?(''+cur).slice(0,20):'',disabled:dis,scrollable:sc,href:(el.href||'').slice(0,200),clientX:Math.round(r.left+r.width/2),clientY:Math.round(r.top+r.height/2),inView:inView,inDialog:!!dlg});return true;}" +
   "var dlgs=document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true]');" +
-  "for(var d=0;d<dlgs.length;d++){var dels=dlgs[d].querySelectorAll(q);" +
-  "for(var j=0;j<dels.length&&j<400;j++){add(dels[j],true);}}" +
+  "var liveDlgs=[];" +
+  "for(var d0=0;d0<dlgs.length;d0++){var dg=dlgs[d0];var dr=dg.getBoundingClientRect();" +
+  "var ds=null;try{ds=getComputedStyle(dg);}catch(e){}" +
+  "var dgHidden=!ds||ds.visibility==='hidden'||ds.display==='none'||parseFloat(ds.opacity||'1')<0.05||" +
+  "dg.getAttribute('aria-hidden')==='true'||dg.hasAttribute('inert')||" +
+  "dr.width<40||dr.height<40||dr.bottom<=0||dr.top>=vh||dr.right<=0||dr.left>=vw;" +
+  "if(dgHidden){hiddenDlgs.push(dg);continue;}" +
+  "var dgModal=dg.getAttribute('aria-modal')==='true'||dg.getAttribute('role')==='alertdialog'||" +
+  "(dr.width*dr.height)>=(vw*vh*0.25);" +
+  "liveDlgs.push({dg:dg,modal:dgModal});}" +
+  "for(var d=0;d<liveDlgs.length;d++){var dels=liveDlgs[d].dg.querySelectorAll(q);" +
+  "for(var j=0;j<dels.length&&j<400;j++){add(dels[j],liveDlgs[d].modal);}}" +
   "var rows=0,all=document.querySelectorAll(q);" +
   "for(var i=0;i<all.length&&i<=2000;i++){var el=all[i];" +
   "var t2=el.tagName.toLowerCase(),r2=el.getAttribute('role')||'';" +
   "var rowish=t2==='tr'||t2==='li'||r2==='row'||r2==='listitem'||r2==='option'||r2==='gridcell';" +
   "if(rowish&&rows>=60)continue;" +
   "if(add(el,false)&&rowish)rows++;}" +
-  "return {url:location.href,title:document.title,items:items};})()";
+  // The viewport the catalog was measured against. Element geometry, inView
+  // flags and screenshot coordinates are all relative to this box; if the view
+  // is resized after the scan (the agent rail opening beside the browser does
+  // exactly that), everything positional in this catalog is stale — and this
+  // is the number that lets the controller notice.
+  "return {url:location.href,title:document.title,viewport:{w:vw,h:vh},items:items};})()";
 
 // Reads the WHOLE document (not just the viewport) so dashboards, tables and
 // below-the-fold data all land in the scrape. Rendered-but-offscreen content
@@ -124,16 +167,34 @@ function buildActionJs(action) {
     "var nodes=document.querySelectorAll('input,textarea,select,button,a,img,tr,li,[role=button],[role=link],[role=radio],[role=option],[role=row],[role=listitem],[role=tab],[role=menuitem],label,[tabindex],div.zA,tr.zA');" +
     "for(var i=0;i<nodes.length;i++){var n=nodes[i],lab=((n.getAttribute('aria-label')||n.innerText||n.placeholder||'')+'').toLowerCase().replace(/\\s+/g,' ').trim();" +
     "if(lab&&(lab.indexOf(want)>-1||want.indexOf(lab.slice(0,40))>-1)&&vis(n))return n;}return null;}" +
+    // The native value setter belongs to HTMLInputElement / HTMLTextAreaElement
+    // and REFUSES any other receiver — calling it on a contenteditable div or a
+    // custom widget throws "Illegal invocation", which is not a failure the
+    // agent can read or route around. (It cost a real run: correcting a
+    // mistyped recipient in Google Drive's share box died here, and the agent
+    // spent the rest of its budget clicking at the field it could no longer
+    // address.) Match the setter to the element, handle contenteditable in its
+    // own terms, and report anything else as a plain, actionable error.
     "function setVal(el,v){" +
     "try{el.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}" +
     "try{el.click();}catch(e1){} try{el.focus();}catch(e2){}" +
-    "var p=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;" +
-    "var d=Object.getOwnPropertyDescriptor(p,'value');if(d&&d.set)d.set.call(el,v);else el.value=v;" +
-    "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}" +
+    "var isInput=(typeof HTMLInputElement!=='undefined')&&(el instanceof HTMLInputElement);" +
+    "var isArea=(typeof HTMLTextAreaElement!=='undefined')&&(el instanceof HTMLTextAreaElement);" +
+    "if(isInput||isArea){" +
+    "var p=isArea?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;" +
+    "var d=Object.getOwnPropertyDescriptor(p,'value');" +
+    "try{if(d&&d.set)d.set.call(el,v);else el.value=v;}catch(e3){el.value=v;}}" +
+    "else if(el.isContentEditable||el.getAttribute('contenteditable')==='true'){" +
+    "el.textContent=v;}" +
+    "else if('value' in el){el.value=v;}" +
+    "else{return false;}" +
+    "el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));" +
+    "return true;}" +
     "var el=findEl(a);if(!el)return {ok:false,error:'Element not found'};" +
     "if(a.type==='type'||a.type==='fill'){" +
     "var before=((el.value!=null?el.value:el.innerText)||'')+'';" +
-    "setVal(el,a.text||a.value||'');" +
+    "if(!setVal(el,a.text||a.value||''))" +
+    "return {ok:false,error:'field_not_writable',hint:'This control does not take a value directly — click it and type instead.'};" +
     "var after=((el.value!=null?el.value:el.innerText)||'')+'';" +
     "var fr=el.getBoundingClientRect();" +
     "return {ok:true,type:a.type,changed:after!==before,valueLen:after.length," +
@@ -292,6 +353,14 @@ async function getViewportMetrics(webContents) {
  * blend / fall back so we don't drift left (too-narrow width) or right
  * (too-wide capture + nudge).
  */
+/**
+ * A capture whose CSS size differs from the live viewport by more than this is
+ * a different layout, not a rounding artifact: the page has reflowed and no
+ * scaling of the old picture lands on the new positions. The agent rail
+ * opening beside the docked browser shifts the width by ~20% in one step.
+ */
+const STALE_CAPTURE_DRIFT = 0.12;
+
 function mapNormCoordToClient(nx, ny, metrics, shotMeta) {
   const m = metrics || {};
   const viewportW = Number(m.w) || Number(m.cw) || 1200;
@@ -300,14 +369,20 @@ function mapNormCoordToClient(nx, ny, metrics, shotMeta) {
   const captureH = Number(shotMeta?.captureCssH) || Number(shotMeta?.cssH) || 0;
   let w = viewportW;
   let h = viewportH;
+  let stale = false;
   if (captureW > 0) {
     const drift = Math.abs(captureW - viewportW) / Math.max(viewportW, 1);
-    // Near match → trust capture (what the model saw). Large mismatch → blend
-    // so a wider capture doesn't push every click toward the right edge.
+    // Near match → trust capture (what the model saw). Moderate mismatch →
+    // blend so a wider capture doesn't push every click toward the right edge.
+    // Large mismatch → the viewport was resized after the shot; the page has
+    // reflowed, and a blended half-scale is a systematic miss dressed up as a
+    // click. Report stale so the caller refuses and re-captures instead.
+    if (drift > STALE_CAPTURE_DRIFT) stale = true;
     w = drift <= 0.03 ? captureW : Math.round((captureW + viewportW) / 2);
   }
   if (captureH > 0) {
     const driftH = Math.abs(captureH - viewportH) / Math.max(viewportH, 1);
+    if (driftH > STALE_CAPTURE_DRIFT) stale = true;
     h = driftH <= 0.03 ? captureH : Math.round((captureH + viewportH) / 2);
   }
   const ox = Number(m.ox) || 0;
@@ -322,6 +397,7 @@ function mapNormCoordToClient(nx, ny, metrics, shotMeta) {
     y: Math.max(1, Math.min(y, maxY)),
     w,
     h,
+    stale,
   };
 }
 
@@ -340,6 +416,12 @@ function snapClientPointToCatalog(x, y, catalogItems, radiusPx = 42, labelHint =
   for (const it of items) {
     if (typeof it?.clientX !== "number" || typeof it?.clientY !== "number") continue;
     if (it.inView === false) continue;
+    // An element inside a frame we could not place carries FRAME-relative
+    // coordinates dressed up as window ones. Snapping to those takes a point
+    // that was read correctly off the screenshot and moves it somewhere the
+    // control is not — which is how every click in Drive's share dialog
+    // landed on nothing while the agent watched the page refuse to respond.
+    if (it.frameOffsetKnown === false) continue;
     const lab = String(it.label || "")
       .toLowerCase()
       .replace(/\s+/g, " ")
@@ -373,11 +455,36 @@ function snapClientPointToCatalog(x, y, catalogItems, radiusPx = 42, labelHint =
   };
 }
 
+/**
+ * CSS page point → view/input point.
+ *
+ * The docked agent tabs render at a fit-to-pane ZOOM FACTOR (main.cjs
+ * applyAgentTabZoom, floor 0.5, and it stamps what it applied on the
+ * webContents). Every point this module computes comes from the page in CSS
+ * space — getBoundingClientRect, elementFromPoint, catalog clientX/Y — but
+ * Electron's sendInputEvent takes VIEW coordinates. With zoom z a CSS point
+ * renders at (x·z, y·z); sending it unscaled overshoots by an error
+ * proportional to distance from the top-left corner. That is why clicks on
+ * far-right and bottom controls (Gmail's Send, a header's Create button)
+ * silently landed on nothing while mid-page clicks worked.
+ */
+function toInputPoint(webContents, cssX, cssY) {
+  let z = Number(webContents?.__lyknZoomFactor);
+  if (!Number.isFinite(z) || z <= 0) {
+    try {
+      z = Number(webContents?.getZoomFactor?.());
+    } catch {
+      z = 1;
+    }
+  }
+  if (!Number.isFinite(z) || z <= 0.2 || z > 5) z = 1;
+  return { x: Math.round(Number(cssX) * z), y: Math.round(Number(cssY) * z) };
+}
+
 /** Real mouse events into the owned tab — SPAs (Gmail/YouTube) often ignore el.click(). */
 async function clickAtClientPoint(webContents, clientX, clientY) {
   if (!webContents || webContents.isDestroyed?.()) return { ok: false, error: "no_webcontents" };
-  const x = Math.round(Number(clientX));
-  const y = Math.round(Number(clientY));
+  const { x, y } = toInputPoint(webContents, clientX, clientY);
   if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
     return { ok: false, error: "bad_point" };
   }
@@ -421,10 +528,14 @@ async function clickAtClientPoint(webContents, clientX, clientY) {
  */
 async function dragByInput(webContents, from, to, { steps = 20, settleMs = 90 } = {}) {
   if (!webContents || webContents.isDestroyed?.()) return { ok: false, error: "no_webcontents" };
-  const x1 = Math.round(Number(from?.x));
-  const y1 = Math.round(Number(from?.y));
-  const x2 = Math.round(Number(to?.x));
-  const y2 = Math.round(Number(to?.y));
+  // CSS → view space, same as clicks: a drag whose endpoints miss by the zoom
+  // ratio drops the payload on whatever happens to sit at the scaled point.
+  const start = toInputPoint(webContents, from?.x, from?.y);
+  const end = toInputPoint(webContents, to?.x, to?.y);
+  const x1 = start.x;
+  const y1 = start.y;
+  const x2 = end.x;
+  const y2 = end.y;
   if (![x1, y1, x2, y2].every((n) => Number.isFinite(n) && n >= 0)) {
     return { ok: false, error: "bad_points" };
   }
@@ -740,6 +851,125 @@ async function focusTypeTarget(webContents, { hint = "", enriched = null, prefer
 }
 
 /** Select-all + Backspace in the focused field — real keys, SPA-safe. */
+/**
+ * Put the caret in the field of whatever dialog is open, in whichever frame it
+ * lives.
+ *
+ * The last resort for typing, and the one that does not depend on geometry at
+ * all. A dialog raised over a page — a share sheet, an invite box, a rename
+ * prompt — has one obvious place to type, and when a click cannot reach it
+ * (wrong coordinates, an unmeasurable iframe, something drawn over it) the
+ * agent is left able to see the field and unable to use it. That is the loop
+ * the share dialog produced over and over: click, nothing, screenshot, click.
+ *
+ * Focus needs no line of sight and no correct pixel, so this succeeds where
+ * the click cannot.
+ *
+ * @returns {Promise<{ok: boolean, frame?: object, label?: string}>}
+ */
+function buildFocusDialogFieldJs(hint = "") {
+  const payload = Buffer.from(JSON.stringify({ hint: String(hint || "") }), "utf8").toString("base64");
+  return `(function(){try{
+  var a=JSON.parse(decodeURIComponent(escape(atob('${payload}'))));
+  var want=(a.hint||'').toLowerCase().replace(/\\s+/g,' ').trim();
+  function vis(el){try{var r=el.getBoundingClientRect();if(r.width<8||r.height<8)return false;
+    var s=getComputedStyle(el);return s.visibility!=='hidden'&&s.display!=='none'&&parseFloat(s.opacity||'1')>0.05;}catch(e){return false;}}
+  function labOf(el){try{return ((el.getAttribute('aria-label')||el.getAttribute('placeholder')||el.getAttribute('title')||el.name||'')+'').toLowerCase().replace(/\\s+/g,' ').trim();}catch(e){return '';}}
+  var sel='input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]),textarea,[contenteditable=true],[role=textbox],[role=combobox],[role=searchbox]';
+  var dlgs=[].slice.call(document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true]')).filter(vis);
+  if(!dlgs.length)return {ok:false};
+  // The last one in document order is the one on top.
+  var dlg=dlgs[dlgs.length-1];
+  var fields=[].slice.call(dlg.querySelectorAll(sel)).filter(vis);
+  if(!fields.length)return {ok:false};
+  // Prefer the field the agent was actually aiming at; fall back to the first,
+  // which on a share or invite dialog is the one that matters.
+  var f=null;
+  if(want){for(var i=0;i<fields.length;i++){var L=labOf(fields[i]);
+    if(L&&(L.indexOf(want.slice(0,24))>-1||want.indexOf(L.slice(0,24))>-1)){f=fields[i];break;}}}
+  if(!f)f=fields[0];
+  try{f.focus();}catch(e){}
+  var ok=document.activeElement===f||f.contains(document.activeElement);
+  if(!ok)return {ok:false};
+  try{if(f.setSelectionRange){var Ln=(f.value||'').length;f.setSelectionRange(Ln,Ln);}}catch(e2){}
+  return {ok:true,label:labOf(f).slice(0,80),fields:fields.length};
+}catch(e){return {ok:false};}})()`;
+}
+
+async function focusOpenDialogField(webContents, { hint = "" } = {}) {
+  if (!webContents || webContents.isDestroyed?.()) return { ok: false };
+  const js = buildFocusDialogFieldJs(hint);
+  const tryFrame = async (frame) => {
+    try {
+      const res = await frame.executeJavaScript(js, true);
+      return res?.ok ? { ...res, frame } : null;
+    } catch {
+      return null;
+    }
+  };
+  const main = webContents.mainFrame;
+  if (main) {
+    const hit = await tryFrame(main);
+    if (hit) return hit;
+    // The dialog is often rendered inside an embed rather than the page.
+    const subs = main.framesInSubtree || [];
+    for (const frame of subs) {
+      if (!frame || frame === main) continue;
+      const inFrameHit = await tryFrame(frame);
+      if (inFrameHit) return inFrameHit;
+    }
+  }
+  return { ok: false };
+}
+
+/**
+ * Put text into the focused field using the real clipboard.
+ *
+ * A different mechanism from `insertText`, not another variation of it.
+ * insertText hands characters to the renderer's focused editable; paste goes
+ * through the application's own paste handling, which is the path products
+ * build deliberately — recipient boxes in particular parse pasted addresses
+ * and turn them into chips. On surfaces where insertText silently does nothing
+ * (custom widgets that never accept synthetic text), paste still works.
+ *
+ * The clipboard is the user's, so whatever was on it is put back afterwards.
+ */
+async function pasteTextIntoFocused(webContents, text) {
+  if (!webContents || webContents.isDestroyed?.()) return false;
+  const value = String(text ?? "");
+  if (!value) return false;
+  let clipboard;
+  try {
+    ({ clipboard } = require("electron"));
+  } catch {
+    return false;
+  }
+  let previous = "";
+  try {
+    previous = clipboard.readText();
+  } catch {
+    previous = "";
+  }
+  try {
+    clipboard.writeText(value);
+    await new Promise((r) => setTimeout(r, 40));
+    webContents.focus();
+    if (typeof webContents.paste === "function") webContents.paste();
+    else await sendShortcut(webContents, `${process.platform === "darwin" ? "meta" : "control"}+v`);
+    await new Promise((r) => setTimeout(r, 240));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    // Never leave the user's clipboard holding our payload.
+    try {
+      clipboard.writeText(previous);
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
 async function clearFocusedField(webContents) {
   const mod = process.platform === "darwin" ? "meta" : "control";
   try {
@@ -844,6 +1074,13 @@ async function typeWithFocusRetry(
     strictVerify = false,
     verifySelector = "",
     verifyLabel = "",
+    // Empty the field before typing, with real keys (select-all then delete).
+    // This is how a value gets CORRECTED on surfaces the DOM cannot simply be
+    // assigned: contenteditable boxes, recipient fields that commit addresses
+    // into chips, and custom widgets. Replacing text was previously only
+    // possible on plain inputs, so a mistyped recipient in a share dialog had
+    // no route back and the run stalled trying to click the mistake away.
+    clearFirst = false,
   } = {},
 ) {
   const value = String(text ?? "");
@@ -904,10 +1141,21 @@ async function typeWithFocusRetry(
       }
     }
 
+    // Correcting a value: empty the field with real keys now that focus is in
+    // it. Select-all + delete is the one clear that works everywhere — plain
+    // inputs, contenteditable, and the chip fields where a committed entry has
+    // no text left to overwrite.
+    if (clearFirst) {
+      await clearFocusedField(webContents);
+    }
+
     // Typing an email into a share dialog: a prior attempt may have committed
     // it as a chip (which empties the field and hides the raw email from page
     // text) — never create a second chip.
-    const emailValue = /^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$/.test(value.trim())
+    //
+    // A deliberate correction is the exception: the chip that is already there
+    // is the mistake being fixed, so a matching chip must not report success.
+    const emailValue = !clearFirst && /^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$/.test(value.trim())
       ? value.trim()
       : "";
     if (emailValue && !preferDocsBody && !canvas) {
@@ -1121,7 +1369,19 @@ function buildResolvePointJs(action) {
         `var r=el.getBoundingClientRect();` +
         `var x=Math.round(r.left+r.width/2),y=Math.round(r.top+Math.min(r.height/2,120));` +
         `x=Math.max(1,Math.min(x,(window.innerWidth||1200)-1));y=Math.max(1,Math.min(y,(window.innerHeight||800)-1));` +
-        `var hitOk=false;try{var hit=document.elementFromPoint(x,y);hitOk=!!(hit&&(hit===el||el.contains(hit)||hit.contains(el)));}catch(e){}` +
+        // The occluder being a SIBLING LAYER of the same widget is not
+        // occlusion. Code editors (CodeMirror, Monaco) keep the real textarea
+        // behind drawn layers inside one container; custom controls stack a
+        // styled face over their input. Clicking the point still reaches the
+        // widget, so accept when the thing at the point lives inside the
+        // target's parent or grandparent — sized-guarded so a page-wide
+        // wrapper can't launder a genuine dialog into a "sibling".
+        `var hitOk=false;try{var hit=document.elementFromPoint(x,y);` +
+        `hitOk=!!(hit&&(hit===el||el.contains(hit)||hit.contains(el)));` +
+        `if(!hitOk&&hit){var anc=el.parentElement;` +
+        `for(var k=0;k<2&&anc&&!hitOk;k++){var ar=anc.getBoundingClientRect();` +
+        `if(ar.width*ar.height<=((window.innerWidth||1200)*(window.innerHeight||800)*0.5)&&anc.contains(hit))hitOk=true;` +
+        `anc=anc.parentElement;}}}catch(e){}` +
         `return {x:x,y:y,hit:hitOk};}` +
         `function labOf(n){return ((n.getAttribute('aria-label')||n.getAttribute('alt')||n.getAttribute('title')||n.innerText||n.placeholder||n.name||n.id||'')+'').toLowerCase().replace(/\\s+/g,' ').trim();}` +
         `var want=(a.label||'').toLowerCase().replace(/\\s+/g,' ').trim();` +
@@ -1272,6 +1532,46 @@ async function runFrameAction(webContents, frame, offset, action) {
         unverified: !verified,
       };
     }
+    // No usable click point — this frame's position in the window could not be
+    // measured, so there is nowhere to aim. Focus the element from inside the
+    // frame instead and type with real keys, which need no coordinates at all.
+    // Without this the only remaining route was assigning .value from script,
+    // which fails outright on the custom widgets these dialogs are built from:
+    // Drive's "Add people" box refused both, and the run died having never
+    // typed a character.
+    const focused = await inFrame({ ...action, type: "focus" });
+    if (focused?.ok) {
+      await new Promise((r) => setTimeout(r, 120));
+      try {
+        webContents.focus();
+        // Correcting a value: empty the field first, in the field itself.
+        if (action.mode === "replace" || action.clearFirst === true) {
+          await clearFocusedField(webContents);
+        }
+        await webContents.insertText(text);
+      } catch (e) {
+        return { ok: false, error: e?.message || String(e) };
+      }
+      if (action.pressEnter) {
+        await new Promise((r) => setTimeout(r, 100));
+        await sendRealKey(webContents, "Enter");
+      }
+      await new Promise((r) => setTimeout(r, 260));
+      const landed = await readFrameElementValue(frame, action.selector || "");
+      const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const needle = norm(text).slice(0, 48);
+      const verified = !!needle && norm(landed).includes(needle);
+      return {
+        ok: true,
+        type: "click_type",
+        via: "frame_focus_insert_text",
+        viaFrame: true,
+        frameId: frame.routingId,
+        chars: text.length,
+        verified,
+        unverified: !verified,
+      };
+    }
     const res = await inFrame({ ...action, type: "fill", text, value: text });
     if (res?.ok) return { ...res, viaFrame: true, synthetic: true, frameId: frame.routingId };
     return res || { ok: false, error: "frame_type_failed" };
@@ -1286,7 +1586,8 @@ async function runFrameAction(webContents, frame, offset, action) {
   if (type === "hover" || type === "mouseover") {
     if (!point?.pageCoords) return { ok: false, error: "frame_offset_unknown" };
     try {
-      webContents.sendInputEvent({ type: "mouseMove", x: point.x, y: point.y });
+      const vp = toInputPoint(webContents, point.x, point.y);
+      webContents.sendInputEvent({ type: "mouseMove", x: vp.x, y: vp.y });
       return { ok: true, type: "hover", x: point.x, y: point.y, viaFrame: true };
     } catch (e) {
       return { ok: false, error: e?.message || String(e) };
@@ -1445,6 +1746,10 @@ async function navigate(webContents, url) {
 async function getDOMCatalog(webContents, { includeFrames = true } = {}) {
   if (!webContents || webContents.isDestroyed()) return { ok: false, error: "no_webcontents" };
   try {
+    // Reading the page is the last thing that happens before acting on it, so
+    // it is where the activity monitor has to be armed: a request fired by the
+    // upcoming click is only observable if the patch predates the click.
+    webContents.executeJavaScript(ACTIVITY_MONITOR_JS, true).catch(() => {});
     const data = await webContents.executeJavaScript(COLLECT_INTERACTABLES_JS, true);
     const url = data?.url || webContents.getURL?.() || "";
     const items = Array.isArray(data?.items) ? [...data.items] : [];
@@ -1650,6 +1955,97 @@ async function collectFrameInteractables(webContents, { offsets, viewport } = {}
     /* frame catalog is additive — never break the main-frame scrape */
   }
   return out;
+}
+
+/**
+ * Clear whatever the page has put in front of itself — cookie walls, consent
+ * managers, newsletter modals, "open in app" nags, notification prompts.
+ *
+ * All of the judgement lives in browserOverlays.cjs; this is the wiring. The
+ * scan runs in the main frame and in every sub-frame, because the two most
+ * widely deployed consent managers render their wall inside an iframe, where a
+ * main-frame scan sees an empty rectangle and the agent sees an unresponsive
+ * page. A click goes out as a real mouse event at the point the scan measured,
+ * falling back to the element itself when the point is unusable — a frame whose
+ * position could not be measured, or a control something else is covering.
+ *
+ * @returns {Promise<{ok: boolean, dismissed: Array, remaining: Array, tried: string[]}>}
+ */
+async function dismissOverlays(
+  webContents,
+  { allowGeneric = true, skipSignatures = [], maxDismissals = 3, includeFrames = true } = {},
+) {
+  if (!webContents || webContents.isDestroyed?.()) {
+    return { ok: false, error: "no_webcontents", dismissed: [], remaining: [], tried: [] };
+  }
+  const scanJs = browserOverlays.buildScanJs();
+  const metrics = await getViewportMetrics(webContents).catch(() => null);
+  const vw = Number(metrics?.w) || 1200;
+  const vh = Number(metrics?.h) || 800;
+
+  const scanFrames = async () => {
+    const frames = [];
+    const top = await webContents.executeJavaScript(scanJs, true).catch(() => null);
+    if (top?.ok && top.overlays?.length) {
+      frames.push({
+        frameId: null,
+        offsetX: 0,
+        offsetY: 0,
+        offsetKnown: true,
+        docKey: top.docKey,
+        overlays: top.overlays,
+      });
+    }
+    const main = webContents.mainFrame;
+    const subs = includeFrames ? main?.framesInSubtree || [] : [];
+    if (subs.length > 1) {
+      const offsets = await buildFrameOffsets(webContents).catch(() => null);
+      for (const fr of subs) {
+        if (!fr || fr === main) continue;
+        const url = String(fr.url || "");
+        if (!url || url === "about:blank") continue;
+        const res = await fr.executeJavaScript(scanJs, true).catch(() => null);
+        if (!res?.ok || !res.overlays?.length) continue;
+        const off = offsets?.get(fr.routingId) || { x: 0, y: 0, known: false };
+        frames.push({
+          frameId: fr.routingId,
+          offsetX: Number(off.x) || 0,
+          offsetY: Number(off.y) || 0,
+          offsetKnown: !!off.known,
+          overlays: res.overlays,
+        });
+      }
+    }
+    return frames;
+  };
+
+  const click = async ({ point, control, frameId }) => {
+    if (point && point.x >= 1 && point.y >= 1 && point.x < vw && point.y < vh) {
+      const hit = await clickAtClientPoint(webContents, point.x, point.y);
+      if (hit?.ok) return hit;
+    }
+    return runAction(
+      webContents,
+      {
+        type: "click",
+        selector: control?.selector || "",
+        label: control?.label || "",
+        ...(frameId != null ? { frameId } : {}),
+      },
+      [],
+    );
+  };
+
+  return browserOverlays.sweepOverlays({
+    scanFrames,
+    click,
+    settle: async (ms) => {
+      await waitForDomSettle(webContents, ms).catch(() => {});
+    },
+    allowGeneric,
+    skipSignatures,
+    maxDismissals,
+  });
 }
 
 /** The live WebFrameMain for a catalog item's frame, or null for the main frame. */
@@ -1904,7 +2300,16 @@ async function runAction(webContents, action, catalogItems) {
     // Share dialog: never resolve "Send" via fuzzy label/coords (often hits Cancel).
     if (/\bsend\b/i.test(labelHint) && !/\b(cancel|discard)\b/i.test(labelHint)) {
       const sent = await clickSendInShareDialog(webContents);
-      if (sent?.ok) return { ...sent, type: "click", resolved: "share_send_before_coord" };
+      if (sent?.ok) {
+        return {
+          ...sent,
+          type: "click",
+          resolved: "share_send_before_coord",
+          // What the fast path actually clicked — without this, a whole run of
+          // hijacked send attempts traced as anonymous successes.
+          clickedLabel: String(sent.label || "Send"),
+        };
+      }
     }
     // Prefer vision coordinates. Label override only when score is excellent
     // AND the live point is near the mapped coords (avoids toolbar twins).
@@ -1952,6 +2357,20 @@ async function runAction(webContents, action, catalogItems) {
       const shotMeta = lastScreenshotMeta.get(webContents) || null;
       let mapped =
         mappedForLabel || mapNormCoordToClient(nx, ny, metrics, shotMeta);
+      // The screenshot these coordinates were read off no longer matches the
+      // live viewport — the view was resized and the page reflowed. Clicking a
+      // scaled guess would land on whatever moved under the point, so refuse
+      // and make the caller look again. (The label path above already had its
+      // chance; it resolves against the live DOM and is immune to this.)
+      if (mapped.stale) {
+        return {
+          ok: false,
+          error: "stale_screenshot",
+          hint:
+            "The browser viewport was resized after this screenshot was taken, so positions read off it " +
+            "no longer land where they aim. Take a fresh screenshot and read the point off that instead.",
+        };
+      }
       // Snap only to a nearby control whose label matches the agent's target.
       const snapped = snapClientPointToCatalog(
         mapped.x,
@@ -2055,6 +2474,47 @@ async function runAction(webContents, action, catalogItems) {
       const live = await resolveElementPoint(webContents, enriched);
       if (live) {
         if (live.hit === false && enriched.strictTarget) {
+          // Something is drawn over the field. It is still in the document and
+          // still focusable, and focus needs no clear line of sight — so put
+          // the caret in it from script and type with real keys rather than
+          // refusing. Refusing sent the agent back to clicking at a field it
+          // could see, could not hit, and was never going to reach that way.
+          // Returns a plain boolean: did the caret actually land in the field.
+          const focused = await focusTargetFieldDom(webContents, {
+            selector: enriched.selector || "",
+            label: enriched.label || "",
+          }).catch(() => false);
+          if (focused) {
+            try {
+              webContents.focus();
+              if (enriched.mode === "replace" || enriched.clearFirst === true) {
+                await clearFocusedField(webContents);
+              }
+              await webContents.insertText(text);
+              if (enriched.pressEnter) {
+                await new Promise((r) => setTimeout(r, 100));
+                await sendRealKey(webContents, "Enter");
+              }
+              await new Promise((r) => setTimeout(r, 220));
+              // Resolves to the field's value as a string, or null.
+              const landed = await readTargetFieldValue(webContents, {
+                selector: enriched.selector || "",
+                label: enriched.label || "",
+              }).catch(() => null);
+              const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+              const verified = !!landed && norm(landed).includes(norm(text).slice(0, 40));
+              return {
+                ok: true,
+                type: "click_type",
+                via: "focus_insert_text_over_overlay",
+                chars: text.length,
+                verified,
+                unverified: !verified,
+              };
+            } catch (e) {
+              return { ok: false, error: e?.message || String(e) };
+            }
+          }
           return {
             ok: false,
             error: "element_obscured",
@@ -2110,17 +2570,32 @@ async function runAction(webContents, action, catalogItems) {
           const metrics = await getViewportMetrics(webContents);
           const shotMeta = lastScreenshotMeta.get(webContents) || null;
           const mapped = mapNormCoordToClient(nx, ny, metrics, shotMeta);
-          const snapped = snapClientPointToCatalog(
-            mapped.x,
-            mapped.y,
-            catalogItems,
-            40,
-            fieldHint,
-          );
-          clickPoint = {
-            x: snapped.snapped ? snapped.x : mapped.x,
-            y: snapped.snapped ? snapped.y : mapped.y,
-          };
+          if (mapped.stale) {
+            // The shot these coordinates came from predates a viewport resize.
+            // With a field name we can still focus by label below; without one
+            // a scaled guess would type into whatever moved under the point.
+            if (!fieldHint) {
+              return {
+                ok: false,
+                error: "stale_screenshot",
+                hint:
+                  "The browser viewport was resized after this screenshot was taken. " +
+                  "Take a fresh screenshot and read the field's position off that instead.",
+              };
+            }
+          } else {
+            const snapped = snapClientPointToCatalog(
+              mapped.x,
+              mapped.y,
+              catalogItems,
+              40,
+              fieldHint,
+            );
+            clickPoint = {
+              x: snapped.snapped ? snapped.x : mapped.x,
+              y: snapped.snapped ? snapped.y : mapped.y,
+            };
+          }
         } catch {
           /* fall through to hint focus */
         }
@@ -2140,7 +2615,7 @@ async function runAction(webContents, action, catalogItems) {
       };
     }
 
-    return typeWithFocusRetry(webContents, {
+    const typed = await typeWithFocusRetry(webContents, {
       text,
       hint: fieldHint,
       pressEnter: !!enriched.pressEnter,
@@ -2155,9 +2630,79 @@ async function runAction(webContents, action, catalogItems) {
       useInsertText: true,
       clickPoint,
       strictVerify: !!enriched.strictTarget && !wantsDocBody,
+      // "replace" means the field already holds something wrong.
+      clearFirst: enriched.mode === "replace" || enriched.clearFirst === true,
       verifySelector: enriched.selector || "",
       verifyLabel: enriched.label || "",
     });
+    // The text did not end up where it was aimed — nothing took focus, or it
+    // landed somewhere else, or it went nowhere at all. Strict targeting
+    // reports the middle case for all three, which is why keying this off one
+    // error name missed it entirely. If a dialog is open, its field is the one
+    // place the agent was aiming at: reach it by focus rather than by pixel,
+    // which is the part that keeps failing on share and invite dialogs.
+    const TYPING_MISSED = new Set([
+      "field_not_focused",
+      "text_not_in_target_field",
+      "type_no_effect",
+    ]);
+    if (!typed?.ok && TYPING_MISSED.has(String(typed?.error || "")) && !wantsDocBody) {
+      const dialogField = await focusOpenDialogField(webContents, { hint: fieldHint });
+      if (dialogField.ok) {
+        try {
+          webContents.focus();
+          if (enriched.mode === "replace" || enriched.clearFirst === true) {
+            await clearFocusedField(webContents);
+          }
+          const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+          const isEmail = /^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$/.test(text.trim());
+          const landed = async () => {
+            const state = await readActiveEditableState(webContents);
+            if (norm(state?.value).includes(norm(text).slice(0, 40))) return true;
+            // A recipient field commits what you type into a chip and empties
+            // itself, so an empty field is the SUCCESS case here, not a miss.
+            if (isEmail) {
+              return !!(await shareDialogHasRecipientChip(webContents, text.trim()).catch(() => false));
+            }
+            return false;
+          };
+
+          await webContents.insertText(text);
+          await new Promise((r) => setTimeout(r, 200));
+          let verified = await landed();
+          let via = "dialog_field_focus";
+          // insertText reached nothing. Paste is a different mechanism, not a
+          // retry of the same one: it runs through the app's own paste
+          // handling, which is the path a recipient box is actually built for.
+          if (!verified) {
+            const pasted = await pasteTextIntoFocused(webContents, text);
+            if (pasted) {
+              verified = await landed();
+              if (verified) via = "dialog_field_paste";
+            }
+          }
+          if (enriched.pressEnter) {
+            await new Promise((r) => setTimeout(r, 100));
+            await sendRealKey(webContents, "Enter");
+            // Committing the entry empties the field, so re-read before
+            // deciding it never arrived.
+            if (!verified) verified = await landed();
+          }
+          return {
+            ok: true,
+            type: "os_write",
+            via,
+            chars: text.length,
+            verified,
+            unverified: !verified,
+            fieldLabel: dialogField.label || "",
+          };
+        } catch (e) {
+          return { ok: false, error: e?.message || String(e) };
+        }
+      }
+    }
+    return typed;
   }
   // Key press the way a user would: focus the target (best-effort), then send
   // REAL keyboard events — synthetic KeyboardEvents don't submit forms and are
@@ -2203,7 +2748,8 @@ async function runAction(webContents, action, catalogItems) {
     }
     if (!pt) return { ok: false, error: "Element not found" };
     try {
-      webContents.sendInputEvent({ type: "mouseMove", x: pt.x, y: pt.y });
+      const vp = toInputPoint(webContents, pt.x, pt.y);
+      webContents.sendInputEvent({ type: "mouseMove", x: vp.x, y: vp.y });
       return { ok: true, type: "hover", x: pt.x, y: pt.y };
     } catch (e) {
       return { ok: false, error: e?.message || String(e) };
@@ -2214,6 +2760,23 @@ async function runAction(webContents, action, catalogItems) {
   // moment the page scrolls or re-renders, and below-fold items sit outside
   // the viewport entirely. Catalog coords are only a last-resort fallback.
   if (type === "click" || type === "tap" || type === "press_click") {
+    // Committing an open dialog — Send / Share / Invite. This is the click a
+    // whole task comes down to, and aiming at it by pixel or by fuzzy label is
+    // where runs end up cycling: a near miss hits the page chrome behind the
+    // dialog, which closes it, and the agent reopens and tries again. The
+    // resolver scores the dialog's own controls, refuses anything that
+    // dismisses, and clicks the real button.
+    if (/^\W*(?:send|share|invite)\b/i.test(String(enriched.label || "").trim())) {
+      const sent = await clickSendInShareDialog(webContents);
+      if (sent?.ok) {
+        return {
+          ...sent,
+          type: "click",
+          resolved: "dialog_commit",
+          clickedLabel: String(sent.label || enriched.label || ""),
+        };
+      }
+    }
     // Synthetic Docs body target — focus the real editor, not a random chrome hit.
     if (
       enriched.id === "docs_editor_body" ||
@@ -2298,6 +2861,22 @@ async function runAction(webContents, action, catalogItems) {
         await clickAtClientPoint(webContents, result.clientX, result.clientY);
       }
       return result;
+    }
+    // The value could not be assigned from script — a custom widget, or a
+    // wrapper matched instead of the real field. Type it the way a person
+    // would instead of giving up: focus the field and use real keys.
+    if (result?.error === "field_not_writable" && (type === "fill" || type === "type")) {
+      const typed = await typeWithFocusRetry(webContents, {
+        text: String(enriched.text ?? enriched.value ?? ""),
+        hint: enriched.label || "",
+        pressEnter: !!enriched.pressEnter,
+        enriched,
+        clearFirst: enriched.mode === "replace" || enriched.clearFirst === true,
+        strictVerify: !!enriched.strictTarget,
+        verifySelector: enriched.selector || "",
+        verifyLabel: enriched.label || "",
+      });
+      if (typed?.ok) return { ...typed, via: typed.via || "real_keys_after_fill" };
     }
     const pt =
       (await resolveElementPoint(webContents, enriched)) ||
@@ -3015,6 +3594,12 @@ function unmetBrowseAskRequirements(
   if (!/^https?:\/\//i.test(u) || isPlaceholderAgentUrl(u)) {
     return ["open the requested page"];
   }
+  // A dead link outranks every other reading of the page. Nothing asked for can
+  // be true on a 404, and describing the gap as "create the thing" invites an
+  // ask for controls that are not there.
+  if (deadEndPage.looksLikeDeadEnd({ title, visibleText: text }).deadEnd) {
+    return ["get off the dead link and onto the real page"];
+  }
   if (
     looksLikeSignInWall({
       url: u,
@@ -3651,7 +4236,18 @@ function detectBrowseBlocker({ url = "", pageText = "", title = "" } = {}) {
     /* ignore */
   }
 
-  if (looksLikeSignInWall({ url: u, text: t, title: titleL })) {
+  // A marketing/landing page is never a wall. Its copy overlaps both the
+  // sign-in and paywall detectors almost perfectly — "Log In", "Sign Up
+  // Free", "Upgrade", "Pricing", "Try free" — but on a public homepage those
+  // are invitations, not barriers, and parking the run there handed tasks
+  // back to users whose session was live one navigation away ("go to
+  // mailchimp.com and…" died on mailchimp.com's own front page, twice, as
+  // "sign-in" once and "paywall" once). looksLikeMarketingOrHomeUrl is
+  // auth-host aware, so a real login.* or /signin page can never take this
+  // exit.
+  const onMarketingPage = looksLikeMarketingOrHomeUrl(u, t);
+
+  if (!onMarketingPage && looksLikeSignInWall({ url: u, text: t, title: titleL })) {
     const userAction = describeSignInUserAction({ url: u, pageText: t, title: titleL, host });
     const note = signInPageThirdPartyNote({ pageText: t, title: titleL, url: u });
     return {
@@ -3678,7 +4274,7 @@ function detectBrowseBlocker({ url = "", pageText = "", title = "" } = {}) {
   // Real captcha / interstitial walls are sparse pages, not full apps.
   const sparsePage = compactBody.length <= 2000;
 
-  if (!onSignedInMail && looksLikePaywall({ url: u, text: t, title: titleL })) {
+  if (!onSignedInMail && !onMarketingPage && looksLikePaywall({ url: u, text: t, title: titleL })) {
     const userAction =
       `Clear the upgrade/paywall on **${host}** in the agent browser ` +
       `(upgrade, dismiss, or switch account) — leave me on the page after.`;
@@ -3857,6 +4453,9 @@ async function advanceTowardUserGate(
   // this keeps a stall from being reported to the user as five identical
   // actions, which reads as thrashing and tells them nothing about what to do.
   const spentClicks = new Set();
+  // Dead addresses already landed on, so backing out cannot offer one of them
+  // again and bounce the run between two 404s.
+  const deadUrlsSeen = [];
 
   for (let step = 0; step < maxSteps; step += 1) {
     let page = { url: "", text: "", title: "" };
@@ -3870,6 +4469,44 @@ async function advanceTowardUserGate(
     const text = String(page.text || "");
     const title = String(page.title || "");
     const blocker = detectBrowseBlocker({ url, pageText: text, title });
+
+    // A dead link is not something the user can fix by clicking. Left alone this
+    // loop reads the goal, sees "create", and asks them to "click New page /
+    // Create / Blank" on a 404 that has no such control — the same shape of
+    // nonsense as asking for a password on a marketing page. Route around it.
+    const dead = deadEndPage.looksLikeDeadEnd({ title, visibleText: text });
+    if (dead.deadEnd) {
+      // Structural backout only. Where to go from the page that loads is
+      // decided by that page's own links — the marketing/home branch below
+      // clicks its "Log in" — never by a table of app addresses.
+      const back = deadEndPage.backoutTarget(url, { avoid: deadUrlsSeen });
+      deadUrlsSeen.push(url);
+      if (back) {
+        const nav = await navigate(webContents, back.url).catch(() => null);
+        if (nav?.ok) {
+          taken.push(`Left a dead link and opened ${back.what}`);
+          continue;
+        }
+      }
+      // Nothing left up this route — say what is actually wrong, rather than
+      // naming a button that isn't on screen.
+      return {
+        advanced: taken.length > 0,
+        actionsTaken: taken,
+        blocker: null,
+        userAction:
+          `That address is a dead end (${dead.reason}) and I could not find a working page ` +
+          `above it. Open the right page for this task in the agent browser and I'll carry on.`,
+        label: "Needs you",
+        message: formatUserHelpBrief({
+          userAction:
+            `That address is a dead end (${dead.reason}) and I could not find a working page ` +
+            `above it. Open the right page for this task in the agent browser and I'll carry on.`,
+          kind: "stuck",
+          alreadyDone: taken,
+        }),
+      };
+    }
 
     // Marketing / home with create goal → click into app / Log in.
     if (
@@ -3900,8 +4537,15 @@ async function advanceTowardUserGate(
       if (clicked) continue;
     }
 
-    // Permission → try Allow ourselves.
+    // Permission / cookie prompt → clear it ourselves. The sweeper reads the
+    // actual banner rather than guessing at three label names, and it will not
+    // click a "Manage preferences" that only swaps one wall for a deeper one.
     if (blocker?.kind === "permission") {
+      const swept = await dismissOverlays(webContents, { maxDismissals: 2 }).catch(() => null);
+      if (swept?.dismissed?.length) {
+        for (const d of swept.dismissed) taken.push(`Dismissed the ${d.what}`);
+        continue;
+      }
       const hit =
         (await clickInPageByHint(webContents, { hint: "Allow" })) ||
         (await clickInPageByHint(webContents, { hint: "Accept" })) ||
@@ -4122,7 +4766,13 @@ async function advanceTowardUserGate(
 }
 
 /** Specific next click when the agent is stuck without a hard wall. */
-function describeStuckUserAction({ goal = "", gaps = [], url = "", pageText = "" } = {}) {
+function describeStuckUserAction({
+  goal = "",
+  gaps = [],
+  url = "",
+  pageText = "",
+  title = "",
+} = {}) {
   const g = String(goal || "").toLowerCase();
   const gap0 = String(gaps[0] || "").toLowerCase();
   const t = String(pageText || "").toLowerCase();
@@ -4133,6 +4783,18 @@ function describeStuckUserAction({ goal = "", gaps = [], url = "", pageText = ""
     /* ignore */
   }
 
+  // Before anything about the goal: if the page itself is dead, every other ask
+  // below names a control that is not on screen. The page is checked directly
+  // and not just via the gap list, because the gap list is empty for a whole
+  // class of goals (anything reading as an email task short-circuits it) and an
+  // empty list is exactly what let the goal-derived "click New page / Create /
+  // Blank" ask be written on top of a 404.
+  const deadHere =
+    /dead link/i.test(gap0) ||
+    deadEndPage.looksLikeDeadEnd({ title, visibleText: pageText }).deadEnd;
+  if (deadHere) {
+    return `Open the page this task needs on **${host}** in the agent browser — the address I tried is a dead end — and I'll carry on from there.`;
+  }
   if (/sign in/i.test(gap0) || /account dashboard/i.test(gap0)) {
     return `Sign in to **${host}** in the agent browser — I'll continue into your account right after.`;
   }
@@ -4146,7 +4808,14 @@ function describeStuckUserAction({ goal = "", gaps = [], url = "", pageText = ""
   // has to come before the create/marketing branch below, which otherwise reads
   // the word "home" in a gap like "get past the home/marketing page" and asks
   // for a "New page / Create / Blank" click that does not exist on a login form.
-  if (looksLikeSignInPageText(t) || looksLikeAuthUrl(url)) {
+  //
+  // A landing page is excluded: its nav has "Log in" and "Sign up" in it, which
+  // is enough to read as a login form, and asking a signed-in user to sign in on
+  // a marketing page is the one thing that must never happen here.
+  if (
+    (looksLikeSignInPageText(t) || looksLikeAuthUrl(url)) &&
+    !(looksLikeMarketingOrHomeUrl(url, pageText) && !looksLikeAuthUrl(url))
+  ) {
     return `Sign in to **${host}** in the agent browser — I'll pick it up the moment you're through.`;
   }
   if (/marketing|home page/i.test(gap0)) {
@@ -7593,7 +8262,6 @@ function resolveSignInUrl(text, currentUrl = "") {
   if (host === "pinterest.com") {
     return "https://www.pinterest.com/login/";
   }
-
   // Gmail / Google mail context, or bare "sign in page" with no other site → Gmail login.
   if (mailContext || host === "google.com" || host === "accounts.google.com" || !host) {
     return gmailSignInUrl();
@@ -7611,11 +8279,77 @@ function resolveSignInUrl(text, currentUrl = "") {
  * Question / explain / summarize / opine about what's already on screen —
  * scrape + answer, not a multi-step click plan.
  */
+/**
+ * A question whose answer is not written on the page — it is state you have to
+ * open something to see: who a file is shared with, what permissions someone
+ * has, which members are in a workspace, a document's version history.
+ *
+ * These read like questions ("who is it shared with?") and route like chat,
+ * which answers them from page text that does not contain the answer. Drive
+ * shows sharing in a dialog; nothing about it appears in the page until you
+ * open it. So the agent has to go and look, which makes this browser work.
+ */
+function asksAboutAppState(text) {
+  const t = String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!t) return false;
+  return (
+    /\bshared with\b/.test(t) ||
+    /\b(who|which people|what people)\b[^?]{0,40}\b(?:has|have|can|with)\b[^?]{0,24}\b(?:access|edit|view|see|it|this)\b/.test(t) ||
+    /\b(sharing|permission|permissions|access)\s+(?:settings|options|list|rights|level)?\b/.test(t) ||
+    /\b(collaborators|shared users|who it'?s shared with|members of)\b/.test(t) ||
+    /\b(version|revision)\s+history\b/.test(t)
+  );
+}
+
+/**
+ * An ask about the user's OWN material inside an app — "my drive", "my inbox",
+ * "the final folder", "that doc I made".
+ *
+ * These are errands, not questions. The answer is in an account, behind a
+ * navigation or a dialog, and nothing about it is in the page text unless the
+ * agent goes and opens it. Read as questions they route to the chat model,
+ * which has no browser and can only narrate ("I'm checking now…") while the
+ * task quietly never starts — which is exactly what happened to a run asking
+ * who a Drive folder was shared with.
+ *
+ * Deliberately keyed on the user's OWN content: a possessive plus an app noun,
+ * or a named product plus something of theirs in it. General knowledge and
+ * questions about the open page do not match.
+ */
+const OWN_APP_NOUN_RE =
+  /\b(drive|inbox|mailbox|e-?mails?|gmail|calendar|schedule|docs?|documents?|sheets?|spreadsheets?|slides?|decks?|folders?|files?|notes?|notion|figma|dropbox|photos|albums?|contacts|tasks|todos?)\b/;
+
+const NAMED_APP_RE =
+  /\b(google\s+drive|drive\.google|gmail|google\s+docs?|google\s+sheets?|google\s+calendar|notion|figma|dropbox|onedrive|slack|trello|asana|airtable|canva|mailchimp)\b/;
+
+function looksLikeOwnAppContentAsk(text) {
+  const t = String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!t) return false;
+  // "what do you think of this" / "summarize this page" are about what is
+  // already on screen — those stay answerable without going anywhere.
+  const aboutThisScreen =
+    /\b(this|that|the)\s+(page|screen|tab|site|article|post|video|thing)\b/.test(t) ||
+    /\b(on|in)\s+(?:my\s+)?screen\b/.test(t) ||
+    /\bhere\b/.test(t);
+  if (aboutThisScreen && !NAMED_APP_RE.test(t)) return false;
+  const possessive = /\b(my|our|mine)\b/.test(t);
+  if (possessive && OWN_APP_NOUN_RE.test(t)) return true;
+  // "the final folder", "the Q3 deck" alongside a named product.
+  if (NAMED_APP_RE.test(t) && /\b(the|that|a)\s+[\w'-]+\s+(folder|file|doc|document|sheet|deck|note|album|event)\b/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
 function looksLikePageQuestionAsk(text) {
   const t = String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
   if (!t) return false;
   // Navigate / mutate elsewhere → not a pure page question.
   if (looksLikeBrowseActAsk(t)) return false;
+  // The answer is behind a dialog, not in the page text — going to look is the
+  // only way to answer it, so this is browser work rather than a question the
+  // chat model can field from what is already on screen.
+  if (asksAboutAppState(t)) return false;
   if (
     /\b(what(?:'s| is| are)|how much|how many|how (?:is|are|does|do)|why|when|where|which|who)\b/.test(
       t,
@@ -7924,6 +8658,21 @@ function looksLikeShareCurrentPageAsk(text) {
     /\bthe\s+(doc|document|page|file|sheet|spreadsheet|slides?|deck|presentation|notes?|report|essay|paper|draft)\b/.test(
       lower,
     );
+  // "write an email to bob@x.com" asks the agent to AUTHOR a message. It says
+  // nothing about the page that happens to be open, so reading it as "share
+  // this page with bob" invents both the subject of the email and its whole
+  // body — which is exactly what happened: a bare compose ask on a Google tab
+  // became "email him this link", and the synthesized instruction then read as
+  // the user's own words downstream. Sharing what is on screen has to be
+  // asked for: some reference to it ("this", "the doc", "the page").
+  if (
+    /\b(?:write|compose|draft|send|shoot|fire)\b(?:\s+\w+){0,2}\s+(?:an?|the|another)\s+(?:new\s+|quick\s+|short\s+)?(?:e-?mail|message|note|dm)\b/.test(
+      lower,
+    ) &&
+    !deictic
+  ) {
+    return false;
+  }
   // "click/open the email to open it" is NOT Docs Share — ignore action verbs after to/with.
   const toRecipient =
     hasEmailAddr ||
@@ -9761,19 +10510,25 @@ function looksLikeSignInWall({ url, text, title } = {}) {
     }
   }
 
+  // Product marketing / home pages often have Log in + Sign up in the nav —
+  // that is NOT a hard wall. Agent should click those CTAs (or park clearly),
+  // not freeze in a 30-minute wait without acting.
+  //
+  // This has to outrank the phrase test below. A landing page frequently throws
+  // a consent/promo/login *modal* over itself, and its copy ("log in to
+  // continue") was enough to score the whole page as a wall — so a run that
+  // only needed the popup closed parked and told an already-signed-in user to
+  // sign in. A modal is dismissable; a wall is not. Landing page wins.
+  if (looksLikeMarketingOrHomeUrl(url, text)) {
+    return false;
+  }
+
   if (
     /\b(log in to continue|sign in to continue|sign up to continue|create a free account to|join (pinterest|to see)|sign up to see more|log in to see more|you need to (sign|log) ?in)\b/.test(
       t,
     )
   ) {
     return true;
-  }
-
-  // Product marketing / home pages often have Log in + Sign up in the nav —
-  // that is NOT a hard wall. Agent should click those CTAs (or park clearly),
-  // not freeze in a 30-minute wait without acting.
-  if (looksLikeMarketingOrHomeUrl(url, text)) {
-    return false;
   }
 
   if (!looksLikeSignInPageText(t)) return false;
@@ -9946,37 +10701,130 @@ async function waitForUserAssist(
   return { ok: false, error: "timeout", url: webContents.getURL?.() || "" };
 }
 
-async function waitForDomSettle(webContents, ms = 1200) {
+/**
+ * Watches the page for signs it is still working: DOM mutations, and fetch or
+ * XHR requests in flight.
+ *
+ * `isLoading()` is false for every in-page interaction, so without this there
+ * is nothing to wait ON after a click — only a fixed sleep, which is either too
+ * short for the page or too long for the agent. A click that fires a request
+ * and renders the response 400ms later needs to be waited out; a click on a
+ * static page should not cost a millisecond more than it has to.
+ *
+ * Requests are kept by start time, not counted, because long-polling and SSE
+ * connections never finish. A pending request stops mattering after
+ * REQUEST_STALE_MS: past that it is a subscription, not this action's response.
+ */
+const ACTIVITY_MONITOR_JS =
+  "(function(){try{" +
+  "if(window.__lyknActivity&&window.__lyknActivity.v===1)return true;" +
+  "var S=window.__lyknActivity={v:1,t:Date.now(),n:0,seq:0,reqs:Object.create(null)};" +
+  "try{var mo=new MutationObserver(function(recs){S.t=Date.now();S.n+=recs.length;});" +
+  "mo.observe(document.documentElement,{childList:true,subtree:true,attributes:true,characterData:true});" +
+  "S.mo=mo;}catch(e){}" +
+  "function open(){var id=++S.seq;S.reqs[id]=Date.now();S.t=Date.now();return id;}" +
+  "function shut(id){delete S.reqs[id];S.t=Date.now();}" +
+  "try{var of=window.fetch;if(typeof of==='function'&&!of.__lykn){" +
+  "var nf=function(){var id=open(),p;" +
+  "try{p=of.apply(this,arguments);}catch(e){shut(id);throw e;}" +
+  "return Promise.resolve(p).then(function(r){shut(id);return r;},function(e){shut(id);throw e;});};" +
+  "nf.__lykn=1;window.fetch=nf;}}catch(e){}" +
+  "try{var XP=XMLHttpRequest.prototype,os=XP.send;if(typeof os==='function'&&!os.__lykn){" +
+  "var ns=function(){var id=open(),self=this,done=function(){if(!self.__lyknDone){self.__lyknDone=1;shut(id);}};" +
+  "try{this.addEventListener('loadend',done);}catch(e){}" +
+  "try{return os.apply(this,arguments);}catch(e){done();throw e;}};" +
+  "ns.__lykn=1;XP.send=ns;}}catch(e){}" +
+  "return true;}catch(e){return false;}})()";
+
+/** Pending requests are forgotten after this, so the map cannot grow forever. */
+const REQUEST_STALE_MS = 30000;
+
+/**
+ * Only requests that started after `since` are worth waiting for.
+ *
+ * A mail client or a chat app holds a long-poll open for the whole session and
+ * opens the next one the moment it returns, so "is anything in flight" is
+ * permanently yes and waiting on it would spend the entire budget on every
+ * action. What matters is whether THIS action started something.
+ */
+const readActivityJs = (since) =>
+  "(function(){try{var S=window.__lyknActivity;if(!S||S.v!==1)return null;" +
+  "var now=Date.now(),pending=0;" +
+  `for(var k in S.reqs){var t=S.reqs[k];if(t>=${Math.round(since)})pending++;` +
+  `else if(now-t>${REQUEST_STALE_MS})delete S.reqs[k];}` +
+  "return {quietFor:now-S.t,pending:pending,mutations:S.n,loading:document.readyState!=='complete'};" +
+  "}catch(e){return null;}})()";
+
+/**
+ * A page that mutates without pause — a carousel, a ticker, a live clock —
+ * never goes quiet, and waiting for it to would cost the full budget on every
+ * single action. Once there is nothing in flight, that is as settled as it gets.
+ */
+const ANIMATED_PAGE_MS = 600;
+
+/**
+ * Wait until the page stops changing, or until the budget runs out.
+ *
+ * `ms` stays a hard ceiling, so no existing caller can become slower than the
+ * budget it already passes; on a page that is genuinely idle this now returns
+ * sooner than the old fixed sleep did.
+ */
+async function waitForDomSettle(webContents, ms = 1200, { quietMs = 200, graceMs = 700 } = {}) {
   if (!webContents || webContents.isDestroyed()) return;
   const budget = Math.max(0, Number(ms) || 0);
-  const start = Date.now();
-  // If the document already finished loading, don't burn the full settle budget.
-  try {
-    if (!webContents.isLoading()) {
-      await new Promise((r) => setTimeout(r, Math.min(budget, 180)));
-      try {
-        await webContents.executeJavaScript(
-          "new Promise((resolve)=>{requestAnimationFrame(()=>requestAnimationFrame(resolve));})",
-          true,
-        );
-      } catch {
-        /* ignore */
-      }
-      return;
+  const started = Date.now();
+  const deadline = started + budget;
+  // Requests this old or newer are treated as the action's own. The window
+  // covers the gap between dispatching the action and arriving here; anything
+  // older was already running and is none of this action's business.
+  const readJs = readActivityJs(started - Math.max(0, Number(graceMs) || 0));
+  const paint = async () => {
+    try {
+      await webContents.executeJavaScript(
+        "new Promise((resolve)=>{requestAnimationFrame(()=>requestAnimationFrame(resolve));})",
+        true,
+      );
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
-  }
-  const remaining = Math.max(0, budget - (Date.now() - start));
-  if (remaining > 0) await waitForLoad(webContents, remaining);
+  };
+  // A document being replaced has nothing worth observing until it arrives.
   try {
-    await webContents.executeJavaScript(
-      "new Promise((resolve)=>{requestAnimationFrame(()=>requestAnimationFrame(resolve));})",
-      true,
-    );
+    if (webContents.isLoading()) await waitForLoad(webContents, budget);
   } catch {
     /* ignore */
   }
+  const quiet = Math.max(60, Math.min(Number(quietMs) || 200, budget));
+  let installed = false;
+  let bestQuiet = 0;
+  while (Date.now() < deadline) {
+    let state = null;
+    try {
+      state = await webContents.executeJavaScript(readJs, true);
+    } catch {
+      break;
+    }
+    if (!state) {
+      // Nothing is watching yet. Install, then measure from now — which costs
+      // one quiet window on the first call in a document and nothing after.
+      if (installed) break;
+      installed = true;
+      try {
+        if (!(await webContents.executeJavaScript(ACTIVITY_MONITOR_JS, true))) break;
+      } catch {
+        break;
+      }
+      continue;
+    }
+    bestQuiet = Math.max(bestQuiet, Number(state.quietFor) || 0);
+    if (!state.loading && !state.pending && (Number(state.quietFor) || 0) >= quiet) break;
+    const elapsed = Date.now() - started;
+    if (!state.pending && !state.loading && elapsed >= ANIMATED_PAGE_MS && bestQuiet < quiet) break;
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(50, left)));
+  }
+  await paint();
 }
 
 /** Wait until the address bar stops bouncing (SPA redirects / theme refresh). */
@@ -11709,6 +12557,7 @@ module.exports = {
   looksLikeSendApprovalFollowUp,
   navigate,
   getDOMCatalog,
+  dismissOverlays,
   REF_STORE_JS,
   getPageContext,
   getPageContextRich,
@@ -11721,6 +12570,8 @@ module.exports = {
   accountDashboardLooksSignedIn,
   askStillNeedsAdaptiveWork,
   looksLikeInspectOrReviewAsk,
+  asksAboutAppState,
+  looksLikeOwnAppContentAsk,
   unmetBrowseAskRequirements,
   pageShowsSubstantialDocBody,
   remainingAskGoal,
@@ -11734,6 +12585,15 @@ module.exports = {
   clickAtClientPoint,
   sendRealKey,
   sendShortcut,
+  // The live viewport, and the screenshot-space mapper. Exported so the
+  // browser-agent controller can notice a resize between observe and act, and
+  // so the mapper's stale-capture refusal is testable outside Electron.
+  getViewportMetrics,
+  mapNormCoordToClient,
+  // The no-coordinate route into a dialog's field — exported so its page-side
+  // script can be exercised directly.
+  buildFocusDialogFieldJs,
+  focusOpenDialogField,
   resolveAccountDashboardUrl,
   resolveNamedWorkVenueUrl,
   namesNonMailVenue,
@@ -11862,6 +12722,7 @@ module.exports = {
   resolveSignInUrl,
   looksLikeSignInPageText,
   looksLikeSignInWall,
+  looksLikeMarketingOrHomeUrl,
   looksLikePaywall,
   detectBrowseBlocker,
   advanceTowardUserGate,

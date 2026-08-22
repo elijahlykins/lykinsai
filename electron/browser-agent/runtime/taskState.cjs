@@ -137,6 +137,76 @@ function formatHistoryForModel(task, { max = 12 } = {}) {
   return lines.length ? lines.join("\n") : "(no actions yet)";
 }
 
+/**
+ * A restart-safe snapshot of everything the loop needs to continue a task.
+ *
+ * Long-running task state used to be memory-only: an app restart lost the plan
+ * position, gathered facts, and action history, and the user started the whole
+ * task again. This is the shape the loop hands to its `onTaskState` hook after
+ * every recorded action, and the shape `resumeTask` accepts back. Plain JSON
+ * throughout — the caller can write it to disk as-is.
+ */
+function serializeTask(task) {
+  return {
+    id: task.id,
+    goal: task.goal,
+    status: task.status,
+    plan: task.plan.map((p) => ({ step: p.step, done: !!p.done })),
+    currentStep: task.currentStep,
+    skills: [...task.skills],
+    knownFacts: { ...task.knownFacts },
+    constraints: [...task.constraints],
+    workingMemory: {
+      facts: [...task.workingMemory.facts],
+      candidateResults: [...task.workingMemory.candidateResults],
+      openQuestions: [...task.workingMemory.openQuestions],
+      completedSteps: [...task.workingMemory.completedSteps],
+    },
+    recentActions: task.recentActions.slice(-MAX_RECENT_ACTIONS),
+    archivedActionCount: task.archivedActionCount,
+    round: task.round,
+    startedAt: task.startedAt,
+    completionReason: task.completionReason,
+  };
+}
+
+/**
+ * Rebuild a task from a serialized snapshot, defensively — the data comes off
+ * disk and may be from an older build.
+ *
+ * @returns {object|null} null when the snapshot is unusable (no goal), in
+ *   which case the caller should start a fresh task instead.
+ */
+function restoreTask(data, { conversationHistory = [] } = {}) {
+  if (!data || typeof data !== "object" || !String(data.goal || "").trim()) return null;
+  const task = createTask({ goal: data.goal, conversationHistory });
+  if (data.id) task.id = String(data.id);
+  task.plan = Array.isArray(data.plan)
+    ? data.plan
+        .map((p) => ({ step: String(p?.step || ""), done: p?.done === true }))
+        .filter((p) => p.step)
+    : [];
+  task.currentStep = Math.min(Math.max(Number(data.currentStep) || 0, 0), task.plan.length);
+  task.skills = Array.isArray(data.skills) ? data.skills.map(String) : [];
+  task.knownFacts = data.knownFacts && typeof data.knownFacts === "object" ? { ...data.knownFacts } : {};
+  task.constraints = Array.isArray(data.constraints) ? data.constraints.map(String) : [];
+  const wm = data.workingMemory && typeof data.workingMemory === "object" ? data.workingMemory : {};
+  for (const key of ["facts", "candidateResults", "openQuestions", "completedSteps"]) {
+    task.workingMemory[key] = Array.isArray(wm[key]) ? wm[key].map(String) : [];
+  }
+  task.recentActions = Array.isArray(data.recentActions)
+    ? data.recentActions.filter((a) => a && typeof a === "object").slice(-MAX_RECENT_ACTIONS)
+    : [];
+  task.archivedActionCount = Math.max(0, Number(data.archivedActionCount) || 0);
+  task.startedAt = String(data.startedAt || task.startedAt);
+  // Rounds spent before the interruption stay visible in the history; the
+  // resumed run gets a fresh budget — the restart was not the task's doing.
+  task.round = 0;
+  task.status = "working";
+  task.completionReason = "";
+  return task;
+}
+
 module.exports = {
   createTask,
   setPlan,
@@ -145,4 +215,6 @@ module.exports = {
   markStepDone,
   formatTaskForModel,
   formatHistoryForModel,
+  serializeTask,
+  restoreTask,
 };

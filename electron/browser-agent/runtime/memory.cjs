@@ -172,7 +172,10 @@ function createMemoryStore({ userDataPath } = {}) {
     if (!host) return 0;
     const safe = (Array.isArray(notes) ? notes : [])
       .map((n) => String(n || "").trim())
-      .filter((n) => n && n.length >= 12 && n.length <= 300 && !SECRET_RE.test(n));
+      // 420 rather than 300: a full route note ("To send a campaign: Create >
+      // Email > …") is the most valuable line a run can leave and routinely
+      // runs past 300 characters.
+      .filter((n) => n && n.length >= 12 && n.length <= 420 && !SECRET_RE.test(n));
     if (!safe.length) return 0;
     try {
       return await appendNotesDeduped(path.join("websites", `${host}.md`), safe);

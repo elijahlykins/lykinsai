@@ -688,8 +688,36 @@ test("a run that fails still records what it learned about the site", async () =
 
   const r = await runTask(fake, model, { memory, maxRounds: 6 });
   assert.equal(r.ok, false, "this run is meant to fail");
+  // Learning runs in the background so the answer is never delayed by it;
+  // `learning` is the handle that says the notes are actually on disk.
+  await r.learning;
   assert.ok(learned.length > 0, "the run with the most to teach is the one that lost");
   assert.equal(learned[0].host, "tricky.example.com");
+});
+
+test("the answer is never delayed by post-run learning", async () => {
+  const fake = createFakeBrowser({
+    url: "https://slowlearn.example.com", text: "nothing works here",
+    elements: [makeElement({ name: "b", label: "Go" })],
+  });
+  const model = createScriptedModel({
+    plan: { plan: ["Try"] },
+    decisions: [{ kind: "act", action: { type: "click", target: "e1" }, expectedOutcome: "something happens" }],
+    verify: () => ({ success: false, evidence: "", reason: "nothing moved", next: "recover" }),
+  });
+  let learnSettled = false;
+  model.learn = () =>
+    new Promise((resolve) =>
+      setTimeout(() => {
+        learnSettled = true;
+        resolve({ notes: ["a durable note about this site"], userNotes: [] });
+      }, 150),
+    );
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lykn-mem-"));
+  const r = await runTask(fake, model, { memory: createMemoryStore({ userDataPath: dir }), maxRounds: 6 });
+  assert.equal(learnSettled, false, "the result must land before the learn call finishes");
+  await r.learning;
+  assert.equal(learnSettled, true, "the learning handle must settle once the notes are written");
 });
 
 // ── degradation and budgets ─────────────────────────────────────────────────
@@ -714,8 +742,12 @@ test("asking permission is a punt, however it is worded", () => {
     .then((r) => {
       assert.equal(r.status, "completed", "a permission question must be pushed back, not end the run");
       assert.ok(
-        asked.some((t) => /settle yourself/i.test(String(t))),
-        "the agent should be told to decide it itself",
+        // Permission asks now get their own answer: go and do it, and the
+        // safety gate will confirm at the committing click if one is coming.
+        // (The generic "settle it yourself" pushback still covers the other
+        // kinds of punt.)
+        asked.some((t) => /asked the user for permission|settle yourself/i.test(String(t))),
+        "the agent should be told to proceed rather than ask",
       );
     });
 });

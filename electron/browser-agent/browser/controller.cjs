@@ -19,8 +19,19 @@ const { buildSnapshot, diffSnapshots } = require("./snapshot.cjs");
  * @param {object} [deps.ownership] optional ownership store (browser/ownership.cjs).
  *   When absent the controller behaves exactly as it did before ownership
  *   existed: every action is permitted and nothing is suppressed.
+ * @param {boolean} [deps.autoDismissOverlays] clear cookie walls and popups
+ *   before each observe. On by default, including under the eval harness — a
+ *   harness that measured an agent with this switched off would be measuring
+ *   something we do not ship. Off leaves every banner in the element list for
+ *   the model to deal with by hand.
  */
-function createBrowserController({ webContents, actuator, tabs = null, ownership = null }) {
+function createBrowserController({
+  webContents,
+  actuator,
+  tabs = null,
+  ownership = null,
+  autoDismissOverlays = true,
+}) {
   let currentSnapshot = null;
   let snapshotStale = true;
   /**
@@ -49,9 +60,28 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
    */
   const MUTATING = new Set([
     "navigate", "goBack", "goForward", "click", "clickCoord", "typeAtCoord",
-    "drag", "type", "replaceText", "select", "scroll", "pressKey",
-    "openTab", "closeTab", "switchTab",
+    "drag", "type", "replaceText", "pasteText", "select", "scroll", "pressKey",
+    "openTab", "closeTab", "switchTab", "dismissOverlays",
   ]);
+
+  /**
+   * Actions aimed at a specific thing on the page. A dialog that appears right
+   * after one of these is a dialog the agent asked for — the settings panel it
+   * opened, the confirmation on the button it pressed — so the overlay sweeper
+   * has to keep its hands off until the page moves on.
+   */
+  const TARGETED = new Set([
+    "click", "clickCoord", "typeAtCoord", "type", "replaceText", "pasteText", "select", "drag", "pressKey",
+  ]);
+
+  /** Actions that put a different page in front of the agent. */
+  const NAVIGATIONAL = new Set(["navigate", "goBack", "goForward", "openTab", "switchTab"]);
+
+  /**
+   * The page whose dialogs are the agent's own doing, or "" when none are.
+   * Cleared by navigation, because nothing survives a new document.
+   */
+  let agentOpenedOn = "";
 
   /**
    * Refuse an action the agent is not entitled to perform.
@@ -65,6 +95,91 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
       error: "user_controlling",
       reason: ownership.reason() || "the user has control of the browser",
       state: ownership.state(),
+    };
+  }
+
+  /**
+   * Gate an action, and remember the kind of thing it was.
+   *
+   * Every mutating action goes through here, which is the only place that can
+   * see the whole sequence — and the overlay sweeper's one safety rule is about
+   * the sequence, not about any single action.
+   */
+  function beginAction(name) {
+    const blocked = ownershipBlock(name);
+    if (blocked) return blocked;
+    if (TARGETED.has(name)) agentOpenedOn = currentUrl() || "-";
+    else if (NAVIGATIONAL.has(name)) agentOpenedOn = "";
+    return null;
+  }
+
+  /**
+   * How far the live viewport may drift from the one the snapshot was measured
+   * against before coordinate aims are refused. 2% absorbs scrollbar and
+   * rounding noise; a layout change (the agent rail opening beside the
+   * browser resizes the view by ~20%) is far past it.
+   */
+  const LAYOUT_DRIFT_TOLERANCE = 0.02;
+
+  /**
+   * Refuse a coordinate-aimed action when the view was resized after the page
+   * was read.
+   *
+   * The UI can resize the browser mid-round — the agent rail opening on the
+   * first progress event shrinks the docked view — and every screenshot
+   * coordinate and inView flag in the current snapshot describes the old
+   * layout. Ref-targeted actions survive this (they re-resolve by selector at
+   * act time), so only actions that aim at a point pay this check. On drift the
+   * snapshot is invalidated, which forces the loop to re-observe — the layout
+   * epoch, in effect: an observation is only actionable while the geometry it
+   * was taken under still holds.
+   *
+   * @returns {Promise<null|{ok:false, error:"layout_changed", hint:string}>}
+   */
+  async function layoutDriftBlock() {
+    const vp = currentSnapshot?.viewport;
+    if (!vp?.w || !vp?.h || typeof actuator.getViewportMetrics !== "function") return null;
+    let live = null;
+    try {
+      live = await actuator.getViewportMetrics(wc());
+    } catch {
+      return null;
+    }
+    const liveW = Number(live?.w);
+    const liveH = Number(live?.h);
+    if (!Number.isFinite(liveW) || !Number.isFinite(liveH) || liveW <= 0 || liveH <= 0) return null;
+    const drift = Math.max(Math.abs(liveW - vp.w) / vp.w, Math.abs(liveH - vp.h) / vp.h);
+    if (drift <= LAYOUT_DRIFT_TOLERANCE) return null;
+    invalidate();
+    return {
+      ok: false,
+      error: "layout_changed",
+      hint:
+        `The browser viewport changed size (${vp.w}x${vp.h} -> ${liveW}x${liveH}) after the page was read, ` +
+        "so positions read off the old view no longer land where they aim. The page has been marked for " +
+        "re-reading — observe again and take a fresh screenshot before aiming at a point.",
+    };
+  }
+
+  /**
+   * Refuse a coordinate aim taken from an observation that has since been
+   * invalidated.
+   *
+   * Ref actions tolerate this — they re-resolve by selector — but a point read
+   * off a screenshot describes the page as it stood at observe time. When
+   * something invalidated the snapshot between observe and act (the user
+   * scrolled to peek, an overlay sweep moved the page), the point aims at
+   * whatever is there now. Refusing costs one re-observe; clicking costs
+   * whatever moved under the cursor.
+   */
+  function staleViewBlock() {
+    if (currentSnapshot && !snapshotStale) return null;
+    return {
+      ok: false,
+      error: "stale_view",
+      hint:
+        "The page changed after it was read — it may have been scrolled or altered while you were " +
+        "deciding. Re-read the page and take a fresh screenshot before aiming at a point.",
     };
   }
 
@@ -130,12 +245,115 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
     ];
   }
 
+  // --- overlays ---------------------------------------------------------------
+
+  /** Dismissals already attempted, per page, so a stubborn wall gets one go. */
+  const overlaysTried = new Map();
+
+  /** Dismissals allowed on one page, before we accept it is fighting back. */
+  const OVERLAY_CAP_PER_PAGE = 6;
+  const overlaysCleared = new Map();
+
+  /** Pages remembered for overlay bookkeeping. A long run visits many. */
+  const OVERLAY_PAGE_MEMORY = 40;
+
+  function overlayKey() {
+    const url = currentUrl();
+    try {
+      const u = new URL(url);
+      return `${u.host}${u.pathname}`;
+    } catch {
+      return url || "-";
+    }
+  }
+
+  /**
+   * Clear the cookie walls, consent managers and promo modals in front of the
+   * page.
+   *
+   * Nothing here judges what may be clicked — that is browserOverlays.cjs, via
+   * the actuator. What this owns is the bookkeeping that keeps a sweep from
+   * becoming a loop: a dismissal that leaves its overlay standing is never
+   * tried twice on the same page, and a page that keeps producing walls stops
+   * being swept once the cap is reached and is handed to the model instead.
+   */
+  async function dismissOverlays({ allowGeneric = true } = {}) {
+    const empty = { ok: true, dismissed: [], remaining: [] };
+    if (typeof actuator.dismissOverlays !== "function") return empty;
+    const blocked = beginAction("dismissOverlays");
+    if (blocked) return blocked;
+    let w;
+    try {
+      w = wc();
+    } catch {
+      return { ok: false, error: "browser_gone", dismissed: [], remaining: [] };
+    }
+    const key = overlayKey();
+    const cleared = overlaysCleared.get(key) || 0;
+    if (cleared >= OVERLAY_CAP_PER_PAGE) return { ...empty, capped: true };
+    if (!overlaysTried.has(key)) {
+      // A long run on a big app visits hundreds of pages; the ledger only
+      // exists to stop one page being swept forever, so keep it bounded.
+      if (overlaysTried.size >= OVERLAY_PAGE_MEMORY) {
+        const oldest = overlaysTried.keys().next().value;
+        overlaysTried.delete(oldest);
+        overlaysCleared.delete(oldest);
+      }
+      overlaysTried.set(key, new Set());
+    }
+    const tried = overlaysTried.get(key);
+    const res = await asAgent(() =>
+      actuator.dismissOverlays(w, {
+        allowGeneric,
+        skipSignatures: [...tried],
+        maxDismissals: Math.min(3, OVERLAY_CAP_PER_PAGE - cleared),
+      }),
+    ).catch((e) => ({ ok: false, error: e?.message || String(e), dismissed: [], remaining: [] }));
+    for (const sig of res?.tried || []) tried.add(sig);
+    if (res?.dismissed?.length) {
+      overlaysCleared.set(key, cleared + res.dismissed.length);
+      // The page under the banner is not the page above it.
+      invalidate();
+    }
+    return { dismissed: [], remaining: [], ...res };
+  }
+
+  /**
+   * Cookie walls and promo modals arrive on their own, so they are cleared on
+   * the observe that follows. A dialog the agent's own click opened is not one
+   * of those — closing that would be the agent undoing its own work — so a
+   * targeted interaction suppresses the sweep until the page moves on.
+   */
+  function shouldSweepOverlays() {
+    if (!autoDismissOverlays) return false;
+    if (typeof actuator.dismissOverlays !== "function") return false;
+    if (!agentOpenedOn) return true;
+    return (currentUrl() || "-") !== agentOpenedOn;
+  }
+
   /**
    * Capture a fresh structured snapshot. This is the ONLY way the agent sees
    * the page; element refs are minted here and die on the next navigation.
    */
   async function getPageState() {
     const w = wc();
+    // Before the catalog is read, not after: an element list that still
+    // contains the banner is a page the model has to reason its way past, and
+    // the point of sweeping is that it never has to.
+    //
+    // allowGeneric:false — the automatic sweep only clears overlays it can
+    // positively name (cookie walls, consent managers, notification nags,
+    // promos, surveys, app interstitials). The generic tier — "something
+    // covers the page and has an X" — is indistinguishable by shape from a
+    // modal the APP opened as part of its own flow: a template chooser, a
+    // wizard step, a share sheet. Auto-closing one of those closed the very
+    // dialog the task needed, and every click after that aimed at a ghost.
+    // Generic overlays are left in the element list with [dialog] markers for
+    // the model to judge; its explicit `dismiss_overlay` action still passes
+    // allowGeneric:true, so a wall it decides is junk can still be cleared.
+    const swept = shouldSweepOverlays()
+      ? await dismissOverlays({ allowGeneric: false }).catch(() => null)
+      : null;
     const [catalogRes, contextRes, tabList] = await Promise.all([
       actuator.getDOMCatalog(w),
       actuator.getPageContext(w),
@@ -152,8 +370,14 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
       catalog: Array.isArray(catalogRes?.items) ? catalogRes.items : [],
       text: contextRes?.text || "",
       tabs: tabList,
+      viewport: catalogRes?.viewport || null,
     });
     currentSnapshot.collectorFailed = catalogFailed || contextFailed;
+    // What was in the way, and what still is. Both matter to the model: the
+    // first explains a page that changed under it without it acting, and the
+    // second is the only warning it gets that its clicks may not be landing.
+    currentSnapshot.overlaysDismissed = swept?.dismissed || [];
+    currentSnapshot.overlaysBlocking = swept?.remaining || [];
     for (const el of currentSnapshot.elements) {
       if (el.label) seenRefs.set(el.ref, el.label);
     }
@@ -198,7 +422,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   // --- deterministic actions -------------------------------------------------
 
   async function navigate(url) {
-    const blocked = ownershipBlock("navigate");
+    const blocked = beginAction("navigate");
     if (blocked) return blocked;
     const res = await asAgent(() => actuator.navigate(wc(), url));
     invalidate();
@@ -206,7 +430,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function goBack() {
-    const blocked = ownershipBlock("goBack");
+    const blocked = beginAction("goBack");
     if (blocked) return blocked;
     const res = await asAgent(() => actuator.runAction(wc(), { type: "back" }, []));
     invalidate();
@@ -214,7 +438,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function goForward() {
-    const blocked = ownershipBlock("goForward");
+    const blocked = beginAction("goForward");
     if (blocked) return blocked;
     const res = await asAgent(() => actuator.runAction(wc(), { type: "forward" }, []));
     invalidate();
@@ -222,7 +446,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function click(ref) {
-    const blocked = ownershipBlock("click");
+    const blocked = beginAction("click");
     if (blocked) return blocked;
     const { el, error, hint } = resolveRef(ref);
     if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
@@ -250,7 +474,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function type(ref, text, { pressEnter = false, mode = "append" } = {}) {
-    const blocked = ownershipBlock("type");
+    const blocked = beginAction("type");
     if (blocked) return blocked;
     const { el, error, hint } = resolveRef(ref);
     if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
@@ -284,13 +508,15 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
       // on an error the model has to reinterpret.
       if (!String(el.raw.value || "").trim()) {
         mode = "append";
-      } else {
-        return {
-          ok: false,
-          error: "replace_mode_unsupported",
-          hint: "This is a rich-text area with content — use replace_text to edit the specific passage instead of replacing everything.",
-        };
       }
+      // Anything else keeps mode "replace" and falls through to the typing
+      // path below, which now clears the field with real keys before typing.
+      // Refusing here was a dead end on exactly the fields that most need
+      // correcting — contenteditable boxes and recipient fields that commit
+      // their contents into chips — and left the agent clicking at a mistake
+      // it had no way to erase. `replace_text` remains the better tool for
+      // editing ONE passage inside a long document; this is for putting a
+      // whole field right.
     }
     const res = await asAgent(() => actuator.runAction(
       wc(),
@@ -306,6 +532,9 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
         pressEnter: !!pressEnter,
         strictTarget: true,
         minLabelScore: 80,
+        // Carried so the actuator empties the field before typing — this is
+        // what makes correcting a value work on rich and chip-based fields.
+        mode,
       },
       catalogItems(),
     ));
@@ -317,13 +546,41 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   /**
+   * Put a whole body of text into the editor on this page, via the clipboard.
+   *
+   * Typing is how you fill a field; this is how you fill a DOCUMENT. Editors
+   * accept a paste as one operation — formatting, line breaks and all — where
+   * typing thousands of characters is slow, and slow typing into a live editor
+   * is where autocomplete, autosave and reformatting get to interfere.
+   *
+   * This exists so that writing into Notion, Docs or Slides happens INSIDE the
+   * agent loop. It used to be a separate pipeline: draft, paste, hope — with
+   * no verification, no safety gate, no trace, and no recovery when the paste
+   * silently did nothing.
+   */
+  async function pasteText(text, { replaceAll = false } = {}) {
+    const blocked = beginAction("pasteText");
+    if (blocked) return blocked;
+    if (typeof actuator.pasteTextIntoPage !== "function") {
+      return { ok: false, error: "paste_unsupported" };
+    }
+    const body = String(text ?? "");
+    if (!body.trim()) return { ok: false, error: "empty_text" };
+    const res = await asAgent(() =>
+      actuator.pasteTextIntoPage(wc(), { text: body, replaceAll: !!replaceAll }),
+    );
+    invalidate();
+    return res || { ok: false, error: "paste_failed" };
+  }
+
+  /**
    * Targeted in-place edit: find `findText` inside the element and replace
    * only that occurrence, preserving everything else. Works on inputs,
    * textareas and rich-text (contenteditable) fields. This is the right tool
    * for revisions — never retype a whole document to change one passage.
    */
   async function replaceText(ref, findText, replaceWith) {
-    const blocked = ownershipBlock("replaceText");
+    const blocked = beginAction("replaceText");
     if (blocked) return blocked;
     const { el, error, hint } = resolveRef(ref);
     if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
@@ -347,7 +604,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function select(ref, value) {
-    const blocked = ownershipBlock("select");
+    const blocked = beginAction("select");
     if (blocked) return blocked;
     const { el, error, hint } = resolveRef(ref);
     if (error) return { ok: false, error, ...(hint ? { hint } : {}) };
@@ -383,7 +640,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function scroll(direction = "down", amount = 600, ref = "") {
-    const blocked = ownershipBlock("scroll");
+    const blocked = beginAction("scroll");
     if (blocked) return blocked;
     const dir = direction === "up" ? "up" : "down";
     // A ref means "scroll inside this thing" — editor palettes, block lists and
@@ -421,8 +678,19 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
    * target has no DOM presence at all.
    */
   async function drag(from, to, { mode = "" } = {}) {
-    const blocked = ownershipBlock("drag");
+    const blocked = beginAction("drag");
     if (blocked) return blocked;
+    // Only coordinate endpoints depend on the geometry the snapshot was
+    // measured under; a ref-to-ref drag re-resolves both ends by selector.
+    const usesCoords =
+      (from && typeof from === "object" && from.x != null) ||
+      (to && typeof to === "object" && to.x != null);
+    if (usesCoords) {
+      const stale = staleViewBlock();
+      if (stale) return stale;
+      const drifted = await layoutDriftBlock();
+      if (drifted) return drifted;
+    }
     const action = { type: "drag", mode };
     if (from && typeof from === "object" && from.x != null) {
       action.x = Number(from.x);
@@ -468,13 +736,17 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
    * drawn surfaces there is nothing in the catalog to snap to anyway.
    */
   async function clickCoord(x, y, label = "", { snap = "" } = {}) {
-    const blocked = ownershipBlock("clickCoord");
+    const blocked = beginAction("clickCoord");
     if (blocked) return blocked;
     const nx = Number(x);
     const ny = Number(y);
     if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
       return { ok: false, error: "bad_coords" };
     }
+    const stale = staleViewBlock();
+    if (stale) return stale;
+    const drifted = await layoutDriftBlock();
+    if (drifted) return drifted;
     const res = await asAgent(() => actuator.runAction(
       wc(),
       { type: "click_coord", x: nx, y: ny, label: String(label || ""), ...(snap ? { snap } : {}) },
@@ -493,13 +765,17 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
    * — the same reason the ref path exists at all.
    */
   async function typeAtCoord(x, y, text, { pressEnter = false, label = "", snap = "" } = {}) {
-    const blocked = ownershipBlock("typeAtCoord");
+    const blocked = beginAction("typeAtCoord");
     if (blocked) return blocked;
     const nx = Number(x);
     const ny = Number(y);
     if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
       return { ok: false, error: "bad_coords" };
     }
+    const stale = staleViewBlock();
+    if (stale) return stale;
+    const drifted = await layoutDriftBlock();
+    if (drifted) return drifted;
     const res = await asAgent(() => actuator.runAction(
       wc(),
       {
@@ -518,7 +794,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function pressKey(key = "Enter", modifiers = null) {
-    const blocked = ownershipBlock("pressKey");
+    const blocked = beginAction("pressKey");
     if (blocked) return blocked;
     const mods = Array.isArray(modifiers) ? modifiers.filter(Boolean).map(String) : [];
     const res = await asAgent(() => actuator.runAction(
@@ -576,7 +852,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function openTab(url) {
-    const blocked = ownershipBlock("openTab");
+    const blocked = beginAction("openTab");
     if (blocked) return blocked;
     if (tabs?.open) {
       const res = await asAgent(() => tabs.open(url));
@@ -588,7 +864,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function closeTab(tabId) {
-    const blocked = ownershipBlock("closeTab");
+    const blocked = beginAction("closeTab");
     if (blocked) return blocked;
     if (tabs?.close) {
       const res = await asAgent(() => tabs.close(tabId));
@@ -599,7 +875,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
   }
 
   async function switchTab(tabId) {
-    const blocked = ownershipBlock("switchTab");
+    const blocked = beginAction("switchTab");
     if (blocked) return blocked;
     if (tabs?.activate) {
       const res = await asAgent(() => tabs.activate(tabId));
@@ -695,6 +971,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
     getCurrentSnapshot,
     settle,
     invalidate,
+    dismissOverlays,
     navigate,
     goBack,
     goForward,
@@ -704,6 +981,7 @@ function createBrowserController({ webContents, actuator, tabs = null, ownership
     drag,
     type,
     replaceText,
+    pasteText,
     select,
     scroll,
     pressKey,

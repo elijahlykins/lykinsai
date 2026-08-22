@@ -237,6 +237,22 @@ function renderInline(s) {
     );
 }
 
+/**
+ * Which agent steps the user has opened, keyed "<agentId>/<index>".
+ * The transcript is re-rendered from scratch on every delta, so without this a
+ * step's reasoning snapped shut the instant the next step arrived — which is
+ * exactly when someone is reading it.
+ */
+const expandedAgentSteps = new Set();
+
+/** Reasoning arrives as one line of " · "-joined parts; show them as lines. */
+function splitStepDetail(detail) {
+  return String(detail || "")
+    .split("·")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 function renderMarkdown(md) {
   const lines = escapeHtml(md).split("\n");
   let html = "";
@@ -256,42 +272,6 @@ function renderMarkdown(md) {
   };
   const stepMarkerRe =
     /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+|lykn-vault:\/\/[^\s)]+|lykn-artifact:\/\/[^\s)]+|lykn-agent-step:\/\/[^\s)]+)(?:\s+(?:&quot;|")(.+?)(?:&quot;|"))?\)$/;
-  const isStepMarkerLine = (rawLine) => {
-    const mm = stepMarkerRe.exec(String(rawLine || "").trim());
-    if (!mm) return false;
-    const alt = unescapeHtml(mm[1]).toLowerCase();
-    const url = unescapeHtml(mm[2]);
-    return /^lykn[-_]step\s*:/.test(alt) || /^lykn-agent-step:\/\//i.test(url);
-  };
-  const renderStepBody = (bodyLines) => {
-    const chunks = [];
-    let buf = [];
-    const flush = () => {
-      if (!buf.length) return;
-      chunks.push(`<p>${renderInline(buf.join(" "))}</p>`);
-      buf = [];
-    };
-    for (const bl of bodyLines) {
-      const t = String(bl || "").trim();
-      if (!t) {
-        flush();
-        continue;
-      }
-      if (/^#{1,6}\s+/.test(t)) {
-        flush();
-        chunks.push(`<div class="md-h">${renderInline(t.replace(/^#{1,6}\s+/, ""))}</div>`);
-        continue;
-      }
-      if (/^\s*[-*•]\s+/.test(t)) {
-        flush();
-        chunks.push(`<div class="md-step-li">${renderInline(t.replace(/^\s*[-*•]\s+/, ""))}</div>`);
-        continue;
-      }
-      buf.push(t);
-    }
-    flush();
-    return chunks.join("") || `<p class="md-step-empty">Open this step in the agent browser.</p>`;
-  };
   for (let li = 0; li < lines.length; li++) {
     const raw = lines[li];
     const line = raw.replace(/\s+$/, "");
@@ -328,51 +308,63 @@ function renderMarkdown(md) {
         }
         let stepAgentId = "";
         let stepIndex = "";
-        const stepMatch = /^lykn-agent-step:\/\/([^/]+)\/(\d+)/i.exec(mediaUrl);
+        const stepMatch = /^lykn-agent-step:\/\/([^/]+)\/(\d+)(?:\/(live|pending|done))?/i.exec(
+          mediaUrl,
+        );
         if (stepMatch) {
           stepAgentId = stepMatch[1] || "";
           stepIndex = stepMatch[2] || "";
         }
-        const kindLabel =
-          stepKind === "report"
-            ? "Report"
-            : stepKind === "artifact"
-              ? "Presentation"
-              : stepKind === "browse"
-                ? "Browser"
-                : stepKind === "image"
-                  ? "Image"
-                  : "Step";
-        const stepNum =
-          /^\s*step\s+(\d+)/i.exec(stepTitle)?.[1] ||
-          (stepIndex !== "" ? String(Number(stepIndex) + 1) : "");
+        const stepStatus = String(stepMatch?.[3] || "done").toLowerCase();
         const shortTitle = stepTitle
           .replace(/^\s*step\s+\d+\s*[—–\-·:]\s*/i, "")
           .trim() || stepTitle;
-        // Fold following prose into the dropdown until --- or the next step.
-        const bodyLines = [];
-        let j = li + 1;
-        while (j < lines.length) {
-          const peek = lines[j].replace(/\s+$/, "");
-          if (/^\s*---+\s*$/.test(peek)) {
-            j += 1;
-            break;
-          }
-          if (isStepMarkerLine(peek)) break;
-          bodyLines.push(peek);
-          j += 1;
-        }
-        li = j - 1;
-        html +=
-          `<details class="md-step" data-agent-id="${escapeAttr(stepAgentId)}" data-step-index="${escapeAttr(stepIndex)}" data-kind="${escapeAttr(stepKind)}">` +
-          `<summary class="md-step-summary" title="Open this step">` +
-          `<span class="md-step-chevron" aria-hidden="true"></span>` +
-          (stepNum ? `<span class="md-step-num">${escapeHtml(stepNum)}</span>` : "") +
+        // A step's reasoning travels in the marker's own title. Prose after the
+        // marker used to be swallowed into the dropdown as the step's body, but
+        // that text is now the agent narrating to the user between steps, so
+        // folding it away hid the explanation rather than the detail. Kept in
+        // its escaped form — this is model-written text on its way into
+        // innerHTML, and renderInline does not escape what it is handed.
+        const reasonLines = splitStepDetail(m[3] || "");
+        const hasBody = reasonLines.length > 0;
+        const icon =
+          stepStatus === "live"
+            ? `<svg class="md-step-spin lykn-outline-spinner" width="14" height="14" viewBox="0 0 204.29 204.29" fill="none" aria-hidden="true"><path d="${SPINNER_PATH}" pathLength="1" fill="currentColor" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" /></svg>`
+            : stepStatus === "pending"
+              ? `<span class="md-step-dot" aria-hidden="true"></span>`
+              : `<span class="md-step-check" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg></span>`;
+        // Expandable while live too: the whole point of the thinking box is
+        // being able to look at what it is working through before it acts.
+        const expandable = hasBody && stepStatus !== "pending";
+        const titleAttr = expandable
+          ? "Show what the agent was doing"
+          : stepStatus === "done"
+            ? "Open this step"
+            : "";
+        const rowInner = (tag) =>
+          `<${tag} class="md-step-summary" title="${escapeAttr(titleAttr)}">` +
+          icon +
           `<span class="md-step-title">${escapeHtml(shortTitle)}</span>` +
-          `<span class="md-step-kind">${escapeHtml(kindLabel)}</span>` +
-          `</summary>` +
-          `<div class="md-step-body">${renderStepBody(bodyLines)}</div>` +
-          `</details>`;
+          (expandable ? `<span class="md-step-caret" aria-hidden="true">›</span>` : "") +
+          `</${tag}>`;
+        const attrs =
+          `class="md-step md-step-${escapeAttr(stepStatus)}" data-agent-id="${escapeAttr(stepAgentId)}" data-step-index="${escapeAttr(stepIndex)}" data-kind="${escapeAttr(stepKind)}" data-status="${escapeAttr(stepStatus)}"`;
+        if (expandable) {
+          const stepKey = `${stepAgentId}/${stepIndex}`;
+          const openAttr = expandedAgentSteps.has(stepKey) ? " open" : "";
+          const body = reasonLines.map((l) => `<p>${renderInline(l)}</p>`).join("");
+          const openLink =
+            stepStatus === "done" && stepIndex !== ""
+              ? `<button type="button" class="md-step-open">Open in the browser</button>`
+              : "";
+          html +=
+            `<details ${attrs} data-expandable="1"${openAttr}>` +
+            rowInner("summary") +
+            `<div class="md-step-body">${body}${openLink}</div>` +
+            `</details>`;
+        } else {
+          html += `<div ${attrs}>${rowInner("div")}</div>`;
+        }
         continue;
       }
       if (isVault) {
@@ -1185,11 +1177,15 @@ async function requestSuggestions(question, answer) {
   }
   const suggested = (data && Array.isArray(data.links) ? data.links : []).filter((l) => l && l.url);
   const priorLinks = (sideContext && sideContext.links) || [];
+  const stepOnly = /lykn-agent-step:\/\//i.test(String(answer || ""));
   // This turn's deep-research sources replace the list; otherwise keep prior
   // sources so a follow-up prompt doesn't wipe the Sources panel.
-  const links = researchSources.length
-    ? mergeSourceLinks(researchSources, suggested)
-    : mergeSourceLinks(priorLinks, suggested);
+  // Step-box transcripts are not a source list — don't invent links from them.
+  const links = stepOnly
+    ? []
+    : researchSources.length
+      ? mergeSourceLinks(researchSources, suggested)
+      : mergeSourceLinks(priorLinks, suggested);
   const followups = (data && Array.isArray(data.followups) ? data.followups : []).filter(Boolean);
 
   lastAnswerText = answer;
@@ -1310,11 +1306,23 @@ function setBusy(on) {
   sendEl.disabled = on;
 }
 
+// Type the newest step explanation instead of flashing the whole paragraph.
+let stepNoteType = { timer: null, key: "", shown: "", target: "" };
+
+function stopStepNoteTyping() {
+  if (stepNoteType.timer) {
+    clearTimeout(stepNoteType.timer);
+    stepNoteType.timer = null;
+  }
+}
+
 // Start a new turn: collapse every prior turn, append an expanded item for this
 // question, and return its answer element to stream into.
 function startTurn(question) {
   // A new question is pending — reset sources side data but keep live watch panel open.
   stopStatusRotation();
+  stopStepNoteTyping();
+  stepNoteType = { timer: null, key: "", shown: "", target: "" };
   // A new turn supersedes any parked wait from the previous one.
   pendingAgentWaiting = null;
   currentPageSource = null;
@@ -1551,6 +1559,87 @@ function setThinkingStatus(text) {
   // Don't resize on status text swaps — height rarely changes and it adds noise.
 }
 
+// Earlier notes stay as rendered; only the latest one writes out.
+function newestStepNoteNodes(bodyEl) {
+  const steps = [...bodyEl.querySelectorAll(".md-step")];
+  const last = steps[steps.length - 1];
+  if (!last) return null;
+  const nodes = [];
+  let n = last.nextElementSibling;
+  while (n && !n.classList.contains("md-step") && n.tagName !== "HR") {
+    nodes.push(n);
+    n = n.nextElementSibling;
+  }
+  if (!nodes.length) return null;
+  const key = `${last.getAttribute("data-agent-id") || ""}/${last.getAttribute("data-step-index") || steps.length - 1}`;
+  const target = nodes
+    .map((el) => el.textContent)
+    .join("\n\n")
+    .replace(/\s+$/, "")
+    .trim();
+  if (!target) return null;
+  return { key, nodes, target };
+}
+
+function typeNewestStepNote(bodyEl) {
+  const found = newestStepNoteNodes(bodyEl);
+  if (!found) {
+    stopStepNoteTyping();
+    return;
+  }
+  const { key, nodes, target } = found;
+  const htmls = nodes.map((el) => el.innerHTML);
+  if (stepNoteType.key !== key || !target.startsWith(stepNoteType.shown)) {
+    stopStepNoteTyping();
+    stepNoteType.key = key;
+    stepNoteType.shown = "";
+  }
+  stepNoteType.target = target;
+  nodes.forEach((el, i) => {
+    if (i === 0) {
+      el.classList.add("md-step-note");
+      el.textContent = stepNoteType.shown;
+    } else {
+      el.hidden = true;
+    }
+  });
+  const finish = () => {
+    nodes.forEach((el, i) => {
+      el.hidden = false;
+      if (htmls[i] != null) el.innerHTML = htmls[i];
+      el.classList.add("md-step-note");
+    });
+    stepNoteType.shown = target;
+    stepNoteType.timer = null;
+    threadEl.scrollTop = threadEl.scrollHeight;
+    reportHeight();
+  };
+  if (stepNoteType.shown === target) {
+    finish();
+    return;
+  }
+  const stepMs = target.length > 220 ? 12 : target.length > 80 ? 16 : 22;
+  const tick = () => {
+    if (stepNoteType.shown === stepNoteType.target) {
+      finish();
+      return;
+    }
+    const rest = stepNoteType.target.startsWith(stepNoteType.shown)
+      ? stepNoteType.target.slice(stepNoteType.shown.length)
+      : stepNoteType.target;
+    const m = rest.match(/^(\s+|\S+)/);
+    stepNoteType.shown =
+      (stepNoteType.target.startsWith(stepNoteType.shown) ? stepNoteType.shown : "") +
+      (m ? m[1] : rest);
+    if (nodes[0]) nodes[0].textContent = stepNoteType.shown;
+    threadEl.scrollTop = threadEl.scrollHeight;
+    reportHeight();
+    stepNoteType.timer = setTimeout(tick, stepMs);
+  };
+  stopStepNoteTyping();
+  stepNoteType.timer = setTimeout(tick, stepMs);
+}
+
 function updateAnswer(text) {
   if (!currentAnswerEl) return;
   const bodyEl = ensureAnswerChrome(currentAnswerEl);
@@ -1563,6 +1652,11 @@ function updateAnswer(text) {
   currentAnswerEl.classList.add("has-md");
   currentAnswerEl.dataset.raw = trimmed;
   bodyEl.innerHTML = renderMarkdown(trimmed);
+  const hasLiveStep = /lykn-agent-step:\/\/[^)\s]+\/live\b/i.test(trimmed);
+  const shouldTypeNotes =
+    /lykn-agent-step:\/\//i.test(trimmed) && (answerStillWorking || hasLiveStep);
+  if (shouldTypeNotes) typeNewestStepNote(bodyEl);
+  else stopStepNoteTyping();
   const actions = currentAnswerEl.querySelector(":scope > .chat-a-actions");
   if (actions) actions.hidden = !trimmed;
   // Build mode: description lands first, then the tool runs for a while with
@@ -3077,10 +3171,28 @@ threadEl.addEventListener("click", (e) => {
   }
   const stepEl = e.target.closest(".md-step");
   if (stepEl) {
-    // Let the native <details> toggle; also open the step in the agent tab.
+    const stepStatus = stepEl.getAttribute("data-status") || "done";
+    if (stepStatus === "pending") return;
     const stepAgentId = stepEl.getAttribute("data-agent-id") || activeAgentId || "";
     const stepIndex = stepEl.getAttribute("data-step-index");
     if (stepIndex == null || stepIndex === "") return;
+    const openBtn = e.target.closest(".md-step-open");
+    // A step that can explain itself expands on click; going to the browser is
+    // the button inside it. Otherwise clicking the row still jumps to the page.
+    if (stepEl.getAttribute("data-expandable") === "1" && !openBtn) {
+      // The native toggle happens after this handler, so `open` is still the
+      // state we're leaving.
+      const stepKey = `${stepAgentId}/${stepIndex}`;
+      if (stepEl.open) expandedAgentSteps.delete(stepKey);
+      else expandedAgentSteps.add(stepKey);
+      // Growing the box mid-thread changes how much room the overlay needs.
+      setTimeout(reportHeight, 0);
+      return;
+    }
+    if (openBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     void window.lyknOverlay.agentShowStep?.(stepAgentId, Number(stepIndex));
     return;
   }
@@ -3315,18 +3427,17 @@ window.lyknOverlay.onAgentDelta((p) => {
   if (text) {
     agentStreamingText = text;
     updateAnswer(text);
-    // Only treat as final when explicitly marked, or the close clearly landed.
-    // Do NOT key off "## What I did" alone — that appears in the mid-run draft too.
-    // Do NOT key off "want me to" — suggestions live above the chat bar now.
+    // Final when marked, or when the transcript is only finished step boxes.
     const looksFinal =
       !!p?.final ||
       (/!\[[^\]]*\]\(lykn-agent-step:/i.test(text) &&
-        /\bAll \d+ steps finished\b/i.test(text) &&
-        /\b##\s*Summary\b/i.test(text)) ||
-      (/\b##\s*Summary\b/i.test(text) &&
-        /\b##\s*(What I did|Link)\b/i.test(text));
+        !/lykn-agent-step:\/\/[^)\s]+\/(?:live|pending)\b/i.test(text));
+    const hasLiveStep = /lykn-agent-step:\/\/[^)\s]+\/live\b/i.test(text);
     if (looksFinal) {
       answerStillWorking = false;
+      clearBuildingUnder();
+    } else if (hasLiveStep) {
+      // Spinner lives in the current step box — don't stack a second one.
       clearBuildingUnder();
     } else if (answerStillWorking && (p?.writing || status)) {
       const n = Number(p.chars) || text.length;

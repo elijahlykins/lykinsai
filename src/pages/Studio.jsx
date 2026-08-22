@@ -14,24 +14,30 @@ import {
   Bell,
   BellOff,
   CalendarDays,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  CircleAlert,
+  CircleCheck,
   Clock,
   Folder,
   FolderKanban,
   Globe,
   Home,
   ListTodo,
+  LoaderCircle,
   Lock,
   Maximize2,
   MessageCircle,
   Minimize2,
+  MoreHorizontal,
   Newspaper,
+  PanelRight,
   Paperclip,
-  Plus,
   Search,
+  Send,
   Settings,
   Sparkles,
   SquarePen,
@@ -71,13 +77,14 @@ import { subscribeLyknChatsChanged } from "@/lib/lyknChat/chatsChanged";
 import { applyTheme, isDarkTheme, readSavedTheme } from "@/lib/theme";
 import { readAppearance, subscribeAppearance } from "@/lib/appearance";
 import { isDesktopShell } from "@/lib/webAppAccess";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import {
   CHAT_REMARK_PLUGINS,
   CHAT_REHYPE_PLUGINS,
   normalizeMathDelimiters,
 } from "@/lib/chat/chatMarkdown";
 import ThinkingIndicator from "@/components/lyknChat/ThinkingIndicator";
+import LyknOutlineSpinner from "@/components/lyknChat/LyknOutlineSpinner";
 import StudioHoverTips from "@/components/StudioHoverTips";
 import MacAppDock from "@/components/macdock/MacAppDock";
 import MacFilesBrowser from "@/components/macfiles/MacFilesBrowser";
@@ -629,12 +636,85 @@ function StudioSearch({ userId, onOpen }) {
  * concentric with the frame's. Reported to the main process, which wears it on
  * the native views. */
 const BROWSER_VIEW_RADIUS = 14;
+// Mirrors AGENT_STAGE_CHROME_DEFAULT in electron/main.cjs — how much room the
+// native tab strip + nav row take above the page. The stage reports its real
+// height (a favourites row makes it taller) and that arrives with the shot.
+const BROWSER_CHROME_HEIGHT = 82;
+// Long enough to cover the slowest way the window leaves (DesktopAppWindow's
+// 260ms peek slide; close and minimize are quicker) and no longer, so the
+// browser's last picture is gone by the time it comes back.
+const LEAVE_SHOT_MS = 320;
+
+/** Stand-in for the browser while its native views can't paint: the window's
+ *  open animation, and the moment after, before they first dock. Deliberately
+ *  identical every time — the alternative, the browser as it last looked, made
+ *  every open animate over different content and the handover to the live
+ *  views read as a glitch. Geometry mirrors electron/agent-stage.html so the
+ *  strip, the nav row and the seam below them land where the real ones will. */
+function StudioBrowserSkeleton({ chromeHeight }) {
+  return (
+    <div aria-hidden className="absolute inset-0 flex flex-col overflow-hidden bg-white">
+      <div
+        className="flex flex-none flex-col border-b border-black/[0.08] bg-[#f3f2f0]"
+        style={{ height: chromeHeight }}
+      >
+        {/* Tab strip: traffic lights, then the one open tab. */}
+        <div className="flex h-[42px] flex-none items-center gap-2 pl-[13px] pr-2">
+          <div className="h-3 w-3 flex-none rounded-full bg-black/[0.09]" />
+          <div className="h-3 w-3 flex-none rounded-full bg-black/[0.09]" />
+          <div className="h-3 w-3 flex-none rounded-full bg-black/[0.09]" />
+          <div className="ml-1 flex h-[30px] w-[190px] flex-none items-center gap-[7px] rounded-lg bg-white px-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_2px_8px_rgba(0,0,0,0.06)]">
+            <div className="h-3.5 w-3.5 flex-none rounded-[3px] bg-black/[0.08]" />
+            <div className="h-2 flex-1 rounded-full bg-black/[0.07]" />
+          </div>
+        </div>
+        {/* Nav row: round icon buttons, then the omnibox. */}
+        <div className="flex h-10 flex-none items-center gap-1 px-2.5">
+          <div className="h-7 w-7 flex-none rounded-full bg-black/[0.05]" />
+          <div className="h-7 w-7 flex-none rounded-full bg-black/[0.05]" />
+          <div className="h-7 w-7 flex-none rounded-full bg-black/[0.05]" />
+          <div className="ml-1 h-7 flex-1 rounded-full bg-black/[0.05]" />
+        </div>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6">
+        <div className="h-12 w-12 rounded-2xl bg-black/[0.05]" />
+        <div className="h-11 w-[min(460px,66%)] rounded-full bg-black/[0.05]" />
+      </div>
+    </div>
+  );
+}
 
 /** Body of the floating Browser window: the surface the main process docks
  *  the native agent-browser views onto (tab strip, toolbar and page all
  *  render inside `hostRef`'s rect), with the agent rail beside it. The window
  *  frame supplies the card, so this fills it edge to edge. */
-function StudioBrowserBody({ hostRef, desktop, shot }) {
+function StudioBrowserBody({ hostRef, desktop, shot, docked, chromeHeight }) {
+  // The picture is strictly for leaving: the native views can't be scaled or
+  // faded, so they step aside and this animates out in their place. It has to
+  // expire with the animation that needed it, though. A window that leaves by
+  // minimizing (or by the dock icon, or a peek) never unmounts, so it comes
+  // back still holding the picture — and showing it then puts a stale, scaled
+  // still of the browser on screen, ahead of the skeleton, ahead of the live
+  // page. Three states deep, and the first two read as a blurry flash. Coming
+  // back is the skeleton and nothing else.
+  const [leaving, setLeaving] = useState(false);
+  const wasDocked = useRef(false);
+  useEffect(() => {
+    if (docked) {
+      wasDocked.current = true;
+      setLeaving(false);
+      return undefined;
+    }
+    // Undocked without ever having been docked: this window is opening, not
+    // going anywhere.
+    if (!wasDocked.current) return undefined;
+    wasDocked.current = false;
+    setLeaving(true);
+    const t = setTimeout(() => setLeaving(false), LEAVE_SHOT_MS);
+    return () => clearTimeout(t);
+  }, [docked]);
+  const showShot = leaving && !!(shot && (shot.chrome || shot.page));
+  const showSkeleton = desktop && !showShot;
   return (
     // The native views paint above the page and would swallow the pointer, so
     // they're inset by the width of the frame's resize grips (6px) all round —
@@ -647,26 +727,30 @@ function StudioBrowserBody({ hostRef, desktop, shot }) {
         className="relative min-w-0 flex-1 overflow-hidden"
         style={{ borderRadius: BROWSER_VIEW_RADIUS }}
       >
-        {/* Light underlay so the dock loads in light mode; shows while the
-            views attach, and in the web preview where there are none. */}
-        <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-[#ececeb] text-black/45">
-          <Globe className="h-9 w-9" />
-          <p className="max-w-sm text-center text-sm">
-            {desktop
-              ? "Your agent browser tabs appear here. Press + in the browser bar above to open one."
-              : "The LYKN browser is available in the desktop app."}
-          </p>
+        {/* Underlay for the sliver of time before the native views paint. It
+            matches the page they'll show rather than announcing itself: any
+            mark or copy here reads as a placeholder screen flashing up in
+            front of the browser. The web preview has no views at all, so that
+            is the one case that does explain itself. */}
+        <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-white text-black/45">
+          {!desktop && (
+            <>
+              <Globe className="h-9 w-9" />
+              <p className="max-w-sm text-center text-sm">
+                The LYKN browser is available in the desktop app.
+              </p>
+            </>
+          )}
         </div>
+        {showSkeleton && <StudioBrowserSkeleton chromeHeight={chromeHeight} />}
         {/* The browser as it last looked, standing in for the native views
-            while the window opens, closes, minimizes or slides out of the way —
-            they can't be scaled or faded, so they leave and this animates in
-            their place. Once they're back they paint over it, so it can simply
-            stay: there is no swap to time and nothing flashes between the two.
-            The seam matches the layout's, chrome height and all. */}
-        {shot && (shot.chrome || shot.page) && (
+            while the window closes, minimizes or slides out of the way — they
+            can't be scaled or faded, so they leave and this animates in their
+            place. The seam matches the layout's, chrome height and all. */}
+        {showShot && (
           <div
             aria-hidden
-            className="absolute inset-0 flex flex-col overflow-hidden bg-[#ececeb]"
+            className="absolute inset-0 flex flex-col overflow-hidden bg-white"
           >
             {shot.chrome && (
               <img
@@ -745,6 +829,189 @@ function agentSubLabel(a) {
   const step = String(a.step || a.status || "idle").trim();
   if (skill && step && step !== skill) return `${skill} · ${step}`;
   return skill || step || "idle";
+}
+
+function agentHostLabel(url) {
+  try {
+    return new URL(String(url || "")).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function startOfLocalDay(d = new Date()) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function dateSectionLabel(iso) {
+  const t = new Date(iso || 0).getTime();
+  if (!Number.isFinite(t) || t <= 0) return "Older";
+  const today = startOfLocalDay();
+  if (t >= today) return "Today";
+  if (t >= today - 86400000) return "Yesterday";
+  return "Older";
+}
+
+function groupByDateSection(items, getIso) {
+  const buckets = { Today: /** @type {any[]} */ ([]), Yesterday: /** @type {any[]} */ ([]), Older: /** @type {any[]} */ ([]) };
+  for (const item of items) {
+    buckets[dateSectionLabel(getIso(item))].push(item);
+  }
+  return ["Today", "Yesterday", "Older"]
+    .map((label) => ({ label, items: buckets[label] }))
+    .filter((g) => g.items.length > 0);
+}
+
+function threadLooksSame(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i]?.role !== b[i]?.role) return false;
+    if (String(a[i]?.content || "") !== String(b[i]?.content || "")) return false;
+  }
+  return true;
+}
+
+/** Runtime history wins; keep a trailing optimistic user line the registry hasn't echoed yet. */
+function mergeAgentThread(prev, next) {
+  const incoming = Array.isArray(next) ? next : [];
+  const current = Array.isArray(prev) ? prev : [];
+  if (threadLooksSame(current, incoming)) return current;
+  const lastPrev = current[current.length - 1];
+  if (
+    lastPrev?.role === "user" &&
+    String(lastPrev.content || "").trim() &&
+    !incoming.some(
+      (m) =>
+        m?.role === "user" &&
+        String(m.content || "") === String(lastPrev.content || ""),
+    )
+  ) {
+    return [...incoming, lastPrev];
+  }
+  return incoming;
+}
+
+const AGENT_SIDEBAR_SECTION_CAP = 6;
+const IS_MAC_AGENT =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad/.test(String(navigator.platform || navigator.userAgent || ""));
+
+function AgentRailIcon({ title, onClick, disabled = false, pressed = false, children }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-pressed={pressed || undefined}
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex h-6 w-6 flex-none items-center justify-center rounded-md transition-colors ${
+        disabled
+          ? "text-white/22"
+          : pressed
+            ? "bg-white/16 text-white"
+            : "text-white/55 hover:bg-white/10 hover:text-white"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function AgentStatusMark({ agent }) {
+  if (agent?.status === "running" || agent?.busy) {
+    return <LoaderCircle className="h-3.5 w-3.5 animate-spin text-[#7fa8ff]" />;
+  }
+  if (agent?.status === "waiting") {
+    return <MessageCircle className="h-3.5 w-3.5 text-[#7fa8ff]" />;
+  }
+  if (agent?.status === "error") {
+    return <CircleAlert className="h-3.5 w-3.5 text-red-400" />;
+  }
+  return <CircleCheck className="h-3.5 w-3.5 text-white/40" />;
+}
+
+function AgentListRow({
+  title,
+  subtitle,
+  active = false,
+  onSelect,
+  onRemove,
+  removeTitle,
+  icon,
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => e.key === "Enter" && onSelect?.()}
+      className={`group flex w-full cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
+        active ? "bg-white/[0.12]" : "hover:bg-white/[0.07]"
+      }`}
+    >
+      <span className="mt-0.5 flex h-3.5 w-3.5 flex-none items-center justify-center">
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[0.76rem] font-medium text-white/90">
+          {title}
+        </span>
+        {subtitle ? (
+          <span className="block truncate text-[0.63rem] text-white/42">
+            {subtitle}
+          </span>
+        ) : null}
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          title={removeTitle}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+          className="mt-0.5 flex h-5 w-5 flex-none items-center justify-center rounded-md text-white/35 opacity-0 transition-all hover:bg-white/15 hover:text-white group-hover:opacity-100"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function AgentGroupedList({
+  groups,
+  expanded,
+  expandPrefix = "",
+  onToggleMore,
+  renderItem,
+}) {
+  return groups.map(({ label, items }) => {
+    const moreKey = `${expandPrefix}${label}`;
+    const open = !!expanded[moreKey];
+    const visible = open ? items : items.slice(0, AGENT_SIDEBAR_SECTION_CAP);
+    const hidden = items.length - visible.length;
+    return (
+      <div key={moreKey} className="mb-2">
+        <div className="px-2 pb-1 pt-2 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-white/38">
+          {label}
+        </div>
+        <div className="space-y-0.5">
+          {visible.map(renderItem)}
+        </div>
+        {hidden > 0 ? (
+          <button
+            type="button"
+            onClick={() => onToggleMore(moreKey)}
+            className="mt-0.5 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[0.72rem] text-white/50 transition-colors hover:bg-white/[0.07] hover:text-white/80"
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+            More
+          </button>
+        ) : null}
+      </div>
+    );
+  });
 }
 
 /** Short topic phrase for post-agent suggestion labels. */
@@ -889,72 +1156,118 @@ function extractSourceLinksFromAnswer(text) {
  * markers in agent answers — click opens that step's report/artifact/image in
  * the agent's browser subtab (same behavior as the Glass overlay's step chips).
  */
-function RailStepPill({ src, alt }) {
+function railStepStatus(src) {
+  const m = /lykn-agent-step:\/\/[^/]+\/\d+\/(live|pending|done)/i.exec(String(src || ""));
+  return (m?.[1] || "done").toLowerCase();
+}
+
+function draftHasLiveStep(text) {
+  return /lykn-agent-step:\/\/[^)\s]+\/live\b/i.test(String(text || ""));
+}
+
+function answerIsStepTranscript(text) {
+  return /lykn-agent-step:\/\//i.test(String(text || ""));
+}
+
+/** Reasoning rides in the marker title as one " · "-joined line; show it as lines. */
+function splitRailStepDetail(detail) {
+  return String(detail || "")
+    .split("·")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function RailStepPill({ src, alt, title: detail }) {
   const m = /^lykn-agent-step:\/\/([^/]+)\/(\d+)/i.exec(String(src || ""));
   const agentId = m?.[1] || "";
   const stepIndex = m ? Number(m[2]) : null;
-  let kind = "text";
   let title = String(alt || "").replace(/^lykn[-_]step\s*:/i, "").trim();
   const kt = String(alt || "").match(/^lykn[-_]step\s*:([^:]+):(.+)$/i);
-  if (kt) {
-    kind = String(kt[1] || "text").trim().toLowerCase();
-    title = String(kt[2] || title).trim();
-  }
-  const kindLabel =
-    kind === "report"
-      ? "Report"
-      : kind === "artifact"
-        ? "Presentation"
-        : kind === "browse"
-          ? "Browser"
-          : kind === "image"
-            ? "Image"
-            : "Step";
-  const stepNum = /^\s*step\s+(\d+)/i.exec(title)?.[1] || "";
+  if (kt) title = String(kt[2] || title).trim();
   const shortTitle =
-    title.replace(/^\s*step\s+\d+\s*[—–\-·:]\s*/i, "").trim() || kindLabel;
+    title.replace(/^\s*step\s+\d+\s*[—–\-·:]\s*/i, "").trim() || "Step";
+  const status = railStepStatus(src);
+  const pending = status === "pending";
+  const live = status === "live";
+  const reasonLines = splitRailStepDetail(detail);
+  // A step that can account for itself opens on click; the browser is a button
+  // inside it. Steps with nothing to say still jump straight to the page.
+  const expandable = reasonLines.length > 0 && !pending;
+  const [open, setOpen] = useState(false);
   return (
-    <button
-      type="button"
-      title="Open in the browser"
-      onClick={() => {
-        if (stepIndex == null) return;
-        void window.lykn?.agentShowStep?.(agentId, stepIndex);
-      }}
-      className="my-1 flex w-full max-w-full items-center gap-2 rounded-full border border-white/20 bg-white/[0.08] px-2.5 py-1.5 text-left text-[0.72rem] text-white/85 transition hover:bg-white/[0.14]"
+    <div
+      className={`my-1 w-full max-w-full overflow-hidden rounded-lg border border-white/10 text-[0.72rem] ${
+        open ? "bg-white/[0.08]" : "bg-white/[0.05]"
+      } ${pending ? "pointer-events-none opacity-40" : ""}`}
     >
-      {stepNum ? (
-        <span className="flex h-4 w-4 flex-none items-center justify-center rounded-full bg-white/15 text-[0.6rem] font-semibold text-white/80">
-          {stepNum}
-        </span>
-      ) : null}
-      <span className="min-w-0 flex-1 truncate font-medium text-white/90">{shortTitle}</span>
-      <span className="flex-none text-[0.62rem] uppercase tracking-wide text-white/50">
-        {kindLabel}
-      </span>
-      <svg
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        className="h-3 w-3 flex-none text-white/60"
-        aria-hidden="true"
+      <button
+        type="button"
+        title={expandable ? "Show what the agent was doing" : status === "done" ? "Open this step" : ""}
+        disabled={pending}
+        onClick={() => {
+          if (pending) return;
+          if (expandable) {
+            setOpen((v) => !v);
+            return;
+          }
+          if (stepIndex == null) return;
+          void window.lykn?.agentShowStep?.(agentId, stepIndex);
+        }}
+        className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition ${
+          live ? "text-white/75" : "text-white/85 hover:bg-white/[0.06]"
+        }`}
       >
-        <path d="M7 17 17 7M9 7h8v8" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    </button>
+        {live ? (
+          <LyknOutlineSpinner size={14} className="flex-none" />
+        ) : pending ? (
+          <span className="mx-0.5 h-2 w-2 flex-none rounded-full bg-white/30" aria-hidden="true" />
+        ) : (
+          <span
+            className="flex h-3.5 w-3.5 flex-none items-center justify-center rounded-full bg-emerald-400/20 shadow-[inset_0_0_0_1px_rgba(52,211,153,0.45)]"
+            aria-hidden="true"
+          >
+            <Check className="h-2.5 w-2.5 text-emerald-200" strokeWidth={3.4} />
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate font-medium text-white/90">{shortTitle}</span>
+        {expandable ? (
+          <ChevronRight
+            className={`h-3 w-3 flex-none text-white/30 transition-transform ${open ? "rotate-90" : ""}`}
+            aria-hidden="true"
+          />
+        ) : null}
+      </button>
+      {expandable && open ? (
+        <div className="border-t border-white/10 px-2.5 py-2 pl-[30px] text-[0.7rem] leading-relaxed text-white/70">
+          {reasonLines.map((line, i) => (
+            <p key={i} className={i ? "mt-1.5" : ""}>
+              {line}
+            </p>
+          ))}
+          {status === "done" && stepIndex != null ? (
+            <button
+              type="button"
+              onClick={() => void window.lykn?.agentShowStep?.(agentId, stepIndex)}
+              className="mt-2 rounded-md border border-white/15 bg-white/5 px-2 py-1 text-[0.68rem] text-white/75 transition hover:bg-white/10 hover:text-white"
+            >
+              Open in the browser
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
 // Markdown for the agent rail — same remark/rehype pipeline as the main chat,
 // with components sized for the narrow dark-glass thread.
 const RAIL_MD_COMPONENTS = {
-  img: ({ src, alt }) => {
+  img: ({ src, alt, title }) => {
     const s = String(src || "");
     const a = String(alt || "");
     // Deliverable step markers render as clickable "open" pills, not images.
     if (/^lykn-agent-step:\/\//i.test(s) || /^lykn[-_]step\s*:/i.test(a)) {
-      return <RailStepPill src={s} alt={a} />;
+      return <RailStepPill src={s} alt={a} title={String(title || "")} />;
     }
     if (/^https?:\/\//i.test(s) || /^data:image\//i.test(s)) {
       return (
@@ -1022,37 +1335,199 @@ const RAIL_MD_COMPONENTS = {
   td: (props) => <td className="border border-white/15 px-1.5 py-1 align-top" {...props} />,
 };
 
+/**
+ * react-markdown blanks any URL whose scheme it doesn't recognize, and that
+ * silently emptied the `src` of every agent step marker: the pill still drew
+ * itself from the alt text, but with no agent id, no index and no status, so
+ * every step in the rail showed a finished check and none of them could be
+ * opened. Step markers are minted by the agent runtime rather than coming from
+ * page content, so this one scheme is safe to pass through; everything else
+ * still goes through the default sanitizer.
+ */
+function railUrlTransform(url) {
+  const u = String(url || "");
+  if (/^lykn-agent-step:\/\//i.test(u)) return u;
+  return defaultUrlTransform(u);
+}
+
 function RailMarkdown({ children }) {
   return (
     <ReactMarkdown
       remarkPlugins={CHAT_REMARK_PLUGINS}
       rehypePlugins={CHAT_REHYPE_PLUGINS}
       components={RAIL_MD_COMPONENTS}
+      urlTransform={railUrlTransform}
     >
       {normalizeMathDelimiters(String(children || ""))}
     </ReactMarkdown>
   );
 }
 
-// Agent icon color: grey idle → blue while working → green when finished.
-function agentToneClass(a) {
-  if (a.status === "running" || a.busy) {
-    return "animate-pulse text-[#3b78ff]";
+const RAIL_STEP_LINE_RE =
+  /^!\[([^\]]*)\]\((lykn-agent-step:\/\/[^)\s]+)(?:\s+"([^"]*)")?\)$/i;
+
+/**
+ * Split a step transcript into pills, the explanation under each one, and
+ * any closing summary after the `---` seam the runtime inserts.
+ */
+function parseRailStepBlocks(md) {
+  const lines = String(md || "")
+    .replace(/\s+$/, "")
+    .split("\n");
+  const blocks = [];
+  let i = 0;
+  let proseI = 0;
+  while (i < lines.length) {
+    const m = RAIL_STEP_LINE_RE.exec(lines[i].trim());
+    if (m) {
+      const src = m[2];
+      const idxMatch = /lykn-agent-step:\/\/([^/]+)\/(\d+)/i.exec(src);
+      const agentId = idxMatch?.[1] || "";
+      const stepIndex = idxMatch?.[2] || String(blocks.length);
+      blocks.push({
+        kind: "step",
+        key: `step-${agentId}-${stepIndex}`,
+        alt: m[1],
+        src,
+        title: m[3] || "",
+      });
+      i += 1;
+      const noteLines = [];
+      while (i < lines.length) {
+        const next = lines[i].trim();
+        if (RAIL_STEP_LINE_RE.test(next) || /^---+$/.test(next)) break;
+        noteLines.push(lines[i]);
+        i += 1;
+      }
+      const note = noteLines.join("\n").trim();
+      if (note) {
+        blocks.push({
+          kind: "note",
+          key: `note-${agentId}-${stepIndex}`,
+          text: note,
+        });
+      }
+      continue;
+    }
+    if (/^---+$/.test(lines[i].trim())) {
+      i += 1;
+      continue;
+    }
+    const proseLines = [];
+    while (i < lines.length) {
+      const next = lines[i].trim();
+      if (RAIL_STEP_LINE_RE.test(next)) break;
+      if (/^---+$/.test(next)) {
+        i += 1;
+        break;
+      }
+      proseLines.push(lines[i]);
+      i += 1;
+    }
+    const text = proseLines.join("\n").trim();
+    if (text) {
+      blocks.push({ kind: "prose", key: `prose-${proseI++}`, text });
+    }
   }
-  // Parked on the user: brand blue, but at rest. Same "this agent is live"
-  // signal without the pulse that means "working, wait".
-  if (a.status === "waiting") return "text-[#3b78ff]";
-  if (a.status === "error") return "text-red-400";
-  const step = String(a.step || "").trim().toLowerCase();
-  // A worker that has run leaves a step behind ("Done", "Stopped", last action).
-  if (step && step !== "orchestrator" && step !== "idle") return "text-emerald-400";
-  return "text-white/40";
+  return blocks;
+}
+
+/**
+ * Type an explanation out word by word. Finished history snaps to the full
+ * text; a live note grows toward whatever the runtime last sent.
+ */
+function TypedRailNote({ text, animate }) {
+  const target = String(text || "");
+  const [shown, setShown] = useState(() => (animate ? "" : target));
+  const shownRef = useRef(animate ? "" : target);
+  const targetRef = useRef(target);
+  shownRef.current = shown;
+  targetRef.current = target;
+
+  useEffect(() => {
+    if (!animate) {
+      setShown(target);
+      shownRef.current = target;
+      return undefined;
+    }
+    if (target !== shownRef.current && !target.startsWith(shownRef.current)) {
+      setShown("");
+      shownRef.current = "";
+    }
+    let timer = 0;
+    const stepMs = target.length > 220 ? 12 : target.length > 80 ? 16 : 22;
+    const tick = () => {
+      const nextTarget = targetRef.current;
+      const prev = shownRef.current;
+      if (prev === nextTarget) return;
+      const rest = nextTarget.startsWith(prev) ? nextTarget.slice(prev.length) : nextTarget;
+      const m = rest.match(/^(\s+|\S+)/);
+      const next = (nextTarget.startsWith(prev) ? prev : "") + (m ? m[1] : rest);
+      shownRef.current = next;
+      setShown(next);
+      if (next !== nextTarget) timer = window.setTimeout(tick, stepMs);
+    };
+    if (shownRef.current !== target) timer = window.setTimeout(tick, stepMs);
+    return () => window.clearTimeout(timer);
+  }, [animate, target]);
+
+  useEffect(() => {
+    const el = document.querySelector("[data-agent-thread]");
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [shown]);
+
+  if (!shown) return null;
+  return <RailMarkdown>{shown}</RailMarkdown>;
+}
+
+function RailStepTranscript({ text, animate = false }) {
+  const blocks = parseRailStepBlocks(text);
+  if (!blocks.length) return <RailMarkdown>{text}</RailMarkdown>;
+  let lastTypedKey = "";
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i].kind === "note" || blocks[i].kind === "prose") {
+      lastTypedKey = blocks[i].key;
+      break;
+    }
+  }
+  return (
+    <div className="space-y-2">
+      {blocks.map((b) => {
+        if (b.kind === "step") {
+          return <RailStepPill key={b.key} src={b.src} alt={b.alt} title={b.title} />;
+        }
+        if (b.kind === "note") {
+          return (
+            <div key={b.key} className="pl-1 text-white/70">
+              <TypedRailNote text={b.text} animate={animate && b.key === lastTypedKey} />
+            </div>
+          );
+        }
+        return (
+          <div key={b.key}>
+            <TypedRailNote text={b.text} animate={animate && b.key === lastTypedKey} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RailAgentBody({ text, animate = false }) {
+  const body = String(text || "");
+  if (!body) return null;
+  if (answerIsStepTranscript(body)) {
+    return <RailStepTranscript text={body} animate={animate} />;
+  }
+  return <RailMarkdown>{body}</RailMarkdown>;
 }
 
 const AGENT_CHAT_WIDTH_KEY = "lykn-studio-agent-chat-width";
 const AGENT_CHAT_WIDTH_DEFAULT = 330;
 const AGENT_CHAT_WIDTH_MIN = 260;
 const AGENT_CHAT_WIDTH_MAX = 640;
+const AGENT_SIDEBAR_WIDTH = 252;
+const AGENT_RAIL_SLIDE = "transition-[width] duration-[360ms] ease-[cubic-bezier(0.32,0.72,0,1)]";
 
 function readAgentChatWidth() {
   try {
@@ -1070,9 +1545,11 @@ function StudioAgentRail({ desktop }) {
   const [open, setOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [agents, setAgents] = useState([]);
-  // Closed tabs/agents, newest first — the "History" list under Agents.
+  // Closed tabs/agents, newest first — the History panel opened from the strip.
   const [history, setHistory] = useState([]);
-  const [historyOpen, setHistoryOpen] = useState(true);
+  const [agentSearch, setAgentSearch] = useState("");
+  const [agentMenu, setAgentMenu] = useState("");
+  const [sectionMore, setSectionMore] = useState({});
   const [activeId, setActiveId] = useState(null);
   // Active agent's conversation: prompts + finished answers, plus the
   // in-flight streaming draft and a live status line while it works.
@@ -1085,6 +1562,8 @@ function StudioAgentRail({ desktop }) {
   // rebuilt from restored state would resolve to "no_pending_choice".
   const [agentChoice, setAgentChoice] = useState(null);
   const [choiceBusy, setChoiceBusy] = useState(false);
+  // Draft answer for the question card pinned over the chat bar.
+  const [answerDraft, setAnswerDraft] = useState("");
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState([]);
   // Custom post-finish chips for the active agent (runtime + LLM). Cleared on send.
@@ -1098,6 +1577,7 @@ function StudioAgentRail({ desktop }) {
   const activeIdRef = useRef(null);
   const chatWidthRef = useRef(chatWidth);
   const threadSnapshotRef = useRef([]);
+  const syncedRunRef = useRef("");
   useEffect(() => {
     activeIdRef.current = activeId;
   }, [activeId]);
@@ -1195,15 +1675,36 @@ function StudioAgentRail({ desktop }) {
       .then(apply)
       .catch(() => {});
     const offList = window.lykn.onAgentList?.(apply);
+    const pullThread = (agentId) => {
+      const id = String(agentId || "");
+      if (!id || id !== activeIdRef.current || !window.lykn?.agentHistory) return;
+      void window.lykn.agentHistory(id).then((snap) => {
+        if (dead || !snap || id !== activeIdRef.current) return;
+        setThread((prev) => mergeAgentThread(prev, snap.history));
+      });
+    };
     const offProgress = window.lykn.onAgentProgress?.((p) => {
       if (dead || !p?.agentId) return;
       setAgents((prev) => prev.map((a) => (a.id === p.agentId ? { ...a, ...p } : a)));
       if (p.agentId === activeIdRef.current && p.step && p.status === "running") {
         setLiveStep(String(p.step));
       }
+      // Prompts that didn't come through this rail's composer (chat handoff,
+      // new-tab page, Glass) update the agent title immediately but never
+      // push a user row into `thread`. Pull history once when a run starts.
+      if (p.agentId === activeIdRef.current && p.status === "running") {
+        const runKey = `${p.agentId}:running`;
+        if (syncedRunRef.current !== runKey) {
+          syncedRunRef.current = runKey;
+          pullThread(p.agentId);
+        }
+      } else if (p.agentId === activeIdRef.current && p.status !== "running") {
+        syncedRunRef.current = "";
+      }
     });
     const offSwitched = window.lykn.onAgentSwitched?.((p) => {
       if (dead) return;
+      syncedRunRef.current = "";
       setActiveId(p?.agentId || null);
       setThread(Array.isArray(p?.history) ? p.history : []);
       setDraft(String(p?.partialText || ""));
@@ -1275,8 +1776,9 @@ function StudioAgentRail({ desktop }) {
       }
       const fromRuntime = mapAgentSuggestionChips(p?.suggestions);
       setCustomSuggestions(fromRuntime);
-      // Answer links first (## Link / markdown) — always show with the links icon.
-      setSourceLinks(extractSourceLinksFromAnswer(finalText));
+      const stepOnly = answerIsStepTranscript(finalText);
+      // Step transcripts never surface page URLs as a links row.
+      setSourceLinks(stepOnly ? [] : extractSourceLinksFromAnswer(finalText));
       // Upgrade with LLM follow-ups tailored to this finished turn (Glass parity).
       const gen = ++suggestGenRef.current;
       void (async () => {
@@ -1296,9 +1798,9 @@ function StudioAgentRail({ desktop }) {
           if (dead || gen !== suggestGenRef.current) return;
           const fromLlm = mapAgentSuggestionChips(data?.followups);
           if (fromLlm.length) setCustomSuggestions(fromLlm);
+          if (stepOnly) return;
           const fromSuggest = mapAgentSourceLinks(data?.links);
           if (fromSuggest.length) {
-            // Prefer answer links, then fill with suggest sources.
             setSourceLinks((prev) => {
               const seen = new Set(prev.map((l) => l.url));
               const merged = [...prev];
@@ -1334,6 +1836,8 @@ function StudioAgentRail({ desktop }) {
       setAgentWaiting({
         label: String(p.label || "").trim() || fallback,
         detail: String(p.detail || "").trim(),
+        kind: String(p.kind || "").trim(),
+        options: Array.isArray(p.options) ? p.options : [],
       });
     });
     // A question with buttons. Deliberately NOT cleared on agent-done:
@@ -1399,6 +1903,28 @@ function StudioAgentRail({ desktop }) {
     };
   }, [desktop, activeId]);
 
+  useEffect(() => {
+    if (!agentMenu) return undefined;
+    const onDown = (e) => {
+      if (e.target?.closest?.("[data-agent-menu]")) return;
+      setAgentMenu("");
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [agentMenu]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "n" || e.key === "N")) {
+        e.preventDefault();
+        createAgent();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
   // Pin the thread to the newest message as answers stream in.
   useEffect(() => {
     const el = threadRef.current;
@@ -1425,6 +1951,10 @@ function StudioAgentRail({ desktop }) {
     // so the buttons must not linger and imply they are still answerable.
     setAgentChoice(null);
     setChoiceBusy(false);
+    // Any send answers/supersedes an open question — drop the card at once
+    // rather than waiting for the runtime's next waiting:false event.
+    setAgentWaiting(null);
+    setAnswerDraft("");
     const targetId = activeIdRef.current;
     const fromSuggestion = !!opts?.fromSuggestion;
     // Thread shows the short chip label; runtime still gets the grounded prompt.
@@ -1476,6 +2006,17 @@ function StudioAgentRail({ desktop }) {
     void window.lykn?.agentShowBrowser?.(a.id);
   };
 
+  const createAgent = () => {
+    void window.lykn?.agentCreate?.({ title: "New agent" });
+    setAgentsOpen(true);
+  };
+
+  const cycleAgent = (dir) => {
+    const idx = agents.findIndex((a) => a.id === activeId);
+    const next = agents[idx + dir];
+    if (next) selectAgent(next);
+  };
+
   const anyRunning = agents.some((a) => a.status === "running");
   const canSend = !!(text.trim() || attachments.length);
   const active = agents.find((a) => a.id === activeId) || null;
@@ -1484,6 +2025,9 @@ function StudioAgentRail({ desktop }) {
   // A paused run has to look paused even when this rail never caught the
   // agent-waiting event — mounted late, reloaded, or was on another tab.
   const waitingRow = agentWaitingRow(active, agentWaiting);
+  // The agent asked a free-text question — it gets a dedicated answer card
+  // pinned over the chat bar, so the answer goes exactly where the question is.
+  const questionRow = waitingRow?.kind === "question" ? waitingRow : null;
   // Only ever the active agent's own live question.
   const choiceRow =
     agentChoice && active?.id === agentChoice.agentId ? agentChoice : null;
@@ -1528,19 +2072,45 @@ function StudioAgentRail({ desktop }) {
       : agentFollowUpItems(latestAgentTopic)
     : [];
   const agentSourceLinks = showAgentSuggestions ? sourceLinks : [];
+  const sidebarWidth = agentsOpen ? AGENT_SIDEBAR_WIDTH : 0;
+  const railTotal = chatWidth + sidebarWidth;
+  const searchNeedle = agentSearch.trim().toLowerCase();
+  const visibleAgents = searchNeedle
+    ? agents.filter((a) => {
+        const hay = `${a.title || ""} ${agentSubLabel(a)} ${agentHostLabel(a.url)}`.toLowerCase();
+        return hay.includes(searchNeedle);
+      })
+    : agents;
+  const agentGroups = groupByDateSection(
+    visibleAgents,
+    (a) => a.updatedAt || a.createdAt,
+  );
+  const visibleHistory = searchNeedle
+    ? history.filter((h) => {
+        const hay = `${h.pageTitle || ""} ${h.title || ""} ${historySubLabel(h)}`.toLowerCase();
+        return hay.includes(searchNeedle);
+      })
+    : history;
+  const historyGroups = groupByDateSection(visibleHistory, (h) => h.closedAt);
+  const agentIndex = agents.findIndex((a) => a.id === activeId);
+  const canPrev = agentIndex > 0;
+  const canNext = agentIndex >= 0 && agentIndex < agents.length - 1;
+  const newAgentShortcut = IS_MAC_AGENT ? "⌘N" : "Ctrl+N";
 
   return (
-    <>
-    {/* Response rail — hidden until Use LYKN is clicked in the browser. */}
-    {open ? (
     <div
-      className={`relative flex h-full flex-none flex-col overflow-hidden border-l border-white/15 text-white/85 animate-in fade-in-0 slide-in-from-right-4 ${
-        resizingChat ? "" : "transition-[width] duration-300 ease-out"
+      className={`relative h-full flex-none overflow-hidden ${
+        resizingChat ? "" : AGENT_RAIL_SLIDE
       }`}
       style={{
         ...NO_DRAG,
-        width: chatWidth,
+        width: open ? railTotal : 0,
       }}
+      aria-hidden={!open}
+    >
+    <div
+      className="absolute inset-y-0 right-0 flex h-full"
+      style={{ width: railTotal, pointerEvents: open ? "auto" : "none" }}
     >
           {/* Drag the left edge to widen / narrow the chat panel. */}
           <div
@@ -1553,33 +2123,86 @@ function StudioAgentRail({ desktop }) {
               resizingChat ? "bg-white/35" : "bg-transparent hover:bg-white/25"
             }`}
           />
-          <div className="flex flex-shrink-0 items-center gap-1 px-3 pb-1.5 pt-3">
-            <span className="min-w-0 truncate text-[0.66rem] font-bold uppercase tracking-[0.09em] text-white/50">
-              {active?.title || "LYKN Agent"}
-            </span>
-            <span className="flex-1" />
-            <button
-              type="button"
-              onClick={() => window.lykn?.agentCreate?.({ title: "New agent" })}
-              title="New agent"
-              className="flex h-6 w-6 items-center justify-center rounded-lg text-white/55 transition-colors hover:bg-white/10 hover:text-white"
+    {/* Response rail — hidden until Use LYKN is clicked in the browser. */}
+    <div
+      className={`relative flex h-full flex-none flex-col overflow-hidden border-l border-white/15 text-white/85 ${
+        resizingChat ? "" : "transition-[width] duration-300 ease-out"
+      }`}
+      style={{ width: chatWidth }}
+    >
+          <div className="relative flex h-8 flex-shrink-0 items-center gap-0.5 border-b border-white/12 px-1.5">
+            <AgentRailIcon
+              title="Previous agent"
+              disabled={!canPrev}
+              onClick={() => cycleAgent(-1)}
             >
-              <SquarePen className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setChatOpen(false)}
-              title="Close LYKN chat"
-              className="flex h-6 w-6 items-center justify-center rounded-lg text-white/55 transition-colors hover:bg-white/10 hover:text-white"
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </AgentRailIcon>
+            <AgentRailIcon
+              title="Next agent"
+              disabled={!canNext}
+              onClick={() => cycleAgent(1)}
             >
               <ChevronRight className="h-3.5 w-3.5" />
-            </button>
+            </AgentRailIcon>
+            <AgentRailIcon title="New agent" onClick={createAgent}>
+              <SquarePen className="h-3.5 w-3.5" />
+            </AgentRailIcon>
+            <span className="mx-1 h-3.5 w-px flex-none bg-white/14" />
+            <Folder className="h-3.5 w-3.5 flex-none text-white/40" />
+            <span className="min-w-0 truncate px-1 text-[0.72rem] font-medium text-white/80">
+              {active?.title || "LYKN Agent"}
+            </span>
+            <div className="relative" data-agent-menu>
+              <AgentRailIcon
+                title="Agent actions"
+                pressed={agentMenu === "more"}
+                onClick={() => setAgentMenu((m) => (m === "more" ? "" : "more"))}
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </AgentRailIcon>
+              {agentMenu === "more" ? (
+                <div className="absolute left-0 z-30 mt-1 w-40 rounded-lg border border-white/14 bg-[#1c1c1e] py-1 shadow-lg">
+                  {activeId ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void window.lykn?.agentClose?.(activeId);
+                        setAgentMenu("");
+                      }}
+                      className="flex w-full px-3 py-1.5 text-left text-[0.72rem] text-white/80 hover:bg-white/10"
+                    >
+                      Delete agent
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChatOpen(false);
+                      setAgentMenu("");
+                    }}
+                    className="flex w-full px-3 py-1.5 text-left text-[0.72rem] text-white/80 hover:bg-white/10"
+                  >
+                    Close chat
+                  </button>
+                </div>
+              ) : null}
+            </div>
+            <span className="flex-1" />
+            <AgentRailIcon
+              title={agentsOpen ? "Hide agents" : "Show agents"}
+              pressed={agentsOpen}
+              onClick={() => setAgentsOpen((v) => !v)}
+            >
+              <PanelRight className="h-3.5 w-3.5" />
+            </AgentRailIcon>
           </div>
 
           {/* Thread — the active agent's prompts + answers, streaming live. */}
           <div
             ref={threadRef}
-            className="mt-1 min-h-0 flex-1 space-y-2.5 overflow-y-auto border-t border-white/15 px-3 py-2.5 scrollbar-hide"
+            data-agent-thread
+            className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-2.5 scrollbar-hide"
           >
             {thread.length === 0 && !draft && !liveStep && (
               <p className="px-2 pt-10 text-center text-xs leading-relaxed text-white/40">
@@ -1612,16 +2235,16 @@ function StudioAgentRail({ desktop }) {
                   key={`${m.at || i}-a`}
                   className="lykn-rail-md break-words text-[0.78rem] leading-relaxed text-white/85"
                 >
-                  <RailMarkdown>{body}</RailMarkdown>
+                  <RailAgentBody text={body} />
                 </div>
               );
             })}
             {draft && (
               <div className="lykn-rail-md break-words text-[0.78rem] leading-relaxed text-white/85">
-                <RailMarkdown>{draft}</RailMarkdown>
+                <RailAgentBody text={draft} animate />
               </div>
             )}
-            {liveStep && !waitingRow && (
+            {liveStep && !waitingRow && !draftHasLiveStep(draft) && (
               // Same thinking animation as the main app chat — LYKN outline
               // spinner + shimmering status text (ThinkingIndicator).
               <div className="min-w-0 text-[0.72rem] text-white/70">
@@ -1635,7 +2258,9 @@ function StudioAgentRail({ desktop }) {
               // is holding the task, and the next move is theirs.
               <div className="min-w-0 text-[0.72rem] text-white/70">
                 <ThinkingIndicator status={waitingRow.label} compact tone="inherit" paused />
-                {waitingRow.detail && (
+                {/* A question's text lives in the answer card over the chat
+                    bar — repeating it here would just say everything twice. */}
+                {waitingRow.detail && !questionRow && (
                   <p className="mt-1 break-words pl-6 text-[0.68rem] leading-snug text-white/55">
                     {waitingRow.detail}
                   </p>
@@ -1665,6 +2290,63 @@ function StudioAgentRail({ desktop }) {
               </div>
             )}
           </div>
+
+          {/* Question card — pinned over the chat bar whenever the agent is
+              waiting on a free-text answer. The answer goes exactly where the
+              question is: its own input, submitted straight into the run. */}
+          {questionRow && (
+            <div className="flex-shrink-0 border-t border-[#3b78ff]/40 bg-[#3b78ff]/[0.12] px-3 py-2.5">
+              <p className="mb-2 flex items-start gap-2 text-[0.76rem] font-medium leading-snug text-white/95">
+                <MessageCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-[#7fa8ff]" />
+                <span className="min-w-0 break-words">
+                  {questionRow.detail || questionRow.label}
+                </span>
+              </p>
+              {/* Answers the agent proposed — one tap sends it. The input
+                  below stays open for anything else, so these are shortcuts,
+                  never the only way through. */}
+              {questionRow.options?.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {questionRow.options.map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      title={opt}
+                      onClick={() => void send(opt)}
+                      className="max-w-full truncate rounded-full border border-white/25 bg-white/[0.10] px-2.5 py-1 text-[0.7rem] text-white/85 transition hover:border-[#5b8fff]/70 hover:bg-white/[0.18] hover:text-white"
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const answer = answerDraft.trim();
+                  if (!answer) return;
+                  void send(answer);
+                }}
+                className="flex items-center gap-2"
+              >
+                <input
+                  autoFocus
+                  value={answerDraft}
+                  onChange={(e) => setAnswerDraft(e.target.value)}
+                  placeholder="Type your answer…"
+                  autoComplete="off"
+                  className="min-w-0 flex-1 rounded-xl border border-white/20 bg-white/[0.08] px-2.5 py-1.5 text-[0.76rem] text-white/95 outline-none ring-0 placeholder:text-white/35 focus:border-[#5b8fff]/70 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={!answerDraft.trim()}
+                  className="flex-shrink-0 rounded-full bg-[#3b78ff] px-3.5 py-1.5 text-[0.72rem] font-medium text-white transition hover:bg-[#5b8fff] disabled:opacity-40"
+                >
+                  Answer
+                </button>
+              </form>
+            </div>
+          )}
 
           {/* Chat bar — same glass as the thread, split by a hairline. */}
           <div className="flex-shrink-0 border-t border-white/15 px-3 pb-2.5 pt-2">
@@ -1794,201 +2476,119 @@ function StudioAgentRail({ desktop }) {
             </div>
           </div>
     </div>
-    ) : null}
 
-    {/* Agent strip — only with chat (Use LYKN). */}
-    {open ? (
-    <div
-      className={`relative flex h-full flex-none flex-col overflow-hidden border-l border-white/15 text-white/85 transition-all duration-300 ease-out animate-in fade-in-0 slide-in-from-right-2 ${
-        agentsOpen ? "w-[220px]" : "w-11"
-      }`}
-      style={NO_DRAG}
-    >
-      {agentsOpen ? (
-        <>
-          <div className="flex flex-shrink-0 items-center gap-1 px-3 pb-1.5 pt-3">
-            <button
-              type="button"
-              onClick={() => setAgentsOpen(false)}
-              title="Collapse agents"
-              className="flex h-6 w-6 flex-none items-center justify-center rounded-lg text-white/55 transition-colors hover:bg-white/10 hover:text-white"
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
-            <span className="text-[0.66rem] font-bold uppercase tracking-[0.09em] text-white/50">
-              Agents
-            </span>
-            <span className="text-[0.66rem] font-semibold text-white/35">
-              {agents.length}
-            </span>
-            <span className="flex-1" />
-            <button
-              type="button"
-              onClick={() => window.lykn?.agentCreate?.({ title: "New agent" })}
-              title="Add agent"
-              className="flex h-6 w-6 items-center justify-center rounded-lg text-white/55 transition-colors hover:bg-white/10 hover:text-white"
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-1 scrollbar-hide">
-            {agents.length === 0 && (
-              <p className="px-2 pt-8 text-center text-xs leading-relaxed text-white/40">
-                No agents yet. Press + to add one.
-              </p>
-            )}
-            {agents.map((a) => (
-              <div
-                key={a.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => selectAgent(a)}
-                onKeyDown={(e) => e.key === "Enter" && selectAgent(a)}
-                className={`group flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2 py-1.5 transition-colors ${
-                  a.id === activeId
-                    ? "bg-white/[0.14]"
-                    : "hover:bg-white/[0.08]"
-                }`}
-              >
-                <span className={agentToneClass(a)}>
-                  <PageFavicon url={a.url} className="h-4 w-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[0.76rem] font-medium text-white/90">
-                    {a.title || "Agent"}
-                  </span>
-                  <span className="block truncate text-[0.63rem] text-white/45">
-                    {agentSubLabel(a)}
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  title="Delete agent"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void window.lykn?.agentClose?.(a.id);
-                  }}
-                  className="flex h-5 w-5 flex-none items-center justify-center rounded-md text-white/40 opacity-0 transition-all hover:bg-white/15 hover:text-white group-hover:opacity-100"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-          {/* History — closed tabs & agents, newest first. Click to reopen
-              the page in a fresh agent tab; × removes the entry. */}
-          {history.length > 0 && (
-            <div
-              className={`flex flex-none flex-col border-t border-white/10 ${
-                historyOpen ? "max-h-[38%] min-h-0" : ""
-              }`}
-            >
-              <div className="flex flex-shrink-0 items-center gap-1 px-2 pb-1 pt-2.5">
-                <button
-                  type="button"
-                  onClick={() => setHistoryOpen((v) => !v)}
-                  title={historyOpen ? "Hide history" : "Show history"}
-                  aria-expanded={historyOpen}
-                  className="flex min-w-0 flex-1 items-center gap-1 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-white/[0.06]"
-                >
-                  <span className="text-[0.66rem] font-bold uppercase tracking-[0.09em] text-white/50">
-                    History
-                  </span>
-                  <span className="text-[0.66rem] font-semibold text-white/35">
-                    {history.length}
-                  </span>
-                  <span className="flex-1" />
-                  <ChevronDown
-                    className={`h-3.5 w-3.5 flex-none text-white/45 transition-transform ${
-                      historyOpen ? "" : "-rotate-90"
-                    }`}
-                  />
-                </button>
-              </div>
-              {historyOpen ? (
-                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-1 scrollbar-hide">
-                  {history.map((h) => (
-                    <div
-                      key={h.id}
-                      role="button"
-                      tabIndex={0}
-                      title={h.url || h.title}
-                      onClick={() => window.lykn?.agentBrowserHistoryOpen?.(h.id)}
-                      onKeyDown={(e) =>
-                        e.key === "Enter" && window.lykn?.agentBrowserHistoryOpen?.(h.id)
-                      }
-                      className="group flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2 py-1.5 transition-colors hover:bg-white/[0.08]"
-                    >
-                      <PageFavicon
-                        url={h.url}
-                        fallback={Clock}
-                        className="h-3.5 w-3.5 text-white/35"
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[0.72rem] font-medium text-white/75">
-                          {h.pageTitle || h.title}
-                        </span>
-                        <span className="block truncate text-[0.6rem] text-white/40">
-                          {historySubLabel(h)}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        title="Remove from history"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void window.lykn?.agentBrowserHistoryRemove?.(h.id);
-                        }}
-                        className="flex h-5 w-5 flex-none items-center justify-center rounded-md text-white/40 opacity-0 transition-all hover:bg-white/15 hover:text-white group-hover:opacity-100"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          )}
-        </>
-      ) : (
-        <div className="flex h-full flex-col items-center gap-1.5 overflow-y-auto py-2.5 scrollbar-hide">
+    {agentsOpen ? (
+      <div
+        className={`flex h-full flex-none flex-col overflow-hidden border-l border-white/15 text-white/85 ${AGENT_RAIL_SLIDE}`}
+        style={{ width: AGENT_SIDEBAR_WIDTH }}
+      >
+        <div className="flex-shrink-0 px-2.5 pb-1 pt-2.5">
+          <label className="flex items-center gap-2 rounded-lg border border-white/14 bg-white/[0.06] px-2.5 py-1.5">
+            <Search className="h-3.5 w-3.5 flex-none text-white/35" />
+            <input
+              value={agentSearch}
+              onChange={(e) => setAgentSearch(e.target.value)}
+              placeholder="Search Agents..."
+              className="min-w-0 flex-1 bg-transparent text-[0.74rem] text-white/90 outline-none placeholder:text-white/35"
+            />
+          </label>
           <button
             type="button"
-            onClick={() => setAgentsOpen(true)}
-            title="Show agents"
-            className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+            onClick={createAgent}
+            className="mt-1.5 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[0.78rem] font-medium text-white/85 transition-colors hover:bg-white/[0.08]"
           >
-            <ChevronLeft className="h-4 w-4" />
+            <Send className="h-3.5 w-3.5 text-white/55" />
+            <span className="flex-1">New Agent</span>
+            <span className="text-[0.64rem] font-normal text-white/32">
+              {newAgentShortcut}
+            </span>
           </button>
-          <button
-            type="button"
-            onClick={() => window.lykn?.agentCreate?.({ title: "New agent" })}
-            title="Add agent"
-            className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
-          <span className="my-0.5 h-px w-5 flex-none bg-white/15" />
-          {agents.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              title={`${a.title || "Agent"} — ${agentSubLabel(a)}`}
-              onClick={() => selectAgent(a)}
-              className={`flex h-7 w-7 flex-none items-center justify-center rounded-full transition-colors hover:bg-white/10 ${
-                a.id === activeId ? "bg-white/[0.14] ring-1 ring-white/30" : ""
-              }`}
-            >
-              <span className={agentToneClass(a)}>
-                <PageFavicon url={a.url} className="h-4 w-4" />
-              </span>
-            </button>
-          ))}
         </div>
-      )}
-    </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1 scrollbar-hide">
+          {agentGroups.length === 0 ? (
+            <p className="px-3 pt-10 text-center text-xs leading-relaxed text-white/40">
+              {searchNeedle
+                ? "No matching agents."
+                : "No agents yet. Press New Agent to start one."}
+            </p>
+          ) : (
+            <AgentGroupedList
+              groups={agentGroups}
+              expanded={sectionMore}
+              expandPrefix="agents:"
+              onToggleMore={(key) =>
+                setSectionMore((prev) => ({ ...prev, [key]: true }))
+              }
+              renderItem={(a) => (
+                <AgentListRow
+                  key={a.id}
+                  title={a.title || "Agent"}
+                  subtitle={
+                    agentSubLabel(a) === "idle" && agentHostLabel(a.url)
+                      ? agentHostLabel(a.url)
+                      : agentSubLabel(a)
+                  }
+                  active={a.id === activeId}
+                  onSelect={() => selectAgent(a)}
+                  onRemove={() => void window.lykn?.agentClose?.(a.id)}
+                  removeTitle="Delete agent"
+                  icon={<AgentStatusMark agent={a} />}
+                />
+              )}
+            />
+          )}
+        </div>
+        {history.length > 0 ? (
+          <div className="flex max-h-[38%] min-h-0 flex-none flex-col border-t border-white/10">
+            <div className="flex flex-shrink-0 items-center gap-2 px-3 pb-1 pt-2.5">
+              <span className="text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-white/38">
+                History
+              </span>
+              <span className="text-[0.62rem] font-semibold text-white/28">
+                {history.length}
+              </span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2 scrollbar-hide">
+              {historyGroups.length === 0 ? (
+                <p className="px-3 py-4 text-center text-[0.7rem] text-white/40">
+                  No matching history.
+                </p>
+              ) : (
+                <AgentGroupedList
+                  groups={historyGroups}
+                  expanded={sectionMore}
+                  expandPrefix="history:"
+                  onToggleMore={(key) =>
+                    setSectionMore((prev) => ({ ...prev, [key]: true }))
+                  }
+                  renderItem={(h) => (
+                    <AgentListRow
+                      key={h.id}
+                      title={h.pageTitle || h.title || "Agent"}
+                      subtitle={historySubLabel(h)}
+                      onSelect={() => window.lykn?.agentBrowserHistoryOpen?.(h.id)}
+                      onRemove={() =>
+                        void window.lykn?.agentBrowserHistoryRemove?.(h.id)
+                      }
+                      removeTitle="Remove from history"
+                      icon={
+                        <PageFavicon
+                          url={h.url}
+                          fallback={Clock}
+                          className="h-3.5 w-3.5 text-white/35"
+                        />
+                      }
+                    />
+                  )}
+                />
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
     ) : null}
-  </>
+    </div>
+    </div>
   );
 }
 
@@ -2054,7 +2654,8 @@ export default function Studio() {
   // Floating Home windows (Browser / Calendar / To-dos), back to front: the
   // last id is the focused one. Minimized windows stay in the list (and stay
   // mounted, so their state survives) and come back from the dock or their
-  // widget.
+  // widget. Closing the Browser window is different: it tears the session
+  // down so the next press opens a fresh window.
   const [appWins, setAppWins] = useState([]);
   const [minimized, setMinimized] = useState({});
   // Clicking the bare wallpaper sweeps every window off the sides to reveal the
@@ -2250,16 +2851,54 @@ export default function Studio() {
   // Stable so the window frame's geometry effect doesn't re-fire every render.
   const reportBrowserBounds = useCallback(() => sendBrowserBounds.current?.(), []);
   // Native views paint above the whole renderer, so they may only be on screen
-  // while the window itself is: Home tab, open, not minimized, not mid-
-  // animation, and not swept aside by a desktop peek (a CSS transform can't
-  // carry them off with the frame, so they undock for the duration instead).
-  const [browserAnimating, setBrowserAnimating] = useState(false);
+  // while the window itself is: Home tab, open, not minimized, at rest, and not
+  // swept aside by a desktop peek (a CSS transform can't carry them off with
+  // the frame, so they undock for the duration instead).
+  //
+  // At rest has to be something the frame states, not the absence of a report:
+  // on the first render after the window opens it hasn't said anything yet, and
+  // reading that silence as "at rest" docked the views for one commit and
+  // undocked them on the next, re-parenting the whole browser an extra time on
+  // every single open.
+  const [browserSettled, setBrowserSettled] = useState(false);
+  const onBrowserAnimating = useCallback((busy) => setBrowserSettled(!busy), []);
+  const browserOpen = appWins.includes("browser");
+  // Full-screen Browser hides the dock, macOS style. The native page already
+  // paints over the strip, but the window's React parts (the agent rail) sit
+  // under the dock's z-30 — so without this the dock pokes through into the
+  // rail and swallows its clicks. The window reports false on restore AND on
+  // unmount, and the checks below bring the dock back for minimize/peek,
+  // where the user needs it to get the window back.
+  const [browserZoomed, setBrowserZoomed] = useState(false);
+  const dockHidden =
+    browserZoomed &&
+    browserOpen &&
+    !minimized.browser &&
+    !desktopPeek &&
+    tab === "dashboard";
+  // The chats popover hangs off the dock; a hidden dock must not leave it
+  // floating (or reappear with a stale popover already open).
+  useEffect(() => {
+    if (dockHidden) setChatsOpen(false);
+  }, [dockHidden]);
   const browserDocked =
     tab === "dashboard" &&
-    appWins.includes("browser") &&
+    browserOpen &&
     !minimized.browser &&
-    !browserAnimating &&
+    browserSettled &&
     !desktopPeek;
+  useEffect(() => {
+    // A closed window reports nothing, so its last word was "at rest" — clear
+    // it, or the next open would dock before the frame has been placed.
+    if (!browserOpen) {
+      setBrowserSettled(false);
+      return;
+    }
+    // The views can only dock once the frame has settled and been measured, so
+    // start the browser loading the moment it's asked for: by then there's a
+    // painted page to reveal rather than a cold tab.
+    window.lykn?.warmStudioBrowser?.();
+  }, [browserOpen]);
   useEffect(() => {
     if (!browserDocked || !window.lykn?.setStudioBrowser) return undefined;
     const el = browserHostRef.current;
@@ -2300,10 +2939,16 @@ export default function Studio() {
   // last one after the views leave, so closing has something to fly out with
   // and the next open something to fly back in.
   const [browserShot, setBrowserShot] = useState(null);
+  // The stage's real chrome height rides along with the picture. The skeleton
+  // needs it too, and needs it after the picture has been set aside, so it's
+  // kept apart — starting on the default the stage itself starts on.
+  const [browserChromeH, setBrowserChromeH] = useState(BROWSER_CHROME_HEIGHT);
   useEffect(() => {
     if (!window.lykn?.onStudioBrowserShot) return undefined;
     return window.lykn.onStudioBrowserShot((p) => {
-      if (p?.ok) setBrowserShot(p);
+      if (!p?.ok) return;
+      setBrowserShot(p);
+      if (p.chromeHeight > 0) setBrowserChromeH(p.chromeHeight);
     });
   }, []);
 
@@ -2386,6 +3031,12 @@ export default function Studio() {
     setMinimized((m) => (m[id] ? { ...m, [id]: false } : m));
     // Drop the deep link so the next open starts on the page's own entry.
     setFrameSrc((f) => (f[id] ? { ...f, [id]: undefined } : f));
+    // Red traffic light: the window unmounts AND the native session dies.
+    // Yellow minimize only hides the frame and keeps the tabs.
+    if (id === "browser") {
+      setBrowserShot(null);
+      void window.lykn?.closeStudioBrowser?.();
+    }
   };
 
   const openTab = (id, src) => {
@@ -2803,17 +3454,22 @@ export default function Studio() {
                   // native page paints above every React layer, so stopping
                   // short of the bottom just leaves a dead strip.
                   zoomCoversDock={app.native}
+                  // …and the dock itself steps aside while it's zoomed (its
+                  // z-30 would otherwise poke through the agent rail).
+                  onZoomChange={app.native ? setBrowserZoomed : undefined}
                   // Dragging moves the native browser views with the frame.
                   onGeometry={app.native ? reportBrowserBounds : undefined}
                   // …and the frame's open/close/minimize animations park them
                   // until it settles (CSS can't scale a native view).
-                  onAnimating={app.native ? setBrowserAnimating : undefined}
+                  onAnimating={app.native ? onBrowserAnimating : undefined}
                 >
                   {app.native ? (
                     <StudioBrowserBody
                       hostRef={browserHostRef}
                       desktop={desktop}
                       shot={browserShot}
+                      docked={browserDocked}
+                      chromeHeight={browserChromeH}
                     />
                   ) : id === "settings" ? (
                     <SettingsModal
@@ -2845,10 +3501,17 @@ export default function Studio() {
           />
         )}
 
-        {/* ── Bottom dock — the studio sidebar, macOS style. Always visible:
-            LYKN chats popover, section icons, then the user's Mac apps with
-            running indicators (Sync with Mac). ── */}
-        <div ref={dockRef} className="relative z-30 mt-3 flex-shrink-0 select-none">
+        {/* ── Bottom dock — the studio sidebar, macOS style. Visible except
+            under a full-screen Browser, which covers the desktop edge to edge
+            the way a zoomed mac window swallows the Dock. It slides away
+            rather than unmounting so the desktop layout (and every window's
+            offsetParent box) never reflows. ── */}
+        <div
+          ref={dockRef}
+          className={`relative z-30 mt-3 flex-shrink-0 select-none transition-all duration-300 ${
+            dockHidden ? "pointer-events-none translate-y-[135%] opacity-0" : ""
+          }`}
+        >
           {/* Chats popover — search + new chat + recent chats, like the
               in-app sidebar. Hangs above the dock, macOS-Dock style. */}
           {chatsOpen && (

@@ -29,6 +29,10 @@ const NON_COMMITTING_ACTIONS = new Set([
   "close_tab",
   // Dragging rearranges a document being composed; it delivers nothing.
   "drag",
+  // The sweeper will only ever click a control that dismisses — anything that
+  // signs in, spends, subscribes, sends or deletes is refused in
+  // browserOverlays.cjs, so there is nothing here for the gate to judge.
+  "dismiss_overlay",
 ]);
 
 // Three outcomes are irreversible enough to be worth interrupting the user
@@ -127,7 +131,7 @@ const OUTBOUND_LABEL_RE =
 // Keyboard-shortcut sends have no button label at all — the expected outcome
 // is the only evidence ("the message is sent").
 const OUTBOUND_OUTCOME_RE =
-  /\b(?:message|email|e-mail|mail|reply|invite|invitation|post|campaign|newsletter|announcement|design|document|file|link|report|draft)\s+(?:\w+\s+){0,3}(?:is|was|has been|will be|gets?)\s+(?:sent|delivered|published|posted|shared|emailed|broadcast)\b/i;
+  /\b(?:message|email|e-mail|mail|reply|invite|invitation|post|campaign|newsletter|announcement|design|document|doc|file|folder|photo|video|album|link|report|draft)\s+(?:\w+\s+){0,3}(?:is|was|has been|will be|gets?)\s+(?:sent|delivered|published|posted|shared|emailed|broadcast|invited)\b/i;
 
 /**
  * Labels that read as outbound but only open the composer or the dialog. The
@@ -136,6 +140,21 @@ const OUTBOUND_OUTCOME_RE =
  */
 const OUTBOUND_LABEL_EXEMPT_RE =
   /^\W*(new|compose|write|create|draft|start)\b|\b(settings|options|preferences|history|log|list|report|analytics|template|draft(?:s)?)\s*$/i;
+
+/**
+ * A target described as somewhere you PUT something, not something that sends
+ * it: "the Add people field in the FINAL sharing dialog", "the recipient input
+ * at the top of the Share dialog".
+ *
+ * These arrive when a target is aimed by description rather than by element
+ * reference — the description names the surrounding dialog, and the dialog is
+ * often called Share. Judged by the short label of a button, "sharing" means
+ * this click sends something; inside a sentence describing a text box it means
+ * nothing of the kind. Without this the agent asked "want me to perform
+ * click_coord?" before clicking into an empty text field, once per attempt.
+ */
+const TARGET_IS_A_FIELD_RE =
+  /\b(field|input|textbox|text box|search ?box|combobox|entry box|address bar)\b/i;
 
 /**
  * The label patterns above are broad because a button label is short. Prose is
@@ -147,7 +166,7 @@ const MONEY_OUTCOME_RE =
   /\b(?:order|purchase|payment|booking|reservation|subscription|transfer|donation|trial|charge)\s+(?:\w+\s+){0,3}(?:is|was|has been|will be|gets?)\s+(?:placed|completed|confirmed|submitted|processed|charged|made|paid|started|activated)\b|\b(?:card|account|balance)\s+(?:is|was|will be|gets?)\s+(?:charged|debited|billed)\b/i;
 
 const DESTRUCTIVE_OUTCOME_RE =
-  /\b(?:item|items|file|files|email|emails|message|messages|record|records|row|rows|photo|photos|account|subscription|order|member|access|draft)\s+(?:\w+\s+){0,3}(?:is|are|was|were|has been|have been|will be|gets?)\s+(?:deleted|removed|erased|revoked|cancell?ed|trashed|wiped|destroyed|overwritten|discarded)\b/i;
+  /\b(?:item|items|file|files|folder|folders|document|documents|doc|docs|email|emails|message|messages|record|records|row|rows|photo|photos|video|videos|album|event|account|subscription|order|member|access|draft|page|post|campaign|list)\s+(?:\w+\s+){0,3}(?:is|are|was|were|has been|have been|will be|gets?)\s+(?:deleted|removed|erased|revoked|cancell?ed|trashed|wiped|destroyed|overwritten|discarded)\b/i;
 
 /**
  * Enter inside a composer sends the thing; there is no button label to read.
@@ -255,14 +274,17 @@ async function decideNext({
   assistGrounding = false,
   signal = null,
 }) {
+  // The system prompt is byte-stable across the task so providers can serve
+  // it from prompt cache; everything that varies — memory included — goes in
+  // the user message, which changes every round regardless.
   const system = contextRouter.buildDecisionSystem({
     task,
     skills: task.skills,
-    userMemory: memoryContext.userMemory || "",
-    websiteMemory: memoryContext.websiteMemory || "",
   });
 
+  const memoryBlock = contextRouter.buildMemoryContext(memoryContext);
   const userParts = [
+    ...(memoryBlock ? [memoryBlock] : []),
     `TASK STATE:\n${taskState.formatTaskForModel(task)}`,
     `RECENT ACTIONS:\n${taskState.formatHistoryForModel(task)}`,
   ];
@@ -465,11 +487,92 @@ function targetLabel(decision, snapshot) {
   return String(el?.label || action.label || "").trim();
 }
 
+/** Roles that hold other controls. Their label is everyone else's text. */
+const CONTAINER_ROLE_RE =
+  /^(menu|menubar|listbox|list|group|region|toolbar|tablist|tree|grid|table|form|navigation|document|main|dialog)$/i;
+
+/**
+ * Verbs that name an action a control might commit. Counted, not matched: one
+ * of them is a button, several of them is a menu.
+ */
+const ACTION_WORD_RE =
+  /\b(download|rename|share|shared|sharing|delete|remove|move|trash|organize|automation|information|copy|duplicate|print|open|edit|star|send|publish|post|invite|buy|purchase|pay|subscribe|cancel|export|manage)\b/gi;
+
+/**
+ * Is this label the name of ONE control, or the contents of a container?
+ *
+ * A container's accessible name is the text of everything inside it, so a
+ * right-click menu came through as "Download Rename ⌥⌘E Set up an automation
+ * Share Organize Folder information Move to trash Delete" — which contains
+ * Share, Move to trash and Delete, and so read as a click that shares and
+ * deletes at once. The agent asked permission to open a menu, quoting the menu
+ * back at the user, who has no idea which of those words the gate reacted to.
+ *
+ * Counting distinct action words separates the two cleanly: a button says one
+ * thing ("Send", "Move to trash"), a menu lists many. Deliberately not a
+ * length test — a described target ("the blue Send button at the bottom of the
+ * compose window") is long and is exactly the click that must still be caught.
+ */
+function isSingleControlLabel(label, role) {
+  const text = String(label || "").trim();
+  if (!text) return false;
+  if (CONTAINER_ROLE_RE.test(String(role || ""))) return false;
+  const found = text.match(ACTION_WORD_RE) || [];
+  const distinct = new Set(found.map((w) => w.toLowerCase()));
+  return distinct.size <= 2;
+}
+
+/**
+ * The action opens the UI for something rather than doing it: the Share menu
+ * item that raises the share dialog, "Invite people" that opens the invite
+ * panel, the compose button.
+ *
+ * Judged on the agent's own account of what it expects, which is the one
+ * reliable statement of intent available before the click. Opening a share
+ * dialog commits nothing — the control INSIDE it does — and asking the user to
+ * approve reaching a dialog spends their attention on a step that changes
+ * nothing, so that when a real send arrives they are already used to saying
+ * yes. Anything that mentions delivering as well ("the invite is sent") does
+ * not qualify, so a control that opens and sends in one go is still caught.
+ */
+const OPENS_UI_OUTCOME_RE =
+  /\b(?:dialog|modal|panel|menu|window|sheet|drawer|popup|pop-up|composer|editor|form|screen|options|settings|sidebar)\b[^.]{0,40}\b(?:opens?|opened|appears?|appeared|shows?|shown|is displayed|becomes visible|expands?)\b|\b(?:opens?|opening|shows?|displays?|reveals?|brings? up|launch(?:es)?)\b[^.]{0,40}\b(?:dialog|modal|panel|menu|window|sheet|drawer|popup|pop-up|composer|editor|form|options|settings)\b/i;
+
+/** Words that mean something actually went out or was destroyed. */
+const COMMITS_ANYWAY_RE =
+  /\b(?:sent|sends|sending|delivered|shared with|published|posted|invited|emailed|deleted|removed|charged|paid|placed|purchased|submitted)\b/i;
+
+/**
+ * Controls whose name leaves no room for interpretation. "Share" opens a
+ * dialog in one product and posts to the world in another, so what the agent
+ * expects to happen decides it — but nothing called Send or Delete gets to be
+ * excused as merely opening something. If such a button really does raise a
+ * confirmation step, one extra question is the correct price.
+ */
+const STRONG_COMMIT_LABEL_RE =
+  /^\W*(?:send|delete|remove|erase|wipe|trash|discard|destroy|pay|buy|purchase|order now|place (?:your |the |my )?order|confirm (?:and |& )?pay|unsubscribe|revoke|deactivate)\b/i;
+
 function consequenceKind(decision, snapshot) {
   const action = decision.action || {};
   const type = String(action.type || "");
   if (!type || NON_COMMITTING_ACTIONS.has(type)) return "";
-  const label = targetLabel(decision, snapshot);
+  // Reaching a dialog is not doing the thing the dialog is for.
+  const expected = String(decision.expectedOutcome || "");
+  const openerLabel = targetLabel(decision, snapshot);
+  if (
+    OPENS_UI_OUTCOME_RE.test(expected) &&
+    !COMMITS_ANYWAY_RE.test(expected) &&
+    !STRONG_COMMIT_LABEL_RE.test(openerLabel)
+  ) {
+    return "";
+  }
+  const el = snapshot?.byRef?.get(String(action.target || ""));
+  const rawLabel = targetLabel(decision, snapshot);
+  // A container's name is a list of what it holds, and judging a click by it
+  // asks about actions this click does not take. What the action is EXPECTED
+  // to do still counts — that is the agent's own account of the consequence,
+  // and it stays trustworthy whatever was clicked.
+  const label = isSingleControlLabel(rawLabel, el?.role) ? rawLabel : "";
   const outcome = String(decision.expectedOutcome || "");
 
   // "Order history", "Purchase details", "Payment methods" carry a committing
@@ -481,11 +584,15 @@ function consequenceKind(decision, snapshot) {
     return "destructive";
   }
   if (OUTBOUND_OUTCOME_RE.test(outcome)) return "outbound";
-  if (label && OUTBOUND_LABEL_RE.test(label) && !OUTBOUND_LABEL_EXEMPT_RE.test(label)) {
-    return "outbound";
+  // Putting text somewhere delivers nothing. Only committing it does — which
+  // is the Enter case handled below, or a separate click on a Send control.
+  const typing = type === "type" || type === "type_coord";
+  if (!typing && label && OUTBOUND_LABEL_RE.test(label) && !OUTBOUND_LABEL_EXEMPT_RE.test(label)) {
+    // …unless what is being aimed at is a place to type, described in prose.
+    if (!TARGET_IS_A_FIELD_RE.test(label)) return "outbound";
   }
   // Pressing Enter in a composer commits the send with no button involved.
-  if (type === "type" && action.pressEnter === true && SUBMITS_ON_ENTER_RE.test(label)) {
+  if (typing && action.pressEnter === true && SUBMITS_ON_ENTER_RE.test(label)) {
     return "outbound";
   }
   return "";

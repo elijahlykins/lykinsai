@@ -40,7 +40,12 @@ async function planTask({ model, task, snapshot = null, userMemory = "", website
     knownFacts: result.knownFacts,
     skills,
   });
-  return { clarification: result.clarification };
+  return {
+    clarification: result.clarification,
+    // Tappable answers for the clarification, when the model proposed any.
+    clarificationOptions: result.clarificationOptions || [],
+    approach: result.approach || "",
+  };
 }
 
 /** Only skills that actually exist. A hallucinated name loads nothing and

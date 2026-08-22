@@ -127,6 +127,12 @@ export default function DesktopAppWindow({
   // window swallows the Dock. A React window would instead have its last inch
   // hidden *behind* the dock (z-25 against z-30), which just looks broken.
   zoomCoversDock = false,
+  // Fired with true/false as the window zooms and restores (and false on
+  // unmount). The Studio uses it to hide the dock while the Browser is
+  // full-screen — the native page covers the strip, but the React parts of
+  // the window (the agent rail) sit under the dock's z-30 and had it poking
+  // through them.
+  onZoomChange,
   z = 1,
   onFocus,
   onClose,
@@ -269,6 +275,19 @@ export default function DesktopAppWindow({
   // tab and back changes the timings but plays no animation.
   const msRef = useRef(ms);
   msRef.current = ms;
+  // The clock has to start during the render the stage changed in, not in the
+  // effect below. `busy` is read while rendering, so an effect leaves one whole
+  // render of it saying "at rest" at the exact moment a transition begins —
+  // and coming back from minimized that render is the first one, because the
+  // previous stage finished settling long ago. Whatever the desktop anchors to
+  // this frame acted on it: the Browser docked its native views on screen at
+  // full opacity, undocked them a frame later for the animation that had only
+  // just started, then docked them again at the end of it.
+  const [settleStage, setSettleStage] = useState(stage);
+  if (settleStage !== stage) {
+    setSettleStage(stage);
+    setSettling(ms > 0);
+  }
   useEffect(() => {
     const wait = msRef.current;
     if (!wait) {
@@ -279,6 +298,17 @@ export default function DesktopAppWindow({
     const t = setTimeout(() => setSettling(false), wait);
     return () => clearTimeout(t);
   }, [stage]);
+
+  // Zoom state is this component's own; anything outside that reacts to it
+  // (the dock hiding under a full-screen Browser) hears about it here — and
+  // hears "restored" when the window unmounts, so a close while zoomed can
+  // never leave the dock hidden.
+  const zoomChangeRef = useRef(onZoomChange);
+  zoomChangeRef.current = onZoomChange;
+  useEffect(() => {
+    zoomChangeRef.current?.(zoomed);
+  }, [zoomed]);
+  useEffect(() => () => zoomChangeRef.current?.(false), []);
 
   // Anything the desktop anchors to this frame from outside the DOM has to sit
   // the animation out: a CSS scale doesn't carry native views with it, and the

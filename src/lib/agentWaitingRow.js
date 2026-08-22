@@ -35,6 +35,10 @@ export function agentWaitingRow(agent, fromEvent = null) {
     return {
       label: String(fromEvent.label).trim(),
       detail: String(fromEvent.detail || "").trim(),
+      // "question" gets its own answer card over the chat bar; everything
+      // else renders as the plain waiting row.
+      kind: String(fromEvent.kind || "").trim(),
+      options: answerOptions(fromEvent.options),
     };
   }
   if (!agent?.waiting) return null;
@@ -46,7 +50,24 @@ export function agentWaitingRow(agent, fromEvent = null) {
     (String(agent.waitingKind || "") === "signin"
       ? `Waiting for you to sign in${host ? ` to ${host}` : ""}`
       : "Waiting for you");
-  return { label, detail: String(agent.waitingDetail || "").trim() };
+  return {
+    label,
+    detail: String(agent.waitingDetail || "").trim(),
+    kind: String(agent.waitingKind || "").trim(),
+    options: answerOptions(agent.waitingOptions),
+  };
+}
+
+/**
+ * One-tap answers a question pause may carry. Buttons, so: trimmed, capped,
+ * and never more than the four the runtime allows — a rail that renders a
+ * malformed payload as chips is worse than one that renders none.
+ */
+function answerOptions(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .map((o) => String(o || "").replace(/\s+/g, " ").trim().slice(0, 120))
+    .filter(Boolean)
+    .slice(0, 4);
 }
 
 export default agentWaitingRow;

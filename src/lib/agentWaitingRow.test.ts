@@ -58,3 +58,35 @@ test("an empty event does not stand in for a finished agent", () => {
   // a row with no label must never keep the pulse alive on its own.
   assert.equal(agentWaitingRow({ waiting: false, step: "Done" }, { label: "", detail: "" }), null);
 });
+
+test("a question pause carries its kind and one-tap answers", () => {
+  const row = agentWaitingRow(
+    { waiting: true, step: "Needs an answer from you", waitingKind: "question" },
+    {
+      label: "Needs an answer from you",
+      detail: "What subject line would you like?",
+      kind: "question",
+      options: ["Quick favor — 2 mins?", "  Something fun for you  ", ""],
+    },
+  );
+  assert.equal(row?.kind, "question");
+  // Blanks dropped, whitespace collapsed — these render as buttons.
+  assert.deepEqual(row?.options, ["Quick favor — 2 mins?", "Something fun for you"]);
+});
+
+test("options survive a rail that mounted after the question", () => {
+  const row = agentWaitingRow({
+    waiting: true,
+    step: "Needs an answer from you",
+    waitingKind: "question",
+    waitingDetail: "What subject line would you like?",
+    waitingOptions: ["Top secret inside", "A link you'll like"],
+  });
+  assert.equal(row?.kind, "question");
+  assert.equal(row?.options.length, 2);
+});
+
+test("a pause with no options offers none rather than undefined", () => {
+  const row = agentWaitingRow({ waiting: true, step: "Waiting for you", waitingKind: "signin" });
+  assert.deepEqual(row?.options, []);
+});

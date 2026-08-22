@@ -1,5 +1,4 @@
 import { supabase } from "@/lib/supabase";
-import type { Block } from "@/lyknChat/types";
 
 type LocalFolderEntry = {
   id: string;
@@ -57,7 +56,7 @@ const truncateText = (value: string, max = 500) => {
   return `${raw.slice(0, max)}…`;
 };
 
-const summarizeBlock = (block: Block) => {
+const summarizeBlock = (block: any) => {
   if (!block) return "";
   switch (block.type) {
     case "text": {
@@ -113,7 +112,7 @@ const normalizeBlocks = (snapshot: any): KnowledgeBaseBlock[] => {
   return order
     .map((id: string) => blocksRecord[id])
     .filter(Boolean)
-    .map((block: Block) => ({
+    .map((block: any) => ({
       id: block.id,
       type: block.type,
       summary: summarizeBlock(block),

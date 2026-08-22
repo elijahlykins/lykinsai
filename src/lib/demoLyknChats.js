@@ -1533,8 +1533,8 @@ function computeDemoCamera(snap) {
 
 export function getDemoLyknChatSnapshot(id) {
   if (!isDemoLyknChatId(id)) return null;
-  // Deep-clone so callers that mutate (loadBlocks, etc.) don't poison the
-  // shared template across boards.
+  // Deep-clone so callers that mutate the snapshot don't poison the
+  // shared template.
   const snap = JSON.parse(JSON.stringify(DEMO_GRID_SNAPSHOTS[id]));
   snap.camera = computeDemoCamera(snap);
   return snap;
